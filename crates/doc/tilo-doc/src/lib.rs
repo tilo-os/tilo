@@ -21,6 +21,7 @@ pub mod document;
 pub mod export;
 pub mod inline_time;
 pub mod model;
+pub mod paging;
 pub mod reconcile;
 pub mod restore;
 pub mod schema;

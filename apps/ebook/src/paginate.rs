@@ -9,6 +9,7 @@
 //! [`TextRenderer`] is available) and is cached per [`LayoutKey`]; it only
 //! recomputes when the chapter, content width, or a typography setting changes.
 
+use ui::text_render::paging::{Block as PageBlock, Fragmentation, PageFlow};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::{
     ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks,
@@ -1406,29 +1407,16 @@ impl<'a> ChapterLayouter<'a> {
     }
 }
 
-/// One row of the flattened page-breaking grid: either a whole `Separator`
-/// block, or a single line of a text block (retaining enough paragraph
-/// structure — `line`/`line_count` — to enforce TeX-like break constraints).
-#[derive(Clone, Copy)]
-struct Row {
-    y: f32,
-    height: f32,
-    block: usize,
-    line: usize,
-    line_count: usize,
-    kind: LayoutKind,
-}
-
 /// Slices the flow into page-start offsets at line boundaries as its blocks
-/// arrive in order. A break is decided once the row that overflows the page
-/// is known; every rule looks back from that row, never past it, so a break
-/// taken early is the one the whole chapter would take.
+/// arrive in order, with the shared page-breaking rules. A break is decided
+/// once the block that overflows the page is known and never revisited, so a
+/// break taken early is the one the whole chapter would take.
 struct Paginator {
     page_h: f32,
-    rows: Vec<Row>,
-    blocks: usize,
-    /// The row the open page starts at, once there is one.
-    page_row: Option<usize>,
+    flow: PageFlow,
+    /// The first row of every block handed to `flow`, in its order: where a
+    /// page starts when a heading moves down to it.
+    block_tops: Vec<f32>,
     pages: Vec<f32>,
     /// How many of `pages` were handed out.
     handed: usize,
@@ -1438,9 +1426,8 @@ impl Paginator {
     fn new(page_h: f32) -> Self {
         Self {
             page_h,
-            rows: Vec::new(),
-            blocks: 0,
-            page_row: None,
+            flow: PageFlow::new(f64::from(page_h)),
+            block_tops: Vec::new(),
             pages: Vec::new(),
             handed: 0,
         }
@@ -1453,108 +1440,67 @@ impl Paginator {
     }
 
     fn push(&mut self, b: &LaidBlock) {
-        let block_index = self.blocks;
-        self.blocks += 1;
         if self.page_h <= 1.0 {
             if self.pages.is_empty() {
                 self.pages.push(0.0);
             }
             return;
         }
-        if b.kind == LayoutKind::Separator {
-            self.rows.push(Row {
-                y: b.top,
-                height: b.bottom - b.top,
-                block: block_index,
-                line: 0,
-                line_count: 1,
-                kind: b.kind,
-            });
+        // Rows: a separator whole, a text block line by line.
+        let rows: Vec<(f32, f32)> = if b.kind == LayoutKind::Separator {
+            vec![(b.top, b.bottom - b.top)]
         } else {
-            for (line, l) in b.lines.iter().enumerate() {
-                self.rows.push(Row {
-                    y: l.y,
-                    height: b.line_height,
-                    block: block_index,
-                    line,
-                    line_count: b.lines.len(),
-                    kind: b.kind,
-                });
+            b.lines.iter().map(|l| (l.y, b.line_height)).collect()
+        };
+        let (Some(&(first, _)), Some(&(last, last_h))) = (rows.first(), rows.last()) else {
+            return;
+        };
+        if self.pages.is_empty() {
+            self.pages.push(first);
+        }
+        let page_start = self.pages.last().copied().unwrap_or(first);
+        // Ordinary text keeps two lines on either side of a break once it has
+        // four; shorter text and headings break anywhere, so a heading never
+        // strands at the foot of a page for want of a legal split below it.
+        let fragmentation = if matches!(
+            b.kind,
+            LayoutKind::Paragraph | LayoutKind::Quote | LayoutKind::Verse { .. } | LayoutKind::List
+        ) && rows.len() >= 4
+        {
+            Fragmentation::default()
+        } else {
+            Fragmentation::ANYWHERE
+        };
+        let block = PageBlock::new(f64::from(last + last_h - first))
+            .with_lead(f64::from(first - page_start) - self.flow.y())
+            .keeping_with_next(b.kind == LayoutKind::Heading)
+            .fragmented(fragmentation);
+        self.block_tops.push(first);
+        let placed = self.flow.place_lines(&block, || {
+            rows.iter()
+                .map(|&(y, h)| (f64::from(y - first), f64::from(h)))
+                .collect()
+        });
+        if let Some(carry) = placed.carry
+            && let Some(&top) = self.block_tops.get(carry.block)
+        {
+            self.start_page(carry.from_page.saturating_add(1), top);
+        }
+        if placed.fragments.is_empty() {
+            self.start_page(placed.page, first);
+        }
+        for fragment in &placed.fragments {
+            if let Some(&(y, _)) = rows.get(fragment.lines.start) {
+                self.start_page(fragment.page, y);
             }
         }
-        self.advance();
     }
 
-    fn advance(&mut self) {
-        let rows = &self.rows;
-        let mut page_row = if let Some(row) = self.page_row {
-            row
-        } else {
-            let Some(first) = rows.first() else {
-                return;
-            };
-            self.pages.push(first.y);
-            0
-        };
-        while page_row < rows.len() {
-            let Some(&start_row) = rows.get(page_row) else {
-                break;
-            };
-            let page_start = start_row.y;
-            let Some(overflow) = (page_row..rows.len()).find(|&index| {
-                rows.get(index)
-                    .is_some_and(|r| r.y + r.height - page_start > self.page_h + 0.5)
-            }) else {
-                break;
-            };
-            let mut break_at = overflow;
-            let Some(&row) = rows.get(break_at) else {
-                break;
-            };
-
-            // Keep at least two lines of an ordinary text block on either side of
-            // a page boundary whenever that can be achieved on this page.
-            if matches!(
-                row.kind,
-                LayoutKind::Paragraph
-                    | LayoutKind::Quote
-                    | LayoutKind::Verse { .. }
-                    | LayoutKind::List
-            ) && row.line_count >= 4
-                && (row.line == 1 || row.line_count - row.line == 1)
-            {
-                break_at -= 1;
-            }
-
-            // A heading is semantically attached to the text following it. If it
-            // would become the final item on a page, carry the complete heading to
-            // the next page as long as it did not itself begin this page.
-            if break_at > page_row
-                && let Some(&prev) = rows.get(break_at - 1)
-                && let Some(&cur) = rows.get(break_at)
-                && prev.kind == LayoutKind::Heading
-                && prev.block != cur.block
-            {
-                let heading_block = prev.block;
-                let heading_start = (page_row..break_at)
-                    .find(|&index| rows.get(index).is_some_and(|r| r.block == heading_block))
-                    .unwrap_or(break_at - 1);
-                if heading_start > page_row {
-                    break_at = heading_start;
-                }
-            }
-
-            // An indivisible item taller than a page has no legal alternative.
-            if break_at <= page_row {
-                break_at = overflow.max(page_row + 1);
-            }
-            let Some(&brk) = rows.get(break_at) else {
-                break;
-            };
-            self.pages.push(brk.y);
-            page_row = break_at;
+    /// Record that page `page` starts at `y`, once.
+    fn start_page(&mut self, page: usize, y: f32) {
+        if page >= self.pages.len() {
+            self.pages.push(y);
         }
-        self.page_row = Some(page_row);
     }
 }
 

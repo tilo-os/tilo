@@ -24,8 +24,8 @@ use crate::widget::arrange::{Align, Fit, Page, Row, Slot, Stack, TranscriptEdges
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
-    Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry, MenuItemProps,
-    SwipeActionProps, Text, Widget,
+    Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
+    MenuPart, SwipeActionProps, Text, Widget,
 };
 
 use super::{ListModel, ListModelChange, VirtualList};
@@ -57,13 +57,21 @@ pub struct ListItemProps {
     /// When it was written, in a transcript: the time beside its author's name, and a divider
     /// over the first message of each day.
     pub time: Option<Moment>,
-    /// The commands of the row's context menu: a right-click, the Menu key or a long press
-    /// opens it, and selects the row.
+    /// What the item offers on its context menu (a right-click, the Menu key or a long press
+    /// opens it, and selects the row): each of its allowed actions, after the menu the row's
+    /// view placed (`attached`) and without those that menu placed already, so every action
+    /// stays reachable.
     #[component(slot)]
-    pub menu: Vec<MenuItemProps>,
-    /// What swiping the row across does.
+    pub menu: Vec<MenuPart>,
+    /// What swiping the row from its trailing edge does, unless its view says
+    /// (`attached`).
     #[component(slot)]
     pub swipe: Option<SwipeActionProps>,
+    /// What the row's view attached to it (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe`
+    /// anywhere in the row's view): its own menu, first in the row's menu; a toolbar shown
+    /// while the row is hovered or holds focus; a swipe either way.
+    #[component(slot)]
+    pub attached: Attachments,
     /// The row: a `ui.ListRow`, or any view.
     #[component(slot(default))]
     pub row: ItemRow,
@@ -91,9 +99,6 @@ impl SlotType for ItemRow {
 
     fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
         let kinds = source.slot_kinds(slot);
-        if kinds.len() > 1 {
-            return Err(format!("holds one row, not {}", kinds.len()));
-        }
         if matches!(kinds.as_slice(), [Some(kind)] if kind == ListRowProps::NAME) {
             let mut row = None;
             source.components(slot, &mut |child| {
@@ -103,11 +108,18 @@ impl SlotType for ItemRow {
             *self = row.map_or(Self::None, |row| Self::Row(Box::new(row)));
             return Ok(());
         }
-        *self = source
-            .children(slot)
-            .into_iter()
-            .next()
-            .map_or(Self::None, Self::View);
+        // A row's view: its call (one view, whatever it holds), or the views given one by one,
+        // stacked as a view's body is.
+        let mut views = source.children(slot);
+        *self = match views.len() {
+            0 => Self::None,
+            1 => views.pop().map_or(Self::None, Self::View),
+            _ => Self::View(Box::new(
+                views
+                    .into_iter()
+                    .fold(Stack::stack().fill_width().gap(Rhythm::Tight), Stack::push),
+            )),
+        };
         Ok(())
     }
 }
@@ -189,6 +201,12 @@ impl SlotType for DescribedRows {
         source.components(slot, &mut |child| {
             let item = ListItemProps::from_source(child).map_err(|error| error.to_string())?;
             match &item.row {
+                _ if !item.attached.toolbar.is_empty() => {
+                    return Err(
+                        "a list given its items whole holds list rows; a row with a toolbar of its own renders as it is shown"
+                            .to_owned(),
+                    );
+                }
                 ItemRow::Row(row) if row.trailing.is_some() => {
                     return Err(
                         "a row of a virtual list is built again each time it scrolls into view, so it takes no trailing control"
@@ -294,23 +312,26 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         presence: item.presence.clone(),
         author: item.author.clone(),
         time: item.time,
-        menu: item
-            .menu
-            .iter()
-            .map(|entry| MenuItemProps {
-                label: entry.label.clone(),
-                icon: entry.icon,
-                destructive: entry.destructive,
-                checked: entry.checked,
-                choose: entry.choose.clone(),
-            })
-            .collect(),
-        swipe: item.swipe.as_ref().map(|swipe| SwipeActionProps {
-            label: swipe.label.clone(),
-            icon: swipe.icon,
-            destructive: swipe.destructive,
-            swipe: swipe.swipe.clone(),
-        }),
+        menu: item.menu.iter().map(MenuPart::again).collect(),
+        swipe: item.swipe.as_ref().map(SwipeActionProps::again),
+        attached: Attachments {
+            menu: item.attached.menu.iter().map(MenuPart::again).collect(),
+            toolbar: Vec::new(),
+            swipe: crate::widget::SwipeProps {
+                leading: item
+                    .attached
+                    .swipe
+                    .leading
+                    .as_ref()
+                    .map(SwipeActionProps::again),
+                trailing: item
+                    .attached
+                    .swipe
+                    .trailing
+                    .as_ref()
+                    .map(SwipeActionProps::again),
+            },
+        },
         row,
     })
 }
@@ -414,8 +435,6 @@ fn rendered(rows: &DescribedRows) -> Option<usize> {
 enum ListBody {
     /// The list under the menu every row shares.
     Menus(Box<ContextMenuArea>),
-    /// A transcript, whose rows offer no menu.
-    Plain(Box<VirtualList<DescribedRows>>),
 }
 
 impl DescribedList {
@@ -424,7 +443,6 @@ impl DescribedList {
     pub fn list(&self) -> Option<&VirtualList<DescribedRows>> {
         match &self.body {
             ListBody::Menus(area) => area.content().as_any()?.downcast_ref(),
-            ListBody::Plain(list) => Some(list),
         }
     }
 
@@ -432,7 +450,6 @@ impl DescribedList {
     pub fn list_mut(&mut self) -> Option<&mut VirtualList<DescribedRows>> {
         match &mut self.body {
             ListBody::Menus(area) => area.content_mut().as_any_mut()?.downcast_mut(),
-            ListBody::Plain(list) => Some(list),
         }
     }
 
@@ -440,7 +457,6 @@ impl DescribedList {
     pub fn menu_area_mut(&mut self) -> Option<&mut ContextMenuArea> {
         match &mut self.body {
             ListBody::Menus(area) => Some(area),
-            ListBody::Plain(_) => None,
         }
     }
 
@@ -480,16 +496,30 @@ fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
         .flatten()
 }
 
-/// The row of an item: its list row, with the item's swipe and presence, or its view.
+/// The row of an item: its list row with the item's presence, or its view; under the swipe
+/// and beside the hover toolbar the item has.
 fn row_of(rows: &DescribedRows, key: &str) -> Element {
-    let built = rows.with_item(key, |item| {
+    match bare_row(rows, key) {
+        Some((row, swipe, attached)) => attach(row, swipe, attached),
+        None => Box::new(ListRow::new(key.to_owned(), "")),
+    }
+}
+
+/// The row of an item, with the swipe and what its view attached, to put around it (or around
+/// the message it is in).
+fn bare_row(
+    rows: &DescribedRows,
+    key: &str,
+) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
+    rows.with_item(key, |item| {
         let ListItemProps {
             presence,
             swipe,
+            attached,
             row,
             ..
         } = item;
-        match row {
+        let row = match row {
             ItemRow::Row(mut props) => {
                 rows.row_props(&mut props, key);
                 // The list activates its rows itself, by key: a row of it is not a target of
@@ -499,16 +529,35 @@ fn row_of(rows: &DescribedRows, key: &str) -> Element {
                 if let Some(person) = presence {
                     row = row.presence(person.identity);
                 }
-                if let Some(swipe) = swipe {
-                    row = row.with_swipe(swipe);
-                }
                 Box::new(row) as Element
             }
             ItemRow::View(view) => view,
             ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
-        }
-    });
-    built.unwrap_or_else(|| Box::new(ListRow::new(key.to_owned(), "")))
+        };
+        (row, swipe, attached)
+    })
+}
+
+/// `row` with the swipe and the hover toolbar its item has: the view's own swipe each way, the
+/// item's (`swipe`) from the trailing edge when the view gives none there.
+fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) -> Element {
+    let Attachments {
+        toolbar,
+        swipe: swiped,
+        ..
+    } = attached;
+    let trailing = swiped.trailing.or(swipe);
+    // The toolbar is over the row, so a swipe moves both.
+    let row = if toolbar.is_empty() {
+        row
+    } else {
+        Box::new(crate::widget::HoverToolbar::new(row, toolbar)) as Element
+    };
+    if trailing.is_some() || swiped.leading.is_some() {
+        Box::new(crate::widget::SwipeRow::new(row, swiped.leading, trailing))
+    } else {
+        row
+    }
 }
 
 /// A message of a transcript: its item's row, under its author and the time when the item
@@ -546,7 +595,9 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
                     _ => true,
                 }
         });
-    let said = row_of(rows, key);
+    let Some((said, swipe, attached)) = bare_row(rows, key) else {
+        return page_row(row_of(rows, key), RUN_GAP);
+    };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
     let message = if continues {
@@ -576,7 +627,13 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
                 .push(said),
         )
     };
-    let message = message.push_fit(said, Fit::fill(1.0));
+    // The message swipes and shows its toolbar whole, its author with it; the day's divider
+    // stays.
+    let message = attach(
+        Box::new(message.push_fit(said, Fit::fill(1.0))),
+        swipe,
+        attached,
+    );
     let gap = if continues { Rhythm::Tight } else { RUN_GAP };
     match day.filter(|_| new_day) {
         Some(day) => page_row(
@@ -584,11 +641,11 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
                 Stack::stack()
                     .gap(RUN_GAP)
                     .push(Box::new(DayDivider::new(clock.day_label(day))))
-                    .push(Box::new(message)),
+                    .push(message),
             ),
             gap,
         ),
-        None => page_row(Box::new(message), gap),
+        None => page_row(message, gap),
     }
 }
 
@@ -620,12 +677,8 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     let entries = rows
         .with_item(&key, |item| {
             let shown = item.item.clone();
-            let entries: Vec<MenuEntry> = item
-                .menu
-                .into_iter()
-                .map(MenuItemProps::into_entry)
-                .collect();
-            (shown, entries)
+            let menu = crate::widget::attached::item_menu(item.attached.menu, item.menu);
+            (shown, crate::widget::attached::menu_entries(menu))
         })
         .unwrap_or_default();
     let (shown, entries) = entries;
@@ -668,8 +721,12 @@ impl Described for DescribedList {
                     .filling()
                     .following_end()
                     .with_id(key);
+            // A message offers its menu as every row does.
+            let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
+                row_menu(list, at, &Event::None)
+            });
             return Self {
-                body: ListBody::Plain(Box::new(list)),
+                body: ListBody::Menus(Box::new(area)),
                 face,
             };
         }
@@ -746,14 +803,12 @@ impl Decorator for DescribedList {
     fn inner(&self) -> &(dyn Widget + 'static) {
         match &self.body {
             ListBody::Menus(area) => area.as_ref(),
-            ListBody::Plain(list) => list.as_ref(),
         }
     }
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         match &mut self.body {
             ListBody::Menus(area) => area.as_mut(),
-            ListBody::Plain(list) => list.as_mut(),
         }
     }
 

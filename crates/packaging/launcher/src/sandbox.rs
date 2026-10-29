@@ -1946,6 +1946,42 @@ mod tests {
         assert_eq!(setenv_value(&argv, APP_MODULE_ENV), None);
     }
 
+    #[test]
+    fn a_media_app_may_own_the_player_name_its_toolkit_requests() {
+        // The app learns who it is from the `TILO_PACKAGE_ID` the sandbox
+        // sets; the toolkit names its player from that identity. The
+        // session-bus filter must grant exactly that name, or the bus
+        // refuses the player and the desktop never shows it.
+        let mut m = mk_manifest("off");
+        m.capabilities = vec![crate::dbus_proxy::MEDIA_SESSION_CAPABILITY.to_string()];
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        let app = tilo_process::environment::HostIdentity {
+            package_id: setenv_value(&argv, "TILO_PACKAGE_ID").map(str::to_owned),
+            ..Default::default()
+        };
+        let requested = app.media_player_bus_name("notes");
+        assert_eq!(requested, "org.mpris.MediaPlayer2.com.example.notes");
+        let granted = crate::dbus_proxy::media_player_for(&m);
+        assert_eq!(granted.as_deref(), Some(requested.as_str()));
+        assert!(
+            crate::dbus_proxy::session_filter_args(false, true, granted.as_deref())
+                .contains(&format!("--own={requested}"))
+        );
+        // Without the declaration there is no player to own.
+        assert_eq!(
+            crate::dbus_proxy::media_player_for(&mk_manifest("off")),
+            None
+        );
+    }
+
     fn atspi_argv(read_only: bool) -> Vec<String> {
         let m = mk_manifest("off");
         let plan = DBusBindPlan {

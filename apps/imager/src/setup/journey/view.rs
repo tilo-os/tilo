@@ -557,7 +557,7 @@ impl InstallerPreview {
                             inventory.refs.iter().any(|item| {
                                 item.app_id().is_some()
                                     && item.installation
-                                        != super::super::flatpak_transfer::Installation::User
+                                        != imager_backend::setup::flatpak_transfer::Installation::User
                             })
                         })
                     {

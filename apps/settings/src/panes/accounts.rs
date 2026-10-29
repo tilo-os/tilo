@@ -4556,7 +4556,7 @@ mod tests {
             let mut labels = Vec::new();
             actions_of(composed.as_ref(), &mut labels);
             let profile = tempfile::tempdir().unwrap();
-            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let cx = PaneCx::in_profile(profile.path().to_path_buf());
             let area = AccountsArea::new(&cx).with_account_root(root);
             let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
             let actions = |account: &str| -> Vec<String> {
@@ -4635,7 +4635,7 @@ mod tests {
         let mut vault = root.vault();
         vault.put(&id, &accounts::Secret::password("test-only-password"));
         vault.try_save().expect("the vault is saved");
-        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let cx = PaneCx::in_profile(dir.path().to_path_buf());
         let area = AccountsArea::new(&cx).with_account_root(root.clone());
         assert!(area.start_read(), "the first read starts");
         assert!(!area.start_read(), "one read at a time");
@@ -4883,7 +4883,7 @@ mod tests {
     #[test]
     fn linked_accounts_show_where_the_room_is_connected_to_a_service() {
         let (scratch, root) = scratch_root();
-        let cx = PaneCx::in_file(scratch.path().join("settings.json"));
+        let cx = PaneCx::in_profile(scratch.path().to_path_buf());
         let pane = AccountsPane::from_dir_in(root.clone(), AccountDirectory::default(), false)
             .with_host(cx.clone());
         assert!(

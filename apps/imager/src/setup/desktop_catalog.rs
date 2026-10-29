@@ -56,7 +56,7 @@ pub struct DesktopRelease {
     pub verified_runtime: Option<RuntimeEvidence>,
     /// Consumer proof extracted from these exact package bytes by the signed catalog producer.
     #[serde(default)]
-    pub account_custody: Option<super::account_admission::ConsumerCapability>,
+    pub account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
 }
 
 impl DesktopRelease {
@@ -145,7 +145,8 @@ impl DesktopRelease {
         if required.is_some_and(|protocol| {
             self.account_custody.as_ref().is_none_or(|proof| {
                 !proof.supports_service_session_protocol(protocol)
-                    && !super::account_admission::source_candidate(protocol, proof).unwrap_or(false)
+                    && !imager_backend::account_admission::source_candidate(protocol, proof)
+                        .unwrap_or(false)
             })
         }) {
             return Err(super::strings::t(

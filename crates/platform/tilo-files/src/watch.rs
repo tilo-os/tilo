@@ -14,7 +14,11 @@ use tilo_lock::MutexRecover as _;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ChangeKind {
-    /// Created or replaced: read it again.
+    /// Created, or moved in, where the backend tells creation apart: read
+    /// it.
+    Created,
+    /// Written, replaced, or created where the backend does not tell
+    /// creation apart: read it again.
     Changed,
     /// Removed, or renamed away.
     Removed,

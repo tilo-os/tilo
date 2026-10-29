@@ -17,14 +17,15 @@
 //! restarts their windows on it. Each later change of the binary re-bakes and reinstalls the
 //! bundle and restarts the apps that use it; the session keeps running.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Instant;
 
-use notify::{RecursiveMode, Watcher as _};
 use tilo_app_package::pack::SigningIdentity;
+use tilo_files::ChangeKind;
+use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 use tilolang::PackageMeta;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
@@ -41,7 +42,8 @@ const RUNTIME_SOURCES: [&str; 4] = [
 
 /// The build of the tilolang runtime binary alone, thin, against the runtime library a nested
 /// session runs, for this machine's architecture: a binary of a few megabytes, as the session's
-/// own runtime bundle carries. rcargo runs it on its builder; t runs it as a check.
+/// own runtime bundle carries. A remote cargo drop-in runs it on its builder; t runs it as a
+/// check.
 const RUNTIME_SCRIPT: &str = "dist/dev/tilolang-runtime-build.sh";
 
 /// t's check that runs [`RUNTIME_SCRIPT`] on a node of this machine's architecture.
@@ -51,8 +53,8 @@ const RUNTIME_CHECK: &str = if cfg!(target_arch = "aarch64") {
     "tilolang-runtime"
 };
 
-/// Where the build lands in the checkout's target directory, where rcargo fetches it and
-/// `t outputs` leaves it: the binary and the runtime library it links.
+/// Where the build lands in the checkout's target directory, where the remote cargo drop-in
+/// fetches it and `t outputs` leaves it: the binary and the runtime library it links.
 const RUNTIME_OUT: &str = "tilolang-runtime";
 const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-app";
 const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
@@ -60,41 +62,50 @@ const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
 /// The environment variable that picks the builder, as it does for `nested-session.sh`.
 const BUILDER_ENV: &str = "TILO_NESTED_BUILDER";
 
-/// Where `--build-runtime` builds the runtime: on the rcargo builder that rcargo's
-/// configuration names (`rcargo exec`), or on t (`t outputs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The environment variable naming the remote cargo drop-in, as it does for
+/// `nested-session.sh`: a cargo replacement that builds on another machine and also runs
+/// `PROGRAM --fetch DIR exec SCRIPT` there, copying DIR of the target directory back.
+const REMOTE_CARGO_ENV: &str = "TILO_REMOTE_CARGO";
+
+/// Where `--build-runtime` builds the runtime: on the builder of the remote cargo drop-in that
+/// [`REMOTE_CARGO_ENV`] names (`PROGRAM --fetch DIR exec SCRIPT`), or on t (`t outputs`).
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Builder {
-    Rcargo,
+    Remote(String),
     T,
 }
 
 impl Builder {
-    /// The builder `name` names: `rcargo` or `t`.
-    fn parse(name: &str) -> Result<Self, String> {
+    /// The builder `name` names: `remote` (the drop-in `remote_cargo` names) or `t`.
+    fn parse(name: &str, remote_cargo: Option<&str>) -> Result<Self, String> {
         match name {
-            "rcargo" => Ok(Self::Rcargo),
+            "remote" => remote_cargo
+                .map(|program| Self::Remote(program.to_owned()))
+                .ok_or_else(|| format!("the remote builder needs {REMOTE_CARGO_ENV}")),
             "t" => Ok(Self::T),
-            other => Err(format!("unknown builder {other} (rcargo or t)")),
+            other => Err(format!("unknown builder {other} (remote or t)")),
         }
     }
 
-    fn program(self) -> &'static str {
+    fn program(&self) -> &str {
         match self {
-            Self::Rcargo => "rcargo",
+            Self::Remote(program) => program,
             Self::T => "t",
         }
     }
 
-    /// The builder asked for (`--builder`, else [`BUILDER_ENV`]), by default rcargo when it is
-    /// on PATH and t otherwise; it must be on PATH.
+    /// The builder asked for (`--builder`, else [`BUILDER_ENV`]), by default the remote cargo
+    /// drop-in when [`REMOTE_CARGO_ENV`] names one on PATH and t otherwise; it must be on PATH.
     fn choose(asked: Option<&str>) -> Result<Self, String> {
-        let from_env = std::env::var(BUILDER_ENV)
-            .ok()
-            .filter(|name| !name.is_empty());
+        let env = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
+        let from_env = env(BUILDER_ENV);
+        let remote_cargo = env(REMOTE_CARGO_ENV);
         let builder = match asked.or(from_env.as_deref()) {
-            Some(name) => Self::parse(name)?,
-            None if on_path("rcargo") => Self::Rcargo,
-            None => Self::T,
+            Some(name) => Self::parse(name, remote_cargo.as_deref())?,
+            None => match remote_cargo {
+                Some(program) if on_path(&program) => Self::Remote(program),
+                _ => Self::T,
+            },
         };
         if !on_path(builder.program()) {
             return Err(format!(
@@ -146,7 +157,7 @@ fn check_architecture(path: &Path) -> Result<(), String> {
     match machine {
         Some(machine) if machine == expected => Ok(()),
         _ => Err(format!(
-            "{} is not built for {}: build on a builder of this architecture (RCARGO_CONFIG)",
+            "{} is not built for {}: build on a builder of this architecture",
             path.display(),
             std::env::consts::ARCH
         )),
@@ -175,7 +186,7 @@ pub struct DevOptions {
 
 /// What wakes the loop: a file event, or the end of the session the tool started.
 pub(crate) enum Wake {
-    File(notify::Result<notify::Event>),
+    File(Vec<WatchEvent>),
     Ended(std::io::Result<std::process::ExitStatus>),
 }
 
@@ -414,43 +425,44 @@ impl Dev {
 
     fn watch(
         &self,
-        watcher: &mut notify::RecommendedWatcher,
-        watching: &mut BTreeSet<PathBuf>,
+        wakes: &mpsc::Sender<Wake>,
+        watching: &mut BTreeMap<PathBuf, ChangeWatch>,
     ) -> Result<(), String> {
-        let mut dirs: Vec<(PathBuf, RecursiveMode)> = self
+        let mut dirs: Vec<(PathBuf, bool)> = self
             .watched_dirs()?
             .into_iter()
-            .map(|dir| (dir, RecursiveMode::NonRecursive))
+            .map(|dir| (dir, false))
             .collect();
         match self.runtime.as_ref() {
             Some(DevRuntime {
                 built_in: Some((repo, _)),
                 ..
-            }) => dirs.extend(
-                RUNTIME_SOURCES
-                    .iter()
-                    .map(|dir| (repo.join(dir), RecursiveMode::Recursive)),
-            ),
+            }) => dirs.extend(RUNTIME_SOURCES.iter().map(|dir| (repo.join(dir), true))),
             Some(runtime) => dirs.extend(
                 runtime
                     .binary
                     .parent()
-                    .map(|dir| (dir.to_path_buf(), RecursiveMode::NonRecursive)),
+                    .map(|dir| (dir.to_path_buf(), false)),
             ),
             None => {}
         }
-        for (dir, mode) in dirs {
-            if watching.insert(dir.clone()) {
-                watcher
-                    .watch(&dir, mode)
-                    .map_err(|error| format!("{}: {error}", dir.display()))?;
+        for (dir, tree) in dirs {
+            if let std::collections::btree_map::Entry::Vacant(slot) = watching.entry(dir) {
+                let watcher = if tree {
+                    Watcher::tree(slot.key())
+                } else {
+                    Watcher::entries(slot.key())
+                };
+                let watch = watch_into(watcher, wakes.clone())
+                    .map_err(|error| format!("{}: {error}", slot.key().display()))?;
+                slot.insert(watch);
             }
         }
         Ok(())
     }
 
-    /// Build the runtime binary in its checkout, thin, on the rcargo builder (one `rcargo exec`
-    /// whose output is fetched) or on t (`t outputs`). A thin binary runs only on the runtime
+    /// Build the runtime binary in its checkout, thin, on the remote cargo drop-in's builder (one
+    /// `exec` whose output is fetched) or on t (`t outputs`). A thin binary runs only on the runtime
     /// library of its build graph, so the library it was built with must be the one the session
     /// runs.
     fn build_runtime(&self) -> Result<(), String> {
@@ -466,7 +478,7 @@ impl Dev {
         let mut command = Command::new(builder.program());
         command.current_dir(repo);
         match builder {
-            Builder::Rcargo => {
+            Builder::Remote(_) => {
                 // Its output passes through: the build's progress and errors.
                 command.args(["--fetch", RUNTIME_OUT, "exec", RUNTIME_SCRIPT]);
             }
@@ -508,35 +520,35 @@ impl Dev {
     pub(crate) fn follow(
         &mut self,
         wakes: &mpsc::Receiver<Wake>,
-        watcher: &mut notify::RecommendedWatcher,
+        sender: &mpsc::Sender<Wake>,
     ) -> Result<(), String> {
-        let mut watching = BTreeSet::new();
-        self.watch(watcher, &mut watching)?;
+        let mut watching = BTreeMap::new();
+        self.watch(sender, &mut watching)?;
         loop {
-            let event = match wakes.recv() {
-                Ok(Wake::File(event)) => event,
+            let events = match wakes.recv() {
+                Ok(Wake::File(events)) => events,
                 Ok(Wake::Ended(status)) => return ended(status),
                 Err(_) => return Err("the file watcher stopped".to_owned()),
             };
-            let Ok(event) = event else { continue };
-            let mut source = is_source_edit(&event);
-            let mut runtime = self.is_runtime_change(&event);
-            let mut runtime_source = self.is_runtime_source_edit(&event);
-            if !source && !runtime && !runtime_source {
-                continue;
-            }
+            let (mut source, mut runtime, mut runtime_source) = (false, false, false);
+            let mut take = |events: &[WatchEvent]| {
+                for event in events {
+                    source |= is_source_edit(event);
+                    runtime |= self.is_runtime_change(event);
+                    runtime_source |= self.is_runtime_source_edit(event);
+                }
+            };
+            take(&events);
             // An editor's save, or a link of the runtime, is several events: take every one
-            // already queued with this one.
+            // already queued with these.
             while let Ok(wake) = wakes.try_recv() {
                 match wake {
                     Wake::Ended(status) => return ended(status),
-                    Wake::File(Ok(more)) => {
-                        source |= is_source_edit(&more);
-                        runtime |= self.is_runtime_change(&more);
-                        runtime_source |= self.is_runtime_source_edit(&more);
-                    }
-                    Wake::File(Err(_)) => {}
+                    Wake::File(more) => take(&more),
                 }
+            }
+            if !source && !runtime && !runtime_source {
+                continue;
             }
             if runtime_source {
                 match self.build_runtime() {
@@ -551,15 +563,14 @@ impl Dev {
             } else {
                 self.rebuild();
             }
-            if let Err(error) = self.watch(watcher, &mut watching) {
+            if let Err(error) = self.watch(sender, &mut watching) {
                 eprintln!("{error}");
             }
         }
     }
 
     /// A new binary of a runtime built by hand.
-    fn is_runtime_change(&self, event: &notify::Event) -> bool {
-        use notify::EventKind;
+    fn is_runtime_change(&self, event: &WatchEvent) -> bool {
         let Some(runtime) = self
             .runtime
             .as_ref()
@@ -567,13 +578,12 @@ impl Dev {
         else {
             return false;
         };
-        matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
-            && event.paths.contains(&runtime.binary)
+        matches!(event.kind, ChangeKind::Created | ChangeKind::Changed)
+            && event.path == runtime.binary
     }
 
     /// An edit of the sources of a runtime the tool builds.
-    fn is_runtime_source_edit(&self, event: &notify::Event) -> bool {
-        use notify::EventKind;
+    fn is_runtime_source_edit(&self, event: &WatchEvent) -> bool {
         let Some(repo) = self
             .runtime
             .as_ref()
@@ -582,29 +592,33 @@ impl Dev {
         else {
             return false;
         };
-        matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-        ) && event.paths.iter().any(|path| {
-            RUNTIME_SOURCES
+        let path = &event.path;
+        event.kind != ChangeKind::Rescan
+            && RUNTIME_SOURCES
                 .iter()
                 .any(|dir| path.starts_with(repo.join(dir)))
-                && (path.extension().is_some_and(|extension| extension == "rs")
-                    || path.file_name().is_some_and(|name| name == "Cargo.toml"))
-        })
+            && (path.extension().is_some_and(|extension| extension == "rs")
+                || path.file_name().is_some_and(|name| name == "Cargo.toml"))
     }
 }
 
-/// Whether `event` changed a package's source.
-pub(crate) fn is_source_edit(event: &notify::Event) -> bool {
-    use notify::EventKind;
-    matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-    ) && event
-        .paths
-        .iter()
-        .any(|path| path.extension().is_some_and(|extension| extension == "tl"))
+/// Whether `event` changed a package's source, or changes may have been missed.
+pub(crate) fn is_source_edit(event: &WatchEvent) -> bool {
+    event.kind == ChangeKind::Rescan
+        || event
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "tl")
+}
+
+/// Start `watcher`, its changes sent to `wakes`.
+pub(crate) fn watch_into(
+    watcher: Watcher,
+    wakes: mpsc::Sender<Wake>,
+) -> std::io::Result<ChangeWatch> {
+    watcher.start(move |events| {
+        let _ = wakes.send(Wake::File(events.to_vec()));
+    })
 }
 
 /// The signed runtime package that offers the baked bundle in `bundle` as `tilolang/<version>`,
@@ -703,10 +717,6 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let mut dev = Dev::new(build, identity, vec![peer], bin);
     dev.runtime = runtime;
     let (sender, wakes) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(Wake::File(event));
-    })
-    .map_err(|error| error.to_string())?;
     if dev.runtime.is_some() {
         dev.build_runtime()?;
         dev.install_runtime()?;
@@ -725,7 +735,7 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
             ""
         }
     );
-    dev.follow(&wakes, &mut watcher)
+    dev.follow(&wakes, &sender)
 }
 
 /// Mark `path` executable: a build server's outputs arrive as plain files.
@@ -762,9 +772,13 @@ mod tests {
     }
 
     #[test]
-    fn builders_are_named_rcargo_or_t() {
-        assert_eq!(Builder::parse("rcargo"), Ok(Builder::Rcargo));
-        assert_eq!(Builder::parse("t"), Ok(Builder::T));
-        assert!(Builder::parse("cargo").is_err());
+    fn builders_are_named_remote_or_t() {
+        assert_eq!(
+            Builder::parse("remote", Some("remote-cargo")),
+            Ok(Builder::Remote("remote-cargo".to_owned()))
+        );
+        assert!(Builder::parse("remote", None).is_err());
+        assert_eq!(Builder::parse("t", None), Ok(Builder::T));
+        assert!(Builder::parse("cargo", Some("remote-cargo")).is_err());
     }
 }

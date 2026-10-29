@@ -15,18 +15,9 @@ fn open() -> App {
     app
 }
 
-/// Choose the window bar's slot `id`, as the bar sends it.
-fn press_bar(app: &mut App, id: &str) {
-    let declared = ui::window_toolbar::declared().expect("the editor declares its bar");
-    assert!(
-        declared
-            .actions
-            .iter()
-            .flat_map(|action| std::iter::once(action).chain(&action.items))
-            .any(|slot| slot.id == id),
-        "the window bar offers {id}: {declared:?}"
-    );
-    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+/// Choose the window bar's slot named `name`, as the bar sends it.
+fn press_bar(app: &mut App, name: &str) {
+    app.harness().press_window_action(name).unwrap();
     app.settle();
 }
 
@@ -69,7 +60,7 @@ fn bar_bold_bolds_a_double_clicked_word_as_one_step() {
         "the double-click selected the word"
     );
 
-    press_bar(&mut app, "bold");
+    press_bar(&mut app, "Bold");
     let marks = first_block_marks(&mut app);
     assert!(
         marks

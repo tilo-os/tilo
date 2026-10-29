@@ -4,7 +4,7 @@
 //! profiles, sign-ins and mail accounts come from actual read-only discovery.
 use super::super::belongings::Belongings;
 use super::super::*;
-use crate::setup::{account_transfer, home_transfer};
+use imager_backend::{account_transfer, home_transfer};
 use std::path::Path;
 
 /// A home with two documents folders, one loose file, a Firefox profile with a
@@ -742,8 +742,8 @@ fn goa_fixture() -> tempfile::TempDir {
 
 #[test]
 fn goa_accounts_and_services_are_individually_selectable_and_only_selected_become_pending() {
-    use crate::setup::account_transfer::Origin;
     use imager_backend::account_sources::Service;
+    use imager_backend::account_transfer::Origin;
 
     let fixture = goa_fixture();
     let mut preview = preview(fixture.path());
@@ -1076,7 +1076,7 @@ fn nextcloud_and_rclone_are_product_sources_selected_by_default() {
 /// keeps its real identity instead of disappearing behind a generic form.
 #[test]
 fn granted_windows_onedrive_root_is_an_account_source() {
-    use crate::setup::windows_inventory::{RootRole, SelectedRoot};
+    use imager_backend::windows_inventory::{RootRole, SelectedRoot};
 
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("OneDrive");

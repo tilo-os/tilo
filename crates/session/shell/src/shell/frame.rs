@@ -10479,7 +10479,6 @@ mod tests {
         let config = tempfile::tempdir().expect("isolated settings store");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", config.path());
-        env.remove("TILO_SESSION_SETTINGS");
         env.remove("TILO_SHOTS_THEME");
         env.remove("TILO_SHOTS_TEXT_SCALE");
         for name in [
@@ -10607,7 +10606,6 @@ mod tests {
         let config = tempfile::tempdir().expect("isolated settings store");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", config.path());
-        env.remove("TILO_SESSION_SETTINGS");
         env.remove("TILO_SHOTS_THEME");
         env.remove("TILO_SHOTS_TEXT_SCALE");
 

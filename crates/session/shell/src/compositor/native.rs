@@ -8990,23 +8990,18 @@ mod live_power_settings_tests {
     use super::reapply_power_policy;
     use crate::compositor::backend::drm::input_config::SettingsChange;
     use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
-    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// A write through the settings store reaches the running session: the
     /// compositor learns of it from the live document, derives the idle
     /// policy from that same document and the idle state machine stops
-    /// locking. Reading the `settings.json` copy instead lost this race,
-    /// because the session's source publishes a change before it has
-    /// rewritten the copy.
+    /// locking.
     #[test]
     #[serial_test::serial]
     fn lock_after_never_stops_auto_lock_in_the_running_session() {
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session_settings = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings =
-            crate::shell::test_support::install_settings(session_settings.host_view().unwrap());
+        let session_settings = settings_store::local().unwrap();
+        let settings = crate::shell::test_support::install_settings(session_settings);
         let live = settings_store::live::LiveSettings::start(|| {});
         let mut follower = settings_store::live::SectionFollower::new(&live);
         let bridge = tilo_power_mgmt::PowerBridge::new();
@@ -9159,11 +9154,6 @@ fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
               the block already ends right after both are computed"
 )]
 pub fn run() {
-    // This thread answers input and flips frames: a settings write it makes
-    // must not wait for the disk (lock, syncs, rename). Readers see it at
-    // once and the settings worker makes it durable; session exit flushes it.
-    settings_store::defer_writes_on_this_thread();
-
     // Arm recovery before creating services, clients or a renderer.
     let recovery = super::session_recovery::SessionRecovery::from_env().unwrap_or_else(|error| {
         eprintln!("tilo compositor: cannot establish session lock recovery: {error}");
@@ -14103,10 +14093,15 @@ pub fn run() {
         // Is there room in the pipe? Building another scene while the render
         // thread is behind would only grow the queue (and input-to-photon latency); capped at the presenter's queue depth plus the frame presenting, the tick still services input/clients without rendering.
         // A frame still waiting for the render thread is replaced by the one built now (latest
-        // wins), so a full pipe whose newest frame has not started takes it too.
-        let pipe_ready = present_pipe
-            .as_ref()
-            .is_none_or(|pipe| pipe.has_capacity() || pipe.can_replace_queued());
+        // wins), so a full pipe whose newest frame has not started takes it too, for what that
+        // frame does not show yet. Motion alone waits for room instead: the waiting frame shows
+        // the motion already, and while a slow render holds the pipe the frame clock stays due,
+        // so replacing it on every tick rebuilt the scene back to back (thousands of frames a
+        // second) for frames that were never rendered.
+        let replaces_for_change = !redraw_reasons.only_motion(session.is_locked());
+        let pipe_ready = present_pipe.as_ref().is_none_or(|pipe| {
+            pipe.has_capacity() || (replaces_for_change && pipe.can_replace_queued())
+        });
         credit_transition_hold = present_hold_credit(
             !pipe_ready,
             cadence_due,

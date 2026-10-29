@@ -283,7 +283,7 @@ fn verify_prepared(
     public_key: &str,
     ids: &[String],
 ) {
-    let authenticated = super::super::prepared_setup::PreparedSetupReview::open(
+    let authenticated = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
         &prepared.package(),
         b"source recovery fixture password",
         &root.join(format!(
@@ -307,7 +307,9 @@ fn verify_switched_recovery(app: &mut App, home: &Path, public_key: &str, ids: &
     std::fs::write(home.join("document"), b"changed again in the writer").unwrap();
     app.with_widget::<crate::app::ImagerApp, _>(|writer| {
         let error = writer.validate_prepared_source_fixture().unwrap_err();
-        assert!(crate::setup::portable_home_media::source_changed(&error));
+        assert!(imager_backend::setup::portable_home_media::source_changed(
+            &error
+        ));
         writer.start_changed_home_fixture(media.clone())
     })
     .unwrap();

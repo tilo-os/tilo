@@ -92,7 +92,6 @@ fn exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(exported),
                 revocations: vec![],
-                successions: Vec::new()
             },
             now
         )
@@ -1429,20 +1428,11 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
     let mut fresh = StatePeer::new(
         native.room(),
         native.authority().clone(),
-        vec![bc.clone()],
+        vec![bc],
         RevocationList::new(),
         now,
     )
     .unwrap();
-    assert!(
-        fresh
-            .receive_from(
-                TransportOrigin::RelayDelta(bc.device_public_key),
-                bootstrap[0].clone(),
-                now
-            )
-            .is_err()
-    );
     fresh
         .receive_from(
             TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
@@ -1680,7 +1670,6 @@ fn self_issued_identity_presence_cannot_expand_the_admitted_roster() {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert),
                     revocations: vec![],
-                    successions: Vec::new()
                 },
                 now
             )
@@ -1772,7 +1761,6 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(bc.clone()),
                 revocations: vec![],
-                successions: Vec::new(),
             },
             now,
         )
@@ -1808,7 +1796,6 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(native.authority().clone()),
                 revocations: vec![revocation],
-                successions: Vec::new(),
             },
             now,
         )
@@ -1945,7 +1932,6 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(bc),
                         revocations: vec![],
-                        successions: Vec::new(),
                     },
                     now,
                 )
@@ -2062,16 +2048,21 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
 
 #[test]
 fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
-    let (mut governor, a, b, _, now) = seeded();
+    let (mut governor, a, _, _, now) = seeded();
     let root = SigningKey::from_bytes(&[1; 32]);
     let new_key = SigningKey::from_bytes(&[8; 32]);
+    let stranger = SigningKey::from_bytes(&[0x5a; 32]);
     let mut cert = governor.authority().clone();
     cert.device_public_key = new_key.verifying_key().to_bytes();
     cert.device_label = "dynamic client".into();
     sign_device_cert(&mut cert, &root).unwrap();
     let mut existing = governor.clone();
     let before = governor.durable().unwrap();
-    assert!(governor.admit_certificate(cert.clone(), &b, now).is_err());
+    assert!(
+        governor
+            .admit_certificate(cert.clone(), &stranger, now)
+            .is_err()
+    );
     assert_eq!(before, governor.durable().unwrap());
     let rows = governor.rows();
     let floors = governor.replay_floors();

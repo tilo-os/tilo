@@ -34,6 +34,11 @@ view contact_row(c: Contact) {
 - One generic adapter turns descriptions into widgets and patches. There's no per-widget
   mapping, and Rust apps can use the same descriptions.
 
+Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
+a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or
+a swipe. A list item holds those of its row, and its menu ends with each of the item's actions the
+row's menu did not place, so every action stays reachable. They all run in the UI host.
+
 ## 2. Views are components
 
 A tilolang `view` is a component: typed parameters are props, view parameters are slots, action

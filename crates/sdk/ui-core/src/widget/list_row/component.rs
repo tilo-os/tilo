@@ -232,6 +232,19 @@ pub struct SwipeActionProps {
     pub swipe: Event,
 }
 
+impl SwipeActionProps {
+    /// The same swipe again, its event shared: a row is built anew each time it scrolls in.
+    #[must_use]
+    pub fn again(&self) -> Self {
+        Self {
+            label: self.label.clone(),
+            icon: self.icon,
+            destructive: self.destructive,
+            swipe: self.swipe.clone(),
+        }
+    }
+}
+
 impl ListRow {
     /// The row with `props` as what swiping it across does.
     #[must_use]

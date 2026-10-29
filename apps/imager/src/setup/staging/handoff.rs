@@ -1,7 +1,7 @@
 //! The Imager's side of the staging ESP handoff ([`staging_handoff_model`]): the
 //! handoff for a plan, and the secret-free profile it may carry onto the
 //! unencrypted staging ESP. The placeholder the exporter reserves for it is
-//! in [`super::fat`].
+//! in [`imager_backend::staging::fat`].
 
 use serde::{Deserialize, Serialize};
 pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
@@ -126,7 +126,7 @@ impl Handoff {
             }
             #[cfg(target_os = "linux")]
             {
-                let plan = crate::setup::migration_handoff::Plan::parse(
+                let plan = imager_backend::setup::migration_handoff::Plan::parse(
                     &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
                 )
                 .map_err(|error| error.to_string())?;
@@ -208,7 +208,7 @@ mod tests {
         let basis = super::super::plan::tests::linux_basis(
             512,
             256 << 30,
-            vec![super::super::platform::Partition {
+            vec![imager_backend::platform::Partition {
                 number: 1,
                 guid: "22222222-2222-4222-8222-222222222222".into(),
                 type_guid: "0fc63daf-8483-4772-8e79-3d69d8477de4".into(),
@@ -279,7 +279,7 @@ mod tests {
             decoded["migration"], migration,
             "retain all source and consent data"
         );
-        crate::setup::migration_handoff::Plan::parse(
+        imager_backend::setup::migration_handoff::Plan::parse(
             &serde_json::to_vec(&decoded["migration"]).unwrap(),
         )
         .unwrap();

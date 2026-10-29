@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use runtime_collab::AppSettingsHandle;
 use runtime_collab::settings::host::{AppSettingsServer, Revalidate};
 use serde_json::{Map, Value, json};
-use settings_store::{SessionPaths, SessionSettings, SettingsSource, load_at};
+use settings_store::{SettingsSource, Store};
 
 const APP: &str = "so.tilo.monitor";
 
@@ -12,15 +12,15 @@ fn object(value: Value) -> Map<String, Value> {
     serde_json::from_value(value).unwrap()
 }
 
-fn session(dir: &std::path::Path) -> Arc<SessionSettings> {
-    Arc::new(SessionSettings::open(SessionPaths::beside(dir.join("settings.json"))).unwrap())
+fn session(dir: &std::path::Path) -> Arc<Store> {
+    Store::open(dir).unwrap()
 }
 
 fn admitted() -> Revalidate {
     Arc::new(|| Ok(()))
 }
 
-fn handle(source: Arc<SessionSettings>, revalidate: Revalidate) -> AppSettingsHandle {
+fn handle(source: Arc<Store>, revalidate: Revalidate) -> AppSettingsHandle {
     let client: runtime_collab::collab_capnp::app_settings::Client =
         capnp_rpc::new_client(AppSettingsServer::new(APP, source, revalidate));
     client.into()
@@ -39,10 +39,9 @@ fn view(bytes: &[u8]) -> Value {
 }
 
 #[test]
-fn an_apps_write_reaches_the_person_record_and_the_copy() {
+fn an_apps_write_reaches_the_person_record() {
     let dir = tempfile::tempdir().unwrap();
     let records = session(dir.path());
-    let paths = records.paths().clone();
     let settings = handle(Arc::clone(&records), admitted());
     run(async {
         let written = settings
@@ -59,12 +58,8 @@ fn an_apps_write_reaches_the_person_record_and_the_copy() {
         );
     });
     assert_eq!(
-        Value::Object(load_at(&paths.person)),
+        Value::Object(records.load()),
         json!({"app_personal": {APP: {"confirm_kill": false}}})
-    );
-    assert_eq!(
-        load_at(&paths.copy)["app_personal"][APP]["confirm_kill"],
-        false
     );
 }
 
@@ -361,7 +356,6 @@ fn personal_dictionary_follows_authenticated_settings_without_room_storage() {
         assert!(!edit(&settings, 3, Edit::Reset).await);
     });
     assert!(records.load().is_empty());
-    assert!(load_at(&records.paths().copy).is_empty());
 }
 
 #[test]
@@ -369,7 +363,6 @@ fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
     use settings_store::app_scope::{Reach, SYSTEM_SETTINGS_CAPABILITY};
     let dir = tempfile::tempdir().unwrap();
     let records = session(dir.path());
-    let paths = records.paths().clone();
     let reach = Reach::of("so.tilo.settings", &[SYSTEM_SETTINGS_CAPABILITY]);
     assert_eq!(reach, Reach::System);
     let channel = |app: &str, reach: Reach| -> AppSettingsHandle {
@@ -417,11 +410,6 @@ fn the_settings_apps_write_over_its_channel_lands_in_the_sessions_settings() {
     assert_eq!(document["appearance"]["high_contrast"], true);
     assert_eq!(document["appearance"]["text_scale"], 1.3);
     assert_eq!(document["input"]["keyboard_layout"], "de");
-    let copy = load_at(&paths.copy);
-    assert_eq!(
-        copy["appearance"]["high_contrast"], true,
-        "every host reading the session's document sees it"
-    );
 }
 
 // The session's history keeps which action made a change an app wrote over

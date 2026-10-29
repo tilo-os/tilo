@@ -64,15 +64,17 @@ fn publish(root: &Path, name: &str, value: &serde_json::Value) -> Result<(), Str
     pin.validate_destination()
         .map_err(|error| error.to_string())?;
     let bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
-    super::super::user_transfer::publish_private_artifact(&pin, name, &bytes)
+    imager_backend::setup::user_transfer::publish_private_artifact(&pin, name, &bytes)
         .map_err(|error| error.to_string())
 }
 pub(super) fn publish_completion(session: &Session) -> Result<(), String> {
     let pin =
         PinnedDirectory::open_absolute(&session.workspace).map_err(|error| error.to_string())?;
-    let consent =
-        super::super::user_transfer::read_private_artifact(&pin, "applications-consent.json")
-            .map_err(|error| error.to_string())?;
+    let consent = imager_backend::setup::user_transfer::read_private_artifact(
+        &pin,
+        "applications-consent.json",
+    )
+    .map_err(|error| error.to_string())?;
     let consent: serde_json::Value =
         serde_json::from_slice(&consent).map_err(|error| error.to_string())?;
     let digest = session

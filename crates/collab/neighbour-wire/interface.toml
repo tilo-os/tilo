@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 15
+version = 16
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -30,7 +30,6 @@ sources = [
     "crates/collab/tilo-user-identity/src/directory.rs",
     "crates/collab/actions/src/outcome.rs",
     "crates/collab/tilo-user-identity/src/revocation.rs",
-    "crates/collab/tilo-user-identity/src/succession.rs",
     "crates/hosting/tilo-delivery-protocol/src/peer_actions/signed.rs",
     "crates/collab/collab-types/src/op.rs",
     "crates/collab/collab-types/src/identity.rs",
@@ -419,11 +418,6 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "FrameworkChange::structure" = "#2 unit"
 "FrameworkChange::transfer" = "#3 unit"
 "FrameworkChange::upgrade" = "#4 unit"
-"GovernorSuccession" = "struct deny_unknown_fields"
-"GovernorSuccession.previous" = "#0 DeviceCert"
-"GovernorSuccession.revocation" = "#1 RevocationEntry"
-"GovernorSuccession.signature" = "#3 [u8; 64] with=serde_bytes"
-"GovernorSuccession.successor" = "#2 DeviceCert"
 "Hdr10Metadata" = "struct"
 "Hdr10Metadata.light" = "#1 ContentLightLevel"
 "Hdr10Metadata.mastering" = "#0 MasteringDisplayColorVolume"
@@ -551,7 +545,6 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "NeighbourMsg::IdentityHello.cert" = "#1 Box<DeviceCert>"
 "NeighbourMsg::IdentityHello.protocol" = "#0 u32"
 "NeighbourMsg::IdentityHello.revocations" = "#2 Vec<RevocationEntry>"
-"NeighbourMsg::IdentityHello.successions" = "#3 Vec<GovernorSuccession>"
 "NeighbourMsg::LivePresence" = "#30 struct"
 "NeighbourMsg::LivePresence.frame" = "#1 Vec<u8>"
 "NeighbourMsg::LivePresence.peer" = "#0 PeerId"

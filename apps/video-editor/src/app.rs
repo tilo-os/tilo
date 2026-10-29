@@ -48,9 +48,6 @@ use crate::model::{
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
-#[cfg(any(feature = "decode", test))]
-#[cfg(test)]
-use crate::preview::CompositedFrame;
 use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
@@ -66,6 +63,7 @@ mod paint;
 mod preview_paint;
 mod project_workflow;
 mod render_action;
+#[cfg(feature = "samples")]
 mod scenario;
 mod selection;
 mod strip_menu;
@@ -80,8 +78,9 @@ use layout::Regions;
     reason = "the shared paint helpers are the vocabulary of every paint file split out of this impl"
 )]
 use paint::*;
-use scenario::ShotLifecycle;
+#[cfg(feature = "samples")]
 pub(crate) use scenario::composed_project;
+#[cfg(feature = "samples")]
 pub use scenario::{EMPTY_CAPTURE, NARROW_CAPTURE, ShotScenario};
 use selection::Selection;
 
@@ -323,11 +322,6 @@ impl Notice {
     fn with_action(mut self, action: notices::NoticeAction) -> Self {
         self.action = Some(action);
         self
-    }
-
-    #[cfg(test)]
-    fn is_failure(&self) -> bool {
-        self.level == NoticeLevel::Failed
     }
 }
 
@@ -976,9 +970,9 @@ pub struct VideoEditorApp {
     /// must never diff a stale local result against a newer remote projection:
     /// doing so would turn unrelated remote edits into reverse patches.
     clip_edit_bases: HashMap<ClipId, Clip>,
-    /// Deterministic capture scenario applied once during the first `sync`.
-    shot_scenario: ShotScenario,
-    shot_lifecycle: ShotLifecycle,
+    /// The screenshot scenario staged on this editor, if any.
+    #[cfg(feature = "samples")]
+    capture: scenario::CaptureStaging,
     seed: SeedState,
     playback: PlaybackState,
     presentation: PresentationState,
@@ -1017,12 +1011,6 @@ pub struct VideoEditorApp {
     /// each poll of [`Widget::presence_payload`], which only carries one.
     /// See [`crate::presence`] for why there are two things to say.
     local_presence: crate::presence::LocalPresence,
-    /// Other participants, staged for a `--shots` capture. `None` in the
-    /// live app, where they arrive over the collaboration socket like
-    /// anyone else; a capture cannot wait on a socket, so the scenario
-    /// stages the very frames a peer would have sent and the draw reads
-    /// them through the identical path.
-    shot_presence: Option<PresenceCtx>,
     // --- ui state ---
     export: ExportSettings,
     export_status: ExportStatus,
@@ -1303,9 +1291,6 @@ pub struct VideoEditorApp {
     /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
     resource_reply: Option<ui::framework::EffectReply>,
-    /// A project open or save at a named path, run on the next sync, where
-    /// the document is at hand.
-    resource_pending_operation: Option<crate::actions::VideoEditorEffect>,
     /// Recently-opened projects, most recent first. Per-device and outside
     /// the CRDT — see [`crate::project_file::recents`].
     recents: Vec<PathBuf>,
@@ -1418,8 +1403,8 @@ impl VideoEditorApp {
             faces: ui::widget::FaceMotions::default(),
             content: None,
             clip_edit_bases: HashMap::new(),
-            shot_scenario: ShotScenario::Live,
-            shot_lifecycle: ShotLifecycle::default(),
+            #[cfg(feature = "samples")]
+            capture: scenario::CaptureStaging::default(),
             seed: SeedState::default(),
             playback: PlaybackState::default(),
             presentation: PresentationState::default(),
@@ -1434,7 +1419,6 @@ impl VideoEditorApp {
             text_scale: 1.0,
             ui_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
-            shot_presence: None,
             playhead: 0.0,
             zoom: 34.0,
             scroll: 0.0,
@@ -1529,7 +1513,6 @@ impl VideoEditorApp {
             save_failure: None,
             resource_operation: None,
             resource_reply: None,
-            resource_pending_operation: None,
             recents: crate::project_file::recents::load(),
             pending_open: None,
             chrome_theme: Theme::dark(),
@@ -2480,20 +2463,6 @@ impl VideoEditorApp {
         self.mix = self.mix_meters.snapshot();
     }
 
-    /// Take in a block the mixer measured, as the monitor does.
-    ///
-    /// The one door meter data comes through, so a `--shots` capture and a
-    /// test exercise the same recording, latching and merging the live
-    /// monitor does rather than a drawing that imitates the result. The
-    /// signature is pinned to the project the block describes: without that
-    /// the next frame would read the staged report as one about a mix that
-    /// has since changed and throw it away.
-    fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
-        self.mix_meters.record(at, report);
-        self.mix_sig = Some(crate::audio::mix_signature(&self.project));
-        self.mix = self.mix_meters.snapshot();
-    }
-
     /// Whether the meter still has something to say — a bar in flight, or a
     /// clipping report standing. Keeps frames coming so a meter finishes
     /// falling instead of freezing part-way down when the transport stops.
@@ -2590,11 +2559,6 @@ impl VideoEditorApp {
     /// Reconcile both side flaps with the current width and advance their
     /// eased reveal using real elapsed time. Kept as the motion-on helper for
     /// direct geometry tests; live drawing calls [`Self::advance_flap_with_motion`].
-    #[cfg(test)]
-    fn advance_flap(&mut self) {
-        self.advance_flap_with_motion(false);
-    }
-
     /// Advance both side flaps, respecting the host's reduced-motion setting.
     /// A reduced-motion frame lands at its target immediately rather than
     /// leaving a half-open panel behind after the host correctly suppresses
@@ -3596,13 +3560,6 @@ impl VideoEditorApp {
             t.pan = 0.0;
         });
         self.dispatch_selected_track();
-    }
-
-    /// Dispatch a whole-media write for one bin source.
-    fn dispatch_media(&mut self, mid: MediaId) {
-        if let Some(m) = self.project.media(mid).cloned() {
-            self.submit_media(&m);
-        }
     }
 
     /// Dispatch a whole-media write for the selected clip's source.
@@ -5256,9 +5213,7 @@ impl VideoEditorApp {
             VideoEditorEffect::OpenProject { .. }
             | VideoEditorEffect::Save { .. }
             | VideoEditorEffect::SaveAs { .. }
-                if self.project_rx.is_none()
-                    && self.resource_pending_operation.is_none()
-                    && self.pending_open.is_none() =>
+                if self.project_rx.is_none() && self.pending_open.is_none() =>
             {
                 self.project_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
@@ -6136,17 +6091,12 @@ impl VideoEditorApp {
         self.poll_export();
 
         self.place_timeline_split();
-        let mut regions = self.regions();
-        if !self.shot_lifecycle.interaction_applied
-            && self.shot_scenario.is_interaction()
-            && self.rect.width() > 1.0
-        {
-            self.apply_shot_interaction(&regions);
-            self.shot_lifecycle.interaction_applied = true;
+        #[cfg(feature = "samples")]
+        if self.stage_capture_interaction() {
             // The scenario may move a side flap, invalidating the first pass.
-            regions = self.regions();
+            return self.regions();
         }
-        regions
+        self.regions()
     }
 }
 
@@ -6213,28 +6163,11 @@ impl Widget for VideoEditorApp {
         dyn ui::widget::controls::ActionControls
     );
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
         self.take_notice_actions();
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
-        }
-        if let Some(operation) = self.resource_pending_operation.take() {
-            use crate::actions::VideoEditorEffect;
-            match &operation {
-                VideoEditorEffect::OpenProject { path: Some(path) } => {
-                    self.begin_open(PathBuf::from(path), None);
-                }
-                VideoEditorEffect::Save { path: Some(path) }
-                | VideoEditorEffect::SaveAs { path: Some(path) } => {
-                    self.write_project_to(state, PathBuf::from(path));
-                }
-                _ => {}
-            }
         }
         // The project arrives through `present`; the document's heads say
         // whether it has changed since it was saved.
@@ -6344,13 +6277,8 @@ impl Widget for VideoEditorApp {
         for (id, palette, src, at) in visual {
             self.thumbnails.ensure(id, palette, &src, at);
         }
-        if !self.shot_lifecycle.applied
-            && self.shot_scenario != ShotScenario::Live
-            && !self.project.clips.is_empty()
-        {
-            self.apply_shot_scenario();
-            self.shot_lifecycle.applied = true;
-        }
+        #[cfg(feature = "samples")]
+        self.stage_capture_scenario();
         // Let the meters fall, and take the one copy the frame will draw
         // from. After the scenario, so a staged capture's levels survive into
         // the frame that captures them.
@@ -6462,11 +6390,11 @@ impl Widget for VideoEditorApp {
         // A key (B, Ctrl+I, S) or a render's progress changes what the bar
         // shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
-        // Everything below draws the room from here. In the live app that is
-        // the host's own context, fed by the collaboration socket; a capture
-        // scenario can stage one instead (see `seed_shot_collaborators`).
-        // Cloned because the draws below need `&mut self`.
-        let staged = self.shot_presence.clone();
+        // Everything below draws the room from here: the host's own context,
+        // fed by the collaboration socket, or the one a capture staged.
+        #[cfg(feature = "samples")]
+        let staged = self.capture.presence.clone();
+        #[cfg(feature = "samples")]
         let presence: &PresenceCtx = staged.as_ref().unwrap_or(presence);
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
@@ -7213,6 +7141,13 @@ impl Widget for VideoEditorApp {
         self.presentation.keyboard_focus
     }
 
+    /// Tab walks the editor's panes (`focus_pane`); without claiming it the
+    /// host would take Tab for its own focus moves and the panes would be
+    /// unreachable from the keyboard.
+    fn wants_tab_input(&self) -> bool {
+        true
+    }
+
     /// The export dialog traps the keyboard while it is open.
     ///
     /// Without this, Tab out of a modal walks the content behind it — the user
@@ -7543,10 +7478,20 @@ impl VideoEditorApp {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }
-            VideoEditorEffect::OpenProject { path: Some(_) }
-            | VideoEditorEffect::Save { path: Some(_) }
-            | VideoEditorEffect::SaveAs { path: Some(_) } => {
-                self.resource_pending_operation = Some(effect.clone());
+            // Run now, with the document the invocation carries: nothing
+            // else would bring the editor a frame to run it on.
+            VideoEditorEffect::OpenProject { path: Some(path) } => {
+                self.begin_open(PathBuf::from(path), None);
+            }
+            VideoEditorEffect::Save { path: Some(path) }
+            | VideoEditorEffect::SaveAs { path: Some(path) } => {
+                let Some(doc) = cx.document() else {
+                    return Err("there is no project to save".into());
+                };
+                // Answered by the write itself: a saved project shows no
+                // notice to read the outcome from.
+                self.write_project_to(&doc, PathBuf::from(path))?;
+                return Ok(ui::framework::Effected::done());
             }
             _ => self.perform_resource_operation(effect.clone())?,
         }
@@ -7555,6 +7500,8 @@ impl VideoEditorApp {
         }
         self.resource_operation = Some(effect);
         self.resource_reply = Some(cx.reply());
+        // An open or save that ran to the end above answers now.
+        self.finish_resource_file_operation_if_ready();
         Ok(ui::framework::Effected::Pending)
     }
 }
@@ -8694,9 +8641,6 @@ impl VideoEditorApp {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 impl VideoEditorApp {
     fn track_head_rect(r: &Regions, lane: &Rect) -> Rect {
         chrome_layout::track_head_card(r.gutter, lane)
@@ -8970,6 +8914,7 @@ impl ui::framework::ResourceSurface<Project, crate::actions::VideoEditorEffect> 
 
     /// A `--shots` capture: the scenario's project is loaded; arrange the
     /// editor around it. See [`Self::stage_capture`].
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_capture(scenario);
     }

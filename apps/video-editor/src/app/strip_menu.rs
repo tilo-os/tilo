@@ -54,15 +54,6 @@ impl Strips {
     pub(super) fn begin_frame(&self) {
         self.folded.borrow_mut().clear();
     }
-
-    /// Whether the strip of `host` at `rect` was painted folded.
-    #[cfg(test)]
-    pub(super) fn is_folded(&self, host: StripHost, rect: Rect) -> bool {
-        self.folded
-            .borrow()
-            .iter()
-            .any(|strip| strip.host == host && strip.rect == rect)
-    }
 }
 
 impl VideoEditorApp {

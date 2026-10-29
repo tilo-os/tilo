@@ -427,20 +427,21 @@ fn find_through_the_window_bar_finds_steps_and_shows_the_current_match() {
 fn going_to_a_search_result_shows_its_query_in_the_window_search() {
     let (_directory, mut app) = reader();
     let lines = 2 * 40;
-    let deadline = tilo_test_env::hang_deadline();
-    while reader_state(&mut app, |pdf| {
-        use ui::widget::Findable as _;
-        let total = pdf
-            .find("quick brown", ui::widget::FindOptions::default())
-            .len();
-        pdf.clear_find();
-        total
-    }) < lines
-    {
-        assert!(ui::time::now() < deadline, "the pages' text never arrived");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+    tilo_test_env::wait_until("the pages' text", || {
+        let total = reader_state(&mut app, |pdf| {
+            use ui::widget::Findable as _;
+            let total = pdf
+                .find("quick brown", ui::widget::FindOptions::default())
+                .len();
+            pdf.clear_find();
+            total
+        });
+        if total >= lines {
+            return true;
+        }
         app.settle();
-    }
+        false
+    });
     let _ = ui::window_toolbar::take_search_request();
 
     // The search result row's action, as an agent runs it.
@@ -480,16 +481,14 @@ fn going_to_a_search_result_shows_its_query_in_the_window_search() {
 #[serial(pdfium)]
 fn a_match_highlight_ends_at_its_last_glyph_advance() {
     let (_directory, mut app) = reader();
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the page's text", || {
         let found = app.harness().search_in_window(SearchOpening::Find, "quic");
         if found.is_some() && reader_state(&mut app, |pdf| !pdf.found_bands(1).is_empty()) {
-            break;
+            return true;
         }
-        assert!(ui::time::now() < deadline, "the page's text never arrived");
-        std::thread::sleep(std::time::Duration::from_millis(5));
         app.settle();
-    }
+        false
+    });
     let (band, last, next) = reader_state(&mut app, |pdf| {
         let found = &pdf.raster_matches[0];
         let layer = pdf.raster_text.get(&found.page).expect("the page's text");

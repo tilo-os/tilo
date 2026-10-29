@@ -9,9 +9,10 @@ use super::*;
 /// One-shot capture scenarios selected by the `--shots` entry points. Each
 /// deterministically arranges editor state so a single offscreen frame shows
 /// a specific feature (filters, a fresh split). `None` is the live editor.
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum ShotScenario {
     /// Default: the live editor with its auto-selected clip.
+    #[default]
     Live,
     /// The graded drone clip selected, filters + fades visible in the
     /// inspector, playhead inside the clip.
@@ -293,11 +294,17 @@ pub(crate) fn composed_project() -> Project {
     project
 }
 
-/// One-time lifecycle of deterministic screenshot setup.
+/// The screenshot scenario staged on an editor, applied once its project
+/// has loaded, and its interaction once the editor is laid out.
 #[derive(Default)]
-pub(super) struct ShotLifecycle {
-    pub(super) applied: bool,
-    pub(super) interaction_applied: bool,
+pub(super) struct CaptureStaging {
+    scenario: ShotScenario,
+    applied: bool,
+    interaction_applied: bool,
+    /// Other participants: a capture cannot wait on a collaboration socket,
+    /// so it stages the very frames a peer would have sent and the draw
+    /// reads them through the identical path.
+    pub(super) presence: Option<PresenceCtx>,
 }
 
 impl VideoEditorApp {
@@ -308,7 +315,7 @@ impl VideoEditorApp {
     /// next sync and draw, through the same one-shot lifecycle the scenario
     /// table always used. `None` is the plain demo capture.
     pub fn stage_capture(&mut self, scenario: Option<&str>) {
-        self.shot_scenario = match scenario {
+        self.capture.scenario = match scenario {
             // The real live app on a blank project, as a fresh machine shows.
             Some(EMPTY_CAPTURE) => {
                 // Nothing on the timeline, so nothing to be part-way through.
@@ -332,8 +339,55 @@ impl VideoEditorApp {
                 ShotScenario::Live
             }
         };
-        self.shot_lifecycle.applied = false;
-        self.shot_lifecycle.interaction_applied = false;
+        self.capture.applied = false;
+        self.capture.interaction_applied = false;
+    }
+
+    /// Apply the staged scenario, once, when its project has loaded.
+    pub(super) fn stage_capture_scenario(&mut self) {
+        if !self.capture.applied
+            && self.capture.scenario != ShotScenario::Live
+            && !self.project.clips.is_empty()
+        {
+            self.apply_shot_scenario();
+            self.capture.applied = true;
+        }
+    }
+
+    /// Run the staged scenario's interaction, once, when the editor is laid
+    /// out. Whether it ran.
+    pub(super) fn stage_capture_interaction(&mut self) -> bool {
+        if self.capture.interaction_applied
+            || !self.capture.scenario.is_interaction()
+            || self.rect.width() <= 1.0
+        {
+            return false;
+        }
+        let regions = self.regions();
+        self.apply_shot_interaction(&regions);
+        self.capture.interaction_applied = true;
+        true
+    }
+
+    /// Take in a block the mixer measured, as the monitor does.
+    ///
+    /// The one door meter data comes through, so a `--shots` capture and a
+    /// test exercise the same recording, latching and merging the live
+    /// monitor does rather than a drawing that imitates the result. The
+    /// signature is pinned to the project the block describes: without that
+    /// the next frame would read the staged report as one about a mix that
+    /// has since changed and throw it away.
+    fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
+        self.mix_meters.record(at, report);
+        self.mix_sig = Some(crate::audio::mix_signature(&self.project));
+        self.mix = self.mix_meters.snapshot();
+    }
+
+    /// Dispatch a whole-media write for one bin source.
+    fn dispatch_media(&mut self, mid: MediaId) {
+        if let Some(m) = self.project.media(mid).cloned() {
+            self.submit_media(&m);
+        }
     }
 
     /// Start the side flaps at the capture width's natural state on the next
@@ -351,7 +405,7 @@ impl VideoEditorApp {
         reason = "the exhaustive deterministic screenshot scenario table is kept together so visual fixtures cannot drift across setup paths"
     )]
     pub(super) fn apply_shot_scenario(&mut self) {
-        match self.shot_scenario {
+        match self.capture.scenario {
             ShotScenario::Live => {}
             ShotScenario::HelpSheet => self.navigation.help_open = true,
             ShotScenario::GotoTimecode => self.goto_entry = Some(interaction::goto_field("1:30")),
@@ -634,7 +688,7 @@ impl VideoEditorApp {
                 ctx.apply_remote_presence(id.to_string(), k, p);
             }
         }
-        self.shot_presence = Some(ctx);
+        self.capture.presence = Some(ctx);
     }
 
     /// The regions with the bin showing: folded away on a narrow window, the
@@ -657,7 +711,7 @@ impl VideoEditorApp {
         // narrow window it starts out of the way. Opening it here is what
         // selecting a clip does in the live app.
         if matches!(
-            self.shot_scenario,
+            self.capture.scenario,
             ShotScenario::Geometry
                 | ShotScenario::TitleClip
                 | ShotScenario::Keyframes
@@ -671,7 +725,7 @@ impl VideoEditorApp {
             self.reconcile_flaps();
             self.inspector_flap.snap(true);
         }
-        match self.shot_scenario {
+        match self.capture.scenario {
             ShotScenario::Collaborators => {
                 self.seed_shot_collaborators();
             }

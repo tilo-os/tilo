@@ -270,6 +270,8 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
             state,
             workspace: "Lounge".into(),
             writable: None,
+            unsynced_writes: 0,
+            cannot_keep_writes: false,
         })
     };
     ui::room_sync::set(told(ui::room_sync::RoomSyncState::Connecting));

@@ -1570,17 +1570,10 @@ mod tests {
             // Strict, so a cold pipeline slower than one fetch is asked again
             // rather than written off: render until the decoded picture lands.
             let mut sources = MediaFrameSource::new(&p, Fetch::Exact).strict();
-            let deadline = tilo_test_env::hang_deadline();
-            let live = loop {
+            let live = tilo_test_env::wait_for("a decoded picture from the frame source", || {
                 let live = c.frame(&p, 2.0, w, h, &mut sources);
-                if sources.served_real_picture() {
-                    break live;
-                }
-                assert!(
-                    ui::time::now() < deadline,
-                    "the frame source reported no decoded picture — the canvas is a stand-in",
-                );
-            };
+                sources.served_real_picture().then_some(live)
+            });
             let detail = horizontal_detail(&live, w, h);
             println!("app-path canvas horizontal detail = {detail:.3}");
             assert!(
@@ -1697,15 +1690,10 @@ mod tests {
 
             // Responsive misses are timed decode windows, not repaints.
             // Keep polling a paused target until the real give-up deadline.
-            let deadline = tilo_test_env::hang_deadline();
-            while !sources.is_undecodable(mid) && ui::time::now() < deadline {
+            tilo_test_env::wait_until("a source that never answers to be written off", || {
                 let _ = c.frame(&p, 0.5, w, h, &mut sources);
-            }
-
-            assert!(
-                sources.is_undecodable(mid),
-                "a source that answered nothing every time was still being treated as decodable",
-            );
+                sources.is_undecodable(mid)
+            });
 
             // The real claim: it stopped *asking*. Written off but still opening a
             // pipeline every frame would leave the stall exactly as it was, and

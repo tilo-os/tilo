@@ -14,3 +14,6 @@ pub mod socket_activation;
 
 #[path = "helper_runtime.rs"]
 pub mod helper_runtime;
+
+#[path = "shell.rs"]
+pub mod shell;

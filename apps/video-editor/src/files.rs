@@ -179,15 +179,6 @@ pub(crate) fn kept_missing(path: &str) -> bool {
     kept_token(path).is_some_and(|token| MISSING.lock().is_ok_and(|m| m.contains(token)))
 }
 
-/// Record `token` as kept here without writing bytes, for tests that cannot
-/// run the app task a real import spawns.
-#[cfg(test)]
-pub(crate) fn mark_kept_for_test(token: &str) {
-    if let Ok(mut kept) = KEPT_HERE.lock() {
-        kept.insert(token.to_string());
-    }
-}
-
 /// The largest media file imported by contents.
 pub(crate) const KEEP_LIMIT: usize = 512 * 1024 * 1024;
 

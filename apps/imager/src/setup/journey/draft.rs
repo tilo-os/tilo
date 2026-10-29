@@ -1,5 +1,5 @@
 //! Private restart pointers. These records contain no grants or password material.
-use super::super::prepared_identity::PreparedIdentity;
+use imager_backend::prepared_identity::PreparedIdentity;
 use imager_backend::prepared_identity::{DraftLock, RestartStorage};
 use serde::{Deserialize, Serialize};
 use std::{

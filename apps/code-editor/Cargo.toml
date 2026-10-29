@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["code-editor-samples"]
+
 [lib]
 name = "code_editor"
 path = "src/lib.rs"
@@ -61,7 +65,10 @@ sha2.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-code-editor = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `code-editor` claims `--features code-editor/thin` in the
+# collection build, and the app then links the whole runtime statically.
+code-editor-samples = { package = "code-editor", path = ".", features = ["samples"] }
 iai-callgrind = "=0.16.1"
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

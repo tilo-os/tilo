@@ -55,7 +55,7 @@ impl ui::host::FilePicker for Picker {
 fn root_set(locations: &Arc<MountedHomeLocations>, cancel: &AtomicBool) -> HomeRootSet {
     let refusal = locations.require_single_root(cancel).unwrap_err();
     HomeRootSet::from_native(
-        crate::setup::portable_home_media::HomeSource::mounted_root_set(&refusal).unwrap(),
+        imager_backend::setup::portable_home_media::HomeSource::mounted_root_set(&refusal).unwrap(),
     )
 }
 pub(super) fn pending_grant(

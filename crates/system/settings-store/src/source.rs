@@ -2,10 +2,10 @@
 //!
 //! A host that keeps settings somewhere of its own installs a
 //! [`SettingsSource`]; [`crate::load`], [`crate::load_section`] and
-//! [`crate::update_section`] then read and merge into it. The shell installs
-//! its session's records ([`crate::SessionSettings`]); a browser page, which
-//! has no config directory, installs a [`HostDocument`]. Every other process
-//! reads and writes `settings.json`.
+//! [`crate::update_section`] then read and merge into it. A sandboxed app
+//! installs its channel to the session; a browser page, which has no config
+//! directory, installs a [`HostDocument`]. Every other process reads and
+//! writes its profile's [`crate::Store`], the session as its holder.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -18,26 +18,14 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 pub enum ConditionalUpdate {
     /// A comparison failed; no requested fields were changed.
     Superseded,
-    /// Durable records and their compatibility copy accepted the change.
+    /// The change was accepted.
     Stored,
-    /// Durable records accepted it, but repairing the compatibility copy failed.
-    StoredWithCopyRepair(std::io::Error),
-}
-
-impl ConditionalUpdate {
-    pub(crate) fn into_sync_result(self) -> std::io::Result<()> {
-        match self {
-            Self::Stored => Ok(()),
-            Self::Superseded => Err(std::io::Error::other("settings intent was superseded")),
-            Self::StoredWithCopyRepair(error) => Err(error),
-        }
-    }
 }
 
 /// A display-only atomic update: the transaction and saved profiles live in
 /// one device record. Expected sections include absence and malformed values,
 /// so a delayed request cannot erase newly adopted display intent.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DisplayUpdate {
     transaction_before: Option<Value>,
     profiles_before: Option<Value>,
@@ -76,10 +64,9 @@ impl DisplayUpdate {
 /// Who and what made a settings change: the action (or shell entry point,
 /// such as a fixed chord) that caused it, and the principal that invoked it.
 ///
-/// A source that keeps a history ([`crate::SessionSettings`]) records it
-/// beside each changed leaf, so "who changed this" has an answer and a later
-/// system undo has its input. Every field is optional: a write another
-/// process made to the copy arrives with no origin at all.
+/// A source that keeps a history ([`crate::Store`]) records it with the
+/// change, so "who changed this" has an answer and a later system undo has
+/// its input. Every field is optional.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeOrigin {
     /// The action id (`appearance.theme.dark`) or shell entry point
@@ -209,9 +196,8 @@ pub trait SettingsSource: Send + Sync {
         self.update_section_by(name, change(&current), origin)
     }
 
-    /// Write every change this source accepted but has not made durable yet
-    /// (see [`defer_writes_on_this_thread`]). Sources whose writes are
-    /// durable when they return have nothing to do.
+    /// Wait until every change this source accepted is durable. Sources
+    /// whose writes are durable when they return have nothing to do.
     fn flush_pending(&self) {}
 
     /// The failures of writes this source accepted before they were made
@@ -219,20 +205,6 @@ pub trait SettingsSource: Send + Sync {
     /// document.
     fn take_deferred_failures(&self) -> Vec<DeferredFailure> {
         Vec::new()
-    }
-
-    /// Preserve the storage owner's explicit durable/copy-repair receipt.
-    /// Ordinary sources report only successful writes; errors stay errors.
-    ///
-    /// # Errors
-    /// The source could not accept the change.
-    fn update_section_report(
-        &self,
-        name: &str,
-        values: Map<String, Value>,
-    ) -> std::io::Result<ConditionalUpdate> {
-        self.update_section(name, values)
-            .map(|()| ConditionalUpdate::Stored)
     }
 
     /// Merge only if the current section still equals `expected`, under the
@@ -254,7 +226,7 @@ pub trait SettingsSource: Send + Sync {
     }
 
     /// Atomically compare and merge display transaction/profile intent in
-    /// its single device record, after adopting external-copy changes.
+    /// its single device record.
     ///
     /// # Errors
     /// Storage failed, or the source cannot provide atomic display updates.
@@ -283,7 +255,7 @@ pub trait SettingsSource: Send + Sync {
             ));
         }
         match self.compare_display_update(DisplayUpdate::new(&document, transaction, None))? {
-            ConditionalUpdate::Stored | ConditionalUpdate::StoredWithCopyRepair(_) => Ok(()),
+            ConditionalUpdate::Stored => Ok(()),
             ConditionalUpdate::Superseded => Err(std::io::Error::new(
                 std::io::ErrorKind::WouldBlock,
                 "The settings transaction changed.",
@@ -302,6 +274,76 @@ pub trait SettingsSource: Send + Sync {
     /// authority; the authenticated settings capability projects scoped reads.
     fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
         None
+    }
+}
+
+/// A shared source is the source it shares.
+impl<T: SettingsSource + ?Sized> SettingsSource for Arc<T> {
+    fn load(&self) -> Map<String, Value> {
+        (**self).load()
+    }
+
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+        (**self).update_section(name, values)
+    }
+
+    fn update_section_by(
+        &self,
+        name: &str,
+        values: Map<String, Value>,
+        origin: &ChangeOrigin,
+    ) -> std::io::Result<()> {
+        (**self).update_section_by(name, values, origin)
+    }
+
+    fn update_section_with(
+        &self,
+        name: &str,
+        origin: &ChangeOrigin,
+        change: &mut SectionChange<'_>,
+    ) -> std::io::Result<()> {
+        (**self).update_section_with(name, origin, change)
+    }
+
+    fn flush_pending(&self) {
+        (**self).flush_pending();
+    }
+
+    fn take_deferred_failures(&self) -> Vec<DeferredFailure> {
+        (**self).take_deferred_failures()
+    }
+
+    fn compare_update_section(
+        &self,
+        name: &str,
+        expected: &Map<String, Value>,
+        values: Map<String, Value>,
+    ) -> std::io::Result<ConditionalUpdate> {
+        (**self).compare_update_section(name, expected, values)
+    }
+
+    fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
+        (**self).compare_display_update(update)
+    }
+
+    fn compare_display_transaction(
+        &self,
+        expected: Option<&Value>,
+        transaction: Map<String, Value>,
+    ) -> std::io::Result<()> {
+        (**self).compare_display_transaction(expected, transaction)
+    }
+
+    fn revision(&self) -> u64 {
+        (**self).revision()
+    }
+
+    fn changes(&self) -> &ChangeSignal {
+        (**self).changes()
+    }
+
+    fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
+        (**self).dictionary_service()
     }
 }
 
@@ -340,50 +382,19 @@ impl ChangeSignal {
 
 static SOURCE: RwLock<Option<Arc<dyn SettingsSource>>> = RwLock::new(None);
 
-thread_local! {
-    static DEFER_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Make the writes this thread makes to the installed source non-blocking.
-///
-/// A write is durable only after a lock, several syncs and a rename, and on a
-/// busy disk that took hundreds of milliseconds. A thread that must keep
-/// answering input (the compositor's loop) calls this once: its writes then
-/// update the document readers see at once, return, and reach the records on
-/// the source's own thread. A failed write is reverted there and reported
-/// through [`take_deferred_failures`]; it cannot be returned to a caller that
-/// has gone on. Writes that return a receipt ([`SettingsSource::update_section_report`],
-/// the compare-and-update calls) stay durable on return whatever thread makes
-/// them. [`flush_pending_writes`] waits for everything accepted so far.
-///
-/// Readers inside the process read the installed source, which shows an
-/// accepted write at once. Readers of the file (other processes, the portal
-/// appearance monitor, the theme refresh) are woken by the watch on the copy,
-/// which the worker writes last in its batch, by rename: they see the whole
-/// change or none of it, and a reader not woken by the watch reads a copy that
-/// lags by one worker pass, a few milliseconds.
-pub fn defer_writes_on_this_thread() {
-    DEFER_WRITES.with(|flag| flag.set(true));
-}
-
-/// Whether [`defer_writes_on_this_thread`] was called on this thread.
-#[must_use]
-pub fn writes_deferred_on_this_thread() -> bool {
-    DEFER_WRITES.with(std::cell::Cell::get)
-}
-
-/// Make durable every write the installed source accepted without waiting
-/// for the disk. Called before the session ends or sleeps.
+/// Make durable every write the settings accepted without waiting for the
+/// disk. Called before the session ends or sleeps.
 pub fn flush_pending_writes() {
-    if let Some(source) = installed_source() {
+    if let Some(source) = crate::source() {
         source.flush_pending();
     }
 }
 
-/// A deferred write that could not be stored: the sections it changed and why.
+/// A save that failed: the sections it held and why. The changes stay in the
+/// documents and are saved again with the next change.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeferredFailure {
-    /// The sections the reverted writes changed, in the order first written.
+    /// The sections changed since the last save that succeeded.
     pub sections: Vec<String>,
     /// What the disk said.
     pub error: String,
@@ -412,11 +423,11 @@ pub fn take_deferred_failures() -> Vec<DeferredFailure> {
     if !DEFERRED_FAILED.swap(false, Ordering::AcqRel) {
         return Vec::new();
     }
-    installed_source().map_or_else(Vec::new, |source| source.take_deferred_failures())
+    crate::source().map_or_else(Vec::new, |source| source.take_deferred_failures())
 }
 
 /// Make `source` the settings document of this process, or restore the
-/// local file with `None`.
+/// local profile with `None`.
 pub fn install_source(source: Option<Arc<dyn SettingsSource>>) {
     *SOURCE.write_recover() = source;
 }

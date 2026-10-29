@@ -2274,9 +2274,8 @@ impl App {
         if let Some(scale) = comforts.ui_scale {
             self.accessibility.ui_scale = scale;
         }
-        self.theme_schedule =
-            Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
-                .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
+        self.theme_schedule = Theme::automatic_schedule_from(&settings_store::load())
+            .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every Tilo app watches the same file and changes its real
         // narrator lifecycle when Personal Settings changes it.

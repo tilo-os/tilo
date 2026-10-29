@@ -87,7 +87,6 @@ fn revoked(peer: &StatePeer, root: &SigningKey, now: SystemTime) -> StatePeer {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.core.authority.clone()),
                 revocations: vec![entry],
-                successions: Vec::new(),
             },
             now,
         )
@@ -267,7 +266,6 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(peer.core.authority.clone()),
                 revocations: vec![entry.clone()],
-                successions: Vec::new(),
             },
             now,
         )
@@ -281,7 +279,6 @@ fn room_media_security_no_policy_accepts_host_revocation_without_enabling_media(
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(sibling),
                 revocations: vec![entry],
-                successions: Vec::new(),
             },
             now,
         )
@@ -336,7 +333,6 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.core.authority.clone()),
                     revocations: vec![foreign],
-                    successions: Vec::new(),
                 },
                 now,
             )
@@ -353,7 +349,6 @@ fn room_media_security_no_policy_refuses_foreign_and_forged_revocations() {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.core.authority.clone()),
                     revocations: vec![invalid_signature],
-                    successions: Vec::new(),
                 },
                 now,
             )

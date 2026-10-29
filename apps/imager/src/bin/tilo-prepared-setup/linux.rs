@@ -9,7 +9,7 @@ fn bootstrap() -> Option<std::process::ExitCode> {
         ))
     {
         return Some(
-            match imager::setup::prepared_setup_helper::retained_consumer_bootstrap(
+            match imager_backend::setup::prepared_setup_helper::retained_consumer_bootstrap(
                 std::env::args_os().skip(2),
             ) {
                 Ok(()) => std::process::ExitCode::SUCCESS,
@@ -24,7 +24,7 @@ fn bootstrap() -> Option<std::process::ExitCode> {
         == Some(std::ffi::OsStr::new("--installed-original-copy-receiver"))
     {
         return Some(
-            match imager::setup::installed_copy::run_receiver(std::env::args_os().skip(2)) {
+            match imager_backend::setup::installed_copy::run_receiver(std::env::args_os().skip(2)) {
                 Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("Installed copy could not continue: {error}");
@@ -37,7 +37,7 @@ fn bootstrap() -> Option<std::process::ExitCode> {
         == Some(std::ffi::OsStr::new("--installed-original-copy-controller"))
     {
         return Some(
-            match imager::setup::prepared_setup_helper::installed_original_copy_controller(
+            match imager_backend::setup::prepared_setup_helper::installed_original_copy_controller(
                 std::env::args_os().skip(2),
             ) {
                 Ok(()) => std::process::ExitCode::SUCCESS,
@@ -55,7 +55,9 @@ fn bootstrap() -> Option<std::process::ExitCode> {
         .map(std::ffi::OsString::into_string)
         .collect::<Result<Vec<_>, _>>();
     if let Ok(arguments) = controller_arguments {
-        match imager::setup::prepared_setup_helper::maybe_run_original_controller(&arguments) {
+        match imager_backend::setup::prepared_setup_helper::maybe_run_original_controller(
+            &arguments,
+        ) {
             Ok(Some(0)) => return Some(std::process::ExitCode::SUCCESS),
             Ok(Some(_)) => return Some(std::process::ExitCode::FAILURE),
             Err(error) => {
@@ -159,36 +161,43 @@ fn dispatch_capabilities(
 ) -> Option<bool> {
     let succeeded = match mode? {
         "--retained-home-consumer" => {
-            imager::setup::prepared_setup_helper::retained_home_consumer(arguments).is_ok()
+            imager_backend::setup::prepared_setup_helper::retained_home_consumer(arguments).is_ok()
         }
         "--applications-consumer-capability" => {
-            imager::setup::prepared_setup_helper::original_reattest::qualify_applications(
+            imager_backend::setup::prepared_setup_helper::original_reattest::qualify_applications(
                 arguments, output,
             )
             .is_ok()
         }
         "--applications-consumer-qualification-child" => {
-            imager::setup::prepared_setup_helper::applications_consumer_qualification_child(
+            imager_backend::setup::prepared_setup_helper::applications_consumer_qualification_child(
                 arguments, output,
             )
             .is_ok()
         }
         "--original-source-consumer-capability" => {
-            imager::setup::prepared_setup_helper::original_reattest::qualify(arguments, output)
-                .is_ok()
+            imager_backend::setup::prepared_setup_helper::original_reattest::qualify(
+                arguments, output,
+            )
+            .is_ok()
         }
         "--reattest-original-source-consumer-capability" => {
-            imager::setup::prepared_setup_helper::original_reattest::run(arguments, output).is_ok()
+            imager_backend::setup::prepared_setup_helper::original_reattest::run(arguments, output)
+                .is_ok()
         }
         "--selected-install-generation" => {
-            imager::setup::prepared_setup_helper::completed::selected(arguments, output).is_ok()
+            imager_backend::setup::prepared_setup_helper::completed::selected(arguments, output)
+                .is_ok()
         }
         "--stream-completed-payload" => {
-            imager::setup::prepared_setup_helper::completed::payload(arguments, output).is_ok()
+            imager_backend::setup::prepared_setup_helper::completed::payload(arguments, output)
+                .is_ok()
         }
         "--home-consumer-capability" => {
-            imager::setup::prepared_setup_helper::home_consumer_capability(arguments, output)
-                .is_ok()
+            imager_backend::setup::prepared_setup_helper::home_consumer_capability(
+                arguments, output,
+            )
+            .is_ok()
         }
         _ => return None,
     };
@@ -201,18 +210,20 @@ fn dispatch_installed_access(
     output: &mut impl std::io::Write,
 ) -> Option<bool> {
     let succeeded = match mode? {
-        "--install-enrolled-device" => imager::setup::prepared_setup_helper::enrolled::run(
+        "--install-enrolled-device" => imager_backend::setup::prepared_setup_helper::enrolled::run(
             arguments,
             &mut std::io::stdin().lock(),
             output,
         )
         .is_ok(),
-        "--authenticate-install" => imager::setup::prepared_setup_helper::authenticate::run(
-            arguments,
-            &mut std::io::stdin().lock(),
-            output,
-        )
-        .is_ok(),
+        "--authenticate-install" => {
+            imager_backend::setup::prepared_setup_helper::authenticate::run(
+                arguments,
+                &mut std::io::stdin().lock(),
+                output,
+            )
+            .is_ok()
+        }
         "--access-shared-files" => imager::setup::installed_migration_helper::run_shared_access(
             arguments,
             std::io::stdin(),
@@ -246,7 +257,7 @@ fn dispatch_portable_consumers(
     output: &mut impl std::io::Write,
 ) -> Option<bool> {
     let succeeded = match mode? {
-        "--portable-home" => imager::setup::portable_home_helper::run(
+        "--portable-home" => imager_backend::setup::portable_home_helper::run(
             arguments,
             &mut std::io::stdin().lock(),
             output,
@@ -258,7 +269,7 @@ fn dispatch_portable_consumers(
             output,
         )
         .is_ok(),
-        "--browser-transfer" => imager::setup::browser_transfer_helper::run(
+        "--browser-transfer" => imager_backend::setup::browser_transfer_helper::run(
             arguments,
             &mut std::io::stdin().lock(),
             output,
@@ -276,7 +287,7 @@ fn dispatch_prepared_handoff(
 ) -> Option<bool> {
     let succeeded = match mode? {
         "--unseal-prepared-handoff" => {
-            imager::setup::prepared_setup_helper::unseal_handoff(arguments, output).is_ok()
+            imager_backend::setup::prepared_setup_helper::unseal_handoff(arguments, output).is_ok()
         }
         "--seal-prepared-handoff" => {
             imager_backend::setup::prepared_tpm::seal_from_reader(std::io::stdin().lock(), output)
@@ -291,6 +302,10 @@ fn default_setup(
     arguments: impl Iterator<Item = std::ffi::OsString>,
     output: &mut impl std::io::Write,
 ) -> bool {
-    imager::setup::prepared_setup_helper::run(arguments, &mut std::io::stdin().lock(), output)
-        .is_ok()
+    imager_backend::setup::prepared_setup_helper::run(
+        arguments,
+        &mut std::io::stdin().lock(),
+        output,
+    )
+    .is_ok()
 }

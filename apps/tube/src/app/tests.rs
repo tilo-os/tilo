@@ -9,12 +9,12 @@ use automerge::{AutoCommit, ReadDoc};
 use ui::tilo_resource::Resource as _;
 
 fn fresh() -> (TubeApp, AutoCommit) {
-    (TubeApp::new(), AutoCommit::new())
+    (TubeApp::sample(), AutoCommit::new())
 }
 
 #[test]
 fn the_demo_page_shows_the_sample_captions_over_the_picture() {
-    let mut app = TubeApp::new();
+    let mut app = TubeApp::sample();
     app.stage_scenario("play-demo");
     let model = app.model_for_test();
     assert_eq!(model.captions_of, crate::sample::SAMPLE_CAPTIONED_VIDEO);
@@ -93,7 +93,7 @@ fn a_worker_result_wakes_the_window() {
             let _ = woke.send(event.requires_sync());
         })
         .unwrap();
-    let mut app = TubeApp::new();
+    let mut app = TubeApp::sample();
     app.wake_with(scope.handle());
     let results = app.script_worker_for_test();
     assert!(wakes.try_recv().is_err(), "nothing has arrived yet");
@@ -116,7 +116,7 @@ fn a_window_with_its_fetch_worker_asks_for_no_idle_syncs() {
     // The worker lives as long as the window and wakes it per result;
     // an idle sync for as long as it existed was a busy loop in a
     // collaborative window.
-    let mut app = TubeApp::new();
+    let mut app = TubeApp::sample();
     let _results = app.script_worker_for_test();
     assert!(!Widget::needs_idle_sync(&app));
 }
@@ -165,7 +165,7 @@ fn controls_without_a_document_change_act_on_this_window() {
     // Opening a video shows it, starts it from the top and records it in
     // the watch history.
     {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         app.apply(Action::OpenVideo("vid_donut".into()));
         assert_eq!(app.model.route, Route::Watch("vid_donut".into()));
         assert_eq!(
@@ -182,7 +182,7 @@ fn controls_without_a_document_change_act_on_this_window() {
         assert!(app.model.history.is_empty());
     }
     {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         app.apply(Action::OpenVideo("vid_donut".into()));
         app.apply(Action::Share("vid_donut".into()));
         assert!(!app.model.is_liked("vid_donut"));
@@ -195,7 +195,7 @@ fn controls_without_a_document_change_act_on_this_window() {
     }
     // A screen an effect names opens; one it does not is refused.
     {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         app.perform(TubeEffect::ShowScreen {
             screen: "settings".into(),
         })
@@ -217,7 +217,7 @@ fn controls_without_a_document_change_act_on_this_window() {
     // What the platform search was asked for opens on YouTube's results
     // for it; a blank search is refused.
     {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         app.follow_palette_query("  veritasium ");
         let entries = app.search_entries_of_model();
         let row = entries
@@ -247,7 +247,7 @@ fn controls_without_a_document_change_act_on_this_window() {
 
 #[test]
 fn an_emptied_library_shows_empty() {
-    let mut app = TubeApp::new();
+    let mut app = TubeApp::sample();
     let mut library = Library::default();
     library.likes.insert("vid_donut".into());
     library.queue.insert("vid_donut".into());
@@ -728,7 +728,7 @@ fn library_and_queries_keep_shared_and_local_state_apart() {
                 .is_none()
         );
 
-        let mut second = TubeApp::new();
+        let mut second = TubeApp::sample();
         Widget::sync(&mut second, &doc, &automerge::ROOT);
         assert!(second.search_query.get().is_empty());
         assert_eq!(first.search_query.get(), "rust async");
@@ -743,7 +743,7 @@ fn library_and_queries_keep_shared_and_local_state_apart() {
             &ui::tilo_resource::Atom("remote query".into()),
         )
         .expect("legacy search seed");
-        let mut third = TubeApp::new();
+        let mut third = TubeApp::sample();
         Widget::sync(&mut third, &legacy_doc, &automerge::ROOT);
         assert!(third.search_query.get().is_empty());
     }
@@ -754,7 +754,7 @@ fn library_and_queries_keep_shared_and_local_state_apart() {
 #[test]
 fn the_rail_adapts_and_navigates_through_published_actions() {
     {
-        let app = TubeApp::new().with_route_shot(Route::Trending);
+        let app = TubeApp::sample().with_route_shot(Route::Trending);
         assert_eq!(app.model.route, Route::Trending);
         assert_eq!(app.nav.current(), &Route::Trending);
         assert!(
@@ -784,7 +784,7 @@ fn the_rail_adapts_and_navigates_through_published_actions() {
         for (width, placement) in [(1280, Docked), (800, Docked), (420, Docked), (340, Screen)] {
             let mut framed = ui::headless::Framed::new(
                 ui::State::new(),
-                TubeApp::new(),
+                TubeApp::sample(),
                 (width, 800),
                 Theme::dark(),
             );
@@ -845,7 +845,7 @@ fn online_catalogue_starts_empty_and_tracks_requests() {
         );
     }
     {
-        let mut app = TubeApp::empty();
+        let mut app = TubeApp::new();
         app.model.search_query = "rust".into();
         app.model.search_loading = true;
         app.request_rejected(
@@ -876,7 +876,7 @@ fn online_catalogue_starts_empty_and_tracks_requests() {
         );
     }
     {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         app.online = true;
         app.kicked_off = true;
         app.search_query.set("rust".into());
@@ -927,7 +927,7 @@ fn online_catalogue_starts_empty_and_tracks_requests() {
         let _ = store.get("http://x/a.png");
         assert!(store.pending() >= 1, "a load is in flight");
 
-        let mut app = TubeApp::new().with_image_store(store.clone());
+        let mut app = TubeApp::sample().with_image_store(store.clone());
         let doc = AutoCommit::new();
         // The first frame builds the shell; image loads arrive after it.
         let _ = Widget::take_structure_dirty(&mut app);
@@ -1035,7 +1035,7 @@ fn unreachable_sources_settle_pages_without_claiming_offline() {
         assert!(!app.model.playing);
     }
     {
-        let mut app = TubeApp::empty();
+        let mut app = TubeApp::new();
         app.model.feed_loading = true;
         app.request_rejected(&Request::Feed, true);
         assert!(!app.model.data_source.label.contains("offline"));

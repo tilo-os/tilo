@@ -122,7 +122,6 @@ settings-sections = { path = "../../system/settings-sections" }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }
-notify.workspace = true
 tilo-paths.workspace = true
 # Where the control sockets live, shared with the `tilo-control` client.
 tilo-control = { path = "../control-cli" }
@@ -452,8 +451,6 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The hooks the network tests reach the actor through.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
-# The write faults the settings-copy repair tests inject.
-settings-store = { path = "../../system/settings-store", features = ["watch", "test-support"] }
 # The calibrated test panels the presenter tests render through.
 tilo-output-passes = { path = "../output-passes", features = ["test-support"] }
 # The radio fixture and panel hooks the chrome tests drive Quick Settings with.
@@ -470,7 +467,7 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
 store = { path = "../../../apps/store" }
 # Private feedback acceptance invokes the actual Chat action and receipt adapter.
-chat = { path = "../../../apps/chat", default-features = false }
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # A sheet made in a workspace is listed in its content list.
 sheets = { path = "../../../apps/sheets" }
 # Real native editor instances in certified multi-device continuity fixtures.

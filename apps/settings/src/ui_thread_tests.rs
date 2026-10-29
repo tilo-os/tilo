@@ -15,7 +15,6 @@
 
 use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
-use ui::lock::MutexRecover as _;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
@@ -52,8 +51,6 @@ fn held(
 
 #[test]
 fn every_pane_opens_and_takes_a_change_without_waiting_on_the_device() {
-    // Its changes are queued on a thread marked as the UI thread.
-    let _queue = crate::settings_write_tests::SETTINGS_QUEUE.lock_recover();
     ui::i18n::I18nManager::init("en-US");
     crate::effects::defer_area_reads_in_tests(true);
     ui::rt::mark_ui_thread();

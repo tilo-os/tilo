@@ -221,7 +221,11 @@ def audit_uki(name: str, stage: Stage) -> list[Finding]:
             "lacks one builds a UKI under a different contract and nothing fails",
             "declare exactly these ARG/ENV lines, in this order, as os/Containerfile does"))
     runs = [i for i in stage.body if i.keyword == "RUN"]
-    others = [i for i in stage.body if i.keyword not in ("ARG", "ENV", "RUN")]
+    # A COPY into the cache-key directory only keys the seal's RUN by the kernel's and
+    # the UKI inputs' content (buildah keys a RUN by its instruction, not by what a bind
+    # mount holds); it runs nothing and leaves nothing but the UKI the stage hands on.
+    others = [i for i in stage.body if i.keyword not in ("ARG", "ENV", "RUN")
+              and not (i.keyword == "COPY" and i.text.split()[-1].startswith("/tilo-uki-key/"))]
     for instruction in others:
         findings.append(Finding(f"{name}:{instruction.line}", f"the `uki` stage carries `{instruction.text}`",
                                 "the stage only runs os/dev/uki.sh; anything else is a fork of the pipeline",

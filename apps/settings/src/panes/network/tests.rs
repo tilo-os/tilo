@@ -269,7 +269,7 @@ fn pending_network() -> Result<(Shared<NetworkModel>, ReleaseSnapshot), String> 
     });
     let profile = tempfile::tempdir().map_err(|error| error.to_string())?;
     let mut network =
-        NetworkModel::with_service(PaneCx::in_file(profile.path().join("settings.json")), fake);
+        NetworkModel::with_service(PaneCx::in_profile(profile.path().to_path_buf()), fake);
     let release = ReleaseSnapshot(Some(release));
     network.start_snapshot();
     starts
@@ -703,7 +703,7 @@ fn saved(uuid: &str, name: &str, last_used: u64) -> SavedNetworkProfile {
 fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
     let profile = tempfile::tempdir().unwrap().keep();
     NetworkModel::loaded_from(
-        PaneCx::in_file(profile.join("settings.json")),
+        PaneCx::in_profile(profile.to_path_buf()),
         Arc::clone(fake) as Arc<dyn NetworkService>,
     )
 }
@@ -918,7 +918,7 @@ fn network_inspection_observes_the_actual_pending_refresh_and_failed_snapshot() 
 #[test]
 fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_reads() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     let area = NetworkArea::new(&cx);
     assert_eq!(area.inspection().unwrap()["state"], "unopened");
     assert!(
@@ -1932,7 +1932,7 @@ fn networks_saved_profiles_and_vpns_are_rows() {
         },
     ];
     let profile = tempfile::tempdir().unwrap().keep();
-    let cx = PaneCx::in_file(profile.join("settings.json"));
+    let cx = PaneCx::in_profile(profile.to_path_buf());
     let area = NetworkArea::new(&cx);
     let _ = area.model.set(Rc::new(RefCell::new(model(&fake))));
     let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
@@ -2545,7 +2545,7 @@ fn a_radio_either_source_sees_is_offered() {
     use crate::radios::Present;
 
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     let area = NetworkArea::new(&cx);
     assert!(
         area.statuses().is_empty(),
@@ -2572,7 +2572,7 @@ fn a_radio_either_source_sees_is_offered() {
         }
     );
     assert_eq!(
-        NetworkRadios::of(&PaneCx::in_file(profile.path().join("other.json")), None),
+        NetworkRadios::of(&PaneCx::in_profile(profile.path().join("other")), None),
         NetworkRadios::default(),
         "neither has said"
     );
@@ -2651,7 +2651,7 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
     *fake.vpns.lock().unwrap() = vec![work_vpn()];
     let profile = tempfile::tempdir().unwrap().keep();
     let mut model = NetworkModel::with_service(
-        PaneCx::in_file(profile.join("settings.json")),
+        PaneCx::in_profile(profile.to_path_buf()),
         Arc::clone(&fake) as Arc<dyn NetworkService>,
     );
     run_vpn(

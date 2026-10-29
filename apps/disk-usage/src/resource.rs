@@ -1,20 +1,16 @@
 //! Disk Usage as a resource: scans and navigation are the
-//! surface's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
+//! view's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
 //! this device, so they are a device-local setting ([`RecentFolders`]),
 //! published as live rows beside the resource.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{
-    EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, LiveRow, ResourceApp, ViewCx};
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
-use crate::app::DiskUsageApp;
 use crate::scan::ScanResult;
 
 /// How many analyzed folders are remembered.
@@ -122,7 +118,7 @@ impl ResourceApp for DiskUsageShell {
     const ICON: Option<&'static str> = Some("disk-usage");
 
     fn view(cx: &mut ViewCx<DiskUsage>) -> Element {
-        cx.surface(DiskUsageApp::new())
+        crate::view::window(cx)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -160,67 +156,6 @@ impl ResourceApp for DiskUsageShell {
             Some(name) if !name.starts_with("analysis") => {}
             _ => fixture.provide(ScanResult::sample()),
         }
-    }
-}
-
-impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
-    fn present(&mut self, _state: &std::rc::Rc<DiskUsage>) {}
-
-    /// A capture shows its scenario's folders; a live window this device's,
-    /// remembering what it analyzes; a past version has none.
-    fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
-        self.immediate = cx.mode() == RunMode::Capture;
-        self.dispatcher = Some(cx.dispatcher());
-        self.actions = (cx.mode() == RunMode::Live).then(|| cx.actions());
-        match cx.mode() {
-            RunMode::Capture => {
-                // A capture names the sample's places, never this machine's.
-                self.places = crate::app::sample_places();
-                if let Some(recent) = cx.fixture::<RecentFolders>() {
-                    self.recent.clone_from(&recent.folders);
-                }
-            }
-            RunMode::Live => self.recents = Some(cx.settings::<RecentFolders>()),
-            RunMode::Past => {}
-        }
-        self.refresh_home();
-        if let Some(scan) = cx.fixture::<ScanResult>() {
-            self.set_result((*scan).clone());
-            if self.immediate {
-                crate::app::sample_job("Home");
-            }
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if scenario.is_some_and(|name| name.starts_with("analysis-hover")) {
-            self.inspect("/home/you/projects");
-        }
-    }
-
-    fn effect(
-        &mut self,
-        effect: DiskUsageEffect,
-        cx: &mut EffectCx<DiskUsage, Self>,
-    ) -> EffectAnswer {
-        match effect {
-            DiskUsageEffect::Analyze { path } => {
-                let push_history = self.in_analysis();
-                Ok(self.scan(PathBuf::from(path), push_history, cx))
-            }
-            DiskUsageEffect::Choose => Ok(Self::choose_folder(cx)),
-            DiskUsageEffect::Back => Ok(self.go_back(cx)),
-            DiskUsageEffect::Home => {
-                self.go_home();
-                Ok(Effected::done())
-            }
-        }
-    }
-
-    /// The common places, the folders analyzed lately, and the folders of
-    /// the scan on screen.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.folder_rows()
     }
 }
 

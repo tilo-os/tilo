@@ -290,6 +290,42 @@ fn the_window_group_is_keyed_by_the_shell_id() {
     assert!(audit.issues.is_empty(), "{:?}", audit.issues);
 }
 
+/// A bound Back and a bound title ask for an idle sync only once what they
+/// follow moved, and the sync that shows it settles them again: a shell
+/// with nothing to change keeps its window's event loop asleep.
+#[test]
+fn bindings_ask_for_an_idle_sync_only_when_they_moved() {
+    let pages = LocalState::new(crate::NavStack::new("dashboard"));
+    let title = LocalState::new("Dashboard".to_owned());
+    let shell = NavShell::new()
+        .content(Probe::boxed("content").0)
+        .content_header_bound(&title, Vec::new())
+        .with_back(&pages);
+    let mut h = harness(shell, 1024, 700, Theme::dark());
+    settle(&mut h, 1024, 700);
+    assert!(!h.root::<NavShell>().needs_idle_sync(), "nothing moved");
+
+    let doc = automerge::AutoCommit::new();
+    pages.update(|stack| stack.push("queue"));
+    assert!(
+        h.root::<NavShell>().needs_idle_sync(),
+        "Back can go back now"
+    );
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+    assert!(
+        !h.root::<NavShell>().needs_idle_sync(),
+        "the sync showed Back"
+    );
+
+    title.set("Queue".to_owned());
+    assert!(h.root::<NavShell>().needs_idle_sync(), "the title moved");
+    h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
+    assert!(
+        !h.root::<NavShell>().needs_idle_sync(),
+        "the sync took the title"
+    );
+}
+
 /// The content's Back follows the app's page stack; the shell draws the
 /// chip, and a press pops the stack.
 #[test]

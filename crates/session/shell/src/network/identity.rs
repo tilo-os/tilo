@@ -84,9 +84,6 @@ struct PeerIdentityStoreInner {
     by_peer: HashMap<PeerOrigin, PeerIdentity>,
     /// Per-user-identity revocation lists — stable across cert cache churn, since revocations are additive.
     revocations: HashMap<[u8; 32], RevocationList>,
-    /// Verified root statements naming who governs in place of a revoked
-    /// device; additive like the revocations they carry.
-    successions: Vec<tilo_user_identity::GovernorSuccession>,
 }
 
 impl PeerIdentityStore {
@@ -168,27 +165,6 @@ impl PeerIdentityStore {
                     .is_some_and(|list| list.is_revoked_at(&identity.device_pubkey, now_ns))
             })
             .cloned()
-    }
-
-    /// Keep the verified `successions` not yet held.
-    pub fn add_successions(&self, successions: &[tilo_user_identity::GovernorSuccession]) {
-        let mut inner = self.inner.write_recover();
-        let mut changed = false;
-        for succession in successions {
-            if !inner.successions.contains(succession) {
-                inner.successions.push(succession.clone());
-                changed = true;
-            }
-        }
-        drop(inner);
-        if changed {
-            tilo_identity_host::policy_change::announce();
-        }
-    }
-
-    /// Every verified governor succession held.
-    pub fn successions(&self) -> Vec<tilo_user_identity::GovernorSuccession> {
-        self.inner.read_recover().successions.clone()
     }
 
     /// The certificates of `user_pubkey`'s devices the transport authenticated

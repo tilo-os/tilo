@@ -1,7 +1,7 @@
 //! Another-device migration consent. A held, source-bound review is kept until
 //! the media writer consumes it. Original-source Copy authority is captured only
 //! for explicit offline continuation; ordinary immutable transfer is unchanged.
-use super::super::{
+use imager_backend::setup::{
     flatpak_transfer::{NativeRunner, portable::PortableFlatpakSource},
     migration_intent::MigrationIntent,
     portable_home_media::HomeSource,
@@ -88,7 +88,7 @@ impl OriginalSource {
         if applications_only != self.applications_only() {
             return Err(std::io::ErrorKind::InvalidInput.into());
         }
-        super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         self.validate()?;
         let mut held = self
             .intent
@@ -113,7 +113,11 @@ impl OriginalSource {
         let directory = root.join("original-source");
         let pin = super::personal::ensure_private_tree(&directory)?;
         pin.validate_destination()?;
-        let result = self.capture_in(&directory, cancel, super::super::migration_handoff::capture);
+        let result = self.capture_in(
+            &directory,
+            cancel,
+            imager_backend::setup::migration_handoff::capture,
+        );
         pin.validate_destination()?;
         let intent = result?;
         *held = Some(intent.clone());
@@ -123,10 +127,10 @@ impl OriginalSource {
         &self,
         directory: &Path,
         cancel: &AtomicBool,
-        capture: super::super::migration_intent::Capture,
+        capture: imager_backend::setup::migration_intent::Capture,
     ) -> std::io::Result<MigrationIntent> {
-        use super::super::migration_handoff::HomePolicy;
-        super::super::migration::check_cancel(cancel)?;
+        use imager_backend::setup::migration_handoff::HomePolicy;
+        imager_backend::migration::check_cancel(cancel)?;
         self.validate()?;
         if !self.choices.home && !self.applications_only() {
             return Err(std::io::ErrorKind::InvalidInput.into());
@@ -159,7 +163,7 @@ impl OriginalSource {
         // The held grant is independently reattested even on capture failure.
         self.validate()?;
         let intent = result?;
-        super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         Ok(intent)
     }
 }
@@ -183,7 +187,7 @@ impl ReviewFailure {
                 locations: super::super::migration_review::mounted_home_locations(&error),
             };
         }
-        match super::super::portable_home_media::source_review_error(&error) {
+        match imager_backend::setup::portable_home_media::source_review_error(&error) {
             Some("installer-source-changed") => Self::SourceChanged,
             Some("installer-source-unavailable") => Self::SourceUnavailable,
             _ if error.kind() == std::io::ErrorKind::PermissionDenied => Self::Permission,
@@ -399,7 +403,8 @@ impl Selection {
                     !choices.home
                         && choices.applications
                         && choices.system_refs.iter().any(|item| {
-                            item.installation == super::super::flatpak_transfer::Installation::User
+                            item.installation
+                                == imager_backend::setup::flatpak_transfer::Installation::User
                         })
                 })
                 .then(|| {
@@ -767,7 +772,7 @@ mod tests {
             .capture_in(
                 &journal,
                 &cancel,
-                super::super::super::migration_handoff::capture_fixture,
+                imager_backend::setup::migration_handoff::capture_fixture,
             )
             .unwrap();
         let persisted: serde_json::Value =
@@ -789,7 +794,7 @@ mod tests {
                 .capture_in(
                     &cancelled,
                     &cancel,
-                    super::super::super::migration_handoff::capture_fixture
+                    imager_backend::setup::migration_handoff::capture_fixture
                 )
                 .is_err()
         );
@@ -802,7 +807,7 @@ mod tests {
                 .capture_in(
                     &cancelled,
                     &cancel,
-                    super::super::super::migration_handoff::capture_fixture
+                    imager_backend::setup::migration_handoff::capture_fixture
                 )
                 .is_err()
         );
@@ -932,7 +937,7 @@ mod tests {
         assert!(selection.reviewed_handle().is_none());
         assert_eq!(std::fs::read(&document).unwrap(), b"original document");
         // Re-read through the existing parser: unsupported policy remains intact.
-        let error = super::super::super::portable_transfer::acl::policy(
+        let error = imager_backend::setup::portable_transfer::acl::policy(
             &std::fs::File::open(&document).unwrap(),
         )
         .unwrap_err();
@@ -955,7 +960,7 @@ mod tests {
             Err("installer-portable-metadata-unsupported")
         );
         assert!(selection.reviewed_handle().is_none());
-        let error = super::super::super::portable_transfer::acl::policy(
+        let error = imager_backend::setup::portable_transfer::acl::policy(
             &std::fs::File::open(&home).unwrap(),
         )
         .unwrap_err();

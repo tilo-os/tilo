@@ -606,8 +606,16 @@ impl Store for AmStore {
     }
 
     fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError> {
+        let id = self.inner.borrow_mut().fresh("d");
+        self.create_with_id(record, &id)
+    }
+
+    fn create_with_id(&mut self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
         let mut inner = self.inner.borrow_mut();
-        let id = inner.fresh("d");
+        if inner.docs.contains_key(id) {
+            return Err(StoreError::Invalid(format!("resource {id} exists")));
+        }
+        let id = id.to_owned();
         let mut doc = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
         doc.put(&ROOT, TYPE_KEY, record.ty.as_str())
             .map_err(backend)?;

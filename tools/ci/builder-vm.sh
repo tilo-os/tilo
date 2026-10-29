@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# This worktree's dev OS image built and its acceptance suite run on the rcargo builder,
-# not on this machine: the builder has /dev/kvm, the cores and the disk, and keeps what a
-# build made (its podman store, the OS build's caches, the dev disk of each image) so the
-# next run of the same inputs is warm. scripts/vm-acceptance/README.md ("On the rcargo
-# builder") explains the flow.
+# This worktree's dev OS image built and its acceptance suite run on the builder of a remote
+# cargo drop-in, not on this machine: the builder has /dev/kvm, the cores and the disk, and
+# keeps what a build made (its podman store, the OS build's caches, the dev disk of each
+# image) so the next run of the same inputs is warm. scripts/vm-acceptance/README.md ("On a
+# remote builder") explains the flow.
+#
+# TILO_REMOTE_CARGO names the drop-in: a cargo replacement that builds this worktree on its
+# builder in a build container named PROGRAM-<worktree id>, and runs commands there with
+# `PROGRAM builder ssh -- COMMAND`. TILO_REMOTE_CARGO_ROOT is its directory on the builder:
+# its worktrees under p/*/w/<worktree id>/ (each with a meta.json naming the local checkout),
+# its CI cache token under ci-cache/, and this script's scratch under scratch/builder-vm.
 #
 #   builder-vm.sh image                  build the dev image of this worktree (tilo-vm image
-#                                        build with the worktree's rcargo build image;
+#                                        build with the worktree's remote build image;
 #                                        TILO_BUILD_ARGS=--no-cache builds every step again),
 #                                        with the Browser and Mail as CI and releases ship
 #                                        them (TILO_WITH_BROWSER=0 leaves them out)
@@ -22,35 +28,32 @@
 #                                        --all also its image, disk and build caches (never
 #                                        another worktree's, never the shared store)
 #
-# Everything heavy runs on the builder under /srv/rcargo/scratch/builder-vm, in rootless
-# podman, outside rcargo's care: rcargo stops a worktree's build container after an hour
-# without an rcargo command, evicts idle worktrees and prunes its shared podman store above
-# the disk watermark, and a two-hour image build or a run's VMs do not survive that. The
+# Everything heavy runs on the builder under TILO_REMOTE_CARGO_ROOT/scratch/builder-vm, in
+# rootless podman, outside the drop-in's care: a drop-in may stop a worktree's build container
+# after a while without a command, evict idle worktrees and prune its shared podman store above
+# a disk watermark, and a two-hour image build or a run's VMs do not survive that. The
 # worktree's files go there with rsync; the image build runs in a container from the
-# worktree's rcargo build image, with a podman store and the OS build's cargo and sccache
+# worktree's remote build image, with a podman store and the OS build's cargo and sccache
 # caches that outlive it; the VMs run in a container made from tools/ci/packages/
 # vm-acceptance.txt with /dev/kvm passed through, each in a network namespace of its own,
 # so shards never share a port.
 set -euo pipefail
 
 cmd=${1:-}
-[[ -n $cmd ]] || { sed -n '2,33p' "$0"; exit 2; }
+[[ -n $cmd ]] || { sed -n '2,39p' "$0"; exit 2; }
 shift
 repo=$(git rev-parse --show-toplevel)
 cd "$repo"
 local_path=$(pwd -P)
-scratch=/srv/rcargo/scratch/builder-vm
+remote=${TILO_REMOTE_CARGO:?TILO_REMOTE_CARGO must name the remote cargo drop-in}
+remote_root=${TILO_REMOTE_CARGO_ROOT:?TILO_REMOTE_CARGO_ROOT must name the drop-in's directory on its builder}
+scratch=$remote_root/scratch/builder-vm
 # This worktree's own part of the scratch, by its path.
 key=$(printf '%s' "$local_path" | sha256sum | cut -c1-12)
 src=$scratch/src/$key
 label=sh.tilo.builder-vm
 host_image_inputs=(tools/ci/install-packages.sh tools/ci/packages/vm-acceptance.txt)
-builder=$(python3 -c '
-import os, tomllib
-b = tomllib.load(open(os.path.expanduser("~/.config/rcargo/config.toml"), "rb"))["builder"]
-print(b.get("user", "fedora") + "@" + b["host"])')
-
-on_builder() { rcargo builder ssh -- "$@"; }
+on_builder() { "$remote" builder ssh -- "$@"; }
 note() { printf 'builder-vm: %s\n' "$*" >&2; }
 stamp() { date -u +%s; }
 
@@ -78,21 +81,23 @@ builder_job() {
 # into its scratch on the builder: an rsync of what changed, seconds after an edit.
 sync_src() {
   on_builder "mkdir -p $src"
+  # rsync reaches the builder through the drop-in's shell; it passes the host it names to the
+  # shell first, and `env` there runs the rest as it is.
   git ls-files -z --cached --others --exclude-standard \
-    | rsync -a --delete-missing-args --from0 --files-from=- -e 'ssh -o BatchMode=yes' \
-        ./ "$builder:$src/" >&2
+    | rsync -a --delete-missing-args --from0 --files-from=- -e "$remote builder ssh --" \
+        ./ "env:$src/" >&2
 }
 
-# The worktree's directory on the builder as rcargo keeps it (its meta.json names this
+# The worktree's directory on the builder as the drop-in keeps it (its meta.json names this
 # checkout), whose build container's image the OS build runs in.
-rcargo_tree() {
+remote_tree() {
   local found
-  found=$(on_builder "grep -l '\"local_path\": \"$local_path\"' /srv/rcargo/p/*/w/*/meta.json | head -1")
-  [[ -n $found ]] || { note "rcargo has no builder worktree for $local_path"; exit 1; }
+  found=$(on_builder "grep -l '\"local_path\": \"$local_path\"' $remote_root/p/*/w/*/meta.json | head -1")
+  [[ -n $found ]] || { note "$remote has no builder worktree for $local_path"; exit 1; }
   printf '%s\n' "${found%/meta.json}"
 }
 
-# The tilo-vm the VMs are driven with, built by rcargo from this tree's tilo-vm sources and
+# The tilo-vm the VMs are driven with, built by the drop-in from this tree's tilo-vm sources and
 # kept by them, so a run whose tilo-vm did not change builds nothing.
 tilo_vm() {
   local sources dir tree
@@ -101,9 +106,9 @@ tilo_vm() {
   dir=$scratch/bin/$sources
   if ! on_builder "test -x $dir/tilo-vm"; then
     note "building tilo-vm ($sources)"
-    rcargo build -p tilo-vm --quiet >&2
+    "$remote" build -p tilo-vm --quiet >&2
     git checkout -q -- Cargo.lock 2>/dev/null || true
-    tree=$(rcargo_tree)
+    tree=$(remote_tree)
     on_builder "mkdir -p $dir.part && cp $tree/target/debug/tilo-vm $dir.part/ && rm -rf $dir && mv $dir.part $dir"
   fi
   printf '%s\n' "$dir/tilo-vm"
@@ -128,18 +133,17 @@ host_image() {
 image_dir() { printf '%s/images/%s\n' "$scratch" "$1"; }
 
 cmd_image() {
-  local t0 digest bin rcargo_image out=$scratch/out/$key
+  local t0 digest bin remote_image out=$scratch/out/$key
   t0=$(stamp)
   note "building the dev image of $(git rev-parse --short HEAD)$(git diff --quiet HEAD || echo ' + local changes') on the builder"
   sync_src
   bin=$(tilo_vm)
-  # The worktree's rcargo build image: the toolchain, podman and the OS build's tools.
-  rcargo check -p tilo-vm-protocol --quiet >&2
+  # The worktree's remote build image: the toolchain, podman and the OS build's tools.
+  "$remote" check -p tilo-vm-protocol --quiet >&2
   git checkout -q -- Cargo.lock 2>/dev/null || true
-  rcargo_image=$(on_builder "podman inspect --format '{{.ImageName}}' rcargo-$(basename "$(rcargo_tree)")")
-  # With the rcargo container's capabilities, the environment rcargo's config gives the OS
-  # build, and a local tag of this worktree's own (rcargo 0.1.0 passes its config's
-  # `TILO_LOCAL_TAG = "wt-{worktree}"` on without expanding the placeholder). The compile
+  remote_image=$(on_builder "podman inspect --format '{{.ImageName}}' $(basename "$remote")-$(basename "$(remote_tree)")")
+  # With the build container's capabilities, the environment the OS build needs, and a local
+  # tag of this worktree's own (a drop-in's own TILO_LOCAL_TAG may not name the worktree). The compile
   # jobs are bounded: the build counts the node's cores (377), not the builder's share of
   # them, and that many compilers at once fail to spawn; neither container limits its
   # processes, as podman's default of 2048 does, which a compile of 32 jobs outgrows.
@@ -165,15 +169,15 @@ cmd_image() {
       --cap-add SYS_ADMIN --cap-add NET_ADMIN --security-opt unmask=ALL --device /dev/fuse \
       -v $scratch/store:/var/lib/containers -v $scratch/store/storage:/var/lib/containers/storage:ro \
       -v $scratch/stores/$key:/var/lib/containers/worktree \
-      -v /srv/rcargo/ci-cache:/srv/rcargo/ci-cache:ro \
+      -v $remote_root/ci-cache:$remote_root/ci-cache:ro \
       -v $src:'$local_path' -v $out:/out -v $bin:/usr/local/bin/tilo-vm:ro \
       -w '$local_path' -e TILO_LOCAL_TAG=wt-$key -e SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) \
       -e TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} \
       -e TILO_CARGO_BUILD_JOBS=32 -e TILO_DEV_CARGO_BUILD_JOBS=32 -e TILO_BUILD_ARGS='${TILO_BUILD_ARGS:-}' \
       -e TILO_ASSET_STORE=/var/lib/containers/tilo-external-assets -e TMPDIR=/var/lib/containers/tmp \
       -e TILO_IMAGE_SCCACHE_URL=https://code.tilo.so/ci-cache/r/tilo/tilo/ \
-      -e TILO_IMAGE_SCCACHE_TOKEN_FILE=/srv/rcargo/ci-cache/token \
-      $rcargo_image tilo-vm image build --out /out/tilo-vm"
+      -e TILO_IMAGE_SCCACHE_TOKEN_FILE=$remote_root/ci-cache/token \
+      $remote_image tilo-vm image build --out /out/tilo-vm"
   digest=$(on_builder "cat $out/tilo-vm/image.digest")
   # One copy per image (reflinks on the builder's XFS), named by its digest, so the next
   # build of this worktree does not replace what a disk was made from.
@@ -339,5 +343,5 @@ case $cmd in
   acceptance) cmd_acceptance "$@" ;;
   all) cmd_image; cmd_disk; cmd_acceptance "$@" ;;
   clean) cmd_clean "$@" ;;
-  *) note "unknown command $cmd"; sed -n '2,33p' "$0"; exit 2 ;;
+  *) note "unknown command $cmd"; sed -n '2,39p' "$0"; exit 2 ;;
 esac

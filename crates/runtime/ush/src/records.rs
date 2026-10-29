@@ -268,13 +268,32 @@ impl Records {
         invoker: &Invoker,
         act: impl FnOnce(&mut Replica<Environment>) -> Result<T, RecordError>,
     ) -> Result<T, RecordError> {
+        self.act_within(key, invoker, None, act)
+    }
+
+    /// [`Self::act`], with every action stamped as part of `run`: one
+    /// command line of a shell, attributed and undone as one.
+    ///
+    /// # Errors
+    /// As [`Self::act`].
+    pub fn act_within<T>(
+        &self,
+        key: &str,
+        invoker: &Invoker,
+        run: Option<&crate::broker::RunGroup>,
+        act: impl FnOnce(&mut Replica<Environment>) -> Result<T, RecordError>,
+    ) -> Result<T, RecordError> {
         let mut store = self.open(key)?;
         let doc =
             Self::load_current(&mut store)?.ok_or_else(|| RecordError::Missing(key.to_owned()))?;
         let replica = Replica::<Environment>::from_doc(doc);
-        let mut replica = match invoker {
+        let replica = match invoker {
             Invoker::Person(person) => replica.as_author(person),
             Invoker::Agent { agent, person } => replica.as_agent_for(agent, person),
+        };
+        let mut replica = match run {
+            Some(run) => replica.within_group(&run.id, &run.label, crate::broker::COMMAND_RUN),
+            None => replica,
         };
         replica.set_now_ms(tilo_clock::unix_now_ms_i64());
         let answer = act(&mut replica)?;

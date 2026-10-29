@@ -4,16 +4,11 @@
 //! Preferences the rest of the system reads (system sounds, night light,
 //! pointer behaviour, update policy), one typed section each.
 //!
-//! # The file (a format contract, not a crate dependency)
+//! # The document (a format contract, not a crate dependency)
 //!
-//! Preferences live in the **same** shared document the region store uses:
-//!
-//! ```text
-//! $XDG_CONFIG_HOME/tilo/session/settings.json   (falls back to ~/.config/tilo/session/settings.json)
-//! ```
-//!
-//! namespaced by domain so each section grows independently and unrelated
-//! writers never collide:
+//! Preferences live in the **same** settings document the region store uses
+//! (`settings_store::Store`), namespaced by domain so each section grows
+//! independently and unrelated writers never collide:
 //!
 //! ```json
 //! {
@@ -154,7 +149,7 @@ impl Default for DisplayPrefs {
 #[serde(default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
+    reason = "flat user-facing preferences record loaded from the settings; each bool is an \
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct InputPrefs {
@@ -1122,7 +1117,7 @@ impl AppearancePrefs {
 #[model(check = NotificationPrefs::valid, check_reads = "per_app", defaults)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
+    reason = "flat user-facing preferences record loaded from the settings; each bool is an \
               independently meaningful serialized setting, not a related toggle group"
 )]
 pub struct NotificationPrefs {

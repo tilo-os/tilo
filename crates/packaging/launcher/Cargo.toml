@@ -59,6 +59,9 @@ sha2.workspace = true
 hex.workspace = true
 tempfile.workspace = true
 tilo-paths.workspace = true
+# The MPRIS name a launched package's player requests, so the session-bus
+# filter grants that same name (`dbus_proxy::media_player_name`).
+tilo-process = { path = "../../platform/tilo-process" }
 # Where the files a person chose for the app are served (the paths only).
 tilo-documents.workspace = true
 fnv.workspace = true

@@ -72,6 +72,9 @@ pub struct SessionOptions {
     /// supervisor's, and the guest's shell gets this as its own. `None` when
     /// `ush` runs on a terminal of its own.
     pub terminal: Option<Arc<OwnedFd>>,
+    /// Which shell the guest runs: ush's own, or bash for a full Linux
+    /// session.
+    pub shell: tilo_environment::Shell,
 }
 
 impl Default for SessionOptions {
@@ -87,6 +90,7 @@ impl Default for SessionOptions {
                 .filter(|key| crate::runs::valid_key(key)),
             editor: None,
             terminal: None,
+            shell: tilo_environment::Shell::default(),
         }
     }
 }
@@ -142,31 +146,7 @@ pub fn runtime_binary() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
-/// The shell a guest hosts. The host's `$SHELL` is a hint: it is used when
-/// the images have it, else `/usr/bin/bash`, else `/usr/bin/sh`, so a session
-/// never fails to start over a preference.
-pub fn guest_shell(images: &[PathBuf]) -> PathBuf {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(s) = std::env::var_os("SHELL") {
-        let s = PathBuf::from(s);
-        // `/bin` is a link into `/usr/bin` in the guest; look where it points.
-        let in_usr = s
-            .strip_prefix("/bin")
-            .map_or_else(|_| s.clone(), |rest| Path::new("/usr/bin").join(rest));
-        candidates.push(in_usr);
-    }
-    candidates.push(PathBuf::from("/usr/bin/bash"));
-    candidates.push(PathBuf::from("/usr/bin/sh"));
-    for c in &candidates {
-        let Ok(relative) = c.strip_prefix("/") else {
-            continue;
-        };
-        if images.iter().any(|image| image.join(relative).exists()) {
-            return c.clone();
-        }
-    }
-    PathBuf::from("/bin/sh")
-}
+pub use crate::shell_start::guest_shell;
 
 /// One session, built and torn down.
 pub struct Session {
@@ -311,12 +291,14 @@ impl Session {
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         let runtime_bin = runtime_binary()?;
         let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
-        let shell = guest_shell(&images);
-        let runs = self
-            .opts
-            .runs
-            .clone()
-            .filter(|_| self.opts.command.is_empty() && crate::runs::is_bash(&shell));
+        let shell = match self.opts.shell {
+            tilo_environment::Shell::Ush => crate::shell_host::guest_shell_path(),
+            tilo_environment::Shell::Linux => guest_shell(&images),
+        };
+        let runs = self.opts.runs.clone().filter(|_| {
+            self.opts.command.is_empty()
+                && (crate::runs::is_bash(&shell) || crate::shell_host::is_ush(&shell))
+        });
         Ok(GuestPlan {
             shell,
             runs,
@@ -1024,6 +1006,7 @@ fn open_environment(
 ) -> anyhow::Result<Served> {
     let record = record.to_owned();
     let ServeRequest::OpenSession {
+        target,
         cols,
         rows,
         term,
@@ -1035,6 +1018,10 @@ fn open_environment(
     } = req
     else {
         return Ok(Served::Done);
+    };
+    let shell = match target {
+        Target::Environment { shell, .. } => shell,
+        Target::Host => tilo_environment::Shell::Linux,
     };
     let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
@@ -1059,6 +1046,7 @@ fn open_environment(
         command: &command,
         runs: runs.as_deref(),
         editor: editor.as_ref().map(|(_, supervisor)| supervisor),
+        shell,
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
@@ -1565,6 +1553,7 @@ fn serve_relay(
             Target::Environment {
                 record,
                 location: tilo_environment::Location::Relay { relay },
+                ..
             },
         cols,
         rows,
@@ -1869,6 +1858,7 @@ struct Launch<'a> {
     /// The key the session's shell marks its runs with.
     runs: Option<&'a str>,
     editor: Option<&'a runtime_portal::editor::Socket>,
+    shell: tilo_environment::Shell,
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -1888,6 +1878,10 @@ fn spawn_attached(
     if let Some(record) = launch.environment {
         cmd.arg("--environment").arg(record);
     }
+    cmd.arg("--shell").arg(match launch.shell {
+        tilo_environment::Shell::Ush => "ush",
+        tilo_environment::Shell::Linux => "linux",
+    });
     cmd.arg("--host-root").arg(launch.host_root);
     // Held until the spawn: the editor endpoint, moved off the descriptor
     // the terminal takes in the child.
@@ -2545,6 +2539,7 @@ mod tests {
             decide_serve(&open(Target::Environment {
                 record: Some("work".into()),
                 location: tilo_environment::Location::ThisDevice,
+                shell: tilo_environment::Shell::Linux,
             })),
             Ok(Some("work".into()))
         );
@@ -2583,6 +2578,7 @@ mod tests {
         let err = decide_serve(&open(Target::Environment {
             record: Some("../../etc".into()),
             location: tilo_environment::Location::ThisDevice,
+            shell: tilo_environment::Shell::Linux,
         }))
         .unwrap_err();
         assert!(err.contains("does not name"), "{err}");
@@ -2804,7 +2800,23 @@ mod tests {
             session.store.environment_home(DEFAULT_RECORD)
         );
         assert_eq!(plan.var_dir, session.store.environment_var(DEFAULT_RECORD));
-        assert_eq!(plan.shell, PathBuf::from("/usr/bin/bash"));
+        // A new session runs ush's own shell; a full Linux session bash.
+        assert_eq!(plan.shell, crate::shell_host::guest_shell_path());
+        let mut linux = session.opts.clone();
+        linux.shell = tilo_environment::Shell::Linux;
+        let bash = Session::new(
+            session.store.clone(),
+            linux,
+            Arc::clone(&session.images),
+            Arc::clone(&session.builder),
+        )
+        .plan(
+            &resolved,
+            PathBuf::from("/tmp/b.sock"),
+            PathBuf::from("/tmp/f.bpf"),
+        )
+        .unwrap();
+        assert_eq!(bash.shell, PathBuf::from("/usr/bin/bash"));
         assert_eq!(plan.environment, tilo_environment::DEFAULT_NAME);
         assert!(
             plan.masked

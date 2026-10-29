@@ -1729,7 +1729,7 @@ mod tests {
     #[test]
     fn sample_area_rows_do_not_wait_for_workers() {
         let profile = tempfile::tempdir().unwrap();
-        let area = SpeakersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        let area = SpeakersArea::new(&PaneCx::in_profile(profile.path().to_path_buf()));
         assert_eq!(
             area.rows().len(),
             1,
@@ -1819,7 +1819,7 @@ mod tests {
     fn model(service: Arc<FakeService>) -> SpeakersModel {
         let profile = tempfile::tempdir().unwrap();
         SpeakersModel::new(
-            PaneCx::in_file(profile.path().join("settings.json")),
+            PaneCx::in_profile(profile.path().to_path_buf()),
             service,
             false,
         )

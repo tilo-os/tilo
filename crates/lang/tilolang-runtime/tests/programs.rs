@@ -36,7 +36,7 @@ mod cases {
         todo.load(&rt);
         notes_app.load(&rt);
         let list = rt.create("TodoList").unwrap();
-        let nb = rt.create("Notebook").unwrap();
+        let nb = rt.create("Notes").unwrap();
         let mut notes = Vec::new();
         let mut titled = Vec::new();
         for title in ["Launch video script", "Groceries", "Launch checklist"] {

@@ -267,6 +267,46 @@ logs: `ush run`'s own log, `bwrap`'s refusals, a library's warning, and the
 guest's first process makes the terminal its standard error just before it
 starts the shell.
 
+## The session's shell
+
+A new Terminal session runs ush's own shell, `ush-sh` on the guest's `PATH`
+(`tilo-ush sh`; [`ush-shell`](../../crates/runtime/ush-shell/src/lib.rs),
+with this device as its host in
+[`ush::shell_host`](../../crates/runtime/ush/src/shell_host.rs)). It is a
+shell interpreter in Rust: POSIX sh, and the bash features people use
+(arrays, `[[ ]]`, `local`, `$'…'`, `${x//a/b}`, brace expansion, `mapfile`).
+A feature it does not have (background jobs with `&`, process substitution,
+`coproc`, `time`, `trap … ERR`, extended globs) is refused by name and stops
+the script, so nothing that relied on it goes on without it. See
+[`ush-portable.md`](ush-portable.md) for where it is going.
+
+Each command resolves to a function, one of the shell's built-ins, one of
+Tilo's own commands, or a program:
+
+- **Tilo's own commands** run in the shell's process. `ls cat head tail wc
+  stat find grep diff tree sort uniq cut tr seq printf echo test pwd cd` and
+  the like read through the guest's file system, which holds exactly what
+  the record granted. The file commands (`cp mv rm mkdir rmdir ln truncate
+  touch append`) are the environment's actions, sent to the broker the way
+  the guest's own `cp` sends them. A pipe between two of these is a pipe in
+  memory.
+- **Anything else** runs in the guest, as it did under bash. Where the shell
+  runs without a guest under it, such a command says it needs a WebAssembly
+  tool (tier 2) or a Linux place (tier 3), which are still to come.
+
+The shell marks its runs itself, with the marks below, so the run records
+are the same whichever shell a session runs. It reads `~/.ushrc` when it
+starts interactively; it does not read bash's files. Lines are read as the
+terminal's line discipline hands them over: there is no line editor or
+history recall in it yet.
+
+**A full Linux session** is still there: Terminal's target picker has
+"Shell: Linux (bash)" for the current environment, and `linux` or
+`linux:<record>` names one in a `run`'s or an agent's target. The target
+carries the choice (`"shell":"linux"` in `open-session`; a target that names
+none runs ush's shell), so a session reopens in the shell it ran. An
+environment on a relay runs bash there for now.
+
 ## Command runs
 
 Terminal records what a session **ran**, not what its screen showed. A
@@ -288,7 +328,8 @@ marks its runs with, chosen by Terminal for that session:
 {"op":"open-session","target":{"kind":"environment"},"runs":"3f6c…"}
 ```
 
-`runs` is 16 to 64 letters and digits. An interactive session's shell starts
+`runs` is 16 to 64 letters and digits. ush's own shell writes the marks
+itself. Otherwise an interactive session's shell starts
 the same way on the Host and in a guest: as the session's login shell. A
 `bash` starts on an rc file of `ush`'s own (`/run/ush/shell.bash` in a guest)
 that runs what must come before the person's files (the native editor's
@@ -554,7 +595,9 @@ two people editing one document at once is the CRDT's own collaboration.
 ## Commands
 
 ```
-ush [-c COMMAND] [-v] [--environment RECORD]   a shell in an environment
+ush [-c COMMAND] [-v] [--environment RECORD] [--shell ush|linux]
+                                                a shell in an environment
+ush-sh [-c SCRIPT | FILE] [-i]                  ush's own shell, in a guest
 tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 
 pkg install PKG…     pkg remove PKG…     pkg list
@@ -660,7 +703,7 @@ included — without being built again:
 ## Verifying it yourself
 
 ```bash
-cargo test -p ush -p tilo-environment -p tilo-egress   # unit + integration
+cargo test -p ush -p ush-shell -p tilo-environment -p tilo-egress   # unit + integration
 ```
 
 The integration test builds a real guest from fixture images — a runtime whose

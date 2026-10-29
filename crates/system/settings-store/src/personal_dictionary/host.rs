@@ -85,13 +85,6 @@ impl SettingsSource for Host {
     ) -> std::io::Result<()> {
         self.source.update_section_with(name, origin, change)
     }
-    fn update_section_report(
-        &self,
-        name: &str,
-        values: Map<String, Value>,
-    ) -> std::io::Result<crate::ConditionalUpdate> {
-        self.source.update_section_report(name, values)
-    }
     fn compare_update_section(
         &self,
         name: &str,

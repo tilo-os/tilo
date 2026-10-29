@@ -59,7 +59,7 @@ fn one_clip() -> (Project, Uuid) {
 
 /// Write `p` and read it straight back — the round trip every peer makes.
 fn round_trip(p: &Project) -> Project {
-    Project::read(&crate::seed::document_of(p)).unwrap()
+    Project::read(&crate::resource::document_of(p)).unwrap()
 }
 
 #[test]
@@ -963,7 +963,7 @@ fn replacing_the_project_removes_what_the_new_one_lacks_and_keeps_shared_ids() {
         .unwrap();
     let after = replica.state().unwrap();
     assert_eq!(after, replica.state_at(&heads).unwrap());
-    let text = crate::seed::document_of(&sample);
+    let text = crate::resource::document_of(&sample);
     assert_eq!(Project::read(&text).unwrap(), after);
 }
 

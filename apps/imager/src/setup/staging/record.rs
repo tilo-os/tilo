@@ -165,8 +165,8 @@ impl Record {
         self.step(step)?.detail.get(key)?.as_str()
     }
 
-    fn resize_key(phase: super::btrfs_resize::Phase) -> (Step, &'static str) {
-        use super::btrfs_resize::Phase;
+    fn resize_key(phase: imager_backend::staging::btrfs_resize::Phase) -> (Step, &'static str) {
+        use imager_backend::staging::btrfs_resize::Phase;
         match phase {
             Phase::ShrinkFilesystem => (Step::Shrink, "btrfs_shrink_filesystem"),
             Phase::ShrinkPartition => (Step::Shrink, "btrfs_shrink_partition"),
@@ -177,7 +177,7 @@ impl Record {
 
     pub(super) fn resize_checkpoint(
         &self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
     ) -> Result<Option<ResizeCheckpoint>, String> {
         let (step, key) = Self::resize_key(phase);
         self.step(step)
@@ -190,7 +190,7 @@ impl Record {
     /// Retry may preserve a Done checkpoint; it may never change its target.
     pub(super) fn resize_intent(
         &mut self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), String> {
         let (step, key) = Self::resize_key(phase);
@@ -220,7 +220,7 @@ impl Record {
 
     pub(super) fn resize_done(
         &mut self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), String> {
         let (step, key) = Self::resize_key(phase);
@@ -250,10 +250,10 @@ impl Record {
 
     fn validate_resize_target(
         &self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), String> {
-        use super::btrfs_resize::Phase;
+        use imager_backend::staging::btrfs_resize::Phase;
         let shrink = self
             .plan
             .shrink
@@ -272,7 +272,7 @@ impl Record {
     }
 
     fn validate_resize_checkpoints(&self) -> Result<(), String> {
-        use super::btrfs_resize::Phase;
+        use imager_backend::staging::btrfs_resize::Phase;
         for phase in [
             Phase::ShrinkFilesystem,
             Phase::ShrinkPartition,
@@ -379,7 +379,7 @@ impl Record {
         super::handoff::validate_profile(&self.profile)?;
         if let Some(expected) = &self.prepared_setup
             && (!expected.valid()
-                || expected.sealed_bytes > super::prepared_setup::SLOT_BYTES
+                || expected.sealed_bytes > imager_backend::staging::prepared_setup::SLOT_BYTES
                 || self.plan.basis.host_os() != super::plan::HostOs::Linux)
         {
             return Err("invalid prepared setup custody in staging record".into());
@@ -401,7 +401,7 @@ impl Record {
             }
             #[cfg(target_os = "linux")]
             {
-                let migration = crate::setup::migration_handoff::Plan::parse(
+                let migration = imager_backend::setup::migration_handoff::Plan::parse(
                     &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
                 )
                 .map_err(|error| error.to_string())?;
@@ -467,7 +467,8 @@ impl RecordStore {
         bytes: &[u8],
         expected: &crate::model::PreparedSetupExpectation,
     ) -> Result<(), String> {
-        super::prepared_setup::verify(bytes, expected).map_err(|error| error.to_string())?;
+        imager_backend::staging::prepared_setup::verify(bytes, expected)
+            .map_err(|error| error.to_string())?;
         secure::ensure_dir(&self.dir, false)?;
         let path = self.prepared_path(id)?;
         match std::fs::symlink_metadata(&path) {
@@ -609,6 +610,9 @@ pub fn pending_in(dir: &Path) -> Vec<Record> {
 pub use imager_backend::staging::record_io::write_atomic;
 use imager_backend::staging::record_io::{read_bounded, secure};
 
+#[cfg(all(test, target_os = "linux", feature = "installation"))]
+mod migration_handoff_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,7 +648,7 @@ mod tests {
 
     #[test]
     fn btrfs_resize_journal_requires_durable_order_and_preserves_retry_intent() {
-        use crate::setup::staging::btrfs_resize::Phase;
+        use imager_backend::staging::btrfs_resize::Phase;
         let temp = tempfile::tempdir().unwrap();
         let store = RecordStore {
             dir: temp.path().join("private"),
@@ -657,7 +661,7 @@ mod tests {
             from_bytes: 128 << 30,
             to_bytes: 64 << 30,
         });
-        record.plan.basis.linux_btrfs_volume = Some(super::super::platform::LinuxBtrfsVolume {
+        record.plan.basis.linux_btrfs_volume = Some(imager_backend::platform::LinuxBtrfsVolume {
             partition_guid: "a".repeat(36),
             filesystem_uuid: "b".repeat(36),
             device_id: 1,

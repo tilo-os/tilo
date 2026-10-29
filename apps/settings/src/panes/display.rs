@@ -365,7 +365,7 @@ pub const DISPLAY_SCALES: &[(&str, f64)] = &[
 
 /// Map a scale factor to the closest offered label (defaults to "100%").
 pub(crate) fn scale_label(scale: f64) -> &'static str {
-    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
+    // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited setting
     // could hold a non-finite scale, and this must degrade to "100%" rather
     // than panic the pane.
     DISPLAY_SCALES

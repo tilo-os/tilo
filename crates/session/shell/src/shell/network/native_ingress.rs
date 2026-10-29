@@ -501,8 +501,10 @@ impl ShellNetwork {
     }
 
     /// Ask `room`'s host to replay what it retains, for app messages this
-    /// device let go before what they waited for arrived.
-    pub(super) fn request_native_replay(&self, room: RoomId) {
+    /// device let go before what they waited for arrived, or let go live
+    /// because their writer sealed them before catching up with the
+    /// channel's latest membership change.
+    pub(crate) fn request_native_replay(&self, room: RoomId) {
         let _ = self.cmd_tx.try_send(NetCmd::NativeReplay {
             ws: room_topic_id(room),
         });

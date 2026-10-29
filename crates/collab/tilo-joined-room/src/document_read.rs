@@ -194,13 +194,12 @@ impl NativeCommittedView {
         let limits = PeerLimits::default();
         #[cfg(test)]
         ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
-        let (governor, revocations) = self.record.current_governor(now);
         let restored = BoundedStatePeer::restore(
             &self.record.peer,
             &self.record.room.to_string(),
-            &governor,
+            &self.record.governor,
             std::slice::from_ref(&self.record.device),
-            &revocations,
+            &tilo_user_identity::RevocationList::new(),
             now,
             &limits,
         )

@@ -325,14 +325,17 @@ fn gateway(work: &Path, url: &str, model: &str) -> (Child, PathBuf) {
     profile.endpoint = url.into();
     profile.location = EndpointLocation::ThisDevice;
     profile.models = vec![ModelDescriptor::new(model)];
-    let settings = work.join("settings.json");
+    // Written and let go before the gateway starts, which follows them.
+    let settings = settings_store::Store::open(&work.join("config/tilo")).unwrap();
     ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
         ..Default::default()
     }
-    .save_at(&settings)
+    .save_in(&settings)
     .unwrap();
+    settings_store::SettingsSource::flush_pending(&settings);
+    drop(settings);
     let socket = work.join("gateway.sock");
     let child = Command::new(env_path("TILO_E2E_GATEWAY"))
         .arg("serve")
@@ -342,7 +345,6 @@ fn gateway(work: &Path, url: &str, model: &str) -> (Child, PathBuf) {
         .env("HOME", work)
         .env("XDG_CONFIG_HOME", work.join("config"))
         .env("XDG_RUNTIME_DIR", work)
-        .env("TILO_SESSION_SETTINGS", &settings)
         .stdin(Stdio::null())
         .spawn()
         .unwrap();

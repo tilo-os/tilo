@@ -344,18 +344,22 @@ pub fn verify_room(
     }
     let before = prior.map(|prior| &prior.doc);
     let pinned = hex::encode(source);
+    let owner = authority.governor().user_public_key;
     // The governor wrote it, so this is the room admission every receiver
-    // runs, from the governor: room, layout, receipts, coverage,
-    // durability and media.
+    // runs, from one of the owner's devices: room, layout, receipts,
+    // coverage, durability and media.
     tilo_peer_state::room::check_candidate(
         &tilo_peer_state::room::RoomAdmission {
             before,
             room: authority.room(),
             source: tilo_peer_state::room::Writer {
                 key: &pinned,
-                standing: tilo_peer_state::room::Standing::TransportAuthorized,
+                standing: tilo_peer_state::room::Standing::Member {
+                    person: owner,
+                    foreign: false,
+                },
             },
-            authority: tilo_peer_state::room::AuthorityPin::Device(&pinned),
+            owner: &owner,
             now_ns: 0,
         },
         &doc,

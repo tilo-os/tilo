@@ -6,11 +6,13 @@ pub(in crate::setup) mod delivery_retirement;
 #[cfg(test)]
 #[path = "prepared_media/native_retained.rs"]
 pub(crate) mod native_retained;
-use super::super::{
-    media_setup::{DeliveryReceipt, MediaFilesystemGrant, PreparedSetupDelivery},
-    portable_transfer::{ExportReview, Purpose},
+use super::super::media_setup::{DeliveryReceipt, MediaFilesystemGrant, PreparedSetupDelivery};
+use imager_backend::{
     prepared_identity::PreparedIdentity,
-    prepared_setup::{self, Manifest},
+    setup::{
+        portable_transfer::{ExportReview, Purpose},
+        prepared_setup::{self, Manifest},
+    },
 };
 use std::{
     io::{self, Write},
@@ -40,7 +42,7 @@ impl TaskProgress {
         }
     }
     fn report(&self, key: &'static str) -> io::Result<()> {
-        super::super::migration::check_cancel(&self.cancel)?;
+        imager_backend::migration::check_cancel(&self.cancel)?;
         *self
             .phase
             .lock()
@@ -57,10 +59,10 @@ impl TaskProgress {
     }
     fn archive(
         &self,
-        progress: super::super::portable_transfer::ArchiveProgress,
+        progress: imager_backend::setup::portable_transfer::ArchiveProgress,
     ) -> io::Result<()> {
-        use super::super::portable_transfer::ArchivePhase;
-        super::super::migration::check_cancel(&self.cancel)?;
+        use imager_backend::setup::portable_transfer::ArchivePhase;
+        imager_backend::migration::check_cancel(&self.cancel)?;
         let key = match progress.phase {
             ArchivePhase::Archiving => "installer-media-phase-archive",
             ArchivePhase::VerifyingArchive => "installer-media-phase-archive-verify",
@@ -113,7 +115,7 @@ pub(crate) struct Delivery {
     cancel: Option<Arc<AtomicBool>>,
     receipt: Option<DeliveryReceipt>,
     awaiting_setup_receipt: Option<DeliveryReceipt>,
-    home_receipt: Option<super::super::portable_home_media::Expectation>,
+    home_receipt: Option<imager_backend::setup::portable_home_media::Expectation>,
     state: &'static str,
     task: Option<TaskProgress>,
     shown_phase: Option<ui::framework::JobProgress>,
@@ -183,7 +185,7 @@ impl Delivery {
         self.state = "delivering";
         self.joined = Some(std::thread::spawn(move || {
             let result = (|| {
-                let media = super::super::portable_home_media::MediaGrant::open(&root)?;
+                let media = imager_backend::setup::portable_home_media::MediaGrant::open(&root)?;
                 artifact.home.as_ref().unwrap().lock().unwrap().deliver(
                     &media,
                     &AtomicBool::new(false),
@@ -488,9 +490,10 @@ impl Delivery {
                 self.state = "awaiting-offline-export";
             }
             Err(error)
-                if super::super::portable_home_media::source_review_error(&error).is_some() =>
+                if imager_backend::setup::portable_home_media::source_review_error(&error)
+                    .is_some() =>
             {
-                self.state = if super::super::portable_home_media::source_changed(&error) {
+                self.state = if imager_backend::setup::portable_home_media::source_changed(&error) {
                     "source-changed"
                 } else {
                     "source-unavailable"
@@ -561,8 +564,8 @@ impl Controller {
         let (finish, finishing) = std::sync::mpsc::channel();
         let (sender, receiver) = std::sync::mpsc::channel();
         let task = TaskProgress::new();
-        task.archive(super::super::portable_transfer::ArchiveProgress {
-            phase: super::super::portable_transfer::ArchivePhase::Archiving,
+        task.archive(imager_backend::setup::portable_transfer::ArchiveProgress {
+            phase: imager_backend::setup::portable_transfer::ArchivePhase::Archiving,
             completed: 4096,
             total: Some(8192),
         })
@@ -572,7 +575,7 @@ impl Controller {
         self.worker = Some(receiver);
         self.joined = Some(std::thread::spawn(move || {
             probed.recv().unwrap();
-            let error = super::super::migration::check_cancel(&task.cancel).unwrap_err();
+            let error = imager_backend::migration::check_cancel(&task.cancel).unwrap_err();
             receipt.send(error.kind()).unwrap();
             finishing.recv().unwrap();
             std::fs::remove_file(scratch).unwrap();
@@ -612,9 +615,10 @@ impl Controller {
         self.task = Some(task.clone());
         self.joined = Some(std::thread::spawn(move || {
             let binding = uuid::Uuid::new_v4().to_string();
-            let runner = super::super::flatpak_transfer::portable::CancellableOfflineRunner(
-                task.cancel.clone(),
-            );
+            let runner =
+                imager_backend::setup::flatpak_transfer::portable::CancellableOfflineRunner(
+                    task.cancel.clone(),
+                );
             let result = PreparedMedia::prepare_with_work(
                 &identity,
                 accounts,
@@ -634,7 +638,7 @@ impl Controller {
     pub fn review_computer_belongings(
         &mut self,
         prepared: Arc<PreparedMedia>,
-        intent: super::super::migration_intent::MigrationIntent,
+        intent: imager_backend::setup::migration_intent::MigrationIntent,
         target_bytes: u64,
     ) -> Result<(), &'static str> {
         if self.busy() {
@@ -660,7 +664,7 @@ impl Controller {
             let result = (|| {
                 task.report("installer-media-phase-review")?;
                 let facts = super::super::staging::capacity_probe::review_with_cancel(&task.cancel);
-                super::super::migration::check_cancel(&task.cancel)?;
+                imager_backend::migration::check_cancel(&task.cancel)?;
                 let basis = facts
                     .basis
                     .as_ref()
@@ -713,7 +717,7 @@ impl Controller {
                 // a ready export, even if its ciphertext was already produced.
                 let current =
                     super::super::staging::capacity_probe::review_with_cancel(&task.cancel);
-                super::super::migration::check_cancel(&task.cancel)?;
+                imager_backend::migration::check_cancel(&task.cancel)?;
                 if current.basis.as_ref() != Some(basis) {
                     return Err(io::Error::other(
                         "System disk changed during preparation review",
@@ -830,9 +834,10 @@ impl Controller {
                 Some(Ok(prepared))
             }
             Err(error)
-                if super::super::portable_home_media::source_review_error(&error).is_some() =>
+                if imager_backend::setup::portable_home_media::source_review_error(&error)
+                    .is_some() =>
             {
-                let reason = if super::super::portable_home_media::source_changed(&error) {
+                let reason = if imager_backend::setup::portable_home_media::source_changed(&error) {
                     ReturnReason::ReviewedHomeChanged
                 } else {
                     ReturnReason::ReviewedHomeUnavailable
@@ -842,7 +847,7 @@ impl Controller {
             }
             Err(error)
                 if error.get_ref().is_some_and(|inner| {
-                    inner.is::<super::super::service_sessions::source::SourceError>()
+                    inner.is::<imager_backend::setup::service_sessions::source::SourceError>()
                 }) =>
             {
                 self.state = "session-reconnect";
@@ -916,13 +921,13 @@ mod recovery_tests;
 struct PreparedBrowser {
     source: super::browser::SelectedSources,
     plan: imager_backend::browser_selection::Plan,
-    expectation: super::super::browser_transfer::Expectation,
-    archive: Mutex<super::super::portable_transfer::ImportReview>,
+    expectation: imager_backend::setup::browser_transfer::Expectation,
+    archive: Mutex<imager_backend::setup::portable_transfer::ImportReview>,
 }
 struct PreparedApplications {
-    source: Arc<super::super::flatpak_transfer::portable::PortableFlatpakSource>,
-    expectation: super::super::flatpak_transfer::portable::Expectation,
-    archive: Mutex<super::super::portable_transfer::ImportReview>,
+    source: Arc<imager_backend::setup::flatpak_transfer::portable::PortableFlatpakSource>,
+    expectation: imager_backend::setup::flatpak_transfer::portable::Expectation,
+    archive: Mutex<imager_backend::setup::portable_transfer::ImportReview>,
 }
 pub(crate) struct NativePreparedMedia {
     _custody: imager_backend::session::BackendSession,
@@ -933,11 +938,17 @@ pub(crate) struct NativePreparedMedia {
     reserved_data_bytes: AtomicU64,
     expectation: imager_backend::imager_model::PreparedSetupExpectation,
     install_profile: Option<prepared_setup::PublicInstallProfile>,
-    retained: Option<super::super::migration_intent::MigrationIntent>,
-    pending_applications_intent: Option<super::super::migration_intent::MigrationIntent>,
+    retained: Option<imager_backend::setup::migration_intent::MigrationIntent>,
+    pending_applications_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     home: Option<Arc<Mutex<HomePreparation>>>,
-    home_preview:
-        Arc<Mutex<Option<(super::super::portable_transfer::ExportSummary, &'static str)>>>,
+    home_preview: Arc<
+        Mutex<
+            Option<(
+                imager_backend::setup::portable_transfer::ExportSummary,
+                &'static str,
+            )>,
+        >,
+    >,
     applications: Option<Arc<PreparedApplications>>,
     browser: Option<Arc<PreparedBrowser>>,
     manifest: Manifest,
@@ -957,19 +968,19 @@ pub(crate) struct NativePreparedMedia {
     other_device: Option<imager_backend::setup::other_device::HandoffIdentity>,
 }
 struct HomePreparation {
-    source: Arc<super::super::portable_home_media::HomeSource>,
+    source: Arc<imager_backend::setup::portable_home_media::HomeSource>,
     password: Zeroizing<Vec<u8>>,
     binding: String,
-    receipt: Option<super::super::portable_home_media::Expectation>,
+    receipt: Option<imager_backend::setup::portable_home_media::Expectation>,
     reservation: u64,
 }
 impl HomePreparation {
     fn deliver(
         &mut self,
-        media: &super::super::portable_home_media::MediaGrant,
+        media: &imager_backend::setup::portable_home_media::MediaGrant,
         cancel: &AtomicBool,
-        observer: &mut super::super::portable_transfer::Observer<'_>,
-    ) -> io::Result<super::super::portable_home_media::Expectation> {
+        observer: &mut imager_backend::setup::portable_transfer::Observer<'_>,
+    ) -> io::Result<imager_backend::setup::portable_home_media::Expectation> {
         if let Some(receipt) = &self.receipt {
             self.source.validate_existing_reporting(
                 media,
@@ -1006,7 +1017,7 @@ pub(in crate::setup) struct AwaitingOfflineExport {
 enum Delivered {
     Complete {
         setup: DeliveryReceipt,
-        home: Option<super::super::portable_home_media::Expectation>,
+        home: Option<imager_backend::setup::portable_home_media::Expectation>,
     },
     AwaitingOfflineExport(AwaitingOfflineExport),
 }
@@ -1039,7 +1050,7 @@ impl PreparedMedia {
     pub(in crate::setup) fn prepare_with_home(
         identity: &PreparedIdentity,
         accounts: Option<super::accounts::PreparedAccounts>,
-        home: Option<Arc<super::super::portable_home_media::HomeSource>>,
+        home: Option<Arc<imager_backend::setup::portable_home_media::HomeSource>>,
         password: Zeroizing<String>,
         binding: String,
     ) -> io::Result<Arc<Self>> {
@@ -1058,7 +1069,7 @@ impl PreparedMedia {
     pub(in crate::setup) fn prepare_for_install(
         identity: &PreparedIdentity,
         accounts: Option<super::accounts::PreparedAccounts>,
-        home: Option<Arc<super::super::portable_home_media::HomeSource>>,
+        home: Option<Arc<imager_backend::setup::portable_home_media::HomeSource>>,
         password: Zeroizing<String>,
         binding: String,
         profile: Option<prepared_setup::PublicInstallProfile>,
@@ -1069,8 +1080,8 @@ impl PreparedMedia {
     pub(in crate::setup) fn prepare_with_migration(
         identity: &PreparedIdentity,
         accounts: Option<super::accounts::PreparedAccounts>,
-        home: Option<Arc<super::super::portable_home_media::HomeSource>>,
-        retained: Option<super::super::migration_intent::MigrationIntent>,
+        home: Option<Arc<imager_backend::setup::portable_home_media::HomeSource>>,
+        retained: Option<imager_backend::setup::migration_intent::MigrationIntent>,
         password: Zeroizing<String>,
         binding: String,
         profile: Option<prepared_setup::PublicInstallProfile>,
@@ -1112,7 +1123,7 @@ impl PreparedMedia {
             password,
             binding,
             profile,
-            &super::super::flatpak_transfer::portable::NativeOfflineRunner,
+            &imager_backend::setup::flatpak_transfer::portable::NativeOfflineRunner,
         )
     }
     #[cfg(test)]
@@ -1123,7 +1134,7 @@ impl PreparedMedia {
         password: Zeroizing<String>,
         binding: String,
         profile: Option<prepared_setup::PublicInstallProfile>,
-        runner: &impl super::super::flatpak_transfer::portable::OfflineRunner,
+        runner: &impl imager_backend::setup::flatpak_transfer::portable::OfflineRunner,
     ) -> io::Result<Arc<Self>> {
         Self::prepare_with_work(
             identity,
@@ -1145,7 +1156,10 @@ impl PreparedMedia {
         password: Zeroizing<String>,
         binding: String,
         profile: Option<prepared_setup::PublicInstallProfile>,
-        work: &PreparationWork<'_, impl super::super::flatpak_transfer::portable::OfflineRunner>,
+        work: &PreparationWork<
+            '_,
+            impl imager_backend::setup::flatpak_transfer::portable::OfflineRunner,
+        >,
     ) -> io::Result<Arc<Self>> {
         work.progress.report("installer-media-phase-review")?;
         let cancel = &*work.progress.cancel;
@@ -1226,7 +1240,8 @@ impl PreparedMedia {
                 // Whole-Home Copy stays in the retained native intent until the
                 // actual staging operation is registered and password-sealed.
                 if plan.categories.home
-                    && plan.home_policy == super::super::migration_handoff::HomePolicy::Copy
+                    && plan.home_policy
+                        == imager_backend::setup::migration_handoff::HomePolicy::Copy
                 {
                     Ok(None)
                 } else {
@@ -1239,7 +1254,7 @@ impl PreparedMedia {
             let source = home.as_plan();
             source.categories.home
                 && source.home_policy
-                    == super::super::migration_handoff::HomePolicy::AccessReadWrite
+                    == imager_backend::setup::migration_handoff::HomePolicy::AccessReadWrite
         }) {
             // Original writable Files consent is independent of Apps copying.
             // The canonical owner/root exchange binds even a Files-only setup.
@@ -1299,7 +1314,7 @@ impl PreparedMedia {
                 .map_err(|_| io::Error::other("Selected accounts could not be prepared"))?;
         }
         if !account_ids.is_empty() {
-            if super::super::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
+            if imager_backend::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
                 &tree.join(prepared_setup::ACCOUNTS_FILE),
                 password.as_bytes(),
                 binding.as_bytes(),
@@ -1369,7 +1384,7 @@ impl PreparedMedia {
         if let Some(intent) = &retained {
             let plan = intent.for_media()?;
             let expected = if plan.categories.home
-                && plan.home_policy == super::super::migration_handoff::HomePolicy::Copy
+                && plan.home_policy == imager_backend::setup::migration_handoff::HomePolicy::Copy
             {
                 None
             } else {
@@ -1540,7 +1555,7 @@ impl PreparedMedia {
                 "Offline export medium has insufficient reserved capacity",
             ));
         }
-        super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         if let Some(apps) = &self.applications {
             let mut archive = apps
                 .archive
@@ -1587,14 +1602,14 @@ impl PreparedMedia {
         &self,
         destination: &std::path::Path,
         cancel: &AtomicBool,
-    ) -> io::Result<super::super::portable_transfer::PackageInfo> {
+    ) -> io::Result<imager_backend::setup::portable_transfer::PackageInfo> {
         use std::os::fd::AsRawFd;
         self.validate_for_write(cancel)?;
-        let parent = super::super::migration::PinnedDirectory::open_absolute(
+        let parent = imager_backend::migration::PinnedDirectory::open_absolute(
             destination.parent().ok_or(io::ErrorKind::InvalidInput)?,
         )?;
         parent.validate_destination()?;
-        super::super::destination_security::check_private_file(&parent.file)?;
+        imager_backend::destination_security::check_private_file(&parent.file)?;
         if let Some(source) = &self.retained {
             source.validate_artifact_destination(&parent)?;
         }
@@ -1624,7 +1639,7 @@ impl PreparedMedia {
         temporary
             .persist_noclobber(held_parent.join(name))
             .map_err(|error| error.error)?;
-        super::super::migration_durability::sync_directory(&parent.file)?;
+        imager_backend::migration_durability::sync_directory(&parent.file)?;
         parent.validate_destination()?;
         self.validate_for_write(cancel)?;
         Ok(info)
@@ -1634,7 +1649,7 @@ impl PreparedMedia {
         &self,
         identity: &PreparedIdentity,
         profile: &prepared_setup::PublicInstallProfile,
-        migration: Option<&super::super::migration_intent::MigrationIntent>,
+        migration: Option<&imager_backend::setup::migration_intent::MigrationIntent>,
     ) -> bool {
         self.public_key == identity.public_key()
             && self.install_profile.as_ref() == Some(profile)
@@ -1772,7 +1787,7 @@ impl PreparedMedia {
                     .map_err(|_| io::Error::other("Browser custody unavailable"))?
                     .verify_held_ciphertext(cancel)?;
             }
-            super::super::migration::check_cancel(cancel)?;
+            imager_backend::migration::check_cancel(cancel)?;
             return Ok(());
         }
         if let Some(pending) = &self.manifest.offline_home {
@@ -1801,7 +1816,7 @@ impl PreparedMedia {
                 let latest = home.source.review_latest(cancel)?;
                 let reservation = latest.sealed_reservation()?;
                 let total = self.capacity_with_home(reservation)?;
-                super::super::migration::check_cancel(cancel)?;
+                imager_backend::migration::check_cancel(cancel)?;
                 let summary = latest.summary()?;
                 let mut preview = self
                     .home_preview
@@ -1865,7 +1880,7 @@ impl PreparedMedia {
         &self,
         grant: &MediaFilesystemGrant,
         cancel: &AtomicBool,
-        observer: &mut super::super::portable_transfer::Observer<'_>,
+        observer: &mut imager_backend::setup::portable_transfer::Observer<'_>,
     ) -> io::Result<DeliveryReceipt> {
         if let Some(intent) = &self.retained {
             intent.for_media()?;
@@ -1920,7 +1935,7 @@ impl PreparedMedia {
             ));
         }
         let phase = |key| -> io::Result<()> {
-            super::super::migration::check_cancel(cancel)?;
+            imager_backend::migration::check_cancel(cancel)?;
             if let Some(task) = task {
                 task.report(key)?;
             }
@@ -2086,11 +2101,11 @@ impl PreparedMedia {
         self.manifest
             .portable_flatpak
             .as_ref()
-            .and_then(|applications| (applications.consumer_protocol == 2).then_some(2))
+            .and_then(|applications| (applications.kind.consumer_protocol == 2).then_some(2))
     }
     pub(crate) fn native_home_archive_protocol(&self) -> Option<u32> {
         (self.manifest.portable_home.is_some() || self.manifest.portable_flatpak.is_some())
-            .then_some(super::super::home_admission::ARCHIVE_PROTOCOL)
+            .then_some(imager_backend::home_admission::ARCHIVE_PROTOCOL)
     }
 
     pub(in crate::setup) fn staging_artifact(
@@ -2176,7 +2191,7 @@ fn prepare_mail(
     };
     let mut handoffs = Vec::with_capacity(selection.profiles.len());
     for (reviewed, selected) in &selection.profiles {
-        super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         // The source is re-read through its pinned profile and revalidated
         // before any byte enters the package.
         let artifact =
@@ -2219,7 +2234,7 @@ fn prepare_browser(
     identity: [u8; 32],
     cancel: &AtomicBool,
 ) -> io::Result<PreparedBrowser> {
-    use super::super::browser_transfer::{self, ExportRequest};
+    use imager_backend::setup::browser_transfer::{self, ExportRequest};
     let plan = source.plan(binding.into(), identity)?;
     let operation = uuid::Uuid::new_v4().to_string();
     let package = root.join(format!("browser-{operation}.sealed"));
@@ -2248,20 +2263,26 @@ fn prepare_applications(
     root: &std::path::Path,
     password: &[u8],
     binding: &str,
-    work: &PreparationWork<'_, impl super::super::flatpak_transfer::portable::OfflineRunner>,
+    work: &PreparationWork<
+        '_,
+        impl imager_backend::setup::flatpak_transfer::portable::OfflineRunner,
+    >,
     cancel: &AtomicBool,
 ) -> io::Result<PreparedApplications> {
-    use super::super::{
-        flatpak_transfer::portable::StageGrant,
+    use imager_backend::{
         migration::PinnedDirectory,
-        portable_transfer::{ImportReview, Purpose},
+        setup::{
+            flatpak_transfer::portable::StageGrant,
+            portable_transfer::{ImportReview, Purpose},
+        },
     };
     let pin = PinnedDirectory::open_absolute(root)?;
     pin.create_child(std::ffi::OsStr::new("applications-stage"))?;
     pin.create_child(std::ffi::OsStr::new("applications-journals"))?;
-    let allocation = super::super::portable_home_media::reviewed_directory_limits(pin.clone())?
-        .plaintext_bytes
-        / 2;
+    let allocation =
+        imager_backend::setup::portable_home_media::reviewed_directory_limits(pin.clone())?
+            .plaintext_bytes
+            / 2;
     let stage = root.join("applications-stage");
     let journals = root.join("applications-journals");
     let staged = selection.source.stage(
@@ -2276,7 +2297,7 @@ fn prepare_applications(
     )?;
     let operation = uuid::Uuid::new_v4().to_string();
     let package = root.join(format!("applications-{operation}.sealed"));
-    let limits = super::super::portable_home_media::reviewed_directory_limits(pin)?;
+    let limits = imager_backend::setup::portable_home_media::reviewed_directory_limits(pin)?;
     let expectation = staged.seal_reporting(
         &package,
         &operation,
@@ -2372,7 +2393,8 @@ mod tests {
         let home = root.join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let caller = crate::setup::home_capture::original_caller::fixture_source_owner(&home);
+        let caller =
+            imager_backend::setup::home_capture::original_caller::fixture_source_owner(&home);
         let operation = uuid::Uuid::new_v4().to_string();
         let identity = PreparedIdentity::create(
             &root.join("identity"),
@@ -2391,7 +2413,7 @@ mod tests {
         .unwrap();
         // A deterministic user-authenticated request fixture; kernel source
         // authority is qualified only by the opt-in GPT-backed native test.
-        let source: super::super::super::migration_handoff::Plan = serde_json::from_value(serde_json::json!({
+        let source: imager_backend::setup::migration_handoff::Plan = serde_json::from_value(serde_json::json!({
             "schema": 1, "operation_id": operation,
             "categories": {"home": true, "flatpak": false, "accounts": false},
             "home": {"volume": {
@@ -2401,7 +2423,7 @@ mod tests {
                 "first_lba": 2048, "last_lba": 65535,
                 "filesystem_uuid": "33333333-3333-4333-8333-333333333333",
                 "filesystem": "ext4"
-            }, "relative": crate::setup::migration_store::NativePath::encode(std::path::Path::new("home/person")),
+            }, "relative": imager_backend::migration_store::NativePath::encode(std::path::Path::new("home/person")),
             "inode": 1234, "original_uid": caller.uid(), "subvolume": null}
         })).unwrap();
         let (_media_directory, _media_path, raw_media) = crate::media_layout::tests::disk();
@@ -2768,7 +2790,7 @@ mod tests {
     }
     #[test]
     fn selected_portable_applications_are_sealed_declared_and_delivered_without_plaintext() {
-        use super::super::super::{
+        use imager_backend::setup::{
             flatpak_transfer::{
                 Installation, InstalledRef,
                 portable::{self, PortableFlatpakSource},
@@ -2875,7 +2897,7 @@ mod tests {
     }
     #[test]
     fn home_delivery_is_bound_to_prepared_identity_and_retry_preserves_ciphertext() {
-        use super::super::super::{
+        use imager_backend::setup::{
             portable_home_import::{HomeImportGrants, PortableHomeReview},
             portable_home_media::{HomeSource, MediaGrant},
         };
@@ -3000,7 +3022,7 @@ mod tests {
         let error = prepared
             .validate_for_write(&AtomicBool::new(false))
             .unwrap_err();
-        assert!(super::super::super::portable_home_media::source_changed(
+        assert!(imager_backend::setup::portable_home_media::source_changed(
             &error
         ));
         assert_eq!(
@@ -3151,7 +3173,7 @@ mod tests {
                 host.to_path_buf().into_os_string(),
             ];
             let mut output = Vec::new();
-            let result = crate::setup::prepared_setup_helper::run(
+            let result = imager_backend::setup::prepared_setup_helper::run(
                 args,
                 &mut std::io::Cursor::new(secret),
                 &mut output,
@@ -3417,7 +3439,7 @@ pub(crate) fn home_media_fixture(root: &std::path::Path) -> Arc<PreparedMedia> {
     PreparedMedia::prepare_with_home(
         &identity,
         None,
-        Some(super::super::portable_home_media::HomeSource::review(&source).unwrap()),
+        Some(imager_backend::setup::portable_home_media::HomeSource::review(&source).unwrap()),
         Zeroizing::new("original chosen preparation password".into()),
         "actual-home-media-fixture".into(),
     )
@@ -3430,7 +3452,7 @@ mod session_tests;
 
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) fn selected_applications_media_fixture(root: &std::path::Path) -> Arc<PreparedMedia> {
-    use super::super::flatpak_transfer::{
+    use imager_backend::setup::flatpak_transfer::{
         Installation, InstalledRef,
         portable::{self, PortableFlatpakSource},
     };

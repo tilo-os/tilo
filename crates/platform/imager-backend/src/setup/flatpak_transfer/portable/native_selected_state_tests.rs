@@ -139,7 +139,7 @@ pub(super) fn owner(source_home: &Path, app: InstalledRef) {
             &cancel,
         )
         .unwrap();
-    assert_eq!(expected.consumer_protocol, 2);
+    assert_eq!(expected.kind.consumer_protocol, 2);
     let setup = prepared_setup(&root, expected, &cancel);
     let target = root.join("target");
     private(&target);

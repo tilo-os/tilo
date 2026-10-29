@@ -339,6 +339,8 @@ pub struct PlayerApp {
     /// Where the shared library's edits and the player's own controls go:
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
+    /// The window bar's entries, carrying the effects they request.
+    bar: ui::framework::BarCommands<crate::actions::VideoEffect>,
     /// The shared library's verbs bound to what the player shows, published
     /// for the view that hosts it: the view reads it, so it does not hold
     /// the player.
@@ -628,6 +630,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
+            bar: ui::framework::BarCommands::new(),
             playhead: None,
             shared_library: crate::shared::Library::default(),
             mode,

@@ -181,7 +181,7 @@ pub struct Callable {
 }
 
 /// What a button or a menu shows for an action or flow, from its declaration.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Presentation {
     pub label: String,
     /// A kebab-case name of the platform's icon set.
@@ -191,6 +191,9 @@ pub struct Presentation {
     /// The id of the hidden view that presents the action's state for its subject, when its
     /// `label:` or `icon:` is an `if`, or it declares `on:`.
     pub view: Option<String>,
+    /// `label: "Move to {col.title}"`: the label as written, read where the action is applied
+    /// with its arguments (`button(move_to(b, card, col))`).
+    pub label_text: Option<Expr>,
 }
 
 /// `new_note` as "New note".
@@ -294,6 +297,9 @@ pub struct Env {
     pub toolkit: Option<&'static crate::toolkit::Catalogue>,
     /// The views expanded where they are called: the module's and the standard library's.
     pub templates: Vec<Template>,
+    /// The toolkit component each of the module's views makes, by the view's name: a view whose
+    /// body is one `ui.X(...)` is an `X` wherever one goes (views are components).
+    pub view_makes: HashMap<String, String>,
 }
 
 impl Env {
@@ -541,6 +547,7 @@ impl Env {
                 icon: a.icon.clone(),
                 role: a.role.clone(),
                 view: a.present.clone(),
+                label_text: None,
             };
             add(
                 CKind::Action,
@@ -644,8 +651,40 @@ pub fn resolve(
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
+    for item in &module.items {
+        if let Item::View(v) = item
+            && let Some(made) = view_root_component(&v.body)
+        {
+            r.env.view_makes.insert(v.name.name.clone(), made);
+        }
+    }
     r.package_decls(module);
     r.env
+}
+
+/// The toolkit component a view body makes: its one call (after its state and `let`s) when
+/// that is `ui.X(...)`.
+fn view_root_component(body: &[ast::UiStmt]) -> Option<String> {
+    let mut calls = body
+        .iter()
+        .filter(|s| !matches!(s.kind, ast::UiKind::State(_) | ast::UiKind::Let { .. }));
+    let one = calls.next()?;
+    if calls.next().is_some() {
+        return None;
+    }
+    let ast::UiKind::Call(c) = &one.kind else {
+        return None;
+    };
+    let callee = match &c.call.kind {
+        ExprKind::Call { callee, .. } => callee,
+        _ => &c.call,
+    };
+    match &callee.kind {
+        ExprKind::Field { base, name } if matches!(&base.kind, ExprKind::Ident(b) if b == "ui") => {
+            Some(name.name.clone())
+        }
+        _ => None,
+    }
 }
 
 fn mentions_principal(ty: &Ty) -> bool {
@@ -1766,6 +1805,7 @@ impl Resolver<'_> {
             icon: None,
             role: a.role.map(|(r, _)| r.word().to_string()),
             view: None,
+            label_text: None,
         };
         let mut seen: Vec<&str> = Vec::new();
         for opt in &a.opts {
@@ -1792,6 +1832,9 @@ impl Resolver<'_> {
                 ("label", ExprKind::Str(_)) if plain_text(&opt.value).is_some() => {
                     out.label = plain_text(&opt.value).unwrap_or_default();
                 }
+                // `"Move to {col.title}"`: read with the arguments where it is applied; the
+                // action's name stands in elsewhere.
+                ("label", ExprKind::Str(_)) => out.label_text = Some(opt.value.clone()),
                 ("label", ExprKind::If { .. }) => {
                     if let Some(label) = fallback_label(&opt.value, &at_rest) {
                         out.label = label;

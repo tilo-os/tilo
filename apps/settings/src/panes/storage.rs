@@ -1355,7 +1355,7 @@ mod tests {
     #[test]
     fn the_pane_shows_what_only_one_device_holds() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let mut pane = StorageModel::over(
             cx,
             std::sync::Arc::new(DeviceStorage {
@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn each_workspace_is_listed_once_under_the_disks_real_capacity() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let mut pane = StorageModel::over(
             cx,
             std::sync::Arc::new(DeviceStorage {
@@ -1504,7 +1504,7 @@ mod tests {
             std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
             std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
             let profile = tempfile::tempdir().unwrap();
-            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let cx = PaneCx::in_profile(profile.path().to_path_buf());
             let mut pane = StorageModel::over(
                 cx,
                 std::sync::Arc::new(DeviceStorage {

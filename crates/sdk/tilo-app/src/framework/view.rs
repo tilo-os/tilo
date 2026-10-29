@@ -688,6 +688,14 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         .host_surface(surface)
     }
 
+    /// `content`, publishing on the resource what [`Publishes`](super::Publishes)
+    /// says beside what its bindings publish: the live rows it shows, search
+    /// entries for what the resource does not hold. It lasts as long as
+    /// `content` stands in the view.
+    pub fn publishing(&self, publishes: super::Publishes<R>, content: Element) -> Element {
+        super::publishing::publishing(publishes, content)
+    }
+
     /// Answer the effect vocabulary `E` — work with no document delta that a
     /// button, the palette, an agent or a script invokes — with `handle`,
     /// and publish `E` on the resource while this part of the view lives.

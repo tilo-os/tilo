@@ -1,6 +1,6 @@
 //! Browser receipt bridge to protected native staging custody.
 use super::RecordStore;
-use crate::setup::browser_transfer::Expectation;
+use imager_backend::setup::browser_transfer::Expectation;
 use std::io;
 
 impl RecordStore {

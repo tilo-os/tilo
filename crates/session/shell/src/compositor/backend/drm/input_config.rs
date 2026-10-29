@@ -261,9 +261,9 @@ impl InputSettings {
         Self::from_section(&settings_store::load_section(SECTION))
     }
 
-    /// Read the settings file at `path` with the same fallbacks as [`Self::load`].
-    pub fn load_at(path: &std::path::Path) -> Self {
-        Self::from_section(&settings_store::load_section_at(path, SECTION))
+    /// Read `source` with the same fallbacks as [`Self::load`].
+    pub fn load_in(source: &dyn settings_store::SettingsSource) -> Self {
+        Self::from_section(&settings_store::load_section_in(source, SECTION))
     }
 
     /// libinput's pointer-acceleration speed for this setting: the slider's `0.0 … 1.0` mapped onto libinput's `-1.0 … 1.0`, so the midpoint lands exactly on the untouched default of `0.0`.
@@ -634,7 +634,6 @@ pub fn reconfigure_all<D: ConfigurableDevice>(settings: &InputSettings, devices:
 mod tests {
     use super::*;
     use settings_store::live::{LiveSettings, SectionFollower};
-    use std::path::{Path, PathBuf};
 
     use serde_json::json;
 
@@ -1243,23 +1242,23 @@ mod tests {
 
     // settings follower
 
-    fn scratch(name: &str) -> PathBuf {
+    fn scratch(name: &str) -> std::sync::Arc<settings_store::Store> {
         let dir =
             std::env::temp_dir().join(format!("tilo-input-watch-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("scratch dir");
-        dir.join("settings.json")
+        settings_store::Store::open(&dir).expect("scratch profile")
     }
 
     fn sections(names: &[&str]) -> BTreeSet<String> {
         names.iter().map(|name| (*name).to_string()).collect()
     }
 
-    fn write(path: &Path, section: &str, value: serde_json::Value) {
+    fn write(path: &settings_store::Store, section: &str, value: serde_json::Value) {
         let serde_json::Value::Object(values) = value else {
             panic!("a section is an object");
         };
-        settings_store::update_section_at(path, section, values).expect("write settings");
+        settings_store::SettingsSource::update_section(path, section, values)
+            .expect("write settings");
     }
 
     /// Run `change` and wait until the live document has taken it in.
@@ -1287,7 +1286,7 @@ mod tests {
             // Otherwise every session start re-applies settings already applied while constructing the backend.
             let path = scratch("baseline");
             write(&path, "input", json!({"tap_to_click": true}));
-            let live = LiveSettings::start_at(path, || {});
+            let live = LiveSettings::start_from(path, || {});
             let mut follower = SectionFollower::new(&live);
             assert_eq!(follower.changed_sections(&live), sections(&[]));
         }
@@ -1295,7 +1294,7 @@ mod tests {
         {
             let path = scratch("write");
             write(&path, "input", json!({"tap_to_click": true}));
-            let live = LiveSettings::start_at(path.clone(), || {});
+            let live = LiveSettings::start_from(path.clone(), || {});
             let mut follower = SectionFollower::new(&live);
             assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
@@ -1314,48 +1313,32 @@ mod tests {
                 "and only once — re-applying every tick would fight the user"
             );
         }
-        // Phase `the_file_appearing_for_the_first_time_counts_as_a_change`.
+        // Phase `the_first_write_counts_as_a_change`.
         {
-            // A fresh install has no settings.json until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
+            // A fresh install has no settings until the user opens Settings; the first write is exactly when the compositor has to start honouring it.
             let path = scratch("appear");
-            let live = LiveSettings::start_at(path.clone(), || {});
+            let live = LiveSettings::start_from(path.clone(), || {});
             let mut follower = SectionFollower::new(&live);
             assert_eq!(
                 follower.changed_sections(&live),
                 sections(&[]),
-                "baseline: no file"
+                "baseline: no settings"
             );
             changed(&live, || {
                 write(&path, "input", json!({"tap_to_click": false}));
             });
             assert_eq!(follower.changed_sections(&live), sections(&["input"]));
         }
-        // Phase `a_removal_is_a_change`.
-        {
-            let path = scratch("removal");
-            write(&path, "power", json!({"auto_suspend": false}));
-            let live = LiveSettings::start_at(path.clone(), || {});
-            let mut follower = SectionFollower::new(&live);
-            assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
-            changed(&live, || std::fs::remove_file(&path).expect("remove"));
-            assert_eq!(
-                follower.changed_sections(&live),
-                sections(&["power"]),
-                "the removal must be seen"
-            );
-            assert_eq!(follower.changed_sections(&live), sections(&[]));
-        }
     }
 
     #[test]
     fn settings_follower_reports_changed_sections() {
-        // Writers go through the shared merge-and-replace path, which
-        // rewrites the whole document: knowing that the file changed cannot
-        // say whether a theme or the display arrangement changed.
+        // Knowing that the document changed cannot say whether a theme or
+        // the display arrangement changed.
         let path = scratch("sections");
         write(&path, "input", json!({"tap_to_click": true}));
         write(&path, "notifications", json!({"do_not_disturb": false}));
-        let live = LiveSettings::start_at(path.clone(), || {});
+        let live = LiveSettings::start_from(path.clone(), || {});
         let mut follower = SectionFollower::new(&live);
         assert_eq!(follower.changed_sections(&live), sections(&[]), "baseline");
 
@@ -1392,7 +1375,7 @@ mod tests {
     fn a_keyboard_layout_edit_reaches_every_keymap_and_an_unset_one_follows_the_machine() {
         let path = scratch("keyboard-layout");
         write(&path, "input", json!({"tap_to_click": true}));
-        let live = LiveSettings::start_at(path.clone(), || {});
+        let live = LiveSettings::start_from(path.clone(), || {});
         let mut follower = SectionFollower::new(&live);
         assert_eq!(
             KeyboardSettings::from_section(&live.section(SECTION)).source_ids,
@@ -1422,7 +1405,7 @@ mod tests {
     fn the_hint_record_and_the_notification_policy_follow_their_settings_change() {
         let path = scratch("hints-notifications");
         write(&path, "input", json!({"tap_to_click": true}));
-        let live = LiveSettings::start_at(path.clone(), || {});
+        let live = LiveSettings::start_from(path.clone(), || {});
         let mut follower = SectionFollower::new(&live);
 
         changed(&live, || {

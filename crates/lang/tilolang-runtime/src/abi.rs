@@ -41,6 +41,7 @@ imports! {
     (ListGetF, "list_get_f", "il", "f"),
     (ListGetH, "list_get_h", "il", "i"),
     (ListSortByKey, "list_sort_by_key", "ii", "i"),
+    (ListReverse, "list_reverse", "i", "i"),
     (ListEnd, "list_end", "ii", "i"),
 
     (TupleNew, "tuple_new", "i", "i"),
@@ -71,7 +72,7 @@ imports! {
     (ResTextSet, "res_text_set", "iii", ""),
     (CollInsert, "coll_insert", "iii", "i"),
     (CollRemove, "coll_remove", "iii", ""),
-    (CollMove, "coll_move", "iiil", ""),
+    (CollMove, "coll_move", "iiiii", ""),
     (CollWhere, "coll_where", "ii", "i"),
     (SetAdd, "set_add", "iii", ""),
     (SetRemove, "set_remove", "iii", ""),

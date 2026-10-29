@@ -13,9 +13,9 @@
 //! markup lives in the shared Automerge document, so undo/redo and live collaboration come for
 //! free. Each document's markup is a record of its own: launched with a
 //! file the app opens that file's record; launched bare it reopens the
-//! document its record marks up, or shows an empty state. The bundled
-//! demonstration document ([`model::sample_document`]) is used only by the
-//! screenshot scenarios ([`scenarios`]) and the tests.
+//! document its record marks up, or shows an empty state. The screenshot
+//! scenarios (`scenarios`, behind the `samples` feature) open a real sample
+//! PDF the same way.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -57,6 +57,7 @@ pub mod tiles;
 pub use app::PdfApp;
 pub use model::{AnnoKind, Annotation, Comment, Document, Signature, SignatureInk, Swatch, Tool};
 
+#[cfg(feature = "samples")]
 pub mod scenarios;
 pub mod source;
 

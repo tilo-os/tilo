@@ -180,9 +180,8 @@ impl BlockEditor {
             match views.get(reference) {
                 Some(InlineView::Unreadable) => unreadable,
                 Some(InlineView::Resource { .. } | InlineView::Elsewhere) => resource,
-                Some(InlineView::Person { .. }) => of_person(reference),
                 None if tilo_reference::embed::names_resource(reference) => resource,
-                None => of_person(reference),
+                Some(InlineView::Person { .. }) | None => of_person(reference),
             }
         })));
     }

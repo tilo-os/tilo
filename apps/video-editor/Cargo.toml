@@ -45,6 +45,7 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
 [dev-dependencies]
+video-editor = { path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
 tempfile.workspace = true
@@ -64,6 +65,9 @@ gstreamer-app.workspace = true
 web-features = []
 
 [features]
+# The demo project, its bundled stand-in media and the screenshot scenarios:
+# development runs, captures and tests only, never a release.
+samples = []
 # Shared-runtime build, as the rest of the fleet has adopted: links the
 # toolkit as a dylib so an app stays small.
 thin = ["dep:runtime-dylib"]

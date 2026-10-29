@@ -6,14 +6,14 @@ use std::process::Command;
 use std::sync::atomic::Ordering;
 
 fn stamp(inode: u64) -> SourceStamp {
-    let file = FileStamp {
+    let vault = FileStamp {
         device: 1,
         inode,
         length: 1,
         modified: (0, 0),
         changed: (0, 0),
     };
-    (file, Some(file))
+    (settings_store::SettingsStamp(inode), Some(vault))
 }
 
 fn at(start: Instant, seconds: u64) -> Instant {
@@ -370,36 +370,26 @@ fn plan_profiles_follow_the_settings_document_and_vault_on_disk() {
         child_follows_settings_and_vault();
         return;
     }
-    for session_document in [false, true] {
-        let root = tempfile::tempdir().unwrap();
-        let mut child = Command::new(std::env::current_exe().unwrap());
-        child
-            .args([
-                "--exact",
-                "service::profile_tests::plan_profiles_follow_the_settings_document_and_vault_on_disk",
-                "--nocapture",
-            ])
-            // No ambient credentials, settings path, or secret-tool.
-            .env_clear()
-            .env("PATH", root.path())
-            .env("XDG_CONFIG_HOME", root.path())
-            .env("PROFILE_TEST_CHILD", "1");
-        if session_document {
-            child.env("TILO_SESSION_SETTINGS", root.path().join("session.json"));
-        }
-        let output = child.output().unwrap();
-        assert!(
-            output.status.success(),
-            "child failed (session document: {session_document}): {} {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            root.path().join("session.json").exists(),
-            session_document,
-            "the configuration went to the document under test"
-        );
-    }
+    let root = tempfile::tempdir().unwrap();
+    let mut child = Command::new(std::env::current_exe().unwrap());
+    child
+        .args([
+            "--exact",
+            "service::profile_tests::plan_profiles_follow_the_settings_document_and_vault_on_disk",
+            "--nocapture",
+        ])
+        // No ambient credentials, settings path, or secret-tool.
+        .env_clear()
+        .env("PATH", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env("PROFILE_TEST_CHILD", "1");
+    let output = child.output().unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn seal_grant(profile_id: &str, refresh_token: &str) {

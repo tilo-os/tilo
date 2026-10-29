@@ -13,6 +13,8 @@ pub(crate) mod browser;
 mod capabilities;
 mod compatibility;
 mod demo;
+mod scenarios;
+pub use scenarios::SCENARIOS;
 mod desktop;
 mod devices;
 mod direct;
@@ -42,6 +44,8 @@ pub(crate) mod portable_source;
 mod portable_source_native;
 #[cfg(all(test, target_os = "linux"))]
 mod preparation_navigation_tests;
+#[cfg(all(test, unix))]
+mod prepared_identity_presentation_tests;
 #[path = "prepared_media/presentation.rs"]
 pub(crate) mod prepared_media;
 #[cfg(target_os = "linux")]
@@ -73,7 +77,7 @@ mod your_data;
 #[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
 pub(in crate::setup) fn paint_native_flatpak_inventory(
     home: &std::path::Path,
-    inventory: &super::flatpak_transfer::Inventory,
+    inventory: &imager_backend::setup::flatpak_transfer::Inventory,
 ) {
     visual_tests::paint_native_flatpak_inventory(home, inventory);
 }
@@ -585,25 +589,6 @@ fn identity_color(value: &str) -> Result<[u8; 3], &'static str> {
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("installer-preview-identity-invalid-color")
 }
-pub const SCENARIOS: &[&str] = &[
-    "installer-destination",
-    "installer-migration",
-    "installer-identity",
-    "installer-profile",
-    "installer-password",
-    "installer-connect",
-    "installer-desktop-connect",
-    "installer-devices",
-    "installer-purpose",
-    "installer-belongings",
-    "installer-accounts",
-    "installer-belongings-details",
-    "installer-storage",
-    "installer-usb",
-    "installer-desktop",
-    "installer-review",
-    "installer-ready",
-];
 
 type Commands = Rc<RefCell<Vec<InstallerPreviewEffect>>>;
 
@@ -741,7 +726,7 @@ pub struct InstallerPreview {
     native_full_os_review_pending: bool,
     user_transfer: transfer::Transfer,
     home_promotion: promotion::Promotion,
-    account_actions: super::account_transfer::AccountActions,
+    account_actions: imager_backend::account_transfer::AccountActions,
     accounts: accounts::Accounts,
     personal: personal::Personal,
     restart: restart_controller::Restart,
@@ -824,7 +809,7 @@ impl Default for InstallerPreview {
             native_full_os_review_pending: false,
             user_transfer: transfer::Transfer::default(),
             home_promotion: promotion::Promotion::default(),
-            account_actions: super::account_transfer::AccountActions::default(),
+            account_actions: imager_backend::account_transfer::AccountActions::default(),
             accounts: accounts::Accounts::default(),
             personal: personal::Personal::default(),
             restart: restart_controller::Restart::default(),
@@ -1718,8 +1703,9 @@ impl InstallerPreview {
                 && !self.user_transfer.busy()
                 && (candidate.is_none() || self.journey.migrate == Some(true)) =>
             {
-                let provider = super::account_transfer::ConnectionProvider::from_id(&provider)
-                    .ok_or("installer-preview-invalid-choice")?;
+                let provider =
+                    imager_backend::account_transfer::ConnectionProvider::from_id(&provider)
+                        .ok_or("installer-preview-invalid-choice")?;
                 let consent = self
                     .account_actions
                     .begin(
@@ -3330,9 +3316,11 @@ impl InstallerPreview {
             .iter()
             .filter(|item| {
                 item.app_id().is_some()
-                    && (item.installation == super::flatpak_transfer::Installation::User
+                    && (item.installation
+                        == imager_backend::setup::flatpak_transfer::Installation::User
                         || !inventory.refs.iter().any(|existing| {
-                            existing.installation == super::flatpak_transfer::Installation::User
+                            existing.installation
+                                == imager_backend::setup::flatpak_transfer::Installation::User
                                 && existing.reference == item.reference
                         }))
             })
@@ -3340,7 +3328,8 @@ impl InstallerPreview {
                 let with_home = self.journey.migrate == Some(true)
                     && self.journey.categories[0]
                     && self.journey.destination == Some(Destination::Another)
-                    && item.installation == super::flatpak_transfer::Installation::User;
+                    && item.installation
+                        == imager_backend::setup::flatpak_transfer::Installation::User;
                 let label = if item.name.trim().is_empty() {
                     item.app_id().unwrap_or_default()
                 } else {
@@ -3353,7 +3342,8 @@ impl InstallerPreview {
                 let already_here = self.journey.destination == Some(Destination::Desktop);
                 let selectable = !already_here
                     && !with_home
-                    && (item.installation != super::flatpak_transfer::Installation::User
+                    && (item.installation
+                        != imager_backend::setup::flatpak_transfer::Installation::User
                         || matches!(
                             self.journey.destination,
                             Some(Destination::Another | Destination::Computer)
@@ -3903,8 +3893,8 @@ impl InstallerPreview {
         }
     }
 
-    fn selected_portable_apps(&self) -> Vec<super::flatpak_transfer::InstalledRef> {
-        use super::flatpak_transfer::Installation;
+    fn selected_portable_apps(&self) -> Vec<imager_backend::setup::flatpak_transfer::InstalledRef> {
+        use imager_backend::setup::flatpak_transfer::Installation;
         if !self.journey.categories[1] || self.journey.destination == Some(Destination::Desktop) {
             return Vec::new();
         }
@@ -4092,7 +4082,7 @@ impl InstallerPreview {
     ) -> Result<
         (
             std::path::PathBuf,
-            Vec<super::flatpak_transfer::InstalledRef>,
+            Vec<imager_backend::setup::flatpak_transfer::InstalledRef>,
         ),
         &'static str,
     > {
@@ -4286,7 +4276,7 @@ impl InstallerPreview {
         self.avatar = None;
         self.resume_draft = None;
         self.accounts = accounts::Accounts::default();
-        self.account_actions = super::account_transfer::AccountActions::default();
+        self.account_actions = imager_backend::account_transfer::AccountActions::default();
         self.account_answer = serde_json::Value::Null;
         self.belongings = belongings::Belongings::default();
         self.belongings_worker = None;
@@ -5408,45 +5398,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         self.journey.destination = Some(Destination::Computer);
         self.journey.migrate = Some(true);
         self.journey.identity = Some(Identity::New);
-        self.journey.page = match scenario {
-            "installer-migration" => Page::Migration,
-            "installer-identity" => Page::Identity,
-            "installer-profile" => Page::Profile,
-            "installer-password" => Page::Password,
-            "installer-connect" => {
-                self.journey.identity = Some(Identity::Existing);
-                Page::Connect
-            }
-            "installer-desktop-connect" => {
-                self.journey.destination = Some(Destination::Desktop);
-                self.journey.migrate = Some(false);
-                self.journey.identity = Some(Identity::Existing);
-                Page::Connect
-            }
-            "installer-devices" => Page::Devices,
-            "installer-purpose" => Page::Purpose,
-            "installer-belongings" => Page::Belongings,
-            "installer-belongings-details" => {
-                self.journey.details = true;
-                Page::Belongings
-            }
-            "installer-accounts" => Page::Accounts,
-            "installer-storage" => Page::Storage,
-            "installer-usb" => {
-                self.journey.destination = Some(Destination::Another);
-                Page::Storage
-            }
-            "installer-desktop" => {
-                self.journey.destination = Some(Destination::Desktop);
-                Page::Storage
-            }
-            "installer-review" => Page::Review,
-            "installer-ready" => Page::Ready,
-            _ => {
-                self.journey.destination = None;
-                Page::Destination
-            }
-        };
+        self.journey.page = scenarios::page(&mut self.journey, scenario);
         if self.journey.destination == Some(Destination::Desktop) {
             self.journey.categories[0] = false;
             self.journey.categories[1] = false;
@@ -6465,7 +6417,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn belongings_edit_cancel_retains_source_custody_and_persisted_consent() {
-        let (root, intent) = super::super::migration_intent::reviewed_app_routing_fixture();
+        let (root, intent) =
+            imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
@@ -6503,7 +6456,8 @@ mod tests {
             preview.accounts = accounts;
             preview.belongings.home = Some(root.path().join("source"));
             // The source fixture contains user app data, with no system refs.
-            preview.belongings.flatpak = Some(super::super::flatpak_transfer::Inventory::default());
+            preview.belongings.flatpak =
+                Some(imager_backend::setup::flatpak_transfer::Inventory::default());
             preview.storage.set_application_minimum(minimum);
             preview.storage.stage();
             preview
@@ -6661,7 +6615,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn enabling_accounts_from_review_requires_fresh_public_saved_connection_consent() {
-        let (root, intent) = super::super::migration_intent::reviewed_app_routing_fixture();
+        let (root, intent) =
+            imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
@@ -6693,7 +6648,8 @@ mod tests {
             preview.journey.categories = [true, true, true];
             preview.belongings.home = Some(root.path().join("source"));
             // The source fixture contains user app data, with no system refs.
-            preview.belongings.flatpak = Some(super::super::flatpak_transfer::Inventory::default());
+            preview.belongings.flatpak =
+                Some(imager_backend::setup::flatpak_transfer::Inventory::default());
             preview.storage.set_application_minimum(minimum);
             preview.storage.stage();
             preview
@@ -6701,7 +6657,7 @@ mod tests {
                 .prepare_routing_fixture(intent.clone());
         })
         .unwrap();
-        use super::super::account_transfer::{SourceRoots, discover};
+        use imager_backend::account_transfer::{SourceRoots, discover};
         use std::os::unix::fs::PermissionsExt;
         let home = root.path().join("source");
         let config = home.join(".config");
@@ -6784,7 +6740,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn disabling_accounts_in_review_releases_prepared_selection_only_on_save() {
-        let (root, intent) = super::super::migration_intent::reviewed_app_routing_fixture();
+        let (root, intent) =
+            imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
@@ -6819,7 +6776,8 @@ mod tests {
             preview.accounts = accounts;
             preview.belongings.home = Some(root.path().join("source"));
             // The source fixture contains user app data, with no system refs.
-            preview.belongings.flatpak = Some(super::super::flatpak_transfer::Inventory::default());
+            preview.belongings.flatpak =
+                Some(imager_backend::setup::flatpak_transfer::Inventory::default());
             preview.storage.set_application_minimum(minimum);
             preview.storage.stage();
             preview
@@ -6890,7 +6848,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn destination_edit_cancel_retains_reviewed_source_and_commit_discards_it() {
-        let (root, intent) = super::super::migration_intent::reviewed_app_routing_fixture();
+        let (root, intent) =
+            imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
         // Exercise the existing gallery's storage review route. This does not
@@ -6930,16 +6889,16 @@ mod tests {
             // process Home cannot decide how much this source has to capture.
             preview.belongings_worker = None;
             let source_home = root.path().join("source");
-            let roots = super::super::account_transfer::SourceRoots {
+            let roots = imager_backend::account_transfer::SourceRoots {
                 home: source_home.clone(),
                 config: source_home.join(".config"),
             };
             let mut belongings = super::belongings::Belongings {
                 home: Some(source_home.clone()),
                 roots: Some(roots.clone()),
-                accounts: super::super::account_transfer::discover(&roots),
+                accounts: imager_backend::account_transfer::discover(&roots),
                 // The source fixture contains user app data, with no system refs.
-                flatpak: Some(super::super::flatpak_transfer::Inventory::default()),
+                flatpak: Some(imager_backend::setup::flatpak_transfer::Inventory::default()),
                 ..Default::default()
             };
             belongings.source_selection = super::source_selection::SourceSelection::discover(
@@ -7196,7 +7155,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn changing_routes_discards_previous_application_budget_and_migration_consent() {
-        use super::super::migration_intent::reviewed_app_routing_fixture;
+        use imager_backend::setup::migration_intent::reviewed_app_routing_fixture;
         for (page, effect) in [
             (
                 Page::Migration,
@@ -7255,7 +7214,7 @@ mod tests {
 
     #[test]
     fn existing_backup_recovery_preserves_identity_and_migration_choices() {
-        use super::super::prepared_identity::PreparedIdentity;
+        use imager_backend::prepared_identity::PreparedIdentity;
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -7734,7 +7693,7 @@ mod tests {
                 packaged["prepared_identity"]["state"], "setup-exported",
                 "{packaged}"
             );
-            let reviewed = super::super::prepared_setup::PreparedSetupReview::open(
+            let reviewed = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
                 &package,
                 b"several unrelated installation words",
                 &root.join("setup-quarantine"),
@@ -7768,8 +7727,8 @@ mod tests {
         std::fs::write(profile.join("Bookmarks"), b"bookmarks").unwrap();
         std::fs::write(profile.join("History"), b"private history").unwrap();
         std::fs::write(profile.join("Cookies"), b"original cookies").unwrap();
-        let inventory = super::super::account_transfer::discover(
-            &super::super::account_transfer::SourceRoots {
+        let inventory = imager_backend::account_transfer::discover(
+            &imager_backend::account_transfer::SourceRoots {
                 home: home.clone(),
                 config,
             },
@@ -7896,7 +7855,7 @@ mod tests {
 
     #[test]
     fn belongings_lists_saved_tilo_connections_without_projecting_configuration() {
-        use super::super::account_transfer::{SourceRoots, discover};
+        use imager_backend::account_transfer::{SourceRoots, discover};
         let source = crate::setup::test_support::qualified_tempdir();
         let config = source.path().join(".config");
         let mut store = ::accounts::AccountStore::new();
@@ -7947,7 +7906,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn final_review_shows_independent_browser_and_selected_session_choices() {
-        use super::super::account_transfer::{SourceRoots, discover};
+        use imager_backend::account_transfer::{SourceRoots, discover};
         use std::os::unix::fs::PermissionsExt;
         let source = crate::setup::test_support::qualified_tempdir();
         std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -8187,7 +8146,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     struct SettingsLocations(std::path::PathBuf);
     #[cfg(target_os = "linux")]
-    impl super::super::flatpak_transfer::Runner for SettingsLocations {
+    impl imager_backend::setup::flatpak_transfer::Runner for SettingsLocations {
         fn run(&self, _: &std::path::Path, args: &[String]) -> Result<String, String> {
             assert_eq!(args.first().map(String::as_str), Some("info"));
             Ok(format!(
@@ -8199,14 +8158,16 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn settings_details_inventory() -> super::super::flatpak_transfer::Inventory {
-        let installed = super::super::flatpak_transfer::InstalledRef {
+    fn settings_details_inventory() -> imager_backend::setup::flatpak_transfer::Inventory {
+        let installed = imager_backend::setup::flatpak_transfer::InstalledRef {
             reference: "app/org.tilo.Settings/x86_64/stable".into(),
             origin: "approved".into(),
-            installation: super::super::flatpak_transfer::Installation::System("named".into()),
+            installation: imager_backend::setup::flatpak_transfer::Installation::System(
+                "named".into(),
+            ),
             name: "Settings fixture".into(),
         };
-        super::super::flatpak_transfer::Inventory {
+        imager_backend::setup::flatpak_transfer::Inventory {
             refs: vec![installed],
             remotes: Vec::new(),
         }
@@ -8215,7 +8176,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn flatpak_custom_access_details_follow_selection_and_never_publish_private_values() {
-        use super::super::flatpak_transfer::{self, Installation};
+        use imager_backend::setup::flatpak_transfer::{self, Installation};
         use std::os::unix::fs::PermissionsExt;
         let source = crate::setup::test_support::qualified_tempdir();
         let root = source.path().join("installation");
@@ -8334,7 +8295,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn named_app_action_drives_canonical_portable_selection_review() {
-        use super::super::flatpak_transfer::{self, portable::PortableFlatpakSource};
+        use imager_backend::setup::flatpak_transfer::{self, portable::PortableFlatpakSource};
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -8402,7 +8363,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn named_user_app_action_drives_actual_selected_data_stage_without_home() {
-        use super::super::flatpak_transfer::{
+        use imager_backend::setup::flatpak_transfer::{
             self,
             portable::{PortableFlatpakSource, StageGrant},
         };
@@ -8500,7 +8461,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn expanded_app_actions_filter_actual_migration_requests_and_preserve_home() {
-        use super::super::flatpak_transfer::{self, Runner};
+        use imager_backend::setup::flatpak_transfer::{self, Runner};
         struct Discovery;
         impl Runner for Discovery {
             fn run(&self, _: &std::path::Path, args: &[String]) -> Result<String, String> {
@@ -8722,7 +8683,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn expanded_flatpak_names_follow_actual_category_actions_and_discovery() {
-        use super::super::flatpak_transfer::{self, Runner};
+        use imager_backend::setup::flatpak_transfer::{self, Runner};
         // Synthetic CLI fixture exercises the production discovery parser and
         // public action path; the native fixture separately uses real installs.
         struct Discovery;
@@ -8906,7 +8867,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn expanded_flatpak_details_scroll_with_pinned_actions_at_actual_device_scales() {
-        use super::super::flatpak_transfer::{self, Installation, InstalledRef, Inventory, Runner};
+        use imager_backend::setup::flatpak_transfer::{
+            self, Installation, InstalledRef, Inventory, Runner,
+        };
         struct Locations(std::path::PathBuf);
         impl Runner for Locations {
             fn run(&self, _: &std::path::Path, args: &[String]) -> Result<String, String> {
@@ -9098,7 +9061,7 @@ mod tests {
 
     #[test]
     fn belongings_review_uses_detected_profiles_without_exposing_credentials() {
-        use super::super::account_transfer::{SourceRoots, discover};
+        use imager_backend::account_transfer::{SourceRoots, discover};
         let source = crate::setup::test_support::qualified_tempdir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
@@ -9193,7 +9156,7 @@ mod tests {
 
     #[test]
     fn discovered_belongings_keep_unavailable_apps_and_foreign_logins_out_of_the_main_choices() {
-        use super::super::account_transfer::{SourceRoots, discover};
+        use imager_backend::account_transfer::{SourceRoots, discover};
         let source = crate::setup::test_support::qualified_tempdir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(
@@ -9296,15 +9259,15 @@ mod tests {
         fn gated_capture(
             home: &std::path::Path,
             operation: &str,
-            categories: super::super::migration_handoff::Categories,
-        ) -> std::io::Result<super::super::migration_handoff::Plan> {
+            categories: imager_backend::setup::migration_handoff::Categories,
+        ) -> std::io::Result<imager_backend::setup::migration_handoff::Plan> {
             let (started, release) = GATE.get().unwrap().lock().unwrap().take().unwrap();
             started.send(()).map_err(std::io::Error::other)?;
             release
                 .recv_timeout(tilo_test_env::hang_bound())
                 .map_err(std::io::Error::other)?;
             // Discovery and registration must agree on the actual owned GPT.
-            super::super::migration_handoff::capture(home, operation, categories)
+            imager_backend::setup::migration_handoff::capture(home, operation, categories)
         }
         let (started, ready) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
@@ -9409,7 +9372,7 @@ mod tests {
             let metadata = std::fs::metadata(&home).unwrap();
             assert_eq!(
                 plan.home_policy,
-                super::super::migration_handoff::HomePolicy::AccessReadWrite
+                imager_backend::setup::migration_handoff::HomePolicy::AccessReadWrite
             );
             let persisted =
                 std::fs::read(intent.directory().join("migration-intent.json")).unwrap();
@@ -9465,13 +9428,13 @@ mod tests {
             preview.journey.categories = [true, false, false];
             preview.accounts = accounts;
             preview.belongings =
-                belongings::Belongings::from_roots(super::super::account_transfer::SourceRoots {
+                belongings::Belongings::from_roots(imager_backend::account_transfer::SourceRoots {
                     home: home.clone(),
                     config: root.path().join("config"),
                 });
             preview.migration_selection.permission_reply = Some(receiver);
             preview.migration_selection.capture =
-                Some(super::super::migration_handoff::capture_fixture);
+                Some(imager_backend::setup::migration_handoff::capture_fixture);
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -9577,14 +9540,14 @@ mod tests {
             // Belongings check inspected the process Home, and its result must
             // not decide whether this source has content to capture.
             preview.belongings_worker = None;
-            let roots = super::super::account_transfer::SourceRoots {
+            let roots = imager_backend::account_transfer::SourceRoots {
                 home: home.clone(),
                 config: home.join(".config"),
             };
             let mut belongings = super::belongings::Belongings {
                 home: Some(home.clone()),
                 roots: Some(roots.clone()),
-                accounts: super::super::account_transfer::discover(&roots),
+                accounts: imager_backend::account_transfer::discover(&roots),
                 ..Default::default()
             };
             belongings.source_selection = super::source_selection::SourceSelection::discover(
@@ -9720,7 +9683,7 @@ mod tests {
             preview.journey.migrate = Some(true);
             preview.journey.categories = [true, false, false];
             preview.belongings =
-                belongings::Belongings::from_roots(super::super::account_transfer::SourceRoots {
+                belongings::Belongings::from_roots(imager_backend::account_transfer::SourceRoots {
                     home: home.clone(),
                     config: root.path().join("config"),
                 });
@@ -9887,7 +9850,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|item| item["native"]
-                    == serde_json::to_value(super::super::migration_store::NativePath::encode(
+                    == serde_json::to_value(imager_backend::migration_store::NativePath::encode(
                         std::path::Path::new(&non_utf8)
                     ))
                     .unwrap())
@@ -9911,7 +9874,7 @@ mod tests {
         );
         assert!(page["items"].as_array().unwrap().iter().any(|item| {
             item["native"]
-                == serde_json::to_value(super::super::migration_store::NativePath::encode(
+                == serde_json::to_value(imager_backend::migration_store::NativePath::encode(
                     std::path::Path::new(&non_utf8),
                 ))
                 .unwrap()
@@ -10121,7 +10084,7 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let authenticated = crate::setup::prepared_setup::PreparedSetupReview::open(
+        let authenticated = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
             &package,
             b"preview-secret-only",
             &root.path().join("checked"),

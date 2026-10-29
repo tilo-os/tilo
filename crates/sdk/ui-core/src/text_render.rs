@@ -741,21 +741,12 @@ impl HangingPunctuation {
     };
 }
 
-/// Minimum line counts retained on either side of a page/column break.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Fragmentation {
-    pub orphans: u8,
-    pub widows: u8,
-}
-
-impl Default for Fragmentation {
-    fn default() -> Self {
-        Self {
-            orphans: 2,
-            widows: 2,
-        }
-    }
-}
+/// Minimum line counts retained on either side of a page/column break: the
+/// rule every paged layout shares.
+pub use tilo_doc::paging::Fragmentation;
+/// The page-break rules every paged layout shares: fit, manual breaks,
+/// widow and orphan splits, headings kept with their text.
+pub use tilo_doc::paging;
 
 impl Hyphenation {
     pub(crate) fn language(&self) -> Option<hypher::Lang> {

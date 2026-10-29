@@ -69,20 +69,6 @@ impl Place {
     /// The places the window shows, in the bar's order.
     pub(crate) const ALL: [Self; 4] = [Self::List, Self::Board, Self::Tasks, Self::Thread];
 
-    pub(crate) const fn key(self) -> &'static str {
-        match self {
-            Self::List => "list",
-            Self::Board => "board",
-            Self::Thread => "thread",
-            Self::Tasks => "tasks",
-        }
-    }
-
-    /// The place a bar view's key names, if it names one.
-    pub(crate) fn of(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|place| place.key() == key)
-    }
-
     /// The place as the window bar and the bar's view switcher name it.
     pub(crate) fn title(self) -> String {
         match self {

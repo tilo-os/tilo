@@ -55,6 +55,7 @@ pub mod call;
 mod channel_sheet;
 pub mod composer;
 pub mod continuity;
+#[cfg(feature = "samples")]
 pub mod demo;
 pub mod drafts;
 pub mod effects;

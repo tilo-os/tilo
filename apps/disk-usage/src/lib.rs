@@ -5,8 +5,8 @@
     reason = "bounded app-local chart and filesystem arithmetic"
 )]
 
-pub mod app;
 pub mod resource;
 pub mod scan;
+mod view;
 
 pub use resource::{DiskUsage, DiskUsageShell};

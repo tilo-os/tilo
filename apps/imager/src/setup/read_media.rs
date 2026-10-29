@@ -1,7 +1,7 @@
 //! Compatibility boundary: native read authority lives in the backend, while
 //! the frontend observes abandoned-child retirement on its canonical runtime.
-use super::migration_intent::MigrationIntent;
 use crate::model::TargetDrive;
+use imager_backend::setup::migration_intent::MigrationIntent;
 use imager_backend::setup::read_media as native;
 use std::{io, sync::atomic::AtomicBool};
 

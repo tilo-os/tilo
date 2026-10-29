@@ -25,7 +25,7 @@ impl Transfer {
         destination: PathBuf,
         journals: PathBuf,
         categories: [bool; 3],
-        refs: Vec<super::super::flatpak_transfer::InstalledRef>,
+        refs: Vec<imager_backend::setup::flatpak_transfer::InstalledRef>,
         prepared_accounts: Option<super::accounts::PreparedAccounts>,
     ) -> Result<(), &'static str> {
         journey_transfer::ensure_supported()?;
@@ -63,7 +63,7 @@ impl Transfer {
         directory: PathBuf,
         operation: String,
         categories: [bool; 3],
-        refs: Vec<super::super::flatpak_transfer::InstalledRef>,
+        refs: Vec<imager_backend::setup::flatpak_transfer::InstalledRef>,
     ) -> Result<(), &'static str> {
         journey_transfer::ensure_supported()?;
         if self.busy() {
@@ -375,7 +375,7 @@ mod tests {
         wait(&mut transfer);
         let reviewed = transfer.status();
         assert_eq!(reviewed["state"], "reviewed", "{reviewed}");
-        let native: super::super::super::migration_store::NativePath =
+        let native: imager_backend::migration_store::NativePath =
             serde_json::from_value(reviewed["result"]["target"]["native"].clone()).unwrap();
         assert_eq!(native.decode().unwrap(), target);
         transfer.start(false, [true, false, false]).unwrap();
@@ -386,7 +386,7 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(skipped.len(), 1, "{finished}");
-        let native: super::super::super::migration_store::NativePath =
+        let native: imager_backend::migration_store::NativePath =
             serde_json::from_value(skipped[0]["path"]["native"].clone()).unwrap();
         assert_eq!(native.decode().unwrap(), std::path::Path::new(name));
         assert_eq!(

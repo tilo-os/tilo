@@ -55,14 +55,14 @@ fn choose(app: &mut App, choice: &str) {
 fn prepare(
     app: &mut App,
     picture: &std::path::Path,
-) -> std::sync::Arc<super::super::prepared_identity::PreparedIdentity> {
+) -> std::sync::Arc<imager_backend::prepared_identity::PreparedIdentity> {
     prepare_with_migration(app, picture, false)
 }
 fn prepare_with_migration(
     app: &mut App,
     picture: &std::path::Path,
     migrate: bool,
-) -> std::sync::Arc<super::super::prepared_identity::PreparedIdentity> {
+) -> std::sync::Arc<imager_backend::prepared_identity::PreparedIdentity> {
     wait(app, |state| state["restart"]["state"] == "missing");
     choose(app, "computer");
     accept_compatibility(app);

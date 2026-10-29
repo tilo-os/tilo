@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["shortcuts-samples"]
+
 [lib]
 name = "shortcuts"
 path = "src/lib.rs"
@@ -29,7 +33,10 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-shortcuts = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `shortcuts` claims `--features shortcuts/thin` in the
+# collection build, and the app then links the whole runtime statically.
+shortcuts-samples = { package = "shortcuts", path = ".", features = ["samples"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

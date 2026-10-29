@@ -1,5 +1,5 @@
 //! Device-local identity work. Custody persists independently of this controller.
-use super::super::prepared_identity::PreparedIdentity;
+use imager_backend::prepared_identity::PreparedIdentity;
 use std::{
     path::PathBuf,
     sync::{Arc, mpsc},
@@ -21,7 +21,7 @@ enum ResultValue {
     Exported(runtime_identity::PortableBackupInfo),
     AccountsExported(usize),
     #[cfg(target_os = "linux")]
-    SetupExported(super::super::portable_transfer::PackageInfo),
+    SetupExported(imager_backend::setup::portable_transfer::PackageInfo),
 }
 
 struct PhotoEdit {
@@ -183,7 +183,7 @@ impl Personal {
                 } else {
                     let directory = pending.as_ref().ok_or(())?.identity_directory();
                     let pin = ensure_private_tree(directory.parent().ok_or(())?).map_err(|_| ())?;
-                    super::super::destination_security::check_private_file(&pin.file)
+                    imager_backend::destination_security::check_private_file(&pin.file)
                         .map_err(|_| ())?;
                     Arc::new(
                         PreparedIdentity::create(
@@ -390,16 +390,16 @@ impl Personal {
             .clone()
             .ok_or("installer-preview-identity-not-prepared")?;
         self.start("exporting-setup", move || {
-            use super::super::{portable_transfer, prepared_setup};
+            use imager_backend::setup::{portable_transfer, prepared_setup};
             imager_backend::startup_password::validate(&password).map_err(|_| ())?;
-            let parent = super::super::migration::PinnedDirectory::open_absolute(
+            let parent = imager_backend::migration::PinnedDirectory::open_absolute(
                 destination.parent().ok_or(())?,
             )
             .map_err(|_| ())?;
             parent.validate_destination().map_err(|_| ())?;
-            super::super::destination_security::check_private_file(&parent.file).map_err(|_| ())?;
+            imager_backend::destination_security::check_private_file(&parent.file).map_err(|_| ())?;
             if let Some(source) = source_home {
-                let source = super::super::migration::PinnedDirectory::open_absolute(&source)
+                let source = imager_backend::migration::PinnedDirectory::open_absolute(&source)
                     .map_err(|_| ())?;
                 if parent.contains_identity(&source.identity) {
                     return Err(());
@@ -434,7 +434,7 @@ impl Personal {
                     .map_err(|_| ())?;
             }
             if !manifest.account_ids.is_empty() {
-                if super::super::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
+                if imager_backend::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
                     &root.join(prepared_setup::ACCOUNTS_FILE),
                     password.as_bytes(),
                     binding.as_bytes(),

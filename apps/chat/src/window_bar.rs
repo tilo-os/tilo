@@ -22,10 +22,9 @@ pub(crate) type BarEntries = BarCommands<Hit>;
 
 impl ChatApp {
     fn window_bar_actions(&self) -> Vec<ToolbarAction> {
-        let hits = &self.bar_entries;
         let mut actions = Vec::new();
         if self.sharing_context {
-            actions.push(hits.entry(
+            actions.push(self.bar_entries.entry(
                 "eye-off",
                 crate::i18n::t("chat-context-stop"),
                 Hit::StopSharingLiveContext,
@@ -37,7 +36,10 @@ impl ChatApp {
             } else {
                 "chat-agent-float"
             });
-            actions.push(hits.entry("external-link", label, Hit::AgentWindow));
+            actions.push(
+                self.bar_entries
+                    .entry("external-link", label, Hit::AgentWindow),
+            );
         }
         // The call in progress, its microphone and leaving it, whatever the
         // window shows and whoever else is in the room: someone alone in a
@@ -48,7 +50,11 @@ impl ChatApp {
                 || crate::i18n::t("chat-header-call-open"),
                 |channel| channel.name.clone(),
             );
-            actions.push(hits.entry("volume-2", name, Hit::StartCall).on(true));
+            actions.push(
+                self.bar_entries
+                    .entry("volume-2", name, Hit::StartCall)
+                    .on(true),
+            );
             // The microphone stays at hand wherever the call is.
             let (icon, label) = if self.microphone_missing() {
                 ("mic-off", "chat-call-no-microphone")
@@ -57,7 +63,10 @@ impl ChatApp {
             } else {
                 ("mic", "chat-call-mute")
             };
-            actions.push(hits.entry(icon, crate::i18n::t(label), Hit::CallMute));
+            actions.push(
+                self.bar_entries
+                    .entry(icon, crate::i18n::t(label), Hit::CallMute),
+            );
             // Hearing the call, beside speaking into it: in the menu, so
             // the row keeps the call, its microphone and Leave.
             let (icon, label) = if self.call.deafened {
@@ -66,46 +75,52 @@ impl ChatApp {
                 ("headphones", "chat-call-deafen")
             };
             actions.push(
-                hits.entry(icon, crate::i18n::t(label), Hit::CallDeafen)
+                self.bar_entries
+                    .entry(icon, crate::i18n::t(label), Hit::CallDeafen)
                     .on(self.call.deafened)
                     .in_menu(),
             );
             actions.push(
-                hits.entry(
-                    "phone-off",
-                    crate::i18n::t("chat-call-leave-action"),
-                    Hit::CallLeave,
-                )
-                .destructive(),
+                self.bar_entries
+                    .entry(
+                        "phone-off",
+                        crate::i18n::t("chat-call-leave-action"),
+                        Hit::CallLeave,
+                    )
+                    .destructive(),
             );
         }
         if self.direct_person.is_none() && self.has_other_collaborator() {
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
             actions.push(
-                hits.entry("pin", crate::i18n::t("chat-pins"), Hit::TogglePins)
+                self.bar_entries
+                    .entry("pin", crate::i18n::t("chat-pins"), Hit::TogglePins)
                     .on(pins),
             );
             let people = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
             actions.push(
-                hits.entry("users", self.roster_label(), Hit::ToggleRightFlap)
+                self.bar_entries
+                    .entry("users", self.roster_label(), Hit::ToggleRightFlap)
                     .on(people),
             );
         }
         if self.direct_person.is_none() {
             for command in self.model_controls(&self.active_channel) {
                 actions.push(
-                    hits.entry(
-                        "sparkles",
-                        crate::i18n::t(&format!("chat-model-{command}")),
-                        Hit::HostModel(command.into()),
-                    )
-                    .in_menu(),
+                    self.bar_entries
+                        .entry(
+                            "sparkles",
+                            crate::i18n::t(&format!("chat-model-{command}")),
+                            Hit::HostModel(command.into()),
+                        )
+                        .in_menu(),
                 );
             }
         }
         if self.keeps_layout() && self.direct_person.is_none() {
             actions.push(
-                hits.entry("plus", crate::i18n::t("chat-create-menu"), Hit::AddCategory)
+                self.bar_entries
+                    .entry("plus", crate::i18n::t("chat-create-menu"), Hit::AddCategory)
                     .in_menu(),
             );
         }
@@ -158,7 +173,7 @@ impl ChatApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run what the person did in the window's bar as the window's own hits.
+    /// Run what the person did in the window's bar as the window's own self.bar_entries.
     pub(crate) fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
             // A thread that fills the window: its Back returns to the

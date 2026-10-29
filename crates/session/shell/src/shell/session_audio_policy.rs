@@ -430,7 +430,7 @@ impl PolicyEnv for LiveEnv {
         let events = self.events.clone();
         // A file watch on the socket's directory, reporting only events that
         // name the socket: what the settings file's watch is.
-        self.daemon_watch = settings_store::watch::watch_settings_at(&socket, move || {
+        self.daemon_watch = settings_store::watch::watch_file_at(&socket, move || {
             let _ = events.send(PolicyEvent::DaemonChanged);
         })
         .inspect_err(

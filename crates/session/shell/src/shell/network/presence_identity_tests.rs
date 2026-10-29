@@ -49,7 +49,6 @@ fn says_hello(
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations: Vec::new(),
-            successions: Vec::new(),
         },
     );
 }

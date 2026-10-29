@@ -317,8 +317,7 @@ fn a_side_panel_is_as_wide_as_the_person_dragged_it_within_the_themes_bounds() {
     let shared: SharedEngine = ui::webview::test_engine::TestEngine::new();
     let dir = tempfile::tempdir().unwrap();
     let store = || {
-        ui::storage::Settings::<SidePanelWidths>::for_app("so.tilo.browser")
-            .in_file(dir.path().join("settings.json"))
+        ui::storage::Settings::<SidePanelWidths>::for_app("so.tilo.browser").in_profile(dir.path())
     };
     let (notes, other) = ("n".repeat(32), "o".repeat(32));
     let open = |controller: &mut ExtensionController, id: &str| {

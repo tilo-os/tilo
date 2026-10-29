@@ -45,7 +45,7 @@ chrono.workspace = true
 tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }
 
 [dev-dependencies]
-chat = { path = "../../../apps/chat", default-features = false }
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }
 tilo-app-state = { path = "../../system/app-state" }

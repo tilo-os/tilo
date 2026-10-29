@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["ebook-samples"]
+
 [lib]
 name = "ebook"
 path = "src/lib.rs"
@@ -37,6 +41,7 @@ blake3.workspace = true
 # Where a host that has no files for it (the browser) keeps an opened book's
 # bytes, by content hash; the library row names the hash.
 tilo-content = { path = "../../crates/system/content", default-features = false }
+# Page breaking shared with the word processor and its PDF export.
 # The published tree, effects and live rows the reader adds beside the library.
 tilo-actions = { path = "../../crates/collab/actions" }
 # Notes and comments are rich text, written in the SDK editor.
@@ -64,7 +69,10 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
 
 [dev-dependencies]
-ebook = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `ebook` claims `--features ebook/thin` in the
+# collection build, and the app then links the whole runtime statically.
+ebook-samples = { package = "ebook", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # Encodes cover fixtures.

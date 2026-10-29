@@ -6,11 +6,11 @@ impl PreparedMedia {
     pub(in crate::setup) fn prepare_applications_offline(
         self: &Arc<Self>,
         media: &Arc<OfflineMediaReview>,
-        intent: &super::super::super::super::migration_intent::MigrationIntent,
+        intent: &imager_backend::setup::migration_intent::MigrationIntent,
         password: Zeroizing<Vec<u8>>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        super::super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         let mut generation = self
             .transfer_generation
             .lock()
@@ -87,7 +87,7 @@ impl PreparedMedia {
         if intent.for_pending_applications()? != plan {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
-        super::super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         *generation = Some(Arc::clone(&prepared));
         Ok(prepared)
     }

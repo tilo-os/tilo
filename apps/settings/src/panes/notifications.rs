@@ -1001,7 +1001,7 @@ mod tests {
     #[test]
     fn the_pane_follows_the_policy() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let area = NotificationsArea {
             cx: cx.clone(),
             prefs: RefCell::new(cx.follow::<NotificationPrefs>()),

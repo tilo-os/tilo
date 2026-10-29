@@ -8,9 +8,8 @@ pub use ui::mpris::{
     track_object_path,
 };
 
-/// The bus identity also used by the shell's playback handoff record.
-pub const BUS_NAME: &str = "org.mpris.MediaPlayer2.tilo-music";
-
+/// Music's player. Its bus name, also named in the shell's playback handoff
+/// record, is the launched package's (see [`MprisConfig::new`]).
 pub fn config() -> MprisConfig {
     let mut config = MprisConfig::new("tilo-music", "Tilo Music");
     config.desktop_entry = "music".into();
@@ -52,7 +51,7 @@ mod tests {
     #[test]
     fn shared_media_control_retains_music_identity() {
         let config = config();
-        assert_eq!(config.bus_name, BUS_NAME);
+        assert!(config.bus_name.starts_with("org.mpris.MediaPlayer2."));
         assert_eq!(config.identity, "Tilo Music");
         assert_eq!(config.desktop_entry, "music");
         assert_eq!(config.supported_uri_schemes, ["http", "https"]);

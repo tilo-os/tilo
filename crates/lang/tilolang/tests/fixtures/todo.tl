@@ -24,8 +24,8 @@ action remove(list: TodoList, item: Todo) {
     list.items.remove(item)
 }
 
-action move_to(list: TodoList, item: Todo, index: Int) {
-    list.items.move(item, index)
+action move_before(list: TodoList, item: Todo, other: Todo) {
+    list.items.move(item, before: other)
 }
 
 action rename(list: TodoList, name: Text) {

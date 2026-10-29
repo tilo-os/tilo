@@ -1,11 +1,11 @@
 //! Windows prepares selected local data and private sign-in suggestions only.
 //! Identity enrollment and account authorization happen later in the live OS.
 use super::*;
-use crate::setup::windows_inventory::{Decision, RootRole, SelectedRoot};
+use imager_backend::windows_inventory::{Decision, RootRole, SelectedRoot};
 use std::path::Path;
 
 enum Discovery {
-    Suggestions(Vec<crate::setup::windows_inventory::RootSuggestion>),
+    Suggestions(Vec<imager_backend::windows_inventory::RootSuggestion>),
     Granted {
         selected: Vec<SelectedRoot>,
         belongings: belongings::Belongings,
@@ -17,7 +17,7 @@ enum Discovery {
 pub(super) struct Preparation {
     pub enabled: bool,
     selected: Vec<SelectedRoot>,
-    suggestions: Vec<crate::setup::windows_inventory::RootSuggestion>,
+    suggestions: Vec<imager_backend::windows_inventory::RootSuggestion>,
     hints: Vec<imager_backend::windows_preparation::AccountHint>,
     password: ui::LocalState<String>,
     exclusion_reason: ui::LocalState<String>,
@@ -189,7 +189,8 @@ impl InstallerPreview {
                 self.windows.source_worker = Some(rx);
                 std::thread::spawn(move || {
                     let _ = tx.send(
-                        super::super::windows_inventory::suggestions().map(Discovery::Suggestions),
+                        imager_backend::windows_inventory::suggestions()
+                            .map(Discovery::Suggestions),
                     );
                 });
             }
@@ -223,9 +224,9 @@ impl InstallerPreview {
                     let result =
                         belongings::Belongings::from_windows_roots(&selected).map(|belongings| {
                             let profiles =
-                                super::super::account_transfer::native_windows_profiles();
+                                imager_backend::account_transfer::native_windows_profiles();
                             let hints_unavailable = profiles.is_err();
-                            let hints = super::super::account_transfer::private_windows_hints(
+                            let hints = imager_backend::account_transfer::private_windows_hints(
                                 &selected,
                                 &profiles.unwrap_or_default(),
                             );
@@ -673,7 +674,7 @@ impl InstallerPreview {
                                 "local"
                             } else {
                                 match entry.availability {
-                                    crate::setup::windows_inventory::Availability::Placeholder => {
+                                    imager_backend::windows_inventory::Availability::Placeholder => {
                                         "placeholder"
                                     }
                                     _ => "unsupported",
@@ -790,8 +791,8 @@ impl InstallerPreview {
     }
 }
 
-fn categories() -> [crate::setup::windows_inventory::Category; 9] {
-    use crate::setup::windows_inventory::Category::{
+fn categories() -> [imager_backend::windows_inventory::Category; 9] {
+    use imager_backend::windows_inventory::Category::{
         GameInstallation, GameMod, GameSave, MailArchive, MailCacheOrDrafts, PersonalFiles,
         PotentiallyUnique, SteamUserdata, SyncData,
     };
@@ -808,8 +809,8 @@ fn categories() -> [crate::setup::windows_inventory::Category; 9] {
     ]
 }
 
-fn category_id(category: crate::setup::windows_inventory::Category) -> &'static str {
-    use crate::setup::windows_inventory::Category::{
+fn category_id(category: imager_backend::windows_inventory::Category) -> &'static str {
+    use imager_backend::windows_inventory::Category::{
         GameInstallation, GameMod, GameSave, MailArchive, MailCacheOrDrafts, PersonalFiles,
         PotentiallyUnique, SteamUserdata, SyncData,
     };
@@ -843,8 +844,8 @@ use imager_backend::windows_preparation::export;
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use crate::setup::windows_inventory::Inventory;
     use InstallerPreviewEffect::*;
+    use imager_backend::windows_inventory::Inventory;
 
     thread_local! {
         static OPENED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -1199,7 +1200,7 @@ mod tests {
 
     #[test]
     fn windows_export_keeps_registry_account_identities_out_of_public_media_json() {
-        use crate::setup::account_transfer::{WindowsProfile, private_windows_hints};
+        use imager_backend::account_transfer::{WindowsProfile, private_windows_hints};
         let source = tempfile::tempdir().unwrap();
         let destination = tempfile::tempdir().unwrap();
         let selected = [SelectedRoot {

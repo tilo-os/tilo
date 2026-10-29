@@ -3,7 +3,7 @@
 //! app: a press-drag reaches the reader through the strip and its window, and
 //! Ctrl+C copies what it selected.
 
-use std::{rc::Rc, time::Duration};
+use std::rc::Rc;
 
 use serial_test::serial;
 use tilo_desktop_model::{IdMinter, Tab, TileContent, Workspace};
@@ -96,17 +96,12 @@ fn reader<T>(h: &mut FrameHarness, nth: usize, visit: impl FnOnce(&mut PdfApp) -
 
 /// Run the desktop's frames until `done` holds of the right-hand reader.
 fn settle(h: &mut FrameHarness, mut done: impl FnMut(&PdfApp) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the reader to settle", || {
         let _ = h.poll_frame();
         h.relayout();
         h.service_pending_owner_models().expect("owner models");
-        if reader(h, 1, |pdf| done(pdf)).unwrap_or(false) {
-            return;
-        }
-        assert!(ui::time::now() < deadline, "the reader never settled");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        reader(h, 1, |pdf| done(pdf)).unwrap_or(false)
+    });
 }
 
 #[serial(clipboard, pdfium)]

@@ -4515,7 +4515,7 @@ impl ActorState {
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
-    /// for the room and the revocations and successions that come with it.
+    /// for the room and the revocations that come with it.
     fn identity_hello(&self, ws: WorkspaceId) -> Option<NeighbourMsg> {
         let identity = self.host_identity.as_ref()?;
         let (cert, revocations) = identity.material_for(ws);
@@ -4523,7 +4523,6 @@ impl ActorState {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert),
             revocations,
-            successions: identity.successions_for(ws),
         })
     }
 

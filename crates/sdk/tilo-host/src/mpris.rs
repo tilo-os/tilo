@@ -55,9 +55,18 @@ pub struct MprisConfig {
 }
 
 impl MprisConfig {
+    /// The player of this process, shown as `identity`. Its bus name is the
+    /// launched package's (`org.mpris.MediaPlayer2.<package id>`, the one
+    /// name a sandboxed package may own), else `app_id`'s for an app run
+    /// outside a launcher; `app_id` is also the `DesktopEntry`.
     pub fn new(app_id: &str, identity: &str) -> Self {
+        Self::for_host(&crate::host::environment().identity, app_id, identity)
+    }
+
+    /// [`Self::new`] for the process `host` describes.
+    pub fn for_host(host: &crate::host::HostIdentity, app_id: &str, identity: &str) -> Self {
         Self {
-            bus_name: format!("org.mpris.MediaPlayer2.{app_id}"),
+            bus_name: host.media_player_bus_name(app_id),
             identity: identity.to_string(),
             desktop_entry: app_id.to_string(),
             supported_uri_schemes: vec!["http".into(), "https".into(), "file".into()],
@@ -281,7 +290,8 @@ mod tests {
         }
 
         {
-            let c = MprisConfig::new("tilo-tube", "Tilo Tube");
+            let unlaunched = crate::host::HostIdentity::default();
+            let c = MprisConfig::for_host(&unlaunched, "tilo-tube", "Tilo Tube");
             assert_eq!(c.bus_name, "org.mpris.MediaPlayer2.tilo-tube");
             assert_eq!(c.identity, "Tilo Tube");
             assert_eq!(c.desktop_entry, "tilo-tube");
@@ -299,6 +309,31 @@ mod tests {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'/' || b == b'_')
             );
         }
+    }
+
+    #[test]
+    fn a_launched_package_names_its_player_as_the_launcher_grants() {
+        // The sandbox's session bus lets a package own only
+        // `media_player_bus_name(<package id>)`; whatever id the app passes,
+        // its session must request that name or the bus refuses the player.
+        let launched = crate::host::HostIdentity {
+            package_id: Some("so.tilo.music".into()),
+            ..crate::host::HostIdentity::default()
+        };
+        let (services, recorder) = crate::host::HostServices::recording();
+        crate::host::scoped(&services, || {
+            let _handle = MprisHandle::spawn(
+                MprisConfig::for_host(&launched, "tilo-music", "Tilo Music"),
+                PlayerSnapshot::default(),
+            );
+        });
+        let [started] = recorder.media_sessions().try_into().expect("one session");
+        assert_eq!(
+            started.bus_name,
+            crate::host::environment::media_player_bus_name("so.tilo.music")
+        );
+        assert_eq!(started.bus_name, "org.mpris.MediaPlayer2.so.tilo.music");
+        assert_eq!(started.desktop_entry, "tilo-music");
     }
 
     #[test]

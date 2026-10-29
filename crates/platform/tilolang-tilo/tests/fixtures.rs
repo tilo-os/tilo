@@ -28,7 +28,9 @@ type TodoList {
 
 action add(l: TodoList, text: Text) { l.items.insert(Item(text: text, done: false)) }
 
-action move_first(l: TodoList, i: Item) { l.items.move(i, 0) }
+action move_first(l: TodoList, i: Item) {
+  if let first = l.items.first() { l.items.move(i, before: first) }
+}
 
 action tag(l: TodoList, t: Text) { l.tags.add(t) }
 

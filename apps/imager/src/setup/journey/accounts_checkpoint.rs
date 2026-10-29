@@ -36,7 +36,7 @@ pub(super) struct Worker {
 impl Worker {
     pub(super) fn save(
         handle: Option<PreparedAccounts>,
-        guard: crate::setup::account_transfer::DestinationGuard,
+        guard: imager_backend::account_transfer::DestinationGuard,
         root: std::path::PathBuf,
         binding: String,
         group: [u8; 32],

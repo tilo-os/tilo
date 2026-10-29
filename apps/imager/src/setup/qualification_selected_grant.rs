@@ -1,9 +1,12 @@
 //! Genuine original-user producer for the optional receiving Apps+Home case.
 //! Every declaration below comes from the normal capture and registration path.
-use crate::setup::{
-    flatpak_transfer::InstalledRef, journey::prepared_media::PreparedMedia,
-    migration_intent::MigrationIntent, prepared_identity::PreparedIdentity,
-    prepared_setup::PreparedSetupReview, staging,
+use crate::setup::{journey::prepared_media::PreparedMedia, staging};
+use imager_backend::{
+    prepared_identity::PreparedIdentity,
+    setup::{
+        flatpak_transfer::InstalledRef, migration_intent::MigrationIntent,
+        prepared_setup::PreparedSetupReview,
+    },
 };
 use std::{
     io,

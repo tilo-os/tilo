@@ -43,16 +43,18 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
-### On the rcargo builder
+### On a remote builder
 
-`tools/ci/builder-vm.sh` runs the whole thing on the rcargo builder from this worktree, with
-nothing heavy on this machine. The builder has no loop devices or root, so the disk is
+`tools/ci/builder-vm.sh` runs the whole thing on the builder of a remote cargo drop-in from
+this worktree, with nothing heavy on this machine. `TILO_REMOTE_CARGO` names the drop-in and
+`TILO_REMOTE_CARGO_ROOT` its directory on the builder (the script's header says what it
+expects of both). The builder has no loop devices or root, so the disk is
 installed the way `os-dev-disk` installs it (`tools/ci/publish/os-dev-disk.sh`), but inside a
 worker VM booted from main's newest published dev disk, with a work disk beside it. The image
 has the Browser and Mail, as CI and releases build it (`TILO_WITH_BROWSER=0` leaves them out):
 
 ```bash
-tools/ci/builder-vm.sh image        # the dev image, built with the worktree's rcargo build image
+tools/ci/builder-vm.sh image        # the dev image, built with the worktree's remote build image
 tools/ci/builder-vm.sh disk         # that image installed onto a disk, in a worker VM
 tools/ci/builder-vm.sh acceptance   # every shard at once, one VM host container each
 tools/ci/builder-vm.sh acceptance --only A15,W16   # just these, in the shards that hold them
@@ -61,15 +63,15 @@ tools/ci/builder-vm.sh clean        # this worktree's run containers and run scr
                                     # its image and disk too)
 ```
 
-- **Where things live.** Everything stays under `/srv/rcargo/scratch/builder-vm` on the
-  builder: `stores/<worktree>` (the podman store the worktree's image builds write),
+- **Where things live.** Everything stays under `$TILO_REMOTE_CARGO_ROOT/scratch/builder-vm`
+  on the builder: `stores/<worktree>` (the podman store the worktree's image builds write),
   `store` (the shared one beneath them, read only, whose layers still count as build
   cache), `out/<worktree>` (the OS build's output and caches), `images/<digest>` (the
   image's OCI layout), `disks/<digest>` (its disk, with its install log), `base/<tag>` (the
   published disk the worker boots), `worker-vm` (the worker's work disk) and `runs/<run>`
   (each run's reports).
-- **What makes a re-run warm.** The image build runs in a container of its own (rcargo
-  stops idle worktree containers and prunes its shared store, which a long build does not
+- **What makes a re-run warm.** The image build runs in a container of its own (a drop-in
+  may stop idle worktree containers and prune its shared store, which a long build does not
   survive), with a podman store and the OS build's cargo and sccache caches that outlive
   it. The base is rebuilt only when a file its build reads changed
   (`os/dev/base-input-paths.py`), so a change to the harness, a CI script or a doc reuses it.
