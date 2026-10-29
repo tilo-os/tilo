@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, anyhow, bail};
 use git2::{
-    ApplyLocation, ApplyOptions, BranchType, Delta, DiffFormat, DiffOptions, IndexAddOption,
-    ObjectType, Repository, ResetType, Sort, Status, StatusOptions,
+    ApplyLocation, ApplyOptions, BranchType, Delta, DiffDelta, DiffFindOptions, DiffFormat,
+    DiffOptions, IndexAddOption, ObjectType, Repository, ResetType, Sort, Status, StatusOptions,
 };
 
 use crate::diff::{language_for, parse_unified};
@@ -127,16 +127,20 @@ fn classify_worktree(status: Status) -> Option<(ChangeArea, ChangeKind)> {
 
 fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
     let mut opts = StatusOptions::new();
+    // A staged rename is one row, as `git status` shows it. A file moved but
+    // not yet staged stays its deleted old path and its untracked new path,
+    // so each row's actions act on exactly the path the row names.
     opts.include_untracked(true)
         .recurse_untracked_dirs(true)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
+        .renames_head_to_index(true);
     let Ok(statuses) = repo.statuses(Some(&mut opts)) else {
         return;
     };
 
     for entry in statuses.iter() {
         let st = entry.status();
+        // `path()` is the entry's *old* path; a renamed row is named by the
+        // path the file has now.
         let path = entry.path().unwrap_or("").to_string();
         if path.is_empty() {
             continue;
@@ -144,9 +148,20 @@ fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
 
         // A file can have both a staged and a worktree change; record each.
         if let Some((area, kind)) = classify(st) {
+            let staged = entry.head_to_index();
+            let new_path = staged
+                .as_ref()
+                .and_then(delta_new_path)
+                .unwrap_or_else(|| path.clone());
+            let old_path = staged
+                .as_ref()
+                .filter(|_| kind == ChangeKind::Renamed)
+                .and_then(|delta| delta.old_file().path())
+                .map(|old| old.to_string_lossy().into_owned())
+                .filter(|old| *old != new_path);
             model.staged.push(FileChange {
-                path: path.clone(),
-                old_path: None,
+                path: new_path,
+                old_path,
                 area,
                 kind,
                 additions: 0,
@@ -155,7 +170,11 @@ fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
         }
         if let Some((area, kind)) = classify_worktree(st) {
             let fc = FileChange {
-                path: path.clone(),
+                path: entry
+                    .index_to_workdir()
+                    .as_ref()
+                    .and_then(delta_new_path)
+                    .unwrap_or_else(|| path.clone()),
                 old_path: None,
                 area,
                 kind,
@@ -175,6 +194,13 @@ fn read_status(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
     collect_index_diffs(repo, model, diffs);
 }
 
+fn delta_new_path(delta: &DiffDelta<'_>) -> Option<String> {
+    delta
+        .new_file()
+        .path()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 fn collect_worktree_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut DiffMap) {
     let mut opts = DiffOptions::new();
     opts.include_untracked(true)
@@ -191,9 +217,12 @@ fn collect_index_diffs(repo: &Repository, model: &mut RepoModel, diffs: &mut Dif
     let head_tree = repo.head().ok().and_then(|h| h.peel_to_tree().ok());
     let mut opts = DiffOptions::new();
     opts.context_lines(3);
-    let Ok(diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) else {
+    let Ok(mut diff) = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut opts)) else {
         return;
     };
+    // Pair a staged deletion with its added copy, as the status list does,
+    // so a renamed row's diff is the rename rather than a whole-file add.
+    let _ = diff.find_similar(Some(DiffFindOptions::new().renames(true)));
     fold_diff(&diff, model, diffs, true);
 }
 
@@ -223,10 +252,11 @@ fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, stag
 
     for (path, raw) in raw_by_path {
         let mut fd = parse_unified(&path, &language_for(&path), &raw);
-        if let Some(delta) = find_delta(diff, &path) {
+        if let Some((delta, old_path)) = find_delta(diff, &path) {
             match delta {
                 Delta::Added | Delta::Untracked => fd.is_new = true,
                 Delta::Deleted => fd.is_deleted = true,
+                Delta::Renamed => fd.old_path = old_path.filter(|old| *old != path),
                 _ => {}
             }
         }
@@ -261,7 +291,8 @@ fn fold_diff(diff: &git2::Diff, model: &mut RepoModel, diffs: &mut DiffMap, stag
     }
 }
 
-fn find_delta(diff: &git2::Diff, path: &str) -> Option<Delta> {
+/// The status of `path`'s delta in `diff`, with the path it had before.
+fn find_delta(diff: &git2::Diff, path: &str) -> Option<(Delta, Option<String>)> {
     for d in diff.deltas() {
         let p = d
             .new_file()
@@ -270,7 +301,11 @@ fn find_delta(diff: &git2::Diff, path: &str) -> Option<Delta> {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         if p == path {
-            return Some(d.status());
+            let old = d
+                .old_file()
+                .path()
+                .map(|p| p.to_string_lossy().into_owned());
+            return Some((d.status(), old));
         }
     }
     None

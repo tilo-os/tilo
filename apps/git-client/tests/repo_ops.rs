@@ -1060,3 +1060,80 @@ fn linked_worktree_enumeration_errors_preserve_the_repository() {
         "bare checkout absence is explicit"
     );
 }
+
+/// A staged rename (`git mv`) is listed under the path the file has now with
+/// the path it came from beside it, its diff is found under that row's path,
+/// and unstaging the row puts both paths back. Moved but not yet staged, the
+/// file is listed as `git status` lists it: the old path deleted and the new
+/// one untracked, each with actions that act on exactly that path.
+#[test]
+fn a_staged_rename_lists_its_new_path_and_unstages_both_sides() {
+    use git_client::model::{ChangeKind, DiffKey};
+
+    let (_d, path) = init_repo();
+    fs::rename(path.join("file.txt"), path.join("moved.txt")).unwrap();
+    {
+        let repo = open(&path);
+        let mut index = repo.index().unwrap();
+        index.remove_path(Path::new("file.txt")).unwrap();
+        index.add_path(Path::new("moved.txt")).unwrap();
+        index.write().unwrap();
+    }
+
+    let (model, diffs) = repo::load(&path).expect("load repo");
+    let staged: Vec<_> = model
+        .staged
+        .iter()
+        .map(|f| (f.path.as_str(), f.old_path.as_deref(), f.kind))
+        .collect();
+    assert_eq!(
+        staged,
+        vec![("moved.txt", Some("file.txt"), ChangeKind::Renamed)],
+        "the rename is one row under its new path"
+    );
+    assert!(
+        model.unstaged.is_empty() && model.untracked.is_empty(),
+        "nothing else changed: {:?} {:?}",
+        model.unstaged,
+        model.untracked
+    );
+    let diff = diffs
+        .get(&DiffKey::staged("moved.txt"))
+        .expect("the row's diff is under the path it shows");
+    assert_eq!(diff.old_path.as_deref(), Some("file.txt"));
+    assert!(
+        !diff.is_deleted && !diff.is_new,
+        "a rename is neither a deletion nor a new file"
+    );
+
+    let mut app = GitClientApp::open_at(&path).unwrap();
+    app.test_toggle_stage(ChangeArea::Staged, 0);
+    assert_eq!(app.test_last_error(), None);
+    assert!(
+        !is_staged(&path, "file.txt") && !is_staged(&path, "moved.txt"),
+        "unstaging the rename puts both paths back in the index"
+    );
+
+    let (model, _) = repo::load(&path).expect("load repo");
+    let unstaged: Vec<_> = model
+        .unstaged
+        .iter()
+        .map(|f| (f.path.as_str(), f.kind))
+        .collect();
+    let untracked: Vec<_> = model.untracked.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(unstaged, vec![("file.txt", ChangeKind::Deleted)]);
+    assert_eq!(untracked, vec!["moved.txt"]);
+
+    let mut app = GitClientApp::open_at(&path).unwrap();
+    app.test_discard_file(ChangeArea::Unstaged, 0);
+    assert_eq!(app.test_last_error(), None);
+    assert_eq!(
+        fs::read_to_string(path.join("file.txt")).unwrap(),
+        "line 1\nline 2\nline 3\n",
+        "discarding the deletion restores the old path"
+    );
+    assert!(
+        path.join("moved.txt").exists(),
+        "and leaves the new file alone"
+    );
+}

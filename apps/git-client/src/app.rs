@@ -717,11 +717,17 @@ impl GitClientApp {
                 ChangeArea::Unstaged => &self.model.unstaged,
                 ChangeArea::Untracked => &self.model.untracked,
             };
-            let Some(file) = list.get(idx).map(|f| f.path.clone()) else {
+            let Some((file, old_path)) =
+                list.get(idx).map(|f| (f.path.clone(), f.old_path.clone()))
+            else {
                 return;
             };
             let res = match area {
-                ChangeArea::Staged => crate::repo::unstage_file(&path, &file),
+                // A staged rename is two index entries: the new path and the
+                // old one's deletion. Unstaging it puts both back.
+                ChangeArea::Staged => crate::repo::unstage_file(&path, &file).and_then(|()| {
+                    old_path.map_or(Ok(()), |old| crate::repo::unstage_file(&path, &old))
+                }),
                 ChangeArea::Unstaged | ChangeArea::Untracked => {
                     crate::repo::stage_file(&path, &file)
                 }
