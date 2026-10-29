@@ -45,6 +45,7 @@ fn content_parameter_is_marked_in_generated_declaration() {
             example: ::core::option::Option::None,
             flat: false,
             content: true,
+            field_type: <String as tilo_resource::JsonSchema>::field_type,
         }
     };
     assert_eq!(
@@ -99,6 +100,7 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
             example: ::core::option::Option::None,
             flat: false,
             content: false,
+            field_type: <String as tilo_resource::JsonSchema>::field_type,
         }
     };
     assert_eq!(

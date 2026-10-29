@@ -103,6 +103,16 @@ pub struct ParamSurface {
     /// Its JSON Schema, from its type.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub schema: serde_json::Value,
+    /// Its type ([`FieldType`]), its named records and enums declared in
+    /// the surface's types; left out of a file, and absent from one written
+    /// before parameters had it, when the schema says all there is.
+    #[serde(
+        rename = "type",
+        default,
+        skip_serializing_if = "FieldType::is_any",
+        deserialize_with = "crate::field_type::field_type_or_text"
+    )]
+    pub ty: FieldType,
 }
 
 /// One stored field.

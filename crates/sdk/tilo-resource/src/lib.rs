@@ -371,6 +371,8 @@ pub mod __private {
         /// It takes content another action produced, by its hash, beside
         /// the verb's other parameters.
         pub content: bool,
+        /// Its type in the surface's vocabulary.
+        pub field_type: crate::vocabulary::ParamFieldType,
     }
 
     /// A declared parameter's type.
@@ -474,6 +476,12 @@ pub mod __private {
             params_of(verb.params),
             build,
         );
+        decl.param_types = verb
+            .params
+            .iter()
+            .filter(|param| !param.flat)
+            .map(|param| (param.name, param.field_type))
+            .collect();
         decl.kind = verb.kind;
         decl.keywords = verb
             .keywords
