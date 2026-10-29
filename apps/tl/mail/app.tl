@@ -179,6 +179,21 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
     t.boxes.add("inbox")
 }
 
+/// Moves the conversation to another mailbox of its account.
+action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
+    require not t.boxes.any(b -> b == to.key) "It is in {to.name} already"
+    for m in t.messages {
+        if m.mailbox != "sent" {
+            m.mailbox = to.key
+        }
+    }
+    t.boxes.remove("inbox")
+    t.boxes.remove("archive")
+    t.boxes.remove("junk")
+    t.boxes.remove("trash")
+    t.boxes.add(to.key)
+}
+
 /// Deletes the conversation: its messages go to the trash.
 destructive action delete(t: Thread) (icon: .trash) {
     require not t.boxes.any(b -> b == "trash") "It is in the trash"

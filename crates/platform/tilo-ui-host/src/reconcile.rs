@@ -1059,7 +1059,8 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
-        if cases.len() <= 4 {
+        // A few cases are segments; more, or people and resources (`menu`), a menu.
+        if cases.len() <= 4 && !flag(node, "menu") {
             let segments = cases
                 .iter()
                 .map(|case| Segment::new(case.label.clone()))

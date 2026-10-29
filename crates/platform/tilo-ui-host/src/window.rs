@@ -102,6 +102,8 @@ pub struct AppWindow {
     answers: Rc<RefCell<Vec<Answer>>>,
     /// The Ask bar shown, if one is.
     ask: Option<wire::Ask>,
+    /// The form shown, if one is: an action waiting for its arguments.
+    form: Option<crate::form::Shown>,
     out: Vec<ToApp>,
     structure_dirty: bool,
     /// Why the window shows the platform's error state: a batch it refused.
@@ -139,6 +141,8 @@ impl AppWindow {
                 Box::new(Pane::new(Box::new(NavShell::new()))),
                 Fit::fill(1.0),
             ))
+            .push_slot(slot(Box::new(Absent::new()), Fit::hug()))
+            // The form of an action waiting for its arguments: out of flow, over the window.
             .push_slot(slot(Box::new(Absent::new()), Fit::hug()));
         for element in beside {
             body = body.push_slot(slot(element, Fit::hug()));
@@ -173,6 +177,7 @@ impl AppWindow {
             body: Box::new(body),
             answers: Rc::default(),
             ask: None,
+            form: None,
             out: Vec::new(),
             structure_dirty: true,
             failed: None,
@@ -339,6 +344,7 @@ impl AppWindow {
                 }
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
+                ToUi::Form(form) => self.show_form(form.as_deref()),
                 ToUi::Took { fired } => {
                     self.took = self.took.max(fired);
                     // What was typed after the presses it ran goes to what they opened, before
@@ -651,6 +657,49 @@ impl AppWindow {
         self.set_body_slot(1, bar, Fit::hug());
     }
 
+    /// The body slot the form stands in.
+    const FORM_SLOT: usize = 2;
+
+    /// Show the form `form` of an action waiting for its arguments, or none. The form the
+    /// window shows already, sent again as it reads now, is reconciled in place.
+    fn show_form(&mut self, form: Option<&wire::Form>) {
+        let Some(form) = form else {
+            if self.form.take().is_some() {
+                self.set_body_slot(Self::FORM_SLOT, Box::new(Absent::new()), Fit::hug());
+            }
+            return;
+        };
+        let reconciler = Rc::clone(&self.reconciler);
+        if let Some(shown) = self.form.as_mut().filter(|shown| shown.id == form.id) {
+            let sheet = self
+                .body
+                .children_mut()
+                .into_iter()
+                .nth(Self::FORM_SLOT)
+                .and_then(crate::form::sheet_of);
+            if let Some(sheet) = sheet {
+                shown.update(form, sheet, &mut reconciler.borrow_mut());
+                self.structure_dirty = true;
+                return;
+            }
+        }
+        let (shown, sheet) = crate::form::Shown::build(form, &mut reconciler.borrow_mut());
+        self.form = Some(shown);
+        self.set_body_slot(Self::FORM_SLOT, Box::new(sheet), Fit::hug());
+    }
+
+    /// What the person answered in the form's own controls since the last frame. Cancel closes
+    /// it at once; what they typed stays the app's.
+    fn take_form_answer(&mut self) {
+        let Some(answer) = self.form.as_ref().and_then(crate::form::Shown::take_answer) else {
+            return;
+        };
+        if matches!(answer, ToApp::FormCancel { .. }) {
+            self.show_form(None);
+        }
+        self.out.push(answer);
+    }
+
     // ----- what the person did -------------------------------------------------------------
 
     /// Send the app what the person did since the last frame: one batch.
@@ -659,6 +708,7 @@ impl AppWindow {
             self.out.push(ToApp::Answer(answer));
         }
         self.take_events();
+        self.take_form_answer();
         if self.shell().and_then(NavShell::take_toast_action).is_some() {
             self.out.push(ToApp::Undo);
         }
@@ -729,6 +779,12 @@ impl AppWindow {
     }
 
     fn event(&mut self, event: UiEvent) {
+        if crate::form::in_form(&event) {
+            if let Some(edit) = self.form.as_ref().and_then(|form| form.edit(&event)) {
+                self.out.push(edit);
+            }
+            return;
+        }
         if let UiEvent::Fire(key, name, _) = &event
             && *name == crate::shell::BACK
             && self.built.as_ref().is_some_and(|built| built.key == *key)

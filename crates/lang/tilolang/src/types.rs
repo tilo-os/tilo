@@ -123,6 +123,27 @@ impl Vt {
 }
 
 impl Ty {
+    /// Whether an action's form can ask the person for a value of this type when nobody gave
+    /// it (forms-and-diagrams.md §1): text, a number, a flag, a day or a moment, a person, a
+    /// resource, a case of an enum, or none of one of those. Each has its control.
+    #[must_use]
+    pub fn asked_by_form(&self) -> bool {
+        match self {
+            Self::Int
+            | Self::Float
+            | Self::Bool
+            | Self::Text
+            | Self::RichText
+            | Self::Date
+            | Self::Time
+            | Self::Principal
+            | Self::Record(_)
+            | Self::Enum(_) => true,
+            Self::Option(inner) => !matches!(**inner, Self::Option(_)) && inner.asked_by_form(),
+            _ => false,
+        }
+    }
+
     /// The wasm representation: `i64`, `f64`, or an `i32` (a bool or a handle); `None` for no
     /// value.
     pub const fn repr(&self) -> Option<Vt> {

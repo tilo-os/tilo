@@ -294,6 +294,53 @@ impl Core {
         Ok(args)
     }
 
+    /// The parameters `aref` leaves out that have no default, by index: what an invocation of
+    /// it still needs. Empty for anything but an action of a package.
+    pub(crate) fn missing_arguments(&self, aref: &ActionRef) -> Vec<usize> {
+        let Some(pkg) = self.registry.borrow().action_package(&aref.action) else {
+            return Vec::new();
+        };
+        let Some(meta) = pkg.action(&aref.action) else {
+            return Vec::new();
+        };
+        meta.params
+            .iter()
+            .enumerate()
+            .skip(aref.args.len())
+            .filter(|(_, param)| param.default.is_none())
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// The default of the parameter `at` of `action`, over the arguments before it: `None`
+    /// when it has none.
+    pub(crate) fn default_argument(
+        &self,
+        action: &str,
+        at: usize,
+        before: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        let Some(pkg) = self.registry.borrow().action_package(action) else {
+            return Ok(None);
+        };
+        let meta = pkg
+            .action(action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {action}")))?
+            .clone();
+        let Some(param) = meta.params.get(at) else {
+            return Ok(None);
+        };
+        let Some(default) = &param.default else {
+            return Ok(None);
+        };
+        let params = meta.params.get(..at).unwrap_or_default();
+        if params.len() != before.len() {
+            return Ok(None);
+        }
+        self.call_pure(&pkg, &default.export, params, before, &param.ty)
+            .map(Some)
+    }
+
     /// Call the export `export` of `pkg`, a function of the values it is given that changes
     /// nothing (a parameter default, an argument computed at an event), in a frame of its own.
     pub(crate) fn call_pure(

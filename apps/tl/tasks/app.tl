@@ -122,6 +122,17 @@ action take(t: Task) (label: "Assign to me", icon: .user) {
     t.assignee = invoker
 }
 
+/// Gives a task to someone in the workspace to do.
+action assign(t: Task, to: Principal) (label: "Assign to…", icon: .user) {
+    t.assignee = to
+}
+
+/// Puts a task off until a day: it is due then.
+action snooze(t: Task, until: Date) (label: "Snooze until…", icon: .clock) {
+    require not t.done "It is done already"
+    t.due = until
+}
+
 /// Leaves a task for anyone to take.
 action release(t: Task) (label: "Unassign", icon: .user) {
     require t.assignee != .none "Nobody is doing it"
