@@ -712,7 +712,7 @@ impl AppWindow {
             return;
         }
         if matches!(event, UiEvent::Press(_) | UiEvent::Fire(..)) {
-            self.fired += 1;
+            self.fired = self.fired.saturating_add(1);
         }
         let message = match event {
             UiEvent::Press(key) => {
@@ -816,14 +816,14 @@ impl AppWindow {
         };
         let shown = typed.sent.clone().unwrap_or_else(|| typed.base.clone());
         let (at, delete, insert) = splice_between(&typed.base, &typed.now);
-        let after = typed.base.len().saturating_sub(at + delete);
+        let after = typed.base.len().saturating_sub(at.saturating_add(delete));
         let mut at = shown.len().saturating_sub(after.saturating_add(delete));
         while !shown.is_char_boundary(at) {
             at = at.saturating_sub(1);
         }
-        let mut end = (at + delete).min(shown.len());
+        let mut end = at.saturating_add(delete).min(shown.len());
         while !shown.is_char_boundary(end) {
-            end += 1;
+            end = end.saturating_add(1);
         }
         let mut text = shown.clone();
         text.replace_range(at..end, &insert);

@@ -1366,10 +1366,7 @@ impl Instance {
                 key,
                 event,
                 value,
-            } => {
-                self.fired += 1;
-                self.fire(lane, &key, &event, value.as_ref(), &mut ran)
-            }
+            } => self.fire(lane, &key, &event, value.as_ref(), &mut ran),
             ToApp::Toggle { lane, key, checked } => self.edit(lane, &key, Value::Bool(checked)),
             ToApp::Splice {
                 lane,
@@ -1488,6 +1485,8 @@ impl Instance {
         value: Option<&ui::Value>,
         ran: &mut Option<(ActionRef, Value)>,
     ) -> Result<(), Words> {
+        // Counted whatever comes of it: the window waits for every press it sent.
+        self.fired = self.fired.saturating_add(1);
         let Some(view) = self.view(lane) else {
             return Ok(());
         };

@@ -1,7 +1,6 @@
 //! A hosted tilolang app as a person uses it: the window process's own window (the UI host's
 //! half, `HostedWindow`) driven by pointer and key events, over a real patch connection to a
-//! tilolang host running the app's instance on a broker the test plays. What the person types
-//! lands in the field focused when they pressed the key, whenever the host answers.
+//! tilolang host running the app's instance on a broker the test plays.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,7 +11,7 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -27,7 +26,6 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::room::RoomRecord;
 use ui::headless::{FrameHarness, InspectionNode};
 
-const NOTES: &str = "so.tilo.lang.notes";
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -81,11 +79,6 @@ struct Session {
 }
 
 impl Session {
-    /// A person at a Notes window.
-    fn notes() -> Self {
-        Self::new(NOTES, "../tl/notes", "ada", |_| {})
-    }
-
     /// `person` at a window of the package `app` in `dir`, whose presence `present` sets up.
     fn new(
         app: &str,
@@ -175,8 +168,10 @@ impl Session {
     fn shown(&self) -> Vec<String> {
         fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
             for value in node.props.values() {
-                if let tilo_ui_host::Value::Text(text) = value {
-                    out.push(text.clone());
+                match value {
+                    tilo_ui_host::Value::Text(text) => out.push(text.clone()),
+                    tilo_ui_host::Value::Principal(who) => out.push(who.name.clone()),
+                    _ => {}
                 }
             }
             for child in &node.children {
@@ -190,57 +185,6 @@ impl Session {
         }
         out
     }
-
-    /// The titles of the notebook's notes, as the instance publishes them.
-    fn titles(&self) -> Vec<String> {
-        let hosted = self.host.instances().next().unwrap();
-        let notes: BTreeSet<(String, String)> = hosted
-            .published()
-            .iter()
-            // The notes, not the notebook: each note is an item of its record.
-            .filter(|action| action.address.resource.contains("/i"))
-            .map(|action| {
-                (
-                    action.address.resource.clone(),
-                    action.resource_label.clone(),
-                )
-            })
-            .collect();
-        notes.into_iter().map(|(_, label)| label).collect()
-    }
-
-    /// The centre of the detail view's field whose placeholder is `placeholder`.
-    fn field(&self, placeholder: &str) -> (f64, f64) {
-        let detail = self
-            .hosted()
-            .view()
-            .and_then(tilo_ui_host::AppWindow::detail_tree)
-            .expect("a note is open");
-        let key = find(&detail, &|node| {
-            matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
-        })
-        .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
-        .key
-        .clone();
-        let id = format!("{}{key}", tilo_ui_host::shell::DETAIL);
-        let inspection = self.window.inspection();
-        let node = find_widget(&inspection.root, &id).unwrap_or_else(|| {
-            let mut ids = Vec::new();
-            test_ids(&inspection.root, &mut ids);
-            panic!("the field {id} is laid out: {ids:?}")
-        });
-        let [x, y, w, h] = node.rect;
-        (x + w / 2.0, y + h / 2.0)
-    }
-
-    /// The centre of the header's New note button.
-    fn new_note_button(&mut self) -> (f64, f64) {
-        let inspection = self.window.inspection();
-        let mut found = Vec::new();
-        named(&inspection.root, "New note", &mut found);
-        let [x, y, w, h] = *found.last().expect("the window offers New note");
-        (x + w / 2.0, y + h / 2.0)
-    }
 }
 
 fn find<'a>(
@@ -253,15 +197,6 @@ fn find<'a>(
     node.children.iter().find_map(|child| find(child, want))
 }
 
-fn test_ids(node: &InspectionNode, out: &mut Vec<String>) {
-    if let Some(id) = &node.test_id {
-        out.push(format!("{id}{:?}", node.rect));
-    }
-    for child in &node.children {
-        test_ids(child, out);
-    }
-}
-
 fn find_widget<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
     if node.test_id.as_deref() == Some(id) {
         return Some(node);
@@ -269,21 +204,6 @@ fn find_widget<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionN
     node.children
         .iter()
         .find_map(|child| find_widget(child, id))
-}
-
-/// The rects of the widgets whose accessible label is `label`.
-fn named(node: &InspectionNode, label: &str, out: &mut Vec<[f64; 4]>) {
-    if node
-        .semantics
-        .as_ref()
-        .is_some_and(|access| access.name.as_deref() == Some(label))
-        && node.rect[2] > 0.0
-    {
-        out.push(node.rect);
-    }
-    for child in &node.children {
-        named(child, label, out);
-    }
 }
 
 #[test]
