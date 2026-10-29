@@ -84,6 +84,9 @@ pub struct TaskRequest {
     pub task: String,
     /// The room the task works in.
     pub room: String,
+    /// The person the task acts for, as its programs' `me`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
     /// The length of the modules in their memfd ([`encode_modules`]).
     pub modules_len: u64,
 }
@@ -528,6 +531,7 @@ mod tests {
         let request = TaskRequest {
             task: "door:1".into(),
             room: "7a110d00-0000-4000-8000-000000000001".into(),
+            person: Some("ada".into()),
             modules_len: 3,
         };
         let fds = TaskFds {

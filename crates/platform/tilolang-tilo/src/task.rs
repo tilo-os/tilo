@@ -57,6 +57,13 @@ pub trait TaskDoor {
 
     /// Invoke `call` (`{app, resource, action, arguments}`) as the task.
     fn invoke(&self, call: &Json) -> Answered;
+
+    /// What the app `app` answers to a program's `request` to read it (`grep`, `find`, `read`,
+    /// `describe`: a [`tilolang_runtime::reads::ReadRequest`]), read as the task.
+    ///
+    /// # Errors
+    /// Why it cannot be read.
+    fn query(&self, app: &str, request: &Json) -> Result<Json, String>;
 }
 
 /// How an invocation the door made ended.
@@ -89,6 +96,8 @@ struct Steps {
 pub struct TaskSession {
     runtime: Runtime,
     task: Principal,
+    /// The person the task acts for: `me`.
+    person: Option<Principal>,
     session: RefCell<Session>,
     steps: Rc<RefCell<Steps>>,
     reads: Rc<RefCell<Reads>>,
@@ -110,7 +119,12 @@ impl TaskSession {
     ///
     /// # Errors
     /// The runtime cannot start or a package does not load.
-    pub fn new(task: &str, door: &Rc<dyn TaskDoor>, bundles: &[Bundle]) -> Result<Self, String> {
+    pub fn new(
+        task: &str,
+        person: Option<&str>,
+        door: &Rc<dyn TaskDoor>,
+        bundles: &[Bundle],
+    ) -> Result<Self, String> {
         let reads = Rc::new(RefCell::new(Reads::default()));
         let store = TaskStore {
             door: Rc::clone(door),
@@ -141,14 +155,25 @@ impl TaskSession {
             apps,
             steps: Rc::clone(&steps),
         });
+        let asked = Rc::clone(door);
+        runtime.set_reader(move |request| {
+            let encoded = serde_json::to_value(request).map_err(|error| error.to_string())?;
+            asked.query(request.app(), &encoded)
+        });
         runtime.set_clock(crate::host::system_time);
         Ok(Self {
             runtime,
             task: Principal::new(format!("agent:{task}")),
+            person: person.map(Principal::new),
             session: RefCell::new(Session::new()),
             steps,
             reads,
         })
+    }
+
+    /// Read the time from `clock` (ISO-8601 UTC), for `now` and the times filters write.
+    pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
+        self.runtime.set_clock(clock);
     }
 
     /// Run `source` as one step of the task; see the module docs for `confirm`. The answer:
@@ -186,10 +211,14 @@ impl TaskSession {
             ..Steps::default()
         };
         self.reads.borrow_mut().known.clear();
+        let inputs = tilolang_runtime::reads::ProgramInputs {
+            me: self.person.clone(),
+            ..Default::default()
+        };
         let reply = self
             .session
             .borrow_mut()
-            .run(&self.runtime, &self.task, source);
+            .run_with(&self.runtime, &self.task, source, inputs);
         let steps = std::mem::take(&mut *self.steps.borrow_mut());
         let lets: Vec<Json> = self
             .session
@@ -205,6 +234,11 @@ impl TaskSession {
                 ("suspended", json!({"action": suggestion.action}))
             }
             ProgramOutcome::Failed(reason) => ("failed", json!(reason)),
+            // Every read is answered while the program runs; one left over is a fault.
+            ProgramOutcome::NeedsReads(asked) => (
+                "failed",
+                json!(format!("{} reads were left unanswered", asked.len())),
+            ),
         };
         let answer = json!({
             "kind": "program",
@@ -488,6 +522,38 @@ impl Store for TaskStore {
             .get(&field.id)
             .cloned()
             .unwrap_or(FieldValue::Absent))
+    }
+
+    fn select(
+        &self,
+        ty: &TypeId,
+        pred: &tilolang_runtime::store::Pred,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Result<Vec<ResourceRef>, StoreError> {
+        let app = self.app_of(&ResourceRef {
+            doc: String::new(),
+            item: None,
+            ty: ty.clone(),
+        })?;
+        let request = tilolang_runtime::reads::ReadRequest::Select {
+            app: app.clone(),
+            ty: ty.clone(),
+            pred: pred.clone(),
+            order: order.cloned(),
+        };
+        let encoded = serde_json::to_value(&request)
+            .map_err(|error| StoreError::Backend(error.to_string()))?;
+        let found = self
+            .door
+            .query(&app, &encoded)
+            .map_err(StoreError::Backend)?;
+        Ok(found
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Json::as_str)
+            .filter_map(|id| ResourceRef::parse_id(id, ty.clone()))
+            .collect())
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {

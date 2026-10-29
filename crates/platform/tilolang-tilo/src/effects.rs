@@ -9,6 +9,7 @@
 use serde_json::{Value as Json, json};
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
+use tilolang_runtime::program::ReadRequest;
 use tilolang_runtime::value::{ResourceRef, to_json};
 use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
 
@@ -42,6 +43,18 @@ pub enum HostEffect {
     ReadValues {
         #[param("The resource's id in its record, as `tl:<app>:<id>` ends")]
         item: String,
+    },
+    /// Read for a program.
+    ///
+    /// Answer what a program running in another app's host asks to read of this app: the
+    /// matches of a grep, what search finds, a resource's text, or a declaration (agents.md,
+    /// "Querying"). It reads only, as the caller.
+    #[effect(kind = "read", returns)]
+    ReadForProgram {
+        #[param(
+            "The request, as JSON: {\"read\": \"grep\" | \"find\" | \"read\" | \"describe\", \"app\": ..., ...}"
+        )]
+        request: String,
     },
     /// Run a flow.
     ///
@@ -199,6 +212,11 @@ impl Host {
                 }))
             }
             HostEffect::ReadValues { item } => self.read_values(&item).map(output),
+            HostEffect::ReadForProgram { request } => {
+                let request: ReadRequest = serde_json::from_str(&request)
+                    .map_err(|error| format!("the request is not one a program makes: {error}"))?;
+                self.runtime().answer_read(&request).map(output)
+            }
             HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
             HostEffect::Resolve { target, decision } => {
                 if caller.is_some_and(|caller| caller.agent) {

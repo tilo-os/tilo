@@ -167,8 +167,18 @@ mod cases {
         assert!(literal.starts_with("@notes.Note:"), "{out}");
         let read = session.run(&w.rt, &agent(), &format!("print(read({literal}))"));
         let text = done(&read);
-        assert!(text.contains("title: Groceries"), "{text}");
-        assert!(text.contains("pinned: false"), "{text}");
+        assert!(
+            text.starts_with(&format!("{literal} \"Groceries\"  Note: 1 paragraph")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{literal} title  Groceries")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{literal} .pinned  false")),
+            "{text}"
+        );
     }
 
     #[test]

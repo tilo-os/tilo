@@ -9,7 +9,10 @@
 
 use serde::Serialize;
 use serde_json::{Value as Json, json};
-use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
+use tilo_actions::surface::{
+    FieldSurface, FieldType, NamedType, ParamSurface, Surface, TypeCase, TypeField, TypeSet,
+    VerbSurface,
+};
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::meta::Ty;
 
@@ -70,6 +73,78 @@ fn plain_cases(
             })
         })
         .collect()
+}
+
+/// The language-neutral type of a value of the tilolang type `ty` (as metadata writes it), the
+/// enums of `meta` it names declared in `types`: what the generated surface publishes of a
+/// field, as a native model's derive publishes its fields.
+#[must_use]
+pub fn field_type_of_type(meta: &Meta, ty: &str, types: &mut TypeSet) -> FieldType {
+    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
+        Ok(parsed) => field_type_of(meta, &parsed, types),
+        Err(_) => FieldType::Any,
+    }
+}
+
+fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
+    let boxed = |inner: &Ty, types: &mut TypeSet| Box::new(field_type_of(meta, inner, types));
+    match ty {
+        Ty::Int => FieldType::Int,
+        Ty::Float => FieldType::Float,
+        Ty::Bool => FieldType::Bool,
+        Ty::Text => FieldType::Text,
+        Ty::RichText => FieldType::RichText,
+        Ty::Date => FieldType::Date,
+        Ty::Time => FieldType::Time,
+        Ty::Identifier => FieldType::Identifier,
+        Ty::Principal => FieldType::Principal,
+        Ty::Record(key) => FieldType::Resource(record_kind(key)),
+        Ty::Union(keys) => FieldType::Union(
+            keys.iter()
+                .map(|key| FieldType::Resource(record_kind(key)))
+                .collect(),
+        ),
+        Ty::Enum(key) if key.app == meta.app => {
+            let Some(declared) = meta.enums.iter().find(|declared| declared.name == key.name)
+            else {
+                return FieldType::Any;
+            };
+            types.named(&format!("{}.{}", key.app, key.name), &key.name, |types| {
+                NamedType {
+                    name: declared.name.clone(),
+                    doc: declared.doc.clone(),
+                    fields: Vec::new(),
+                    cases: declared
+                        .variants
+                        .iter()
+                        .map(|variant| TypeCase {
+                            name: variant.name.clone(),
+                            label: if variant.label.is_empty() {
+                                tilo_actions::field_type::label_of(&variant.name)
+                            } else {
+                                variant.label.clone()
+                            },
+                            fields: variant
+                                .fields
+                                .iter()
+                                .map(|field| TypeField {
+                                    name: field.name.clone(),
+                                    ty: field_type_of_type(meta, &field.ty, types),
+                                    title: String::new(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                }
+            })
+        }
+        Ty::Option(inner) => FieldType::Option(boxed(inner, types)),
+        Ty::List(inner) => FieldType::List(boxed(inner, types)),
+        Ty::Set(inner) => FieldType::Set(boxed(inner, types)),
+        Ty::Collection(inner) => FieldType::Collection(boxed(inner, types)),
+        Ty::Map(inner) => FieldType::Map(boxed(inner, types)),
+        _ => FieldType::Any,
+    }
 }
 
 /// The JSON Schema of a value of the tilolang type `ty`, as the door takes it: a record as the
@@ -294,6 +369,7 @@ fn field_surfaces(
     ty: &TypeMeta,
     prefix: &str,
     stack: &mut Vec<String>,
+    types: &mut TypeSet,
     out: &mut Vec<FieldSurface>,
 ) {
     if stack.contains(&ty.id) {
@@ -318,7 +394,7 @@ fn field_surfaces(
             owner: ty.name.to_lowercase(),
             title: field.name.clone(),
             stored: stored.to_owned(),
-            ty: field.ty.clone(),
+            ty: field_type_of_type(meta, &field.ty, types),
             readonly: false,
             unit: false,
             label: false,
@@ -330,7 +406,7 @@ fn field_surfaces(
             } else {
                 format!("{path}.")
             };
-            field_surfaces(meta, inner, &below, stack, out);
+            field_surfaces(meta, inner, &below, stack, types, out);
         }
     }
     stack.pop();
@@ -351,7 +427,8 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
                 .map(|action| verb(meta, action)),
         );
         let mut fields = Vec::new();
-        field_surfaces(meta, ty, "", &mut Vec::new(), &mut fields);
+        let mut types = TypeSet::new();
+        field_surfaces(meta, ty, "", &mut Vec::new(), &mut types, &mut fields);
         surfaces.push(Surface {
             kind: meta.kind_of(&ty.name),
             label: ty.name.clone(),
@@ -359,6 +436,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
             person: false,
             verbs,
             fields,
+            types: types.into_types(),
         });
     }
     let loose: Vec<VerbSurface> = meta
@@ -373,6 +451,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
         person: false,
         verbs: loose,
         fields: Vec::new(),
+        types: Vec::new(),
     });
     surfaces
 }
@@ -410,6 +489,7 @@ pub fn host_surface() -> Surface {
             }],
         )],
         fields: Vec::new(),
+        types: Vec::new(),
     }
 }
 

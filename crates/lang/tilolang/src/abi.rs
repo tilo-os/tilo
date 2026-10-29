@@ -111,6 +111,8 @@ imports! {
     PrincipalNamed = "principal_named" ([H] -> [H]);
     InvokerPush = "invoker_push" ([H, H] -> []);
     InvokerPop = "invoker_pop" ([] -> []);
+    PrincipalKind = "principal_kind" ([H] -> [I64]);
+    PrincipalRole = "principal_role" ([H] -> [H]);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
     EnumSetI = "enum_set_i" ([H, H, I64] -> []);
@@ -128,12 +130,24 @@ imports! {
     Outside = "outside" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
     QueueBlock = "queue_block" ([H, H, H] -> []);
-    Print = "print" ([H] -> []);
+    Print = "print" ([H, H] -> []);
     Find = "find" ([H, H] -> [H]);
     ReadText = "read_text" ([H] -> [H]);
     OfType = "of_type" ([H, H] -> [H]);
     Keep = "keep" ([H, H] -> []);
     EditField = "edit_field" ([H, H, H] -> []);
+    Grep = "grep" ([H, H, H] -> [H]);
+    Describe = "describe" ([H] -> [H]);
+    DescribeRef = "describe_ref" ([H] -> [H]);
+    ReadWith = "read_with" ([H, H, H] -> [H]);
+    PrintRows = "print_rows" ([H, H, H] -> []);
+    CountBy = "count_by" ([H, H] -> [H]);
+    GroupBy = "group_by" ([H, H] -> [H]);
+    Take = "take" ([H, I64] -> [H]);
+    Single = "single" ([H] -> [H]);
+    Me = "me" ([] -> [H]);
+    ForeignRef = "foreign_ref" ([H, H, H] -> [H]);
+    MatchGroup = "match_group" ([H, I64] -> [H]);
 
     UiNode = "ui_node" ([H, H] -> [H]);
     UiPropH = "ui_prop_h" ([H, H, H] -> []);
@@ -153,6 +167,9 @@ imports! {
     ArgAt = "arg_at" ([H, H, I32] -> [H]);
     Actions = "actions" ([H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
+    WorkspaceMembers = "workspace_members" ([] -> [H]);
+    Members = "members" ([H] -> [H]);
+    Speakers = "speakers" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
@@ -167,6 +184,7 @@ imports! {
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
+    UiActions = "ui_actions" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);

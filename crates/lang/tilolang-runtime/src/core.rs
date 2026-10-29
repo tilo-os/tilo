@@ -63,6 +63,8 @@ pub struct Core {
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
+    /// The workspace's members, as the host last gave them (`workspace.members`).
+    pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The platform's phrases in the person's language (`phrase(...)`); the id itself until
     /// the host says.
@@ -84,6 +86,12 @@ pub struct Core {
     /// Where a task's programs send what they change, in a host that runs no app's code
     /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
     pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// Where a task's programs ask each app what they read of it (`grep`, `find`, `read`,
+    /// `describe`), while they run: a host that holds no records; `None` where the runtime
+    /// answers what it holds itself.
+    pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
+    /// The resources of apps this runtime does not hold that programs read, as they print.
+    pub foreign: RefCell<crate::reads::Foreign>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -174,6 +182,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             names: RefCell::new(None),
+            members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
             phrases: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
@@ -183,6 +192,8 @@ impl Core {
             program: RefCell::new(None),
             text_search: RefCell::new(None),
             invoker: RefCell::new(None),
+            reader: RefCell::new(None),
+            foreign: RefCell::new(crate::reads::Foreign::default()),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -261,14 +272,15 @@ impl Core {
             FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
             IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
             ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
-            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName,
-            PrincipalNamed, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-            RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, RichEmpty, RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH,
-            SomeI, SpaceF, SpaceI, StateAt, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit,
-            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            Members, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
+            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
+            StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind, UiBindState,
+            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -314,16 +326,32 @@ impl Core {
                 self.effect_import(imp, a)
             }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen => {
-                self.ui_import(imp, a)
-            }
+            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
+            | UiActions => self.ui_import(imp, a),
             EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {
                 self.platform_import(imp, a)
             }
-            Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {
-                self.program_import(imp, a)
+            WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
+                self.members_import(imp, a)
             }
             Imp::EditField => self.flow_edit(a),
+            Imp::Print
+            | Imp::Find
+            | Imp::ReadText
+            | Imp::OfType
+            | Imp::Keep
+            | Imp::Grep
+            | Imp::Describe
+            | Imp::DescribeRef
+            | Imp::ReadWith
+            | Imp::PrintRows
+            | Imp::CountBy
+            | Imp::GroupBy
+            | Imp::Take
+            | Imp::Single
+            | Imp::Me
+            | Imp::ForeignRef
+            | Imp::MatchGroup => self.program_import(imp, a),
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

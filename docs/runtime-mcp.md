@@ -284,6 +284,18 @@ step 1: 2 changes in notes; `undo` takes it back
 - **Undo.** `undo` takes back the last step in every app it changed, `undo
   task` every step of this session, newest first, through each app's own
   undo; `history task` lists the steps.
+- **Reading across apps.** `grep`, `find`, `read` and `describe` read every
+  running app the task may use: what a program asks of an app is answered by
+  that app's host (`read-for-program`, a read, through the same gate as every
+  other action, as the task) while the program runs, and what it holds comes
+  as the app's own resources, whose fields read by name.
+
+```text
+> tilo {program: "grep(/\\bChen\\b/, in: notes + chat).count_by(.doc)"}
+grep /\bChen\b/: 3 matches in 3 of 26 resources searched (notes 14, chat 12)
+n1 "Standup, Monday"  1
+…
+```
 
 `tilolang repl` is a terminal for the same tool: it connects to a session's
 door (a nested session by default, `--real` for the person's own) and sends

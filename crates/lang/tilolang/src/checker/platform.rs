@@ -94,6 +94,55 @@ impl Checker<'_> {
         Ex::host(Imp::Lenses, vec![r], Ty::List(Box::new(host_ty("Lens"))))
     }
 
+    /// `members(r)`: the workspace's members who can read `r` now, as the platform's
+    /// membership and grants decide, each a `Principal` (`name()`, `kind()`, `role()`). A view
+    /// that reads it runs again when membership or grants change.
+    pub(super) fn builtin_members(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("members", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Members, vec![r], Ty::List(Box::new(Ty::Principal)))
+    }
+
+    /// `workspace.members`: everyone in the workspace now, people and agents, read from the
+    /// platform's membership, never a copy the app keeps.
+    pub(super) fn workspace_field(&mut self, name: &ast::Ident) -> Ex {
+        if name.name == "members" {
+            return Ex::host(
+                Imp::WorkspaceMembers,
+                Vec::new(),
+                Ty::List(Box::new(Ty::Principal)),
+            );
+        }
+        self.err(
+            "E021",
+            name.span,
+            format!(
+                "`workspace` has no field `{}`; fields are: {}",
+                name.name,
+                crate::prims::WORKSPACE_FIELDS
+            ),
+        );
+        Ex::error()
+    }
+
+    /// The people a rich input's `@` drawer offers, which the system gives every rich input
+    /// (chat.md, "Completion drawers"): who spoke last in `subject` (the resource the view
+    /// shows) and its members; without a subject, nobody first and the workspace's members.
+    pub(super) fn drawer_people(subject: Option<Ex>) -> (Ex, Ex) {
+        let people = Ty::List(Box::new(Ty::Principal));
+        match subject {
+            Some(r) => (
+                Ex::host(Imp::Speakers, vec![r.clone()], people.clone()),
+                Ex::host(Imp::Members, vec![r], people),
+            ),
+            None => (
+                Ex::host(Imp::ListNew, Vec::new(), people.clone()),
+                Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            ),
+        }
+    }
+
     /// `meta(r)` or `meta(T)`: what the platform shows of a resource or its type, a
     /// `host.Meta`: its title, its type's name, the noun a sentence calls it by, its app's
     /// icon, and whether it opens in a window of its own.

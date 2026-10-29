@@ -1,6 +1,7 @@
 //! The tilolang tool: what `tilolang build`, `tilolang run` and `tilolang dev` do. Every other
 //! command is the compiler's ([`tilolang::cli`]).
 
+pub mod describe;
 pub mod dev;
 pub mod package;
 pub mod repl;

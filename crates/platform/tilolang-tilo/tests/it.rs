@@ -10,6 +10,7 @@
     reason = "test assertions"
 )]
 
+mod agent_queries;
 mod bundle;
 mod chat;
 mod collab;
@@ -35,5 +36,6 @@ mod scenarios;
 mod surface;
 mod sync;
 mod task;
+mod task_door;
 mod unions;
 mod upgrade;

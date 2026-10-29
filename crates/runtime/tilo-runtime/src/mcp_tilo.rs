@@ -154,12 +154,55 @@ enum Piece {
     Other(String),
 }
 
+/// Whether a `/` after `previous` (the last character that is no space) starts a regular
+/// expression, as the lexer reads it: where a value starts, not after one.
+fn starts_regex(previous: Option<char>) -> bool {
+    previous.is_none_or(|c| "(,:=[{+-*!<>&|;\n".contains(c))
+}
+
+/// The rest of a regular expression whose `/` was just taken: up to its closing `/` on the
+/// line (a `\/` is a slash), with its flags.
+fn regex_rest(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> String {
+    let mut text = String::new();
+    let mut escaped = false;
+    while let Some(&next) = chars.peek() {
+        if next == '\n' {
+            break;
+        }
+        chars.next();
+        text.push(next);
+        match next {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '/' => {
+                while let Some(flag) = chars.next_if(char::is_ascii_alphabetic) {
+                    text.push(flag);
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
 /// `source` in pieces, which joined give it back.
 fn pieces(source: &str) -> Vec<Piece> {
     let mut found: Vec<Piece> = Vec::new();
     let mut chars = source.chars().peekable();
     let mut previous: Option<char> = None;
+    let mut significant: Option<char> = None;
     while let Some(character) = chars.next() {
+        if character == '/' && chars.peek() != Some(&'/') && starts_regex(significant) {
+            let text = format!("/{}", regex_rest(&mut chars));
+            previous = text.chars().last();
+            significant = previous;
+            match found.last_mut() {
+                Some(Piece::Other(run)) => run.push_str(&text),
+                _ => found.push(Piece::Other(text)),
+            }
+            continue;
+        }
         if character.is_alphabetic() || character == '_' {
             let mut text = String::from(character);
             while let Some(next) = chars.next_if(|c| c.is_alphanumeric() || *c == '_') {
@@ -167,6 +210,7 @@ fn pieces(source: &str) -> Vec<Piece> {
             }
             let member = matches!(previous, Some('.' | '@' | ':'));
             previous = text.chars().last();
+            significant = previous;
             found.push(Piece::Word { text, member });
             continue;
         }
@@ -184,6 +228,9 @@ fn pieces(source: &str) -> Vec<Piece> {
             }
         }
         previous = text.chars().last();
+        if let Some(last) = text.chars().rev().find(|c| *c != ' ' && *c != '\t') {
+            significant = Some(last);
+        }
         match found.last_mut() {
             Some(Piece::Other(run)) => run.push_str(&text),
             _ => found.push(Piece::Other(text)),
@@ -227,12 +274,23 @@ fn resolve_refs(source: &str, programs: &Programs) -> Result<String, String> {
     Ok(out)
 }
 
-/// `source` without the text of its strings.
+/// `source` without the text of its strings and regular expressions.
 fn outside_strings(source: &str) -> String {
     let mut out = String::new();
     let mut in_string = false;
     let mut escaped = false;
-    for character in source.chars() {
+    let mut significant: Option<char> = None;
+    let mut chars = source.chars().peekable();
+    while let Some(character) = chars.next() {
+        if !in_string && character == '/' && chars.peek() != Some(&'/') && starts_regex(significant)
+        {
+            let _ = regex_rest(&mut chars);
+            significant = Some('/');
+            continue;
+        }
+        if !in_string && !character.is_whitespace() {
+            significant = Some(character);
+        }
         if in_string {
             match character {
                 _ if escaped => escaped = false,
@@ -398,6 +456,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             let reply = if let Some(read) = message.get("read") {
                 Box::pin(self.task_read(read, &mut providers)).await
+            } else if let Some(query) = message.get("query") {
+                Box::pin(self.task_query(query, &mut providers)).await
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
@@ -457,12 +517,38 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         };
         let mut arguments = Map::new();
         arguments.insert("item".to_owned(), json!(item));
+        self.host_read(provider, READ_VALUES, arguments).await
+    }
+
+    /// The task's query `query` (`{app, request}`: a program's `grep`, `find`, `read` or
+    /// `describe` of an app): the app's `read-for-program`, as the task.
+    async fn task_query(&self, query: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(request)) = (query["app"].as_str(), query.get("request")) else {
+            return json!({"err": "a query names its app and request"});
+        };
+        let provider = match self.provider_of(app, providers).await {
+            Ok(provider) => provider,
+            Err(why) => return json!({"err": why}),
+        };
+        let mut arguments = Map::new();
+        arguments.insert("request".to_owned(), json!(request.to_string()));
+        self.host_read(provider, READ_FOR_PROGRAM, arguments).await
+    }
+
+    /// The read `action` of an app's tilolang host, as the task: `{"ok": answer}` or `{"err":
+    /// why}`.
+    async fn host_read(
+        &self,
+        provider: Addressed,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Value {
         let value = Box::pin(self.invoke_one(OneCall {
             provider,
             workspace: false,
             revision: None,
             resource: HOST_RESOURCE.to_owned(),
-            action: READ_VALUES.to_owned(),
+            action: action.to_owned(),
             arguments,
             invocation_id: None,
             wait_ms: None,
@@ -541,6 +627,7 @@ type Providers = BTreeMap<String, Addressed>;
 /// The resource every tilolang app answers a task's reads on, and the read.
 const HOST_RESOURCE: &str = "tl:host";
 const READ_VALUES: &str = "read-values";
+const READ_FOR_PROGRAM: &str = "read-for-program";
 
 /// Whether the door's error `why` is the policy's refusal, not a failure of the action.
 fn refusal(why: &str) -> bool {
@@ -632,10 +719,11 @@ fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (Strin
                 } else {
                     "it changed nothing"
                 };
-                lines.push(format!(
-                    "error: {}; {kept}",
-                    answer["detail"].as_str().unwrap_or("the program failed")
-                ));
+                let detail = answer["detail"].as_str().unwrap_or("the program failed");
+                let mut shown = detail.lines().map(|line| shown_line(line, programs));
+                lines.push(format!("error: {}", shown.next().unwrap_or_default()));
+                lines.extend(shown);
+                lines.push(kept.to_owned());
                 true
             }
         };
@@ -785,6 +873,16 @@ mod tests {
     }
 
     #[test]
+    fn a_regular_expression_holds_no_references_and_no_literal() {
+        let programs = Programs::default();
+        let grep = r"grep(/\bt1\b|x@y/i, in: notes).count_by(.doc)";
+        assert_eq!(resolve_refs(grep, &programs).unwrap(), grep);
+        // After a value, a slash divides; the reference after it is still checked.
+        let divided = resolve_refs("print(10 / t7)", &programs).unwrap_err();
+        assert!(divided.contains("`t7`"), "{divided}");
+    }
+
+    #[test]
     fn a_preview_counts_the_actions_and_resources() {
         let answer = json!({"steps": [
             {"action": "pin", "resources": ["a", "root"], "destructive": false},
@@ -827,7 +925,7 @@ mod tests {
         let answer = json!({"state": "failed", "detail": "trap: no", "changed": 1, "apps": ["so.tilo.lang.todo"]});
         let (text, failed) = answer_text(&mut programs, "x", &answer);
         assert!(failed);
-        assert_eq!(text, "error: trap: no; what it changed is taken back");
+        assert_eq!(text, "error: trap: no\nwhat it changed is taken back");
         assert!(programs.steps.is_empty(), "a failed program is no step");
     }
 

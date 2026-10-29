@@ -10,7 +10,8 @@
 //!
 //! The connection carries one JSON object per line. The door sends `{"run": {source, confirm}}`;
 //! while the program runs, the host asks `{"read": {app, item}}` (answered `{"ok": fields}` or
-//! `{"err": why}`) and `{"invoke": {app, resource, action, arguments}}` (answered `{"ok":
+//! `{"err": why}`), `{"query": {app, request}}` (a `grep`, `find`, `read` or `describe` of an
+//! app, answered the same way) and `{"invoke": {app, resource, action, arguments}}` (answered `{"ok":
 //! output}`, `{"failed": why}`, `{"refused": why}` or `{"asks": why}`), and it ends with
 //! `{"answer": …}` ([`tilolang_tilo::task::TaskSession::run`]).
 
@@ -70,6 +71,18 @@ impl TaskDoor for Line {
         }
     }
 
+    fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
+        let reply = self.ask(&json!({"query": {"app": app, "request": request}}))?;
+        match reply.get("ok") {
+            Some(answer) => Ok(answer.clone()),
+            None => Err(reply
+                .get("err")
+                .and_then(Json::as_str)
+                .unwrap_or("the app did not answer")
+                .to_owned()),
+        }
+    }
+
     fn invoke(&self, call: &Json) -> Answered {
         let reply = match self.ask(&json!({"invoke": call})) {
             Ok(reply) => reply,
@@ -119,6 +132,7 @@ impl Task {
         });
         let session = TaskSession::new(
             &request.task,
+            request.person.as_deref(),
             &(Rc::clone(&line) as Rc<dyn TaskDoor>),
             &bundles,
         )?;

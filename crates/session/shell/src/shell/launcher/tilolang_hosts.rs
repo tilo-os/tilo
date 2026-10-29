@@ -289,6 +289,7 @@ pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
     let request = runtime_portal::tilolang_host::TaskRequest {
         task: task.to_owned(),
         room: room.to_string(),
+        person: Some(crate::shell::state::local_user_id_for_room(&room)),
         modules_len: encoded.len() as u64,
     };
     let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;

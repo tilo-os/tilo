@@ -2,18 +2,12 @@
 //! holds no records, reading Notes and Todo through their apps and changing them only by
 //! invoking each app's actions, which the apps (here two hosts behind a door) run.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
-use tilolang_runtime::Principal;
-use tilolang_tilo::bundle::Bundle;
-use tilolang_tilo::host::Host;
-use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
-use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
+use tilolang_tilo::task::TaskSession;
 
-use crate::fixtures::Replica;
+use crate::task_door::Apps;
 
 const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
@@ -26,136 +20,21 @@ const TODO: (&str, &str) = (
 const NOTES_APP: &str = "so.tilo.lang.notes";
 const TODO_APP: &str = "so.tilo.lang.todo";
 
-fn compiled((source, ids): (&str, &str)) -> tilolang::Compiled {
-    let lock = tilolang::IdsLock::parse(ids).unwrap();
-    tilolang::compile_package(source, &lock, &[]).unwrap()
-}
-
-/// One app as the workspace runs it: its own room record and host.
-fn app(compiled: &tilolang::Compiled) -> Replica {
-    let doc = AutoCommit::new();
-    let host = Host::new(&doc, Principal::new("ada"), || None).unwrap();
-    host.load_compiled(compiled).unwrap();
-    host.root_of(&compiled.meta.app).unwrap();
-    let mut replica = Replica {
-        name: "ada".to_owned(),
-        doc,
-        host,
-        log: Vec::new(),
-    };
-    replica.commit();
-    replica
-}
-
-/// The task's door: each app answers its reads and runs what the task invokes, as the broker
-/// delivers it; every call is recorded.
-struct Door {
-    notes: RefCell<Replica>,
-    todo: RefCell<Replica>,
-    invoked: RefCell<Vec<Json>>,
-    /// Actions whose invocations the policy refuses.
-    refused: Vec<&'static str>,
-}
-
-impl Door {
-    fn app(&self, app: &str) -> &RefCell<Replica> {
-        match app {
-            NOTES_APP => &self.notes,
-            TODO_APP => &self.todo,
-            other => panic!("no app {other}"),
-        }
-    }
-}
-
-impl TaskDoor for Door {
-    fn read(&self, app: &str, item: &str) -> Result<Json, String> {
-        self.app(app).borrow().host.read_values(item)
-    }
-
-    fn invoke(&self, call: &Json) -> Answered {
-        self.invoked.borrow_mut().push(call.clone());
-        let app = call["app"].as_str().unwrap();
-        let action = call["action"].as_str().unwrap();
-        if self.refused.contains(&action) {
-            return Answered::Refused(format!("{action}: denied by the workspace's policy"));
-        }
-        let mut replica = self.app(app).borrow_mut();
-        let prefix = resource_id(app, "");
-        let resource = call["resource"].as_str().unwrap().strip_prefix(&prefix);
-        let arguments = call["arguments"].as_object().unwrap();
-        let planned = if action == "edit-text" || action == "edit-flag" {
-            let package = replica.host.package(app).unwrap();
-            let id = resource.unwrap();
-            let ty = replica.host.read_values(id).unwrap()["type"]
-                .as_str()
-                .unwrap()
-                .to_owned();
-            let declared = package.meta.types.iter().find(|t| t.id == ty).unwrap();
-            let field = package
-                .meta
-                .types
-                .iter()
-                .flat_map(|t| &t.fields)
-                .find(|f| f.id == arguments["field"])
-                .unwrap();
-            edit_action(
-                &package.meta,
-                &declared.name,
-                id,
-                &field.id,
-                &arguments["value"],
-            )
-        } else {
-            replica.host.plan(&PlanRequest {
-                app,
-                kind: "",
-                action_id: action,
-                resource,
-                args: arguments,
-                caller: None,
-            })
-        };
-        match planned {
-            Ok(planned) => {
-                replica.apply(&planned);
-                let returned = replica
-                    .host
-                    .take_returned(action)
-                    .map(|made| resource_id(app, &made.id_string()));
-                Answered::Done(
-                    json!({"value": null, "resources": returned.into_iter().collect::<Vec<_>>()}),
-                )
-            }
-            Err(why) => Answered::Failed(why),
-        }
-    }
-}
-
 struct Task {
     session: TaskSession,
-    door: Rc<Door>,
+    door: Rc<Apps>,
 }
 
+/// Notes and Todo, each in a host of its own, and a task of them; the policy refuses the
+/// actions `refused`.
 fn task(refused: Vec<&'static str>) -> Task {
-    let (notes, todo) = (compiled(NOTES), compiled(TODO));
-    let door = Rc::new(Door {
-        notes: RefCell::new(app(&notes)),
-        todo: RefCell::new(app(&todo)),
-        invoked: RefCell::default(),
-        refused,
-    });
-    let bundles: Vec<Bundle> = [notes, todo]
-        .iter()
-        .map(|compiled| Bundle {
-            wasm: compiled.wasm.clone(),
-            meta: compiled.meta.clone(),
-            ids: String::new(),
-            imports: Vec::new(),
-        })
-        .collect();
-    let session =
-        TaskSession::new("task-1", &(Rc::clone(&door) as Rc<dyn TaskDoor>), &bundles).unwrap();
-    Task { session, door }
+    let mut apps = Apps::new(&[&[NOTES], &[TODO]]);
+    apps.refused = refused;
+    let door = Rc::new(apps);
+    Task {
+        session: door.task(),
+        door,
+    }
 }
 
 impl Task {
