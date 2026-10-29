@@ -20045,6 +20045,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-notifications-service"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-copy-lint",
+ "tilo-desktop-entry",
+ "tilo-lock",
+ "tilo-resource",
+ "tilo-service",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-notify"
 version = "0.1.0"
 dependencies = [
