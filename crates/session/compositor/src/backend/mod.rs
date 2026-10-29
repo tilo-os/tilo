@@ -103,6 +103,18 @@ pub trait Backend {
         )))
     }
 
+    /// Draw and blur what lies below a hosted surface's translucent region
+    /// (see [`crate::backdrop::draw`]); `None` when it did not change.
+    /// Backends that cannot draw outside their frames have none.
+    fn backdrop(
+        &mut self,
+        _state: &mut State,
+        _region: (usize, usize),
+        _request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        Ok(None)
+    }
+
     /// Draw what a capture frame copies (part of an output, a window) into
     /// the client's buffer with the backend's renderer (see
     /// [`crate::capture::copy`]). Backends that cannot draw outside their

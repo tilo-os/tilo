@@ -19,7 +19,7 @@ use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
-use smithay::utils::{Physical, Point, Rectangle, Scale, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 
 use crate::state::State;
 
@@ -95,6 +95,57 @@ where
             Kind::Unspecified,
         ),
     ))
+}
+
+/// What lies below hosted surface `host`, front first: the hosts beneath
+/// it and the windows, drawn at `scale` with `origin` (logical) at the
+/// top left, as its backdrop sees them.
+pub(crate) fn below_host<R>(
+    renderer: &mut R,
+    state: &State,
+    host: usize,
+    origin: Point<f64, Logical>,
+    scale: f64,
+) -> Vec<OutputRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let mut elements = Vec::new();
+    if state.locked() {
+        return elements;
+    }
+    for below in state.hosts.iter().take(host).rev() {
+        for layer in below.layers().into_iter().rev() {
+            let location =
+                (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
+            match MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                location,
+                &layer.buffer,
+                None,
+                None,
+                Some(Size::from(layer.size)),
+                Kind::Unspecified,
+            ) {
+                Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
+                Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
+            }
+        }
+    }
+    for window in state.space.elements().rev() {
+        let Some(location) = state.space.element_location(window) else {
+            continue;
+        };
+        let at = (location - window.geometry().loc).to_f64() - origin;
+        elements.extend(window.render_elements::<OutputRenderElement<R>>(
+            renderer,
+            at.to_physical_precise_round(scale),
+            Scale::from(scale),
+            1.0,
+        ));
+    }
+    elements
 }
 
 /// The elements `output` shows, front first, in its physical pixels.

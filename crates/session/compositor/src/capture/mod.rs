@@ -742,7 +742,7 @@ where
 
 /// Draw `elements` into an offscreen image of `size` and read it back as
 /// rows of R, G, B, A.
-fn render_to_memory<R, T, E>(
+pub(crate) fn render_to_memory<R, T, E>(
     renderer: &mut R,
     size: Size<i32, Physical>,
     scale: f64,

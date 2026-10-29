@@ -22,6 +22,7 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod backdrop;
 pub mod backend;
 pub mod capture;
 pub mod config;
@@ -65,6 +66,7 @@ use smithay::reexports::wayland_server::Display;
 use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
+pub use backdrop::{BackdropImage, BackdropRequest};
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
@@ -729,6 +731,7 @@ impl Compositor {
         self.data.state.rearrange();
         self.data.backend.render(&mut self.data.state)?;
         self.data.backend.serve_captures(&mut self.data.state);
+        self.data.backend.serve_backdrops(&mut self.data.state);
         self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())
