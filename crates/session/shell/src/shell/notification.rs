@@ -871,120 +871,116 @@ mod tests {
         switch_workspace_does_not_push_a_notification();
     }
 
-    #[test]
-    fn toast_stack_layout_motion_and_accessibility() {
-        /// Review fixtures: the ux-bench cannot raise a notification on macOS,
-        /// so the stack is photographed from its paint path — a live column
-        /// with an error toast, Do Not Disturb holding items (which puts no
-        /// card on screen), and the locked-session card — at 1× and 200 %
-        /// text, dark and light.
-        #[expect(
-            clippy::many_single_char_names,
-            reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
-        )]
-        fn notification_stack_review_fixtures_are_written() {
-            // Motion reads at its end: this test checks the resting frame.
-            let _settled = ui::motion::testing::settled();
-            let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../target/ui-review/s2-r2/notifications");
-            let (w, h) = (640_u32, 400_u32);
-            let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
-            let mut renderer = crate::shell::osd::review_offscreen::OffscreenRenderer::new(w, h);
-            let variants = [
-                ("dark-1x", Theme::dark(), 1.0_f32),
-                ("dark-2x", Theme::dark().with_text_scale(2.0), 2.0),
-                ("light-1x", Theme::light(), 1.0),
-            ];
-            for (name, mut theme, scale) in variants {
-                // A still cannot show the entry slide; photograph the rest state.
-                theme.reduce_motion = true;
-                for state in ["live", "dnd", "locked"] {
-                    let chrome = new_chrome();
-                    {
-                        let mut ch = chrome.borrow_mut();
-                        match state {
-                            "dnd" => {
-                                ch.set_dnd(true);
-                                ch.push_notification("Held", "while quiet");
-                                ch.push_notification("Also held", "for later");
-                            }
-                            "locked" => {
-                                ch.push_notification("Private", "never shown while locked");
-                                ch.push_notification("Second", "count only");
-                                ch.set_session_locked(true);
-                            }
-                            _ => {
-                                ch.push_notification("Saved", "Report.pdf is in Documents");
-                                ch.push_notification_full(
-                                    Notification::new(
-                                        "Backup failed",
-                                        "The drive is not connected",
-                                    )
+    /// Review fixtures: the ux-bench cannot raise a notification on macOS,
+    /// so the stack is photographed from its paint path — a live column
+    /// with an error toast, Do Not Disturb holding items (which puts no
+    /// card on screen), and the locked-session card — at 1× and 200 %
+    /// text, dark and light.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "viewport size and sampled colour channels read best as w/h and r/g/b/e"
+    )]
+    fn notification_stack_review_fixtures_are_written() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = ui::motion::testing::settled();
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../target/ui-review/s2-r2/notifications");
+        let (w, h) = (640_u32, 400_u32);
+        let viewport = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
+        let mut renderer = crate::shell::osd::review_offscreen::OffscreenRenderer::new(w, h);
+        let variants = [
+            ("dark-1x", Theme::dark(), 1.0_f32),
+            ("dark-2x", Theme::dark().with_text_scale(2.0), 2.0),
+            ("light-1x", Theme::light(), 1.0),
+        ];
+        for (name, mut theme, scale) in variants {
+            // A still cannot show the entry slide; photograph the rest state.
+            theme.reduce_motion = true;
+            for state in ["live", "dnd", "locked"] {
+                let chrome = new_chrome();
+                {
+                    let mut ch = chrome.borrow_mut();
+                    match state {
+                        "dnd" => {
+                            ch.set_dnd(true);
+                            ch.push_notification("Held", "while quiet");
+                            ch.push_notification("Also held", "for later");
+                        }
+                        "locked" => {
+                            ch.push_notification("Private", "never shown while locked");
+                            ch.push_notification("Second", "count only");
+                            ch.set_session_locked(true);
+                        }
+                        _ => {
+                            ch.push_notification("Saved", "Report.pdf is in Documents");
+                            ch.push_notification_full(
+                                Notification::new("Backup failed", "The drive is not connected")
                                     .with_severity(NotificationSeverity::Error),
-                                );
-                            }
+                            );
                         }
                     }
-                    let host = ChromeNotifications::new(&chrome);
-                    let mut stack = NotificationStack::new();
-                    stack.set_viewport(viewport);
-                    stack.set_feed(BannerFeed::of(&host));
-                    let mut tr = TextRenderer::new();
-                    tr.set_text_scale(scale);
-                    let mut scene = Scene::new();
-                    stack.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-                    assert_eq!(
-                        tr.text_scale(),
-                        scale,
-                        "the pass restores the renderer's scale"
-                    );
-                    let ground = theme.tokens.colors.surfaces.base;
-                    let path = out.join(format!("{name}-{state}.png"));
-                    renderer.render_png(&scene, ground, &path);
-                    assert!(
-                        path.is_file(),
-                        "notification fixture missing: {}",
-                        path.display()
-                    );
-                    if state == "dnd" {
-                        assert!(stack.rect().is_zero_area(), "{name}: no quiet card");
-                        continue;
-                    }
-                    // The rendered pixels, not just the file: the first surface
-                    // in the column (locked card or toast card) is the
-                    // card ground at its plain bottom-right interior — the
-                    // toolkit toast and the two shell cards share one material.
-                    let first = stack.rect();
-                    let first_h = if state == "live" {
-                        64.0
-                    } else {
-                        first.height()
-                    };
-                    let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        clippy::cast_sign_loss,
-                        reason = "probe points are inside a positive viewport"
-                    )]
-                    let (r, g, b, _) =
-                        crate::shell::osd::review_offscreen::OffscreenRenderer::sample(
-                            &renderer.render_resilient(&scene, ground),
-                            w,
-                            probe.x as u32,
-                            probe.y as u32,
-                        );
-                    let e = ui::widget::toast::card_ground(&theme).0.to_rgba8();
-                    assert!(
-                        r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
-                        "{name}-{state}: surface interior ({r},{g},{b}) is the card ground ({},{},{})",
-                        e.r,
-                        e.g,
-                        e.b
-                    );
                 }
+                let host = ChromeNotifications::new(&chrome);
+                let mut stack = NotificationStack::new();
+                stack.set_viewport(viewport);
+                stack.set_feed(BannerFeed::of(&host));
+                let mut tr = TextRenderer::new();
+                tr.set_text_scale(scale);
+                let mut scene = Scene::new();
+                stack.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                assert_eq!(
+                    tr.text_scale(),
+                    scale,
+                    "the pass restores the renderer's scale"
+                );
+                let ground = theme.tokens.colors.surfaces.base;
+                let path = out.join(format!("{name}-{state}.png"));
+                renderer.render_png(&scene, ground, &path);
+                assert!(
+                    path.is_file(),
+                    "notification fixture missing: {}",
+                    path.display()
+                );
+                if state == "dnd" {
+                    assert!(stack.rect().is_zero_area(), "{name}: no quiet card");
+                    continue;
+                }
+                // The rendered pixels, not just the file: the first surface
+                // in the column (locked card or toast card) is the
+                // card ground at its plain bottom-right interior — the
+                // toolkit toast and the two shell cards share one material.
+                let first = stack.rect();
+                let first_h = if state == "live" {
+                    64.0
+                } else {
+                    first.height()
+                };
+                let probe = Point::new(first.x1 - 12.0, first.y0 + first_h - 8.0);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "probe points are inside a positive viewport"
+                )]
+                let (r, g, b, _) = crate::shell::osd::review_offscreen::OffscreenRenderer::sample(
+                    &renderer.render_resilient(&scene, ground),
+                    w,
+                    probe.x as u32,
+                    probe.y as u32,
+                );
+                let e = ui::widget::toast::card_ground(&theme).0.to_rgba8();
+                assert!(
+                    r.abs_diff(e.r) <= 2 && g.abs_diff(e.g) <= 2 && b.abs_diff(e.b) <= 2,
+                    "{name}-{state}: surface interior ({r},{g},{b}) is the card ground ({},{},{})",
+                    e.r,
+                    e.g,
+                    e.b
+                );
             }
         }
+    }
 
+    #[test]
+    fn toast_stack_layout_motion_and_accessibility() {
         notification_stack_review_fixtures_are_written();
     }
 
