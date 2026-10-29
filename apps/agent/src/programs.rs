@@ -167,36 +167,45 @@ fn title_of(catalogue: &Catalogue, app: &str) -> String {
 #[must_use]
 pub fn named<'a>(source: &str, mounted: &'a [Mounted]) -> Vec<&'a Mounted> {
     let mut found: Vec<&Mounted> = Vec::new();
-    let bytes = source.as_bytes();
-    let mut index = 0;
     let mut in_string = false;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if byte == b'"' && (index == 0 || bytes[index - 1] != b'\\') {
-            in_string = !in_string;
-            index += 1;
+    let mut escaped = false;
+    let mut word = String::new();
+    // Whether the word being read may name an app: it starts with a letter and follows no dot
+    // (a field) and no digit (a number's unit).
+    let mut may_name = false;
+    let mut previous: Option<char> = None;
+    // A word ends at the character after it; the end of the source is the last such place.
+    for c in source.chars().map(Some).chain(std::iter::once(None)) {
+        if in_string {
+            match c {
+                Some('\\') if !escaped => escaped = true,
+                Some('"') if !escaped => in_string = false,
+                _ => escaped = false,
+            }
+            previous = c;
             continue;
         }
-        let starts_word = byte.is_ascii_alphabetic() || byte == b'_';
-        let after_dot = index > 0 && bytes[index - 1] == b'.';
-        let in_word =
-            index > 0 && (bytes[index - 1].is_ascii_alphanumeric() || bytes[index - 1] == b'_');
-        if in_string || !starts_word || after_dot || in_word {
-            index += 1;
-            continue;
+        match c {
+            Some(c) if c.is_ascii_alphanumeric() || c == '_' => {
+                if word.is_empty() {
+                    may_name = (c.is_ascii_alphabetic() || c == '_')
+                        && !previous.is_some_and(|p| p == '.' || p.is_ascii_digit());
+                }
+                word.push(c);
+            }
+            other => {
+                if other == Some('.')
+                    && may_name
+                    && let Some(app) = mounted.iter().find(|m| m.alias == word)
+                    && !found.iter().any(|f| f.app == app.app)
+                {
+                    found.push(app);
+                }
+                word.clear();
+                in_string = other == Some('"');
+            }
         }
-        let end = bytes[index..]
-            .iter()
-            .position(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
-            .map_or(bytes.len(), |n| index + n);
-        let word = &source[index..end];
-        if bytes.get(end) == Some(&b'.')
-            && let Some(app) = mounted.iter().find(|m| m.alias == word)
-            && !found.iter().any(|f| f.app == app.app)
-        {
-            found.push(app);
-        }
-        index = end;
+        previous = c;
     }
     found
 }
@@ -433,7 +442,7 @@ fn invocation(value: &Value, naming: &Naming<'_>, step: &mut ProgramStep) {
             step.answer.push(format!("// {action}: done"));
             let before = step.refs.len();
             show(&result, naming, step, 0);
-            let changed: Vec<ResourceAt> = step.refs[before..].to_vec();
+            let changed: Vec<ResourceAt> = step.refs.iter().skip(before).cloned().collect();
             if changed.is_empty() {
                 // An action that returns nothing changed the resources it was given; the
                 // program names them.

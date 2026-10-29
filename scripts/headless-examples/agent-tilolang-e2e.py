@@ -53,15 +53,49 @@ APPS = ["board", "todo", "chat", "notes", "views"]
 NATIVE = "agent tasks settings"
 SCRIPT = HERE / "agent-tilolang/release.json"
 TRACKER = "tasks.tracker"
+AGENT = "scribe"
+MODEL = "release-replay"
+# Writes a keyless provider on this device into the session's settings
+# (crates/agent/provider-config/examples/local_provider.rs).
+LOCAL_PROVIDER = REPO / "target/debug/examples/local_provider"
 
 
 def app_id(name: str) -> str:
     return f"so.tilo.lang.{name}"
 
 
+def tl_resource(found: dict) -> str | None:
+    """The tilolang resource an action is bound to (`tl:<app>:<id>`): a bound resource's id
+    ends with its published id in hex."""
+    tail = (found.get("resource") or "").rsplit(":", 1)[-1]
+    try:
+        return bytes.fromhex(tail).decode()
+    except ValueError:
+        return None
+
+
+def actions_of(session: Session, app: str, title: str) -> list[dict]:
+    """The actions `app` publishes under `title`, each bound to one of its resources."""
+    return [a for a in session.actions(title)
+            if a.get("title") == title and (tl_resource(a) or "").startswith(f"tl:{app}:")]
+
+
 def action(session: Session, app: str, title: str, deadline: float = 30.0) -> dict:
     """The action `app` publishes under `title`, once it does."""
-    return until(f"{app}'s {title!r}", lambda: e2e.app_action(session, app, title), deadline)
+    return until(f"{app}'s {title!r}", lambda: next(iter(actions_of(session, app, title)), None), deadline)
+
+
+def act(session: Session, app: str, title: str, args: dict | None = None):
+    """Invoke the action `app` publishes under `title`, found afresh: a directory id names one
+    revision of the directory, and one taken before the last change is refused."""
+    for _ in range(20):
+        try:
+            return invoke(session, action(session, app, title), args)
+        except Failed as error:
+            if "list it again" not in str(error):
+                raise
+            time.sleep(0.25)
+    raise Failed(f"{app}'s {title!r} kept changing under its invocation")
 
 
 def invoke(session: Session, found: dict, args: dict | None = None):
@@ -73,32 +107,34 @@ def invoke(session: Session, found: dict, args: dict | None = None):
 
 
 def configure_model(session: Session, port: int) -> dict:
-    """A provider on this device, keyless, at the recorded model's loopback address, speaking
-    Anthropic Messages, chosen for agents: Settings' own provider actions, as a person does."""
-    settings = "so.tilo.settings"
-    invoke(session, action(session, settings, "Add provider"), {"preset": "lm-studio"})
-    providers = until("the new provider", lambda: [
-        a for a in session.actions("Set provider details") if a.get("application") == settings])
-    found = providers[-1]
-    provider = found.get("resource", "").rsplit("/", 1)[-1] or "lm-studio"
-    invoke(session, found, {"provider": provider, "label": "Recorded model",
-                            "endpoint": f"http://127.0.0.1:{port}", "model": "release-replay"})
-    invoke(session, action(session, settings, "Speak another protocol to a provider"),
-           {"provider": provider, "protocol": "anthropic"})
-    invoke(session, action(session, settings, "Set default provider"), {"provider": provider})
-    return {"provider": provider, "port": port}
+    """A provider on this device, keyless, at the recorded model's loopback address, chosen for
+    agents, and an agent in the workspace to ask: what a person sets up in Settings and the
+    workspace's Agents tab."""
+    env = session.env()
+    run([LOCAL_PROVIDER, f"http://127.0.0.1:{port}/v1", MODEL], env=env)
+    session.invoke("actions", "agent.invite", {"name": AGENT, "preset": "contributor"})
+    session.control_cmd("key", "Escape")
+    ready = until("the agent ready to be asked", lambda: [
+        a for a in session.actions("Ask an agent: release")
+        if a.get("provider") == "ask-agent" and AGENT in (a.get("subtitle") or "").lower()], 30)
+    return {"port": port, "agent": AGENT, "says": ready[0].get("subtitle")}
+
+
+def card_column(session: Session, board: str, title: str) -> dict:
+    """A column of the board as a picked resource, made and named `title`."""
+    before = {tl_resource(a) for a in actions_of(session, board, "Rename column")}
+    act(session, board, "New column")
+    made = until(f"the new column {title!r}", lambda: [
+        a for a in actions_of(session, board, "Rename column") if tl_resource(a) not in before])
+    invoke(session, made[0], {"title": title})
+    return {"app": board, "kind": f"tl.{board}.Column", "id": tl_resource(made[0]), "label": title}
 
 
 def seed(session: Session) -> dict:
     """A release a week out, through each app's own actions: Board's columns and cards, the
     Todo list and the release conversation in Chat."""
     board, todo, chat = app_id("board"), app_id("todo"), app_id("chat")
-    columns = {}
-    for title in ["To do", "Doing", "Done"]:
-        made = e2e.value_of(invoke(session, action(session, board, "New column")))
-        column = made["id"] if isinstance(made, dict) else made
-        invoke(session, action(session, board, "Rename column"), {"col": column, "title": title})
-        columns[title] = column
+    columns = {title: card_column(session, board, title) for title in ["To do", "Doing", "Done"]}
     cards = [
         ("To do", "Write the release notes", "Lead with the sync fix, then the new board."),
         ("To do", "Screenshots for the docs", ""),
@@ -110,17 +146,14 @@ def seed(session: Session) -> dict:
         ("Done", "Merge the offline queue", "Landed on Tuesday."),
     ]
     for column, title, notes in cards:
-        invoke(session, action(session, board, "Add card"),
-               {"col": columns[column], "title": title, "notes": notes})
-    invoke(session, action(session, todo, "Rename"), {"name": "Release 2.4"})
-    items = ["Freeze the strings for translation", "Record the demo video", "Update the changelog",
-             "Send the beta to the testers", "Check the upgrade from 2.3"]
+        act(session, board, "Add card", {"col": columns[column], "title": title, "notes": notes})
+    act(session, todo, "Rename", {"name": "Release 2.4"})
+    items = ["Record the demo video", "Update the changelog", "Check the upgrade from 2.3"]
     for title in items:
-        invoke(session, action(session, todo, "Add"), {"title": title})
-    release = e2e.value_of(invoke(session, action(session, chat, "Start"), {"title": "Release checklist"}))
-    conversation = release["id"] if isinstance(release, dict) else release
+        act(session, todo, "Add", {"title": title})
+    act(session, chat, "Start", {"title": "Release checklist"})
     for text in ["Docs still need the new screenshots.", "I'll take the screenshots after lunch."]:
-        invoke(session, action(session, chat, "Post"), {"c": conversation, "text": text, "block": ""})
+        act(session, chat, "Send", {"text": text})
     return {"columns": len(columns), "cards": len(cards), "todos": len(items)}
 
 
@@ -200,6 +233,7 @@ def main() -> int:
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--out", type=Path, default=REPO / "target/agent-tilolang-e2e")
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--port", type=int, default=0, help="the recorded model's port (any free one)")
     args = parser.parse_args()
     out = args.out.resolve()
     shutil.rmtree(out, ignore_errors=True)
@@ -215,12 +249,13 @@ def main() -> int:
     run([e2e.SESSION, *build, "--prepare-only", "--apps", NATIVE, "--state", state], env=env)
     if not args.no_build:
         print("==> building the tilolang tool", file=sys.stderr)
-        run(["cargo", "build", "--locked", "-p", "tilolang-cli", "--bin", "tilolang"], cwd=REPO)
+        run(["cargo", "build", "--locked", "-p", "tilolang-cli", "--bin", "tilolang",
+             "-p", "agent-provider-config", "--example", "local_provider"], cwd=REPO)
     runtime = (state / "runtimes/.version").read_text().strip()
     run([tool, "build", REPO / "apps/tl/views", "--search", REPO / "apps/tl", "--out", out / "build",
          "--tilo-runtime", f"tilo-runtime/{runtime}"])
 
-    model, replay = serve(SCRIPT)
+    model, replay = serve(SCRIPT, port=args.port)
     summary: dict = {"checks": {}, "failed": []}
     proc = None
     try:
