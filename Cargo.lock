@@ -18538,6 +18538,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-desktop-policy"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
+ "tilo-ui",
+]
+
+[[package]]
 name = "tilo-desktop-search"
 version = "0.1.0"
 dependencies = [
@@ -27568,6 +27579,7 @@ dependencies = [
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
+ "tilo-desktop-policy",
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-device-admin",
