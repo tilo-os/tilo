@@ -112,6 +112,28 @@ impl State {
         Presentation { feedback, refresh }
     }
 
+    /// Tell the clients on `output` what to allocate: `scanout` for a
+    /// surface the frame showed on a plane, `render` for the rest.
+    pub(crate) fn send_scanout_feedback(
+        &self,
+        output: &Output,
+        states: &RenderElementStates,
+        render: &smithay::wayland::dmabuf::DmabufFeedback,
+        scanout: &smithay::wayland::dmabuf::DmabufFeedback,
+    ) {
+        for window in self.space.elements_for_output(output) {
+            window.send_dmabuf_feedback(
+                output,
+                |_, _| Some(output.clone()),
+                |surface, _| {
+                    smithay::backend::renderer::element::utils::select_dmabuf_feedback(
+                        surface, states, render, scanout,
+                    )
+                },
+            );
+        }
+    }
+
     /// A frame of `output` was drawn and is on screen at once (no display
     /// to wait for).
     pub(crate) fn frame_shown(&self, output: &Output) {

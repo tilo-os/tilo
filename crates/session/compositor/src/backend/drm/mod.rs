@@ -38,7 +38,10 @@ use smithay::backend::drm::{
 };
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
+use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::renderer::ImportDma as _;
+use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
+use smithay::wayland::dmabuf::{DmabufFeedback, DmabufFeedbackBuilder};
 use smithay::backend::renderer::element::{RenderElement, RenderElementStates};
 use smithay::backend::renderer::gles::{Capability, GlesRenderer};
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
@@ -103,9 +106,57 @@ struct Lit {
     queued_at: Instant,
     vrr: Vrr,
     color: LitColor,
+    /// What clients on this output are told to allocate, when its planes
+    /// can show their buffers directly.
+    feedback: Option<ScanoutFeedback>,
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
+}
+
+/// The dma-buf feedback for client surfaces on one output: the primary
+/// GPU's render formats, or, for a surface whose buffer could go straight
+/// onto a plane, the planes' formats first.
+struct ScanoutFeedback {
+    render: DmabufFeedback,
+    scanout: DmabufFeedback,
+}
+
+impl ScanoutFeedback {
+    /// The feedback for `surface`'s planes on the primary GPU (`primary`,
+    /// its card `card`). A display on another GPU gets none: a buffer the
+    /// primary rendered goes through a copy there anyway.
+    fn new(
+        surface: &Surface,
+        primary: DrmNode,
+        card: DrmNode,
+        render_formats: &FormatSet,
+    ) -> Option<Self> {
+        let plane_formats: Vec<_> = surface.with_compositor(|compositor| {
+            let planes = compositor.surface();
+            planes
+                .plane_info()
+                .formats
+                .iter()
+                .chain(
+                    planes
+                        .planes()
+                        .overlay
+                        .iter()
+                        .flat_map(|plane| plane.formats.iter()),
+                )
+                .filter(|format| render_formats.contains(format))
+                .copied()
+                .collect()
+        });
+        let builder = DmabufFeedbackBuilder::new(primary.dev_id(), render_formats.iter().copied());
+        let render = builder.clone().build().ok()?;
+        let scanout = builder
+            .add_preference_tranche(card.dev_id(), Some(TrancheFlags::Scanout), plane_formats)
+            .build()
+            .ok()?;
+        Some(Self { render, scanout })
+    }
 }
 
 /// An output's colour pass and HDR signal.
@@ -586,6 +637,14 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
             // Clients draw their next frame now; an output with nothing
             // new is asked again one refresh later.
             let states = states.unwrap_or(&frame.states);
+            if let Some(feedback) = &lit.feedback {
+                state.send_scanout_feedback(
+                    &lit.output,
+                    states,
+                    &feedback.render,
+                    &feedback.scanout,
+                );
+            }
             let presentation = state.frame_drawn(&lit.output, Some(states));
             if frame.is_empty {
                 presentation.shown(Shown::Host);
@@ -1024,8 +1083,12 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
         gpus,
         renderers,
         config,
+        primary,
         ..
     } = &mut *inner;
+    let Some(primary) = *primary else {
+        return;
+    };
     let devices: Vec<u64> = gpus.keys().copied().collect();
     for device in devices {
         // Names other GPUs' outputs already have: a connector of the same
@@ -1036,7 +1099,7 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             .flat_map(|(_, gpu)| gpu.outputs.values().map(|lit| lit.output.name()))
             .collect();
         if let Some(gpu) = gpus.get_mut(&device) {
-            scan_gpu(gpu, renderers, config, &taken, state);
+            scan_gpu(gpu, primary, renderers, config, &taken, state);
         }
     }
     arrange_outputs(gpus, config, state);
@@ -1057,6 +1120,7 @@ fn output_name(path: &Path, connector: &str, taken: &HashSet<String>) -> String 
 
 fn scan_gpu(
     gpu: &mut Gpu,
+    primary: DrmNode,
     renderers: &mut Renderers,
     config: &DisplayConfig,
     taken: &HashSet<String>,
@@ -1134,6 +1198,7 @@ fn scan_gpu(
             renderers,
             state,
             &Lighting {
+                primary,
                 info,
                 name: &name,
                 crtc,
@@ -1240,6 +1305,8 @@ fn logical_width(output: &Output) -> i32 {
 /// A connector to light: its name, the CRTC and mode to drive it with and
 /// the scale it starts at.
 struct Lighting<'a> {
+    /// The render node of the GPU that renders every output.
+    primary: DrmNode,
     info: &'a connector::Info,
     name: &'a str,
     crtc: crtc::Handle,
@@ -1254,6 +1321,7 @@ fn light(
     lighting: &Lighting<'_>,
 ) -> Option<Lit> {
     let &Lighting {
+        primary,
         info,
         name,
         crtc,
@@ -1312,6 +1380,16 @@ fn light(
     } else {
         Vrr::Unable
     };
+    let feedback = if gpu.render == primary {
+        renderers
+            .single_renderer(&primary)
+            .ok()
+            .and_then(|renderer| {
+                ScanoutFeedback::new(&surface, primary, gpu.node, &renderer.dmabuf_formats())
+            })
+    } else {
+        None
+    };
     crate::output::advertise(&output, &state.display);
     state.add_output(&output, location);
     let interval = refresh_interval(output_mode.refresh);
@@ -1333,6 +1411,7 @@ fn light(
         queued_at: Instant::now(),
         vrr,
         color: LitColor::default(),
+        feedback,
         next_frame: Instant::now(),
         interval,
     })
