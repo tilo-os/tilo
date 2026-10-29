@@ -1268,3 +1268,19 @@ people-follows = Folgt { $person }
 people-follows-you = Folgt dir
 people-follows-where = { $place }, folgt { $person }
 people-follows-you-where = { $place }, folgt dir
+
+## The desktop's published actions
+desktop-actions-chrome = Schreibtisch
+desktop-actions-desk = Fenster
+desktop-action-toggle-overview = Übersicht ein- oder ausblenden
+desktop-action-toggle-quick-settings = Schnelleinstellungen ein- oder ausblenden
+desktop-action-toggle-tilo-menu = Tilo-Menü ein- oder ausblenden
+desktop-action-toggle-workspace-menu = Arbeitsbereichsmenü ein- oder ausblenden
+desktop-action-switch-workspace = Zu einem anderen Arbeitsbereich wechseln
+desktop-action-step-strip = Zu einer anderen Leiste wechseln
+desktop-action-new-workspace = Neuer Arbeitsbereich
+desktop-action-focus-tab = Ein Fenster nach vorn holen
+desktop-action-close-tab = Ein Fenster schließen
+desktop-action-open-search = Suchen
+desktop-action-param-delta = Wie viele Arbeitsbereiche weiter, negativ zurück
+desktop-action-param-steps = Wie viele Leisten weiter, negativ zurück

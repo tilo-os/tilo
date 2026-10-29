@@ -35,6 +35,7 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::ChromeIntent;
+use crate::desktop_actions::{DesktopAction, OPERATION, chrome_resource, desk_resource};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overview::{OverviewHost, room_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
@@ -304,7 +305,70 @@ impl DeskLayer {
     }
 }
 
+impl DeskLayer {
+    /// Carry out a desk action; false for one of the chrome's.
+    fn perform(&self, action: &DesktopAction) -> bool {
+        match *action {
+            DesktopAction::FocusTab { tab } => {
+                self.handle.focus_tab(tab);
+            }
+            DesktopAction::CloseTab { tab } => {
+                let mut tree = self.handle.read(Clone::clone);
+                if tree.close_tab(tab).is_some() {
+                    self.handle.replace_tree(tree);
+                }
+            }
+            DesktopAction::OpenSearch => self.handle.open_search(None),
+            _ => return false,
+        }
+        true
+    }
+}
+
+impl ui::resources::PublishesResources for DeskLayer {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        let tabs: Vec<(u64, String)> = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| (tab.id, tab.title.clone()))
+                .collect()
+        });
+        vec![desk_resource(&tabs)]
+    }
+}
+
+impl ui::host_operation::ResourceOperations for DeskLayer {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[OPERATION]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::host_operation::ResourceOperation<'_>,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &ui::automerge::ObjId,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+        if let Some(request) = op.unscoped()
+            && let Some(action) = DesktopAction::decode(request.type_id, request.payload)
+            && self.perform(&action)
+        {
+            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        ui::host_operation::start_in_children(self, op, doc, path)
+    }
+}
+
 impl Widget for DeskLayer {
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::host_operation::ResourceOperations
+    );
+
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let empty = self.handle.read(desk_is_empty);
         let mut changed = self.empty.replace(empty) != empty;
@@ -342,7 +406,7 @@ impl Widget for DeskLayer {
                 flex_shrink: 0.0,
                 ..Default::default()
             })
-            .unwrap_or_else(|_| backdrop);
+            .unwrap_or(backdrop);
         let area = self.area.build_layout(taffy, theme, map);
         grow(taffy, area);
         let node = taffy.widget_node(column(), &[backdrop, band, area], map, self);
@@ -774,7 +838,7 @@ impl DesktopChrome {
                 }
             }
             WorkspaceMenuChoice::Action(id) => {
-                self.asks.borrow_mut().push(DesktopAsk::HostAction(id))
+                self.asks.borrow_mut().push(DesktopAsk::HostAction(id));
             }
             WorkspaceMenuChoice::Overview => {
                 if !self.overview.is_open() {
@@ -1113,7 +1177,7 @@ impl DesktopChrome {
     }
 
     /// Whether the strip ribbon, its labels or the rail took `event`.
-    fn navigation_event(&mut self, event: &WindowEvent, scale: f64, modifiers: &Modifiers) -> bool {
+    fn navigation_event(&mut self, event: &WindowEvent, scale: f64, modifiers: Modifiers) -> bool {
         use winit::event::{Ime, MouseButton};
         let now = ui::time::now();
         let navigation = match event {
@@ -1233,7 +1297,70 @@ impl DesktopChrome {
     }
 }
 
+impl DesktopChrome {
+    /// Carry out a chrome action; false for one of the desk's.
+    fn perform(&mut self, action: &DesktopAction) -> bool {
+        let intent = match *action {
+            DesktopAction::ToggleOverview => ChromeIntent::ToggleOverview,
+            DesktopAction::ToggleQuickSettings => ChromeIntent::ToggleQuickSettings,
+            DesktopAction::ToggleTiloMenu => ChromeIntent::ToggleTiloMenu,
+            DesktopAction::ToggleWorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu,
+            DesktopAction::SwitchWorkspace { delta } => {
+                ChromeIntent::SwitchWorkspace(i32::try_from(delta).unwrap_or_default())
+            }
+            DesktopAction::StepStrip { steps } => {
+                let steps = isize::try_from(steps).unwrap_or_default();
+                self.go_to_strip(|current| current.checked_add_signed(steps));
+                return true;
+            }
+            DesktopAction::NewWorkspace => {
+                self.new_workspace();
+                return true;
+            }
+            DesktopAction::FocusTab { .. }
+            | DesktopAction::CloseTab { .. }
+            | DesktopAction::OpenSearch => return false,
+        };
+        self.apply_intent(intent);
+        true
+    }
+}
+
+impl ui::resources::PublishesResources for DesktopChrome {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        vec![chrome_resource()]
+    }
+}
+
+impl ui::host_operation::ResourceOperations for DesktopChrome {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[OPERATION]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::host_operation::ResourceOperation<'_>,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &ui::automerge::ObjId,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+        if let Some(request) = op.unscoped()
+            && let Some(action) = DesktopAction::decode(request.type_id, request.payload)
+            && self.perform(&action)
+        {
+            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )));
+        }
+        ui::host_operation::start_in_children(self, op, doc, path)
+    }
+}
+
 impl Widget for DesktopChrome {
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::host_operation::ResourceOperations
+    );
+
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let intents = std::mem::take(&mut *self.intents.borrow_mut());
         let mut changed = !intents.is_empty();
@@ -1280,7 +1407,7 @@ impl Widget for DesktopChrome {
     ) -> NodeId {
         use taffy::{LengthPercentageAuto, Position, Size};
         let bar = self.bar.build_layout(taffy, theme, map);
-        let content = taffy.new_leaf(Style::default()).unwrap_or_else(|_| bar);
+        let content = taffy.new_leaf(Style::default()).unwrap_or(bar);
         grow(taffy, content);
         // Over the area under the bar, which stays usable while it is open.
         let overview = self.overview.build_layout(taffy, theme, map);
@@ -1374,7 +1501,7 @@ impl Widget for DesktopChrome {
         }
         // The strip switcher's name field and keyboard choosing come before
         // the desktop's chords, as any field's typing does.
-        if self.navigation_event(event, ctx.scale_factor, ctx.modifiers) {
+        if self.navigation_event(event, ctx.scale_factor, *ctx.modifiers) {
             *ctx.handled = true;
             return;
         }
