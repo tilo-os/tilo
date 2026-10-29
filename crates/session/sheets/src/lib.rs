@@ -13,6 +13,7 @@ pub mod displays;
 pub mod power;
 mod presentation;
 pub mod shortcut_guide;
+pub mod workspace_settings;
 
 pub use presentation::{Phase, Presentation, Seat};
 
