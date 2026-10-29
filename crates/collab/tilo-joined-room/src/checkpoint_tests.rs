@@ -524,7 +524,6 @@ fn checkpoint_reader_fixture() -> (
                         },
                     },
                 },
-                &fixture.certificate,
                 &fixture.key,
                 fixture.now,
             )
@@ -673,7 +672,6 @@ fn deny_checkpoint_naming(fixture: &Fixture, member: &tilo_user_identity::Device
                         },
                 },
             },
-            &fixture.certificate,
             &fixture.key,
             fixture.now,
         )
@@ -785,7 +783,6 @@ fn revoke_membership_grant(fixture: &Fixture, grant: tilo_action_policy::GrantId
                         },
                 },
             },
-            &fixture.certificate,
             &fixture.key,
             fixture.now,
         )

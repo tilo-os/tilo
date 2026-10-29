@@ -92,6 +92,12 @@ impl CapnpBrokerState {
                 let (action, argument) = bot_invocation(command)?;
                 (WORKSPACE.into(), action, Some(argument))
             }
+            WorkspaceMembershipCommand::Member { .. } => {
+                return Err(
+                    "a change to the room's people is its person's own, made at their device"
+                        .into(),
+                );
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(
@@ -350,8 +356,8 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         })?;
         for (room, mut actions) in rooms {
-            // A room its host stewards keeps its own membership changes
-            // here too: this device asks that host to commit them.
+            // A room its host stewards offers its membership changes here
+            // too: this device writes them itself, as in any room it holds.
             if !(service.requires_room(&room) || service.grants_authorship_at_host(&room)) {
                 continue;
             }
@@ -983,8 +989,7 @@ mod tests {
     struct DiscoveryMemberships;
 
     /// A service standing in for a room this device holds but a host
-    /// stewards: it commits nothing here and asks the host, so the room's
-    /// own membership changes are what it publishes.
+    /// stewards: the room's own membership changes are what it publishes.
     struct HostedElsewhereMemberships;
 
     impl WorkspaceMemberships for HostedElsewhereMemberships {
@@ -1119,7 +1124,7 @@ mod tests {
                 state.refresh_workspace_membership_services().unwrap();
                 // The room's own governance is offered, so adding and
                 // removing an agent and giving and taking back a grant are
-                // actions here, and the host is asked to commit them.
+                // actions here.
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),

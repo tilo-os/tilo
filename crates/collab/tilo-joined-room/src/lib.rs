@@ -497,20 +497,23 @@ impl NativeWorkspaceOwner {
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let previous_publication = candidate.record.publication.clone();
         let mut reports = Vec::with_capacity(inputs.len());
+        let mut governed = BTreeSet::new();
         for (origin, message) in inputs {
-            reports.push(Self::admit_input(
-                &mut candidate,
-                room,
-                origin,
-                message,
-                now,
-            ));
+            let from_governance = Self::governance_changes(&candidate, origin, &message);
+            let report = Self::admit_input(&mut candidate, room, origin, message, now);
+            if report.is_ok()
+                && let Some(changes) = from_governance
+            {
+                governed.extend(changes);
+            }
+            reports.push(report);
         }
         if reports.iter().all(Result::is_err) {
             // Every input was refused: nothing changed to commit.
             return Ok(reports);
         }
         publication::retire(&mut candidate)?;
+        publication::retire_member_changes(&mut candidate, &governed)?;
         publication::refresh_governance_checkpoint(&mut candidate)?;
         let durable = candidate.peer.durable()?;
         // Authentication and causal admission still run for every replay.
@@ -530,6 +533,26 @@ impl NativeWorkspaceOwner {
             .ok_or("native owner generation exhausted")?;
         self.publish_room(room, candidate, None)?;
         Ok(reports)
+    }
+    /// The room changes `message` carries when one of the owner's devices,
+    /// other than this one, sent it: the room's governance, which retires
+    /// what this member published once it carries it.
+    fn governance_changes(
+        candidate: &NativeCommittedView,
+        origin: TransportOrigin,
+        message: &NeighbourMsg,
+    ) -> Option<BTreeSet<automerge::ChangeHash>> {
+        let (TransportOrigin::RelayDelta(author) | TransportOrigin::RetainedRelayDelta(author)) =
+            origin
+        else {
+            return None;
+        };
+        let NeighbourMsg::SyncResp { changes, .. } = message else {
+            return None;
+        };
+        (author != candidate.device().device_public_key && candidate.peer.signed_by_owner(&author))
+            .then(|| publication::change_hashes(changes).ok())
+            .flatten()
     }
     /// Decide one relay input into `candidate`: refused, it changes nothing.
     fn admit_input(

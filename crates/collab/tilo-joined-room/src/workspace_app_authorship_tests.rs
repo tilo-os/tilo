@@ -18,21 +18,11 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     };
     let receipt = fixture
         .owner
-        .commit_workspace_membership_command(
-            request.clone(),
-            &fixture.certificate,
-            &fixture.key,
-            fixture.now,
-        )
+        .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
         .unwrap();
     let retry = fixture
         .owner
-        .commit_workspace_membership_command(
-            request.clone(),
-            &fixture.certificate,
-            &fixture.key,
-            fixture.now,
-        )
+        .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
         .unwrap();
     assert_eq!(receipt.binding, retry.binding);
     assert_eq!(receipt.generation, retry.generation);
@@ -46,12 +36,7 @@ fn app_authorship_is_governor_signed_durable_and_exact_retry_only() {
     assert!(
         fixture
             .owner
-            .commit_workspace_membership_command(
-                changed,
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(changed, &fixture.key, fixture.now,)
             .is_err()
     );
     let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
@@ -91,12 +76,7 @@ fn app_authorship_refuses_forged_person_and_invalid_package() {
         assert!(
             fixture
                 .owner
-                .commit_workspace_membership_command(
-                    request,
-                    &fixture.certificate,
-                    &fixture.key,
-                    fixture.now,
-                )
+                .commit_workspace_membership_command(request, &fixture.key, fixture.now,)
                 .is_err()
         );
     }
@@ -178,12 +158,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
     assert!(
         fixture
             .owner
-            .commit_workspace_membership_command(
-                request,
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(request, &fixture.key, fixture.now,)
             .is_ok()
     );
 }

@@ -1817,15 +1817,22 @@ impl Rooms {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        // A room whose layout is personal takes in no member's windows; its
-        // doors refuse them before they get here (`layout_scope`).
-        if self.is_public(room) {
-            return Ok(());
-        }
+        let public = self.is_public(room);
         let host = &self.inner.host;
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
         if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
+            // A room whose layout is personal takes in no member's windows;
+            // its doors refuse them before they get here (`layout_scope`).
+            // Its membership, which members change themselves, it takes in.
+            if public
+                && !room
+                    .peer()
+                    .admitted_room()
+                    .is_some_and(|before| layout_scope::leaves_layout(before, changes))
+            {
+                return Ok(());
+            }
             let missing =
                 unbuildable_windows::missing_history(room.peer().admitted_room(), changes)?;
             if missing > 0 {
@@ -1842,8 +1849,17 @@ impl Rooms {
         if !outcome.changed {
             return Ok(());
         }
+        // A member removed takes every way in the room handed them with
+        // them: an invitation issued to them before, still unredeemed,
+        // would otherwise admit them again at once.
+        let removed: std::collections::BTreeSet<_> = member_roots(room.peer(), now)
+            .difference(&member_roots(&candidate, now))
+            .copied()
+            .collect();
         room.commit(candidate, &host.key, now, |record, _| {
-            Ok(record.collaboration.clone())
+            let mut state = record.collaboration.clone();
+            state.withdraw_invitations(&removed);
+            Ok(state)
         })?;
         self.settle(&mut room).await
     }

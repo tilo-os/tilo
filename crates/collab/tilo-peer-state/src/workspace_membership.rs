@@ -335,6 +335,13 @@ pub enum WorkspaceMembershipCommand {
     UninstallApp {
         app: String,
     },
+    /// A change to the room's members, as the caller makes it: a role, a
+    /// removal, a ban or a restriction, or a grant given or taken back. The
+    /// room's admission decides it against the caller's own grants where
+    /// they made it, on every device that receives it.
+    Member {
+        change: tilo_action_policy::Change,
+    },
 }
 
 impl WorkspaceMembershipCommand {
@@ -357,7 +364,8 @@ impl WorkspaceMembershipCommand {
             | Self::RequestBot(_)
             | Self::WithdrawBotRequest { .. }
             | Self::InstallApp(_)
-            | Self::UninstallApp { .. } => None,
+            | Self::UninstallApp { .. }
+            | Self::Member { .. } => None,
         }
     }
 
@@ -412,6 +420,9 @@ impl WorkspaceMembershipCommand {
         if matches!(self, Self::Grant { .. } | Self::Revoke { .. }) {
             return Ok(());
         }
+        if let Self::Member { change } = self {
+            return validate_member_change(change);
+        }
         if let Self::GrantAppAuthorship { app } = self {
             return validate_app_id(app);
         }
@@ -426,6 +437,29 @@ impl WorkspaceMembershipCommand {
         }
         Ok(())
     }
+}
+
+/// A member change names its person by their user root key, and a grant
+/// it gives by an id.
+fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), String> {
+    use tilo_action_policy::Change;
+    let person = match change {
+        Change::AddMember { person, .. }
+        | Change::RemoveMember { person }
+        | Change::Ban { person }
+        | Change::Unban { person }
+        | Change::Restrict { person, .. }
+        | Change::Unrestrict { person }
+        | Change::SetRole { person, .. } => person,
+        Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
+            return Err("a grant needs an id".into());
+        }
+        Change::Grant(_) | Change::Revoke(_) => return Ok(()),
+    };
+    if person.len() != 64 || hex::decode(person).is_err() {
+        return Err("a member is named by their user root key".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

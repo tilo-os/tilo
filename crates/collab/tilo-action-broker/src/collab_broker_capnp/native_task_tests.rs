@@ -302,7 +302,6 @@ impl Fixture {
             .owner
             .commit_workspace_membership_command(
                 membership,
-                &native.certificate,
                 &native.key,
                 std::time::SystemTime::now(),
             )
@@ -400,7 +399,6 @@ impl Fixture {
             .owner
             .commit_workspace_membership_command(
                 removal,
-                &self.native.certificate,
                 &self.native.key,
                 std::time::SystemTime::now(),
             )

@@ -781,7 +781,8 @@ impl StatePeer {
 
     /// Whether `device` is a known, unrevoked device of the owner's, at no
     /// particular time: for evidence a device of theirs signed earlier.
-    fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
+    #[must_use]
+    pub fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
         self.core
             .certificates
             .get(device)
@@ -937,6 +938,29 @@ impl StatePeer {
     /// them.
     pub fn room_heads(&self) -> Option<Vec<automerge::ChangeHash>> {
         Some(self.core.room_doc.as_deref()?.committed_heads())
+    }
+
+    /// The room document's changes past `heads`, encoded, in causal order:
+    /// what a member's device publishes of a change it made itself.
+    #[must_use]
+    pub fn room_changes_since(&self, heads: &[automerge::ChangeHash]) -> Vec<Vec<u8>> {
+        let Some(room) = self.core.room_doc.as_deref() else {
+            return Vec::new();
+        };
+        room.clone()
+            .get_changes(heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect()
+    }
+
+    /// Whether the room document holds the change `hash`.
+    #[must_use]
+    pub fn room_holds_change(&self, hash: &automerge::ChangeHash) -> bool {
+        self.core
+            .room_doc
+            .as_deref()
+            .is_some_and(|room| room.get_change_by_hash(hash).is_some())
     }
 
     /// Start the room's document over from a base ([`room::base`]), as its

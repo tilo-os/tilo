@@ -1,7 +1,8 @@
 //! Governance writes made at this device: checked against the room's
-//! policy as this device holds it, then asked of the room's governor, its
-//! host. Nothing changes here until the room's admitted document carries
-//! the change.
+//! policy as this device holds it, then written here when they change the
+//! room's membership, or asked of the room's governor, its host, when they
+//! change the rest of its governance. Nothing changes here until the
+//! room's admitted document carries the change.
 
 use tilo_desktop::workspace_settings::{GovernanceOperation, apply_governance};
 
