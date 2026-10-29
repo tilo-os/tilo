@@ -1,26 +1,46 @@
 //! Disk Usage as a resource: scans and navigation are the
-//! view's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
-//! this device, so they are a device-local setting ([`RecentFolders`]),
-//! published as live rows beside the resource.
+//! view's [`DiskUsageEffect`]s. The folders analyzed lately are a record
+//! beside it ([`RecentFolders`]), each device's paths its own, published as
+//! live rows beside the resource.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use ui::framework::{Fixture, LiveRow, ResourceApp, ViewCx};
-use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, Model, resource};
+use ui::tilo_resource::{self, AbsolutePath, Model, Recents, resource};
 use ui::widget::Element;
 
 use crate::scan::ScanResult;
 
-/// The folders analyzed on this device lately, newest first.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The folders one device analyzed lately, newest first.
+pub type Folders = Recents<PathBuf, 5>;
+
+/// The folders analyzed lately, by the device whose disk they are on: a
+/// record Disk Usage keeps beside its own in the workspace, synced with
+/// it, each device reading and writing only its own list.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RecentFolders {
-    pub folders: ui::tilo_resource::Recents<PathBuf, 5>,
+    pub devices: BTreeMap<String, Folders>,
 }
 
-impl SettingsSchema for RecentFolders {
-    const SCOPE: Scope = Scope::DeviceLocal;
+#[resource(kind = "disk-usage.recent-folders", label = "Recent folders")]
+impl RecentFolders {
+    /// `folder` on `device` was analyzed: it moves to the front.
+    #[action(housekeeping)]
+    pub fn remember(&mut self, device: String, folder: AbsolutePath) {
+        self.devices
+            .entry(device)
+            .or_default()
+            .remember(folder.into_path_buf());
+    }
+}
+
+impl RecentFolders {
+    /// The folders `device` analyzed lately, newest first.
+    #[must_use]
+    pub fn on(&self, device: &str) -> Folders {
+        self.devices.get(device).cloned().unwrap_or_default()
+    }
 }
 
 /// What the analyzer does that changes no document: scanning a folder and
@@ -33,8 +53,8 @@ pub enum DiskUsageEffect {
     /// Scans it and shows what takes up its space.
     #[effect(job)]
     Analyze {
-        #[param("The folder to analyze")]
-        path: String,
+        #[param("Absolute path of the folder to analyze")]
+        path: AbsolutePath,
     },
     /// Choose folder.
     ///
@@ -53,7 +73,8 @@ pub enum DiskUsageEffect {
 
 /// The disk-usage analyzer: the door its effects and live rows are
 /// published on. It keeps no document state: what it scans is this device's
-/// disk, and the folders it remembers are a device-local setting.
+/// disk, and the folders it remembers are a record beside it
+/// ([`RecentFolders`]).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DiskUsage {}
 
@@ -62,19 +83,23 @@ impl DiskUsage {}
 
 /// One remembered folder, offered to analyze again.
 pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
-    LiveRow::new(
+    let row = LiveRow::new(
         format!("disk-usage.recent:{}", path.display()),
         "disk-usage.recent",
         folder_name(path),
-    )
-    .effect(&analyze(path))
+    );
+    match analyze(path) {
+        Some(effect) => row.effect(&effect),
+        None => row,
+    }
 }
 
-/// The analyze effect for `path`.
-pub(crate) fn analyze(path: &std::path::Path) -> DiskUsageEffect {
-    DiskUsageEffect::Analyze {
-        path: path.to_string_lossy().into_owned(),
-    }
+/// The analyze effect for `path`; `None` for a relative path, which names
+/// no folder.
+pub(crate) fn analyze(path: &std::path::Path) -> Option<DiskUsageEffect> {
+    AbsolutePath::new(path)
+        .ok()
+        .map(|path| DiskUsageEffect::Analyze { path })
 }
 
 /// A folder's name as rows and cards show it.
@@ -87,12 +112,15 @@ pub(crate) fn folder_name(path: &std::path::Path) -> String {
 
 /// One folder a live row offers to analyze.
 pub(crate) fn folder_row(label: &str, path: &std::path::Path) -> LiveRow {
-    LiveRow::new(
+    let row = LiveRow::new(
         format!("disk-usage.folder:{}", path.display()),
         "disk-usage.folder",
         label,
-    )
-    .effect(&analyze(path))
+    );
+    match analyze(path) {
+        Some(effect) => row.effect(&effect),
+        None => row,
+    }
 }
 
 /// Framework app.
@@ -135,14 +163,14 @@ impl ResourceApp for DiskUsageShell {
     /// scanned before.
     fn fixture(fixture: &mut Fixture<DiskUsage>) {
         match fixture.scenario() {
-            Some(name) if name.starts_with("home") => fixture.provide(RecentFolders {
-                folders: [
+            Some(name) if name.starts_with("home") => fixture.provide::<Folders>(
+                [
                     PathBuf::from("/home/you/Projects/tilo"),
                     PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
                 ]
                 .into_iter()
                 .collect(),
-            }),
+            ),
             Some(name) if !name.starts_with("analysis") => {}
             _ => fixture.provide(ScanResult::sample()),
         }
@@ -168,9 +196,14 @@ mod tests {
         folder
     }
 
-    /// The folders this device remembers.
-    fn recent(app: &TestApp<DiskUsageShell>) -> Vec<PathBuf> {
-        app.settings::<RecentFolders>().get().folders.to_vec()
+    /// The device every test window runs on.
+    const DEVICE: &str = "test-device";
+
+    /// The folders this device remembers, in the record.
+    fn recent(app: &mut TestApp<DiskUsageShell>) -> Vec<PathBuf> {
+        app.person::<RecentFolders>()
+            .map(|record| record.with(|recent| recent.on(DEVICE).to_vec()))
+            .unwrap_or_default()
     }
 
     /// Run frames until the scan a row started has shown and remembered
@@ -200,13 +233,20 @@ mod tests {
             assert!(surface.contains(published), "{published}: {surface}");
         }
 
+        // A relative path is refused: it names no folder on its own.
+        let relative = app.call("analyze", serde_json::json!({"path": "photos"}));
+        assert!(
+            relative.unwrap_err().to_string().contains("absolute"),
+            "a relative folder must be refused"
+        );
+
         let versions = app.versions().len();
-        let answer = app.effect(&analyze(&folder)).unwrap();
+        let answer = app.effect(&analyze(&folder).unwrap()).unwrap();
         let answer = answer.value.unwrap();
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
         app.settle();
-        assert_eq!(recent(&app), std::slice::from_ref(&folder));
+        assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
         assert_eq!(
             app.versions().len(),
             versions,
@@ -237,7 +277,7 @@ mod tests {
         assert!(frame.contains("File system"), "{frame}");
 
         let missing = folder.join("not-there");
-        assert!(app.effect(&analyze(&missing)).is_err());
+        assert!(app.effect(&analyze(&missing).unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -258,7 +298,7 @@ mod tests {
             folder.to_string_lossy().as_ref()
         );
         app.settle();
-        assert_eq!(recent(&app), std::slice::from_ref(&folder));
+        assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -285,7 +325,7 @@ mod tests {
         let frame = app.harness().inspection_json().unwrap();
         assert!(!frame.contains("Analyze storage"), "{frame}");
 
-        app.effect(&analyze(&folder)).unwrap();
+        app.effect(&analyze(&folder).unwrap()).unwrap();
         settle_until_recent(&mut app, &folder);
         let bar = ui::window_toolbar::declared().expect("the window's slots");
         let name = folder.file_name().unwrap().to_string_lossy().into_owned();
@@ -316,7 +356,7 @@ mod tests {
 
         let mut home = TestApp::<DiskUsageShell>::capture(Some("home-narrow")).unwrap();
         assert_eq!(home.harness().inspection().viewport, [560, 720]);
-        assert!(recent(&home).is_empty(), "a capture remembers nothing");
+        assert!(recent(&mut home).is_empty(), "a capture remembers nothing");
         let frame = home.harness().inspection_json().unwrap();
         assert!(frame.contains("\"tilo\""), "{frame}");
 
@@ -325,7 +365,7 @@ mod tests {
         let frame = analysis.harness().inspection_json().unwrap();
         assert!(frame.contains("Projects"), "{frame}");
         assert!(
-            recent(&analysis).is_empty(),
+            recent(&mut analysis).is_empty(),
             "a staged scan is not one this person made"
         );
 
@@ -378,8 +418,12 @@ mod tests {
             };
             assert_eq!(address.action, "analyze");
         }
-        app.settings::<RecentFolders>()
-            .update(|recent| recent.folders.remember(folder.clone()))
+        app.person::<RecentFolders>()
+            .unwrap()
+            .invoke(
+                &RecentFolders::REMEMBER
+                    .with((DEVICE.to_owned(), AbsolutePath::new(&folder).unwrap())),
+            )
             .unwrap();
         app.settle();
         let id = format!("disk-usage.place:{}", folder.display());

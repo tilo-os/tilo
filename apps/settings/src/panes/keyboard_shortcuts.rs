@@ -155,7 +155,10 @@ pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
 /// with, which the page names keys and modifiers in.
 fn active_keycaps(document: &ui::storage::SettingsDocument) -> ui::Keycaps {
     let config =
-        settings_store::hardware::RichInputConfig::from_section(&document.section("input"));
+        settings_store::hardware::RichInputConfig::from_section(&settings_store::merged_sections(
+            &document.load(),
+            settings_store::hardware::INPUT_SECTIONS,
+        ));
     config
         .sources()
         .into_iter()

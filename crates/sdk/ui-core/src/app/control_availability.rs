@@ -35,20 +35,6 @@ impl App {
         }
         #[cfg(test)]
         let _walk = crate::profiling::frame_probe::span("walk.availability");
-        if !inputs.framework_input
-            && !history_captures
-            && let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
-                self.root_widget.as_mut(),
-                &self.permission_ctx,
-                &self.collaboration.local_author,
-            )
-        {
-            tracing::warn!(%error, "legacy control availability refused");
-        }
-        // A first page's control availability took 246 ms in Settings; the
-        // startup file names the stage. Startup-only: this runs on
-        // every rebuild.
-        tilo_startup_metrics::startup_mark("actions-legacy-done");
         let history_door = inputs.history_door.clone();
         let bound = self.refresh_bound_control_availability(&history_door);
         self.refresh_emitter_availability(history_door);
@@ -66,6 +52,7 @@ impl App {
 
     /// When a bound component's permissions next change with time alone,
     /// as the last walk of the tree found: a frame then walks it again.
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn permissions_change_at(&self) -> Option<crate::time::Instant> {
         self.layout
             .walks

@@ -1484,6 +1484,42 @@ impl<R, A: Serialize> ActionRef<R, A> {
     {
         Mapped { action: self, map }
     }
+
+    /// Adapt a control's input to this action's arguments where the input
+    /// may not make any: `parse` reads the input (a draft's text) and makes
+    /// the arguments only when it parses, through the types that refuse what
+    /// the action would refuse ([`NonBlank`](crate::NonBlank)):
+    /// `Tracker::CREATE.try_map(|title: String| Some(Create { title: NonBlank::parse(&title)?, .. }))`.
+    ///
+    /// An input `parse` makes nothing of invokes nothing; a control bound
+    /// to a draft through it is disabled meanwhile. `parse` only reads: it
+    /// also runs, as the draft changes, to tell whether the control can act.
+    pub fn try_map<I, T, F>(self, parse: F) -> TryMapped<R, A, F>
+    where
+        F: Fn(I) -> Option<T>,
+        T: Into<A>,
+    {
+        TryMapped {
+            action: self,
+            parse,
+        }
+    }
+}
+
+/// An [`ActionRef`] behind an input adapter that may make no arguments. See
+/// [`ActionRef::try_map`].
+pub struct TryMapped<R, A, F> {
+    action: ActionRef<R, A>,
+    parse: F,
+}
+
+impl<R, A, F: Clone> Clone for TryMapped<R, A, F> {
+    fn clone(&self) -> Self {
+        Self {
+            action: self.action,
+            parse: self.parse.clone(),
+        }
+    }
 }
 
 /// An [`ActionRef`] behind an input adapter. See [`ActionRef::map`].
@@ -1553,6 +1589,26 @@ where
     }
     fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         self.action.arguments(&(self.map)(input).into())
+    }
+}
+
+impl<R, A, I, T, F> Binds<R, I> for TryMapped<R, A, F>
+where
+    R: 'static,
+    A: Serialize + 'static,
+    T: Into<A>,
+    F: Fn(I) -> Option<T> + Send + Sync + 'static,
+{
+    fn action_id(&self) -> &'static str {
+        self.action.id
+    }
+    fn action_key(&self) -> ActionKey {
+        ActionRef::key(&self.action)
+    }
+    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let parsed = (self.parse)(input)
+            .ok_or_else(|| format!("the input makes no arguments for `{}`", self.action.id))?;
+        self.action.arguments(&parsed.into())
     }
 }
 

@@ -99,6 +99,10 @@ impl ControlState for WitnessedState {
     fn press_witness(&self) -> Option<(&dyn ui::widget::Widget, PressFacts)> {
         Some((&self.root, PressFacts::at(self.frame, self.in_transition)))
     }
+
+    fn chrome_state_json(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
 }
 
 #[test]
@@ -758,6 +762,21 @@ fn pointer_commands_plan_typed_buttons_clicks_drags_and_list_targets() {
                 panic!("expected Err");
             };
             assert_eq!(code, "desktop_in_transition");
+            // The state dump says the same, and says when it has settled.
+            let in_transition = |state: &WitnessedState| {
+                let (Response::State { chrome, .. }, _) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    state,
+                ) else {
+                    panic!("expected State");
+                };
+                chrome["in_transition"].clone()
+            };
+            assert_eq!(in_transition(&state), serde_json::json!(true));
+            state.in_transition = false;
+            assert_eq!(in_transition(&state), serde_json::json!(false));
         }
     }
 
@@ -1989,4 +2008,31 @@ fn action_ops_resolve_addresses_and_bind_arguments_strictly() {
             assert_eq!(code, "invalid_arguments");
         }
     }
+}
+
+#[test]
+fn a_test_id_activation_asks_the_focused_window_and_stays_off_agent_and_admin_sockets() {
+    let request = parse_request(r#"{"op":"activate_test_id","test_id":"akcqjax3.t34.t15.52/0"}"#)
+        .expect("the activation parses");
+    let command = request.command;
+    assert_eq!(
+        command,
+        Command::ActivateTestId {
+            test_id: "akcqjax3.t34.t15.52/0".into()
+        }
+    );
+    let (resp, actions) = dispatch_command(&command, &StaticState::new(&[]));
+    assert!(matches!(resp, Response::Ok { .. }));
+    assert_eq!(
+        actions,
+        vec![PlannedAction::ActivateTestId {
+            test_id: "akcqjax3.t34.t15.52/0".into()
+        }],
+        "the app finds the control itself: nothing is planned by where it is drawn"
+    );
+    assert!(
+        !command.agent_permitted(),
+        "agents press through input, not test ids"
+    );
+    assert!(!command.admin_permitted());
 }

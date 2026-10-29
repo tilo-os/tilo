@@ -21,6 +21,8 @@ use crate::registry::FieldInfo;
 use crate::runtime::Runtime;
 use crate::value::{RefValue, ResourceRef, Value};
 
+pub use crate::reads::{ProgramInputs, ReadRequest};
+
 /// How many resources `find` answers at most.
 pub const FIND_LIMIT: usize = 50;
 
@@ -30,14 +32,20 @@ const PRINT_ITEMS: usize = 50;
 /// Characters of one text a read shows before it says it was cut.
 const READ_TEXT_CHARS: usize = 4_000;
 
+/// What answers a program's read of an app while it runs ([`Runtime::set_reader`]).
+pub type ReadThrough = dyn Fn(&crate::reads::ReadRequest) -> Result<serde_json::Value, String>;
+
 /// What finds resources by text for `find`: the words, how many at most, the best first.
 pub type TextSearch = dyn Fn(&str, usize) -> Vec<ResourceRef>;
 
-/// What one program run collects: its lines of output and the values its `let`s bound.
+/// What one program run collects: its lines of output and the values its `let`s bound; what
+/// it was given to read with, and what it asked to read that it was not given.
 #[derive(Debug, Default)]
 pub struct ProgramIo {
     pub output: Vec<String>,
     pub kept: Vec<(String, Value)>,
+    pub inputs: ProgramInputs,
+    pub missing: Vec<ReadRequest>,
 }
 
 /// How a program ended.
@@ -51,6 +59,9 @@ pub enum ProgramOutcome {
     Suspended(Suggestion),
     /// It stopped: a trap, or an action that failed.
     Failed(String),
+    /// It read apps its host does not hold, and needs these answers first: it changed nothing,
+    /// and runs again with them ([`crate::reads`]).
+    NeedsReads(Vec<ReadRequest>),
 }
 
 /// What a program run answers.
@@ -61,7 +72,7 @@ pub struct ProgramReply {
 }
 
 /// A REPL session: the names earlier programs bound, with their values.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Session {
     bound: Vec<(Binding, Value)>,
 }
@@ -89,9 +100,23 @@ impl Session {
 
     /// Compile `source` against every app `runtime` holds and run it as `agent`.
     pub fn run(&mut self, runtime: &Runtime, agent: &Principal, source: &str) -> ProgramReply {
+        self.run_with(runtime, agent, source, ProgramInputs::default())
+    }
+
+    /// [`Session::run`] for a program that may also read the apps `inputs` names, with the
+    /// answers the platform brought for them.
+    pub fn run_with(
+        &mut self,
+        runtime: &Runtime,
+        agent: &Principal,
+        source: &str,
+        inputs: ProgramInputs,
+    ) -> ProgramReply {
         let visible = runtime.visible_packages();
         let bindings = self.bindings();
-        let program = match tilolang::compile_program(source, &visible, &bindings) {
+        let compiled =
+            tilolang::compile_program_reading(source, &visible, &bindings, &inputs.sources);
+        let program = match compiled {
             Ok(program) => program,
             Err(diagnostics) => {
                 return ProgramReply {
@@ -106,7 +131,13 @@ impl Session {
             }
         };
         let (io, outcome) =
-            runtime.run_program(agent, &program, |param| self.value(param).cloned());
+            runtime.run_program_with(agent, &program, |param| self.value(param).cloned(), inputs);
+        if matches!(outcome, ProgramOutcome::NeedsReads(_)) {
+            return ProgramReply {
+                output: io.output,
+                outcome,
+            };
+        }
         for (name, value) in io.kept {
             let Some(declared) = program.lets.iter().find(|b| b.name == name) else {
                 continue;
@@ -162,6 +193,17 @@ impl Runtime {
         program: &CompiledProgram,
         bound: impl Fn(&str) -> Option<Value>,
     ) -> (ProgramIo, ProgramOutcome) {
+        self.run_program_with(agent, program, bound, ProgramInputs::default())
+    }
+
+    /// [`Runtime::run_program`] with what the program reads of apps its host does not hold.
+    pub fn run_program_with(
+        &self,
+        agent: &Principal,
+        program: &CompiledProgram,
+        bound: impl Fn(&str) -> Option<Value>,
+        inputs: ProgramInputs,
+    ) -> (ProgramIo, ProgramOutcome) {
         let started = (|| {
             self.core.load_block(&program.wasm, &program.meta)?;
             let params = program
@@ -182,15 +224,46 @@ impl Runtime {
             Ok(args) => args,
             Err(e) => return (ProgramIo::default(), ProgramOutcome::Failed(e.to_string())),
         };
-        let outer = self.core.program.replace(Some(ProgramIo::default()));
+        let outer = self.core.program.replace(Some(ProgramIo {
+            inputs,
+            ..ProgramIo::default()
+        }));
         let ran = self.core.start_flow(agent, &program.flow, args, Vec::new());
         let io = self.core.program.replace(outer).unwrap_or_default();
+        if !io.missing.is_empty() {
+            let missing = io.missing.clone();
+            return (io, ProgramOutcome::NeedsReads(missing));
+        }
         let outcome = match ran {
             Ok(FlowOutcome::Done(_)) => ProgramOutcome::Done,
             Ok(FlowOutcome::Suspended(s)) => ProgramOutcome::Suspended(s),
             Err(e) => ProgramOutcome::Failed(e.to_string()),
         };
         (io, outcome)
+    }
+
+    /// The fields of the type `ty` as a store reads them, or `None` for a type no loaded package
+    /// declares.
+    #[must_use]
+    pub fn field_specs(&self, ty: &str) -> Option<Vec<crate::store::FieldSpec>> {
+        let registry = self.core.registry.borrow();
+        registry.type_info(ty).map(|(_, info)| info.specs())
+    }
+
+    /// Send what programs change to `invoker` instead of running it here: the runtime of a
+    /// task's host, which holds no records and runs no app's code ([`crate::delegate`]).
+    pub fn set_invoker(&self, invoker: impl crate::delegate::Invoker + 'static) {
+        *self.core.invoker.borrow_mut() = Some(Box::new(invoker));
+    }
+
+    /// Ask `reader` what programs read of each app (`grep`, `find`, `read`, `describe`) while
+    /// they run, instead of answering it here: the runtime of a task's host, which holds no
+    /// records.
+    pub fn set_reader(
+        &self,
+        reader: impl Fn(&crate::reads::ReadRequest) -> Result<serde_json::Value, String> + 'static,
+    ) {
+        *self.core.reader.borrow_mut() = Some(Box::new(reader));
     }
 
     /// Find resources by text for programs' `find`: the host's search, which answers words
@@ -215,10 +288,13 @@ impl Core {
         use crate::abi::Imp;
         match imp {
             Imp::Print => {
+                let types: Vec<String> =
+                    serde_json::from_str(&self.text(a.h(1)?)?).unwrap_or_default();
                 let said = match self.val(a.h(0)?)? {
                     Value::Tuple(items) => items
                         .iter()
-                        .map(|v| self.show(v))
+                        .enumerate()
+                        .map(|(i, v)| self.show_typed(v, types.get(i).map_or("", String::as_str)))
                         .collect::<Vec<_>>()
                         .join(" "),
                     other => self.show(&other),
@@ -242,6 +318,18 @@ impl Core {
                 let found = self.journaled_read(|| self.find_import(&query, &ty))?;
                 self.ret_h(found)
             }
+            Imp::Grep
+            | Imp::Describe
+            | Imp::DescribeRef
+            | Imp::ReadWith
+            | Imp::PrintRows
+            | Imp::CountBy
+            | Imp::GroupBy
+            | Imp::Take
+            | Imp::Single
+            | Imp::Me
+            | Imp::ForeignRef
+            | Imp::MatchGroup => self.agent_query_import(imp, a),
             Imp::ReadText => {
                 let Value::Ref(r) = self.val(a.h(0)?)? else {
                     return trap("read takes a resource");
@@ -295,8 +383,7 @@ impl Core {
                     "find needs words to search for, or a type first: `find(\"Note is:pinned\")`",
                 );
             }
-            let found = self.search_text(&words)?;
-            return Ok(Value::List(found.into_iter().map(as_value).collect()));
+            return self.find_everywhere(&words);
         };
         let (pkg, info) =
             self.registry.borrow().type_info(&ty).ok_or_else(|| {
@@ -356,6 +443,33 @@ impl Core {
     /// its title, a list one item per line.
     pub(crate) fn show(&self, value: &Value) -> String {
         match value {
+            // Rows (`count_by`, `group`): one per line, each value as it shows alone.
+            Value::List(items)
+                if items.iter().all(|v| matches!(v, Value::Tuple(_))) && !items.is_empty() =>
+            {
+                let mut lines: Vec<String> = items
+                    .iter()
+                    .take(PRINT_ITEMS)
+                    .map(|row| match row {
+                        Value::Tuple(cells) => cells
+                            .iter()
+                            .map(|c| match c {
+                                Value::Ref(_) => self.show(c),
+                                other => self.show_inline(other),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("  "),
+                        other => self.show_inline(other),
+                    })
+                    .collect();
+                if items.len() > PRINT_ITEMS {
+                    lines.push(format!(
+                        "… {} more",
+                        items.len().saturating_sub(PRINT_ITEMS)
+                    ));
+                }
+                lines.join("\n")
+            }
             Value::List(items) => {
                 let mut lines: Vec<String> = items
                     .iter()
@@ -391,7 +505,7 @@ impl Core {
     }
 
     /// A value on one line: a resource as its literal alone, a list as its items' literals.
-    fn show_inline(&self, value: &Value) -> String {
+    pub(crate) fn show_inline(&self, value: &Value) -> String {
         match value {
             Value::Unit | Value::Opt(None) => "none".to_owned(),
             Value::Int(i) => i.to_string(),
@@ -444,7 +558,13 @@ impl Core {
     }
 
     /// `@notes.Note:root-1/notes:n2`: how a program writes the resource.
-    fn ref_literal(&self, target: &ResourceRef) -> String {
+    pub(crate) fn ref_literal(&self, target: &ResourceRef) -> String {
+        if crate::reads::is_foreign(target) {
+            return self.foreign.borrow().get(target).map_or_else(
+                || format!("@{}:{}", target.ty.replace('#', "."), target.id_string()),
+                |shown| shown.literal.clone(),
+            );
+        }
         let found = self.registry.borrow().type_info(&target.ty);
         match found {
             Some((pkg, info)) => {
@@ -458,7 +578,10 @@ impl Core {
 
     /// The text a resource is called by: its `title`, `name` or `label` field, else its first
     /// text field.
-    fn program_title(&self, target: &ResourceRef) -> Option<String> {
+    pub(crate) fn program_title(&self, target: &ResourceRef) -> Option<String> {
+        if crate::reads::is_foreign(target) {
+            return self.foreign.borrow().get(target)?.title.clone();
+        }
         let (_, info) = self.registry.borrow().type_info(&target.ty)?;
         let texts: Vec<&FieldInfo> = info
             .fields

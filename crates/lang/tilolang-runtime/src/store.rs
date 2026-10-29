@@ -87,7 +87,8 @@ pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreErr
         FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
         FieldValue::Scalar(Scalar::Float(f)) => Ok(Lit::Float(tilolang::pred::Float(f))),
         FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
-        FieldValue::Rich(r) => Ok(Lit::Text(r.plain_text())),
+        // What rich text says depends on who reads it (its references): a filter compares none.
+        FieldValue::Rich(_) => Err(invalid(&"rich text")),
         FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
         FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
         FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
@@ -202,10 +203,14 @@ pub enum Mutation {
         item: NewRecord,
         index: Option<usize>,
     },
+    /// Remove the item, with every item in it ([`crate::place`]).
     CollRemove {
         field: FieldId,
         item: ItemId,
     },
+    /// Put the item at the place `index` of this collection, among its other items: from where
+    /// it is in this collection, or from another collection of the same document. It keeps its
+    /// id ([`crate::place`]).
     CollMove {
         field: FieldId,
         item: ItemId,
@@ -331,13 +336,17 @@ impl Reflected {
 }
 
 /// The versions of `at` among a document's change notes, oldest first: the changes whose
-/// resources include it.
+/// resources include it (named by id, or by the path an older change named it by).
 #[must_use]
 pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
     let id = at.id_string();
     notes
         .iter()
-        .filter(|note| note.touched.contains(&id))
+        .filter(|note| {
+            note.touched
+                .iter()
+                .any(|touched| *touched == id || crate::value::flat_id(touched) == id)
+        })
         .map(|note| Version {
             who: note.invoker.clone(),
             at: note
@@ -349,8 +358,32 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
         .collect()
 }
 
+/// Who made the changes `newest_first` of `at`, each once, at most `limit` of them
+/// ([`Store::recent_authors`]).
+pub fn recent_authors_in<'n>(
+    newest_first: impl Iterator<Item = &'n ChangeNote>,
+    at: &ResourceRef,
+    limit: usize,
+) -> Vec<String> {
+    let id = at.id_string();
+    let mut out: Vec<String> = Vec::new();
+    for note in newest_first {
+        if out.len() >= limit {
+            break;
+        }
+        let touches = note
+            .touched
+            .iter()
+            .any(|touched| *touched == id || crate::value::flat_id(touched) == id);
+        if touches && !out.contains(&note.invoker) {
+            out.push(note.invoker.clone());
+        }
+    }
+    out
+}
+
 /// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
-/// document, then a step per nested item), and the field id, or [`ANY_FIELD`] for every field
+/// document, then `/item` for an item), and the field id, or [`ANY_FIELD`] for every field
 /// of that resource. Views record what they read as these, and stores report changes as them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FieldKey {
@@ -409,6 +442,14 @@ pub trait PagedItems: std::fmt::Debug {
 
     /// The item at `index`, `None` past the end.
     fn get(&self, index: usize) -> Option<Rc<str>>;
+
+    /// Where the item `id` is, found by what orders it (a page or two), not by reading the
+    /// items one by one: `Some(None)` when it is not in the listing, `None` when this listing
+    /// cannot say so.
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        let _ = id;
+        None
+    }
 }
 
 impl PartialEq for Listing {
@@ -465,6 +506,16 @@ impl Listing {
         self.len().checked_sub(1).and_then(|last| self.get(last))
     }
 
+    /// Where the item `id` is: `Some(None)` when it is not in the listing. A listing read page by
+    /// page finds it by what orders it, reading a page or two; one that cannot gives `None`
+    /// rather than read its pages one by one.
+    pub fn position(&self, id: &str) -> Option<Option<usize>> {
+        match &self.paged {
+            Some(paged) => paged.position(id),
+            None => Some(self.held.iter().position(|held| &**held == id)),
+        }
+    }
+
     /// The items in order, each read as it is reached.
     pub fn iter(&self) -> impl Iterator<Item = Rc<str>> + '_ {
         (0..self.len()).map_while(|index| self.get(index))
@@ -506,6 +557,56 @@ pub enum Splice {
         at: usize,
         item: ItemId,
     },
+}
+
+impl Splice {
+    /// The item the step puts in or takes out.
+    #[must_use]
+    pub fn item(&self) -> &str {
+        match self {
+            Self::Insert { item, .. } | Self::Remove { item, .. } => item,
+        }
+    }
+}
+
+/// The steps from `before` to `after`, two listings of one query (a filtered or sorted view of a
+/// collection), when only the items `moved` came, went or moved between them and the others
+/// kept their order: each is found where it was and where it is ([`Listing::position`]), so the
+/// steps cost the items that changed, not the listing's length. The removals come first, from
+/// the last, then the insertions in order; an item in the same place in both takes no step.
+/// `None` when a listing cannot say where an item is.
+#[must_use]
+pub fn moved_steps<'a>(
+    before: &Listing,
+    after: &Listing,
+    moved: impl IntoIterator<Item = &'a str>,
+) -> Option<Vec<Splice>> {
+    let mut gone: Vec<(usize, &str)> = Vec::new();
+    let mut come: Vec<(usize, &str)> = Vec::new();
+    let mut same = true;
+    for id in moved {
+        let was = before.position(id)?;
+        let now = after.position(id)?;
+        same &= was == now;
+        gone.extend(was.map(|at| (at, id)));
+        come.extend(now.map(|at| (at, id)));
+    }
+    // Each where it was, and the others in their order around them: nothing moved.
+    if same {
+        return Some(Vec::new());
+    }
+    gone.sort_unstable_by(|a, b| b.cmp(a));
+    come.sort_unstable();
+    let mut out = Vec::with_capacity(gone.len().saturating_add(come.len()));
+    out.extend(gone.into_iter().map(|(at, id)| Splice::Remove {
+        at,
+        item: id.to_owned(),
+    }));
+    out.extend(come.into_iter().map(|(at, id)| Splice::Insert {
+        at,
+        item: id.to_owned(),
+    }));
+    Some(out)
 }
 
 /// How a collection's listing changed: the steps, in order, from the listing as the store held
@@ -597,6 +698,25 @@ pub trait Store {
     /// `NotFound` when the document or item does not exist.
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError>;
 
+    /// Where the item `at` is: the resource whose collection holds it, and the collection's
+    /// field. `None` for a document, which no collection holds.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the document or item does not exist.
+    fn container(&self, at: &ResourceRef) -> Result<Option<(ResourceRef, FieldId)>, StoreError>;
+    /// How a reference in rich text reads for the person this store holds resources for: a
+    /// resource they hold by what it is called now, one they cannot read as only being there.
+    /// A store that cannot tell what its reader holds reads every resource as not shared: a
+    /// reference never grants a read.
+    fn reading(&self, reference: &crate::rich::Reference) -> crate::rich::Reading {
+        if reference.as_person().is_some() {
+            crate::rich::Reading::AsWritten
+        } else {
+            crate::rich::Reading::Unshared
+        }
+    }
+
     /// Open a transaction. Documents join it when first mutated.
     ///
     /// # Errors
@@ -662,7 +782,7 @@ pub trait Store {
         let all = self.listing(at, field)?;
         let mut items = Vec::new();
         for id in all.iter() {
-            let target = at.item(&field.id, &id, item.clone());
+            let target = at.item(&id, item.clone());
             let holds =
                 pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
             if holds {
@@ -700,7 +820,7 @@ pub trait Store {
         };
         let mut keyed = Vec::with_capacity(base.len());
         for id in base.iter() {
-            let target = at.item(&field.id, &id, item.clone());
+            let target = at.item(&id, item.clone());
             let value = match Reflected::of(&order.field) {
                 Some(end) => self
                     .version_end(&target, end == Reflected::Updated)?
@@ -768,6 +888,26 @@ pub trait Store {
         } else {
             versions.into_iter().next()
         })
+    }
+
+    /// Who made the latest versions of `at`, newest first and each once: at most `limit` of
+    /// them, from at most the last `window` changes of its document. What a rich input's `@`
+    /// drawer offers first; its cost is bounded by `window`, never by how long the history is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::history`].
+    fn recent_authors(
+        &self,
+        at: &ResourceRef,
+        limit: usize,
+        window: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        Ok(recent_authors_in(
+            self.history(&at.doc)?.iter().rev().take(window),
+            at,
+            limit,
+        ))
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;

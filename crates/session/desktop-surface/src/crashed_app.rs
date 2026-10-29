@@ -56,10 +56,6 @@ impl ui::widget::Decorator for CrashedApp {
 }
 
 impl AppWidget for CrashedApp {
-    // The notice stands in for the app: the window's record stays the app's.
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }

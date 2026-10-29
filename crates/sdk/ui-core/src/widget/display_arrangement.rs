@@ -6,9 +6,13 @@
 //! selection: pressing or tapping a display chooses it, as do the arrow
 //! keys once the canvas has focus and a screen reader's activation of a
 //! display's tile. Dragging one moves it 1:1 under the pointer or finger,
-//! by transform alone: nothing is laid out or stored while it moves. Within
-//! a small threshold its edges and centre snap magnetically onto another
-//! display's, and an alignment guide shows each line it lines up with
+//! by transform alone: nothing is laid out or stored while it moves. The
+//! canvas holds its frame while a display is held, so nothing but the held
+//! tile moves while the hand does; a display taken past the edge is cut
+//! there, and the frame refits the arrangement after the drop. Within a few
+//! pixels its edges snap
+//! magnetically onto another display's edges and its centre onto another's
+//! centre, and an alignment guide shows each line it lines up with
 //! ([`placement::snap_with_guides`]). On release it settles into the
 //! nearest place where it touches another display and covers none
 //! ([`placement::settle`]) with the paged-strip settle spring
@@ -280,8 +284,6 @@ pub struct DisplayArrangement {
     gesture: ui::LocalState<ArrangementGesture>,
     /// The page's one display selection, chosen here.
     selection: Option<ui::LocalState<String>>,
-    /// The display under the pointer, for the pane to flash its number on.
-    pointed: Option<ui::LocalState<Option<String>>>,
     /// While Identify shows each display's number: when it showed and
     /// goes. The tiles show the same numbers in the accent meanwhile.
     identify: Option<(Instant, Instant)>,
@@ -311,12 +313,11 @@ impl DisplayArrangement {
                 .collect(),
             gesture,
             selection: None,
-            pointed: None,
             identify: None,
             hovered: None,
             cursor: None,
             padding: f64::from(ui::tokens::Spacing::BASE.s6),
-            snap_radius: f64::from(ui::tokens::Metrics::BASE.icon_sm),
+            snap_radius: f64::from(ui::tokens::Spacing::BASE.s2),
             motion: EffectiveMotion::default(),
             dirty: true,
             focused: false,
@@ -329,14 +330,6 @@ impl DisplayArrangement {
     #[must_use]
     pub fn with_selection(mut self, selection: ui::LocalState<String>) -> Self {
         self.selection = Some(selection);
-        self
-    }
-
-    /// Tell the pane which display the pointer is over, so it can flash that
-    /// display's number on it.
-    #[must_use]
-    pub fn with_pointed(mut self, pointed: ui::LocalState<Option<String>>) -> Self {
-        self.pointed = Some(pointed);
         self
     }
 
@@ -379,8 +372,8 @@ impl DisplayArrangement {
 
     /// Where the held display stands under the hand when the canvas maps
     /// the desktop by `mapping`, pulled onto the lines it is near, and those
-    /// lines. It never goes further from the others than its own size: a
-    /// display cannot float detached, and the canvas need not grow past it.
+    /// lines. It goes wherever the hand takes it, even off on its own: only
+    /// the drop brings it back into contact ([`placement::settle`]).
     fn held_at(&self, drag: &ArrangementDrag, mapping: Mapping) -> (Placement, Vec<Guide>) {
         let Some(display) = self
             .displays
@@ -402,18 +395,6 @@ impl DisplayArrangement {
         };
         let others = self.others(&drag.connector);
         let group = self.group_bounds(&drag.connector, moved);
-        let group = if others.is_empty() {
-            group
-        } else {
-            let near = bounds_of(&others);
-            let clamp = |value: i32, low: f64, high: f64| {
-                round_to_i32(f64::from(value).clamp(low, high.max(low)))
-            };
-            group.at(
-                clamp(group.x, near.x0 - f64::from(group.width), near.x1),
-                clamp(group.y, near.y0 - f64::from(group.height), near.y1),
-            )
-        };
         let snapped = placement::snap_with_guides(group, &others, mapping.snap_threshold());
         (
             self.align_group(&drag.connector, moved, snapped.placement),
@@ -421,28 +402,25 @@ impl DisplayArrangement {
         )
     }
 
-    /// Grow the framed view so the held display stays in it: it springs
-    /// out to take in the display wherever the hand holds it, and never
-    /// shrinks while the display is held.
-    fn follow_view(&self, now: Instant) {
-        let Some(drag) = self
-            .gesture
-            .with(|gesture| gesture.drag.clone())
-            .filter(|drag| drag.active)
-        else {
+    /// Frame a capture's held display with the arrangement, so its held
+    /// drag is in sight on its first frame. A real drag never reframes: the
+    /// press pins the view where it stands until the drop.
+    fn frame_held_capture(&self) {
+        let Some((connector, held)) = self.gesture.with(|gesture| {
+            gesture
+                .drag
+                .as_ref()
+                .filter(|drag| drag.active)
+                .and_then(|drag| Some((drag.connector.clone(), drag.held?)))
+        }) else {
             return;
         };
-        let (held, _) = self.held_at(&drag, self.mapping_at(now));
-        let wanted = self
+        let view = self
             .fitted_view()
-            .union(rect_of(self.group_bounds(&drag.connector, held)));
-        let fitted = self.fitted_view();
-        let timing = Snap::SPEC.timing(Direction::Enter, self.motion, MotionSource::Gesture);
+            .union(rect_of(self.group_bounds(&connector, held)));
         self.gesture.update(|gesture| {
-            let view = gesture.view.get_or_insert_with(|| MotionValue::new(fitted));
-            let target = view.target().union(wanted);
-            if (target.area() - view.target().area()).abs() > 1.0 {
-                view.set(target, timing, now);
+            if gesture.view.is_none() {
+                gesture.view = Some(MotionValue::new(view));
             }
         });
     }
@@ -681,8 +659,8 @@ impl DisplayArrangement {
     }
 
     /// The hand moved to `point`: the held display follows it 1:1, pulled
-    /// onto the lines it is near, and the view grows to keep it in sight.
-    /// Only the drawing changes.
+    /// onto the lines it is near. Only the drawing changes: the canvas keeps
+    /// the frame the press found.
     fn drag_to(&mut self, point: Point) -> bool {
         let Some(drag) = self.gesture.with(|gesture| gesture.drag.clone()) else {
             return false;
@@ -702,7 +680,6 @@ impl DisplayArrangement {
                 drag.path_y.push(now, dy);
             }
         });
-        self.follow_view(now);
         self.dirty = true;
         true
     }
@@ -940,7 +917,7 @@ impl DisplayArrangement {
     }
 
     /// The pointer is over `point` (or left the canvas): the display under
-    /// it is told to the pane once per display. Whether that changed.
+    /// it is drawn hovered. Whether that changed.
     fn hover(&mut self, point: Option<Point>) -> bool {
         let hovered = point
             .filter(|point| self.rect.contains(*point))
@@ -949,10 +926,7 @@ impl DisplayArrangement {
         if hovered == self.hovered {
             return false;
         }
-        self.hovered.clone_from(&hovered);
-        if let Some(pointed) = &self.pointed {
-            pointed.set(hovered);
-        }
+        self.hovered = hovered;
         self.dirty = true;
         true
     }
@@ -1123,7 +1097,10 @@ impl Widget for DisplayArrangement {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.padding = f64::from(theme.tokens.spacing.s6);
-        self.snap_radius = f64::from(theme.tokens.metrics.icon_sm);
+        // A few pixels of pull: enough to land flush without hunting,
+        // little enough that the tile runs free under the hand between
+        // lines.
+        self.snap_radius = f64::from(theme.tokens.spacing.s2);
         self.motion = theme.motion();
         let style = Style {
             size: Size {
@@ -1158,9 +1135,7 @@ impl Widget for DisplayArrangement {
         let radius = f64::from(theme.tokens.radii.panel);
         let ground = colors.lift(0.1);
         ui::surface::card(scene, transform, self.rect, radius, ground);
-        // A held display keeps the view growing to take it in (a capture's
-        // held drag is framed so on its first frame).
-        self.follow_view(now);
+        self.frame_held_capture();
         // A display held past the canvas's edge is cut there, never drawn
         // over the rows around it.
         scene.push_layer(
@@ -2153,7 +2128,7 @@ mod tests {
     }
 
     #[test]
-    fn the_view_grows_to_keep_a_held_display_in_sight_then_settles_back() {
+    fn the_view_holds_while_a_display_is_held_then_refits_after_the_drop() {
         let mut canvas = canvas();
         let fitted = canvas.mapping();
         let rest = fitted
@@ -2168,17 +2143,22 @@ mod tests {
         let monitor = fitted.to_canvas(displays()[1].placement);
         assert!(canvas.press(monitor.center()));
         let panel = fitted.to_canvas(displays()[0].placement);
-        assert!(canvas.drag_to(Point::new(panel.center().x, canvas.rect.y1 + 40.0)));
+        // Past the canvas's bottom edge: the tile goes with the hand, cut
+        // at the edge, and nothing else moves.
+        let hand = Point::new(panel.center().x, canvas.rect.y1 + 40.0);
+        assert!(canvas.drag_to(hand));
         let later = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
-        let grown = canvas.mapping_at(later);
-        assert!(grown.scale < fitted.scale, "the view grew");
+        let held = canvas.mapping_at(later);
+        assert_eq!(held, fitted, "the frame holds while the display is held");
         let drawn = canvas.drawn_at(later);
-        let (held, _, _) = drawn.iter().find(|(_, _, held)| *held).unwrap();
-        let tile = grown.to_canvas(held.placement);
+        let (panel_now, _, _) = drawn.iter().find(|(_, _, held)| !*held).unwrap();
+        assert_eq!(held.to_canvas(panel_now.placement), panel);
+        let (tile, _, _) = drawn.iter().find(|(_, _, held)| *held).unwrap();
+        let tile = held.to_canvas(tile.placement);
         assert!(
-            canvas.rect.inflate(1.0, 1.0).union(tile) == canvas.rect.inflate(1.0, 1.0),
-            "the held display stays in sight: {tile:?} in {:?}",
-            canvas.rect
+            (tile.center().x - hand.x).abs() <= canvas.snap_radius + 0.5
+                && (tile.center().y - hand.y).abs() <= canvas.snap_radius + 0.5,
+            "the tile is under the hand: {tile:?} at {hand:?}"
         );
         assert!(canvas.release());
         let after = crate::motion::frame_now() + crate::time::Duration::from_secs(2);
@@ -2191,8 +2171,237 @@ mod tests {
         );
         assert!(
             (settled.scale - expected.scale).abs() < 1e-6,
-            "it settles back to fit the new arrangement"
+            "it refits the new arrangement after the drop"
+        );
+        let resting = settled.to_canvas(canvas.displays[1].placement);
+        assert!(
+            canvas.rect.inflate(1.0, 1.0).union(resting) == canvas.rect.inflate(1.0, 1.0),
+            "the dropped display is in sight again: {resting:?}"
         );
         assert!(!canvas.settling(after), "and then asks for nothing");
+    }
+
+    /// What a drag did, frame by frame, on a Settings-sized canvas with a
+    /// laptop panel and a larger desk monitor beside it.
+    struct DragTrace {
+        /// On each axis, how far the point the hand took the tile by was
+        /// from the hand, in canvas pixels, and whether a snap line held
+        /// the tile on that axis.
+        misses: Vec<[(f64, bool); 2]>,
+        /// The view's scale on each frame after the drag began.
+        scales: Vec<f64>,
+        /// The held tile's top-left on the canvas, each frame.
+        tiles: Vec<Point>,
+        /// The hand on each frame.
+        hands: Vec<Point>,
+    }
+
+    /// Press the monitor and move it along `path` (canvas offsets from
+    /// where it was pressed), one move per 120 Hz frame.
+    fn trace_drag(path: impl Fn(f64) -> Vec2, frames: u32) -> DragTrace {
+        let mut canvas = DisplayArrangement::new(
+            vec![
+                ArrangedDisplay {
+                    placement: Placement::new(0, 0, 1920, 1080),
+                    ..displays()[0].clone()
+                },
+                ArrangedDisplay {
+                    placement: Placement::new(1920, -360, 2560, 1440),
+                    ..displays()[1].clone()
+                },
+            ],
+            Vec::new(),
+            ui::LocalState::new(ArrangementGesture::default()),
+        );
+        canvas.rect = Rect::new(0.0, 0.0, 560.0, 360.0);
+        let start = crate::time::now();
+        let frame =
+            |index: u32| start + crate::time::Duration::from_micros(8_333 * u64::from(index));
+        let pressed = {
+            let _at = crate::motion::pin_frame_at(frame(0));
+            let monitor = canvas.mapping().to_canvas(canvas.displays[1].placement);
+            let pressed = Point::new(
+                monitor.x0 + monitor.width() * 0.4,
+                monitor.y0 + monitor.height() * 0.6,
+            );
+            assert!(canvas.press(pressed));
+            pressed
+        };
+        let grab = canvas
+            .gesture
+            .with(|gesture| gesture.drag.as_ref().map(|drag| drag.grab))
+            .unwrap();
+        let mut trace = DragTrace {
+            misses: Vec::new(),
+            scales: Vec::new(),
+            tiles: Vec::new(),
+            hands: Vec::new(),
+        };
+        for index in 1..=frames {
+            let _at = crate::motion::pin_frame_at(frame(index));
+            let hand = pressed + path(f64::from(index) / f64::from(frames));
+            assert!(canvas.drag_to(hand));
+            let now = crate::motion::frame_now();
+            let mapping = canvas.mapping_at(now);
+            let drag = canvas.gesture.with(|gesture| gesture.drag.clone()).unwrap();
+            if !drag.active {
+                continue;
+            }
+            let (held, guides) = canvas.held_at(&drag, mapping);
+            let tile = mapping.to_canvas(held);
+            let taken = Point::new(
+                tile.x0 + grab.0 * tile.width(),
+                tile.y0 + grab.1 * tile.height(),
+            );
+            let along = |vertical: bool| guides.iter().any(|guide| guide.vertical == vertical);
+            trace.misses.push([
+                ((taken.x - hand.x).abs(), along(true)),
+                ((taken.y - hand.y).abs(), along(false)),
+            ]);
+            trace.scales.push(mapping.scale);
+            trace.tiles.push(tile.origin());
+            trace.hands.push(hand);
+        }
+        trace
+    }
+
+    #[test]
+    fn a_drag_follows_the_hand_every_frame() {
+        // Left along under the panel and back up beside it, as a person
+        // moves a monitor from the laptop's right to its lower left.
+        let trace = trace_drag(
+            |t| {
+                Vec2::new(
+                    -260.0 * t,
+                    90.0 * (t * std::f64::consts::PI).sin() + 20.0 * t,
+                )
+            },
+            240,
+        );
+        let snap = f64::from(ui::tokens::Spacing::BASE.s2);
+        let mut report = Vec::new();
+        for axis in 0..2 {
+            let misses: Vec<(f64, bool)> = trace.misses.iter().map(|frame| frame[axis]).collect();
+            let free: Vec<f64> = misses
+                .iter()
+                .filter(|(_, held)| !held)
+                .map(|(miss, _)| *miss)
+                .collect();
+            let worst_free = free.iter().copied().fold(0.0, f64::max);
+            let worst = misses.iter().map(|(miss, _)| *miss).fold(0.0, f64::max);
+            report.push(format!(
+                "{}: free {}/{} worst_free={worst_free:.2}px worst={worst:.2}px",
+                ["x", "y"][axis],
+                free.len(),
+                misses.len()
+            ));
+            assert!(
+                worst_free < 0.5,
+                "off every snap line the tile is exactly under the hand: {worst_free:.2} px"
+            );
+            assert!(
+                worst <= snap + 0.5,
+                "a snap pulls the tile only a short way: {worst:.2} px"
+            );
+            assert!(
+                free.len() * 2 > misses.len(),
+                "the tile runs free most of the way: {}",
+                report.join("; ")
+            );
+        }
+        let rescaled = trace
+            .scales
+            .windows(2)
+            .filter(|pair| (pair[0] - pair[1]).abs() > 1e-9)
+            .count();
+        // The held tile's step against the hand's step, frame to frame.
+        let worst_step = trace
+            .tiles
+            .windows(2)
+            .zip(trace.hands.windows(2))
+            .map(|(tile, hand)| ((tile[1] - tile[0]) - (hand[1] - hand[0])).hypot())
+            .fold(0.0, f64::max);
+        eprintln!(
+            "DRAG-TRACE frames={} {} rescaled_frames={rescaled} worst_step={worst_step:.2}px snap_radius={snap}",
+            trace.misses.len(),
+            report.join("; ")
+        );
+        assert!(
+            worst_step <= 2.0 * snap + 1.0,
+            "no frame jumps the tile further than a snap: {worst_step:.2} px"
+        );
+        assert_eq!(rescaled, 0, "the view holds still while a display is held");
+    }
+
+    #[test]
+    fn a_drag_follows_the_hand_in_every_direction() {
+        // The two side-by-side 1080p displays: the monitor dragged straight
+        // right (past the arrangement's edge), left, up and down, one move
+        // per 120 Hz frame. Every frame the point it was taken by stays
+        // under the hand, off the snap lines exactly, on them within the
+        // snap's pull, and it never stands still while the hand moves.
+        let snap = f64::from(ui::tokens::Spacing::BASE.s2);
+        for (way, travel) in [
+            ("right", Vec2::new(300.0, 0.0)),
+            ("left", Vec2::new(-300.0, 0.0)),
+            ("up", Vec2::new(0.0, -210.0)),
+            ("down", Vec2::new(0.0, 210.0)),
+        ] {
+            let mut canvas = canvas();
+            let start = crate::time::now();
+            let frame =
+                |index: u32| start + crate::time::Duration::from_micros(8_333 * u64::from(index));
+            let pressed = {
+                let _at = crate::motion::pin_frame_at(frame(0));
+                let monitor = canvas.mapping().to_canvas(canvas.displays[1].placement);
+                assert!(canvas.press(monitor.center()));
+                monitor.center()
+            };
+            let grab = canvas
+                .gesture
+                .with(|gesture| gesture.drag.as_ref().map(|drag| drag.grab))
+                .unwrap();
+            let mut stuck = 0;
+            let mut last: Option<Point> = None;
+            for index in 1..=120_u32 {
+                let _at = crate::motion::pin_frame_at(frame(index));
+                let hand = pressed + travel * (f64::from(index) / 120.0);
+                assert!(canvas.drag_to(hand));
+                let now = crate::motion::frame_now();
+                let mapping = canvas.mapping_at(now);
+                let Some(drag) = canvas
+                    .gesture
+                    .with(|gesture| gesture.drag.clone())
+                    .filter(|drag| drag.active)
+                else {
+                    continue;
+                };
+                let (held, guides) = canvas.held_at(&drag, mapping);
+                let tile = mapping.to_canvas(held);
+                let taken = Point::new(
+                    tile.x0 + grab.0 * tile.width(),
+                    tile.y0 + grab.1 * tile.height(),
+                );
+                for (miss, vertical) in [
+                    ((taken.x - hand.x).abs(), true),
+                    ((taken.y - hand.y).abs(), false),
+                ] {
+                    let pulled = guides.iter().any(|guide| guide.vertical == vertical);
+                    let allowed = if pulled { snap + 0.5 } else { 0.5 };
+                    assert!(
+                        miss <= allowed,
+                        "{way}, frame {index}: {miss:.2} px off the hand (pulled: {pulled})"
+                    );
+                }
+                if guides.is_empty() && last.is_some_and(|last| last == tile.origin()) {
+                    stuck += 1;
+                }
+                last = Some(tile.origin());
+            }
+            assert_eq!(
+                stuck, 0,
+                "{way}: the display stood still under a moving hand"
+            );
+        }
     }
 }

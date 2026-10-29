@@ -136,7 +136,7 @@ pub fn project(
         return;
     };
     let section = view
-        .entry(crate::continuity::APP_DEVICE_LOCAL_SECTION.to_owned())
+        .entry(crate::placement::APP_DEVICE_LOCAL_SECTION.to_owned())
         .or_insert_with(|| Value::Object(Map::new()));
     let Some(section) = section.as_object_mut() else {
         return;
@@ -164,7 +164,7 @@ pub fn command(
     if app.is_empty() {
         return Err(denied());
     }
-    if section != crate::continuity::APP_DEVICE_LOCAL_SECTION {
+    if section != crate::placement::APP_DEVICE_LOCAL_SECTION {
         return Ok(false);
     }
     let own = values.get(app).and_then(Value::as_object);
@@ -242,7 +242,7 @@ mod tests {
                 &host,
                 "so.tilo.settings",
                 None,
-                crate::continuity::APP_DEVICE_LOCAL_SECTION,
+                crate::placement::APP_DEVICE_LOCAL_SECTION,
                 &values
             )
             .is_err()
@@ -252,7 +252,7 @@ mod tests {
                 &host,
                 "so.tilo.settings",
                 Some([1; 32]),
-                crate::continuity::APP_DEVICE_LOCAL_SECTION,
+                crate::placement::APP_DEVICE_LOCAL_SECTION,
                 &values
             )
             .unwrap()
@@ -265,7 +265,7 @@ mod tests {
             let mut view = Map::new();
             project(&host, app, Some([1; 32]), &mut view);
             let delivery: Delivery = serde_json::from_value(
-                view[crate::continuity::APP_DEVICE_LOCAL_SECTION][app][VIEW_KEY].clone(),
+                view[crate::placement::APP_DEVICE_LOCAL_SECTION][app][VIEW_KEY].clone(),
             )
             .unwrap();
             assert_eq!(delivery.snapshot.hints("nl").collect::<Vec<_>>(), ["Tilo"]);
@@ -275,7 +275,7 @@ mod tests {
                 &host,
                 "so.tilo.settings",
                 Some([1; 32]),
-                crate::continuity::APP_DEVICE_LOCAL_SECTION,
+                crate::placement::APP_DEVICE_LOCAL_SECTION,
                 &values
             )
             .is_err(),
@@ -289,7 +289,7 @@ mod tests {
         assert!(old_reader.snapshot().is_err());
         project(&host, "so.tilo.osk", Some([2; 32]), &mut view);
         let delivery: Delivery = serde_json::from_value(
-            view[crate::continuity::APP_DEVICE_LOCAL_SECTION]["so.tilo.osk"][VIEW_KEY].clone(),
+            view[crate::placement::APP_DEVICE_LOCAL_SECTION]["so.tilo.osk"][VIEW_KEY].clone(),
         )
         .unwrap();
         assert!(delivery.snapshot.words.is_empty());
@@ -298,7 +298,7 @@ mod tests {
                 &host,
                 "so.tilo.settings",
                 Some([1; 32]),
-                crate::continuity::APP_DEVICE_LOCAL_SECTION,
+                crate::placement::APP_DEVICE_LOCAL_SECTION,
                 &values
             )
             .is_err()

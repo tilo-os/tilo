@@ -40,7 +40,7 @@
 use crate::i18n::t;
 
 use ui::framework::LiveRow;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 use crate::model::{ChangeArea, FileChange, RepoModel};
 
@@ -56,8 +56,8 @@ pub enum GitClientEffect {
     ///
     /// Open the git repository at a path on this device.
     OpenRepository {
-        #[param("Path of the repository's folder on this device")]
-        path: String,
+        #[param("Absolute path of the repository's folder on this device")]
+        path: AbsolutePath,
     },
     /// Choose repository
     ///
@@ -132,7 +132,7 @@ pub enum GitClientEffect {
     /// Create branch
     CreateBranch {
         #[param("Branch name")]
-        name: String,
+        name: ui::tilo_resource::NonBlank,
     },
     /// Create linked worktree
     ///
@@ -140,7 +140,7 @@ pub enum GitClientEffect {
     #[effect(job)]
     CreateWorktree {
         #[param("Absolute path of the new working directory")]
-        path: String,
+        path: AbsolutePath,
         #[param("New branch name")]
         branch: String,
         #[param("Start point: branch, tag or commit")]

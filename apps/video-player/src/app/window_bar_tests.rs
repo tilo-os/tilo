@@ -12,7 +12,7 @@ use crate::app::PlayerApp;
 use crate::resource::VideoPlayerShell;
 
 fn toolbar(app: &mut TestApp<VideoPlayerShell>) -> WindowToolbar {
-    app.surface_mut::<PlayerApp>().window_toolbar()
+    app.surface_mut::<PlayerApp>().state().window_toolbar()
 }
 
 fn press(app: &mut TestApp<VideoPlayerShell>, event: ToolbarEvent) {
@@ -50,10 +50,10 @@ fn with_nothing_open_the_bar_names_no_video_and_still_opens_one() {
 fn the_bars_sidebar_shows_and_hides_the_library_as_its_actions_do() {
     let mut app = TestApp::<VideoPlayerShell>::new().expect("the player starts");
     press(&mut app, ToolbarEvent::ToggleSidebar);
-    assert!(app.surface_mut::<PlayerApp>().library_visible());
+    assert!(app.surface_mut::<PlayerApp>().state().library_visible());
     assert_eq!(toolbar(&mut app).sidebar, Some(true));
     press(&mut app, ToolbarEvent::ToggleSidebar);
-    assert!(!app.surface_mut::<PlayerApp>().library_visible());
+    assert!(!app.surface_mut::<PlayerApp>().state().library_visible());
     assert_eq!(toolbar(&mut app).sidebar, Some(false));
 
     app.effect(&VideoEffect::ShowLibrary {

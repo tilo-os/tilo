@@ -71,19 +71,17 @@ impl ShellNetwork {
             // Each remote action is authorized per call against its own
             // declared permission.
             | NeighbourMsg::RemoteAction { .. }
-            // Channel governance is steward-signed and hash-chained; access
-            // requests and acks are how a reader obtains and confirms keys.
+            // Channel governance is signed by a participant and checked
+            // against the membership; access requests are how a reader
+            // obtains keys.
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. } => Some((TreePath::root(), ActionKind::Read)),
+            | NeighbourMsg::MlsRoutedAccessRequest { .. } => Some((TreePath::root(), ActionKind::Read)),
             // Settled before the room gate: identity is how a sender becomes
             // known at all, a codec advert describes the sender's device, and
             // the personal lane is the person's own topic, never a room's.
             NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::MediaCapabilities { .. }
-            | NeighbourMsg::PersonalContinuityRequest { .. }
-            | NeighbourMsg::PersonalContinuityCheckpoint { .. }
             | NeighbourMsg::PersonalWorkspaces { .. }
             | NeighbourMsg::RoomArchive { .. }
             // Retired generations, refused where they enter

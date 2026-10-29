@@ -50,7 +50,7 @@ use std::thread::JoinHandle;
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
-use crate::damage::{Region, coalesce_regions};
+use crate::damage::{coalesce_regions, pixel_rect};
 use crate::gpu::RenderContext;
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
@@ -101,6 +101,10 @@ pub enum RenderRequest {
         /// The backdrops the scene's floating surfaces were recorded over
         /// (`crate::backdrop`), in physical pixels. Empty draws no blur.
         backdrop: crate::backdrop::BackdropFrame,
+        /// The frame drawn as layers (`crate::strip_layers::LayerRecording`),
+        /// whose `scene` is their composition: a worker keeping their
+        /// textures pans the strip by copying instead of rasterising it.
+        layers: Option<crate::strip_layers::FrameCache>,
         /// Called with the time this frame, or the first later one, is
         /// presented.
         on_present: Option<PresentHook>,
@@ -452,6 +456,10 @@ pub(crate) fn spawn_render_thread_deferred(
                 tracing::info!("tilo-ui: CPU fine rasterization selected for software adapter");
             }
             let mut target_valid = false;
+            // The layers of frames drawn as layers, and the frame the
+            // target holds when it holds a presented one.
+            let mut layer_presenter = crate::strip_layers::LayerPresenter::default();
+            let mut holds: Option<u64> = None;
             let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
@@ -487,6 +495,7 @@ pub(crate) fn spawn_render_thread_deferred(
                             &render_cx,
                             &surface,
                         ) {
+                            layer_presenter.forget();
                             request_full_repaint(
                                 &mut target_valid,
                                 &worker_full_repaint,
@@ -511,6 +520,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     partial,
                     cpu_frame_id,
                     backdrop,
+                    layers,
                 ) = match msg {
                     RenderRequest::Frame {
                         scene,
@@ -523,6 +533,7 @@ pub(crate) fn spawn_render_thread_deferred(
                         partial,
                         cpu_frame_id,
                         backdrop,
+                        layers,
                         on_present,
                     } => {
                         present_hooks.extend(on_present);
@@ -537,6 +548,7 @@ pub(crate) fn spawn_render_thread_deferred(
                             partial,
                             cpu_frame_id,
                             backdrop,
+                            layers,
                         )
                     }
                     RenderRequest::Shutdown {
@@ -635,6 +647,16 @@ pub(crate) fn spawn_render_thread_deferred(
                 if let Some(observer) = gpu_trace.as_mut() {
                     observer.observe(&mut renderer, None);
                 }
+                // A frame drawn as layers is composited from them once they
+                // hold an earlier frame's; the first is rasterised from its
+                // scene as any other, and its layers warmed after it.
+                let layers = layers.filter(|cache| {
+                    !raster.on_cpu()
+                        && backdrop.is_empty()
+                        && !partial
+                        && crate::strip_layers::LayerPresenter::can_present(cache, (width, height))
+                });
+                let composited = layers.as_ref().filter(|_| layer_presenter.holds_layers());
                 let render_start = present_dbg.then(crate::time::now);
                 let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
@@ -644,6 +666,11 @@ pub(crate) fn spawn_render_thread_deferred(
                         renderer: &mut renderer,
                         raster: &mut raster,
                         damage_only: partial,
+                        layers: composited.map(|cache| FrameLayersPresent {
+                            cache,
+                            presenter: &mut layer_presenter,
+                            holds,
+                        }),
                     },
                     FrameContent {
                         scene: &scene,
@@ -697,6 +724,28 @@ pub(crate) fn spawn_render_thread_deferred(
                 timing::handoff::record(&mut handoff, timing::handoff::Stage::AfterOutcomeLog);
                 // A per-session frame counter; bounded by wall-clock session
                 // length at typical refresh rates, nowhere near `u64::MAX`.
+                if outcome == FrameOutcome::Presented
+                    && composited.is_none()
+                    && let Some(cache) = layers.as_ref()
+                    && let Some(device) = render_cx.devices.get(surface.dev_id)
+                {
+                    let warmed = layer_presenter.warm(
+                        &mut crate::strip_layers::QueuedRaster {
+                            device: &device.device,
+                            queue: &device.queue,
+                            renderer: &mut renderer,
+                            output: &surface.target_view,
+                            size: (width, height),
+                            base_color,
+                        },
+                        cache,
+                        &|| true,
+                    );
+                    if let Err(error) = warmed {
+                        tracing::warn!(%error, "the frame's layers could not be rasterised");
+                    }
+                }
+                holds = (outcome == FrameOutcome::Presented).then_some(frame_ix);
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
                 had_backdrop = !backdrop.is_empty();
@@ -760,6 +809,7 @@ pub(crate) fn spawn_render_thread_deferred(
                     request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
                 }
                 if poll_bump_recovery(&mut bump_recovery, &mut renderer, &render_cx, &surface) {
+                    layer_presenter.forget();
                     request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
                 }
             }
@@ -994,6 +1044,16 @@ struct FrameRasterizers<'a> {
     raster: &'a mut RetainedRaster,
     /// The scene holds only what its damage needs (`crate::draw_cull`).
     damage_only: bool,
+    /// The frame is composited from its layers instead.
+    layers: Option<FrameLayersPresent<'a>>,
+}
+
+/// A frame composited from the layers it was drawn as.
+struct FrameLayersPresent<'a> {
+    cache: &'a crate::strip_layers::FrameCache,
+    presenter: &'a mut crate::strip_layers::LayerPresenter,
+    /// The frame the target holds, when it holds a presented one.
+    holds: Option<u64>,
 }
 
 #[allow(
@@ -1011,6 +1071,7 @@ fn render_one_frame(
         renderer,
         raster,
         damage_only,
+        layers,
     } = rasterizers;
     let FrameContent {
         scene,
@@ -1083,7 +1144,48 @@ fn render_one_frame(
         view: &surface.target_view,
     };
     let gpu = (&device_handle.device, &device_handle.queue);
-    let (rasterized, backdrop_stats) = if damage_only {
+    // Where a frame composited from layers changed the target.
+    let mut composited = None;
+    let (rasterized, backdrop_stats) = if let Some(FrameLayersPresent {
+        cache,
+        presenter,
+        holds,
+    }) = layers
+    {
+        let presented = presenter.present(
+            &mut crate::strip_layers::QueuedRaster {
+                device: gpu.0,
+                queue: gpu.1,
+                renderer,
+                output: target.view,
+                size: (width, height),
+                base_color: frame.base_color,
+            },
+            cache,
+            frame_ix,
+            holds,
+        );
+        composited = presenter.last_work().map(|work| {
+            work.composite.map_or(Rect::ZERO, |rect| {
+                Rect::new(
+                    f64::from(rect.x),
+                    f64::from(rect.y),
+                    f64::from(rect.x.saturating_add(rect.width)),
+                    f64::from(rect.y.saturating_add(rect.height)),
+                )
+            })
+        });
+        (
+            presented
+                .map(|()| {
+                    presenter
+                        .last_pixels((width, height))
+                        .map_or(0, |(raster, _)| raster)
+                })
+                .map_err(|error| error.to_string()),
+            None,
+        )
+    } else if damage_only {
         raster.rasterize_damage_only(gpu, renderer, target, frame)
     } else {
         raster.rasterize(gpu, renderer, target, frame)
@@ -1185,7 +1287,14 @@ fn render_one_frame(
 
     let t_present = present_dbg.then(crate::time::now);
     // The compositor repaints where the copies landed as well as the damage.
-    let presented: std::borrow::Cow<'_, [Rect]> = if frame.scroll_copies.is_empty() {
+    let presented: std::borrow::Cow<'_, [Rect]> = if let Some(rect) = composited {
+        std::borrow::Cow::Owned(
+            vec![rect]
+                .into_iter()
+                .filter(|rect| rect.area() > 0.0)
+                .collect(),
+        )
+    } else if frame.scroll_copies.is_empty() {
         std::borrow::Cow::Borrowed(frame.damage_regions)
     } else {
         std::borrow::Cow::Owned(
@@ -1275,11 +1384,6 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "finite framebuffer bounds are rounded outward and clamped to their u32 extent before narrowing"
-)]
 fn bounded_present_damage(
     width: u32,
     height: u32,
@@ -1293,18 +1397,7 @@ fn bounded_present_damage(
         if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
             return None;
         }
-        let x = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
-        let y = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
-        if x1 > x && y1 > y {
-            regions.push(Region {
-                x,
-                y,
-                width: x1.saturating_sub(x),
-                height: y1.saturating_sub(y),
-            });
-        }
+        regions.extend(pixel_rect(*rect, width, height));
     }
     if regions.is_empty() {
         return None;

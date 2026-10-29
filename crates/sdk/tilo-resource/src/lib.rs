@@ -101,6 +101,7 @@
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
 
+mod absolute_path;
 pub mod action;
 mod apply_cache;
 pub mod batch;
@@ -129,10 +130,12 @@ pub mod keyed;
 pub mod kind;
 mod map;
 pub mod model;
+mod non_blank;
 pub mod order;
 pub mod ordered;
 pub mod path;
 pub mod reactions;
+pub mod read;
 pub mod reader;
 mod recents;
 pub mod recording;
@@ -151,10 +154,11 @@ mod upsert;
 mod value;
 pub mod vocabulary;
 
+pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, minted_keys,
-    reverting_type, take_minted,
+    Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, minted_ids,
+    minted_keys, reverting_type, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
@@ -175,6 +179,7 @@ pub use model::{
     Atom, Doc, Fields, LocatedAt, MapSlot, Model, ModelError, Slot, VARIANT_KEY, edit_whole,
     load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
+pub use non_blank::{Blank, NonBlank};
 pub use ordered::{Arranged, Ordered};
 pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
 pub use reactions::{
@@ -199,6 +204,7 @@ pub use surface::Surface;
 pub use text::{PlainText, TextEdit};
 pub use tilo_action_policy::edits::Weaker;
 pub use tilo_actions::Availability;
+pub use tilo_actions::surface::{FieldType, TypeSet};
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
@@ -365,6 +371,8 @@ pub mod __private {
         /// It takes content another action produced, by its hash, beside
         /// the verb's other parameters.
         pub content: bool,
+        /// Its type in the surface's vocabulary.
+        pub field_type: crate::vocabulary::ParamFieldType,
     }
 
     /// A declared parameter's type.
@@ -468,6 +476,12 @@ pub mod __private {
             params_of(verb.params),
             build,
         );
+        decl.param_types = verb
+            .params
+            .iter()
+            .filter(|param| !param.flat)
+            .map(|param| (param.name, param.field_type))
+            .collect();
         decl.kind = verb.kind;
         decl.keywords = verb
             .keywords

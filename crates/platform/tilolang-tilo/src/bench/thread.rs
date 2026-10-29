@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use serde_json::{Value as Json, json};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_resource::{Collection, Edit, EditOp, Id, Segment};
+use tilo_resource::{Collection, Id};
 use tilolang::Compiled;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, ViewInstance};
@@ -25,11 +25,16 @@ use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
 use crate::schema::{MergeKind, lookup};
 
+/// The id of the one item of the root's list: the thread whose transcript the scenarios show.
+fn thread_id() -> String {
+    "thread".to_owned()
+}
+
 /// The fields of the packages' types that hold a principal (a message's author), by type and
 /// field id: a register a seeded record has no default for.
-type Principals = HashSet<(String, String)>;
+pub(super) type Principals = HashSet<(String, String)>;
 
-fn principals(packages: &[Compiled]) -> Principals {
+pub(super) fn principals(packages: &[Compiled]) -> Principals {
     packages
         .iter()
         .flat_map(|package| &package.meta.types)
@@ -44,9 +49,9 @@ fn principals(packages: &[Compiled]) -> Principals {
 
 /// A record of type `ty` with `label` in every text field, a principal of its own in every
 /// field that holds one, and, `depth` collections down, one item in each collection (a
-/// message's text part).
-fn filled(
-    ty: &str,
+/// message's text part), whose id is the record's `id` and `-part`.
+pub(super) fn filled(
+    (id, ty): (&str, &str),
     label: &str,
     depth: usize,
     principals: &Principals,
@@ -64,9 +69,10 @@ fn filled(
             (MergeKind::Collection, Some(DynValue::Collection(slot))) if depth > 0 => {
                 if let Some(inner) = field.record.as_deref() {
                     let mut items = Collection::default();
+                    let part = format!("{id}-part");
                     items.push(
-                        Id::from_raw("part-0"),
-                        filled(inner, label, depth.saturating_sub(1), principals)?,
+                        Id::from_raw(&part),
+                        filled((&part, inner), label, depth.saturating_sub(1), principals)?,
                     );
                     *slot = items;
                 }
@@ -91,12 +97,17 @@ pub(super) fn seeded(
     let principals = principals(packages);
     let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
     let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
-    let mut item = filled(&list.item_ty, "Item 0", 0, &principals)?;
+    let mut item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &principals)?;
     let mut inner = Collection::default();
     for i in 0..n {
         inner.push(
             Id::from_raw(item_id(i)),
-            filled(&nested.item_ty, &format!("Message {i}"), 1, &principals)?,
+            filled(
+                (&item_id(i), &nested.item_ty),
+                &format!("Message {i}"),
+                1,
+                &principals,
+            )?,
         );
     }
     match item.get_mut(&nested.field) {
@@ -104,7 +115,7 @@ pub(super) fn seeded(
         _ => return Err("the item's collection is not one".into()),
     }
     let mut items = Collection::default();
-    items.push(Id::from_raw(item_id(0)), item);
+    items.push(Id::from_raw(thread_id()), item);
     match root.get_mut(&list.field) {
         Some(DynValue::Collection(slot)) => *slot = items,
         _ => return Err("the list field is not a collection".into()),
@@ -166,11 +177,8 @@ impl Thread {
 /// A scenario fails.
 pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec<Record>, String> {
     let shape = sized.shape;
-    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone()).item(
-        &list.field,
-        &item_id(0),
-        list.item_ty.clone(),
-    );
+    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone())
+        .item(&thread_id(), list.item_ty.clone());
     let mut out = vec![open(sized, &item)?];
     if sized.config.open_only {
         return Ok(out);
@@ -181,7 +189,7 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
     room.frame(&mut [&mut thread.view])?;
     room.phases.take();
     out.push(keystroke(sized, &mut room, &mut thread)?);
-    out.push(post(sized, (list, nested), &mut room, &mut thread)?);
+    out.push(post(sized, nested, &mut room, &mut thread)?);
     out.push(scroll(sized, &mut thread)?);
     Ok(out)
 }
@@ -239,7 +247,7 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<
 /// Another replica appending a row, which the transcript, following its end, shows.
 fn post(
     sized: &Sized<'_>,
-    (list, nested): (&List, &Nested),
+    nested: &Nested,
     room: &mut Room,
     thread: &mut Thread,
 ) -> Result<Record, String> {
@@ -248,32 +256,36 @@ fn post(
     let mut peer = room.doc.fork();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
+        let id = format!("peer-{sample:06}");
         let message = filled(
-            &nested.item_ty,
+            (&id, &nested.item_ty),
             &format!("Peer message {sample}"),
             1,
             &principals,
         )?;
+        // After the seeded messages and the peer's earlier ones.
+        let key = crate::action::keys_in_order(sized.n.saturating_add(sample).saturating_add(1))
+            .pop()
+            .unwrap_or_default();
+        let at = tilolang_runtime::place::Placement::At {
+            place: tilolang_runtime::place::Place {
+                parent: Some(thread_id()),
+                field: nested.field.clone(),
+                key,
+            },
+            was: None,
+        };
         let action = DynAction {
             app: shape.app.clone(),
             kind: format!("tl.{}.edit", shape.app),
             action_id: "$edit".into(),
             args: Json::Null,
             authorship: Authorship::default(),
-            edits: vec![DynEdit::Edit {
+            edits: vec![DynEdit::Insert {
                 id: root_id(shape),
-                edit: Edit::new(
-                    vec![
-                        Segment::Field(list.field.clone()),
-                        Segment::Item(Id::from_raw(item_id(0))),
-                        Segment::Field(nested.field.clone()),
-                    ],
-                    EditOp::InsertItem {
-                        id: Some(Id::from_raw(format!("peer-{sample:06}"))),
-                        at: tilo_resource::At::End,
-                        value: tilo_resource::Model::to_json(&message),
-                    },
-                ),
+                item: id,
+                record: tilo_resource::Model::to_json(&message),
+                at: at.encode(),
             }],
         };
         execute(&mut peer, &action, "peer")?;

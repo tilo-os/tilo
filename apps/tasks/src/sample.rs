@@ -8,6 +8,7 @@
 //! its count to read as they do.
 
 use ui::prelude::*;
+use ui::tilo_resource::NonBlank;
 
 use crate::model::{Status, Tracker, tracker};
 use crate::{Filter, Nav, Place};
@@ -84,11 +85,14 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         } else {
             None
         };
+        let Some(title) = NonBlank::parse(issue.title) else {
+            continue;
+        };
         replica = replica.as_author(person);
         replica.set_now_ms(at);
         if replica
             .apply(Tracker::CREATE.with(tracker::Create {
-                title: issue.title.to_owned(),
+                title,
                 parent: None,
                 body: Some(format!("## Why\n\n{} before the launch.", issue.title)),
                 status: Some(issue.status),
@@ -102,6 +106,10 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         // something to read and the person's own voice is in it.
         if matches!(issue.status, Status::InProgress | Status::InReview)
             && let Some(id) = made(&replica, issue.title)
+            && let Some(text) = NonBlank::parse(&format!(
+                "Started on {}: the first draft is in the folder.",
+                issue.title
+            ))
         {
             at = at.saturating_add(1_000);
             replica = replica.as_author(person);
@@ -109,14 +117,11 @@ pub(crate) fn tracker(person: &str) -> Tracker {
             replica
                 .apply(Tracker::COMMENT.with(tracker::Comment {
                     issue: id.clone(),
-                    text: format!(
-                        "Started on {}: the first draft is in the folder.",
-                        issue.title
-                    ),
+                    text,
                 }))
                 .ok();
         }
-        let Some(label) = issue.label else {
+        let Some(label) = issue.label.and_then(NonBlank::parse) else {
             continue;
         };
         let Some(id) = made(&replica, issue.title) else {
@@ -124,10 +129,7 @@ pub(crate) fn tracker(person: &str) -> Tracker {
         };
         at = at.saturating_add(1_000);
         replica.set_now_ms(at);
-        let _ = replica.apply(Tracker::ADD_LABEL.with(tracker::AddLabel {
-            issue: id,
-            label: label.to_owned(),
-        }));
+        let _ = replica.apply(Tracker::ADD_LABEL.with(tracker::AddLabel { issue: id, label }));
     }
     replica.state().unwrap_or_default()
 }

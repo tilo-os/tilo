@@ -1,7 +1,7 @@
 //! A remote stream its source stops serving partway through, and picking it
 //! up again where it stopped.
 
-use super::MusicApp;
+use super::Music;
 use ui::widget::toast::ToastKind;
 
 /// How far short of its known length a stream may end and still count as
@@ -68,7 +68,7 @@ pub(super) fn stream_cut_action(
     StreamCutAction::Resume(position_ms)
 }
 
-impl MusicApp {
+impl Music {
     /// Re-resolve the current remote stream and resume it where it stopped,
     /// when [`stream_cut_action`] says the source cut it short. Says so in a
     /// toast and the log, as it does when a stream is cut short again at the

@@ -47,6 +47,22 @@ pub struct MemberAddition {
     pub epoch: u64,
 }
 
+/// A commit staged by [`ChannelGroup::stage_commit`].
+pub(crate) struct StagedChange {
+    pub(crate) commit: Vec<u8>,
+    /// The Welcome and the joiners' key history, when the commit adds.
+    pub(crate) joining: Option<(Vec<u8>, Vec<u8>)>,
+    pub(crate) epoch: u64,
+}
+
+/// What an inbound commit changes, by credential identity.
+#[derive(Debug, Default)]
+pub(crate) struct IncomingCommit {
+    pub(crate) committer: Vec<u8>,
+    pub(crate) added: Vec<Vec<u8>>,
+    pub(crate) removed: Vec<Vec<u8>>,
+}
+
 /// One device's view of one channel's MLS group.
 ///
 /// Holds `MemberKey` by value (move-in on `create`/`process_welcome`) —
@@ -71,9 +87,16 @@ pub struct ChannelGroup {
 /// makes every Welcome carry the ratchet tree inline, so a joiner needs
 /// no out-of-band tree — simpler, and the size penalty is small at
 /// human-scale channel sizes.
+///
+/// Commits travel as public messages: a frame already names the devices a
+/// commit adds and removes in the clear, and every receiver must be able to
+/// look at a commit, refuse it, and look again once its membership caught up,
+/// which an encrypted handshake (its secret-tree key spent on first read)
+/// does not allow.
 fn group_create_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .use_ratchet_tree_extension(true)
+        .wire_format_policy(MIXED_PLAINTEXT_WIRE_FORMAT_POLICY)
         .build()
 }
 
@@ -81,6 +104,7 @@ fn group_create_config() -> MlsGroupCreateConfig {
 fn group_join_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
         .use_ratchet_tree_extension(true)
+        .wire_format_policy(MIXED_PLAINTEXT_WIRE_FORMAT_POLICY)
         .build()
 }
 
@@ -394,7 +418,7 @@ impl ChannelGroup {
         let preexisting_members = self.member_count();
         // An add-only commit needs no update path (RFC 9420, 12.4): the
         // epoch secret still changes, and joiners get the key history from
-        // the steward anyway. A path is encrypted to the resolution of every
+        // the committer anyway. A path is encrypted to the resolution of every
         // copath node, which grows with each member added without one, so
         // in a busy channel it made each commit, and every member's work to
         // apply it, grow with the channel.
@@ -428,6 +452,137 @@ impl ChannelGroup {
             self.clear_pending()?;
         }
         staged
+    }
+
+    /// Stage one commit removing the members at `removed` and adding every
+    /// key package's device, and leave it pending: the caller signs its
+    /// frame, then merges it ([`Self::merge_pending_transaction`]) or drops
+    /// it ([`Self::discard_pending_transaction`]). A removal needs an update
+    /// path (RFC 9420, 12.4); an add alone does not, which keeps each commit
+    /// in a busy channel from growing with the members added before.
+    pub(crate) fn stage_commit(
+        &mut self,
+        removed: &[u32],
+        added: &[KeyPackage],
+    ) -> Result<StagedChange> {
+        let provider = &self.member.provider;
+        let bundle = self
+            .group
+            .commit_builder()
+            .propose_removals(removed.iter().copied().map(LeafNodeIndex::new))
+            .propose_adds(added.iter().cloned())
+            .force_self_update(!removed.is_empty())
+            .load_psks(openmls_traits::OpenMlsProvider::storage(provider))
+            .map_err(Error::openmls)?
+            .build(
+                openmls_traits::OpenMlsProvider::rand(provider),
+                openmls_traits::OpenMlsProvider::crypto(provider),
+                &self.member.signer,
+                |_| true,
+            )
+            .map_err(Error::openmls)?
+            .stage_commit(provider)
+            .map_err(Error::openmls)?;
+        let staged = (|| {
+            let (commit, welcome, _group_info) = bundle.into_messages();
+            let commit = commit.tls_serialize_detached().map_err(Error::tls_codec)?;
+            let epoch = self.epoch().saturating_add(1);
+            let joining = match welcome {
+                Some(welcome) => Some((
+                    welcome.tls_serialize_detached().map_err(Error::tls_codec)?,
+                    self.pending_key_history(epoch)?,
+                )),
+                None => None,
+            };
+            Ok(StagedChange {
+                commit,
+                joining,
+                epoch,
+            })
+        })();
+        if staged.is_err() {
+            self.clear_pending()?;
+        }
+        staged
+    }
+
+    /// Process an inbound commit, let `check` refuse it by what it changes,
+    /// and only then advance the local epoch. A refused commit leaves the
+    /// group as it was.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::process_commit`], or `check`'s error.
+    pub(crate) fn process_commit_checked(
+        &mut self,
+        commit_bytes: &[u8],
+        check: impl FnOnce(&IncomingCommit) -> Result<()>,
+    ) -> Result<()> {
+        let msg_in = MlsMessageIn::tls_deserialize_exact(commit_bytes).map_err(Error::tls_codec)?;
+        let protocol_msg: ProtocolMessage =
+            msg_in.try_into_protocol_message().map_err(Error::openmls)?;
+        // Same defensive panic-catch as `decrypt`.
+        let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.group
+                .process_message(&self.member.provider, protocol_msg)
+        }))
+        .map_err(|_| Error::OpenMls("commit processing failed (panic absorbed)".to_string()))?
+        .map_err(Error::openmls)?;
+        let committer = match processed.sender() {
+            Sender::Member(leaf) => self.identity_at(*leaf),
+            _ => None,
+        };
+        let ProcessedMessageContent::StagedCommitMessage(staged) = processed.into_content() else {
+            return Err(Error::UnexpectedMessageKind {
+                expected: "commit",
+                actual: "non-commit content",
+            });
+        };
+        let incoming = IncomingCommit {
+            committer: committer.unwrap_or_default(),
+            added: staged
+                .add_proposals()
+                .filter_map(|proposal| {
+                    BasicCredential::try_from(
+                        proposal
+                            .add_proposal()
+                            .key_package()
+                            .leaf_node()
+                            .credential()
+                            .clone(),
+                    )
+                    .ok()
+                    .map(|credential| credential.identity().to_vec())
+                })
+                .collect(),
+            removed: staged
+                .remove_proposals()
+                .filter_map(|proposal| self.identity_at(proposal.remove_proposal().removed()))
+                .collect(),
+        };
+        check(&incoming)?;
+        self.group
+            .merge_staged_commit(&self.member.provider, *staged)
+            .map_err(Error::openmls)?;
+        self.record_epoch_key()
+    }
+
+    fn identity_at(&self, leaf: LeafNodeIndex) -> Option<Vec<u8>> {
+        let member = self.group.member_at(leaf)?;
+        BasicCredential::try_from(member.credential)
+            .ok()
+            .map(|credential| credential.identity().to_vec())
+    }
+
+    /// The signature key of the member whose credential identity is
+    /// `identity`: it names the member key the device joined with.
+    pub(crate) fn signature_key_of(&self, identity: &[u8]) -> Option<Vec<u8>> {
+        self.group.members().find_map(|member| {
+            BasicCredential::try_from(member.credential)
+                .ok()
+                .filter(|credential| credential.identity() == identity)
+                .map(|_| member.signature_key)
+        })
     }
 
     fn clear_pending(&mut self) -> Result<()> {
@@ -756,33 +911,6 @@ impl ChannelGroup {
                 Err(Error::tls_codec(error))
             }
         }
-    }
-
-    /// Leave this member alone in the group, in one commit nobody else
-    /// receives: the group goes on at the next epoch with every content key
-    /// held so far. A device taking over a channel whose steward is away
-    /// starts so, as a genesis requires, and admits the others again as
-    /// they ask.
-    ///
-    /// # Errors
-    ///
-    /// Returns an `OpenMLS` error when the removal cannot be committed.
-    pub(crate) fn remove_others(&mut self) -> Result<()> {
-        let own: &[u8] = self.member.name();
-        let others: Vec<LeafNodeIndex> = self
-            .member_identities()
-            .into_iter()
-            .filter(|(_, identity)| identity.as_slice() != own)
-            .map(|(leaf, _)| LeafNodeIndex::new(leaf))
-            .collect();
-        if others.is_empty() {
-            return Ok(());
-        }
-        self.group
-            .remove_members(&self.member.provider, &self.member.signer, &others)
-            .map_err(Error::openmls)?;
-        self.merge_pending_transaction()?;
-        Ok(())
     }
 
     /// Finish a pending member commit restored from a sealed crash-recovery

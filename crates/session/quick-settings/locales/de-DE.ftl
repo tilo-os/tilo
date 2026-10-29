@@ -65,7 +65,7 @@ qs-edit-available-heading = Verfügbar
 qs-edit-controls = Steuerungen bearbeiten
 qs-edit-done = Fertig
 qs-edit-done-a11y = Bearbeiten der Schnelleinstellungen beenden
-qs-edit-help = Ziehen oder Strg + Auf/Ab drücken zum Anordnen
+qs-edit-help = Zum Anordnen ziehen oder bei einer Zeile Nach oben und Nach unten wählen
 qs-edit-optional-control-a11y = Fügt dieses Steuerelement hinzu oder entfernt es. Strg plus Pfeiltasten ordnen es an.
 qs-edit-remove-a11y = Steuerung aus den Schnelleinstellungen entfernen
 qs-edit-required-a11y = Erforderliche Steuerung der Schnelleinstellungen
@@ -136,3 +136,44 @@ status-wifi = WLAN
 status-wifi-named = WLAN: { $name }
 status-wired = Kabelgebunden
 status-wired-named = Kabelgebunden: { $name }
+
+# The panel as an app: its pages, the clipboard's search, the password
+# prompt and arranging the controls.
+qs-back-to-controls = Zurück zu den Schnelleinstellungen
+qs-back-to-notifications = Zurück zu den Mitteilungen
+qs-bluetooth-accessory = Bluetooth-Zubehör
+qs-bluetooth-disconnect = { $accessory } trennen, ohne es zu vergessen
+qs-bluetooth-move = { $accessory } verschieben
+qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestätigt ist
+qs-bluetooth-move-note = Das andere Gerät muss bereits damit gekoppelt sein
+qs-bluetooth-this-certified = Dieses Gerät
+qs-bluetooth-this-device = Dieses Gerät
+qs-clipboard-no-matches = Nichts passt zu „{ $query }“
+qs-clipboard-pin = Eintrag anheften
+qs-clipboard-remove = Eintrag aus der Zwischenablage entfernen
+qs-clipboard-search = Einträge durchsuchen
+qs-clipboard-search-count = { $count ->
+        [one] Ein Eintrag
+       *[other] { $count } Einträge
+    }
+qs-clipboard-search-matches = { $count ->
+        [one] Ein Eintrag passt zu „{ $query }“
+       *[other] { $count } Einträge passen zu „{ $query }“
+    }
+qs-clipboard-unpin = Eintrag lösen
+qs-devices-fabric-unavailable = Das persönliche Gerätenetz ist nicht verfügbar
+qs-devices-offline = Offline
+qs-edit-move-down = Nach unten
+qs-edit-move-up = Nach oben
+qs-edit-required = Erforderlich
+qs-notification-dismiss = Schließen
+qs-notification-gone = Diese Mitteilung wird nicht mehr aufbewahrt
+qs-notification-hand-to = An { $agent } übergeben
+qs-notifications-clear = Alle löschen
+qs-notifications-dismiss-all = Alle von { $app } schließen
+qs-notifications-empty = Keine aktuellen Mitteilungen
+qs-notifications-undo = Rückgängig
+qs-wifi-password = Passwort
+qs-wifi-password-cancel = Abbrechen
+qs-wifi-password-connect = Verbinden
+qs-wifi-password-for = Gib das Passwort des Netzwerks ein

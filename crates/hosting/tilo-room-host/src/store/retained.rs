@@ -580,7 +580,6 @@ pub struct RetainBuild {
     fast_admitted: bool,
     selected_obsolete: bool,
     staged_only: bool,
-    continuity: Option<super::continuity::Receipt>,
     store: WorkspaceStore,
     /// A delta's active generation, stamped when the build began.
     stamp: Option<tail_index::Stamp>,
@@ -780,11 +779,6 @@ impl CheckpointStage {
     }
 }
 impl RetainBuild {
-    pub(crate) fn with_continuity(mut self, receipt: Option<super::continuity::Receipt>) -> Self {
-        self.continuity = receipt;
-        self
-    }
-
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
@@ -837,8 +831,7 @@ impl RetainBuild {
     /// checkpoint, or append.
     fn inspected(&mut self) -> Result<(), StoreError> {
         let unsynced_parent = self.unsynced_parent.take();
-        let stage_checkpoint = self.continuity.is_none()
-            && self.checkpoint
+        let stage_checkpoint = self.checkpoint
             && !self.opaque
             && (covers(&self.bytes, &self.bytes, self.workspace)
                 || standalone(&**self.store.payloads(), &self.bytes, self.workspace).is_some());
@@ -847,7 +840,7 @@ impl RetainBuild {
         {
             sync_dir_once(parent)?;
         }
-        if self.duplicate && self.continuity.is_none() {
+        if self.duplicate {
             self.phase = if self.staged_only {
                 RetainPhase::Done
             } else {
@@ -904,8 +897,8 @@ impl RetainBuild {
             }
             self.store.forget_lineage_listing(&self.lineage);
             if std::mem::take(&mut self.fresh) {
-                // An append goes into the selected generation, where a
-                // continuity marker reserves its slot: select it first.
+                // An append goes into the selected generation: select it
+                // first.
                 create_dir(&self.active)?;
                 let name = self
                     .active
@@ -913,15 +906,7 @@ impl RetainBuild {
                     .invariant("active generation name")?;
                 durable_write(&self.lineage.join("CURRENT"), name.as_encoded_bytes())?;
             }
-            if let Some(receipt) = &self.continuity {
-                super::continuity::account_validation(
-                    &**self.store.payloads(),
-                    &mut self.sorter.stats,
-                    self.bytes.len(),
-                );
-                super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
-            }
-            if let Some(group) = self.group.as_ref().filter(|_| self.continuity.is_none()) {
+            if let Some(group) = self.group.as_ref() {
                 group.defer(&self.lineage, &self.active, path, &self.bytes, self.digest)?;
             } else {
                 durable_write(&path, &self.bytes)?;
@@ -1070,9 +1055,6 @@ impl RetainBuild {
                     crate::store::count_listed_entry();
                     let name = entry.file_name();
                     let lossy = name.to_string_lossy();
-                    if let Some(slot) = super::continuity::reserved_slot(&lossy) {
-                        self.last = self.last.max(slot);
-                    }
                     if entry.file_type()?.is_file()
                         && lossy.ends_with(".delta")
                         && !lossy.starts_with('.')
@@ -1167,14 +1149,6 @@ impl RetainBuild {
                                 .as_ref()
                                 .invariant("staged missing")?
                                 .join(format!("{next:016x}.delta"));
-                            if let Some(receipt) = &self.continuity {
-                                super::continuity::account_validation(
-                                    &**self.store.payloads(),
-                                    &mut self.sorter.stats,
-                                    self.bytes.len(),
-                                );
-                                super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
-                            }
                             durable_write(&path, &self.bytes)?;
                             self.staged_synced = true;
                         }
@@ -1220,13 +1194,6 @@ impl RetainBuild {
                         drop(record);
                         self.staged_synced = false;
                         tilo_relay_store::durable::link(&source, &destination)?;
-                        super::continuity::copy_measured(
-                            &self.store,
-                            &source,
-                            &destination,
-                            &mut self.sorter.stats,
-                            self.bytes.capacity(),
-                        )?;
                     }
                 }
             }
@@ -1610,7 +1577,6 @@ impl WorkspaceStore {
             fast_admitted: false,
             selected_obsolete: false,
             staged_only: false,
-            continuity: None,
             store: self.clone(),
             stamp: None,
             indexed: false,
@@ -1737,7 +1703,6 @@ impl WorkspaceStore {
             fast_admitted: false,
             selected_obsolete: false,
             staged_only: false,
-            continuity: None,
             store: self.clone(),
             collected: stamp
                 .filter(|_| indexed.is_none())
@@ -2042,13 +2007,12 @@ pub(super) mod tests {
         assert!(
             size <= 2048,
             "a RetainBuild is {size} bytes inline: store {}, sorter {}, phase {}, \
-             publication {}, fast {}, continuity {}, stamp {}",
+             publication {}, fast {}, stamp {}",
             size_of::<WorkspaceStore>(),
             size_of::<super::super::bounded::Sorter>(),
             size_of::<RetainPhase>(),
             size_of::<Option<super::super::shell_selection::Publication>>(),
             size_of::<Option<Box<dyn super::super::shell_selection::ShellTail>>>(),
-            size_of::<Option<super::super::continuity::Receipt>>(),
             size_of::<Option<tail_index::Stamp>>(),
         );
     }
@@ -2407,12 +2371,13 @@ pub(super) mod tests {
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8, timestamp: u64| {
-            let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+            let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 room: "room".into(),
-                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     channel,
                     device,
-                    [through; 32],
+                    vec![through],
+                    u64::from(through),
                 )),
                 delivery: 0,
             };
@@ -2466,19 +2431,20 @@ pub(super) mod tests {
         assert_eq!(store.load_retained().unwrap(), vec![third]);
     }
 
-    /// A standalone checkpoint of `author` (its acknowledgement of
-    /// `channel`'s governance), with its retention route.
+    /// A standalone checkpoint of `author` (its access request for
+    /// `channel`), with its retention route.
     fn standalone_checkpoint(
         channel: collab_types::ChannelId,
         author: u8,
         through: u8,
     ) -> ([u8; 32], Vec<u8>) {
-        let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+        let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
             room: "room".into(),
-            ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+            request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                 channel,
                 collab_types::Ed25519PublicKey::from_bytes([author; 32]),
-                [through; 32],
+                vec![through],
+                u64::from(through),
             )),
             delivery: 0,
         };
@@ -2721,20 +2687,21 @@ pub(super) mod tests {
 
     /// Checkpoint replacement asks the adapter the store was opened with,
     /// not a process-wide one: through an adapter that classifies nothing,
-    /// the governance acknowledgements the desktop adapter lets replace one
-    /// another are all kept.
+    /// the access requests the desktop adapter lets replace one another are
+    /// all kept.
     #[test]
     fn checkpoint_replacement_asks_the_stores_own_adapter() {
         let tmp = tempfile::tempdir().unwrap();
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8| {
-            let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+            let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 room: "room".into(),
-                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     channel,
                     device,
-                    [through; 32],
+                    vec![through],
+                    u64::from(through),
                 )),
                 delivery: 0,
             };

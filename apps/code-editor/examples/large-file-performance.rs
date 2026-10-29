@@ -169,7 +169,7 @@ fn scroll(app: &mut App) -> Result<(), Box<dyn Error>> {
 fn switch(app: &mut App, path: &Path, text: &str) -> Result<serde_json::Value, Box<dyn Error>> {
     let started = Instant::now();
     app.effect(&CodeEditorEffect::OpenFile {
-        path: Some(path.display().to_string()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(path)?),
     })?;
     app.settle();
     eprintln!(

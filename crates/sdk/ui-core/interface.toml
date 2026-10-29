@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 17
+version = 18
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -18,6 +18,7 @@ sources = [
     "crates/sdk/ui-core/src/widget/toast.rs",
     "crates/sdk/ui-core/src/widget/find_bar.rs",
     "crates/sdk/ui-core/src/window_door.rs",
+    "crates/sdk/ui-core/src/search/request.rs",
     "crates/sdk/ui-core/src/action_locus.rs",
     "crates/sdk/ui-core/src/shared_selection.rs",
     "crates/sdk/ui-core/src/theme_document.rs",
@@ -34,6 +35,7 @@ roots = ["FloatingSurfaceClientMessage", "FloatingSurfaceHostMessage", "WindowRe
 [opaque]
 Value = "serde_json::Value: any JSON value"
 Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
+ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or part searched) and `label`, both text"
 
 [schema]
 "ActionApp" = "struct"
@@ -53,6 +55,9 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "AdoptedQuery.options" = "FindOptions optional"
 "AdoptedQuery.query" = "String"
 "AdoptedQuery.serial" = "u64"
+"Anchor" = "struct"
+"Anchor.query" = "String"
+"Anchor.resource" = "String"
 "Ask" = "enum internal tag=ask"
 "Ask::share" = "tuple(OpenWindow)"
 "Ask::stop" = "struct"
@@ -157,6 +162,9 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceClientMessage::move_device_display" = "struct"
 "FloatingSurfaceClientMessage::move_device_display.placement" = "DeviceDisplayMove"
 "FloatingSurfaceClientMessage::move_device_display.request" = "u64"
+"FloatingSurfaceClientMessage::open_app_search" = "struct"
+"FloatingSurfaceClientMessage::open_app_search.instance" = "Option<u64> optional"
+"FloatingSurfaceClientMessage::open_app_search.request" = "SearchRequest"
 "FloatingSurfaceClientMessage::open_capture_studio" = "struct"
 "FloatingSurfaceClientMessage::open_capture_studio.mode" = "CaptureStudioProtocolMode"
 "FloatingSurfaceClientMessage::open_search" = "struct"
@@ -216,6 +224,8 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "FloatingSurfaceClientMessage::window_resource" = "struct"
 "FloatingSurfaceClientMessage::window_resource.resource" = "Option<ActionResource> optional"
 "FloatingSurfaceHostMessage" = "enum internal tag=type"
+"FloatingSurfaceHostMessage::activate_test_id" = "struct"
+"FloatingSurfaceHostMessage::activate_test_id.test_id" = "String"
 "FloatingSurfaceHostMessage::adopted" = "struct"
 "FloatingSurfaceHostMessage::adopted.id" = "String"
 "FloatingSurfaceHostMessage::adopted.rect" = "[f64; 4]"
@@ -470,6 +480,15 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "SearchOpening" = "enum external"
 "SearchOpening::find" = "unit"
 "SearchOpening::replace" = "unit"
+"SearchRequest" = "struct"
+"SearchRequest.action" = "Option<String> optional"
+"SearchRequest.anchor" = "Option<Anchor> optional"
+"SearchRequest.offer" = "Option<SearchOffer> optional"
+"SearchRequest.query" = "Option<String> optional"
+"SearchRequest.scope" = "SearchRequestScope optional"
+"SearchRequestScope" = "enum internal tag=kind"
+"SearchRequestScope::resource" = "tuple(ScopeDecl)"
+"SearchRequestScope::this_app" = "unit"
 "SelectionAnchor" = "struct"
 "SelectionAnchor.excerpt" = "Option<String> optional"
 "SelectionAnchor.interaction" = "Option<InteractionAnchor> optional"

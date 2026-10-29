@@ -184,6 +184,21 @@ none.
   display by construction (`Anchor::display_of`); a surface drawn once for the
   whole desktop says `Anchor::Fill`.
 
+## Sheets are apps
+
+A sheet over the desktop is an ordinary framework app (`crates/session/sheets`):
+a resource whose actions are published, a view built from toolkit widgets, and
+scenarios that render it headless. The shell mounts its component in its own
+process and hosts it as a layer (`overlay_host/sheet_apps.rs`, `SheetHost`): the
+layer only places the app over the display it opens on and gives it the
+layer's input; the app draws, keeps its own keyboard model and publishes its
+own accessibility tree. What only the shell can do for it the shell lends the
+app as a seat (`HostContext::lend`): plain data in (whether the sheet is up,
+what this session offers) and requests out (what the person chose), which the
+shell carries out. A sheet's window is `WindowRole::Sheet`, so it stands on no
+ground of its own and the desktop shows around it. The power menu, the
+question about a tool's display change and the shortcut guide are apps.
+
 ## Migration
 
 The stack is the migration's order:

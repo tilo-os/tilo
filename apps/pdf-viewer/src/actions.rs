@@ -228,26 +228,24 @@ pub enum PdfEffect {
     /// Opens a PDF on its own markup record, in this window.
     #[effect(job, cancellable, destructive)]
     OpenPdf {
-        #[param("Filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Save annotated PDF
     #[effect(job, cancellable, destructive)]
     SaveAs {
-        #[param("Filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
 }
 
 /// The paths of annotation `id`.
-fn annotation(
-    id: &str,
-) -> <crate::markup::StoredAnnotation as tilo_resource::Model>::Paths<PdfMarkup> {
+fn annotation(id: &str) -> <Annotation as tilo_resource::Model>::Paths<PdfMarkup> {
     PdfMarkup::paths().annotations.item(&Id::from_raw(id))
 }
 
 /// The paths of comment `id`.
-fn comment(id: &str) -> <crate::markup::StoredComment as tilo_resource::Model>::Paths<PdfMarkup> {
+fn comment(id: &str) -> <crate::model::Comment as tilo_resource::Model>::Paths<PdfMarkup> {
     PdfMarkup::paths().comments.item(&Id::from_raw(id))
 }
 
@@ -268,7 +266,7 @@ pub fn add_annotation_on(a: &Annotation, page_id: &str) -> Invoke<PdfMarkup> {
         page_id: page_id.to_owned(),
         mark: a.kind.clone(),
         color: a.color,
-        chars: a.chars.map(|(start, end)| [start, end]),
+        chars: a.chars,
         space: a.space,
     })
 }
@@ -285,10 +283,10 @@ pub fn set_annotation_position_user_action(
     y: f64,
 ) -> Option<Invoke<PdfMarkup>> {
     let stored = markup.annotations.find(&Id::from_raw(id))?;
-    matches!(stored.mark, crate::model::AnnoKind::Note { .. }).then(|| {
+    matches!(stored.kind, crate::model::AnnoKind::Note { .. }).then(|| {
         let paths = annotation(id);
         group(&[
-            paths.mark.set(crate::model::AnnoKind::Note { x, y }),
+            paths.kind.set(crate::model::AnnoKind::Note { x, y }),
             paths.space.set(GeomSpace::User),
         ])
     })
@@ -308,9 +306,9 @@ pub fn import_existing_action(
         annotations: plan
             .annotations
             .iter()
-            .map(|(a, page_id)| AdoptedAnnotation {
+            .map(|a| AdoptedAnnotation {
                 id: a.id.clone(),
-                page_id: page_id.clone(),
+                page_id: a.page_id.clone(),
                 mark: a.kind.clone(),
                 color: a.color,
                 author: a.author.clone(),
@@ -320,27 +318,19 @@ pub fn import_existing_action(
         comments: plan
             .comments
             .iter()
-            .map(|c| AdoptedThread {
-                id: c.id.clone(),
-                anno: c.anno_id.clone(),
-                page_id: plan
-                    .annotations
-                    .iter()
-                    .find(|(a, _)| Some(&a.id) == c.anno_id.as_ref())
-                    .map_or_else(
-                        || format!("source-{}", c.page),
-                        |(_, page_id)| page_id.clone(),
-                    ),
-                author: c.author.clone(),
-                text: c.body.clone(),
-                created: c.created,
-                replies: c
-                    .replies
-                    .iter()
-                    .map(|r| AdoptedReply {
-                        id: r.id.clone(),
+            .map(|t| AdoptedThread {
+                id: t.id.clone(),
+                anno: t.pinned().map(str::to_owned),
+                page_id: t.comment.anchor.page_id.clone(),
+                author: t.comment.author.clone(),
+                text: t.comment.text.clone(),
+                date: t.comment.date.clone(),
+                replies: t
+                    .replies()
+                    .map(|(id, r)| AdoptedReply {
+                        id: id.to_owned(),
                         author: r.author.clone(),
-                        text: r.body.clone(),
+                        text: r.text.clone(),
                     })
                     .collect(),
             })
@@ -354,10 +344,10 @@ pub fn import_existing_action(
 /// Change free text `id`'s words, keeping its box.
 pub fn set_free_text_action(markup: &PdfMarkup, id: &str, text: &str) -> Option<Invoke<PdfMarkup>> {
     let stored = markup.annotations.find(&Id::from_raw(id))?;
-    let crate::model::AnnoKind::FreeText { rect, size, .. } = &stored.mark else {
+    let crate::model::AnnoKind::FreeText { rect, size, .. } = &stored.kind else {
         return None;
     };
-    Some(edit(&annotation(id).mark.set(
+    Some(edit(&annotation(id).kind.set(
         crate::model::AnnoKind::FreeText {
             rect: *rect,
             text: text.to_owned(),
@@ -375,12 +365,12 @@ pub fn set_free_text_box_user_action(
     size: f64,
 ) -> Option<Invoke<PdfMarkup>> {
     let stored = markup.annotations.find(&Id::from_raw(id))?;
-    let crate::model::AnnoKind::FreeText { text, .. } = &stored.mark else {
+    let crate::model::AnnoKind::FreeText { text, .. } = &stored.kind else {
         return None;
     };
     let paths = annotation(id);
     Some(group(&[
-        paths.mark.set(crate::model::AnnoKind::FreeText {
+        paths.kind.set(crate::model::AnnoKind::FreeText {
             rect: *rect,
             text: text.clone(),
             size,
@@ -450,7 +440,7 @@ pub fn add_comment_action(
 #[cfg(test)]
 pub fn set_comment_body_action(id: &str, body: &str) -> Invoke<PdfMarkup> {
     let paths = comment(id);
-    group(&[paths.text.replace(body), paths.rich.set(Vec::new())])
+    group(&[paths.text.replace(body), paths.body.set(Vec::new())])
 }
 
 /// Replace a comment's text with what was written in the editor: its
@@ -460,7 +450,7 @@ pub fn set_comment_text_action(
     clips: Vec<tilo_document::ClipBlock>,
 ) -> Invoke<PdfMarkup> {
     let paths = comment(id);
-    group(&[paths.text.replace(plain_of(&clips)), paths.rich.set(clips)])
+    group(&[paths.text.replace(plain_of(&clips)), paths.body.set(clips)])
 }
 
 /// Reply to a comment with what was written in the editor.
@@ -470,7 +460,7 @@ pub fn add_reply_text_action(
 ) -> Invoke<PdfMarkup> {
     PdfMarkup::REPLY.with(pdf_markup::Reply {
         comment: Id::from_raw(comment_id),
-        id: Some(crate::model::Reply::new_id()),
+        id: Some(crate::model::new_id()),
         text: plain_of(&clips),
         rich: Some(clips),
     })
@@ -491,7 +481,7 @@ pub fn set_comment_resolved_action(id: &str, resolved: bool) -> Invoke<PdfMarkup
 
 #[cfg(test)]
 pub fn add_reply_action(comment_id: &str, body: &str) -> Invoke<PdfMarkup> {
-    add_reply_action_with_id(comment_id, &crate::model::Reply::new_id(), body)
+    add_reply_action_with_id(comment_id, &crate::model::new_id(), body)
 }
 
 /// A reply with its already-minted durable id.

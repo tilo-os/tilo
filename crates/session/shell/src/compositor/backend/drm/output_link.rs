@@ -174,6 +174,10 @@ pub(super) struct OutputLink {
     /// active with the same mode changes nothing; from off it retrains the
     /// link and re-enables the panel.
     remodeset: bool,
+    /// The driver refused to re-light the CRTC with its routing and mode
+    /// kept, and why: the link modesets it from scratch instead. Taken by
+    /// the scanout for its journal ([`Self::take_relight_refusal`]).
+    relight_refused: Option<String>,
 }
 
 impl OutputLink {
@@ -190,7 +194,14 @@ impl OutputLink {
             failure: None,
             redo_owed: false,
             remodeset: false,
+            relight_refused: None,
         }
+    }
+
+    /// Why the driver refused the last re-light that kept the routing and
+    /// mode, once: the full modeset that replaced it is already committed.
+    pub(super) fn take_relight_refusal(&mut self) -> Option<String> {
+        self.relight_refused.take()
     }
 
     /// The output may present: lit, proven up, nothing of the link's own
@@ -312,7 +323,18 @@ impl OutputLink {
             }
             Err(error) if retry_later(&error) => {}
             Err(error) => match change {
-                LinkChange::On { .. } => {
+                LinkChange::On { full: false } => {
+                    // Waking a CRTC switched off by DPMS keeps its routing
+                    // and mode, and some drivers refuse that commit after a
+                    // blank (amdgpu driving a hybrid laptop's panel did,
+                    // once, and the panel stayed dark for good). The full
+                    // modeset is what a fresh output commits: try that
+                    // before failing the output.
+                    self.relight_refused = Some(error.to_string());
+                    self.full = true;
+                    self.advance(device, flip_unread);
+                }
+                LinkChange::On { full: true } => {
                     self.failure = Some(LinkFailure::Refused(error.to_string()));
                 }
                 LinkChange::Probe => {
@@ -614,12 +636,14 @@ mod tests {
         commits: RefCell<Vec<LinkChange>>,
         /// The errno the next commits answer with, until cleared.
         refuse: Cell<Option<i32>>,
+        /// The errno only the next commit answers with.
+        refuse_once: Cell<Option<i32>>,
         vblank: Cell<Option<u32>>,
     }
 
     impl LinkDevice for FakeCrtc {
         fn commit(&self, change: LinkChange) -> io::Result<()> {
-            if let Some(errno) = self.refuse.get() {
+            if let Some(errno) = self.refuse.get().or_else(|| self.refuse_once.take()) {
                 return Err(io::Error::from_raw_os_error(errno));
             }
             self.commits.borrow_mut().push(change);
@@ -902,6 +926,87 @@ mod tests {
         assert_eq!(
             crtc.commits.borrow().last(),
             Some(&LinkChange::On { full: true })
+        );
+    }
+
+    /// A link lit and proven up on `crtc`, its vblank counter at `at`.
+    fn lit(crtc: &FakeCrtc, at: u32) -> OutputLink {
+        let mut link = OutputLink::new();
+        link.service(crtc, false);
+        link.complete(at, crtc);
+        assert_eq!(
+            link.complete(at.wrapping_add(1), crtc),
+            Completion::Link(LinkStep::Up)
+        );
+        link
+    }
+
+    #[test]
+    fn a_wake_relights_both_cards_when_the_second_refuses_its_first_power_on() {
+        // A hybrid laptop: the HDMI output on the discrete card, the panel
+        // on the integrated one. After the idle blank the integrated card
+        // refused the panel's wake commit once; the panel must still light.
+        let hdmi = counting(100);
+        let panel = counting(500);
+        let mut hdmi_link = lit(&hdmi, 100);
+        let mut panel_link = lit(&panel, 500);
+
+        // The blank.
+        hdmi_link.want(Power::Off, &hdmi, false);
+        panel_link.want(Power::Off, &panel, false);
+        assert_eq!(
+            hdmi_link.complete(102, &hdmi),
+            Completion::Link(LinkStep::Off)
+        );
+        assert_eq!(
+            panel_link.complete(502, &panel),
+            Completion::Link(LinkStep::Off)
+        );
+
+        // The wake: the panel's card refuses its first power-on commit.
+        panel.refuse_once.set(Some(libc::EINVAL));
+        hdmi_link.arm_wake_redo();
+        panel_link.arm_wake_redo();
+        hdmi_link.want(Power::On, &hdmi, false);
+        panel_link.want(Power::On, &panel, false);
+        assert_eq!(
+            hdmi.commits.borrow().last(),
+            Some(&LinkChange::On { full: false })
+        );
+        assert_eq!(panel_link.failure(), None, "one refusal does not fail it");
+        assert!(
+            panel_link.take_relight_refusal().is_some(),
+            "the refusal is kept for the journal"
+        );
+        assert_eq!(
+            panel.commits.borrow().last(),
+            Some(&LinkChange::On { full: true }),
+            "the panel is modeset from scratch instead"
+        );
+
+        for (link, crtc, at) in [(&mut hdmi_link, &hdmi, 103), (&mut panel_link, &panel, 503)] {
+            crtc.vblank.set(Some(at));
+            assert_eq!(link.complete(at, crtc), Completion::Link(LinkStep::Pending));
+            assert_eq!(link.complete(at + 1, crtc), Completion::Link(LinkStep::Up));
+            assert!(link.presentable());
+        }
+    }
+
+    #[test]
+    fn a_refused_relight_and_a_refused_full_modeset_fail_the_output() {
+        let crtc = counting(30);
+        let mut link = lit(&crtc, 30);
+        link.want(Power::Off, &crtc, false);
+        link.complete(32, &crtc);
+        crtc.refuse.set(Some(libc::EINVAL));
+        link.want(Power::On, &crtc, false);
+        assert!(matches!(link.failure(), Some(LinkFailure::Refused(_))));
+        crtc.refuse.set(None);
+        link.service(&crtc, false);
+        assert_eq!(
+            crtc.commits.borrow().last(),
+            Some(&LinkChange::Off),
+            "nothing is committed again once both were refused"
         );
     }
 

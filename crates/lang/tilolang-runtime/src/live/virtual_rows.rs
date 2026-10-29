@@ -11,14 +11,18 @@
 //! The rows follow their collection's steps as the loops of other containers do. When the
 //! boundary holding the list runs again, the rows built that still stand are kept by key, and
 //! if what the rows are made of changed (steps that did not fit, another list of values) the
-//! steps from the rows the host holds to the new ones are found by key. Rows made of another
+//! steps from the rows the host holds to the new ones are found by key. Rows of a filtered or
+//! sorted query follow it the same way: a change names the items it touched, the store says
+//! where each was in the listing the rows stand for and where it is now
+//! ([`crate::store::moved_steps`]), and those are the steps, so a post that brings one item to
+//! the top of 100,000 reads the pages of that item, not the list's. Rows made of another
 //! query (a filter or an order chosen) are new rows: the host reads them anew, as it reads a
 //! list new to the tree, and choosing a filter costs the rows it shows, not the collection's.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::{Bound, BoundId, Builder, Live, Pending};
+use super::{Bound, BoundId, Builder, Live, Pending, Steps};
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::render::{RowSource, RowsOf, VirtualRows, item_key};
@@ -277,7 +281,18 @@ impl Live {
             return Ok(false);
         };
         let parent = self.keys_at(&at);
-        let mut splices = step.splices.iter().peekable();
+        let found;
+        let step_splices = match &step.steps {
+            Steps::Splices(splices) => splices,
+            Steps::Moved(ids) => {
+                let Some(steps) = self.moved_in_query(core, list, &step.rows, ids) else {
+                    return Ok(false);
+                };
+                found = steps;
+                &found
+            }
+        };
+        let mut splices = step_splices.iter().peekable();
         while let Some(splice) = splices.next() {
             let patch = match splice {
                 // A removal and an insertion of the same item: the row moves, kept as it is.
@@ -348,6 +363,32 @@ impl Live {
         }
         self.place_built(list, &at);
         Ok(true)
+    }
+
+    /// The steps that take the rows of `list`, a query of a collection (filtered or sorted), from
+    /// the listing they stand for to the query's listing now, when only the items `ids` came,
+    /// went or moved: each found where it was and where it is, which reads a page or two per
+    /// item whatever the listing's length. `None` when the rows are not of that query, or a
+    /// listing cannot say where an item is.
+    fn moved_in_query(
+        &self,
+        core: &Core,
+        list: &str,
+        rows: &crate::render::LoopRows,
+        ids: &std::collections::BTreeSet<String>,
+    ) -> Option<Vec<Splice>> {
+        let Rows::Coll {
+            coll,
+            listing: before,
+        } = &self.lists.get(list)?.rows
+        else {
+            return None;
+        };
+        if !Rc::ptr_eq(coll, &rows.coll) && **coll != *rows.coll {
+            return None;
+        }
+        let now = core.coll_listing(&rows.coll).ok()?;
+        crate::store::moved_steps(before, &now, ids.iter().map(String::as_str))
     }
 
     /// Move the row keyed `key` from index `from` to `to` among the rows of `list`, its node

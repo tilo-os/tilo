@@ -7,23 +7,6 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// Open the session menu and optionally arm Shut down, then pin its
-    /// entrance animation so deterministic screenshots capture the resting
-    /// production surface rather than a wall-clock-dependent intermediate.
-    pub fn force_power_menu_for_visual_test(&mut self, select_shutdown: bool) {
-        self.layers.power_menu.open();
-        if select_shutdown {
-            use winit::keyboard::{Key, NamedKey};
-            for _ in 0..5 {
-                let _ = self
-                    .layers
-                    .power_menu
-                    .key(&Key::Named(NamedKey::ArrowDown), false);
-            }
-        }
-        self.layers.power_menu.force_settled_for_visual_test();
-    }
-
     /// Folds every reading the quick-settings workers delivered into
     /// chrome state. Never blocks — the reads happen on a worker, since
     /// a shell-out on the paint path froze the desktop. Each field
@@ -257,7 +240,7 @@ impl ShellOverlayHost {
     pub(super) fn apply_qs_volume(
         &self,
         st: &mut crate::shell::chrome_state::ChromeState,
-        volume: Option<os_actions::VolumeState>,
+        volume: Option<media::audio::default_node::VolumeState>,
     ) {
         let Some(volume) = volume else {
             return;
@@ -1107,10 +1090,6 @@ impl ShellOverlayHost {
             }
             tilo_quick_settings::QsLevel::BluetoothDetails(_) => Vec::new(),
         }
-    }
-
-    pub fn power_menu_semantic_rects(&self) -> Vec<(&'static str, Rect)> {
-        self.layers.power_menu.action_rects(self.overlay_area())
     }
 
     /// May the local user invite into the room they're looking at? Asked

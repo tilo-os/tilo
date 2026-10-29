@@ -44,11 +44,11 @@ impl VideoEditorApp {
     /// the person chooses.
     pub(super) fn open_project_file(
         &mut self,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut Cx,
     ) -> ui::framework::EffectAnswer {
         if let Some(path) = path {
-            let path = PathBuf::from(path);
+            let path = path.into_path_buf();
             let read = crate::project_file::load(&path);
             return self.bring_in_project(read, &path, path.parent(), cx);
         }
@@ -158,7 +158,7 @@ impl VideoEditorApp {
     /// `path`, or where the person chooses.
     pub(super) fn export_project_file(
         &mut self,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut Cx,
     ) -> ui::framework::EffectAnswer {
         let bytes = crate::project_file::encode(&self.project).map_err(|e| e.to_string())?;
@@ -177,7 +177,7 @@ impl VideoEditorApp {
                 },
             ));
         };
-        let path = PathBuf::from(path);
+        let path = path.into_path_buf();
         // A plain write rather than write-temp-then-rename: under a strict
         // sandbox the grant is for the file chosen, not for siblings beside
         // it. The header's length is what catches a write cut short.

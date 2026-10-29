@@ -1458,13 +1458,10 @@ impl BridgeState {
                 rpc_kind,
                 rpc_error,
                 rpc_error_truncated,
-                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
+                "collab: collaboration stopped: {direction}"
             );
         } else {
-            tracing::error!(
-                direction,
-                "collab: bounded bridge overloaded or disconnected; disabling collaboration"
-            );
+            tracing::error!(direction, "collab: collaboration stopped: {direction}");
         }
         // A derailed worker has no reader left for the answer: publish it.
         if !first {
@@ -10383,7 +10380,7 @@ mod tests {
     }
 
     /// A route the channel service answered as waiting, or as unavailable
-    /// (no steward known yet), is told when that changes: it is not asked
+    /// (its room's governance unknown yet), is told when that changes: it is not asked
     /// about on a timer while the broker pushes, and a pushed change asks.
     #[test]
     #[cfg(unix)]

@@ -12,10 +12,10 @@
 //! Overwrite mode keeps the file's length, so a paste that would change it is
 //! refused with the fix named, exactly as a replacement of another length is.
 
-use super::HexView;
+use super::Editor;
 use crate::model::{ChangesLength, Column, EditMode};
 
-impl HexView {
+impl Editor {
     /// The selection as the clipboard text of the focus mode, with how many
     /// bytes it covers. `None` when nothing is selected.
     fn selection_as_text(&self) -> Option<(String, usize)> {

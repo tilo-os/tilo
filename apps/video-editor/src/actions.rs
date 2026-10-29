@@ -57,8 +57,8 @@ pub enum VideoEditorEffect {
     /// Import media.
     #[effect(job)]
     Import {
-        #[param("Direct filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Open project file.
     ///
@@ -66,8 +66,8 @@ pub enum VideoEditorEffect {
     /// what the timeline holds; Undo takes it back.
     #[effect(job, cancellable, opens_path = "qvp")]
     OpenProjectFile {
-        #[param("Direct filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Export project file.
     ///
@@ -76,8 +76,8 @@ pub enum VideoEditorEffect {
     /// is a copy of it.
     #[effect(job, cancellable, risk = "project_file_risk")]
     ExportProjectFile {
-        #[param("Direct filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Export video.
     ///
@@ -85,8 +85,8 @@ pub enum VideoEditorEffect {
     /// other.
     #[effect(cancellable)]
     Export {
-        #[param("Direct export path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute export path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Cancel export.
     #[effect(destructive)]

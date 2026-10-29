@@ -27,6 +27,21 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+/// Where a `PipeWire` client connects: `PIPEWIRE_REMOTE` (`pipewire-0`
+/// unless set), in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR` unless
+/// it is a path of its own. Watching it tells a daemon that is not running
+/// from one that cannot be watched.
+pub fn pipewire_socket() -> Option<std::path::PathBuf> {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    let remote =
+        std::path::PathBuf::from(set("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into()));
+    if remote.is_absolute() {
+        return Some(remote);
+    }
+    let directory = set("PIPEWIRE_RUNTIME_DIR").or_else(|| set("XDG_RUNTIME_DIR"))?;
+    Some(std::path::PathBuf::from(directory).join(remote))
+}
+
 /// How long after the first change of a burst the watch reports it.
 pub const DEBOUNCE: Duration = Duration::from_millis(50);
 

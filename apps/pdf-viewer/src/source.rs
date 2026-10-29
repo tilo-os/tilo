@@ -57,8 +57,8 @@ use vello::peniko::{Blob, ImageData as PenikoImage};
 
 use crate::markup::{ImportedPage, PagePlanEntry};
 use crate::model::{
-    AnnoKind, Annotation, Comment, Document, FormEntry, MarkupStyle, OutlineItem, PtRect,
-    Signature, SignatureInk,
+    AnnoKind, Annotation, Document, FormEntry, MarkupStyle, OutlineItem, PtRect, Signature,
+    SignatureInk, Thread,
 };
 use crate::text_layer::PageText;
 use ui::lock::MutexRecover as _;
@@ -1028,10 +1028,10 @@ impl RasterBackend {
         // Threads: every comment pinned to an annotation, oldest first. The
         // first comment's body is the annotation's text; its replies, and
         // any later comment, are written as replies to it.
-        let mut threads: HashMap<&str, Vec<&Comment>> = HashMap::new();
-        for c in &markup.comments {
-            if let Some(anno) = c.anno_id.as_deref() {
-                threads.entry(anno).or_default().push(c);
+        let mut threads: HashMap<&str, Vec<&Thread>> = HashMap::new();
+        for thread in &markup.comments {
+            if let Some(anno) = thread.pinned() {
+                threads.entry(anno).or_default().push(thread);
             }
         }
         let adopted: HashMap<&str, &crate::adopt::AdoptedEntry> =
@@ -1046,7 +1046,10 @@ impl RasterBackend {
                     entry.parent.is_none()
                         && crate::adopt::thread_print(
                             a,
-                            threads.get(a.id.as_str()).and_then(|t| t.first().copied()),
+                            threads
+                                .get(a.id.as_str())
+                                .and_then(|t| t.first())
+                                .map(|t| &t.comment),
                         ) == entry.print
                         && threads.get(a.id.as_str()).is_none_or(|t| t.len() <= 1)
                 })
@@ -1081,7 +1084,7 @@ impl RasterBackend {
                     continue;
                 }
                 let (r, g, b) = a.color.rgb();
-                let thread: &[&Comment] = threads.get(a.id.as_str()).map_or(&[], Vec::as_slice);
+                let thread: &[&Thread] = threads.get(a.id.as_str()).map_or(&[], Vec::as_slice);
                 let reply_at = match &a.kind {
                     AnnoKind::Markup { quads, .. } => {
                         quads.first().map_or((0.0, 0.0), |q| (q.x, q.y + q.h))
@@ -1157,7 +1160,7 @@ impl RasterBackend {
                     color: tilo_pdf::Rgba::new(r, g, b, 255),
                     author: a.author.clone(),
                     contents: contents
-                        .or_else(|| first.map(|c| c.body.clone()))
+                        .or_else(|| first.map(|t| t.comment.text.clone()))
                         .unwrap_or_default(),
                     name: name.clone(),
                     modified: pdf_date(a.created_ms),
@@ -1165,22 +1168,21 @@ impl RasterBackend {
                     reply_type: tilo_pdf::ReplyType::Reply,
                 });
                 // Replies, as reply annotations anchored where the thread is.
-                let mut replies: Vec<(String, &str, &str)> = Vec::new();
+                let mut replies: Vec<(&str, &str, &str)> = Vec::new();
                 if let Some(first) = first {
                     replies.extend(
                         first
-                            .replies
-                            .iter()
-                            .map(|r| (r.id.clone(), r.author.as_str(), r.body.as_str())),
+                            .replies()
+                            .map(|(id, r)| (id, r.author.as_str(), r.text.as_str())),
                     );
                 }
                 for later in later_comments {
-                    replies.push((later.id.clone(), later.author.as_str(), later.body.as_str()));
+                    let comment = &later.comment;
+                    replies.push((&later.id, comment.author.as_str(), comment.text.as_str()));
                     replies.extend(
                         later
-                            .replies
-                            .iter()
-                            .map(|r| (r.id.clone(), r.author.as_str(), r.body.as_str())),
+                            .replies()
+                            .map(|(id, r)| (id, r.author.as_str(), r.text.as_str())),
                     );
                 }
                 for (id, author, body) in replies {
@@ -1192,7 +1194,7 @@ impl RasterBackend {
                         color: tilo_pdf::Rgba::new(r, g, b, 255),
                         author: author.to_string(),
                         contents: body.to_string(),
-                        name: pdf_name(&id),
+                        name: pdf_name(id),
                         modified: String::new(),
                         in_reply_to: Some(name.clone()),
                         reply_type: tilo_pdf::ReplyType::Reply,
@@ -1237,7 +1239,7 @@ impl RasterBackend {
 #[derive(Clone, Debug, Default)]
 pub struct ExportMarkup {
     pub annotations: Vec<Annotation>,
-    pub comments: Vec<Comment>,
+    pub comments: Vec<Thread>,
     pub signatures: Vec<Signature>,
     pub form_values: Vec<(String, FormEntry)>,
     /// The durable occurrence id of each displayed page, in order.

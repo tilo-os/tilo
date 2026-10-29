@@ -181,6 +181,15 @@ impl InstalledApp {
         path.is_file().then_some(path)
     }
 
+    /// The ids the signed manifest names as the app's earlier ones (`[package] previously`).
+    /// A claim, not an answer: [`earlier_ids`] says which of them are honoured.
+    #[must_use]
+    pub fn previously(&self) -> Vec<String> {
+        self.signed_manifest()
+            .map(|manifest| manifest.package.previously)
+            .unwrap_or_default()
+    }
+
     fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
         let source = std::fs::read_to_string(&self.manifest_path).ok()?;
         tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()
@@ -199,31 +208,104 @@ pub struct DeclaredActions {
 
 /// Every package `catalog` holds, GUI or not, freshly read. A package whose
 /// manifest cannot be read is skipped, not a failure of the whole
-/// enumeration.
+/// enumeration. An app installed under an id another app took over
+/// ([`earlier_ids`]) is that app now and is not listed again.
 ///
 /// # Errors
 ///
 /// Returns the [`CatalogError`] of a registry that cannot be read.
 pub fn read(catalog: &Catalog) -> Result<Vec<InstalledApp>, CatalogError> {
-    Ok(catalog
-        .list()?
+    let rows = catalog.list()?;
+    let earlier = honoured(catalog, &rows)?;
+    Ok(rows
         .iter()
+        .filter(|row| earlier.successor(&row.id).is_none())
         .filter_map(InstalledApp::from_package)
         .collect())
 }
 
+/// The ids installed apps were published under before (`[package] previously`), as far as the
+/// catalogue believes them: an app takes an earlier id's place only from the publisher that
+/// signed it. Where the earlier id is still installed, the two must have one publisher key;
+/// where it is not, the user's store must have checked that when the app took it over (the same
+/// rule as installing it, [`package_store::TakenOver`]), or the app comes with the system image.
+///
+/// # Errors
+///
+/// Returns the [`CatalogError`] of a registry that cannot be read.
+pub fn earlier_ids(catalog: &Catalog) -> Result<tilo_action_policy::EarlierIds, CatalogError> {
+    honoured(catalog, &catalog.list()?)
+}
+
+fn honoured(
+    catalog: &Catalog,
+    rows: &[InstalledPackage],
+) -> Result<tilo_action_policy::EarlierIds, CatalogError> {
+    let mut out = tilo_action_policy::EarlierIds::new();
+    for row in rows {
+        let claimed = signed_previously(row);
+        if claimed.is_empty() {
+            continue;
+        }
+        let mut believed = Vec::new();
+        for old in claimed {
+            let ok = match rows.iter().find(|other| other.id == old) {
+                Some(installed) => {
+                    !row.publisher_key_hex.is_empty()
+                        && installed.publisher_key_hex == row.publisher_key_hex
+                }
+                None => row.system || catalog.taken_over_by(&old)?.as_deref() == Some(&row.id),
+            };
+            if ok {
+                believed.push(old);
+            }
+        }
+        out.insert(&row.id, believed);
+    }
+    Ok(out)
+}
+
+/// What the signed manifest of `row` names as its earlier ids.
+fn signed_previously(row: &InstalledPackage) -> Vec<String> {
+    std::fs::read_to_string(&row.manifest_path)
+        .ok()
+        .and_then(|source| tilo_app_package::manifest::Manifest::from_toml_str(&source).ok())
+        .map(|manifest| manifest.package.previously)
+        .unwrap_or_default()
+}
+
+/// The installed app that took the place of the earlier id `old` (see [`earlier_ids`]).
+///
+/// # Errors
+///
+/// Returns the [`CatalogError`] of a registry that cannot be read.
+pub fn successor_of(catalog: &Catalog, old: &str) -> Result<Option<InstalledApp>, CatalogError> {
+    let rows = catalog.list()?;
+    let earlier = honoured(catalog, &rows)?;
+    let Some(app) = earlier.successor(old) else {
+        return Ok(None);
+    };
+    Ok(rows
+        .iter()
+        .find(|row| row.id == app)
+        .and_then(InstalledApp::from_package)
+        .filter(|found| found.package_id == app))
+}
+
 /// Read one visible registry row and its manifest. Other installed packages'
-/// manifests do not have to be parsed to resolve a service by identity.
+/// manifests do not have to be parsed to resolve a service by identity. An id
+/// nothing is installed under any more answers the app that took its place
+/// ([`successor_of`]): a window, a grant or a reference written under it opens
+/// that app.
 ///
 /// # Errors
 ///
 /// Returns a catalogue error when either installed store cannot be read.
 pub fn read_one(catalog: &Catalog, app_id: &str) -> Result<Option<InstalledApp>, CatalogError> {
-    Ok(catalog
-        .find(app_id)?
-        .as_ref()
-        .and_then(InstalledApp::from_package)
-        .filter(|app| app.package_id == app_id))
+    match catalog.find(app_id)? {
+        Some(row) => Ok(InstalledApp::from_package(&row).filter(|app| app.package_id == app_id)),
+        None => successor_of(catalog, app_id),
+    }
 }
 
 /// [`read_one`] over the stores the environment names.
@@ -371,6 +453,93 @@ mod tests {
         assert!(!tool.has_gui);
         assert_eq!(tool.display_name, "Tool");
         assert!(tool.offers.is_empty());
+    }
+
+    #[test]
+    fn an_earlier_id_answers_the_app_that_took_it_over_from_its_publisher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("store");
+        std::fs::create_dir_all(&user).unwrap();
+        let tasks = install(
+            tmp.path(),
+            "so.tilo.lang.tasks",
+            &manifest(
+                "id = \"so.tilo.lang.tasks\"\nversion = \"2.0.0\"\nkind = \"app\"\n\
+                 previously = [\"so.tilo.lang.todo\"]",
+                "[entrypoint]\nbin = \"bin/tilolang-app\"\ntype = \"gui\"\n",
+            ),
+        );
+        let row = |package: &InstalledPackage, publisher: &str| {
+            format!(
+                "[[entry]]\nid = {:?}\npayload_root = {:?}\nmanifest_path = {:?}\n\
+                 publisher_key_hex = {publisher:?}\n\n",
+                package.id,
+                package.payload_root.display().to_string(),
+                package.manifest_path.display().to_string(),
+            )
+        };
+        let registry = package_store::Layout::new(&user).registry();
+        let catalog = Catalog::at(&user, None);
+
+        // A claim alone opens nothing: no store checked who signed the earlier id.
+        std::fs::write(&registry, row(&tasks, "aa")).unwrap();
+        assert!(read_one(&catalog, "so.tilo.lang.todo").unwrap().is_none());
+        assert!(earlier_ids(&catalog).unwrap().is_empty());
+
+        // Taken over at install, from the same publisher: the earlier id is the renamed app.
+        std::fs::write(
+            &registry,
+            format!(
+                "{}[[taken-over]]\nid = \"so.tilo.lang.todo\"\nby = \"so.tilo.lang.tasks\"\n",
+                row(&tasks, "aa")
+            ),
+        )
+        .unwrap();
+        let found = read_one(&catalog, "so.tilo.lang.todo").unwrap().unwrap();
+        assert_eq!(found.package_id, "so.tilo.lang.tasks");
+        assert_eq!(found.previously(), ["so.tilo.lang.todo"]);
+        assert_eq!(
+            earlier_ids(&catalog)
+                .unwrap()
+                .successor("so.tilo.lang.todo"),
+            Some("so.tilo.lang.tasks")
+        );
+
+        // Both installed: one publisher makes them one app, listed once under the new id;
+        // another publisher's claim is not believed.
+        let todo = install(
+            tmp.path(),
+            "so.tilo.lang.todo",
+            &manifest(
+                "id = \"so.tilo.lang.todo\"\nversion = \"1.0.0\"\nkind = \"app\"",
+                "[entrypoint]\nbin = \"bin/tilolang-app\"\ntype = \"gui\"\n",
+            ),
+        );
+        std::fs::write(
+            &registry,
+            format!("{}{}", row(&todo, "aa"), row(&tasks, "aa")),
+        )
+        .unwrap();
+        let ids: Vec<String> = read(&catalog)
+            .unwrap()
+            .into_iter()
+            .map(|app| app.package_id)
+            .collect();
+        assert_eq!(ids, ["so.tilo.lang.tasks"]);
+        std::fs::write(
+            &registry,
+            format!("{}{}", row(&todo, "bb"), row(&tasks, "aa")),
+        )
+        .unwrap();
+        assert_eq!(read(&catalog).unwrap().len(), 2);
+        assert!(earlier_ids(&catalog).unwrap().is_empty());
+        assert_eq!(
+            read_one(&catalog, "so.tilo.lang.todo")
+                .unwrap()
+                .unwrap()
+                .package_id,
+            "so.tilo.lang.todo"
+        );
     }
 
     #[test]

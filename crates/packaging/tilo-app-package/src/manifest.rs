@@ -16,7 +16,7 @@ use crate::id::{Kind, PackageId};
 /// missing ones fail TOML decode with a helpful path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
-    /// `[package]` block — id, version, kind, optional runtime.
+    /// `[package]` block — id, version, kind, runtimes.
     pub package: Package,
     /// `[publisher]` block — identity + signature (filled by `tilo-app-package sign`, empty at author time).
     pub publisher: Publisher,
@@ -240,6 +240,12 @@ pub struct Package {
     /// Reverse-DNS identifier — `so.tilo.editor`. Stable across versions;
     /// pinned in CLI/loader/sandbox profile names.
     pub id: String,
+    /// The ids the app was published under before (`previously = ["so.tilo.lang.todo"]`):
+    /// what it keeps of them (its records, grants and windows) is this app's. Signed with the
+    /// manifest, and only honoured for an id the same publisher signed: installing it over an
+    /// app of another publisher's is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previously: Vec<String>,
     /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`. Absent
     /// means derive one from the id's trailing component, which can't
     /// produce e.g. `API` from `api-tester`.
@@ -327,16 +333,21 @@ pub struct Package {
     /// installs the bundle for the apps that name it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provides: Option<String>,
-    /// Further runtime bundles, `<runtime-name>/<version>` each, that the
-    /// launcher mounts read-only at `/run/tilo-runtime/<version>` when they
-    /// are installed and verify. The app starts without a missing one and
-    /// offers to install it: the browser's web engine is one.
+    /// Further runtime bundles, `<runtime-name>/<version>` each, the app
+    /// needs beside its `runtime`: the browser's web engine is one. They are
+    /// part of the app: installing or updating it installs them in the same
+    /// step or not at all, and the launcher mounts each read-only at
+    /// `/run/tilo-runtime/<version>` and refuses to start the app without
+    /// one.
+    ///
+    /// The manifest key is still `optional-runtimes`: renaming it would
+    /// change the package format every device and registry reads.
     #[serde(
         default,
         rename = "optional-runtimes",
         skip_serializing_if = "Vec::is_empty"
     )]
-    pub optional_runtimes: Vec<String>,
+    pub required_runtimes: Vec<String>,
     /// Targets the app is built and published for; absent means
     /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1051,8 +1062,8 @@ pub struct Entrypoint {
     /// package then carries only what that runtime runs (a tilolang app's
     /// compiled module), and the launcher tells the runtime where it is
     /// (`TILO_APP_MODULE`). It must be one of `[package].optional-runtimes`,
-    /// so every reader that offers missing runtimes sees it; unlike those, a
-    /// launch refuses to start without it.
+    /// the app's required runtimes, so it installs with the app like every
+    /// other one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
 }

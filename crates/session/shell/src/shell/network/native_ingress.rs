@@ -188,17 +188,6 @@ impl ShellNetwork {
                 }
                 true
             }
-            NeighbourMsg::MlsGovernanceAck {
-                room: named, ack, ..
-            } => {
-                if RoomId::parse(named) == Some(room) {
-                    self.queue_channel_governance(InboundChannelGovernance::Ack {
-                        room,
-                        ack: ack.clone(),
-                    });
-                }
-                true
-            }
             NeighbourMsg::AppDocument {
                 peer,
                 app_id,
@@ -356,7 +345,7 @@ impl ShellNetwork {
             .is_ok()
     }
     /// Whether `room` is an enrolled room whose records are sealed
-    /// channels its members write themselves (its governor stewards them).
+    /// channels its members write themselves (its governor takes part in them).
     ///
     /// Read from the room's committed enrollment, which names its governor
     /// from the moment the room is installed, never from the tree's
@@ -373,7 +362,7 @@ impl ShellNetwork {
                         .peer()
                         .authority()
                         .capabilities
-                        .stewards_room_channels())
+                        .takes_part_in_room_channels())
                 })
                 .unwrap_or(false)
         })

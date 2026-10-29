@@ -20,7 +20,8 @@ use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Atom, Derived, Id, JsonSchema, Refusal, SearchEntry, resource,
+    self, ActionCx, ActionDecl, Atom, Derived, Id, JsonSchema, NonBlank, Refusal, SearchEntry,
+    resource,
 };
 use ui::widget::Element;
 
@@ -495,14 +496,9 @@ impl Workbook {
     #[action]
     pub fn set_title(
         &mut self,
-        #[param("The spreadsheet's name, as people call it")] title: String,
-    ) -> Result<(), Refusal> {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(Refusal::new("give the workbook a name: `title` is empty"));
-        }
-        self.title = Some(title.to_owned());
-        Ok(())
+        #[param("The spreadsheet's name, as people call it")] title: NonBlank,
+    ) {
+        self.title = Some(title.into_string());
     }
 
     /// Set records: rows written by the headers in row 1.
@@ -970,14 +966,11 @@ impl Workbook {
     pub fn rename_sheet(
         &mut self,
         sheet: &Id,
-        #[param("The new name")] name: String,
+        #[param("The new name")] name: NonBlank,
     ) -> Result<(), Refusal> {
         use crate::refs::{fold_sheet, rename_sheets};
         let sheet = &self.sheet_key(sheet)?;
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a sheet needs a name"));
-        }
+        let name = name.as_str();
         let old = fold_sheet(&self.sheet_mut(sheet)?.name.0);
         // References reach the first sheet of a name: when that is another
         // one, no formula reads this sheet by name.
@@ -1024,7 +1017,6 @@ impl Workbook {
         let sheet = &self.sheet_key(sheet)?;
         let (start, end) = range_of(&range)?;
         let text = annotation(&text)?;
-        let author = cx.author().unwrap_or_default().to_owned();
         let id = cx.id();
         let area = self
             .sheet_mut(sheet)?
@@ -1034,8 +1026,7 @@ impl Workbook {
             sheet: sheet.clone(),
             area,
         };
-        self.comments
-            .push(id, Comment::new(cells, author, String::new(), text));
+        self.comments.push(id, Comment::written(cx, cells, text));
         Ok(())
     }
 
@@ -1048,13 +1039,13 @@ impl Workbook {
         #[param("Reply")] text: String,
     ) -> Result<(), Refusal> {
         let text = annotation(&text)?;
-        let author = cx.author().unwrap_or_default().to_owned();
         let id = cx.id();
+        let reply = Reply::written(cx, text);
         self.comments
             .get_mut(comment)
             .ok_or_else(|| Refusal::new("the comment no longer exists"))?
             .replies
-            .push(id, Reply::new(author, String::new(), text));
+            .push(id, reply);
         Ok(())
     }
 

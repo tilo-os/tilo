@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ui::icons::Icon;
+use ui::prelude::{Model, resource, tilo_resource};
 
 use crate::media::MediumSpec;
 use crate::model::{Artwork, Ground, MarkBody};
@@ -394,7 +395,7 @@ pub fn file_name(title: &str, extension: &str) -> String {
 }
 
 /// An artwork opened or saved lately.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::JsonSchema)]
 pub struct Recent {
     /// Where the file is.
     pub path: String,
@@ -408,15 +409,46 @@ pub struct Recent {
     pub thumbnail: Option<String>,
 }
 
-/// The artworks opened or saved lately, newest first, one per path. Their
-/// paths name files on this device, so the list is a device-local setting.
+/// The artworks one device opened or saved lately, newest first, one per
+/// path.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecentArtworks {
     pub artworks: ui::tilo_resource::Recents<Recent, 8>,
 }
 
-impl ui::storage::SettingsSchema for RecentArtworks {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+tilo_resource::json_model!(RecentArtworks);
+
+/// The artworks opened or saved lately, by device: a record Canvas keeps
+/// beside the artwork in the workspace. Their paths name files on one
+/// device, so each device reads and writes only its own list.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct ArtworkRecents {
+    pub devices: BTreeMap<String, RecentArtworks>,
+}
+
+#[resource(kind = "canvas.recent-artworks", label = "Recent artworks")]
+impl ArtworkRecents {
+    /// `recent` was opened or saved on `device`: it moves to the front.
+    #[action(housekeeping)]
+    pub fn remember(&mut self, device: String, recent: Recent) {
+        self.devices.entry(device).or_default().remember(recent);
+    }
+
+    /// The artwork at `path` on `device` moved or was removed.
+    #[action(housekeeping)]
+    pub fn forget(&mut self, device: String, path: ui::tilo_resource::AbsolutePath) {
+        if let Some(recents) = self.devices.get_mut(&device) {
+            recents.forget(&path.to_string_lossy());
+        }
+    }
+}
+
+impl ArtworkRecents {
+    /// The artworks `device` opened or saved lately.
+    #[must_use]
+    pub fn on(&self, device: &str) -> RecentArtworks {
+        self.devices.get(device).cloned().unwrap_or_default()
+    }
 }
 
 impl RecentArtworks {
@@ -556,14 +588,8 @@ pub fn save(
     let mut answer = match &save.path {
         None => serde_json::json!({"content": crate::resource::store(&bytes)?, "bytes": size}),
         Some(path) => {
-            let path = std::path::Path::new(path);
-            if !path.is_absolute()
-                || path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION)
-            {
-                return Err(format!(
-                    "path is an absolute path ending in .{EXTENSION}, not {}",
-                    path.display()
-                ));
+            if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
+                return Err(format!("path ends in .{EXTENSION}, not {path}"));
             }
             write(path, &bytes)?;
             serde_json::json!({"path": path.display().to_string(), "bytes": size})
@@ -578,29 +604,32 @@ pub fn save(
     Ok(answer)
 }
 
-/// Write an export's `bytes` to `path`, an absolute path ending in one of
+/// Write an export's `bytes` to `path`, a path ending in one of
 /// `extensions`; answers the path written.
 ///
 /// # Errors
 /// Says why the path is not one or cannot be written.
-pub fn export_to(path: &str, extensions: &[&str], bytes: &[u8]) -> Result<String, String> {
-    let file = std::path::Path::new(path);
-    let extension = file
+pub fn export_to(
+    path: &std::path::Path,
+    extensions: &[&str],
+    bytes: &[u8],
+) -> Result<String, String> {
+    let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
-    if !file.is_absolute()
-        || !extension
-            .as_deref()
-            .is_some_and(|extension| extensions.contains(&extension))
+    if !extension
+        .as_deref()
+        .is_some_and(|extension| extensions.contains(&extension))
     {
         return Err(format!(
-            "path is an absolute path ending in .{}, not {path}",
-            extensions.join(" or .")
+            "path ends in .{}, not {}",
+            extensions.join(" or ."),
+            path.display()
         ));
     }
-    write(file, bytes)?;
-    Ok(file.display().to_string())
+    write(path, bytes)?;
+    Ok(path.display().to_string())
 }
 
 /// Write `bytes` to the file at `path`, replacing it.

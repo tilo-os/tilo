@@ -101,8 +101,7 @@ mod window_bar;
 
 #[cfg(test)]
 pub(crate) use engine_runtime::test_window_engine;
-pub(crate) use engine_runtime::{ENGINE_INSTALL_URI, EngineProblem};
-use engine_runtime::{default_engine, engine_problem_state};
+use engine_runtime::{default_engine, engine_failed_state};
 #[cfg(test)]
 use engine_runtime::{engine_or_error, unavailable_engine};
 
@@ -709,24 +708,16 @@ pub struct BrowserWidget {
     pending_controls: std::collections::VecDeque<ControlInvocation>,
     /// Set when live browsing has no running engine; the page area explains
     /// it instead of showing a blank page.
-    engine_problem: Option<EngineProblem>,
-    /// The engine being fetched from the host, when it is missing.
-    engine_setup: Option<crate::engine_setup::EngineSetup>,
-    /// Whether the first use has already asked for the engine.
-    engine_setup_tried: bool,
-    /// What the page area last drew of the setup.
-    engine_setup_shown: Option<crate::engine_setup::Setup>,
-    /// Where the host is asked for the engine; a test supplies its own.
-    engine_installer: fn() -> Option<Box<dyn ui::webview::chromium::install::EngineInstaller>>,
+    engine_failed: bool,
 }
 
 impl BrowserWidget {
-    /// Live-mode widget on the Chromium engine runtime. Without the runtime
-    /// the page area offers to install it.
+    /// Live-mode widget on the Chromium engine runtime. When the engine does
+    /// not start the page area says so.
     pub fn new_with_mode(mode: BrowsingMode) -> Self {
-        let (engine, problem) = default_engine(mode);
+        let (engine, failed) = default_engine(mode);
         let mut widget = Self::with_engine_mode(engine, false, mode);
-        widget.engine_problem = problem;
+        widget.engine_failed = failed;
         widget
     }
 
@@ -1287,7 +1278,7 @@ impl BrowserWidget {
     /// The content store a picture of the page is kept in: opaque bytes by
     /// hash, which the agent's answer names, so what a page shows as pixels
     /// reaches the reader who can see them. The store the host lent the
-    /// window (`SurfaceCx::content`), so the bytes land where the content
+    /// window (`RecordEnv::content`), so the bytes land where the content
     /// service reads them from.
     pub(crate) fn attach_content(&mut self, content: ui::content::ContentStore) {
         self.content = Some(content);
@@ -1514,11 +1505,7 @@ impl BrowserWidget {
             pending_commands: ui::LocalState::new(Vec::new()),
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
-            engine_problem: None,
-            engine_setup: None,
-            engine_setup_tried: false,
-            engine_setup_shown: None,
-            engine_installer: ui::webview::chromium::install::host_installer,
+            engine_failed: false,
         }
     }
 
@@ -1598,15 +1585,9 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// Document edits bound to the row `row`: the page's row turns tracker
-    /// protection on or off for the site it shows.
-    pub(crate) fn row_declarations(
-        &self,
-        row: &str,
-    ) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
-        if row != "browser.page" {
-            return Vec::new();
-        }
+    /// Document edits bound to the page's row: it turns tracker protection
+    /// on or off for the site it shows.
+    fn page_row_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
         let Some(origin) = crate::site_controls::origin(&self.current_uri) else {
             return Vec::new();
         };
@@ -1641,7 +1622,7 @@ impl BrowserWidget {
             || self.show_settings
             || self.show_library
             || self.load_error.is_some()
-            || self.engine_problem.is_some()
+            || self.engine_failed
         {
             return None;
         }
@@ -1942,56 +1923,8 @@ impl BrowserWidget {
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
             }
-            BrowserOperation::InstallEngine => {
-                if self.engine_problem != Some(EngineProblem::NotInstalled) {
-                    return Err("the browser engine is already installed".into());
-                }
-                // Under way: nothing to start. Failed: try again.
-                if self.engine_setup.as_ref().is_none_or(|setup| {
-                    matches!(setup.state(), crate::engine_setup::Setup::Failed(_))
-                }) && !self.begin_engine_setup()
-                {
-                    // No host to ask (outside Tilo): the Store is the way.
-                    ui::portal::open_uri_detached(ENGINE_INSTALL_URI);
-                }
-            }
         }
         Ok(())
-    }
-
-    /// Ask the host for the engine and follow it. Whether there was a host
-    /// to ask.
-    fn begin_engine_setup(&mut self) -> bool {
-        self.engine_setup = (self.engine_installer)().map(|installer| {
-            crate::engine_setup::EngineSetup::start(
-                installer,
-                Some(self.initial_url.clone()).filter(|url| is_supported_web_url(url)),
-                ui::WakeHandle::new(),
-            )
-        });
-        self.engine_setup_shown = None;
-        self.structure_dirty = true;
-        self.engine_setup.is_some()
-    }
-
-    /// First use without the engine installs it: asked for once when the
-    /// window opens, followed each frame so the page area shows progress.
-    fn drive_engine_setup(&mut self) {
-        if self.engine_problem != Some(EngineProblem::NotInstalled) {
-            return;
-        }
-        if !self.engine_setup_tried {
-            self.engine_setup_tried = true;
-            self.begin_engine_setup();
-        }
-        let now = self
-            .engine_setup
-            .as_ref()
-            .map(crate::engine_setup::EngineSetup::state);
-        if now != self.engine_setup_shown {
-            self.engine_setup_shown = now;
-            self.structure_dirty = true;
-        }
     }
 
     fn page_loading(&self) -> bool {
@@ -2409,9 +2342,10 @@ impl BrowserWidget {
     /// Name the visit just recorded without a title, once the page it
     /// recorded has one.
     fn name_untitled_visit(&mut self) {
-        if self.title.trim().is_empty()
-            || self.untitled_visit.as_deref() != Some(self.current_uri.as_str())
-        {
+        let Some(title) = ui::tilo_resource::NonBlank::parse(&self.title) else {
+            return;
+        };
+        if self.untitled_visit.as_deref() != Some(self.current_uri.as_str()) {
             return;
         }
         self.untitled_visit = None;
@@ -2419,7 +2353,7 @@ impl BrowserWidget {
             let name = crate::history::BrowsingHistory::NAME_VISIT.with(
                 crate::history::browsing_history::NameVisit {
                     url: self.current_uri.clone(),
-                    title: self.title.clone(),
+                    title,
                 },
             );
             if let Err(error) = record.invoke(&name) {
@@ -2888,12 +2822,8 @@ impl BrowserWidget {
             )
         } else if self.show_library {
             self.build_library_composition(theme, &notices)
-        } else if let Some(problem) = self.engine_problem {
-            engine_problem_state(
-                problem,
-                self.unit_binding("browser.page", "install-engine"),
-                self.engine_setup_shown.as_ref(),
-            )
+        } else if self.engine_failed {
+            engine_failed_state()
         } else if let Some(error) = &self.load_error {
             let heading = if self.address_error_active {
                 load_failure::address_failed_title()
@@ -3335,11 +3265,12 @@ impl BrowserWidget {
                     if self.browsing_mode.persists_personal_state()
                         && !self.history_paused()
                         && self.current_uri.starts_with("http")
+                        && let Some(url) = ui::tilo_resource::NonBlank::parse(&self.current_uri)
                         && let Some(record) = &self.person_history
                     {
                         let visit = crate::history::BrowsingHistory::VISIT.with(
                             crate::history::browsing_history::Visit {
-                                url: self.current_uri.clone(),
+                                url,
                                 title: self.title.clone(),
                                 at: tilo_clock::unix_now(),
                             },
@@ -4180,10 +4111,6 @@ impl BrowserWidget {
         });
         *self.content_rect.lock_recover() = frac;
     }
-}
-
-fn megabytes(bytes: u64) -> String {
-    ui::format::size(bytes)
 }
 
 fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
@@ -5184,6 +5111,55 @@ impl Widget for BrowserWidget {
     }
 }
 
+/// What a window publishes of its page: the rows it shows, the edits
+/// bound to the page and its row, the question the page waits on, and what
+/// the search finds of the history, downloads and personal bookmarks.
+pub(crate) struct PagePublication {
+    pub(crate) rows: Vec<ui::framework::LiveRow>,
+    pub(crate) bound: Vec<ui::tilo_resource::ActionDecl<Browser>>,
+    page_row: Vec<ui::tilo_resource::ActionDecl<Browser>>,
+    question: Option<ui::framework::LiveRow>,
+    search_index: crate::search_provider::BrowserSearchIndex,
+    personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
+}
+
+impl PagePublication {
+    /// The document edits bound to the row `row`.
+    pub(crate) fn row_edits(&self, row: &str) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
+        if row == "browser.page" {
+            self.page_row.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The row a history or download hit opens, beyond the published page
+    /// of rows too.
+    pub(crate) fn row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id == crate::page_dialogs::ROW {
+            return self.question.clone();
+        }
+        self.search_index
+            .resource(id)
+            .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
+            .map(ui::framework::LiveRow::from_resource)
+    }
+
+    /// Every history page, download and personal bookmark as a search entry.
+    pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        search_entries(&self.search_index, &self.personal_bookmarks)
+    }
+}
+
+fn search_entries(
+    index: &crate::search_provider::BrowserSearchIndex,
+    personal: &crate::personal_bookmarks::PersonalBookmarkState,
+) -> Vec<ui::tilo_resource::SearchEntry> {
+    let mut entries = index.entries();
+    entries.extend(crate::personal_bookmarks::search(personal));
+    entries
+}
+
 impl BrowserWidget {
     /// The index of history pages and downloads, shared with the opener of
     /// their search hits.
@@ -5192,26 +5168,24 @@ impl BrowserWidget {
     }
 
     /// Every history page and download as a search entry.
+    #[cfg(test)]
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        let mut entries = self.search_index.entries();
-        entries.extend(crate::personal_bookmarks::search(&self.personal_bookmarks));
-        entries
+        search_entries(&self.search_index, &self.personal_bookmarks)
     }
 
-    /// The row a history or download hit opens, beyond the published page
-    /// of rows too.
-    pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        // The page's question, asked since the rows were last published.
-        if id == crate::page_dialogs::ROW {
-            return self
+    /// What the window publishes of this page as it is now.
+    pub(crate) fn publication(&self) -> PagePublication {
+        PagePublication {
+            rows: self.live_rows(),
+            bound: self.page_declarations(),
+            page_row: self.page_row_declarations(),
+            question: self
                 .page_dialogs
                 .resource()
-                .map(ui::framework::LiveRow::from_resource);
+                .map(ui::framework::LiveRow::from_resource),
+            search_index: self.search_index.clone(),
+            personal_bookmarks: Rc::clone(&self.personal_bookmarks),
         }
-        self.search_index
-            .resource(id)
-            .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
-            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// What only this window knows, as rows beneath the browser resource:
@@ -5289,9 +5263,6 @@ impl BrowserWidget {
             }
             .bound_asking(&["url", "background"]),
         );
-        if self.engine_problem == Some(EngineProblem::NotInstalled) {
-            page.actions.push(E::InstallEngine.bound());
-        }
         let mut pip = E::PictureInPicture.bound();
         if self.active_pip {
             pip.type_mut().label = "Close Picture in Picture".into();
@@ -5904,7 +5875,6 @@ impl BrowserWidget {
         self.poll_continuity();
         self.follow_history();
         self.follow_personal_bookmarks();
-        self.drive_engine_setup();
         self.apply_engine_events();
         self.apply_panel_events();
         self.sync_window_toolbar();

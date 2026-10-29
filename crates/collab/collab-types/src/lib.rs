@@ -113,9 +113,9 @@ pub use document_transfer::{
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use mls_governance::{
-    Admission, ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MLS_ACCESS_VERSION,
-    MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-    MlsGovernanceContext, MlsGovernanceError, MlsGovernanceFrameV1,
+    ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MAX_COMMIT_DEVICES,
+    MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAction,
+    MlsGovernanceError, MlsGovernanceFrame,
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
@@ -142,6 +142,7 @@ pub use redaction::{
 };
 pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
+pub use tilo_action_policy::{member_record, member_record_id};
 pub use validator::{
     ChannelState, DEFAULT_ROOM, ValidationError, document_node, named_record_of_channel,
     named_records, pattern_read_witnesses, validate_admitted_inbound_op, validate_inbound_op,

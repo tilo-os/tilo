@@ -2,16 +2,14 @@
 //! open request, a confirmation or a row invokes — connect, forget a
 //! credential, trust a host key — and the outcome reported back for each.
 
-use std::path::PathBuf;
-
 use crate::model::ConnectionId;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::{TransferDirection, transfer_name};
 use crate::view::Destination;
 
-use super::{Action, LiveSession, PendingResourceOperation, RemoteApp, owner};
+use super::{Action, LiveSession, PendingResourceOperation, Store, owner};
 
-impl RemoteApp {
+impl Store {
     /// The open session, published as a live row beside the saved
     /// connections: disconnect, send text, and the SSH host-key decisions.
     pub(crate) fn live_connection_rows(&self) -> Vec<ui::framework::LiveRow> {
@@ -38,7 +36,7 @@ impl RemoteApp {
     pub(crate) fn answer_effect(
         &mut self,
         effect: crate::actions::RemoteEffect,
-        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote>,
     ) -> ui::framework::EffectAnswer {
         use crate::actions::RemoteEffect;
         let done = || Ok(ui::framework::Effected::done());
@@ -94,16 +92,13 @@ impl RemoteApp {
                 local_path,
                 remote_path,
             } => {
-                if local_path.trim().is_empty() {
-                    return Err("the local path is empty".into());
-                }
                 if remote_path.trim().is_empty() {
                     return Err("the remote path is empty".into());
                 }
                 self.start_file_transfer(
                     connection,
                     TransferDirection::Put {
-                        local_path: PathBuf::from(local_path),
+                        local_path: local_path.into_path_buf(),
                         remote_path,
                     },
                     cx,
@@ -117,14 +112,11 @@ impl RemoteApp {
                 if remote_path.trim().is_empty() {
                     return Err("the remote path is empty".into());
                 }
-                if local_path.trim().is_empty() {
-                    return Err("the local path is empty".into());
-                }
                 self.start_file_transfer(
                     connection,
                     TransferDirection::Fetch {
                         remote_path,
-                        local_path: PathBuf::from(local_path),
+                        local_path: local_path.into_path_buf(),
                     },
                     cx,
                 )
@@ -148,7 +140,7 @@ impl RemoteApp {
         &mut self,
         connection: ConnectionId,
         direction: TransferDirection,
-        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote>,
     ) -> ui::framework::EffectAnswer {
         if self.pending_resource_operation.is_some() {
             return Err("another remote operation is still running".into());
@@ -367,13 +359,13 @@ impl RemoteApp {
     }
 }
 
-impl RemoteApp {
+impl Store {
     /// Open the saved `connection` and answer with how the transport went:
     /// pending while it dials, done once it is connected, else why not.
     fn connect(
         &mut self,
         connection: crate::model::ConnectionId,
-        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote>,
     ) -> ui::framework::EffectAnswer {
         if self.pending_resource_operation.is_some() {
             return Err("another remote operation is still running".into());

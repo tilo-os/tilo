@@ -9,6 +9,7 @@
 use serde_json::{Value as Json, json};
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
+use tilolang_runtime::program::ReadRequest;
 use tilolang_runtime::value::{ResourceRef, to_json};
 use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
 
@@ -24,10 +25,36 @@ pub enum HostEffect {
     /// Evaluate a tilolang expression against every app of the room: a view block renders, a
     /// value block is shown as data, and an action block runs or, when it needs a person's
     /// approval, is recorded as a suggested invocation.
-    #[effect(returns)]
+    ///
+    /// The block itself changes only the room's record: each action it applies is decided as
+    /// the caller's code, and what it commits carries that action's own need (an outside effect
+    /// needs what reaching outside needs), so running it is an undoable change, not an outside
+    /// one.
+    #[effect(kind = "undoable", returns)]
     RunBlock {
         #[param("The block's source, such as `letters.send(@letters.Draft:id)` or a view body")]
         source: String,
+    },
+    /// Read a resource's fields.
+    ///
+    /// The resource's type and every field as stored, by field id: how an agent task's
+    /// programs read what this app holds (agents.md, "How a program runs").
+    #[effect(kind = "read", returns)]
+    ReadValues {
+        #[param("The resource's id in its record, as `tl:<app>:<id>` ends")]
+        item: String,
+    },
+    /// Read for a program.
+    ///
+    /// Answer what a program running in another app's host asks to read of this app: the
+    /// matches of a grep, what search finds, a resource's text, or a declaration (agents.md,
+    /// "Querying"). It reads only, as the caller.
+    #[effect(kind = "read", returns)]
+    ReadForProgram {
+        #[param(
+            "The request, as JSON: {\"read\": \"grep\" | \"find\" | \"read\" | \"describe\", \"app\": ..., ...}"
+        )]
+        request: String,
     },
     /// Run a flow.
     ///
@@ -184,6 +211,12 @@ impl Host {
                     }),
                 }))
             }
+            HostEffect::ReadValues { item } => self.read_values(&item).map(output),
+            HostEffect::ReadForProgram { request } => {
+                let request: ReadRequest = serde_json::from_str(&request)
+                    .map_err(|error| format!("the request is not one a program makes: {error}"))?;
+                self.runtime().answer_read(&request).map(output)
+            }
             HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
             HostEffect::Resolve { target, decision } => {
                 if caller.is_some_and(|caller| caller.agent) {
@@ -271,24 +304,32 @@ impl Host {
     /// The anchor names nothing in this room.
     pub fn open_plan(&self, anchor: &str) -> Result<OpenPlan, String> {
         use tilolang_runtime::store::Store as _;
-        let doc = anchor.split('/').next().unwrap_or_default();
+        let probe = ResourceRef::parse_id(anchor, String::new())
+            .ok_or_else(|| format!("`{anchor}` is not a resource id"))?;
         let (package, _, _) = self
             .records()
             .into_iter()
-            .find(|(_, _, id)| id == doc)
+            .find(|(_, _, id)| *id == probe.doc)
             .ok_or_else(|| format!("`{anchor}` is not in this room"))?;
+        // The items from the record down to the anchor, as they are held now.
+        let mut chain = Vec::new();
+        let mut at = Some(probe);
+        while let Some(item) = at.filter(|at| at.item.is_some()) {
+            at = self
+                .store()
+                .container(&item)
+                .map_err(|error| error.to_string())?
+                .map(|(holder, _)| holder);
+            chain.push(item);
+        }
         let mut target = None;
-        let mut path = doc.to_owned();
-        for part in anchor.split('/').skip(1) {
-            path = format!("{path}/{part}");
-            let probe = ResourceRef::parse_id(&path, String::new())
-                .ok_or_else(|| format!("`{path}` is not a resource id"))?;
+        for item in chain.into_iter().rev() {
             let ty = self
                 .store()
-                .type_of(&probe)
+                .type_of(&item)
                 .map_err(|error| error.to_string())?;
             if package.meta.default_view(&ty).is_some() {
-                target = ResourceRef::parse_id(&path, ty);
+                target = Some(ResourceRef { ty, ..item });
             }
         }
         Ok(OpenPlan {

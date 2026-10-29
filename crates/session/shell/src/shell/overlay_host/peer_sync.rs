@@ -13,7 +13,7 @@ impl ShellOverlayHost {
     #[cfg(test)]
     pub(crate) fn enable_persisted_launch_drain_for_test(&mut self) {
         self.desktop_controls = DesktopControlsSource::Persisted(
-            settings_store::hardware::DesktopControlsConfig::default(),
+            settings_store::desktop_controls::DesktopControlsConfig::default(),
         );
     }
 
@@ -55,7 +55,6 @@ impl ShellOverlayHost {
     /// its user, from any entry point.
     pub fn detach_from_host(&mut self) {
         self.session_action_policy.detach_from_host();
-        self.layers.power_menu.detach_from_host();
     }
 
     /// Whether peer-sync palette entries are registered.
@@ -1029,7 +1028,7 @@ impl ShellOverlayHost {
             return;
         };
         ui::widget::Widget::handle_event(
-            &mut self.peer_sync_overlay,
+            &mut *self.peer_sync_overlay,
             event,
             &mut ctx.reborrow(ctx.path, node),
         );
@@ -1058,7 +1057,7 @@ impl ShellOverlayHost {
             return None;
         }
         let node =
-            ui::widget::Widget::build_layout(&mut self.peer_sync_overlay, taffy, theme, node_map);
+            ui::widget::Widget::build_layout(&mut *self.peer_sync_overlay, taffy, theme, node_map);
         let area = self.overlay_area();
         if let Ok(style) = taffy.style(node) {
             let mut placed = style.clone();

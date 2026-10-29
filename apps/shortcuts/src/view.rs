@@ -26,7 +26,7 @@ use ui::framework::{Actions, Live};
 use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
-use ui::tilo_resource::Path;
+use ui::tilo_resource::{NonBlank, Path};
 use ui::widget::{
     Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, Filterable, ListRow,
     ModalDialog, NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
@@ -820,7 +820,7 @@ fn describe_buttons(
         Button::new("draft-with-agent", "shortcuts-draft-it")
             .role(role)
             .with_enabled(!empty && !matches!(drafted, Some(door::Drafting::Drafting))),
-        DoorEffect::DESCRIBE.map(move |()| source.get()),
+        DoorEffect::DESCRIBE.try_map(move |()| NonBlank::parse(&source.get())),
     );
     // Opening a draft is the main action once there is one; asking again is
     // the quieter choice beside it.
@@ -991,9 +991,12 @@ fn refine_panel(ui: &Ui, shortcut: &Shortcut) -> Element {
         .multiline(true);
     let mut items: Vec<Element> = vec![Box::new(field)];
     let program = serde_json::to_string(shortcut).unwrap_or_default();
+    // Nothing is asked until the comment says something.
     let ask = ui.actions.bind_effect(
-        Button::new("refine-it", "shortcuts-refine-it"),
-        DoorEffect::REFINE.map(move |()| (program.clone(), comment.get())),
+        Button::new("refine-it", "shortcuts-refine-it")
+            .enabled_while(&comment, |text: &String| NonBlank::parse(text).is_some()),
+        DoorEffect::REFINE
+            .try_map(move |()| Some((program.clone(), NonBlank::parse(&comment.get())?))),
     );
     items.push(Box::new(ActionGroup::new(ask)));
     let review = {

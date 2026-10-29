@@ -19,7 +19,7 @@ use crate::widget::{HistoryEntry, HistoryEntryId};
 #[derive(Clone)]
 pub(crate) enum HistoryTarget {
     Bound(Box<CallbackBinding>),
-    Legacy {
+    Outer {
         app_id: String,
         record: Option<RecordId>,
         /// Supplied by the host and replaced whenever it replaces the document,
@@ -34,6 +34,23 @@ pub(crate) struct HistoryReadContext<'a> {
     pub active_record: Option<&'a RecordId>,
     pub document_identity: uuid::Uuid,
     pub permissions: &'a PermissionContext,
+}
+
+impl<'a> HistoryReadContext<'a> {
+    /// What History reads of a host: its live document, the record that is
+    /// open, and who may read it.
+    pub(crate) fn of(
+        state: &'a crate::State,
+        records: Option<&'a crate::record::RecordSet>,
+        permissions: &'a PermissionContext,
+    ) -> Self {
+        Self {
+            document: &state.doc,
+            active_record: records.and_then(crate::record::RecordSet::active),
+            document_identity: state.document_identity(),
+            permissions,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -226,7 +243,7 @@ impl HistoryTarget {
                 }
                 Ok(())
             }
-            Self::Legacy {
+            Self::Outer {
                 app_id,
                 record,
                 document_identity,
@@ -269,7 +286,7 @@ impl HistoryTarget {
                     .read_document(context.document, |doc, _| read(doc))
                     .map_err(|error| bound_error(&error))
             }
-            Self::Legacy {
+            Self::Outer {
                 app_id,
                 record,
                 document_identity,
@@ -562,7 +579,7 @@ mod tests {
     }
 
     fn target(record: Option<RecordId>, identity: uuid::Uuid) -> HistoryTarget {
-        HistoryTarget::Legacy {
+        HistoryTarget::Outer {
             app_id: "notes".into(),
             record,
             document_identity: identity,

@@ -66,6 +66,21 @@ pub(crate) const KEYS: &[&str] = &[
     "greeter-key-space",
     "greeter-key-delete",
     "greeter-key-enter",
+    "greeter-recovery-intro",
+    "greeter-recovery-key",
+    "greeter-recovery-new",
+    "greeter-recovery-confirm",
+    "greeter-recovery-save",
+    "greeter-recovery-cancel",
+    "greeter-recovery-saving",
+    "greeter-recovery-hint-key",
+    "greeter-recovery-hint-new",
+    "greeter-recovery-mismatch",
+    "greeter-recovery-wrong",
+    "greeter-recovery-weak",
+    "greeter-recovery-failed",
+    "greeter-recovery-done-password",
+    "greeter-recovery-done-pin",
 ];
 
 #[cfg(test)]

@@ -524,8 +524,8 @@ async fn one_tenants_inviter_reaches_nothing_in_another_tenants_room() {
         (
             ROOM_GOVERNANCE_PROVIDER,
             room_governance_resource(globex),
-            governance::SET_ROLE,
-            serde_json::json!({ "person": hex::encode(t.bob.user_pk), "role": "viewer" }),
+            governance::UNBAN,
+            serde_json::json!({ "person": hex::encode(t.bob.user_pk) }),
         ),
         (
             HOST_ACTIONS_PROVIDER,

@@ -14,10 +14,10 @@ use std::path::{Path, PathBuf};
 use ui::collaboration::NearbyTransferTarget;
 use ui::framework::LiveRow;
 use ui::tilo_actions::ResourceSpec;
-use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::{AbsolutePath, Effect as _};
 
 use super::open_with_recent::{OpenWithFacts, append_open_with_actions};
-use super::{FileExplorerWidget, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
+use super::{FilesState, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
 
@@ -85,7 +85,7 @@ pub(super) fn in_native_trash(path: &Path, trash: Option<&Path>) -> bool {
     trash.is_some_and(|root| path.parent() == Some(root))
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// What every row of the listing shares, now.
     pub(super) fn row_context(&self) -> RowContext {
         RowContext {
@@ -204,7 +204,7 @@ fn app_row(
 )]
 fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> ResourceSpec {
     use crate::effects::{FilesEffect, row_action};
-    let resource_id = FileExplorerWidget::entry_resource_id(entry);
+    let resource_id = FilesState::entry_resource_id(entry);
     let id = || resource_id.clone();
     let record_id = entry.record_id.map(uuid::Uuid::from_bytes);
     let mut resource = ResourceSpec::new(
@@ -289,21 +289,25 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         append_open_with_actions(open_with, &resource_id, &mut resource);
     }
     if !context.trash {
-        let mut copy_to = FilesEffect::CopyTo {
-            entry: id(),
-            folder: String::new(),
-        }
-        .bound_asking(&["folder"]);
-        copy_to.type_mut().label = "Copy to folder…".into();
-        resource.actions.push(copy_to);
-        if importable_under(&entry.path, &context.import_mounts) {
-            let mut import = FilesEffect::ImportOnce {
+        // The destination folder is asked; the entry's own folder stands in
+        // for it until then.
+        if let Ok(here) = AbsolutePath::new(entry.path.parent().unwrap_or(entry.path.as_path())) {
+            let mut copy_to = FilesEffect::CopyTo {
                 entry: id(),
-                folder: String::new(),
+                folder: here.clone(),
             }
             .bound_asking(&["folder"]);
-            import.type_mut().label = t("files-import-once");
-            resource.actions.push(import);
+            copy_to.type_mut().label = "Copy to folder…".into();
+            resource.actions.push(copy_to);
+            if importable_under(&entry.path, &context.import_mounts) {
+                let mut import = FilesEffect::ImportOnce {
+                    entry: id(),
+                    folder: here,
+                }
+                .bound_asking(&["folder"]);
+                import.type_mut().label = t("files-import-once");
+                resource.actions.push(import);
+            }
         }
         resource.actions.push(row_action(
             &FilesEffect::SendNearby { entry: id() },

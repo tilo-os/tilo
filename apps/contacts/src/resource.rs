@@ -10,11 +10,11 @@
 //! the contacts and published as places that reveal them.
 
 use std::collections::HashSet;
-use std::rc::Rc;
 
-use ui::framework::{LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{
-    self, ActionCx, Derived, Edit, Id, Invoke, Keyed, Model, Refusal, SearchEntry, Set, resource,
+    self, ActionCx, Derived, Edit, Id, Invoke, Keyed, Model, NonBlank, Refusal, SearchEntry, Set,
+    resource,
 };
 use ui::widget::Element;
 use uuid::Uuid;
@@ -52,15 +52,8 @@ impl Contacts {
     /// A contact with a typed full name: its first word is the first name,
     /// the rest the last name.
     #[action]
-    pub fn new_contact(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Full name")] name: String,
-    ) -> Result<(), Refusal> {
+    pub fn new_contact(&mut self, cx: &mut ActionCx, #[param("Full name")] name: NonBlank) {
         let (first, last) = split_name(&name);
-        if first.is_empty() {
-            return Err(Refusal::new("a new contact has a name"));
-        }
         self.contacts.push(Contact {
             id: cx.uuid(),
             first,
@@ -68,7 +61,6 @@ impl Contacts {
             ..Contact::default()
         });
         self.contacts.settle();
-        Ok(())
     }
 
     /// Add contacts.
@@ -496,56 +488,11 @@ impl ResourceApp for ContactsShell {
     }
 }
 
-impl ResourceSurface<Contacts, ContactsEffect> for ContactsApp {
-    fn effect(
-        &mut self,
-        effect: ContactsEffect,
-        cx: &mut ui::framework::EffectCx<Contacts, Self>,
-    ) -> ui::framework::EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn present(&mut self, state: &Rc<Contacts>) {
-        self.present_book(state);
-        self.project_identities(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Contacts>) {
-        self.attach_dispatcher(cx.dispatcher());
-        self.jobs = Some(cx.jobs());
-        if cx.mode().is_live() {
-            self.identity_directory =
-                cx.shared_person::<tilo_contact_directory::ContactDirectory>();
-        }
-        // A vCard file the app was opened with ("open with", a dropped
-        // file) is imported into the address book.
-        if let Some(file) = cx.launch().file() {
-            self.open_cards(String::from_utf8_lossy(file.bytes()).into_owned());
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_capture(scenario);
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        let mut rows = self.import_conflict_rows();
-        if let Some(editor) = &self.account_editor {
-            rows.extend(crate::account_editor::review_rows(editor));
-        }
-        rows
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_rows().into_iter().find(|row| row.id() == id)
-    }
-}
-
 impl ContactsApp {
     /// Labels are a projection of this book's stable UUIDs. Service endpoints
     /// are independently confirmed in the shared person-owned directory and
     /// never inferred from matching names, emails or telephone numbers.
-    fn project_identities(&self, state: &Contacts) {
+    pub(crate) fn project_identities(&self, state: &Contacts) {
         use tilo_contact_directory::{ContactDirectory, Projected};
         let Some(directory) = &self.identity_directory else {
             return;

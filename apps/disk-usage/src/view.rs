@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::framework::{
-    Actions, Dispatcher, EffectCx, Effected, LiveRow, Publishes, RunMode, Setting, ViewCx,
-};
+use ui::framework::{Actions, Dispatcher, EffectCx, Effected, LiveRow, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -25,9 +23,13 @@ use ui::widget::{
 };
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
-use crate::resource::{DiskUsage, DiskUsageEffect, RecentFolders, analyze, folder_row, recent_row};
+use crate::resource::{
+    DiskUsage, DiskUsageEffect, Folders, RecentFolders, analyze, folder_row, recent_row,
+};
 use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
+use ui::framework::PersonRecord;
+use ui::tilo_resource::AbsolutePath;
 
 /// The app, as the surfaces name it when it asks for attention.
 pub(crate) const OWNER_NAME: &str = "Disk Usage Analyzer";
@@ -165,10 +167,13 @@ struct Nav {
     /// The analysis that finished last, so a job's "Show me" returns to it
     /// instead of scanning again.
     finished: Rc<RefCell<Option<ScanResult>>>,
-    /// The folders analyzed lately: this device's setting in a live window,
-    /// the scenario's in a capture.
-    recent: LocalState<RecentFolders>,
-    recents: Option<Setting<RecentFolders>>,
+    /// The folders analyzed lately, by device: the record in a live
+    /// window, the scenario's in a capture.
+    recent: LocalState<Rc<RecentFolders>>,
+    /// The record and this device's id, in a live window.
+    recents: Option<(PersonRecord<RecentFolders>, String)>,
+    /// The device whose folders are shown.
+    device: Rc<str>,
     places: Rc<Vec<Place>>,
     /// What the person presses on the waiting stack.
     needs: ui::attention::Presses,
@@ -177,23 +182,33 @@ struct Nav {
 
 impl Nav {
     fn new(cx: &ViewCx<DiskUsage>) -> Self {
+        let device: Rc<str> = cx.device().unwrap_or_default().into();
+        let shown = |folders: Folders| {
+            Rc::new(RecentFolders {
+                devices: [(device.to_string(), folders)].into_iter().collect(),
+            })
+        };
         let (places, recents, recent) = match cx.mode() {
             RunMode::Capture => (
                 sample_places(),
                 None,
-                cx.fixture::<RecentFolders>()
-                    .map(|recent| (*recent).clone())
-                    .unwrap_or_default(),
+                shown(
+                    cx.fixture::<Folders>()
+                        .map(|recent| (*recent).clone())
+                        .unwrap_or_default(),
+                ),
             ),
             RunMode::Live => {
-                let recents = cx.settings::<RecentFolders>();
-                (device_places(), Some(recents), RecentFolders::default())
+                let recents = cx
+                    .person::<RecentFolders>()
+                    .zip(cx.device().map(str::to_owned));
+                (device_places(), recents, shown(Folders::default()))
             }
-            RunMode::Past => (device_places(), None, RecentFolders::default()),
+            RunMode::Past => (device_places(), None, shown(Folders::default())),
         };
         let recent = recents
             .as_ref()
-            .map_or_else(|| cx.local(recent), Setting::state);
+            .map_or_else(|| LocalState::new(recent), |(record, _)| record.state());
         let page = match cx.fixture::<ScanResult>() {
             Some(scan) => {
                 if cx.mode() == RunMode::Capture {
@@ -212,6 +227,7 @@ impl Nav {
             finished: Rc::default(),
             recent,
             recents,
+            device,
             places: Rc::new(places),
             needs: ui::attention::Presses::new(),
             dispatcher: cx.dispatcher(),
@@ -239,13 +255,23 @@ impl Nav {
     }
 
     fn remember(&self, folder: PathBuf) {
-        match &self.recents {
-            Some(recents) => {
-                if let Err(error) = recents.update(|recent| recent.folders.remember(folder)) {
-                    tracing::warn!(%error, "could not remember the analyzed folder");
-                }
+        if let Some((record, device)) = &self.recents {
+            let Ok(folder) = AbsolutePath::new(folder) else {
+                return;
+            };
+            let remember = RecentFolders::REMEMBER.with((device.clone(), folder));
+            if let Err(error) = record.invoke(&remember) {
+                tracing::warn!(%error, "could not remember the analyzed folder");
             }
-            None => self.recent.update(|recent| recent.folders.remember(folder)),
+        } else {
+            let device = self.device.to_string();
+            self.recent.update(|recent| {
+                Rc::make_mut(recent)
+                    .devices
+                    .entry(device)
+                    .or_default()
+                    .remember(folder);
+            });
         }
     }
 
@@ -363,7 +389,11 @@ impl Nav {
                 result,
                 inspected: None,
             }),
-            None => self.dispatcher.effect(&analyze(&path)),
+            None => {
+                if let Some(effect) = analyze(&path) {
+                    self.dispatcher.effect(&effect);
+                }
+            }
         }
     }
 
@@ -384,8 +414,9 @@ impl Nav {
             .iter()
             .map(|place| folder_row(&place.label, &place.path))
             .collect();
-        self.recent
-            .with(|recent| rows.extend(recent.folders.iter().map(|path| recent_row(path))));
+        self.recent.with(|recent| {
+            rows.extend(recent.on(&self.device).iter().map(|path| recent_row(path)));
+        });
         self.page.with(|page| {
             if let Page::Analysis { result, .. } = page {
                 rows.extend(
@@ -461,7 +492,7 @@ fn answer_effects(cx: &ViewCx<DiskUsage>, nav: &Nav) {
     cx.effects(move |effect: DiskUsageEffect, cx| match effect {
         DiskUsageEffect::Analyze { path } => {
             let push_history = nav.analysis().is_some();
-            Ok(nav.scan(PathBuf::from(path), push_history, cx))
+            Ok(nav.scan(path.into_path_buf(), push_history, cx))
         }
         DiskUsageEffect::Choose => Ok(nav.choose_folder(cx)),
         DiskUsageEffect::Back => Ok(nav.go_back(cx)),
@@ -485,15 +516,19 @@ fn page_view(
     match page {
         Page::Home => {
             let places = Rc::clone(&nav.places);
+            let device = Rc::clone(&nav.device);
             cx.switch(&nav.recent, move |_, recent| {
-                pages.home(&places, &recent_places(&places, &recent.folders))
+                pages.home(&places, &recent_places(&places, &recent.on(&device)))
             })
         }
         Page::Needs => Box::new(ui::attention::Stack::with_presses(nav.needs.clone())),
         Page::Analysis { result, inspected } => {
             let dispatcher = nav.dispatcher.clone();
-            let analyze: Rc<dyn Fn(PathBuf)> =
-                Rc::new(move |path: PathBuf| dispatcher.effect(&analyze(&path)));
+            let analyze: Rc<dyn Fn(PathBuf)> = Rc::new(move |path: PathBuf| {
+                if let Some(effect) = analyze(&path) {
+                    dispatcher.effect(&effect);
+                }
+            });
             pages.analysis(result, inspected.as_deref(), analyze)
         }
         Page::Error(path, message) => pages.error(path, message),
@@ -511,7 +546,7 @@ impl Pages {
         match self
             .actions
             .as_ref()
-            .and_then(|actions| actions.effect(&analyze(path)))
+            .and_then(|actions| actions.effect(&analyze(path)?))
         {
             Some(binding) => row.on_action(binding),
             None => row.with_enabled(false),

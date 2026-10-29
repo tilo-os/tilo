@@ -123,7 +123,7 @@ pub trait ResourceApp: 'static {
     /// file selected in a file manager), a History scope beside the
     /// resource's own: its versions are read, previewed and restored through
     /// the filesystem's projection, not the app's document. The app's
-    /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
+    /// view names the file with [`RecordEnv::file_history`](super::RecordEnv::file_history).
     const FILE_HISTORY: Option<FileHistory> = None;
     /// What of the machine it runs on the app shows (its journal, its
     /// processes, its drives, the person's real files). A headless drive
@@ -138,6 +138,15 @@ pub trait ResourceApp: 'static {
     /// definition is first made.
     fn named() -> Option<AppName> {
         None
+    }
+
+    /// Whether each member of a workspace keeps the app's record as their own: a window that
+    /// names no record opens the person's own record of the workspace, which only their devices
+    /// read, instead of the workspace's record of the app
+    /// ([`ApplicationDefinition::member_record`]). Asked once per process, before the definition
+    /// is first made.
+    fn member_record() -> bool {
+        false
     }
 
     /// Import a former document format using host-local custody, before typed
@@ -538,6 +547,7 @@ fn application_definition(
         optional: vec![],
         opens,
         room_record,
+        member_record: (app.member_record)(),
         opens_before_record: room_record && app.opens_before_record,
         create,
     }
@@ -560,6 +570,8 @@ pub(crate) struct AppHooks {
     icon: Option<&'static str>,
     /// [`ResourceApp::named`]: the app's name when the launch gives it.
     named: fn() -> Option<AppName>,
+    /// [`ResourceApp::member_record`].
+    member_record: fn() -> bool,
     /// [`Resource::KIND`] of the app's resource.
     pub(crate) kind: &'static str,
     /// [`Resource::LABEL`] of the app's resource.
@@ -619,6 +631,7 @@ impl<A: ResourceApp> Hooks<A> {
         title: A::TITLE,
         icon: A::ICON,
         named: A::named,
+        member_record: A::member_record,
         kind: <A::Resource as Resource>::KIND,
         label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,
@@ -804,9 +817,12 @@ pub(crate) fn build_root<A: ResourceApp>(
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
-    let root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
+    let mut root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
+    if A::BEHAVIOUR.window == ui_core::application::WindowRole::Sheet {
+        root = root.without_ground();
+    }
     if !app.document_history {
         return root.without_history();
     }

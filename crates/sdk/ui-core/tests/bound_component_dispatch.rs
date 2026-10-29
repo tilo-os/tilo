@@ -325,17 +325,23 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
             });
         });
         driver.send(&winit::event::WindowEvent::Focused(true));
-        // A control naming nothing the window has is said over it, never
-        // dropped unseen; Escape dismisses the notice as any palette.
+        // A control naming nothing the window has is said, never dropped
+        // unseen, and never as search over the window.
         assert!(
-            driver.refusal_shown().is_some(),
+            driver.refusal_said().is_some(),
             "the missing control's refusal is shown"
         );
+        assert!(!driver.palette_shown(), "a refusal opens no palette");
         driver.key("Escape");
-        assert_eq!(driver.refusal_shown(), None);
+        assert_eq!(
+            driver.control_notice(),
+            None,
+            "the next key dismisses what stood at the control"
+        );
         // What the app invokes on its own, for nobody's gesture, is refused
         // without a word over the window: the person pressed nothing.
         let failures = driver.control_failures().len();
+        let said = driver.refusal_said().map(str::to_owned);
         QUEUED_CONTROL.with_borrow_mut(|queue| {
             *queue = Some(tilo_actions::ControlInvocation {
                 address: tilo_actions::ActionAddress::new("missing", "on-its-own"),
@@ -345,8 +351,8 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         QUEUED_ORIGIN.with(|origin| origin.set(tilo_ui::widget::controls::Origin::App));
         driver.send(&winit::event::WindowEvent::Focused(true));
         assert_eq!(
-            driver.refusal_shown(),
-            None,
+            driver.refusal_said().map(str::to_owned),
+            said,
             "the app's own refused invocation is not said as the person's"
         );
         assert_eq!(
@@ -2106,267 +2112,6 @@ fn fill_factory(
         Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
         tilo_actions::ActionRegistry::new(),
     ))
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one live tile proves successful intent transition and retention across missing, mismatched and busy requests"
-)]
-fn legacy_mutable_admission_edits_only_its_record_once() {
-    // Case `mutable_container_traversal_invokes_legacy_fallback_once`.
-    {
-        for accept in [true, false] {
-            LEGACY_START.set(Some(accept));
-            LEGACY_START_CALLS.set(0);
-            let mut tree =
-                Column::new().push(Box::new(tilo_ui::widget::Row::new().push(Box::new(
-                    tilo_ui::widget::Container::new().with_child(Box::new(TileHost::new(
-                        tilo_ui::widget::TileContent::App(Box::new(Root(
-                            Column::new(),
-                            String::new(),
-                            false,
-                        ))),
-                    ))),
-                ))));
-            let result = start_operation(
-                &mut tree,
-                &tilo_ui::host_operation::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "legacy",
-                    &[],
-                ),
-                &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
-                &ROOT,
-            )
-            .unwrap();
-            assert_eq!(result.is_some(), accept);
-            assert_eq!(
-                LEGACY_START_CALLS.get(),
-                1,
-                "legacy accepting/declining handler was revisited"
-            );
-            LEGACY_START.set(None);
-        }
-    }
-
-    // Case `legacy_bound_mutable_admission_edits_only_its_record_and_refuses_missing_or_busy`.
-    {
-        let host = ProbeHost::new();
-        let checkout = tilo_ui::record::RecordCheckout::new(
-            tilo_ui::record::RecordId::minted(),
-            tilo_ui::record::RecordKind::new("probe"),
-        );
-        host.records
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|doc| {
-                doc.put(ROOT, "marker", "bound-B")
-                    .map_err(|error| error.to_string())
-            })
-            .unwrap();
-        let missing = tilo_ui::record::RecordCheckout::new(
-            tilo_ui::record::RecordId::minted(),
-            tilo_ui::record::RecordKind::new("probe"),
-        );
-        let mut outer = AutoCommit::new();
-        outer.put(ROOT, "marker", "outer-A").unwrap();
-        let outer_path = outer
-            .put_object(ROOT, "outer-path", automerge::ObjType::Map)
-            .unwrap();
-        LEGACY_MUTABLE.set(true);
-        LEGACY_DOCUMENTS.with_borrow_mut(Vec::clear);
-        let mut outcomes = vec![];
-        for requested in [&checkout, &missing, &checkout] {
-            let mut tile = TileHost::new(tilo_ui::widget::TileContent::App(Box::new(Root(
-                Column::new(),
-                String::new(),
-                false,
-            ))));
-            tile.bind_record(host.records.clone(), requested.clone());
-            let mut tree = Column::new().push(Box::new(tilo_ui::widget::Row::new().push(
-                Box::new(tilo_ui::widget::Container::new().with_child(Box::new(tile))),
-            )));
-            let mut invoke = || {
-                start_operation(
-                    &mut tree,
-                    &tilo_ui::host_operation::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        "legacy.mutable",
-                        &[],
-                    ),
-                    &mut tilo_ui::widget::Edits::lend(&mut outer),
-                    &outer_path,
-                )
-            };
-            let result = if outcomes.len() == 2 {
-                host.records.with(&checkout.id, |_| invoke()).unwrap()
-            } else {
-                invoke()
-            };
-            outcomes.push(result);
-        }
-        LEGACY_MUTABLE.set(false);
-        assert_eq!(
-            LEGACY_DOCUMENTS.with_borrow(Clone::clone),
-            vec![("bound-B".to_string(), true)],
-            "bound callback must run once with its record and ROOT; missing/busy bindings must not execute"
-        );
-        assert!(matches!(
-            outcomes[0],
-            Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
-            ))
-        ));
-        assert_eq!(
-            outcomes[1].as_ref().unwrap_err(),
-            &tilo_ui::record::RecordOpenError::MissingRecord.to_string()
-        );
-        assert_eq!(
-            outcomes[2].as_ref().unwrap_err(),
-            &tilo_ui::record::RecordOpenError::Busy.to_string()
-        );
-        assert!(outer.get(ROOT, "legacy-follow-up").unwrap().is_none());
-        assert!(
-            host.records
-                .read(&checkout.id, |doc| doc
-                    .get(ROOT, "legacy-follow-up")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_bool()
-                    .unwrap())
-                .unwrap()
-        );
-    }
-
-    // Case `legacy_mutable_admission_follows_new_intent_only_after_checked_resolution`.
-    {
-        let host = ProbeHost::new();
-        let first = tilo_ui::record::RecordCheckout::new(
-            tilo_ui::record::RecordId::minted(),
-            tilo_ui::record::RecordKind::new("probe"),
-        );
-        let next = tilo_ui::record::RecordCheckout::new(
-            tilo_ui::record::RecordId::minted(),
-            tilo_ui::record::RecordKind::new("probe"),
-        );
-        let missing = tilo_ui::record::RecordCheckout::new(
-            tilo_ui::record::RecordId::minted(),
-            tilo_ui::record::RecordKind::new("probe"),
-        );
-        for (checkout, marker) in [(&first, "bound-B"), (&next, "selected-C")] {
-            host.records
-                .reserve_record(checkout)
-                .unwrap()
-                .initialize(|doc| {
-                    doc.put(ROOT, "marker", marker)
-                        .map_err(|error| error.to_string())
-                })
-                .unwrap();
-        }
-        LEGACY_MUTABLE.set(true);
-        LEGACY_DOCUMENTS.with_borrow_mut(Vec::clear);
-        LEGACY_SCOPES.with_borrow_mut(Vec::clear);
-        let mut tile = TileHost::new(tilo_ui::widget::TileContent::App(Box::new(Root(
-            Column::new(),
-            String::new(),
-            false,
-        ))));
-        tile.bind_record(host.records.clone(), first.clone());
-        let mut tree = Column::new().push(Box::new(tilo_ui::widget::Row::new().push(Box::new(
-            tilo_ui::widget::Container::new().with_child(Box::new(tile)),
-        ))));
-        let mut outer = AutoCommit::new();
-        outer.put(ROOT, "marker", "outer-A").unwrap();
-        let mut invoke = || {
-            start_operation(
-                &mut tree,
-                &tilo_ui::host_operation::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    "legacy.mutable",
-                    &[],
-                ),
-                &mut tilo_ui::widget::Edits::lend(&mut outer),
-                &ROOT,
-            )
-        };
-        LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(next.clone()));
-        let selected = invoke();
-        LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(missing));
-        let absent = invoke();
-        LEGACY_INTENT.with_borrow_mut(|intent| {
-            *intent = Some(tilo_ui::record::RecordCheckout::new(
-                next.id.clone(),
-                tilo_ui::record::RecordKind::new("wrong-kind"),
-            ));
-        });
-        let mismatched = invoke();
-        LEGACY_INTENT.with_borrow_mut(|intent| *intent = Some(first.clone()));
-        let busy = host.records.with(&next.id, |_| invoke()).unwrap();
-        LEGACY_INTENT.with_borrow_mut(|intent| *intent = None);
-        let retained = invoke();
-        LEGACY_MUTABLE.set(false);
-        assert!(matches!(
-            selected,
-            Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
-            ))
-        ));
-        assert_eq!(
-            absent.as_ref().unwrap_err(),
-            &tilo_ui::record::RecordOpenError::MissingRecord.to_string()
-        );
-        assert_eq!(
-            mismatched.as_ref().unwrap_err(),
-            &tilo_ui::record::RecordOpenError::IdentityMismatch.to_string()
-        );
-        assert_eq!(
-            busy.as_ref().unwrap_err(),
-            &tilo_ui::record::RecordOpenError::Busy.to_string()
-        );
-        assert!(matches!(
-            retained,
-            Ok(Some(
-                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
-            ))
-        ));
-        assert_eq!(
-            LEGACY_DOCUMENTS.with_borrow(Clone::clone),
-            vec![
-                ("selected-C".to_string(), true),
-                ("selected-C".to_string(), true)
-            ]
-        );
-        assert_eq!(
-            LEGACY_SCOPES.with_borrow(Clone::clone),
-            vec![first.id.clone(), next.id.clone()],
-            "failed intent changed live scope"
-        );
-        assert!(outer.get(ROOT, "legacy-follow-up").unwrap().is_none());
-        assert!(
-            host.records
-                .read(&first.id, |doc| doc
-                    .get(ROOT, "legacy-follow-up")
-                    .unwrap()
-                    .is_none())
-                .unwrap()
-        );
-        assert!(
-            host.records
-                .read(&next.id, |doc| doc
-                    .get(ROOT, "legacy-follow-up")
-                    .unwrap()
-                    .unwrap()
-                    .0
-                    .as_bool()
-                    .unwrap())
-                .unwrap()
-        );
-    }
 }
 
 #[test]

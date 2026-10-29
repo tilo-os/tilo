@@ -61,7 +61,6 @@ pub mod crx;
 mod daily_controls;
 pub mod downloads;
 pub mod effects;
-pub mod engine_setup;
 pub mod extension_controller;
 pub mod extension_host;
 pub mod extension_notices;

@@ -588,6 +588,15 @@ impl AppServingPlane for ComputePlane {
     ) -> Option<Pending<RemoteActionMessage>> {
         self.serve_as(workspace_id, caller, Some(certificate), message)
     }
+
+    fn serve_host(
+        &self,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        self.rest.as_ref()?.serve_host(caller, certificate, message)
+    }
 }
 
 impl ComputePlane {

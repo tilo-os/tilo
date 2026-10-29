@@ -2367,6 +2367,9 @@ fn pump_floating_surface_service(
                 }
                 | ui::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
                     ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch {
+                    ..
                 }) => {
                     // The app id is the launcher's: an app only ever reaches
                     // the bar of a tab that shows it.
@@ -2478,6 +2481,21 @@ fn pump_floating_surface_service(
             connection,
             &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
         );
+    }
+    // A development session's test control activates controls of the
+    // focused window by their test ids: each window of the focused app is
+    // asked, and the focused one acts.
+    if let Some((app, test_ids)) = frame_builder.host_mut().take_test_activations() {
+        for connection in appearance.connections_of(&app) {
+            for test_id in &test_ids {
+                service.send(
+                    connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::ActivateTestId {
+                        test_id: test_id.clone(),
+                    },
+                );
+            }
+        }
     }
     // What the person did with apps' slots in their windows' bars.
     for (connection, event) in frame_builder.host_mut().take_toolbar_outbox() {
@@ -4210,6 +4228,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // Construction work counted at the workspace's factories, and the
         // workspace whose content those factories last reconciled.
         if let Some(fields) = dump.as_object_mut() {
+            // The canvas as this device shows it: the lens, the caret, the
+            // selection, each window's place and rect, answers on their way.
+            fields.insert("canvas".into(), self.fb.host().canvas_state());
             fields.insert(
                 "workspace_work".into(),
                 serde_json::json!(crate::shell::work_accounting::snapshot()),
@@ -5286,6 +5307,9 @@ fn execute_planned_action(
                     *pressed,
                 )));
         }
+        PlannedAction::ActivateTestId { test_id } => {
+            fb.host_mut().queue_test_activation(test_id.clone());
+        }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -5444,12 +5468,12 @@ fn execute_locked_action(
         // make the lock screen bypassable by a socket client that renders
         // nothing; answering `ok` for an action that never ran would leave a
         // caller who cannot see the screen believing it did.
-        PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
-            Some(InvokeFailure {
-                code: "session_locked".into(),
-                message: test_control::SESSION_LOCKED.into(),
-            })
-        }
+        PlannedAction::Snapshot { .. }
+        | PlannedAction::InvokeAction { .. }
+        | PlannedAction::ActivateTestId { .. } => Some(InvokeFailure {
+            code: "session_locked".into(),
+            message: test_control::SESSION_LOCKED.into(),
+        }),
         // Pointer and modifier input is swallowed while locked.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
@@ -8080,10 +8104,7 @@ fn start_session_peer_sync(
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
             let net = Arc::new(
                 crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
-                    .map_err(|error| error.to_string())?
-                    .with_continuation_labels(Box::new(
-                        crate::shell::doc_open::DesktopContinuationLabels,
-                    )),
+                    .map_err(|error| error.to_string())?,
             );
             // Joining reads the enrolled rooms, this device's identities and
             // the community configuration, and redeems a boot invitation:
@@ -10082,7 +10103,7 @@ pub fn run() {
         chrome.open_records_without_waiting(Arc::clone(&session_wake));
         if let Some(apps) = chrome.hosted_inputs.in_process() {
             apps.borrow_mut()
-                .bind_messaging_record_wake(Arc::clone(&session_wake));
+                .bind_session_wake(Arc::clone(&session_wake));
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));
@@ -12110,7 +12131,7 @@ pub fn run() {
             }
             if settings_change.desktop_controls() {
                 frame_builder.host_mut().set_desktop_controls_config(
-                    settings_store::hardware::DesktopControlsConfig::load(),
+                    settings_store::desktop_controls::DesktopControlsConfig::load(),
                 );
             }
             frame_builder.follow_settings_sections(
@@ -12890,11 +12911,17 @@ pub fn run() {
                 proxy.observe_edit_stamp(&mut state, stamp);
             }
         }
+        // The lock screen draws a keyboard of its own for touch; the system
+        // one never shows over it, where its keys would sit across the lock's
+        // and take the taps meant for them.
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
             state.shell_field_active.then_some(shell_field).flatten(),
-            state.text_input_active() && input_methods.osk_shown() && !receipts_only,
+            state.text_input_active()
+                && input_methods.osk_shown()
+                && !receipts_only
+                && !session_locked,
         );
         dictation_vocabulary.refresh(&mut state);
         state.set_native_dictation_deferred(deferred_field && state.shell_field_active);
@@ -15425,7 +15452,7 @@ fn sync_quick_settings_from_osd(
 ) {
     match osd.kind {
         crate::shell::osd::OsdKind::Volume { muted } => {
-            quick_settings.status.volume = Some(os_actions::VolumeState {
+            quick_settings.status.volume = Some(media::audio::default_node::VolumeState {
                 level: osd.level,
                 muted,
             });

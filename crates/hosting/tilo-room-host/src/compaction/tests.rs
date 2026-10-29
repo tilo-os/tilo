@@ -1378,8 +1378,8 @@ fn written_in_the_clear(store: &WorkspaceStore) -> HashSet<(automerge::ActorId, 
         .collect()
 }
 
-/// A key holder's opener for `keys`, as [`Compactor::fold_as_steward`] reads.
-fn steward_opener(
+/// A key holder's opener for `keys`, as [`Compactor::fold_with_keys`] reads.
+fn keyed_opener(
     keys: &channel_crypto::ChannelContentKeys,
 ) -> impl Fn(&collab_types::SignedOp) -> Option<Vec<u8>> + '_ {
     |op| {
@@ -1391,26 +1391,26 @@ fn steward_opener(
     }
 }
 
-fn steward_keys() -> channel_crypto::ChannelContentKeys {
+fn node_keys() -> channel_crypto::ChannelContentKeys {
     let route = route();
     channel_crypto::ChannelGroup::create(
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id),
-        channel_crypto::MemberKey::generate("steward").unwrap(),
+        channel_crypto::MemberKey::generate("node").unwrap(),
     )
     .unwrap()
     .content_keys()
     .unwrap()
 }
 
-/// One steward round over the channel, as [`Compactor::fold_as_steward`]
+/// One round of the host's keyed fold over the channel, as [`Compactor::fold_with_keys`]
 /// runs it; `removes` false stops it where a crash between writing the
 /// sealed snapshot and removing what it holds would.
-fn steward_round(
+fn keyed_round(
     store: &WorkspaceStore,
     keys: &channel_crypto::ChannelContentKeys,
     removes: bool,
 ) -> Option<Replaced> {
-    let open = steward_opener(keys);
+    let open = keyed_opener(keys);
     let entries = store.channel_entries(&channel()).unwrap();
     let (_, folded) = plan_opening(
         &entries,
@@ -1451,7 +1451,7 @@ fn sealed_changes(
     store: &WorkspaceStore,
     keys: &channel_crypto::ChannelContentKeys,
 ) -> Option<HashSet<(automerge::ActorId, u64)>> {
-    let open = steward_opener(keys);
+    let open = keyed_opener(keys);
     let retained = store.channel_entries(&channel()).unwrap();
     let mut signatures = Signatures::default();
     let checked: Vec<Checked<'_>> = retained
@@ -1474,27 +1474,27 @@ fn sealed_changes(
 }
 
 /// What a record retained in the clear before its channel was opened,
-/// sealed by its steward: the channel keeps one sealed snapshot, and a
-/// member with the channel's keys reads every change of that history from
+/// sealed by the host that takes part in it: the channel keeps one sealed
+/// snapshot, and a member with the channel's keys reads every change of that history from
 /// it with its author and sequence.
 #[test]
-fn the_steward_seals_the_history_written_in_the_clear_with_every_change_and_author() {
+fn the_node_seals_the_history_written_in_the_clear_with_every_change_and_author() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let written = written_in_the_clear(&store);
     assert_eq!(written.len(), 7);
     let entries = store.channel_entries(&channel()).unwrap().len();
-    let keys = steward_keys();
-    let outcome = steward_round(&store, &keys, true).expect("a short history is sealed");
+    let keys = node_keys();
+    let outcome = keyed_round(&store, &keys, true).expect("a short history is sealed");
     assert_eq!((outcome.removed, outcome.kept), (entries, 1));
     assert_eq!(sealed_changes(&store, &keys), Some(written));
     assert!(
-        steward_round(&store, &keys, true).is_none(),
+        keyed_round(&store, &keys, true).is_none(),
         "a sealed channel is not sealed again"
     );
 }
 
-/// The steward stops after its sealed snapshot is durable and before it
+/// The node stops after its sealed snapshot is durable and before it
 /// removed anything: the history in the clear is all still there, and the
 /// next round seals it without losing a change.
 #[test]
@@ -1503,20 +1503,20 @@ fn a_seal_stopped_before_its_removal_loses_nothing_and_completes_on_the_next_rou
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let written = written_in_the_clear(&store);
     let entries = store.channel_entries(&channel()).unwrap().len();
-    let keys = steward_keys();
-    let stopped = steward_round(&store, &keys, false).unwrap();
+    let keys = node_keys();
+    let stopped = keyed_round(&store, &keys, false).unwrap();
     assert_eq!((stopped.removed, stopped.kept), (0, entries + 1));
     assert_eq!(sealed_changes(&store, &keys), None);
-    let outcome = steward_round(&store, &keys, true).unwrap();
+    let outcome = keyed_round(&store, &keys, true).unwrap();
     assert_eq!(outcome.kept, 1);
     assert_eq!(sealed_changes(&store, &keys), Some(written));
 }
 
-/// One write in the clear is not due for the host's own fold, and its
-/// steward seals it all the same, once the host's operator decided that it
-/// does.
+/// One write in the clear is not due for the host's own fold, and a host
+/// holding its channel's keys seals it all the same, once the host's
+/// operator decided that it does.
 #[test]
-fn a_lone_write_in_the_clear_is_folded_only_by_its_steward() {
+fn a_lone_write_in_the_clear_is_folded_only_with_its_keys() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let mut seq = 0;
@@ -1537,7 +1537,7 @@ fn a_lone_write_in_the_clear_is_folded_only_by_its_steward() {
         |_, _| Some(Vec::new()),
     );
     assert!(folded.is_none());
-    let steward = |reseal| {
+    let keyed = |reseal| {
         plan_opening(
             &entries,
             &mut Signatures::default(),
@@ -1548,13 +1548,9 @@ fn a_lone_write_in_the_clear_is_folded_only_by_its_steward() {
         )
         .1
     };
-    assert!(steward(false).is_none(), "kept until its operator decides");
+    assert!(keyed(false).is_none(), "kept until its operator decides");
     assert_eq!(
-        steward(true)
-            .expect("sealed by its steward")
-            .0
-            .removed
-            .len(),
+        keyed(true).expect("sealed with its keys").0.removed.len(),
         1
     );
 }

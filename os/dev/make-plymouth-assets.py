@@ -2,7 +2,6 @@
 """Generate dependency-free PNG assets for the Tilo Plymouth theme."""
 
 import ctypes
-import json
 import math
 import os
 import re
@@ -174,8 +173,8 @@ def progress_pixel(width, first, second):
     return pixel
 
 
-# The login screen's face (look.json's `family`, the variable file the
-# greeter's font catalog installs), set by main() before anything is drawn.
+# The login screen's face (LOOK's `family`, the variable file the greeter's
+# font catalog installs), set by main() before anything is drawn.
 FACE = None
 CUT_DIR = tempfile.TemporaryDirectory(prefix="tilo-plymouth-faces-")
 
@@ -201,7 +200,7 @@ CUTS = {}
 def face(size, weight=400):
     """FACE at `size` and `weight`. It is drawn from a static cut of that
     weight: FreeType's advances for a variable instance leave gaps between
-    letters, so the pre-rendered text uses the same cuts Plymouth draws."""
+    letters."""
     if weight not in CUTS:
         CUTS[weight] = os.path.join(CUT_DIR.name, f"{weight}.ttf")
         _HarfBuzz().instance(FACE, weight, CUTS[weight])
@@ -211,7 +210,7 @@ def face(size, weight=400):
 class _HarfBuzz:
     """The few libharfbuzz-subset calls that cut a variable face to one
     static instance: the instancer the font catalog's own HarfBuzz carries,
-    so the boot screen needs no font tooling beyond the image's."""
+    so the theme needs no font tooling beyond the image's."""
 
     def __init__(self):
         P = ctypes.c_void_p
@@ -223,11 +222,7 @@ class _HarfBuzz:
             (hb, "hb_face_reference_blob", P, [P]),
             (hb, "hb_blob_get_data", ctypes.POINTER(ctypes.c_char),
              [P, ctypes.POINTER(ctypes.c_uint)]),
-            (hb, "hb_set_create", P, []),
             (hb, "hb_set_add_range", None, [P, ctypes.c_uint32, ctypes.c_uint32]),
-            (hb, "hb_set_next_range", ctypes.c_int,
-             [P, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]),
-            (hb, "hb_face_collect_unicodes", None, [P, P]),
             (subset, "hb_subset_input_create_or_fail", P, []),
             (subset, "hb_subset_input_unicode_set", P, [P]),
             (subset, "hb_subset_input_pin_all_axes_to_default", ctypes.c_int, [P, P]),
@@ -263,33 +258,6 @@ class _HarfBuzz:
         data = self.blob_get_data(self.face_reference_blob(cut), ctypes.byref(length))
         with open(destination, "wb") as out:
             out.write(ctypes.string_at(data, length.value))
-
-    def ranges(self, path):
-        """The characters of the face at `path`, as inclusive ranges."""
-        found = self.set_create()
-        self.face_collect_unicodes(self.face(path), found)
-        first, last = ctypes.c_uint32(0xFFFFFFFF), ctypes.c_uint32(0)
-        ranges = []
-        while self.set_next_range(found, ctypes.byref(first), ctypes.byref(last)):
-            ranges.append((first.value, last.value))
-        return ranges
-
-
-def boot_faces(directory, look):
-    """The face Plymouth draws run-time text in (names, initials, messages),
-    cut to the two weights the login screen sets them in, and the
-    characters it has, which tilo-boot-signin reads to choose what name to
-    show (crates/system/boot-signin/src/glyphs.rs). The initramfs carries
-    them through os/usr/lib/dracut/modules.d/93tilo-boot-face."""
-    if look["initials_weight"] != look["name_weight"]:
-        raise RuntimeError("Plymouth has two faces: initials and names must share a weight")
-    harfbuzz = _HarfBuzz()
-    text = os.path.join(directory, "boot-face.ttf")
-    harfbuzz.instance(FACE, look["label_weight"], text)
-    harfbuzz.instance(FACE, look["name_weight"], os.path.join(directory, "boot-face-strong.ttf"))
-    with open(os.path.join(directory, "glyphs.txt"), "w", encoding="ascii") as out:
-        for first, last in harfbuzz.ranges(text):
-            out.write(f"{first:04x}-{last:04x}\n")
 
 
 def text_png(path, text, size, color, weight=400):
@@ -344,35 +312,18 @@ def hint_png(path, parts, look):
     image.save(path, format="PNG", optimize=True)
 
 
-def person_pixel(size, disc, figure):
-    """The avatar of someone whose initial the boot screen cannot draw."""
-    center = size / 2
-    disc_pixel = circle_pixel(size, disc)
-
-    def pixel(x, y):
-        px, py = x + 0.5, y + 0.5
-        head = math.hypot(px - center, py - size * 0.38) - size * 0.16
-        body = math.hypot((px - center) / 1.35, py - size * 0.86) - size * 0.26
-        inside = 1.0 - smoothstep(-0.75, 0.75, min(head, body))
-        base = disc_pixel(x, y)
-        if base[3] == 0:
-            return base
-        return (*blend(base[:3], figure, inside), base[3])
-    return pixel
-
-
-def main(directory, look_path=None, face_path=None):
-    """Everything the theme loads, into `directory`. The face is look.json's
+def main(directory, face_path=None):
+    """Everything the theme loads, into `directory`. The face is LOOK's
     family as fontconfig finds it, or `face_path` for a check of the theme's
     structure where the catalog's fonts are not installed."""
     global FACE
     os.makedirs(directory, exist_ok=True)
-    look = read_look(look_path or os.path.join(directory, "look.json"))
+    look = LOOK
     FACE = face_path or find_face(look["family"])
-    boot_faces(directory, look)
     png(os.path.join(directory, "tilo-logo.png"), 160, 160, logo_pixel(160))
-    # The disk's own prompt (tilo.script, "dialog") takes the sign-in field's
-    # look: field.png, field-bullet.png, and its refusal as a note.
+    # The disk's own prompt (tilo.script, "dialog") in the login screen's
+    # look: its field, the dots typed into it, its refusal as a note, and the
+    # way back to signing in.
     text_png(os.path.join(directory, "unlock-heading.png"), "Unlock Tilo", look["name_size"],
              look["text"], look["name_weight"])
     text_png(os.path.join(directory, "unlock-help.png"),
@@ -384,20 +335,43 @@ def main(directory, look_path=None, face_path=None):
                  look["dim"], look["body_weight"])
     note_png(os.path.join(directory, "unlock-retry.png"),
              "Unlock unsuccessful. Please try again.", look, look["danger"])
+    width, height, radius = 360, look["field_height"], look["field_radius"]
+    png(os.path.join(directory, "field.png"), width, height,
+        rounded_rect(width, height, radius, look["field"]))
+    png(os.path.join(directory, "field-bullet.png"), 7, 7, circle_pixel(7, look["text"]))
+    hint_png(os.path.join(directory, "hint-go-back.png"),
+             [("text", "To go back to signing in, press "), ("key", "Enter"),
+              ("text", " with the field empty.")], look)
     text_png(os.path.join(directory, "starting-tilo.png"), "Starting Tilo", 26,
              (240, 240, 250), 600)
     text_png(os.path.join(directory, "shutting-down.png"), "Shutting down", 26,
              (240, 240, 250), 600)
     text_png(os.path.join(directory, "startup-help.png"),
              "Press Esc to view startup messages", 16, (158, 163, 186))
-    sign_in_assets(directory, look)
     png(os.path.join(directory, "progress-background.png"), 280, 4,
         progress_pixel(280, (54, 57, 75), (54, 57, 75)))
     png(os.path.join(directory, "progress-fill.png"), 280, 4,
         progress_pixel(280, (59, 67, 118), (111, 130, 255)))
 
 
-TEXT = (240, 240, 250)
+# The login screen's colours and sizes the disk's prompt is drawn in: the
+# greeter's dark theme (Theme::dark) for its text, field and danger colours,
+# and the Body, Label and LargeTitle text roles.
+LOOK = {
+    "family": "Tilo Sans",
+    "text": (0xEF, 0xF2, 0xF6),
+    "dim": (0xAF, 0xB1, 0xB5),
+    "danger": (0xE4, 0x7C, 0x75),
+    "field": (0x1C, 0x1E, 0x21),
+    "field_radius": 8,
+    "field_height": 32,
+    "name_size": 26,
+    "name_weight": 600,
+    "body_size": 14,
+    "body_weight": 400,
+    "label_size": 13,
+    "label_weight": 500,
+}
 UNLOCK_ASKS = {
     "password-recovery": "Enter your password or recovery key",
     "passphrase-recovery": "Enter your disk passphrase or recovery key",
@@ -405,46 +379,6 @@ UNLOCK_ASKS = {
     "passphrase": "Enter your disk passphrase",
     "recovery": "Enter your recovery key",
 }
-
-
-def read_look(path):
-    """The login screen's colours and sizes (look.json, which the greeter's
-    own test keeps equal to the theme it paints with)."""
-    with open(path, encoding="utf-8") as source:
-        look = json.load(source)
-    rgb = lambda value: tuple(int(value[i:i + 2], 16) for i in (1, 3, 5))
-    for key in ("text", "dim", "danger", "field_label", "field"):
-        look[key] = rgb(look[key])
-    look["faces"] = [{"fill": rgb(slot["fill"]), "ink": rgb(slot["ink"])}
-                     for slot in look["faces"]]
-    for key in ("field_radius", "field_height", "field_label_gap", "avatar", "initials_size",
-                "name_size", "body_size", "label_size", "label_line"):
-        look[key] = round(look[key])
-    return look
-
-
-def script_look(look):
-    """The block of tilo.script that carries the look: Plymouth's script
-    language reads no files, so the values sit in the script itself, and
-    os/tests/boot_ux_invariants.sh checks that they are look.json's."""
-    def colour(name, value):
-        red, green, blue = (round(channel / 255, 3) for channel in value)
-        return f"{name}.red = {red}; {name}.green = {green}; {name}.blue = {blue};"
-    lines = [LOOK_BEGIN]
-    for key in ("text", "dim", "danger"):
-        lines.append(colour(f"look.{key}", look[key]))
-    for slot, disc in enumerate(look["faces"]):
-        lines.append(colour(f"look.ink[{slot}]", disc["ink"]))
-    lines.append(f"look.faces = {len(look['faces'])};")
-    for key in ("avatar", "initials_size", "name_size", "label_size", "label_line",
-                "field_height", "field_label_gap"):
-        lines.append(f"look.{key} = {look[key]};")
-    lines.append(LOOK_END)
-    return "\n".join(lines) + "\n"
-
-
-LOOK_BEGIN = "# ---- The login screen's look (look.json; make-plymouth-assets.py --script-look)"
-LOOK_END = "# ---- End of the login screen's look"
 
 
 def alert_pixel(size, color):
@@ -485,77 +419,11 @@ def note_png(path, text, look, color, icon=True):
     image.save(path, format="PNG", optimize=True)
 
 
-def sign_in_assets(directory, look):
-    """The sign-in screen's fixed text and shapes (tilo.script, "Sign-in"),
-    in the login screen's colours and sizes."""
-    def out(name):
-        return os.path.join(directory, name)
-
-    side = look["avatar"]
-    for slot, disc in enumerate(look["faces"]):
-        png(out(f"avatar-{slot}.png"), side, side, circle_pixel(side, disc["fill"]))
-    png(out("avatar-person.png"), side, side,
-        person_pixel(side, look["faces"][8]["fill"], look["faces"][8]["ink"]))
-    width, height, radius = 360, look["field_height"], look["field_radius"]
-    png(out("field.png"), width, height, rounded_rect(width, height, radius, look["field"]))
-    png(out("field-invalid.png"), width, height,
-        rounded_rect(width, height, radius, look["field"], look["danger"], 1.5))
-    png(out("field-bullet.png"), 7, 7, circle_pixel(7, look["text"]))
-    text_png(out("signin-heading.png"), "Sign in", look["name_size"], look["text"],
-             look["name_weight"])
-    # The field's label, above it as the login screen sets it.
-    label_png(out("field-label-pin.png"), "PIN", look)
-    label_png(out("field-label-password.png"), "Password", look)
-    note_png(out("alert.png"), "", look, look["danger"])
-    note_png(out("note-wrong-pin.png"), "Incorrect PIN. Try again.", look, look["danger"])
-    note_png(out("note-wrong-password.png"), "Incorrect password. Try again.", look,
-             look["danger"])
-    note_png(out("note-wait.png"), "Too many failed attempts. Wait, then try again.", look,
-             look["danger"])
-    note_png(out("signing-in.png"), "Signing in\u2026", look, look["dim"], icon=False)
-    hint_png(out("hint-other-ways.png"),
-             [("text", "Can't sign in? Press "), ("key", "Enter"),
-              ("text", " with the field empty.")], look)
-    hint_png(out("hint-someone-else.png"),
-             [("text", "Someone else, or can't sign in? Press "), ("key", "Enter"),
-              ("text", " with the field empty.")], look)
-    hint_png(out("hint-go-back.png"),
-             [("text", "To go back to signing in, press "), ("key", "Enter"),
-              ("text", " with the field empty.")], look)
-    text_png(out("list-heading.png"), "Who's signing in?", 26, TEXT, 600)
-    hint_png(out("list-keys.png"),
-             [("text", "Press "), ("key", "Tab"), ("text", " to move and "),
-              ("key", "Enter"), ("text", " to choose.")], look)
-    png(out("row.png"), 360, 56, rounded_rect(360, 56, 14, (31, 34, 51), (45, 49, 72), 1))
-    png(out("row-selected.png"), 360, 56,
-        rounded_rect(360, 56, 14, (40, 45, 74), (111, 130, 255), 2))
-    text_png(out("cant-sign-in.png"), "Can't sign in", 20, TEXT)
-    for number in range(1, 5):
-        text_png(out(f"account-{number}.png"), f"Account {number}", 20, TEXT)
-
-
-def label_png(path, text, look):
-    """A field's label: the label role in the field label's ink, one line of
-    the label's height, so tilo.script can put the field that height and
-    the label gap below it."""
-    font = face(look["label_size"], look["label_weight"])
-    probe = ImageDraw.Draw(PillowImage.new("RGBA", (1, 1)))
-    width = round(probe.textlength(text, font=font)) + 2
-    height = look["label_line"]
-    image = PillowImage.new("RGBA", (width, height), (0, 0, 0, 0))
-    ImageDraw.Draw(image).text((0, height / 2), text, font=font,
-                               fill=(*look["field_label"], 255), anchor="lm")
-    image.save(path, format="PNG", optimize=True)
-
-
 if __name__ == "__main__":
     arguments = sys.argv[1:]
-    if arguments[0] == "--script-look":
-        sys.stdout.write(script_look(read_look(arguments[1])))
-    else:
-        face_path = None
-        if "--face" in arguments:
-            at = arguments.index("--face")
-            face_path = arguments[at + 1]
-            del arguments[at:at + 2]
-        main(arguments[0], arguments[1] if len(arguments) > 1 else None, face_path)
+    face_path = None
+    if "--face" in arguments:
+        at = arguments.index("--face")
+        face_path = arguments[at + 1]
+        del arguments[at:at + 2]
+    main(arguments[0], face_path)

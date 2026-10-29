@@ -67,10 +67,10 @@ const GLOBAL_MESSAGES: usize = 128;
 const GLOBAL_BYTES: usize = 256 * 1024 * 1024;
 const REPLAY_MESSAGES: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS;
 const REPLAY_BYTES: usize = 64 * 1024;
-/// Host-authored commits (room governance, the channel steward's frames)
-/// take their own share of the global totals, so a crowd's member traffic
-/// never holds them back: a steward pass waits for its own commits, and
-/// every member waiting for a channel key waits for that pass.
+/// Host-authored commits (room governance, the node's channel frames) take
+/// their own share of the global totals, so a crowd's member traffic never
+/// holds them back: a channels pass waits for its own commits, and every
+/// member waiting for a channel key waits for that pass.
 const HOST_MESSAGES: usize = 16;
 /// Enough for the largest host checkpoint (a compacted record) as charged.
 const HOST_BYTES: usize = 64 * 1024 * 1024;

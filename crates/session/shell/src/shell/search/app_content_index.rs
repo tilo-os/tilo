@@ -129,7 +129,10 @@ impl Inner {
                 }
             }
         }
-        Titles { by_resource }
+        Titles {
+            by_resource,
+            earlier: crate::shell::launcher::installed_earlier_ids(),
+        }
     }
 }
 
@@ -137,6 +140,9 @@ impl Inner {
 /// with the app that published it.
 struct Titles<'a> {
     by_resource: HashMap<(&'a str, &'a str), Vec<(&'a str, &'a str)>>,
+    /// The ids apps had before: a reference written under one names what
+    /// the renamed app publishes.
+    earlier: tilo_action_policy::EarlierIds,
 }
 
 impl Titles<'_> {
@@ -144,6 +150,8 @@ impl Titles<'_> {
     /// `room` is called now.
     fn of(&self, room: &str, reference: &str) -> Option<&str> {
         let (app, resource) = referent(reference)?;
+        let app = self.earlier.current(&app).to_owned();
+        let resource = self.earlier.current_resource(&resource).unwrap_or(resource);
         self.by_resource
             .get(&(room, resource.as_str()))?
             .iter()
@@ -409,6 +417,8 @@ impl AppContentIndex {
                 }
             }
         }
+        drop(titles);
+        drop(inner);
         out
     }
 
@@ -441,6 +451,9 @@ impl AppContentIndex {
                 continue;
             }
             match serde_json::from_slice::<StoredSlot>(&bytes) {
+                // Entries kept before apps published text as each person reads it may say the
+                // title a reference was written with: they wait for their app to publish again.
+                Ok(stored) if stored.form < SLOT_FORM => {}
                 Ok(stored) => slots.push(stored),
                 Err(error) => {
                     tracing::warn!(%error, path = %path.display(), "unreadable app content slot");
@@ -504,11 +517,18 @@ impl tilo_action_broker::services::SearchIndexServices for SearchIndexService {
 /// The file the apps' lock reports are kept in.
 const SECRETS_FILE: &str = "secrets.json";
 
+/// The form slots are kept in: 1 since apps publish the text of rich text as the person
+/// reads it (a reference to a resource they cannot read never by its title).
+const SLOT_FORM: u32 = 1;
+
 /// One slot as kept on disk.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredSlot {
     key: SlotKey,
     entries: Vec<IndexEntry>,
+    /// The form it was kept in ([`SLOT_FORM`]); 0 before forms were written.
+    #[serde(default)]
+    form: u32,
 }
 
 /// One file to replace, or to remove (`None`).
@@ -525,6 +545,7 @@ impl Write {
                 serde_json::to_vec(&StoredSlot {
                     key: key.clone(),
                     entries: entries.to_vec(),
+                    form: SLOT_FORM,
                 })
                 .ok()
             })
@@ -850,5 +871,41 @@ mod tests {
         let reopened = AppContentIndex::in_memory();
         reopened.load(dir.path());
         assert_eq!(titles(&reopened.contents().visible), ["Groceries"]);
+    }
+
+    #[test]
+    fn slots_kept_before_text_was_read_per_person_wait_for_their_app() {
+        // An entry an app published before it read references for each person may hold the
+        // title a reference was written with, which this person may not be allowed to read.
+        let dir = tempfile::tempdir().unwrap();
+        let key = SlotKey::new("so.tilo.tilolang", ROOM, "");
+        let old = serde_json::json!({
+            "key": key,
+            "entries": [entry("tl:so.tilo.lang.board:p1", "The notes are in Acquisition plan")],
+        });
+        std::fs::write(
+            dir.path().join(format!("{:016x}.json", fnv1a(&key))),
+            serde_json::to_vec(&old).unwrap(),
+        )
+        .unwrap();
+        let reopened = AppContentIndex::in_memory();
+        reopened.load(dir.path());
+        assert!(reopened.contents().visible.is_empty());
+        // What the app publishes now is kept and found again.
+        reopened.apply(
+            &key,
+            IndexDelta {
+                reset: true,
+                upsert: vec![entry(
+                    "tl:so.tilo.lang.board:p1",
+                    "The notes are in Not shared with you",
+                )],
+                ..IndexDelta::default()
+            },
+        );
+        assert_eq!(
+            titles(&reopened.contents().visible),
+            ["The notes are in Not shared with you"]
+        );
     }
 }

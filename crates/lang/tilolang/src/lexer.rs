@@ -13,7 +13,7 @@ pub const KEYWORDS: &[&str] = &[
 
 /// Words that are keywords only where a declaration starts: `window` and `lens` at the start
 /// of a statement of a view body; `root`, `default`, `row` (before `view`), `scenario`,
-/// `primary` and `destructive` (before `action`) at the start of an item; `root` before a type
+/// `primary`, `destructive` and `migration` (before `action`) at the start of an item; `root` before a type
 /// in a scenario. Elsewhere they are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
     "window",
@@ -24,6 +24,7 @@ pub const CONTEXTUAL: &[&str] = &[
     "scenario",
     "primary",
     "destructive",
+    "migration",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,6 +248,7 @@ impl Lexer<'_> {
                     }
                 }
                 b'/' if self.at(1) == Some(b'/') => self.comment(start),
+                b'/' if self.operand_expected() => self.regex(start),
                 b'"' => self.string(start),
                 b'@' => self.reference(start),
                 b'0'..=b'9' => self.number(start),
@@ -625,12 +627,15 @@ impl Lexer<'_> {
         self.pos += 1;
         let id_start = self.pos;
         self.id_chars();
-        // A resource nested in another is written `doc/field:item`, one step per nesting.
+        // An item of a document is written `doc/item`. A reference written before items were
+        // named by id alone has a `/field:item` step per nesting; it names its last item.
         while self.at(0) == Some(b'/') && self.step_follows() {
             self.pos += 1;
             self.id_chars();
-            self.pos += 1;
-            self.id_chars();
+            if self.at(0) == Some(b':') {
+                self.pos += 1;
+                self.id_chars();
+            }
         }
         let id = self.slice(id_start, self.pos).to_string();
         if id.is_empty() {
@@ -667,7 +672,8 @@ impl Lexer<'_> {
         }
     }
 
-    /// Whether the `/` at the cursor starts a `/field:item` step of a reference id.
+    /// Whether the `/` at the cursor starts a `/item` (or older `/field:item`) step of a
+    /// reference id.
     fn step_follows(&self) -> bool {
         let is_id = |b: u8| is_ident_char(b) || b == b'-';
         let mut i = self.pos + 1;
@@ -675,10 +681,10 @@ impl Lexer<'_> {
         while self.bytes.get(i).is_some_and(|b| is_id(*b)) {
             i += 1;
         }
-        if i == field || self.bytes.get(i) != Some(&b':') {
+        if i == field {
             return false;
         }
-        self.bytes.get(i + 1).is_some_and(|b| is_id(*b))
+        self.bytes.get(i) != Some(&b':') || self.bytes.get(i + 1).is_some_and(|b| is_id(*b))
     }
 
     fn string(&mut self, start: usize) {
@@ -740,6 +746,91 @@ impl Lexer<'_> {
             pieces.push(StrPiece::Lit(cur));
         }
         self.push(Tok::Str(pieces), start);
+    }
+
+    /// Whether the token before this point leaves an operand to come, so a `/` here starts a
+    /// regular expression, not a division: the start of a line, an opening bracket, a comma, a
+    /// colon, an operator or a keyword.
+    fn operand_expected(&self) -> bool {
+        !matches!(
+            self.toks.last().map(|t| &t.tok),
+            Some(
+                Tok::Ident(_)
+                    | Tok::Int(_)
+                    | Tok::Float(_)
+                    | Tok::Length(..)
+                    | Tok::Duration(..)
+                    | Tok::Calendar(_)
+                    | Tok::Str(_)
+                    | Tok::Ref(_)
+                    | Tok::RParen
+                    | Tok::RBracket
+                    | Tok::RBrace
+                    | Tok::Kw("true" | "false")
+            )
+        )
+    }
+
+    /// A regular expression, `/\bTide\b/i` (agents.md, "Querying"): text whose pattern is
+    /// what is between the slashes, a `\/` standing for a slash, and whose flags (`i`, `m`, `s`,
+    /// `x`) follow the closing slash. It is a `Text` holding the pattern with its flags written
+    /// inline (`(?i)\bTide\b`), the form `grep` and `read(matching:)` take.
+    fn regex(&mut self, start: usize) {
+        self.pos += 1;
+        let mut pattern = String::new();
+        loop {
+            match self.at(0) {
+                None | Some(b'\n') => {
+                    self.error(
+                        "E002",
+                        start,
+                        self.pos,
+                        "unterminated regular expression: close it with `/` on the same line",
+                    );
+                    break;
+                }
+                Some(b'/') => {
+                    self.pos += 1;
+                    break;
+                }
+                Some(b'\\') if self.at(1) == Some(b'/') => {
+                    pattern.push('/');
+                    self.pos += 2;
+                }
+                Some(_) => {
+                    let ch = self
+                        .src
+                        .get(self.pos..)
+                        .and_then(|s| s.chars().next())
+                        .unwrap_or('?');
+                    pattern.push(ch);
+                    self.pos += ch.len_utf8();
+                }
+            }
+        }
+        let mut flags = String::new();
+        while let Some(flag) = self.at(0).filter(u8::is_ascii_alphabetic) {
+            if !matches!(flag, b'i' | b'm' | b's' | b'x') {
+                self.error(
+                    "E002",
+                    self.pos,
+                    self.pos + 1,
+                    format!(
+                        "`{}` is no flag of a regular expression; its flags are i, m, s and x",
+                        char::from(flag)
+                    ),
+                );
+            } else if !flags.contains(char::from(flag)) {
+                flags.push(char::from(flag));
+            }
+            self.pos += 1;
+        }
+        let text = if flags.is_empty() {
+            pattern
+        } else {
+            format!("(?{flags}){pattern}")
+        };
+        self.push(Tok::Str(vec![StrPiece::Lit(text)]), start);
     }
 
     fn escape(&mut self, cur: &mut String) {

@@ -192,12 +192,7 @@ fn refresh_rates(snapshot: &DisplayHardwareSnapshot) -> Vec<String> {
 }
 
 fn input_config() -> RichInputConfig {
-    keyboard_sources::effective(
-        &RichInputConfig::from_section(&settings_store::load_section(
-            settings_store::hardware::INPUT_SECTION,
-        )),
-        keyboard_sources::ALL,
-    )
+    keyboard_sources::effective(&RichInputConfig::load(), keyboard_sources::ALL)
 }
 
 /// The setting as it stands now; `None` where this session has nothing to

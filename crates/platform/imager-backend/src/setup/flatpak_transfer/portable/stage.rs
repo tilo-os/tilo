@@ -362,6 +362,8 @@ impl StagedApplications {
     }
 }
 
+/// The user's Flatpak data travels into the stage as a sealed Home unit,
+/// admitted at `user-state` before the applications unit seals it again.
 fn stage_user_state(
     source: &PortableFlatpakSource,
     runner: &impl OfflineRunner,
@@ -369,7 +371,6 @@ fn stage_user_state(
     cancel: &AtomicBool,
 ) -> io::Result<()> {
     let transfer = crate::setup::user_transfer::review(
-        runner,
         crate::setup::user_transfer::TransferRequest {
             source_home: source.home.clone(),
             target_home: grant.root.join("user-state"),
@@ -378,6 +379,7 @@ fn stage_user_state(
             copy_flatpak: true,
             system_refs: Vec::new(),
         },
+        None,
     )
     .map_err(io::Error::other)?;
     let report = transfer
@@ -419,8 +421,11 @@ fn check_allocation(
                                 .ok_or_else(|| changed("App state size overflows"))?,
                         )
                         .ok_or_else(|| changed("App state size overflows"))?;
+                    // The state is sealed as a Home unit and then admitted,
+                    // so the stage holds the package and its tree at once.
                     required = required
                         .checked_add(bytes)
+                        .and_then(|required| required.checked_add(bytes))
                         .ok_or_else(|| changed("App stage size overflows"))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}

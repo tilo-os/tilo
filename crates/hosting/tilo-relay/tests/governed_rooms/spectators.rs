@@ -152,7 +152,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
 
     // Alice's public room: Bob is an editor, and the spectator person a
     // viewer, as the room's host makes it.
-    let room = create_and_enter(&relay, &host, &laptop, "Plaza").await;
+    let room = create_and_enter(&relay, &laptop, "Plaza").await;
     let workspace_id = room.workspace_id;
     let mut bob_peer = join(
         &relay,
@@ -286,7 +286,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     .await;
 
     // Every way a device writes into the room is refused to it. Its change
-    // could be a channel access request: it reaches no steward either.
+    // could be a channel access request: no participant takes it either.
     let change = tilo_relay::CoeditPayload::RetainedDelta {
         channel: [9; 32],
         body: b"a spectator's change".to_vec(),

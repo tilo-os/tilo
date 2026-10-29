@@ -13,23 +13,17 @@ use winit::event::{ElementState, WindowEvent};
 /// Focus eligibility for one recomputation of the current layout. This owns
 /// only node ids and never survives a layout or input-capture change.
 pub(crate) struct FocusRestrictions {
-    has_surfaces: bool,
     denied: HashSet<NodeId>,
 }
 impl FocusRestrictions {
     pub(crate) fn collect(root: &dyn Widget, tree: &TaffyTree<()>) -> Self {
         let mut restrictions = Self {
-            has_surfaces: false,
             denied: HashSet::new(),
         };
         crate::history_mode::capability::visit_framework_history(root, &mut |history, _| {
-            restrictions.has_surfaces = true;
             history.extend_focus_denials(tree, &mut restrictions.denied);
         });
         restrictions
-    }
-    pub(crate) fn has_surfaces(&self) -> bool {
-        self.has_surfaces
     }
     pub(crate) fn allows(&self, node: NodeId) -> bool {
         !self.denied.contains(&node)
@@ -384,18 +378,12 @@ pub(crate) fn run_door_control(
     intent: &tilo_actions::ControlInvocation,
 ) -> Result<(), tilo_actions::DoorError> {
     let resources = [history.door_resource()];
-    let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+    let encoded = crate::bound_dispatch::encode_resource_invocation(
         &resources,
         &intent.address,
         None,
         Some(&intent.arguments),
         false,
-    )?;
-    let encoded = crate::bound_dispatch::encode_resource_action(
-        &resources,
-        &intent.address,
-        arguments.as_ref(),
-        None,
     )?;
     history
         .invoke_door(&encoded)

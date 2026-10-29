@@ -170,11 +170,47 @@ impl Walk {
             ObjType::Text => {
                 self.budget = self.budget.saturating_sub(1);
                 if let Ok(text) = doc.text(object) {
-                    self.push(&text);
+                    self.push(&unshared_references(doc, object, &text));
                 }
             }
         }
     }
+}
+
+/// `text` (of the text object `object`) with each run referring to a
+/// resource (a `mention` mark naming one, `tilo_reference::embed`) read as
+/// only being there. The run keeps the title the resource had when it was
+/// written, and the records an agent searches do not say whether the
+/// person it acts for may read what they refer to: a search never matches
+/// nor shows a referenced resource's title. People read as written.
+fn unshared_references(doc: &impl ReadDoc, object: &ObjId, text: &str) -> String {
+    use ui::tilo_reference::embed::{self, Reading};
+    let Ok(marks) = doc.marks(object) else {
+        return text.to_owned();
+    };
+    let runs: Vec<(usize, usize, String)> = marks
+        .iter()
+        .filter(|mark| mark.name() == embed::MARK)
+        .filter_map(|mark| match mark.value() {
+            automerge::ScalarValue::Str(value) if embed::names_resource(value) => {
+                Some((mark.start, mark.end, value.to_string()))
+            }
+            _ => None,
+        })
+        .collect();
+    embed::read_text(
+        text,
+        runs.iter()
+            .map(|(start, end, value)| (*start, *end, value.as_str())),
+        &mut |reference| {
+            if reference.as_person().is_some() {
+                Reading::AsWritten
+            } else {
+                Reading::Unshared
+            }
+        },
+        embed::UNSHARED,
+    )
 }
 
 /// Whether a string value reads as words rather than an id, a hash, a
@@ -862,6 +898,34 @@ mod tests {
         ] {
             assert!(!text.contains(left), "{left} in {text:?}");
         }
+    }
+
+    #[test]
+    fn a_referenced_title_is_never_searched_nor_shown() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut doc = automerge::AutoCommit::new();
+        let body = doc
+            .put_object(automerge::ROOT, "body", ObjType::Text)
+            .unwrap();
+        // `@Ada the notes are in Acquisition plan`, the task's title as it was written.
+        doc.splice_text(&body, 0, 0, "@Ada the notes are in Acquisition plan")
+            .unwrap();
+        let task = ui::tilo_reference::Embed::resource(
+            "so.tilo.lang.board",
+            "",
+            "tl:so.tilo.lang.board:plans/tasks:t1",
+        )
+        .mark_value();
+        for (start, end, value) in [(0, 4, "u-ada".to_owned()), (22, 38, task)] {
+            doc.mark(
+                &body,
+                Mark::new("mention".into(), value.as_str(), start, end),
+                ExpandMark::None,
+            )
+            .unwrap();
+        }
+        let text = plain_text(&doc);
+        assert_eq!(text, "@Ada the notes are in Not shared with you");
     }
 
     #[test]

@@ -33,7 +33,7 @@ use ui::widget::{AppModel, Element, ModelPath, NavShell, Widget};
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation};
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, RunMode, Setting, ViewCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, RunMode, ViewCx,
 };
 
 use crate::blocked::BlockedReport;
@@ -158,7 +158,7 @@ pub(crate) struct Store {
     /// Ctrl+K takes. `None` only for a window no resource hosts.
     dispatcher: Option<Dispatcher<Firewall>>,
     /// What this device last applied to its firewalld.
-    applied: Option<Setting<AppliedConfig>>,
+    applied: Option<crate::resource::AppliedOnDevice>,
     /// Where this window applies the stored configuration to the device.
     jobs: Option<ui::framework::Jobs<Firewall>>,
     /// The configuration being applied now, as its canonical text.
@@ -254,7 +254,9 @@ impl Store {
     /// runs that job.
     fn attach(&mut self, cx: &ViewCx<Firewall>) {
         self.dispatcher = Some(cx.dispatcher());
-        self.applied = Some(cx.settings::<AppliedConfig>());
+        self.applied = cx
+            .person::<AppliedConfig>()
+            .zip(cx.device().map(str::to_owned));
         self.host_writes = cx.mode() == RunMode::Live || cfg!(test);
         if self.host_writes {
             self.jobs = Some(cx.jobs());
@@ -421,14 +423,14 @@ impl Store {
     /// again after the next change; a success stays quiet, so the person
     /// keeps the confirmation of what they did.
     fn apply_to_device(&mut self, me: &Shared, config: &FirewallConfig) {
-        let (Some(jobs), Some(applied)) = (&self.jobs, &self.applied) else {
+        let (Some(jobs), Some((record, device))) = (&self.jobs, &self.applied) else {
             return;
         };
         if !self.capability.is_granted() {
             return;
         }
         let Some((canonical, config)) =
-            crate::resource::pending_apply(config, &applied.get()).pop()
+            record.with(|applied| crate::resource::pending_apply(config, applied.on(device)).pop())
         else {
             return;
         };
@@ -876,12 +878,10 @@ impl FirewallWindow {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let config = live.with(Firewall::config);
+        };
+        let config = Firewall::config(&shown);
         let mut store = self.store.borrow_mut();
         store.show_config(&config);
         store.apply_to_device(&self.store, &config);

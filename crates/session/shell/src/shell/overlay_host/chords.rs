@@ -132,7 +132,7 @@ impl ShellOverlayHost {
                 let _ = chrome.borrow_mut().switch_to_next_input_source();
             }
             A::PowerMenu => {
-                self.layers.power_menu.open();
+                self.open_power_menu();
                 let mut st = chrome.borrow_mut();
                 st.overlays.quick_settings = false;
                 st.bump();

@@ -17,10 +17,7 @@
 use tilo_document::{RichText, RichTextAction};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceApp,
-    ResourceSurface, RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{Dispatcher, ResourceApp, RunMode, ViewCx};
 use ui::tilo_resource::{
     self, ActionCx, Collection, Derived, Id, Model, Outbox, Refusal, SearchEntry, Set, Settled,
     resource,
@@ -1208,7 +1205,7 @@ impl TestMail {
 }
 
 /// Hosted-only extras that are not document state: an in-flight send.
-pub(crate) fn live_extras(app: &MailApp) -> Vec<tilo_actions::ResourceSpec> {
+pub(crate) fn live_extras(app: &crate::app::Mailroom) -> Vec<tilo_actions::ResourceSpec> {
     let mut extras = Vec::new();
     if app.has_pending_send() {
         extras.push(tilo_actions::ResourceSpec::new(
@@ -1222,29 +1219,25 @@ pub(crate) fn live_extras(app: &MailApp) -> Vec<tilo_actions::ResourceSpec> {
 
 /// Mail's preferences, which follow the person across their devices and are
 /// never seen by collaborators: the format a new message is written in and
-/// the accounts whose folders the sidebar keeps folded, and the senders
-/// whose remote images load.
+/// the accounts whose folders the sidebar keeps folded.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailPreferences {
     #[serde(default)]
     pub compose_format: crate::model::ComposeFormat,
     #[serde(default)]
     pub collapsed_accounts: Vec<String>,
-    /// The senders whose remote images load without asking.
-    #[serde(default)]
-    pub remote_content_senders: Vec<String>,
 }
 
 impl ui::storage::SettingsSchema for MailPreferences {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
-/// Framework app: the mail widget is the surface over [`Mail`].
+/// Framework app: the mail window is the view of [`Mail`].
 pub struct MailShell;
 
 /// Every screenshot scenario. Each shows the sample mailbox and accounts
 /// (`firstrun` none, `empty` an account with no mail yet) with the view state
-/// its name says, staged by the surface.
+/// its name says, staged by the window.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "wide",
@@ -1346,9 +1339,7 @@ impl ResourceApp for MailShell {
             #[cfg(not(feature = "samples"))]
             RunMode::Capture => MailApp::for_past_version(),
         };
-        // A search hit, or an agent's `open`, shows the folder or message.
-        cx.on_open(app.opener());
-        cx.surface(app)
+        crate::app::window(cx, app)
     }
 
     #[cfg(feature = "samples")]
@@ -1393,166 +1384,6 @@ impl ResourceApp for MailShell {
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(crate::i18n::catalog())
-    }
-}
-
-/// Whether an account set up on this device sends from `address`.
-fn holds_account(state: &crate::state::MailState, address: &str) -> bool {
-    state
-        .accounts
-        .accounts
-        .iter()
-        .any(|account| account.config.email == address)
-}
-
-impl ResourceSurface<Mail, MailEffect> for MailApp {
-    /// Someone searches: the servers are asked too, for mail older than
-    /// what this device keeps; what they find joins the entries below.
-    fn search_query(&mut self, query: &ui::search::SearchQuery) {
-        self.search_servers(query.text());
-    }
-
-    /// The servers are still looking: a search showing waits for what they
-    /// find.
-    fn search_pending(&self) -> bool {
-        self.searching_servers()
-    }
-
-    /// Every message already loaded, outside Trash: its subject, sender and
-    /// body come from the engine, not the document.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        let mut entries = crate::search::message_entries(&self.shared_mailbox());
-        entries.extend(self.contact_recipient_search_entries());
-        entries
-    }
-
-    fn present(&mut self, state: &std::rc::Rc<Mail>) {
-        self.has_contact_draft_conflict = state.has_draft();
-        // Shared folder/message Document state is adopted through sync from
-        // the Automerge document. An empty projection must not wipe the
-        // unpublished local mailbox corpus or in-flight compose.
-    }
-
-    /// Every change the document records that a mail server does not hold
-    /// yet — whoever made it — goes to the server from a live window on a
-    /// device with the account, and the engine's acknowledgement records it
-    /// as applied.
-    fn attach(&mut self, cx: SurfaceCx<Mail>) {
-        self.attach_framework(cx.dispatcher());
-        // A screenshot shows its fixture as it is, whatever the profile holds.
-        if cx.mode().is_live() {
-            self.wake_from_workers(cx.waker());
-            self.follow_preferences(cx.settings::<MailPreferences>());
-            self.contact_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
-            if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
-                self.follow_person_accounts(accounts);
-            }
-            if let Some(copies) = cx.person::<crate::copies::MailCopies>() {
-                self.share_copies(copies);
-            }
-        }
-        let outbox = self.server_outbox();
-        let shared = std::rc::Rc::clone(&self.shared);
-        let projection = cx.outbox(
-            Mail::paths().server,
-            move |_, update: &ServerUpdate| holds_account(&shared.borrow(), update.account()),
-            move |_, update: ServerUpdate, cx| {
-                let reply = cx.reply();
-                outbox.borrow_mut().push(
-                    update,
-                    Box::new(move |result| {
-                        reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
-                    }),
-                );
-                Ok(Effected::Pending)
-            },
-        );
-        self.follow_projection(projection);
-        let outbox = self.server_outbox();
-        let shared = std::rc::Rc::clone(&self.shared);
-        let delivery = cx.outbox(
-            Mail::paths().outbox,
-            move |_, outgoing: &Outgoing| holds_account(&shared.borrow(), &outgoing.account),
-            move |_, outgoing: Outgoing, cx| {
-                let reply = cx.reply();
-                outbox.borrow_mut().deliver(
-                    outgoing,
-                    Box::new(move |result| {
-                        reply.finish(result.map(|settled| tilo_actions::ActionOutput {
-                            value: serde_json::to_value(&settled).ok(),
-                            resources: Vec::new(),
-                        }));
-                    }),
-                );
-                Ok(Effected::Pending)
-            },
-        );
-        self.follow_delivery(delivery);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.request_stage(scenario);
-        }
-    }
-
-    fn effect(&mut self, effect: MailEffect, cx: &mut EffectCx<Mail, Self>) -> EffectAnswer {
-        // Held mail is read from the record alone, in a window or a worker.
-        if let Some(answer) = crate::held::effect(&effect, &cx.live().get()) {
-            return answer;
-        }
-        if let MailEffect::Save { message, index } = &effect {
-            let (name, bytes) = self.attachment_to_save(message, *index)?;
-            let resource = format!("mail.attachment:{message}:{index}");
-            let request = ui::portal::PickRequest::save("Save attachment", "Save", &name)
-                .thread_name("mail-portal-save-attachment")
-                .filter(ui::portal::FileFilter::all_files());
-            return Ok(
-                cx.save_file(request, bytes, move |app: &mut Self, saved, _| {
-                    Ok(app.finish_attachment_save(saved, &name, resource))
-                }),
-            );
-        }
-        if matches!(effect, MailEffect::PrepareContactDraft { .. }) {
-            let state = cx.live().get();
-            self.has_contact_draft_conflict = state.has_draft();
-        }
-        let invocation = cx.invocation().unwrap_or_default();
-        let answer = self.begin_effect(invocation, effect)?;
-        if matches!(answer, Effected::Pending) {
-            self.await_effect(invocation, cx.reply());
-        }
-        Ok(answer)
-    }
-
-    /// Fetching and preparing an invitation need a connected account.
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.can_sync() {
-            return Vec::new();
-        }
-        vec![
-            EffectStatus::unavailable(
-                MailEffect::REFRESH,
-                "account_offline",
-                "No connected mail account is available",
-            ),
-            EffectStatus::unavailable(
-                MailEffect::PREPARE_CALENDAR_INVITATION,
-                "account_offline",
-                "Connect a Mail account before preparing an invitation",
-            ),
-        ]
-    }
-
-    /// The accounts, an in-flight send and a search-index fault.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_rows()
-    }
-
-    /// A loaded message, thread, attachment or account the mailbox does not
-    /// publish.
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_row(id)
     }
 }
 
@@ -1733,8 +1564,7 @@ mod tests {
     }
 
     /// What the window adds beside the mailbox is its live rows, which
-    /// never carry a document action, and an empty mailbox presented does not
-    /// wipe the window's loaded mail.
+    /// never carry a document action.
     #[test]
     fn the_window_keeps_no_second_door() {
         let mut app = MailApp::new_sample();
@@ -1774,7 +1604,7 @@ mod tests {
             .expect("a published message opens where it is");
         assert_eq!(opened.kind, OperationKind::View);
 
-        for row in app.live_rows() {
+        for row in app.state().live_rows() {
             let row = row.into_resource();
             assert_ne!(row.kind, "mail.mailbox");
             assert!(
@@ -1785,18 +1615,6 @@ mod tests {
                 row.id.as_str()
             );
         }
-
-        let before = app.mailbox_message_count();
-        assert!(before > 0, "sample app has a local mailbox corpus");
-        <MailApp as ResourceSurface<Mail, MailEffect>>::present(
-            &mut app,
-            &std::rc::Rc::new(Mail::default()),
-        );
-        assert_eq!(
-            app.mailbox_message_count(),
-            before,
-            "an empty mailbox does not clear unpublished local mail"
-        );
     }
 
     mod captures {
@@ -1878,6 +1696,7 @@ mod tests {
             ui::i18n::I18nManager::init("en-US");
             let app = crate::app::MailApp::new_sample();
             let message = app
+                .state()
                 .shared_mailbox()
                 .messages
                 .values()
@@ -1886,12 +1705,14 @@ mod tests {
                 .clone();
             let id = format!("mail.message:{}", message.id);
             let row = app
+                .state()
                 .live_row(&id)
                 .expect("a loaded message resolves to a live row")
                 .into_resource();
             assert!(row.actions.iter().any(|action| action.id == "open"));
             assert!(
-                app.live_row("mail.message:00000000-0000-0000-0000-000000000000")
+                app.state()
+                    .live_row("mail.message:00000000-0000-0000-0000-000000000000")
                     .is_none(),
                 "a message that is not loaded resolves to nothing"
             );

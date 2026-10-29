@@ -24,7 +24,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, SyncSender};
 
-use automerge::AutoCommit;
 use tilo_content::ContentStore;
 
 use crate::actions::PhotosEffect;
@@ -34,8 +33,8 @@ use vello::peniko::ImageData;
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, DateIndexMarker, DateIndexedScrollbar, EmptyState, ImageViewer, ModalLayout,
-    ProgressBar, ScrollMetrics, ScrollRegion, TextInput, TextInputKind, Widget,
+    Button, DateIndexMarker, DateIndexedScrollbar, ImageViewer, ModalLayout, ProgressBar,
+    ScrollMetrics, ScrollRegion, TextInput, TextInputKind, Widget,
 };
 
 use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary, Rect01};
@@ -55,6 +54,10 @@ mod navigation;
 mod paint;
 mod people;
 mod widget;
+mod window;
+
+pub use window::PhotosApp;
+pub(crate) use window::view;
 
 use directory_import::build_directory_import_buttons;
 use editors::{build_metadata_editor_buttons, clear_toggled_input};
@@ -490,14 +493,17 @@ struct ViewerDetails {
     folder: Option<String>,
 }
 
+/// What a Photos window shows and does, shared between the window
+/// ([`PhotosApp`]) and the view's effect handler and publications: the
+/// library as presented, what is open, the editors, the jobs in flight.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "library mode and the three independent transient album-editor flags have distinct event and reconciliation lifecycles"
 )]
-pub struct PhotosApp {
-    /// The library's door: every edit this surface makes is one of the
-    /// library's actions, applied through it. `None` until the framework
-    /// attaches the surface; nothing is edited before then.
+pub struct Photos {
+    /// The library's door: every edit this window makes is one of the
+    /// library's actions, applied through it. `None` until the view
+    /// attaches it; nothing is edited before then.
     dispatch: Option<ui::framework::Dispatcher<crate::model::PhotoLibrary>>,
     /// The photographs and albums a search hit or an agent's `open` asked
     /// to be shown, shown on the next sync.
@@ -542,11 +548,6 @@ pub struct PhotosApp {
     notice_last: Option<String>,
     /// The last copy, whose outcome can arrive after its notice.
     pub(crate) copy: ui::CopyWatch,
-    /// What the content column shows while it has nothing to lay out.
-    empty_state: Option<EmptyState>,
-    /// What the empty state shows, and whether the framework's door was
-    /// attached to bind its action.
-    empty_state_key: Option<(EmptyShown, bool)>,
     rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
@@ -922,19 +923,7 @@ struct DirectoryImportReceipt {
     limit_reached: bool,
 }
 
-impl Default for PhotosApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PhotosApp {
-    /// An app whose content store lives in memory with it: tests and offscreen
-    /// shots. The runtime uses [`Self::new_persistent`].
-    pub fn new() -> Self {
-        Self::with_content(ContentStore::memory())
-    }
-
+impl Photos {
     /// An app keeping imported originals in, and reading photographs from,
     /// `content`. The handle is shared with the app's background workers.
     #[allow(
@@ -981,8 +970,6 @@ impl PhotosApp {
             notice_said: ui::widget::toast::Transient::new(),
             notice_last: None,
             copy: ui::CopyWatch::default(),
-            empty_state: None,
-            empty_state_key: None,
             rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
@@ -1186,15 +1173,6 @@ impl PhotosApp {
             launched: None,
             staged: None,
         }
-    }
-
-    /// This app, launched naming `path`: a folder of photographs to import
-    /// into the library the window shows, or a photograph the launch
-    /// imported, to show.
-    #[must_use]
-    pub fn launched_on(mut self, path: Option<std::path::PathBuf>) -> Self {
-        self.launched = path;
-        self
     }
 
     /// Stage the view state of a screenshot scenario on the next sync, once
@@ -1470,17 +1448,13 @@ impl PhotosApp {
         ok
     }
 
-    /// Write what is shown to `path` as a PNG. `path` must be absolute: a
-    /// relative one would land wherever this process happens to run.
-    pub fn save_to(&mut self, path: &str) -> bool {
-        let saved = std::path::Path::new(path).is_absolute()
-            && self.edited_png().is_some_and(|bytes| {
-                tilo_files::file_at(std::path::Path::new(path))
-                    .and_then(|(dir, name)| {
-                        tilo_files::blocking::save_document(&dir, &name, &bytes)
-                    })
-                    .is_ok()
-            });
+    /// Write what is shown to `path` as a PNG.
+    pub fn save_to(&mut self, path: &ui::tilo_resource::AbsolutePath) -> bool {
+        let saved = self.edited_png().is_some_and(|bytes| {
+            tilo_files::file_at(path)
+                .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
+                .is_ok()
+        });
         self.notice = Some(if saved {
             format!("{} {path}", tr("photos-saved"))
         } else {
@@ -1583,7 +1557,8 @@ impl PhotosApp {
 
     /// Show the library the framework resource already holds. An empty
     /// projection does not wipe a library that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<crate::model::PhotoLibrary>) {
+    #[doc(hidden)]
+    pub fn adopt_resource_state(&mut self, state: &Rc<crate::model::PhotoLibrary>) {
         if *self.presented == **state {
             return;
         }
@@ -1654,18 +1629,6 @@ impl PhotosApp {
             Some(dispatch) => dispatch.say_when_kept(text),
             None => self.notice = Some(text),
         }
-    }
-
-    /// This surface editing through `dispatcher`: what a test of the
-    /// surface's own methods attaches
-    /// ([`testing::dispatcher`](ui::framework::testing::dispatcher)).
-    #[must_use]
-    pub fn with_dispatcher(
-        mut self,
-        dispatcher: ui::framework::Dispatcher<crate::model::PhotoLibrary>,
-    ) -> Self {
-        self.dispatch = Some(dispatcher);
-        self
     }
 
     /// Submit a field edit or a verb to the library through its door. It
@@ -1914,61 +1877,6 @@ impl PhotosApp {
             action,
         })
     }
-
-    /// Keep the shared empty state mounted as a retained child whenever the
-    /// content column is empty, so keyboard, accessibility and automation
-    /// reach its action through the same door as a click.
-    fn refresh_empty_state(&mut self, doc: &AutoCommit) {
-        let key = self
-            .empty_shown()
-            .map(|shown| (shown, self.actions.is_some()));
-        if key != self.empty_state_key {
-            self.empty_state = key.as_ref().map(|(shown, _)| {
-                let empty = if shown.error {
-                    EmptyState::error(&shown.title, &shown.body)
-                } else {
-                    EmptyState::new(&shown.title).with_message(&shown.body)
-                }
-                .with_icon(shown.icon);
-                // Import and a new album are effects of the app, not actions
-                // of the library record: they bind through the framework's
-                // door, as the header's Open does.
-                let (label, id, effect) = match shown.action {
-                    None => return empty,
-                    // After a failure, Open says it is for another photo:
-                    // the one that failed stays failed.
-                    Some(EmptyAction::Open) => (
-                        tr(if shown.error {
-                            "photos-open-another"
-                        } else {
-                            "photos-open"
-                        }),
-                        "photos-empty-open",
-                        PhotosEffect::Import { path: None },
-                    ),
-                    Some(EmptyAction::NewAlbum) => (
-                        tr("photos-new-album"),
-                        "photos-empty-new-album",
-                        PhotosEffect::NewAlbum,
-                    ),
-                };
-                let empty = empty.with_action(label).with_action_id(id);
-                match self
-                    .actions
-                    .as_ref()
-                    .and_then(|actions| actions.effect(&effect))
-                {
-                    Some(binding) => empty.on_action(binding),
-                    None => empty,
-                }
-            });
-            self.empty_state_key = key;
-            self.structure_dirty = true;
-        }
-        if let Some(empty) = &mut self.empty_state {
-            empty.sync(doc, &automerge::ROOT);
-        }
-    }
 }
 
 /// What the empty content column says and offers.
@@ -2206,7 +2114,7 @@ fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
     crate::files::read_native(std::path::Path::new(path), pixels::MAX_ENCODED_BYTES as u64)
 }
 
-impl PhotosApp {
+impl Photos {
     fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
         let mut buttons: Vec<&mut Button> = Vec::new();
         buttons.extend(
@@ -2238,7 +2146,7 @@ impl PhotosApp {
     }
 }
 
-impl PhotosApp {
+impl Photos {
     /// Why the last search refresh was rejected, while the last good index
     /// stays in use: a row a caller can read and act on.
     pub(crate) fn search_status_row(&self) -> Option<ui::framework::LiveRow> {

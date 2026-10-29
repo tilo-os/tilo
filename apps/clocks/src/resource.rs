@@ -10,7 +10,7 @@ use ui::tilo_resource::items::item_resource_id;
 
 use crate::app::{ClocksApp, Controls, Shown, Store, duration, repeat_summary, wall_now};
 use crate::model::Clocks;
-use crate::schedule::OnThisDevice;
+use crate::schedule::{ClocksOnDevices, DeviceChoices};
 
 /// What changes only this device: which clocks float above other windows
 /// on its screen.
@@ -133,7 +133,10 @@ impl ResourceApp for ClocksShell {
         };
         let app = ClocksApp::new(
             controls,
-            cx.settings::<OnThisDevice>(),
+            DeviceChoices::new(
+                cx.person::<ClocksOnDevices>()
+                    .zip(cx.device().map(str::to_owned)),
+            ),
             cx.live().clone(),
             cx.mode().is_live(),
             (cx.record_id().cloned(), cx.opener()),

@@ -117,3 +117,19 @@ params = [
   { name = "run", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "terminal.recent-environments"
+label = "Recent environments"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "used"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "target", required = true, schema = { type = "string" } },
+]
+

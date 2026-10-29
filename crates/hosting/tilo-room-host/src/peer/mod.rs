@@ -56,7 +56,7 @@ use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
     StateCommit, authorized_state_source, captured_live_current, desktop_refusal,
     gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
-    steward_audience, steward_only_delta, unpublished,
+    unpublished,
 };
 pub use state::{Lag, StateSource};
 pub(crate) use state::{StateDelivery, StateSession, tell_governor};
@@ -70,8 +70,9 @@ pub(crate) use actions::{ActionTarget, PrivateOutbound};
 #[cfg(test)]
 use actions::{PrivateDelivery, authorize_delivery};
 use actions::{
-    RemoteActionRoute, enable_actions, enable_broker_client, handle_remote_action, register_broker,
-    route_private, route_signed_directed, write_private_delivery,
+    RemoteActionRoute, enable_actions, enable_broker_client, handle_host_action,
+    handle_remote_action, register_broker, route_private, route_signed_directed,
+    write_private_delivery,
 };
 use commit::{commit_run_key, handle_commit, handle_commit_run, over_change_limit};
 use compaction::handle_compaction;

@@ -4,30 +4,33 @@
 //! Embedded Framework it loads — is its own signed Tilo runtime bundle,
 //! [`RUNTIME_REF`]. It is installed the way every runtime bundle is: by the
 //! image at `/usr/lib/tilo-runtime/<version>`, or for one user under the
-//! per-user runtime directory. An app that embeds the engine names the bundle
-//! in its manifest's `[package].optional-runtimes`, and the launcher verifies
-//! the bundle's signature and mounts it read-only at
-//! `/run/tilo-runtime/<version>` inside the app's sandbox. Outside the
-//! launcher the installed bundle is used directly.
+//! per-user runtime directory. An app that embeds the engine requires the
+//! bundle in its manifest (`[package].optional-runtimes`, the key of the
+//! runtimes an app requires): installing or updating the app installs it in
+//! the same step, and the launcher verifies the bundle's signature, mounts it
+//! read-only at `/run/tilo-runtime/<version>` inside the app's sandbox and
+//! refuses to start the app without it. Outside the launcher the installed
+//! bundle is used directly.
 //!
 //! On macOS the packaged app carries the engine as a nested application in
 //! its `Contents/Frameworks` directory.
 //!
-//! A missing engine is an ordinary state: [`locate`] reports it as
-//! [`RuntimeMissing`], which an app shows as "not installed" and logs with
-//! [`RuntimeMissing::developer_hint`].
+//! Under the launcher a missing engine means a broken install; outside it (a
+//! developer run) it is ordinary. Either way [`locate`] reports it as
+//! [`RuntimeMissing`], which an app shows as [`NOT_INSTALLED_MESSAGE`] and
+//! logs with [`RuntimeMissing::developer_hint`].
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// The engine runtime's version: the directory name of its bundle and of its
 /// mount. Bump it whenever the host's protocol or its pinned CEF build
-/// changes, or when a host repair must reach an already installed bundle.
-/// The Store keeps a verified bundle already present at this version.
+/// changes. The apps that embed the engine require this version, so it
+/// installs and updates with them.
 pub const RUNTIME_VERSION: &str = "2026.10.23-chromium";
 
-/// The runtime reference an app manifest lists in
-/// `[package].optional-runtimes`.
+/// The runtime reference an app that embeds the engine requires in its
+/// manifest's `[package].optional-runtimes`.
 pub const RUNTIME_REF: &str = "tilo-runtime/2026.10.23-chromium";
 
 /// The host executable, relative to the bundle root.
@@ -73,8 +76,9 @@ impl RuntimeMissing {
     }
 }
 
-/// What a person sees when the engine is not installed.
-pub const NOT_INSTALLED_MESSAGE: &str = "The browser engine isn’t installed yet.";
+/// What a person sees when the engine is missing. The app requires it, so
+/// this is a broken install: updating or reinstalling the app repairs it.
+pub const NOT_INSTALLED_MESSAGE: &str = "The browser engine is missing.";
 
 /// What a person sees when an installed engine fails to start. The cause goes
 /// to the log.

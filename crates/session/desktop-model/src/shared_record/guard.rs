@@ -52,6 +52,10 @@ pub enum DesktopRefusal {
         owner = act.owner.as_deref().unwrap_or("nobody")
     )]
     NotTheirs { writer: String, act: Touched },
+    /// It changes how someone else's window resumes, or another person's
+    /// device focus ([`super::continuation`]).
+    #[error("{writer} may not change where someone else left off with window {window}")]
+    NotTheirContinuation { writer: String, window: TabId },
     /// It binds a window to another record than the one it showed.
     #[error(
         "{writer} may not bind window {window} to another record: it shows its record for good"
@@ -100,6 +104,20 @@ pub fn judge(
             return Err(DesktopRefusal::NotTheirs {
                 writer: writer.person.to_owned(),
                 act,
+            });
+        }
+        let mut authors = left.authors;
+        authors.extend(seen.authors);
+        if let Some(window) = super::continuation::foreign_changes(
+            doc,
+            change.deps(),
+            &[change.hash()],
+            &authors,
+            writer.person,
+        ) {
+            return Err(DesktopRefusal::NotTheirContinuation {
+                writer: writer.person.to_owned(),
+                window,
             });
         }
     }

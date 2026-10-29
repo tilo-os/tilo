@@ -230,7 +230,6 @@ impl Desktop {
         let home = private_home(&runtime_dir);
         let state_path = runtime_dir.join("state.json");
         shell::shell::persist::save_tree_to(tree, &state_path).expect("seed the desktop");
-        seed_tab_records(&runtime_dir, tree);
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
@@ -286,6 +285,12 @@ impl Desktop {
         desktop
     }
 
+    /// Where the compositor keeps its desktop between runs: what a restart
+    /// reads back.
+    pub fn state_path(&self) -> PathBuf {
+        self.runtime_dir.join("state.json")
+    }
+
     /// A connection to the compositor's public Wayland socket.
     pub fn connect_wayland(&self) -> UnixStream {
         UnixStream::connect(&self.wayland_socket).expect("connect to the Wayland socket")
@@ -299,6 +304,12 @@ impl Desktop {
         if let Some(monitor) = self.monitor.take() {
             let _ = monitor.join();
         }
+    }
+
+    /// The settings profile the compositor holds. A [`settings_store::Store`]
+    /// following it writes through the compositor, as Settings does.
+    pub fn settings_root(&self) -> PathBuf {
+        self.runtime_dir.join("config/tilo")
     }
 
     /// The compositor's `XDG_CACHE_HOME`, where its crash records go.
@@ -1203,32 +1214,6 @@ fn wait_until_announced(
         }
     }
     found
-}
-
-fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
-    let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
-    let records = owners
-        .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
-        .expect("open the fixture's Shell record namespace");
-    for tab in tree
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-    {
-        shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
-            .expect("create the fixture tab's document");
-        records
-            .try_open_record(&shell::shell::tab_documents::scratch_tab_record(tab.id))
-            .expect("the fixture tab must admit its existing document");
-    }
-    records
-        .try_flush()
-        .expect("persist the fixture tab documents");
-    drop(records);
-    drop(owners);
 }
 
 fn seed_identity(runtime_dir: &Path) -> PathBuf {

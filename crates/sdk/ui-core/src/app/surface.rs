@@ -131,8 +131,16 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
-        self.track_pointer_buttons(&event);
-        self.track_acting_place(&event, window.scale_factor());
+        self.input.pointer.track_buttons(&event);
+        if self
+            .input
+            .pointer
+            .track_place(&event, window.scale_factor())
+        {
+            // The person acts again: what stood at their last control is
+            // done with.
+            self.dismiss_control_notice();
+        }
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
@@ -169,16 +177,28 @@ impl App {
                 | WindowEvent::Ime(winit::event::Ime::Commit(_))
         ) {
             self.take_over_owner_view();
+            // What the person does lands on the controls the app shows now.
+            // A change of the app's structure since its last frame (what it
+            // took in while the person typed) left the layout map behind: a
+            // press would name a control the map no longer reaches, and the
+            // control it leaves would keep the keyboard.
+            self.build_tree_before_input();
         }
         match &event {
             WindowEvent::KeyboardLayoutChanged(layout) => {
                 self.input.keyboard_layout.clone_from(layout)
             }
-            WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            WindowEvent::Focused(false) => {
+                self.input.keyboard_layout = None;
+                self.input.window_focused = false;
+            }
             // A window that takes the keyboard hands it to the app's entry
             // when nothing in it holds it: what is typed after it opens, or
             // is brought forward, reaches the app.
-            WindowEvent::Focused(true) => self.hand_keyboard_to_app(),
+            WindowEvent::Focused(true) => {
+                self.input.window_focused = true;
+                self.hand_keyboard_to_app();
+            }
             _ => {}
         }
         self.restore_physical_configuration();
@@ -448,12 +468,14 @@ impl App {
                     is_undo_redo = true;
                     handled = true;
                 }
-                // A second press closes the palette.
+                // Search of this app: the session's one search inside a
+                // session, the window's own outside one, where a second
+                // press closes it.
                 Some(crate::platform::HostShortcut::Search) => {
                     if app.actions.action_palette.is_some() {
                         app.close_action_palette();
                     } else {
-                        app.open_action_palette();
+                        app.open_search(crate::search::SearchRequest::this_app());
                     }
                     handled = true;
                 }
@@ -715,16 +737,7 @@ impl App {
             if let (Some(act), Some(fid)) = (action, app.focused_node) {
                 let mut any = false;
                 for _ in 0..times {
-                    any |= app
-                        .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(
-                                &act,
-                                &[],
-                                &mut crate::widget::Edits::lend(doc),
-                                root,
-                            )
-                        })
-                        .unwrap_or(false);
+                    any |= app.perform_node_action(fid, &act).unwrap_or(false);
                 }
                 if any {
                     handled = true;
@@ -747,14 +760,14 @@ impl App {
         app.drain_local_input_capture();
 
         if let Some(address) = app.root_widget.take_action_palette_request()
-            && app.open_action_palette_at(&address)
+            && app.open_search_at_action(&address)
         {
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
 
         if app.root_widget.take_search_request() && app.actions.action_palette.is_none() {
-            app.open_action_palette();
+            app.open_search(crate::search::SearchRequest::this_app());
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
@@ -1013,6 +1026,40 @@ impl App {
         self.input.modifiers = modifiers;
     }
 
+    /// Build the app's tree from its model without laying it out or painting
+    /// it: for a host that hands the app focus or input before its first
+    /// frame, or between a change of the app's structure and the frame that
+    /// shows it, so both find the app's controls. Returns whether a tree was
+    /// built; the next frame then repaints whole, as `damage` cannot say what
+    /// the tree it replaced painted.
+    pub fn surface_build_tree(&mut self, damage: &mut SurfaceDamage) -> bool {
+        let _entry = self.enter_wake_scope();
+        self.sync_model(false);
+        if self.layout.root_node.is_none() {
+            self.init_layout();
+        } else if !self.build_tree_before_input() {
+            return false;
+        }
+        damage.repaint("a tree built between frames");
+        true
+    }
+
+    /// Rebuild the app's tree when its structure changed since it was last
+    /// built, so input or focus handed to it between frames finds the
+    /// controls it shows now. Whether it rebuilt.
+    fn build_tree_before_input(&mut self) -> bool {
+        if self.layout.root_node.is_none() {
+            return false;
+        }
+        let changed = self.take_root_structure_dirty();
+        self.layout.structure_dirty |= changed;
+        if !self.layout.structure_dirty {
+            return false;
+        }
+        self.rebuild_structure();
+        true
+    }
+
     /// Run one frame of the app on `surface` and paint it into `scene`, in
     /// the surface's logical pixels from the app's own origin: its model
     /// pumped (collaboration, invocations, publication), synchronized, laid
@@ -1114,7 +1161,7 @@ impl App {
         let search_pending = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .is_some_and(|palette| palette.advance_search_page().pending);
         // What a window of its own repaints whole: a rebuilt tree, moved
         // geometry, another record, and what paints over the widgets.
@@ -1353,7 +1400,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(crate::action_palette::ActionPalette::is_moving)
             // History's panel moves outside the app's root (it slides in).
             || self
@@ -2296,7 +2343,7 @@ mod tests {
             assert!(
                 app.actions
                     .action_palette
-                    .as_ref()
+                    .as_deref()
                     .is_some_and(crate::action_palette::ActionPalette::is_moving),
                 "a palette a click opened arrives"
             );
@@ -2571,7 +2618,7 @@ mod tests {
         );
         app.close_action_palette();
 
-        app.input.pressed_at = None;
+        app.input.pointer.pressed_at = None;
         let _ = app.surface_frame(&region, &mut Scene::new());
         app.open_action_palette();
         assert_ne!(

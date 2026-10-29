@@ -179,7 +179,9 @@ fn install(locale: &str) -> Result<(), String> {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
             Response::Failed { message } | Response::Refused { message } => return Err(message),
-            other => return Err(format!("the installer answered {other:?}")),
+            other @ Response::LanguagePacks { .. } => {
+                return Err(format!("the installer answered {other:?}"));
+            }
         }
     }
 }

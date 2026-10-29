@@ -198,12 +198,12 @@ impl AgentModelsModel {
             }
             (SignedIn::Grant, false, reply) => {
                 let profile = agent_sign_in::new_profile(setup.service, &id);
+                let mut config = self.providers.config();
+                config.upsert(profile);
                 self.providers
-                    .settings()
-                    .update(|providers| providers.config.upsert(profile))
+                    .store(config)
                     .map_err(|error| error.to_string())?;
-                self.providers.refresh();
-                self.panel.offline_config = self.providers.get().config.clone();
+                self.panel.offline_config = self.providers.config();
                 self.read_vertex_keys();
                 self.notice = Some(t_args("agent-sign-in-done", &[("service", label.into())]));
                 if let Some(reply) = reply {
@@ -467,7 +467,7 @@ mod tests {
             pane.notice.as_deref(),
             Some(t_args("agent-sign-in-done", &[("service", "ChatGPT".into())]).as_str())
         );
-        let stored = pane.providers.get().config.clone();
+        let stored = pane.providers.config();
         let profile = stored
             .profiles
             .iter()
@@ -509,7 +509,7 @@ mod tests {
                 .unwrap(),
             GrantState::Missing
         );
-        assert_eq!(pane.providers.get().config.profiles.len(), 1);
+        assert_eq!(pane.providers.config().profiles.len(), 1);
     }
 
     /// `OpenRouter` hands back a key, and a key is stored only through

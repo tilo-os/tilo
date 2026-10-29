@@ -888,7 +888,7 @@ impl InitialReadBridge {
         }
         // No clock ends this wait: the broker answers the read once it can,
         // which for a record of a sealed room can mean after the room's
-        // host replayed it and the channel's steward admitted this device
+        // host replayed it and a participant of the channel admitted this device
         // to its keys. Each of those is an event the broker waits on; under
         // load they take what they take. The worker's end, the route's
         // failure and the broker's answer each wake it.

@@ -96,8 +96,13 @@ impl Host for Named {
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn io::Read + Send>> {
         self.0.open_read(path)
     }
-    fn open_write(&self, path: &Path, mode: WriteMode) -> io::Result<Box<dyn io::Write + Send>> {
-        self.0.open_write(path, mode)
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        run: Option<&ush_shell::Run>,
+    ) -> io::Result<Box<dyn io::Write + Send>> {
+        self.0.open_write(path, mode, run)
     }
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
         self.0.read_link(path)
@@ -929,8 +934,13 @@ impl Host for Clock {
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn io::Read + Send>> {
         self.files.open_read(path)
     }
-    fn open_write(&self, path: &Path, mode: WriteMode) -> io::Result<Box<dyn io::Write + Send>> {
-        self.files.open_write(path, mode)
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        run: Option<&ush_shell::Run>,
+    ) -> io::Result<Box<dyn io::Write + Send>> {
+        self.files.open_write(path, mode, run)
     }
     fn file_action(&self, call: &ush_shell::FileCall<'_>) -> i32 {
         self.files.file_action(call)

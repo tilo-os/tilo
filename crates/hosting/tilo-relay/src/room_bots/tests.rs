@@ -231,7 +231,7 @@ fn flood(
         doc,
         &hex::encode(governor().1.user_public_key),
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,
@@ -265,7 +265,7 @@ async fn flood_posts(rooms: &Rooms, room: &str, cert: &DeviceCert, general: &str
                 chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
                     message: spam,
                     author: mallory,
-                    reason: "spam".into(),
+                    reason: "spam".parse().unwrap(),
                 }),
             )
             .map_err(|error| error.to_string())
@@ -417,7 +417,7 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
                 doc,
                 &hex::encode(cert.user_public_key),
                 chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                    name: "general".into(),
+                    name: "general".parse().unwrap(),
                     category: None,
                     kind: None,
                     topic: None,
@@ -489,7 +489,7 @@ async fn chat_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
                 doc,
                 &hex::encode(cert.user_public_key),
                 chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                    name: "general".into(),
+                    name: "general".parse().unwrap(),
                     category: None,
                     kind: None,
                     topic: None,
@@ -949,7 +949,7 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
     );
 }
 
-/// In a public room a node stewards, guests seal every chat post. A bot
+/// In a public room whose channels a node takes part in, guests seal every chat post. A bot
 /// (the Discord bridge, say) still answers in that chat: the room decides
 /// its post as the bot's own, it reaches the chat sealed, and a guest
 /// opens it.
@@ -1377,7 +1377,7 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
                     doc,
                     &owner,
                     chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                        name: "welcome".into(),
+                        name: "welcome".parse().unwrap(),
                         category: None,
                         kind: None,
                         topic: None,

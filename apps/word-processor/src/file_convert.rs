@@ -23,14 +23,6 @@ fn extension(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn absolute(file: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(file.trim());
-    if !path.is_absolute() {
-        return Err(format!("`{file}` is not an absolute path"));
-    }
-    Ok(path)
-}
-
 /// The bytes of the file at `path`, at most
 /// [`convert::MAX_DOCUMENT_BYTES`] of them.
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
@@ -63,11 +55,9 @@ fn not_a_pdf(path: &Path) -> Result<(), String> {
 ///
 /// # Errors
 ///
-/// `file` is not an absolute path, cannot be read, is too large, is a PDF,
-/// or its format refuses it.
-pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, String> {
-    let path = absolute(file)?;
-    let bytes = read_bounded(&path)?;
+/// `path` cannot be read, is too large, is a PDF, or its format refuses it.
+pub fn read_file(path: &Path, from: Option<usize>) -> Result<serde_json::Value, String> {
+    let bytes = read_bounded(path)?;
     if let Some(format) = picture_format(&bytes) {
         return Err(format!(
             "{} is a picture ({}), not text",
@@ -75,9 +65,9 @@ pub fn read_file(file: &str, from: Option<usize>) -> Result<serde_json::Value, S
             format.mime
         ));
     }
-    let ext = read_as(&path, &bytes)?;
-    let (format, text) = as_text(&path, &ext, &bytes)?;
-    Ok(page(&path, format, &text, from.unwrap_or(0)))
+    let ext = read_as(path, &bytes)?;
+    let (format, text) = as_text(path, &ext, &bytes)?;
+    Ok(page(path, format, &text, from.unwrap_or(0)))
 }
 
 /// What the document kept as `content` in `store` says, read as
@@ -215,9 +205,9 @@ fn converted(path: &Path, to: &str) -> Result<Vec<u8>, String> {
 ///
 /// # Errors
 ///
-/// `to` is not one of [`CONVERSIONS`], `file` is not an absolute path or
-/// cannot be read as a document, or the new file cannot be written.
-pub fn convert_file(file: &str, to: &str) -> Result<PathBuf, String> {
+/// `to` is not one of [`CONVERSIONS`], `path` cannot be read as a
+/// document, or the new file cannot be written.
+pub fn convert_file(path: &Path, to: &str) -> Result<PathBuf, String> {
     let to = to.trim().trim_start_matches('.').to_ascii_lowercase();
     if !CONVERSIONS.contains(&to.as_str()) {
         return Err(format!(
@@ -225,8 +215,7 @@ pub fn convert_file(file: &str, to: &str) -> Result<PathBuf, String> {
             CONVERSIONS.join(", ")
         ));
     }
-    let path = absolute(file)?;
-    let bytes = converted(&path, &to)?;
+    let bytes = converted(path, &to)?;
     let stem = path.file_stem().map_or_else(
         || "Converted".into(),
         |stem| stem.to_string_lossy().into_owned(),
@@ -261,11 +250,10 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("Letter.md");
         std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
-        let source = source.display().to_string();
 
         let docx = convert_file(&source, ".DOCX").unwrap();
         assert!(docx.ends_with("Letter.docx"));
-        let read = read_file(&docx.display().to_string(), None).unwrap();
+        let read = read_file(&docx, None).unwrap();
         assert_eq!(read["format"], "markdown");
         assert!(
             read["text"].as_str().unwrap().contains("# Dear reader"),
@@ -283,11 +271,7 @@ mod tests {
                 .unwrap_err()
                 .contains("not .exe")
         );
-        assert!(
-            convert_file("Letter.md", "pdf").is_err(),
-            "a path, absolute"
-        );
-        assert!(read_file(&root.path().join("x.pdf").display().to_string(), None).is_err());
+        assert!(read_file(&root.path().join("x.pdf"), None).is_err());
     }
 
     /// A document kept as content (an attachment) reads as Markdown, as a
@@ -297,8 +281,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("Letter.md");
         std::fs::write(&source, "# Dear reader\n\nThank you for writing.").unwrap();
-        let docx =
-            std::fs::read(convert_file(&source.display().to_string(), "docx").unwrap()).unwrap();
+        let docx = std::fs::read(convert_file(&source, "docx").unwrap()).unwrap();
         let store = tilo_content::ContentStore::memory();
         let address = format!("tilo.content:{}", store.put(&docx).unwrap());
         let read = read_content(&store, (&address, "Letter.docx"), None).unwrap();
@@ -375,7 +358,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let file = root.path().join("passport.png");
         std::fs::write(&file, &png).unwrap();
-        let refused = read_file(&file.display().to_string(), None).unwrap_err();
+        let refused = read_file(&file, None).unwrap_err();
         assert!(
             refused.ends_with("is a picture (image/png), not text"),
             "{refused}"

@@ -14,7 +14,7 @@ fields = [
 id = "add-bookmark"
 kind = "undoable"
 params = [
-  { name = "place", required = true, schema = { type = "string" } },
+  { name = "place", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "at", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
@@ -31,7 +31,7 @@ kind = "outside"
 params = [
   { name = "device", required = true, schema = { type = "string" } },
   { name = "parent", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -41,7 +41,7 @@ params = [
   { name = "device", required = true, schema = { type = "string" } },
   { name = "folder", required = true, schema = { type = "string" } },
   { name = "entry", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -100,7 +100,7 @@ kind = "outside"
 params = [
   { name = "device", required = true, schema = { type = "string" } },
   { name = "folder", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "text", required = true, schema = { type = "string" } },
   { name = "replace", required = false, schema = { type = ["boolean", "null"] } },
 ]
@@ -147,5 +147,40 @@ id = "revert"
 kind = "outside"
 params = [
   { name = "op", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "files.recent"
+label = "Recent files"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, RecentFiles>" },
+]
+
+[[resources.verbs]]
+id = "note"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+  { name = "last_use", required = true, schema = { type = "string", enum = ["opened", "changed"] } },
+  { name = "at_ms", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "moved"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "from", required = true, schema = { type = "string" } },
+  { name = "to", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
 ]
 

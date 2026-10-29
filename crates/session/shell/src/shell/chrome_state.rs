@@ -25,44 +25,6 @@ use tilo_desktop::notifications::{
 pub use tilo_desktop::workspace_settings::{GrantDraft, WsTab};
 use tilo_quick_settings::{PasteOrigin, QuickSettingsState};
 
-/// An action-owned request to initialize only this freshly minted scratch tab.
-/// It is intentionally session-local; reopening a saved tab never recreates it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct TabRecordCreationIdentity {
-    tab: u64,
-    workspace: WorkspaceId,
-    room: crate::shell::state::RoomId,
-    tile: Vec<u8>,
-    document: Option<crate::shell::state::NativeDocumentReference>,
-}
-impl TabRecordCreationIdentity {
-    fn capture(tree: &WorkspaceTree, tab: u64) -> Option<Self> {
-        for workspace in &tree.desktop.workspaces {
-            let current = workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find(|candidate| candidate.id == tab);
-            if let Some(current) = current {
-                return Some(Self {
-                    tab,
-                    workspace: workspace.id,
-                    room: workspace.room(),
-                    tile: serde_json::to_vec(&current.tile).ok()?,
-                    document: tree.native_document_tabs.get(&tab).cloned(),
-                });
-            }
-        }
-        None
-    }
-}
-#[derive(Debug)]
-struct PendingTabRecordCreation {
-    identity: TabRecordCreationIdentity,
-    store: RecordStore,
-}
-
 fn visual_notification_alerts_enabled() -> bool {
     tilo_accessibility_settings::AccessibilitySettings::load().visual_alerts
 }
@@ -102,22 +64,6 @@ mod dropped_content_startup_tests {
             .unwrap();
         assert_eq!(group.tabs[0].id, tab);
         drop(tree);
-        // The drop opened the tab, so its document exists: the window shows
-        // the file, never "record does not exist".
-        // The fixture's store keeps documents in memory, so the record is
-        // asked for among the open ones (opening by storage key needs a disk).
-        assert!(
-            state
-                .records()
-                .is_ready(&crate::shell::tab_documents::scratch_tab_record(tab).id),
-            "a dropped file's tab has its document; pending {}, failed {:?}",
-            state.pending_tab_records.len(),
-            state
-                .failed_tab_records
-                .values()
-                .map(|(_, error)| error)
-                .collect::<Vec<_>>()
-        );
         drop(state);
     }
 
@@ -261,14 +207,6 @@ fn clock_activity_active_default() -> bool {
 /// them. Exposures are session-local and never persisted or replicated.
 pub use tilo_desktop::chrome::{ActiveExposure, ActivityFocus, ActivityGlance};
 pub use ui::search::system::SearchScope;
-
-/// The placeholder line for a new tab whose document could not be created.
-fn new_document_unavailable(error: &impl std::fmt::Display) -> String {
-    crate::shell::i18n::t_args(
-        "new-document-unavailable",
-        &[("error", error.to_string().into())],
-    )
-}
 
 /// The shell's localized and addressable view of a [`SearchScope`].
 pub trait SearchScopeText {
@@ -645,8 +583,6 @@ pub struct ChromeState {
     /// is what everything outside the widget tree already reaches
     /// through. Starts in-memory so tests write nothing to disk.
     records: RecordStore,
-    pending_tab_records: VecDeque<PendingTabRecordCreation>,
-    failed_tab_records: BTreeMap<u64, (TabRecordCreationIdentity, String)>,
     /// Wakes the loop when the record store has opened a document this
     /// thread declined to wait for ([`Self::open_records_without_waiting`]).
     records_wake: Option<RecordsWake>,
@@ -737,6 +673,11 @@ pub struct ChromeState {
     pending_closed_tabs: Vec<crate::shell::closed_tabs::ClosedTab>,
     /// A close window's Undo toast, mapped to the remembered close it restores.
     group_undo_toasts: BTreeMap<u64, u64>,
+    /// A removed desk widget's Undo toast, mapped to the widget it brings
+    /// back, and the widgets an Undo asked back that the desk has yet to
+    /// restore.
+    desk_undo_toasts: BTreeMap<u64, settings_store::desk_widgets::WidgetId>,
+    desk_restores: Vec<settings_store::desk_widgets::WidgetId>,
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
@@ -938,6 +879,8 @@ impl ChromeState {
             closed_tabs: crate::shell::closed_tabs::ClosedTabStack::default(),
             pending_closed_tabs: Vec::new(),
             group_undo_toasts: BTreeMap::new(),
+            desk_undo_toasts: BTreeMap::new(),
+            desk_restores: Vec::new(),
             memory_reopen_toasts: BTreeMap::new(),
             refused_agent_admissions: Vec::new(),
             device_asking_toasts: BTreeMap::new(),
@@ -945,8 +888,6 @@ impl ChromeState {
             device_asking_seen: std::collections::BTreeSet::new(),
             device_answers: Vec::new(),
             records: RecordStore::in_memory(),
-            pending_tab_records: VecDeque::new(),
-            failed_tab_records: BTreeMap::new(),
             records_wake: None,
             records_opened: std::sync::Arc::default(),
         }))
@@ -1517,8 +1458,6 @@ impl ChromeState {
     /// Install the session's persistent record store; called before
     /// the window tree is built.
     pub fn set_records(&mut self, records: RecordStore) {
-        self.pending_tab_records.clear();
-        self.failed_tab_records.clear();
         self.records = records;
         self.install_records_wake();
         self.bump();
@@ -1527,7 +1466,7 @@ impl ChromeState {
     /// Never wait on the disk to open or create a tab's record: this runs on
     /// the compositor's loop, where a `mkdir` stuck behind the journal froze
     /// the desktop. The store's own thread opens the document; a tab asks
-    /// again once `wake` reports it done (see `Self::retry_new_tab_records`).
+    /// again once `wake` reports it done (see `Self::resolve_opened_records`).
     pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
         self.records_wake = Some(RecordsWake(wake));
         self.install_records_wake();
@@ -1549,87 +1488,15 @@ impl ChromeState {
         durable_store::waiting::decline_on_this_thread(ready);
     }
 
-    /// Finalize a new-tab action after its complete document reference/setup.
-    /// Only transient record-loan contention retains a bounded retry ticket.
-    pub(crate) fn create_new_tab_record(&mut self, tab: u64) {
-        let Some(identity) = TabRecordCreationIdentity::capture(&self.tree(), tab) else {
-            return;
-        };
-        match super::tab_documents::create_scratch_tab_record(&self.records, tab) {
-            Ok(()) => {}
-            // Retried by `retry_new_tab_records`; an opening document wakes
-            // the loop for it.
-            Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
-                self.pending_tab_records
-                    .push_back(PendingTabRecordCreation {
-                        identity,
-                        store: self.records.clone(),
-                    });
-            }
-            Err(error) => {
-                self.failed_tab_records
-                    .insert(tab, (identity, new_document_unavailable(&error)));
-            }
-        }
-    }
-
-    /// Retain every valid ticket, attempting at most 64 per drain. Busy tickets
-    /// rotate behind unattempted work; rebuilding missing tabs adds no authority.
-    pub(crate) fn retry_new_tab_records(&mut self) {
-        let tree = self.tree_handle.read();
-        let before = self.failed_tab_records.len();
-        self.failed_tab_records.retain(|tab, (identity, _)| {
-            TabRecordCreationIdentity::capture(&tree, *tab).as_ref() == Some(identity)
-        });
-        let mut changed = self.failed_tab_records.len() != before;
-        // A document the store finished opening: tabs that were refused
-        // while it opened bind again on the resync this bump causes.
+    /// A document the store finished opening: tabs that were refused while
+    /// it opened resolve again on the resync this bump causes.
+    pub(crate) fn resolve_opened_records(&mut self) {
         if self
             .records_opened
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
-            changed = true;
-        }
-        self.pending_tab_records.retain(|pending| {
-            TabRecordCreationIdentity::capture(&tree, pending.identity.tab).as_ref()
-                == Some(&pending.identity)
-        });
-        let attempts = self.pending_tab_records.len().min(64);
-        for _ in 0..attempts {
-            let Some(pending) = self.pending_tab_records.pop_front() else {
-                break;
-            };
-            match super::tab_documents::create_scratch_tab_record(
-                &pending.store,
-                pending.identity.tab,
-            ) {
-                Ok(()) => changed = true,
-                Err(ui::record::RecordOpenError::Busy | ui::record::RecordOpenError::Opening) => {
-                    self.pending_tab_records.push_back(pending);
-                }
-                Err(error) => {
-                    self.failed_tab_records.insert(
-                        pending.identity.tab,
-                        (pending.identity, new_document_unavailable(&error)),
-                    );
-                    changed = true;
-                }
-            }
-        }
-        drop(tree);
-        if changed {
             self.bump();
         }
-    }
-
-    pub(crate) fn record_creation_errors(&self, tree: &WorkspaceTree) -> BTreeMap<u64, String> {
-        self.failed_tab_records
-            .iter()
-            .filter(|(tab, (identity, _))| {
-                TabRecordCreationIdentity::capture(tree, **tab).as_ref() == Some(identity)
-            })
-            .map(|(tab, (_, error))| (*tab, error.clone()))
-            .collect()
     }
 
     /// The guard drops at the end of the borrow scope, so concurrent
@@ -2683,10 +2550,6 @@ impl ChromeState {
         if let Some(directory) = files_directory {
             self.hosted_inputs.bind_files_directory(tab_id, directory);
         }
-        // The drop opens the tab, so it is the action that makes its
-        // document: binding never creates one, and without this the new
-        // window showed "record does not exist" instead of the file.
-        self.create_new_tab_record(tab_id);
         if let Some(path) = hosted_document {
             self.hosted_inputs.bind_document(
                 tab_id,
@@ -3311,7 +3174,9 @@ impl ChromeState {
     /// Every path that removes a toast (and the DND-suppression path)
     /// funnels through here, so history is the single complete record.
     fn record_history(&mut self, n: Notification) {
-        if self.group_undo_toasts.remove(&n.id).is_some() {
+        if self.group_undo_toasts.remove(&n.id).is_some()
+            || self.desk_undo_toasts.remove(&n.id).is_some()
+        {
             return;
         }
         self.device_asking_toasts.remove(&n.id);
@@ -3395,6 +3260,11 @@ impl ChromeState {
             if let Some(entry) = self.closed_tabs.take(serial) {
                 self.restore_closed_tab(entry);
             }
+            self.bump();
+            return true;
+        }
+        if let Some(widget) = self.desk_undo_toasts.remove(&id) {
+            self.desk_restores.push(widget);
             self.bump();
             return true;
         }
@@ -4353,12 +4223,17 @@ impl ChromeState {
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
 
+#[path = "chrome_state_canvas.rs"]
+mod canvas;
 #[path = "chrome_state_window_requests.rs"]
 mod window_requests;
 pub use window_requests::{WindowOutcome, WindowRequest};
 
 #[path = "chrome_state_remote_continuity.rs"]
 mod remote_continuity;
+
+#[path = "chrome_state_desk_undo.rs"]
+mod desk_undo;
 
 #[cfg(test)]
 mod panel_exclusion_tests {

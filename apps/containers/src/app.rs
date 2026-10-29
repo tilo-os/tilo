@@ -1,18 +1,20 @@
-//! Root widget for the container manager.
+//! The container manager's window.
 //!
-//! [`ContainersApp`] owns the engine snapshot (containers, images, volumes
-//! and distroboxes mirrored from rootless podman) and presents it in a
-//! [`NavShell`](ui::widget::NavShell): the sections are the sidebar, the container list is the
-//! overview and the chosen container is the content (see `crate::view`).
-//! Dialogs (confirming a removal, asking for a name, the new-container form,
-//! pull progress) are [`ModalDialog`]s mounted beside the shell.
+//! [`ContainersState`] holds the engine snapshot (containers, images,
+//! volumes and distroboxes mirrored from rootless podman), where the window
+//! is and what its dialogs ask; the view shares it with its effect handler.
+//! [`ContainersApp`] presents it in a [`NavShell`](ui::widget::NavShell):
+//! the sections are the sidebar, the container list is the overview and the
+//! chosen container is the content (see `crate::view`). Dialogs (confirming
+//! a removal, asking for a name, the new-container form, pull progress) are
+//! [`ModalDialog`]s mounted beside the shell.
 //!
 //! The new-container draft is the resource's record (see [`crate::draft`]),
 //! edited a splice at a time through the framework's dispatcher; where the
 //! user is (section, selection, detail tab) is this window's own, and the
 //! engine projection is host data that stays in memory.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 use ui::widget::TaffyTreeExt;
@@ -23,7 +25,7 @@ use automerge::AutoCommit;
 use automerge::ObjId;
 use taffy::prelude::*;
 use ui::a11y::{AccessNode, Role};
-use ui::framework::{Dispatcher, LiveRow};
+use ui::framework::{Dispatcher, Effected, Live, LiveRow, Publishes, RunMode, ViewCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -33,8 +35,8 @@ use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
 use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
-    AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
-    Widget,
+    AppModel, Column, Element, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text,
+    TextInput, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -315,39 +317,37 @@ impl Default for ViewState {
     }
 }
 
+/// What the window shows and the view's effect handler answers with: the
+/// engine, where the user is, what the dialogs ask and the background work.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent flags: live engine vs. sample data, a past version, \
-              an open form and a dirty structure"
+              an open form and what the window has yet to follow"
 )]
-pub struct ContainersApp {
+pub(crate) struct ContainersState {
     /// The live (or sample) engine projection.
     pub(crate) engine: Engine,
     /// Bumped whenever `engine` changes.
     engine_rev: u64,
-    /// Retained, revision-gated search projection.
-    rect: Rect,
-    /// The window, rebuilt part by part from the published model.
-    window: ModelView<(Section, bool, bool)>,
     /// What the window's parts are built from: the model, the narrow
     /// window's front screen, the intent queue and the scroll positions.
     parts: view::Parts,
     /// The engine revision and view last published to the model.
     published: Option<(u64, ViewState)>,
     intents: Intents,
-    /// The new-container form. It is retained while closed so its fields
-    /// keep their caret and binding.
-    create: ModalDialog<Column>,
     /// What the form's image field suggests: the engine's images.
     installed_images: crate::create_form::InstalledImages,
     pub(crate) create_open: bool,
+    /// The form opened or closed since the window last looked.
+    create_toggled: bool,
     pub(crate) confirm: Option<Confirm>,
-    confirm_dialog: Option<ModalDialog<Text>>,
+    /// The confirmation changed since the window last looked.
+    confirm_changed: bool,
     pub(crate) prompt: Option<Prompt>,
-    prompt_dialog: Option<ModalDialog<PromptBody>>,
+    /// The prompt changed since the window last looked.
+    prompt_changed: bool,
     /// Live pull progress, if a pull is running or just finished.
     pub(crate) pull: Option<PullProgress>,
-    pull_dialog: Option<ModalDialog<Column>>,
     pull_dirty: bool,
     /// The engine effects the window's controls asked the host for, for
     /// tests of a bare widget.
@@ -373,13 +373,33 @@ pub struct ContainersApp {
     pub(crate) live: bool,
     /// Showing a past version in History: nothing here is live.
     past: bool,
+    /// Where the user is: the section, the selected container, its tab.
+    pub(crate) view: ViewState,
+    /// Where edits of the draft go, once the view attached the window.
+    dispatcher: Option<Dispatcher<Containers>>,
+}
+
+/// The window: the shared [`ContainersState`] in the shell its parts are
+/// built into, with the dialogs it asks for mounted beside it.
+pub struct ContainersApp {
+    state: Rc<RefCell<ContainersState>>,
+    /// The draft as the document holds it, shown as it changes; `None` for
+    /// a window outside the framework.
+    document: Option<Live<Containers>>,
+    presented: Option<(u64, u64)>,
+    rect: Rect,
+    /// The window, rebuilt part by part from the published model.
+    window: ModelView<(Section, bool, bool)>,
+    intents: Intents,
+    /// The new-container form. It is retained while closed so its fields
+    /// keep their caret and binding.
+    create: ModalDialog<Column>,
+    confirm_dialog: Option<ModalDialog<Text>>,
+    prompt_dialog: Option<ModalDialog<PromptBody>>,
+    pull_dialog: Option<ModalDialog<Column>>,
     /// The structure changed (a dialog opened or closed, the shell was
     /// rebuilt): the host lays the tree out again.
     structure_dirty: bool,
-    /// Where the user is: the section, the selected container, its tab.
-    pub(crate) view: ViewState,
-    /// Where edits of the draft go, once the framework attached the surface.
-    dispatcher: Option<Dispatcher<Containers>>,
 }
 
 impl Default for ContainersApp {
@@ -406,10 +426,9 @@ fn controlled_input() -> TextInput {
 }
 
 impl ContainersApp {
-    /// The manager with no engine yet: the framework's
-    /// [`attach`](ui::framework::ResourceSurface::attach) connects it to
-    /// podman in a live window, shows a capture's engine, or leaves it empty
-    /// for a past version.
+    /// The manager with no engine yet: the view connects it to podman in a
+    /// live window, shows a capture's engine, or leaves it empty for a past
+    /// version.
     pub fn new() -> Self {
         Self::with_engine(Engine::default(), TextInput::local)
     }
@@ -435,23 +454,20 @@ impl ContainersApp {
             detail_title: ui::LocalState::new(String::new()),
         };
         let window = view::window(&parts);
-        Self {
+        let state = ContainersState {
             engine,
             engine_rev: 0,
-            rect: Rect::ZERO,
-            window,
             parts,
             published: None,
-            intents,
-            create,
+            intents: intents.clone(),
             installed_images,
             create_open: false,
+            create_toggled: false,
             confirm: None,
-            confirm_dialog: None,
+            confirm_changed: false,
             prompt: None,
-            prompt_dialog: None,
+            prompt_changed: false,
             pull: None,
-            pull_dialog: None,
             pull_dirty: false,
             #[cfg(test)]
             requested: Vec::new(),
@@ -467,12 +483,28 @@ impl ContainersApp {
             in_flight: None,
             live: false,
             past: false,
-            structure_dirty: true,
             view: ViewState::default(),
             dispatcher: None,
+        };
+        Self {
+            state: Rc::new(RefCell::new(state)),
+            document: None,
+            presented: None,
+            rect: Rect::ZERO,
+            window,
+            intents,
+            create,
+            confirm_dialog: None,
+            prompt_dialog: None,
+            pull_dialog: None,
+            structure_dirty: true,
         }
     }
 
+    /// What the window shows, shared with the view's effect handler.
+    pub(crate) fn state(&self) -> RefMut<'_, ContainersState> {
+        self.state.borrow_mut()
+    }
     fn create_dialog(
         intents: &Intents,
         make_input: fn() -> TextInput,
@@ -493,6 +525,283 @@ impl ContainersApp {
         .on_dismiss(move || dismiss.push(Intent::CloseCreate))
     }
 
+    /// Show the draft the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(shown) = document.changed_since(&mut self.presented) else {
+            return;
+        };
+        self.state().present_draft(&shown.draft);
+    }
+
+    /// Mount, rebuild or close the dialogs the state asked for since.
+    fn follow_state(&mut self) {
+        let mut state = self.state.borrow_mut();
+        if std::mem::take(&mut state.create_toggled) {
+            self.create.set_open(state.create_open);
+            focus_draft(
+                &mut self.create,
+                state.create_open.then_some(CreateField::Image),
+            );
+            self.structure_dirty = true;
+        }
+        if std::mem::take(&mut state.confirm_changed) {
+            self.confirm_dialog = state.confirm.as_ref().map(|confirm| {
+                let accept = self.intents.clone();
+                let cancel = self.intents.clone();
+                let dismiss = self.intents.clone();
+                ModalDialog::new(
+                    confirm.title(),
+                    Text::new(confirm.body()).with_role(TextRole::Body),
+                )
+                .with_test_id("containers-confirm-dialog")
+                .with_destructive(true)
+                .primary_action(confirm.verb(), move || accept.push(Intent::ConfirmAccept))
+                .secondary_action("Cancel", move || cancel.push(Intent::ConfirmCancel))
+                .on_dismiss(move || dismiss.push(Intent::ConfirmCancel))
+                .open(true)
+            });
+            self.structure_dirty = true;
+        }
+        if std::mem::take(&mut state.prompt_changed) {
+            self.prompt_dialog = state.prompt.as_ref().map(|prompt| {
+                let submit = self.intents.clone();
+                let cancel = self.intents.clone();
+                let dismiss = self.intents.clone();
+                let body = PromptBody::new(prompt.label(), prompt.placeholder())
+                    .with_initial(&prompt.value);
+                ModalDialog::new(prompt.title(), body)
+                    .with_test_id("containers-prompt-dialog")
+                    .primary_action(prompt.primary(), move || submit.push(Intent::PromptSubmit))
+                    .secondary_action("Cancel", move || cancel.push(Intent::PromptCancel))
+                    .on_dismiss(move || dismiss.push(Intent::PromptCancel))
+                    .open(true)
+            });
+            self.structure_dirty = true;
+        }
+        if std::mem::take(&mut state.pull_dirty) {
+            let had = self.pull_dialog.is_some();
+            let intents = self.intents.clone();
+            self.pull_dialog = state.pull.as_ref().map(|pull| {
+                let dismiss = self.intents.clone();
+                let title = if pull.failed.is_some() {
+                    format!("Couldn't pull {}", pull.reference)
+                } else if pull.done {
+                    format!("Pulled {}", pull.reference)
+                } else {
+                    format!("Pulling {}", pull.reference)
+                };
+                // Closing while the pull runs stops it: hiding a download that
+                // keeps consuming bandwidth and disk was the whole problem.
+                ModalDialog::new(title, view::pull_body(pull, &intents))
+                    .with_test_id("containers-pull-dialog")
+                    .on_dismiss(move || dismiss.push(Intent::ClosePull))
+                    .open(true)
+            });
+            if had != self.pull_dialog.is_some() || self.pull_dialog.is_some() {
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// Apply what the window's controls asked for, then follow the dialogs.
+    pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let typed = self
+            .prompt_dialog
+            .as_ref()
+            .map(|dialog| dialog.content().value().trim().to_owned())
+            .unwrap_or_default();
+        self.state.borrow_mut().drain_intents(doc, &typed);
+        self.follow_state();
+    }
+
+    fn handle_keys(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return;
+        };
+        if key.state != ElementState::Pressed
+            || ctx.modifiers.state().control_key()
+            || ctx.modifiers.state().super_key()
+            || ctx.modifiers.state().alt_key()
+        {
+            return;
+        }
+        let intent = match &key.logical_key {
+            Key::Character(ch) => match ch.as_str() {
+                "1" => Some(Intent::ShowSection(Section::Containers)),
+                "2" => Some(Intent::ShowSection(Section::Images)),
+                "3" => Some(Intent::ShowSection(Section::Volumes)),
+                "4" => Some(Intent::ShowSection(Section::Distrobox)),
+                "n" | "N" if self.state.borrow().engine_controls_available() => {
+                    Some(Intent::NewContainer)
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(intent) = intent {
+            self.intents.push(intent);
+            *ctx.handled = true;
+        }
+    }
+
+    fn create_open(&self) -> bool {
+        self.state.borrow().create_open
+    }
+
+    fn top_dialog_mut(&mut self) -> Option<&mut dyn Widget> {
+        let create_open = self.create_open();
+        if let Some(dialog) = self.confirm_dialog.as_mut() {
+            return Some(dialog);
+        }
+        if let Some(dialog) = self.prompt_dialog.as_mut() {
+            return Some(dialog);
+        }
+        if let Some(dialog) = self.pull_dialog.as_mut() {
+            return Some(dialog);
+        }
+        if create_open {
+            return Some(&mut self.create);
+        }
+        None
+    }
+
+    fn open_dialogs(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = Vec::new();
+        if self.create_open() {
+            out.push(&self.create);
+        }
+        if let Some(dialog) = &self.pull_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &self.prompt_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &self.confirm_dialog {
+            out.push(dialog);
+        }
+        out
+    }
+
+    fn open_dialogs_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let create_open = self.create_open();
+        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if create_open {
+            out.push(&mut self.create);
+        }
+        if let Some(dialog) = &mut self.pull_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &mut self.prompt_dialog {
+            out.push(dialog);
+        }
+        if let Some(dialog) = &mut self.confirm_dialog {
+            out.push(dialog);
+        }
+        out
+    }
+
+    /// Stage a screenshot scenario (`None` for a plain `--shots`); see
+    /// [`ContainersState::stage_scene`].
+    pub fn stage_scene(&mut self, scenario: Option<&str>) {
+        self.state().stage_scene(scenario);
+    }
+
+    /// Show the authored screenshot engine; see
+    /// [`ContainersState::stage_sample_engine`].
+    pub fn stage_sample_engine(&mut self) {
+        self.state().stage_sample_engine();
+    }
+
+    /// Do what `effect` asks, as the view's effect handler does.
+    ///
+    /// # Errors
+    /// Returns why it could not be done.
+    pub fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
+        self.state().perform_effect(effect)
+    }
+
+    pub fn is_create_open(&self) -> bool {
+        self.create_open()
+    }
+
+    /// The section shown.
+    pub fn section(&self) -> Section {
+        self.state.borrow().view.section
+    }
+
+    /// The selected container's id.
+    pub fn selected(&self) -> Option<String> {
+        self.state.borrow().view.selected.clone()
+    }
+
+    pub fn tab(&self) -> DetailTab {
+        self.state.borrow().view.tab
+    }
+}
+
+/// Give keyboard focus to one field of the new-container form (or none).
+fn focus_draft(create: &mut ModalDialog<Column>, field: Option<CreateField>) {
+    crate::create_form::for_each_input(create.content_mut(), &mut |input| {
+        let on = field == Some(input.field());
+        Widget::set_focus(input.input_mut(), on);
+    });
+}
+
+/// The view over `window`: it shares the window's state with the effect
+/// handler, attaches it to the engine this run shows and publishes the
+/// engine's rows and search entries.
+pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Element {
+    window.document = Some(cx.live().clone());
+    let dispatcher = cx.dispatcher();
+    crate::create_form::for_each_input(window.create.content_mut(), &mut |input| {
+        input.attach(dispatcher.clone());
+    });
+    let state = Rc::clone(&window.state);
+    {
+        let mut state = state.borrow_mut();
+        match cx.mode() {
+            RunMode::Live => state.connect(),
+            RunMode::Capture => {
+                if let Some(engine) = cx.fixture::<Engine>() {
+                    state.show_engine((*engine).clone());
+                }
+            }
+            RunMode::Past => state.show_past(),
+        }
+        state.dispatcher = Some(dispatcher);
+    }
+    // A search hit, or an agent's `open`, shows the row it names.
+    cx.on_open(state.borrow().opener());
+    {
+        let (answer, status) = (Rc::clone(&state), Rc::clone(&state));
+        cx.effects(move |effect: ContainersEffect, _| {
+            answer
+                .borrow_mut()
+                .perform_effect(effect)
+                .map(|()| Effected::done())
+        })
+        .status(move || status.borrow().effect_statuses());
+    }
+    {
+        let state = Rc::clone(&state);
+        cx.on_stage(move |scenario| state.borrow_mut().stage_scene(scenario));
+    }
+    let (rows, row, entries) = (Rc::clone(&state), Rc::clone(&state), state);
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || rows.borrow().engine_rows())
+            .live_row(move |id| row.borrow().engine_row(id))
+            // Containers with their recent logs, images, volumes and
+            // distroboxes: what the engine holds, not the document.
+            .search_entries(move || crate::search::engine_entries(&entries.borrow().engine)),
+        Box::new(window),
+    )
+}
+
+impl ContainersState {
     /// Talk to rootless podman: probe it now, then keep the snapshot fresh
     /// in the background and run lifecycle actions against it.
     pub(crate) fn connect(&mut self) {
@@ -520,14 +829,6 @@ impl ContainersApp {
             live: false,
             ..Engine::default()
         });
-    }
-
-    /// Edit the draft through `dispatcher` from now on.
-    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Containers>) {
-        crate::create_form::for_each_input(self.create.content_mut(), &mut |input| {
-            input.attach(dispatcher.clone());
-        });
-        self.dispatcher = Some(dispatcher);
     }
 
     /// The draft as the document holds it now. A past version with a draft
@@ -588,7 +889,7 @@ impl ContainersApp {
 
     /// Ask the host for `effect` as the live row `row` offers it: it
     /// checks permission, availability and confirmation, records the effect
-    /// in activity history, and only then does the surface run it.
+    /// in activity history, and only then does the view run it.
     #[cfg_attr(
         not(test),
         allow(
@@ -1027,7 +1328,6 @@ impl ContainersApp {
         }
         pull.stop.store(true, std::sync::atomic::Ordering::Release);
         self.pull_dirty = true;
-        self.rebuild_pull();
     }
 
     /// Fold one streamed pull message into the progress.
@@ -1245,88 +1545,17 @@ impl ContainersApp {
             return;
         }
         self.create_open = open;
-        self.create.set_open(open);
-        self.focus_draft(open.then_some(CreateField::Image));
-        self.structure_dirty = true;
-    }
-
-    /// Give keyboard focus to one draft field (or none).
-    pub(crate) fn focus_draft(&mut self, field: Option<CreateField>) {
-        crate::create_form::for_each_input(self.create.content_mut(), &mut |input| {
-            let on = field == Some(input.field());
-            Widget::set_focus(input.input_mut(), on);
-        });
-    }
-
-    fn rebuild_confirm(&mut self) {
-        self.confirm_dialog = self.confirm.as_ref().map(|confirm| {
-            let accept = self.intents.clone();
-            let cancel = self.intents.clone();
-            let dismiss = self.intents.clone();
-            ModalDialog::new(
-                confirm.title(),
-                Text::new(confirm.body()).with_role(TextRole::Body),
-            )
-            .with_test_id("containers-confirm-dialog")
-            .with_destructive(true)
-            .primary_action(confirm.verb(), move || accept.push(Intent::ConfirmAccept))
-            .secondary_action("Cancel", move || cancel.push(Intent::ConfirmCancel))
-            .on_dismiss(move || dismiss.push(Intent::ConfirmCancel))
-            .open(true)
-        });
-        self.structure_dirty = true;
-    }
-
-    fn rebuild_prompt(&mut self) {
-        self.prompt_dialog = self.prompt.as_ref().map(|prompt| {
-            let submit = self.intents.clone();
-            let cancel = self.intents.clone();
-            let dismiss = self.intents.clone();
-            let body =
-                PromptBody::new(prompt.label(), prompt.placeholder()).with_initial(&prompt.value);
-            ModalDialog::new(prompt.title(), body)
-                .with_test_id("containers-prompt-dialog")
-                .primary_action(prompt.primary(), move || submit.push(Intent::PromptSubmit))
-                .secondary_action("Cancel", move || cancel.push(Intent::PromptCancel))
-                .on_dismiss(move || dismiss.push(Intent::PromptCancel))
-                .open(true)
-        });
-        self.structure_dirty = true;
-    }
-
-    fn rebuild_pull(&mut self) {
-        let had = self.pull_dialog.is_some();
-        let intents = self.intents.clone();
-        self.pull_dialog = self.pull.as_ref().map(|pull| {
-            let dismiss = self.intents.clone();
-            let title = if pull.failed.is_some() {
-                format!("Couldn't pull {}", pull.reference)
-            } else if pull.done {
-                format!("Pulled {}", pull.reference)
-            } else {
-                format!("Pulling {}", pull.reference)
-            };
-            // Closing while the pull runs stops it: hiding a download that
-            // keeps consuming bandwidth and disk was the whole problem.
-            ModalDialog::new(title, view::pull_body(pull, &intents))
-                .with_test_id("containers-pull-dialog")
-                .on_dismiss(move || dismiss.push(Intent::ClosePull))
-                .open(true)
-        });
-        self.pull_dirty = false;
-        if had != self.pull_dialog.is_some() || self.pull_dialog.is_some() {
-            self.structure_dirty = true;
-        }
+        self.create_toggled = true;
     }
 
     pub(crate) fn ask_confirm(&mut self, confirm: Confirm) {
         self.confirm = Some(confirm);
-        self.rebuild_confirm();
+        self.confirm_changed = true;
     }
 
     pub(crate) fn ask_prompt(&mut self, prompt: Prompt) {
         self.prompt = Some(prompt);
-        self.rebuild_prompt();
+        self.prompt_changed = true;
     }
 
     /// Apply the pending destructive confirm.
@@ -1345,31 +1574,26 @@ impl ContainersApp {
                 ConfirmTarget::Volume { name } => self.remove_volume(&name),
             }
         }
-        self.rebuild_confirm();
+        self.confirm_changed = true;
     }
 
-    /// Commit the prompt's typed value.
-    fn submit_prompt(&mut self) {
-        let value = self
-            .prompt_dialog
-            .as_ref()
-            .map(|dialog| dialog.content().value().trim().to_owned())
-            .unwrap_or_default();
+    /// Commit `value`, typed into the prompt.
+    fn submit_prompt(&mut self, value: &str) {
         let Some(prompt) = self.prompt.take() else {
             return;
         };
-        self.rebuild_prompt();
+        self.prompt_changed = true;
         match prompt.kind {
-            PromptKind::PullImage => self.start_pull(&value),
-            PromptKind::NewVolume => self.create_volume(&value),
-            PromptKind::TagImage => self.tag_image(&prompt.context, &value),
+            PromptKind::PullImage => self.start_pull(value),
+            PromptKind::NewVolume => self.create_volume(value),
+            PromptKind::TagImage => self.tag_image(&prompt.context, value),
         }
     }
 
     /// Present the authored screenshot engine on an existing host, with no
     /// device polling. The framework's live action executor stays installed;
     /// the offline engine refuses actual Podman lifecycle effects.
-    pub fn stage_sample_engine(&mut self) {
+    pub(crate) fn stage_sample_engine(&mut self) {
         self.live = false;
         self.bg_rx = None;
         self.bg_tx = None;
@@ -1379,7 +1603,7 @@ impl ContainersApp {
     /// Stage a screenshot scenario (`None` for a plain `--shots`): the
     /// section, selection and tab it shows, and the dialog it has open. The
     /// engine and the draft are the scenario's already.
-    pub fn stage_scene(&mut self, scenario: Option<&str>) {
+    pub(crate) fn stage_scene(&mut self, scenario: Option<&str>) {
         let scene = scenario.unwrap_or_default();
         match scene {
             "confirm" => {
@@ -1415,7 +1639,7 @@ impl ContainersApp {
                     fetched: Some((2_202_009, Some(3_565_158))),
                     stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 });
-                self.rebuild_pull();
+                self.pull_dirty = true;
             }
             // The engine did not answer a live window: the pages say so.
             "empty" => self.live = true,
@@ -1444,20 +1668,21 @@ impl ContainersApp {
         }
     }
 
-    /// Apply what the window's controls asked for.
-    pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    /// Apply what the window's controls asked for; `typed` is what the
+    /// prompt holds.
+    fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>, typed: &str) {
         self.show_opened();
         let intents = self.intents.take();
         if intents.is_empty() {
             return;
         }
         for intent in intents {
-            self.apply_intent(doc, intent);
+            self.apply_intent(doc, intent, typed);
         }
         self.publish_model();
     }
 
-    fn apply_intent(&mut self, doc: &mut ui::widget::Edits<'_>, intent: Intent) {
+    fn apply_intent(&mut self, doc: &mut ui::widget::Edits<'_>, intent: Intent, typed: &str) {
         match intent {
             Intent::ShowSection(section) => self.show_section(section),
             Intent::Select(id) => self.select_container(id),
@@ -1505,12 +1730,12 @@ impl ContainersApp {
             Intent::ConfirmAccept => self.accept_confirm(),
             Intent::ConfirmCancel => {
                 self.confirm = None;
-                self.rebuild_confirm();
+                self.confirm_changed = true;
             }
-            Intent::PromptSubmit => self.submit_prompt(),
+            Intent::PromptSubmit => self.submit_prompt(typed),
             Intent::PromptCancel => {
                 self.prompt = None;
-                self.rebuild_prompt();
+                self.prompt_changed = true;
             }
             Intent::StopPull => self.stop_pull(),
             Intent::ClosePull => {
@@ -1523,7 +1748,7 @@ impl ContainersApp {
                     self.stop_pull();
                 }
                 self.pull = None;
-                self.rebuild_pull();
+                self.pull_dirty = true;
             }
             Intent::Reconnect => self.spawn_refresh(),
         }
@@ -1563,82 +1788,53 @@ impl ContainersApp {
         );
     }
 
-    fn handle_keys(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let WindowEvent::KeyboardInput { event: key, .. } = event else {
-            return;
-        };
-        if key.state != ElementState::Pressed
-            || ctx.modifiers.state().control_key()
-            || ctx.modifiers.state().super_key()
-            || ctx.modifiers.state().alt_key()
-        {
-            return;
-        }
-        let intent = match &key.logical_key {
-            Key::Character(ch) => match ch.as_str() {
-                "1" => Some(Intent::ShowSection(Section::Containers)),
-                "2" => Some(Intent::ShowSection(Section::Images)),
-                "3" => Some(Intent::ShowSection(Section::Volumes)),
-                "4" => Some(Intent::ShowSection(Section::Distrobox)),
-                "n" | "N" if self.engine_controls_available() => Some(Intent::NewContainer),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(intent) = intent {
-            self.intents.push(intent);
-            *ctx.handled = true;
+    /// What differs from the effects' declarations: creating needs a
+    /// connected engine.
+    pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        if self.engine.live {
+            Vec::new()
+        } else {
+            vec![ui::framework::EffectStatus::unavailable(
+                ContainersEffect::CREATE,
+                "engine_offline",
+                "Creating containers requires a connected Podman engine",
+            )]
         }
     }
 
-    fn top_dialog_mut(&mut self) -> Option<&mut dyn Widget> {
-        if let Some(dialog) = self.confirm_dialog.as_mut() {
-            return Some(dialog);
+    /// Take in what the background work brought, keep the snapshot fresh
+    /// and hand the window what it shows.
+    fn tick(&mut self) {
+        self.drain_bg();
+        // Periodically re-probe the engine. Controlled fixtures own that
+        // cadence through their request channel.
+        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
+            #[cfg(test)]
+            {
+                self.controlled_runtime.is_none()
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        } {
+            self.spawn_refresh();
         }
-        if let Some(dialog) = self.prompt_dialog.as_mut() {
-            return Some(dialog);
-        }
-        if let Some(dialog) = self.pull_dialog.as_mut() {
-            return Some(dialog);
-        }
-        if self.create_open {
-            return Some(&mut self.create);
-        }
-        None
+        self.hydrate_selection();
+        self.toast.expire();
+        // The result says so in the window's bar while it lasts.
+        self.toast.publish();
+        self.publish_model();
     }
 
-    fn open_dialogs(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = Vec::new();
-        if self.create_open {
-            out.push(&self.create);
-        }
-        if let Some(dialog) = &self.pull_dialog {
-            out.push(dialog);
-        }
-        if let Some(dialog) = &self.prompt_dialog {
-            out.push(dialog);
-        }
-        if let Some(dialog) = &self.confirm_dialog {
-            out.push(dialog);
-        }
-        out
-    }
-
-    fn open_dialogs_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        if self.create_open {
-            out.push(&mut self.create);
-        }
-        if let Some(dialog) = &mut self.pull_dialog {
-            out.push(dialog);
-        }
-        if let Some(dialog) = &mut self.prompt_dialog {
-            out.push(dialog);
-        }
-        if let Some(dialog) = &mut self.confirm_dialog {
-            out.push(dialog);
-        }
-        out
+    /// Whether the window keeps syncing while idle: a live engine, or a pull
+    /// still running.
+    fn needs_idle_sync(&self) -> bool {
+        self.live
+            || self
+                .pull
+                .as_ref()
+                .is_some_and(|p| !p.done && p.failed.is_none())
     }
 }
 
@@ -1667,32 +1863,9 @@ impl Widget for ContainersApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        {
-            let (_doc, _) = ui::doc::document_ref(state, path);
-            self.drain_bg();
-            // Periodically re-probe the engine. Controlled fixtures own that
-            // cadence through their request channel.
-            if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
-                #[cfg(test)]
-                {
-                    self.controlled_runtime.is_none()
-                }
-                #[cfg(not(test))]
-                {
-                    true
-                }
-            } {
-                self.spawn_refresh();
-            }
-            self.hydrate_selection();
-            if self.pull_dirty {
-                self.rebuild_pull();
-            }
-            self.toast.expire();
-            // The result says so in the window's bar while it lasts.
-            self.toast.publish();
-            self.publish_model();
-        }
+        self.follow_document();
+        self.state.borrow_mut().tick();
+        self.follow_state();
         self.window.sync(state, path);
         self.create.sync(state, path);
         for dialog in [
@@ -1708,22 +1881,13 @@ impl Widget for ContainersApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        {
-            let (_doc, _) = ui::doc::document_ref(state, path);
-            if self.pull_dirty {
-                self.rebuild_pull();
-            }
-        }
+        self.follow_state();
         let window = self.window.update(state, path);
         window || self.structure_dirty
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.live
-            || self
-                .pull
-                .as_ref()
-                .is_some_and(|p| !p.done && p.failed.is_none())
+        self.state.borrow().needs_idle_sync()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1735,7 +1899,7 @@ impl Widget for ContainersApp {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let mut earliest = self.toast.deadline();
+        let mut earliest = self.state.borrow().toast.deadline();
         self.for_each_child(&mut |child| {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
@@ -1824,7 +1988,8 @@ impl Widget for ContainersApp {
             }
             *ctx.handled = true;
         } else {
-            let pane = self.parts.pane.get();
+            let pane = self.state.borrow().parts.pane.clone();
+            let before = pane.get();
             if let Some(&node) = children.first() {
                 self.window
                     .handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -1832,8 +1997,9 @@ impl Widget for ContainersApp {
             // Escape closes the detail the same way at every width: in a
             // narrow window the shell takes it as Back, and the selection
             // goes with the screen it was shown on.
-            let went_back = pane == NavPane::Content && self.parts.pane.get() == NavPane::Overview;
-            if is_escape(event) && self.view.selected.is_some() && (went_back || !*ctx.handled) {
+            let went_back = before == NavPane::Content && pane.get() == NavPane::Overview;
+            let selected = self.state.borrow().view.selected.is_some();
+            if is_escape(event) && selected && (went_back || !*ctx.handled) {
                 self.intents.push(Intent::Select(None));
                 *ctx.handled = true;
             } else if !*ctx.handled {
@@ -1857,7 +2023,7 @@ impl Widget for ContainersApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let create_open = self.create_open;
+        let create_open = self.create_open();
         let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.window];
         if create_open {
             out.push(&mut self.create);
@@ -1890,7 +2056,7 @@ impl Widget for ContainersApp {
         Some(
             AccessNode::new(Role::Window)
                 .with_name("Containers")
-                .with_description(&self.engine.connection)
+                .with_description(&self.state.borrow().engine.connection)
                 .with_bounds(self.rect),
         )
     }
@@ -1934,12 +2100,15 @@ impl ContainersApp {
         let (bg_tx, bg_rx) = std::sync::mpsc::channel();
         let (requests_tx, requests_rx) = std::sync::mpsc::channel();
         let (results_tx, results_rx) = std::sync::mpsc::channel();
-        let mut app = Self::with_engine(engine, controlled_input);
-        app.live = true;
-        app.bg_tx = Some(bg_tx);
-        app.bg_rx = Some(bg_rx);
-        app.controlled_runtime = Some(requests_tx);
-        app.controlled_immediate_results = Some(results_rx);
+        let app = Self::with_engine(engine, controlled_input);
+        {
+            let mut state = app.state();
+            state.live = true;
+            state.bg_tx = Some(bg_tx);
+            state.bg_rx = Some(bg_rx);
+            state.controlled_runtime = Some(requests_tx);
+            state.controlled_immediate_results = Some(results_rx);
+        }
         (app, requests_rx, results_tx)
     }
 
@@ -1977,24 +2146,6 @@ impl ContainersApp {
             }],
             ..Engine::default()
         }
-    }
-
-    pub fn is_create_open(&self) -> bool {
-        self.create_open
-    }
-
-    /// The section shown.
-    pub fn section(&self) -> Section {
-        self.view.section
-    }
-
-    /// The selected container's id.
-    pub fn selected(&self) -> Option<&str> {
-        self.view.selected.as_deref()
-    }
-
-    pub fn tab(&self) -> DetailTab {
-        self.view.tab
     }
 }
 
@@ -2113,7 +2264,7 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
     ))
 }
 
-impl ContainersApp {
+impl ContainersState {
     /// Note that `verb` was asked on `target` and has not shown in the engine
     /// yet, so the container's controls wait for it.
     fn begin_in_flight(&mut self, kind: &str, target: &str) {
@@ -2210,621 +2361,4 @@ impl ContainersApp {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The sample engine, staged as a plain `--shots` opens it.
-    fn staged() -> ContainersApp {
-        let mut app = ContainersApp::sample();
-        app.stage_scene(None);
-        app
-    }
-
-    fn driver(app: ContainersApp) -> ui::headless::FrameHarness {
-        ui::headless::FrameHarness::for_root(ui::State::new(), app, (1280, 800), ui::Theme::dark())
-    }
-
-    fn app_of(driver: &mut ui::headless::FrameHarness) -> ui::headless::RootMut<'_, ContainersApp> {
-        driver.root_mut::<ContainersApp>()
-    }
-
-    /// A finished verb says so in the window's bar, not over the list.
-    #[test]
-    fn a_result_is_the_window_bars_notice() {
-        let mut d = driver(staged());
-        app_of(&mut d).show_toast("Stopped web", false);
-        d.relayout();
-        let notice = ui::window_toolbar::notice().expect("the bar shows the result");
-        assert_eq!(notice.text, "Stopped web");
-        assert_eq!(notice.kind, ToastKind::Success);
-        app_of(&mut d).show_toast("Podman isn't running", true);
-        d.relayout();
-        assert_eq!(
-            ui::window_toolbar::notice().map(|notice| (notice.text, notice.kind)),
-            Some(("Podman isn't running".to_owned(), ToastKind::Error)),
-            "a newer result replaces the older one"
-        );
-    }
-
-    #[test]
-    fn keys_and_buttons_move_between_sections_and_open_dialogs() {
-        let mut d = driver(staged());
-        let first = view::listed_containers(&app_of(&mut d).engine)[0]
-            .id
-            .clone();
-        assert_eq!(
-            app_of(&mut d).selected(),
-            Some(first.as_str()),
-            "a demo opens on the first container"
-        );
-
-        d.key("2");
-        assert_eq!(app_of(&mut d).section(), Section::Images);
-        d.click_named("images-pull").unwrap();
-        assert_eq!(
-            app_of(&mut d).prompt.as_ref().map(|p| p.kind),
-            Some(PromptKind::PullImage)
-        );
-        d.key("Escape");
-        assert!(app_of(&mut d).prompt.is_none(), "Escape cancels the prompt");
-
-        d.key("3");
-        assert_eq!(app_of(&mut d).section(), Section::Volumes);
-        d.click_named("volumes-new").unwrap();
-        assert_eq!(
-            app_of(&mut d).prompt.as_ref().map(|p| p.kind),
-            Some(PromptKind::NewVolume)
-        );
-        d.type_text("cache");
-        d.key("Enter");
-        assert!(app_of(&mut d).prompt.is_none());
-        assert!(
-            app_of(&mut d)
-                .engine
-                .volumes
-                .iter()
-                .any(|volume| volume.name == "cache"),
-            "the typed name became a volume"
-        );
-
-        d.key("1");
-        assert_eq!(app_of(&mut d).section(), Section::Containers);
-        app_of(&mut d).select_container(Some(first));
-        d.relayout();
-        d.key("Escape");
-        assert!(
-            app_of(&mut d).selected().is_none(),
-            "Escape returns from the detail to the list"
-        );
-    }
-
-    #[test]
-    fn the_detail_closes_from_its_header_control() {
-        let mut d = driver(staged());
-        assert!(app_of(&mut d).selected().is_some());
-        d.click_named("detail-close").unwrap();
-        assert!(
-            app_of(&mut d).selected().is_none(),
-            "the close control clears the chosen container"
-        );
-        d.relayout();
-        assert!(
-            !d.targets().contains_key("detail-close"),
-            "with nothing chosen there is nothing to close"
-        );
-    }
-
-    #[test]
-    fn the_section_and_its_commands_are_in_the_window_bar() {
-        let mut d = driver(staged());
-        d.present_in_window_bar();
-        d.relayout();
-        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
-        let app = d.root::<ContainersApp>();
-        let chosen = app
-            .selected()
-            .and_then(|id| app.engine.find(id))
-            .map(|container| container.name.clone())
-            .expect("the staged window shows a container");
-        assert_eq!(
-            bar.location
-                .as_ref()
-                .map(|location| location.label.as_str()),
-            Some(chosen.as_str()),
-            "the chosen container names the window"
-        );
-        let names: Vec<&str> = bar
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        assert!(
-            names.contains(&"Remove"),
-            "the container's verbs are bar actions: {names:?}"
-        );
-        assert!(
-            !d.targets()
-                .keys()
-                .any(|id| id.starts_with("detail-remove-")),
-            "the detail draws no verbs of its own"
-        );
-        assert!(
-            !bar.actions
-                .iter()
-                .any(|action| action.name.contains("Search")),
-            "the bar's own search is the only one: {:?}",
-            bar.actions
-        );
-        let close = bar
-            .actions
-            .iter()
-            .find(|action| action.name == "Close details")
-            .expect("closing the detail is a bar action");
-        assert_eq!(
-            close.icon, "panel-right",
-            "closing the detail shows the pane it closes, not a cross beside the search"
-        );
-        let close = close.id.clone();
-        assert!(
-            !d.targets().contains_key("detail-close"),
-            "the window draws no header row of its own"
-        );
-        d.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: close });
-        // The shell presses the header's button in the frame's settle pass;
-        // the window then dispatches what the button invoked.
-        d.idle();
-        d.relayout();
-        assert!(
-            app_of(&mut d).selected().is_none(),
-            "the bar closed the detail"
-        );
-        let bar = ui::window_toolbar::declared().expect("the window's slots");
-        assert_eq!(
-            bar.location.map(|location| location.label).as_deref(),
-            Some("Containers"),
-            "with nothing chosen the section names the window"
-        );
-
-        d.key("2");
-        d.relayout();
-        let bar = ui::window_toolbar::declared().expect("the window's slots");
-        assert_eq!(
-            bar.location.map(|location| location.label).as_deref(),
-            Some("Images")
-        );
-    }
-
-    #[test]
-    fn escape_closes_the_detail_in_a_narrow_window_too() {
-        let mut d = ui::headless::FrameHarness::for_root(
-            ui::State::new(),
-            staged(),
-            (390, 844),
-            ui::Theme::dark(),
-        );
-        assert!(app_of(&mut d).selected().is_some());
-        assert_eq!(app_of(&mut d).parts.pane.get(), NavPane::Content);
-        d.key("Escape");
-        assert!(
-            app_of(&mut d).selected().is_none(),
-            "Escape clears the selection as it does in a wide window"
-        );
-        assert_eq!(
-            app_of(&mut d).parts.pane.get(),
-            NavPane::Overview,
-            "and the list is in front again"
-        );
-    }
-
-    #[test]
-    fn log_lines_read_their_severity() {
-        use ui::widget::Tone;
-        assert_eq!(
-            view::line_severity("2026-06-30T13:05:01Z WARN  api::auth: 1 failed login"),
-            Tone::Warning
-        );
-        assert_eq!(
-            view::line_severity("WARNING: Console endpoint is listening on a dynamic port"),
-            Tone::Warning
-        );
-        assert_eq!(
-            view::line_severity("logger=sqlstore level=error msg=\"database locked\""),
-            Tone::Danger
-        );
-        assert_eq!(
-            view::line_severity("2026/06/30 09:14:01 [error] 1#1: open() failed"),
-            Tone::Danger
-        );
-        assert_eq!(
-            view::line_severity("api::http: GET /api/errors 200 12ms"),
-            Tone::Neutral,
-            "a word that only contains a level is not one"
-        );
-    }
-
-    #[test]
-    fn removing_asks_first_and_then_runs_once() {
-        let mut d = driver(staged());
-        let first = view::listed_containers(&app_of(&mut d).engine)[0].clone();
-        assert!(first.status.is_running());
-        d.click_named(&format!("detail-remove-{}", first.id))
-            .unwrap();
-        assert_eq!(
-            app_of(&mut d).confirm.as_ref().map(|c| c.name.clone()),
-            Some(first.name.clone()),
-            "Remove opens the confirmation"
-        );
-        assert!(app_of(&mut d).engine.find(&first.id).is_some());
-        // The dialog opens on its safe answer: Enter keeps the container.
-        d.key("Enter");
-        assert!(app_of(&mut d).confirm.is_none());
-        assert!(
-            app_of(&mut d).engine.find(&first.id).is_some(),
-            "Enter on the opened confirmation cancels"
-        );
-
-        d.click_named(&format!("detail-remove-{}", first.id))
-            .unwrap();
-        let remove = d
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| {
-                node.label() == Some("Remove container")
-                    && node.role() == ui::accesskit::Role::Button
-            })
-            .map(|(id, _)| id)
-            .expect("the confirmation's Remove container action");
-        d.perform_a11y_action(remove, &ui::a11y::Action::Activate)
-            .unwrap();
-        assert!(app_of(&mut d).confirm.is_none());
-        assert!(
-            app_of(&mut d).engine.find(&first.id).is_none(),
-            "the confirmed removal ran"
-        );
-        assert!(
-            app_of(&mut d).selected().is_none(),
-            "the removed container is no longer selected"
-        );
-
-        let stop = view::listed_containers(&app_of(&mut d).engine)[0].clone();
-        app_of(&mut d)
-            .intents
-            .push(Intent::Select(Some(stop.id.clone())));
-        d.relayout();
-        d.click_named(&format!("detail-stop-{}", stop.id)).unwrap();
-        assert!(
-            app_of(&mut d).confirm.is_none(),
-            "stopping is not confirmed"
-        );
-        assert_eq!(
-            app_of(&mut d).engine.find(&stop.id).map(|c| c.status),
-            Some(crate::model::ContainerStatus::Exited)
-        );
-    }
-
-    /// Moving around is the window's own: switching sections leaves the
-    /// selection behind, and a selection opens the containers section.
-    #[test]
-    fn where_the_window_is_stays_local() {
-        let mut app = staged();
-        let id = app.selected().map(ToOwned::to_owned).unwrap();
-        app.show_section(Section::Images);
-        assert_eq!(app.section(), Section::Images);
-        assert!(app.selected().is_none());
-        app.select_container(Some(id.clone()));
-        assert_eq!(app.section(), Section::Containers);
-        assert_eq!(app.selected(), Some(id.as_str()));
-        app.show_tab(DetailTab::Inspect);
-        assert_eq!(app.tab(), DetailTab::Inspect);
-    }
-
-    #[test]
-    fn lifecycle_effects_and_resources_are_exported_and_bounded() {
-        // --- phase: lifecycle_control_emits_the_exported_effect_instead_of_running_podman_inline ---
-        {
-            let mut app = ContainersApp::sample();
-            app.engine.live = true;
-            let id = app.engine.containers[0].id.clone();
-            app.apply_action(Action::Stop, &id);
-            assert_eq!(
-                app.requested.last(),
-                Some(&(
-                    format!("container:{id}"),
-                    ContainersEffect::Stop {
-                        container: id.clone()
-                    }
-                )),
-                "the host is asked for the exported effect on the container's row"
-            );
-            assert_eq!(
-                app.engine.find(&id).map(|container| container.status),
-                Some(crate::model::ContainerStatus::Running),
-                "the control does not mutate the engine before host authorization"
-            );
-        }
-
-        // --- phase: resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily ---
-        {
-            let limit = RESOURCE_SNAPSHOT_LIMIT;
-            let mut app = ContainersApp::sample();
-            let template = app.engine.containers[0].clone();
-            app.engine.containers.clear();
-            for index in 0..(limit + 17) {
-                let mut container = template.clone();
-                container.id = format!("durable-{index:03}");
-                container.name = format!("Container {index:03}");
-                app.engine.containers.push(container);
-            }
-            app.engine_changed();
-
-            let rows = app.engine_rows();
-            assert_eq!(rows.len(), limit);
-            let omitted = format!("container:durable-{:03}", limit + 16);
-            assert!(rows.iter().all(|row| row.id() != omitted));
-            assert_eq!(
-                app.engine_row(&omitted).map(|row| row.id().to_owned()),
-                Some(omitted.clone())
-            );
-
-            app.engine
-                .containers
-                .retain(|container| format!("container:{}", container.id) != omitted);
-            app.engine_changed();
-            assert!(
-                app.engine_row(&omitted).is_none(),
-                "a stale search address cannot recreate removed authority"
-            );
-            assert!(
-                crate::search::engine_entries(&app.engine)
-                    .iter()
-                    .all(|entry| {
-                        entry
-                            .action
-                            .as_ref()
-                            .is_none_or(|action| action.resource != omitted)
-                    }),
-                "removed containers are absent from canonical search entries"
-            );
-        }
-    }
-
-    #[test]
-    fn controlled_pull_retains_channel_and_settles_once() {
-        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        app.start_pull(" quay.io/example/image:1 ");
-        let ControlledRuntimeRequest::Pull(request) = requests.recv().unwrap() else {
-            panic!("expected one controlled pull request");
-        };
-        assert_eq!(request.reference, "quay.io/example/image:1");
-        assert_eq!(
-            request.arguments,
-            crate::podman::pull_args("quay.io/example/image:1")
-        );
-        assert!(
-            requests.try_recv().is_err(),
-            "pull was dispatched only once"
-        );
-
-        request.line("Copying blob 1/1").unwrap();
-        request.done().unwrap();
-        app.drain_bg();
-        let pull = app.pull.as_ref().expect("retained pull progress");
-        assert_eq!(
-            pull.lines.last().map(String::as_str),
-            Some("Copying blob 1/1")
-        );
-        assert!(pull.done);
-        assert!(pull.failed.is_none());
-        assert!(matches!(
-            requests.recv().unwrap(),
-            ControlledRuntimeRequest::Refresh(_)
-        ));
-        let terminal = app.toast.deadline();
-        app.drain_bg();
-        assert_eq!(app.toast.deadline(), terminal);
-        assert!(
-            requests.try_recv().is_err(),
-            "terminal event was reduced once"
-        );
-    }
-
-    #[test]
-    fn controlled_runtime_owns_refresh_cadence() {
-        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        app.last_refresh = Instant::now()
-            .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
-            .expect("refresh interval fits below Instant::now");
-        let doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        assert!(
-            requests.try_recv().is_err(),
-            "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
-        );
-    }
-
-    #[test]
-    fn controlled_create_runs_the_draft_and_drains_one_snapshot() {
-        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        let mut record = ui::tilo_resource::Replica::<Containers>::new();
-        for (field, text) in [
-            (CreateField::Name, "web"),
-            (CreateField::Image, "nginx:1"),
-            (CreateField::Ports, "8080:80"),
-        ] {
-            record
-                .apply(ui::tilo_resource::Invoke::edit(&field.path().replace(text)).unwrap())
-                .unwrap();
-        }
-        let mut doc = record.doc().clone();
-        app.set_create_open(true);
-        app.submit_create(&mut ui::widget::Edits::lend(&mut doc));
-        let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
-            panic!("expected one controlled create request");
-        };
-        assert_eq!(
-            request.arguments,
-            vec!["run", "-d", "--name", "web", "-p", "8080:80", "nginx:1"]
-        );
-        assert!(!app.create_open);
-
-        let refreshed = Engine {
-            live: true,
-            connection: "controlled post-run snapshot".into(),
-            ..Engine::default()
-        };
-        request.post_run_snapshot(refreshed).unwrap();
-        app.drain_bg();
-        assert_eq!(app.engine.connection, "controlled post-run snapshot");
-        app.drain_bg();
-        assert!(
-            requests.try_recv().is_err(),
-            "create was dispatched only once"
-        );
-    }
-
-    #[test]
-    fn controlled_immediate_edges_capture_exact_requests() {
-        let (mut app, requests, results) = ContainersApp::controlled_runtime_root();
-
-        results.send(Ok(())).unwrap();
-        app.tag_image("quay.io/example/source:1", " registry.local/copy:2 ");
-        match requests.recv().unwrap() {
-            ControlledRuntimeRequest::Immediate {
-                operation,
-                target,
-                arguments,
-            } => {
-                assert_eq!(operation, "containers.image.tag");
-                assert_eq!(target, "quay.io/example/source:1");
-                assert_eq!(
-                    arguments,
-                    ["tag", "quay.io/example/source:1", "registry.local/copy:2"]
-                );
-            }
-            _ => panic!("expected captured tag request"),
-        }
-        assert!(matches!(
-            requests.recv().unwrap(),
-            ControlledRuntimeRequest::Refresh(_)
-        ));
-
-        results.send(Ok(())).unwrap();
-        app.create_volume(" cache ");
-        match requests.recv().unwrap() {
-            ControlledRuntimeRequest::Immediate {
-                operation,
-                target,
-                arguments,
-            } => {
-                assert_eq!(operation, "containers.volume.create");
-                assert_eq!(target, "cache");
-                assert_eq!(arguments, ["volume", "create", "cache"]);
-            }
-            _ => panic!("expected captured volume request"),
-        }
-        assert!(matches!(
-            requests.recv().unwrap(),
-            ControlledRuntimeRequest::Refresh(_)
-        ));
-        assert!(requests.try_recv().is_err());
-    }
-
-    #[test]
-    fn a_lifecycle_control_asks_the_host_for_its_exact_target() {
-        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        app.apply_action(Action::Restart, "retained-target");
-        let doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            app.requested,
-            [(
-                "container:retained-target".to_owned(),
-                ContainersEffect::Restart {
-                    container: "retained-target".into()
-                }
-            )],
-            "one effect on exactly that container's row"
-        );
-        assert!(
-            requests.try_recv().is_err(),
-            "nothing reaches the engine before the host answers"
-        );
-    }
-
-    /// A container that logs after it was opened says so: the detail read
-    /// beside the probe replaces what the tab showed, instead of the first
-    /// read being carried over for as long as the container stays open
-    /// (`APP-containers-01`).
-    #[test]
-    fn a_container_that_logs_later_replaces_the_lines_the_tab_shows() {
-        let (mut app, _requests, _results) = ContainersApp::controlled_runtime_root();
-        app.show_engine(ContainersApp::controlled_engine("controlled Podman", true));
-        app.select_container(Some("armed-container".into()));
-        let mut fresh = app
-            .engine
-            .find("armed-container")
-            .cloned()
-            .expect("the container is there");
-        fresh.logs = vec!["error: upstream timed out".into()];
-        fresh.logs_fetched_unix_ms = Some(1_700_000_000_000);
-        app.bg_tx
-            .as_ref()
-            .expect("the controlled runtime has a channel")
-            .send(Bg::Detail(Box::new(fresh)))
-            .unwrap();
-        app.drain_bg();
-        let shown = app.engine.find("armed-container").expect("still there");
-        assert_eq!(shown.logs, ["error: upstream timed out".to_string()]);
-        assert_eq!(shown.logs_fetched_unix_ms, Some(1_700_000_000_000));
-    }
-
-    /// Stopping a pull asks the engine to end it, and the sheet says it
-    /// stopped rather than pretending it finished.
-    #[test]
-    fn stopping_a_pull_ends_it_rather_than_hiding_it() {
-        let (mut app, _requests, _results) = ContainersApp::controlled_runtime_root();
-        app.start_pull("docker.io/library/alpine:3.20");
-        let pull = app.pull.as_ref().expect("the pull sheet is open");
-        assert!(!pull.stop.load(std::sync::atomic::Ordering::Acquire));
-        app.stop_pull();
-        let pull = app.pull.as_ref().expect("the sheet stays open");
-        assert!(pull.stop.load(std::sync::atomic::Ordering::Acquire));
-        assert!(!pull.stopped, "the engine has not confirmed yet");
-        app.apply_pull_msg(StreamMsg::Stopped);
-        assert!(app.pull.as_ref().is_some_and(|p| p.stopped));
-    }
-
-    /// What Podman's layer lines say about the bytes fetched.
-    #[test]
-    fn a_layer_line_says_how_many_bytes_are_fetched() {
-        assert_eq!(
-            pulled_bytes("Copying blob sha256:9fa9226be034 2.1 MiB / 3.4 MiB"),
-            Some((2_202_009, Some(3_565_158)))
-        );
-        assert_eq!(pulled_bytes("Copying blob sha256:9fa9226be034 done"), None);
-        assert_eq!(
-            pulled_bytes("Trying to pull docker.io/library/alpine:3.20"),
-            None
-        );
-    }
-
-    /// A controlled live engine selects and hydrates its one container.
-    #[test]
-    fn controlled_selection_asks_for_its_detail() {
-        let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
-        app.show_engine(ContainersApp::controlled_engine("controlled Podman", false));
-        app.select_container(Some("armed-container".into()));
-        app.hydrate_selection();
-        assert!(matches!(
-            requests.recv().unwrap(),
-            ControlledRuntimeRequest::SelectedDetails { target } if target == "armed-container"
-        ));
-        app.show_engine(ContainersApp::controlled_engine("controlled Podman", true));
-        app.hydrate_selection();
-        assert!(
-            requests.try_recv().is_err(),
-            "a hydrated container is not asked again"
-        );
-    }
-}
+mod tests;

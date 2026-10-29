@@ -56,6 +56,10 @@ by = "os/tests/test_image_size_budget.py"
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
+[[covered]]
+suite = "tools/test-env-setup.sh"
+by = "tools/tests/test_test_environment.py"
+
 [[group]]
 name = "android-runtime-supervisor"
 requirement = { cores = 1, memory = "1GiB" }
@@ -91,7 +95,7 @@ suites = ["os/tests/test_container_signature_policy.py"]
 [[group]]
 name = "os"
 requirement = { cores = 2, memory = "2GiB" }
-# os/scripts/oci-rechunk.py reads OCI images through tools/perf/image_size.py.
+# test_image_size_budget.py reads tools/perf/image_size.py's report fields.
 # test_boot_unit_ordering.py holds the extension activation unit's conditions
 # to the helper's own early return. test_service_candidate_bridge.py holds the
 # fixture's receiving closure to the installed producer's list. The installer
@@ -208,7 +212,6 @@ suites = [
   "os/tests/test_native_resume.py",
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_oci_image_diff.py",
-  "os/tests/test_oci_rechunk.py",
   "os/tests/test_pack_apps_cleanup.py",
   "os/tests/test_pack_apps_surface.py",
   "os/tests/test_shipped_runtimes.py",
@@ -883,7 +886,7 @@ readers = [
 package = "tilolang-app"
 # The window's tests compile the built-in tilolang packages (source and ids lock).
 inputs = ["apps/tl/"]
-readers = ["apps/tilolang/tests/opening.rs"]
+readers = ["apps/tilolang/tests/board.rs", "apps/tilolang/tests/opening.rs"]
 
 [[cargo]]
 package = "tilolang"
@@ -918,6 +921,7 @@ inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
 readers = [
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
+  "crates/platform/tilolang-tilo/tests/chat.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
@@ -1108,15 +1112,12 @@ inputs = [
   "os/tests/test_firstboot_transaction.py",
   "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_prepared_first_use_binding.py",
-  "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
-  "crates/session/installer/src/account_handoff.rs",
   "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
   "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
 ]
 readers = [
   "crates/system/install-helpers/tests/native_python.rs",
-  "crates/system/install-helpers/src/bin/test_home_seeds.rs",
   "crates/system/install-helpers/tests/handoff_copy.rs",
   "crates/system/install-helpers/tests/dev_ssh.rs",
   "crates/system/install-helpers/tests/bootc_copy_cache.rs",
@@ -1131,11 +1132,9 @@ readers = [
 [[cargo]]
 package = "greeter"
 # The greeter offers exactly the sessions the image ships, and records its
-# input where the boot assessment reads it. Its look is generated from the
-# greeter's theme and committed as the plymouth theme's look.json, which the
-# test compares.
-inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session", "os/usr/share/plymouth/themes/tilo/look.json"]
-readers = ["crates/session/greeter/src/greeter_app/tests.rs", "crates/session/greeter/src/seat_input.rs", "crates/session/greeter/src/boot_look.rs"]
+# input where the boot assessment reads it.
+inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session"]
+readers = ["crates/session/greeter/src/greeter_app/tests.rs", "crates/session/greeter/src/seat_input.rs"]
 
 [[cargo]]
 package = "pam-tilo"
@@ -1349,25 +1348,14 @@ inputs = ["os/legacy-guest-snapshot.env"]
 readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
-package = "installer"
-inputs = [
-  "crates/system/block-devices/tests/fixtures/installer.json",
-  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
-]
-readers = [
-  "crates/session/installer/src/disks.rs",
-  "crates/session/installer/src/online_accounts/browser.rs",
-]
-
-[[cargo]]
 package = "imager"
 inputs = [
   "crates/system/block-devices/tests/fixtures/imager.json",
+  "os/usr/libexec/tilo-guided-partition",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
   "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
-  "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
   "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
@@ -1384,8 +1372,12 @@ inputs = [
   "os/usr/libexec/tilo-firstboot-user",
   "crates/system/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
+  "crates/system/block-devices/tests/fixtures/installer.json",
+  "apps/browser/tilo-app.toml",
 ]
 readers = [
+  "crates/platform/imager-backend/src/destination/disks.rs",
+  "crates/platform/imager-backend/src/destination/online_accounts/browser.rs",
   "crates/platform/imager-backend/src/home_transfer/promotion/seeds_native_tests.rs",
   "crates/platform/imager-backend/src/probe.rs",
   "crates/platform/imager-backend/src/setup/prepared_tpm/native.rs",
@@ -1536,7 +1528,6 @@ readers = [
   "crates/session/shell/tests/support/snapshot.rs",
   "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
   "crates/session/shell/src/shell/settings_records.rs",
 ]
@@ -1551,6 +1542,13 @@ package = "tilo-browser-peer"
 inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
 readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
+
+[[cargo]]
+package = "tilo-test-env"
+# The ci profile's setup (its nextest setup scripts) and the audio endpoint
+# that ends with its owner.
+inputs = [".config/nextest.toml", "tools/test-env-setup.sh", "tools/with-headless-audio.sh", "tools/with-test-environment.sh"]
+readers = ["crates/dev/test-env/tests/run_environment.rs"]
 
 [[cargo-exempt]]
 file = "crates/session/shell/tests/headless_examples_smoke.rs"
@@ -2001,7 +1999,7 @@ reason = "the nightly workspace-test checks' runner (t.toml); it runs the worksp
 
 [[unrequired]]
 suite = "tools/test-env.sh"
-reason = "the test environment tools/ci/t-nextest.sh sources, not a suite of its own"
+reason = "the test environment for commands that are not a nextest run, not a suite of its own"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
@@ -2033,7 +2031,7 @@ reason = "drives distrobox and host GPU encoders"
 
 [[unrequired]]
 suite = "scripts/test-local.sh"
-reason = "developer entry point for the Rust suite, which CI runs through tools/test-env.sh"
+reason = "developer entry point for the Rust suite, which CI runs with nextest's ci profile"
 
 [[unrequired]]
 suite = "scripts/two-host-sync-test.sh"

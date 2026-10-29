@@ -9,8 +9,8 @@
 # time would put itself into content (the UKI's initramfs, the rpmdb, the
 # fontconfig caches) and renew those layers in every build. It never precedes
 # an RPM signature the build's offline dnf clock checks, because every
-# package is older than the snapshot that holds it. The build steps, chunkah's
-# clamp ("Rechunk the image") and the release provenance all take it from here.
+# package is older than the snapshot that holds it. The build steps and the
+# release provenance take it from here.
 set -euo pipefail
 
 [ "$#" -ge 1 ] || { echo "usage: $0 IMAGE_REF..." >&2; exit 2; }

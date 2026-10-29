@@ -28,17 +28,8 @@ fn fixture() -> tempfile::TempDir {
     root
 }
 #[test]
-fn cross_process_partial_adoption_renews_completed_copy_and_move_witnesses() {
-    use imager_backend::setup::{
-        flatpak_transfer::Runner,
-        user_transfer::{self, TransferEvent, TransferRequest},
-    };
-    struct NoApps;
-    impl Runner for NoApps {
-        fn run(&self, _: &Path, _: &[String]) -> Result<String, String> {
-            panic!("Home-only adoption must not run applications")
-        }
-    }
+fn cross_process_partial_adoption_renews_the_sealed_unit_and_move_witnesses() {
+    use imager_backend::setup::user_transfer::{self, TransferEvent, TransferRequest};
     let root = fixture();
     let source = root.path().join("original");
     let quarantine = root.path().join("quarantine-parent/home");
@@ -61,7 +52,7 @@ fn cross_process_partial_adoption_renews_completed_copy_and_move_witnesses() {
         copy_flatpak: false,
         system_refs: Vec::new(),
     };
-    let transfer = user_transfer::review(&NoApps, request.clone()).unwrap();
+    let transfer = user_transfer::review(request.clone(), None).unwrap();
     let mut worker = transfer.start(false).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -110,9 +101,9 @@ fn cross_process_partial_adoption_renews_completed_copy_and_move_witnesses() {
         std::fs::read(quarantine.join(".config/tilo/primary.json")).unwrap(),
         b"old custody"
     );
-    std::fs::write(target.join("first"), b"changed after adoption").unwrap();
-    assert!(user_transfer::recover_promotion(request.clone(), &target, &journal).is_err());
-    std::fs::write(target.join("first"), b"first document").unwrap();
+    // The sealed unit, not the original, is the authority once it is admitted.
     std::fs::write(source.join("second"), b"changed original").unwrap();
+    user_transfer::recover_promotion(request.clone(), &target, &journal).unwrap();
+    std::fs::write(target.join("first"), b"changed after adoption").unwrap();
     assert!(user_transfer::recover_promotion(request, &target, &journal).is_err());
 }

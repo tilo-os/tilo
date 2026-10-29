@@ -3,8 +3,10 @@
 # same package selection, shards, features, filters and environment, so a
 # push does not find a failure CI would have.
 #
-#   tdev bash tools/ci/local-affected.sh [--base REF] [--stage STAGES]
-#                                        [--shard N] [--tapps] [--keep-going]
+#   bash tools/ci/local-affected.sh [--base REF] [--stage STAGES]
+#                                   [--shard N] [--tapps] [--keep-going]
+#
+# Run it directly, not through tdev (which bypasses the local memory cap).
 #
 #   --base REF     comparison base (default: merge-base with origin/main; run
 #                  `git fetch origin` first, and rebase when main moved)
@@ -17,10 +19,23 @@
 #                  (the default stops at the first failure)
 #
 # Mirrors .forgejo/workflows/check.yml: select (tools/ci/select.sh), check,
-# clippy, test (cargo nextest --profile ci through tools/test-env.sh with the
-# shared filters), visual goldens, certify, example scenarios, scoped reader
-# tests and tapps. Steps CI runs only on a runner (legacy app E2E, the OS
-# image, Android, wasm) are not here: tools/ci/check-wasm.sh covers wasm.
+# clippy, test (cargo nextest --profile ci with the shared filters), visual
+# goldens, certify, example scenarios, scoped reader tests and tapps. The ci
+# profile sets up the tests' environment where they run (.config/nextest.toml),
+# so this runs the same wherever cargo runs nextest. Steps CI runs only on a
+# runner (legacy app E2E, the OS image, Android, wasm) are not here:
+# tools/ci/check-wasm.sh covers wasm.
+#
+# Any cargo works, including one that forwards compiling subcommands to a
+# remote builder. The workspace metadata comes from `cargo metadata` (which
+# compiles nothing, so a forwarding cargo wrapper runs it locally) and is
+# handed to the selector with --metadata; nothing here asks a builder for it.
+# When `cargo nextest` is unavailable through the cargo in use, the test step
+# falls back to plain `cargo test` over the same packages. That runs the
+# libtest harness without nextest's ci profile, its filtersets or the
+# environment the profile sets up, so it also runs the visual goldens and
+# push-only tests, and the separate goldens stage is skipped. Force the
+# fallback with LOCAL_AFFECTED_NO_NEXTEST=1.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -36,7 +51,7 @@ while [ $# -gt 0 ]; do
     --shard) only_shard=$2; shift 2 ;;
     --tapps) want_tapps=1; shift ;;
     --keep-going) keep_going=1; shift ;;
-    -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -46,7 +61,20 @@ base=$(git merge-base "$base" HEAD)
 
 echo "==> select (base $base)"
 plan=$(mktemp)
-python3 tools/ci/affected_packages.py --base "$base" --shards 2 --allow-security-skip >"$plan" || exit 1
+# The planner reads the workspace graph only from verified metadata: cargo's
+# export of this worktree, sealed to its clean commit, tree and manifest bytes
+# and validated against it (tools/ci/current_source_metadata.py), so a dirty
+# tree or a manifest changed under the run fails instead of planning from a
+# graph that is not HEAD's.
+metadata_dir=$(mktemp -d)
+trap 'rm -rf -- "$metadata_dir" "$plan"' EXIT
+cargo metadata --locked --no-deps --format-version 1 >"$metadata_dir/cargo.json" || exit 1
+python3 tools/ci/current_source_metadata.py seal --root . \
+  --input "$metadata_dir/cargo.json" --output "$metadata_dir/bundle.json" >/dev/null || exit 1
+python3 tools/ci/current_source_metadata.py validate --root . \
+  --input "$metadata_dir/bundle.json" --output "$metadata_dir/metadata.json" >/dev/null || exit 1
+python3 tools/ci/affected_packages.py --metadata "$metadata_dir/metadata.json" \
+  --base "$base" --shards 2 --allow-security-skip >"$plan" || exit 1
 # The filters come as KEY=value lines (the $GITHUB_ENV format CI appends them
 # in); the values are nextest filtersets, not shell words, so export them as
 # data rather than eval-ing them.
@@ -97,9 +125,6 @@ for token in shlex.split(sys.argv[1]):
 PY
 }
 
-export TILO_REQUIRE_MEDIA=1 TILO_REQUIRE_AUDIO=1 TILO_REQUIRE_GPU=1
-bash tools/ensure-headless-audio.sh >/dev/null 2>&1 || true
-
 if want check; then
   while IFS= read -r row; do
     [ -n "$row" ] || continue
@@ -130,6 +155,13 @@ if want clippy; then
   done < <(rows clippy_matrix)
 fi
 
+# nextest through the cargo in use? Otherwise fall back to cargo test.
+use_nextest=1
+if [ "${LOCAL_AFFECTED_NO_NEXTEST:-0}" = 1 ] || ! cargo nextest --version >/dev/null 2>&1; then
+  use_nextest=0
+  echo "note: cargo nextest is unavailable; testing with plain cargo test (no ci profile or filters)" >&2
+fi
+
 pull_filter="not ($GOLDEN_FILTER) and not ($PUSH_ONLY_FILTER)"
 while IFS= read -r row; do
   [ -n "$row" ] || continue
@@ -137,8 +169,6 @@ while IFS= read -r row; do
   [ -z "$only_shard" ] || [ "$only_shard" = "$shard" ] || continue
   tests=$(field "$row" test_packages)
   [ -n "$tests" ] || continue
-  ntfs=0
-  case "$tests" in *"-p tilo-ntfs-helper"*) ntfs=1 ;; esac
   case "$tests" in
     *"-p app-cli"* | *"-p app-host"*)
       want test && step "build tilo-install test fixture (shard $shard)" \
@@ -146,20 +176,24 @@ while IFS= read -r row; do
   esac
   if want test; then
     # shellcheck disable=SC2086
-    TILO_TEST_NTFS_FIXTURES=$ntfs step "nextest shard $shard ($tests)" \
-      bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+    if [ "$use_nextest" = 1 ]; then
+      step "nextest shard $shard ($tests)" \
+        bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+    else
+      step "cargo test shard $shard ($tests)" cargo test --locked $tests
+    fi
   fi
-  if want goldens; then
+  if want goldens && [ "$use_nextest" = 1 ]; then
     case " $tests " in
       *" -p shell "* | *" -p tilo-ui "* | *" -p ebook "*)
         # shellcheck disable=SC2086
         step "visual goldens shard $shard" \
-          bash tools/test-env.sh cargo nextest run --locked --profile ci --tests $tests --no-tests=pass -E "$GOLDEN_FILTER" ;;
+          cargo nextest run --locked --profile ci --tests $tests --no-tests=pass -E "$GOLDEN_FILTER" ;;
     esac
   fi
   if want certify && [ "$(field "$row" certify)" = True ]; then
     # shellcheck disable=SC2086
-    step "tilo-app certify shard $shard" \
+    TILO_REQUIRE_GPU=1 step "tilo-app certify shard $shard" \
       cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace $tests
   fi
   if want scenarios; then
@@ -173,10 +207,7 @@ while IFS= read -r row; do
   if want scoped; then
     scoped=$(field "$row" scoped_tests)
     if [ -n "$scoped" ]; then
-      ntfs=0
-      case "$scoped" in *'"tilo-ntfs-helper"'*) ntfs=1 ;; esac
-      SCOPED_TESTS=$scoped TILO_TEST_NTFS_FIXTURES=$ntfs \
-        step "scoped reader tests shard $shard" python3 tools/ci/run_scoped_tests.py
+      SCOPED_TESTS=$scoped step "scoped reader tests shard $shard" python3 tools/ci/run_scoped_tests.py
     fi
   fi
 done < <(rows matrix)

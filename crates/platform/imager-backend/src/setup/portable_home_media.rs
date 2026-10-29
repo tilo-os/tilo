@@ -27,7 +27,9 @@ mod applications;
 #[path = "browser_media.rs"]
 mod browser;
 mod captured;
+mod local;
 mod original_registration;
+pub use local::{SealedHome, application_data_exclusions};
 pub use original_registration::{
     Registered as RegisteredOriginalSource, register_applications, register_staging_copy,
 };

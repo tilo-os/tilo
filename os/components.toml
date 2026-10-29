@@ -145,6 +145,35 @@ files = [
   { from = "tilo-net-answers", to = "/usr/libexec/tilo-net-answers", mode = "0755" },
 ]
 
+# The session audio helper: persistent audio transforms (balance, mono,
+# echo cancellation) and the hotplug policy, started by the compositor with
+# the session so the compositor drives no audio graph itself.
+[[component]]
+name = "audio-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-audio-service"]
+bins = ["tilo-audio"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-audio", to = "/usr/libexec/tilo-audio", mode = "0755" },
+]
+
+# The person's messaging accounts: Signal, WhatsApp, SMS and Tilo enrollment
+# and the running accounts, started by the compositor with the session and
+# serving Messages over the session's `messaging` socket, so the compositor
+# holds no account, provider or vault key itself.
+[[component]]
+name = "messaging-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-messaging-service"]
+bins = ["tilo-messaging"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-messaging", to = "/usr/libexec/tilo-messaging", mode = "0755" },
+]
+
 # The control-socket CLI, the one way agents and scripts drive a running
 # desktop (AGENTS.md): the action model over the device admin's control socket
 # in every image, plus synthetic input over a dev session's test-control
@@ -488,8 +517,10 @@ name = "installer"
 kind = "boot"
 scope = "vm"
 scenario = "os/dev/test-installer-cycle.sh"
-packages = ["installer"]
+packages = ["imager", "tilo-install-helpers"]
 bins = ["tilo-installer", "tilo-firstboot-home-seeds"]
+# The guided setup's destination side, without its host side.
+features = ["imager/destination"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-installer", to = "/usr/libexec/tilo/tilo-installer", mode = "0755" },

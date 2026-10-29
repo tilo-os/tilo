@@ -97,10 +97,10 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
 
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_WORKSPACE_ROOTS", &mount);
-    let mut files = FileExplorerWidget::with_persistence(None, None);
-    files.navigate(mount.clone());
-    assert_eq!(files.entries().len(), expected.len() + 1);
-    for entry in files.entries() {
+    let files = FileExplorerWidget::with_persistence(None, None);
+    files.state().navigate(mount.clone());
+    assert_eq!(files.state().entries().len(), expected.len() + 1);
+    for entry in files.state().entries() {
         let Some((_, record_id, hash, bytes)) =
             expected.iter().find(|(name, ..)| name == &entry.name)
         else {
@@ -117,17 +117,20 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     }
 
     let folder_index = files
+        .state()
         .entries()
         .iter()
         .position(|entry| entry.name == "Offline")
         .unwrap();
-    files.debug_select(&[folder_index]);
-    assert!(files.apply_command(FileCommand::KeepOffline));
+    files.state().debug_select(&[folder_index]);
+    assert!(files.state().apply_command(FileCommand::KeepOffline));
     let folder = files
+        .state()
         .entries()
         .iter()
         .find(|entry| entry.name == "Offline")
-        .unwrap();
+        .unwrap()
+        .clone();
     let folder_availability = folder.availability.as_ref().unwrap();
     assert_eq!(folder_availability.policy, AvailabilityPolicy::Pinned);
     assert!(!folder_availability.policy_inherited);
@@ -155,12 +158,14 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         );
         tokio::task::yield_now().await;
     }
-    files.navigate(mount.join("Offline"));
+    files.state().navigate(mount.join("Offline"));
     let child = files
+        .state()
         .entries()
         .iter()
         .find(|entry| entry.name == "later.txt")
-        .expect("Files sees a descendant created after pinning its folder");
+        .expect("Files sees a descendant created after pinning its folder")
+        .clone();
     let child_availability = child.availability.as_ref().unwrap();
     assert_eq!(child_availability.policy, AvailabilityPolicy::Pinned);
     assert!(child_availability.policy_inherited);
@@ -183,24 +188,28 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
         drop(registry);
     }
 
-    files.navigate(mount.clone());
-    files.debug_select(&[folder_index]);
-    assert!(files.apply_command(FileCommand::RemoveOfflinePin));
+    files.state().navigate(mount.clone());
+    files.state().debug_select(&[folder_index]);
+    assert!(files.state().apply_command(FileCommand::RemoveOfflinePin));
     let folder = files
+        .state()
         .entries()
         .iter()
         .find(|entry| entry.name == "Offline")
-        .unwrap();
+        .unwrap()
+        .clone();
     assert_eq!(
         folder.availability.as_ref().unwrap().policy,
         AvailabilityPolicy::Automatic
     );
-    files.navigate(mount.join("Offline"));
+    files.state().navigate(mount.join("Offline"));
     let child = files
+        .state()
         .entries()
         .iter()
         .find(|entry| entry.name == "later.txt")
-        .unwrap();
+        .unwrap()
+        .clone();
     assert_eq!(
         child.availability.as_ref().unwrap().policy,
         AvailabilityPolicy::Automatic
@@ -209,7 +218,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
 
     drop(files);
     drop(env);
-    fs::fuse_session::unmount_and_join(session).unwrap();
+    fs::fuse_session::unmount_and_join(session, &mount).unwrap();
     shutdown_endpoint.close().await;
     shutdown_store.store().shutdown().await.unwrap();
 }

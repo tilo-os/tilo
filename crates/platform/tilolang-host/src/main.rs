@@ -10,12 +10,15 @@ use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
-use runtime_portal::tilolang_host::{STORAGE_ENV, receive_instance, take_door};
+use runtime_portal::tilolang_host::{Handed, STORAGE_ENV, receive, send_ended, take_door};
 use tilolang_host::TilolangHost;
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        // RUST_LOG, with the launch timing lines kept, as the session's own log keeps them.
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+        ))
         .with_writer(std::io::stderr)
         .init();
     let Some(door) = take_door() else {
@@ -50,6 +53,14 @@ fn main() -> std::process::ExitCode {
         // What a frame changed may ask for another (a view that read what it changed), until
         // nothing changes: every change is a message taken in or a step made, so it settles.
         while host.turn() {}
+        // The session stops the host once its last instance ended.
+        for instance in host.take_ended() {
+            if let Some(open) = door.as_ref()
+                && let Err(error) = send_ended(open, instance)
+            {
+                tracing::warn!(%error, instance, "the session was not told an instance ended");
+            }
+        }
         if door.is_none() && host.is_empty() {
             return std::process::ExitCode::SUCCESS;
         }
@@ -62,14 +73,23 @@ fn main() -> std::process::ExitCode {
             let mut drained = [0_u8; 256];
             while matches!((&wake_read).read(&mut drained), Ok(n) if n > 0) {}
         }
+        if ready.task {
+            host.serve_task();
+        }
         if ready.door
             && let Some(open) = door.as_ref()
         {
-            match receive_instance(open) {
-                Ok(Some((request, fds))) => {
-                    let app = request.app.clone();
+            match receive(open) {
+                Ok(Some(Handed::Instance(request, fds))) => {
+                    let (app, instance) = (request.app.clone(), request.instance);
                     if let Err(error) = host.admit(request, fds) {
                         tracing::error!(app, %error, "an instance did not start");
+                        let _ = send_ended(open, instance);
+                    }
+                }
+                Ok(Some(Handed::Task(request, fds))) => {
+                    if let Err(error) = host.begin_task(&request, fds) {
+                        tracing::error!(task = request.task, %error, "a task did not start");
                     }
                 }
                 Ok(None) => door = None,
@@ -82,6 +102,7 @@ fn main() -> std::process::ExitCode {
 struct Ready {
     door: bool,
     wake: bool,
+    task: bool,
 }
 
 /// Wait until the door, the wake or a window has something.
@@ -94,6 +115,14 @@ fn wait(door: Option<BorrowedFd<'_>>, wake: BorrowedFd<'_>, host: &TilolangHost)
     if let Some(door) = door {
         fds.push(libc::pollfd {
             fd: door.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    let task_at = fds.len();
+    if let Some(task) = host.task_fd() {
+        fds.push(libc::pollfd {
+            fd: task.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         });
@@ -112,10 +141,12 @@ fn wait(door: Option<BorrowedFd<'_>>, wake: BorrowedFd<'_>, host: &TilolangHost)
         return Ready {
             door: false,
             wake: false,
+            task: false,
         };
     }
     Ready {
         wake: fds.first().is_some_and(|fd| fd.revents != 0),
         door: door.is_some() && fds.get(1).is_some_and(|fd| fd.revents != 0),
+        task: host.task_fd().is_some() && fds.get(task_at).is_some_and(|fd| fd.revents != 0),
     }
 }

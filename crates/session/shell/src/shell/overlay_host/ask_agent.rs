@@ -141,6 +141,10 @@ impl ShellOverlayHost {
     /// and holds a live task subscription. Says so when none does.
     pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
         use crate::shell::state::WorkspaceAuthority as _;
+        // On a canvas a question's answer is a window where it was asked.
+        if self.canvas_shown() && seed.ask.is_some() {
+            return self.ask_about_on_canvas(&seed);
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -353,7 +357,14 @@ impl ShellOverlayHost {
             if !live && actions.start_once(Instant::now()) {
                 starts.push((ask.room, owner.agent.clone()));
             }
-            if actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show, ask.quick) {
+            if actions.open_and_ask(
+                source,
+                &owner,
+                (&ask.title, &ask.body),
+                None,
+                ask.show,
+                ask.quick,
+            ) {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
@@ -368,7 +379,7 @@ impl ShellOverlayHost {
     /// Start `agent` in the workspace of `room`, for work asked of it while
     /// it was not running. Only someone who may administer the workspace
     /// starts its agents; for anyone else the work waits for it.
-    fn start_agent_for(&self, room: &crate::shell::state::RoomId, agent: &str) {
+    pub(super) fn start_agent_for(&self, room: &crate::shell::state::RoomId, agent: &str) {
         let Some(workspace) = self.chrome.as_ref().and_then(|chrome| {
             chrome
                 .borrow()
@@ -402,6 +413,29 @@ impl ShellOverlayHost {
         Some((ActionSessionSource::new(broker), live))
     }
 
+    /// A development session's test control asks to activate the control
+    /// `test_id` in the focused window.
+    pub(crate) fn queue_test_activation(&mut self, test_id: String) {
+        self.test_activations.push(test_id);
+    }
+
+    /// The test ids queued to activate, with the focused app whose windows
+    /// are asked; nothing while no app window is focused.
+    pub(crate) fn take_test_activations(&mut self) -> Option<(String, Vec<String>)> {
+        if self.test_activations.is_empty() {
+            return None;
+        }
+        let activations = std::mem::take(&mut self.test_activations);
+        let Some(app) = self.focused_app_id() else {
+            tracing::warn!(
+                ?activations,
+                "a test control asked to activate controls while no app window is focused"
+            );
+            return None;
+        };
+        Some((app, activations))
+    }
+
     fn focused_app_id(&self) -> Option<String> {
         self.chrome
             .as_ref()?
@@ -421,7 +455,7 @@ impl ShellOverlayHost {
 /// Whether `agent` takes asks in `room`: admitted (certified under its own
 /// key) and holding a live task subscription. The one test both the chord
 /// and the start it waits for use.
-fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
+pub(super) fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
     broker.agent_is_live_task_capable(room, agent)
         && broker
             .certified_agent_identity(room, &format!("agent:{agent}"))

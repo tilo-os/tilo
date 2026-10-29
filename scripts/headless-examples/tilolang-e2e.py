@@ -42,8 +42,12 @@ app gets on a real system:
   host       in the synced Lounge every app is told so and shows the room
              (synced-*.png), native Notes' "New note" lands, and each launch's time
              to its first frame is recorded
-  host-edit  tilolang Notes' "New note" lands in the Lounge too, in a second
-             window of it and in the app started again
+  host-edit  tilolang Notes' "New note" lands in the Lounge too; so does a press
+             of its button in a second window of it, which that window makes
+             itself (activated by its test id), and the app started again
+  host-undo  tilolang Notes' Undo, which its host publishes as every app's is,
+             takes the person's last step in the Lounge back: History lists it
+             undone
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
              Today, whose surface declares that it reads Notes' kinds, and as
@@ -79,7 +83,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
-APPS = ["notes", "chat", "todo", "today"]
+APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
 # Opened last in the local site's Lounge, to time a first launch in a synced room.
@@ -128,6 +132,7 @@ class Session:
     """One headless nested session and the environment its tools act in."""
 
     def __init__(self, state: Path, ready: dict):
+        self.pid = 0
         self.state = state
         self.control = ready["control"]
         self.runtime = ready["runtime"]
@@ -272,6 +277,56 @@ def switches(pid: int) -> dict[str, int]:
             out[f"{task.name} {comm}"] = total
         except OSError:
             pass
+    return out
+
+
+def anon_kib(pid: int) -> int | None:
+    """The anonymous memory `pid` holds, in KiB."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("RssAnon:"):
+            return int(line.split()[1])
+    return None
+
+
+def host_pids(session_pid: int) -> list[int]:
+    """The tilolang hosts of the session."""
+    return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-host")]
+
+
+def launch_timings(session: Session) -> dict:
+    """Where hosted launches spent their time: the shell's handover of each instance and the
+    host's opening of it, by stage, in µs."""
+    return {
+        "handed_over": log_lines(session, "tilolang instance handed over"),
+        "opened": log_lines(session, "tilolang instance opened"),
+    }
+
+
+def window_marks(state: Path) -> dict:
+    """Each hosted window's own startup marks (ms after its process began, the launcher's
+    before it), by the file it wrote: when its patch connection and first tree arrived and
+    what its first frame drew."""
+    out = {}
+    for path in state.glob("**/startup-*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        marks = {e["name"]: round(e["ns"] / 1e6, 1) for e in data.get("events", [])}
+        if not any(name.startswith("tilolang-") for name in marks):
+            continue
+        origin = data.get("origin_epoch_us", 0)
+        launcher = {e["name"]: round((e["epoch_us"] - origin) / 1000, 1) for e in data.get("launcher", [])}
+        keep = ("tilolang-", "first-frame", "render-worker-first", "gpu-device-request-done",
+                "window-render-context-done")
+        out[str(path.relative_to(state))] = {
+            "launcher": launcher,
+            "marks": {k: v for k, v in marks.items() if k.startswith(keep)},
+        }
     return out
 
 
@@ -430,14 +485,18 @@ def check_read(session: Session) -> dict:
     action = until("tilolang Notes' 'Read the content'",
                    lambda: app_action(session, app_id("notes"), "Read the content"))
     room = value_of(session.invoke("app-actions", action["id"]))
-    kind = f"tl.{app_id('notes')}.Notebook"
-    notebook = next((r for r in room.get("records", []) if r.get("kind") == kind), None)
+    # Notes' root record, whatever its type is called: the one record of the app's own kinds.
+    prefix = f"tl.{app_id('notes')}."
+    notebook = next((r for r in room.get("records", []) if r.get("kind", "").startswith(prefix)), None)
     if notebook is None:
-        raise Failed(f"the room's read lists no notebook: {json.dumps(room)[:2000]}")
+        raise Failed(f"the room's read lists no record of Notes: {json.dumps(room)[:2000]}")
+    kind = notebook["kind"]
     read = value_of(session.invoke("app-actions", action["id"], {"item": notebook["item"]}))
-    notes = read.get("fields", {}).get("notes", {})
+    # The collection of notes, whatever the root calls it: its field listing Notes' notes.
+    notes = next((f for f in read.get("fields", {}).values() if isinstance(f, dict)
+                  and any(i.get("type") == "Note" for i in f.get("items", []))), {})
     if read.get("kind") != kind or not notes.get("items"):
-        raise Failed(f"the notebook's read holds no notes: {json.dumps(read)[:2000]}")
+        raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
     native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
     return {
         "records": len(room["records"]),
@@ -540,11 +599,12 @@ def presented(session: Session, app: str) -> bool:
 
 
 def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
-    """The session's own workspace is hosted by this device: there is no host to wait for,
-    so its apps are told nothing about one, and each shows its own state at once."""
+    """The session's own workspace is hosted by this device: its apps wait on no other host
+    (the room syncs with nothing, or with this device's own workspace host, which is there
+    already), and each shows its own state at once."""
     room = session.active_room()
     told = session.room_sync(room)
-    if told["state"] is not None:
+    if told["state"] not in (None, "synced"):
         raise Failed(f"the session's own workspace waits on a host: {told}")
     return {"room": room, "state": told["state"],
             "snapshots": snapshots(session, windows, out, "first-")}
@@ -599,6 +659,16 @@ def check_host_again(session: Session, room: str) -> dict:
     return {"connect_to_sync_ms": sync_times(session)}
 
 
+def history_now(session: Session, app: str):
+    """How many versions `app`'s History lists now; None while it does not answer."""
+    action = next((a for a in session.actions("History") if a.get("application") == app
+                   and a.get("title") == "History" and a.get("operation_kind") == "View"), None)
+    try:
+        return action and value_of(session.invoke("app-actions", action["id"]))["total"]
+    except Failed:
+        return None
+
+
 def new_note_in(session: Session, app: str, args: dict | None = None) -> list[int]:
     """Invoke `app`'s "New note" edit and wait for it in the app's history: [before, after]."""
     # Out of focus, an app lists its actions under directory ids, which move on as the
@@ -613,12 +683,7 @@ def new_note_in(session: Session, app: str, args: dict | None = None) -> list[in
         return None
 
     def history():
-        action = next((a for a in session.actions("History") if a.get("application") == app
-                       and a.get("title") == "History" and a.get("operation_kind") == "View"), None)
-        try:
-            return action and value_of(session.invoke("app-actions", action["id"]))["total"]
-        except Failed:
-            return None
+        return history_now(session, app)
 
     until(f"{app}'s 'New note'", listed)
     before = until(f"{app}'s history", lambda: (lambda t: None if t is None else (t,))(history()))[0]
@@ -670,12 +735,36 @@ def windows_of(session: Session, app: str, workspace: str) -> list:
     return [w for w in session.windows() if w.get("app_id") == app and w.get("workspace") == workspace]
 
 
+COMPONENTS = REPO / "target/debug/examples/components"
+
+
+def test_id_of(package: str, kind: str, label: str) -> str:
+    """The test id of the `kind` component saying `label` in the first window of the tilolang
+    package `package` (apps/tl/<package>), as its instance builds it: the key the compiler gave
+    it, read from the same compiler (tilolang-host's `components` example)."""
+    for line in run([COMPONENTS, REPO / "apps/tl" / package]).splitlines():
+        component = json.loads(line)
+        if component["kind"] == kind and component["label"] == label:
+            return component["key"]
+    raise Failed(f"apps/tl/{package}'s first window shows no {kind} saying {label!r}")
+
+
+def activate(session: Session, test_id: str) -> None:
+    """The focused window activates its control `test_id`, as assistive technology would."""
+    session.control_cmd("raw", json.dumps({"op": "activate_test_id", "test_id": test_id}))
+
+
 def check_host_edit(session: Session, pids_of) -> dict:
-    """tilolang Notes' "New note" changes the Lounge, as native Notes' does; so does it in a
-    second window of the app beside the first, and in the app started again."""
+    """tilolang Notes' "New note" changes the Lounge, as native Notes' does; so does a press of
+    its button in a second window of the app beside the first, made by that window itself;
+    and the app started again edits too."""
     notes = app_id("notes")
     out = {"history": new_note_in(session, notes)}
-    # A second window: the first duplicated, as Super+T does.
+    # A second window: the first duplicated, as Super+T does. The host's memory before and after
+    # is what one more instance costs it.
+    time.sleep(2)
+    hosts = host_pids(session.pid)
+    out["host_anon_before"] = anon_kib(hosts[0]) if len(hosts) == 1 else None
     first = windows_of(session, notes, "Lounge")[0]
     session.invoke("desktop-windows", f"tab.focus:{first['group']}:{first['tab']}")
     session.invoke("actions", "tab.duplicate")
@@ -683,7 +772,19 @@ def check_host_edit(session: Session, pids_of) -> dict:
     until("a frame of the second window", lambda: sum(
         1 for f in session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
         if f["app_id"] == notes and f["presented"] and f["pixels_ready"]) == 2, 30)
-    out["second_window"] = new_note_in(session, notes)
+    hosts = host_pids(session.pid)
+    if len(hosts) != 1:
+        raise Failed(f"the Lounge's tilolang apps run in {len(hosts)} hosts, not one: {hosts}")
+    out["host_anon_kib"] = [out.pop("host_anon_before"), anon_kib(hosts[0])]
+    # The second window, in front, presses its own "New note".
+    second = next(w for w in windows_of(session, notes, "Lounge")
+                  if (w["group"], w["tab"]) != (first["group"], first["tab"]))
+    session.invoke("desktop-windows", f"tab.focus:{second['group']}:{second['tab']}")
+    before = until("Notes' history", lambda: (lambda t: None if t is None else (t,))(history_now(session, notes)))[0]
+    activate(session, test_id_of("notes", "ui.Button", "New note"))
+    after = until("the second window's 'New note' in Notes' history",
+                  lambda: (lambda t: t if t is not None and t > before else None)(history_now(session, notes)), 15)
+    out["second_window"] = [before, after]
     if len(windows_of(session, notes, "Lounge")) != 2:
         raise Failed("a window of Notes closed after its second window edited")
     # Started again: every window closed, the app gone, and opened anew.
@@ -693,6 +794,47 @@ def check_host_edit(session: Session, pids_of) -> dict:
     open_in_workspace(session, [notes], "Lounge")
     out["relaunched"] = new_note_in(session, notes)
     return out
+
+
+def check_host_idle(session: Session, seconds: float = 10.0) -> dict:
+    """The tilolang host, its instances untouched for 10 s, sleeps: what each of its threads
+    woke is recorded, and it must not wake more than once a second."""
+    time.sleep(3)
+    hosts = host_pids(session.pid)
+    if len(hosts) != 1:
+        raise Failed(f"expected one tilolang host, found {hosts}")
+    before = switches(hosts[0])
+    time.sleep(seconds)
+    after = switches(hosts[0])
+    woke = {t: after[t] - before.get(t, 0) for t in after if after[t] != before.get(t, 0)}
+    total = sum(woke.values())
+    out = {"pid": hosts[0], "seconds": seconds, "switches": total, "threads": woke,
+           "anon_kib": anon_kib(hosts[0])}
+    if total > seconds:
+        raise Failed(f"the idle tilolang host woke {total} times in {seconds:.0f} s: {json.dumps(out)}")
+    return out
+
+
+def check_host_undo(session: Session) -> dict:
+    """In the Lounge, tilolang Notes' Undo, published by its host as every app publishes it,
+    takes back the person's last step as a step of its own: History lists that step undone."""
+    notes = app_id("notes")
+    edit = new_note_in(session, notes)
+    undo = until("Notes' Undo", lambda: next(
+        (a for a in session.actions("Undo") if a.get("application") == notes and a.get("title") == "Undo"),
+        None))
+    answer = value_of(session.invoke("app-actions", undo["id"]))
+    undone = answer.get("undone") or []
+    if len(undone) != 1:
+        raise Failed(f"Notes' Undo took back {len(undone)} steps, not the last one: {answer}")
+    change = undone[0]["change"]
+    history = next(a for a in session.actions("History") if a.get("application") == notes
+                   and a.get("title") == "History" and a.get("operation_kind") == "View")
+    versions = value_of(session.invoke("app-actions", history["id"]))["versions"]
+    listed = next((v for v in versions if v.get("change") == change), None)
+    if not listed or not listed.get("undone"):
+        raise Failed(f"History does not list {change} undone: {listed}")
+    return {"history": edit, "undone": change, "now": answer.get("now")}
 
 
 def check_spinner(session: Session, room: str, pid_of) -> dict:
@@ -780,10 +922,13 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
         shutil.copytree(out / "build" / name / "payload", staged / "payload")
         (staged / "payload/probe-routes").write_text("\n".join(routes) + "\n")
         manifest = (out / "build" / name / "manifest.toml").read_text()
+        # The probe runs as an app launched with that app's own custody, as any app's process
+        # is: its entrypoint names the probe's runtime, not tilolang's, so the session starts it
+        # as an app process rather than handing a tilolang host its instance.
         manifest, n = re.subn(r'(?m)^optional-runtimes = \["([^"]*)"\]',
-                              f'optional-runtimes = ["\\1", "tilolang/{PROBE_RUNTIME}"]', manifest)
+                              f'optional-runtimes = ["\\1", "probe/{PROBE_RUNTIME}"]', manifest)
         manifest, m = re.subn(r'(?ms)^\[entrypoint\]\nruntime = "[^"]*"\nbin = "[^"]*"',
-                              f'[entrypoint]\nruntime = "tilolang/{PROBE_RUNTIME}"\nbin = "bin/tilo-collab-probe"',
+                              f'[entrypoint]\nruntime = "probe/{PROBE_RUNTIME}"\nbin = "bin/tilo-collab-probe"',
                               manifest)
         if n != 1 or m != 1:
             raise Failed(f"cannot point {name}'s manifest at the probe")
@@ -981,6 +1126,7 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
         proc, session = start_session(host_state, out, tapps, tag, native="notes chat",
                                       community=site.url, fresh=fresh)
         running["proc"] = proc
+        session.pid = proc.pid
         return session
 
     def stop(tag: str) -> None:
@@ -1016,7 +1162,11 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
         ("reconnect", lambda: check_reconnect(session, site.room)),
         ("host", lambda: check_host(session, site.room, out)),
         ("host-edit", lambda: check_host_edit(session, pids_of)),
+        ("host-undo", lambda: check_host_undo(session)),
+        ("host-idle", lambda: check_host_idle(session)),
     ])
+    summary["checks"].setdefault("host", {})["launch_timings"] = launch_timings(session)
+    summary["checks"]["host"]["window_marks"] = window_marks(session.state)
     stop("host")
 
 
@@ -1042,7 +1192,8 @@ def main() -> int:
     if not args.no_build:
         print("==> building the tilolang tool and the probe", file=sys.stderr)
         run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang",
-             "-p", "collab-probe", "--bin", "tilo-collab-probe"], cwd=REPO)
+             "-p", "collab-probe", "--bin", "tilo-collab-probe",
+             "-p", "tilolang-host", "--example", "components"], cwd=REPO)
     runtime = (state / "runtimes/.version").read_text().strip()
     print("==> tilolang build", file=sys.stderr)
     run([tool, "build", REPO / "apps/tl/today", "--search", REPO / "apps/tl", "--out", out / "build",

@@ -682,6 +682,7 @@ fn bound_components_keep_child_binding_and_focused_document_history() {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: factory,
         };
@@ -1001,6 +1002,7 @@ impl ActionFixture {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                member_record: false,
                 opens_before_record: false,
                 create,
             };
@@ -1330,7 +1332,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
                 .app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .activate_bound(&target)
         );
@@ -1338,7 +1340,7 @@ fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
             .app
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .take_operation()
             .unwrap();
@@ -1985,14 +1987,14 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .set_query("sealed");
             fixture
                 .app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .advance_search_page();
             if initially_allowed {
@@ -2010,7 +2012,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                     .app
                     .actions
                     .action_palette
-                    .as_mut()
+                    .as_deref_mut()
                     .unwrap()
                     .advance_search_page();
             }
@@ -2024,7 +2026,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .set_cursor(allowed);
             assert!(
@@ -2045,14 +2047,14 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
                 .app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .set_query("sealedopaque");
             fixture
                 .app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .advance_search_page();
             let labels = fixture.app.action_palette().unwrap().result_labels();
@@ -2087,7 +2089,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
         PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = Some(counts.clone()));
         fixture.app.open_action_palette();
         PAGED_SEARCH_COUNTS.with_borrow_mut(|slot| *slot = None);
-        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
         palette.set_query("paged");
         let mut ticks = 0;
         while palette.advance_search_page().pending {
@@ -2197,7 +2199,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
     {
         let mut fixture = ActionFixture::new();
         fixture.app.open_action_palette();
-        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
         palette.set_query("lazy");
         for _ in 0..4 {
             palette.advance_search_page();
@@ -2209,7 +2211,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             .iter()
             .find(|target| target.address.instance_id == 12)
             .unwrap();
-        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
         assert!(palette.activate_bound(target));
         let pending = palette.take_operation().unwrap();
         assert!(
@@ -2227,7 +2229,7 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             )
             .unwrap();
         fixture.app.open_action_palette();
-        let palette = fixture.app.actions.action_palette.as_mut().unwrap();
+        let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
         palette.set_query("opaque");
         for _ in 0..4 {
             palette.advance_search_page();
@@ -2711,6 +2713,7 @@ fn a_hosted_components_search_request_becomes_a_host_intent() {
         icon: IconDescriptor::Glyph("P"),
         record_kind: crate::record::RecordKind::new("probe"),
         room_record: true,
+        member_record: false,
         opens_before_record: false,
         required: vec![],
         optional: vec![],

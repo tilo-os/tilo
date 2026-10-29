@@ -1,8 +1,8 @@
 //! One profile's settings, kept as two Automerge documents.
 //!
-//! A [`Store`] holds the person's document (the leaves
-//! [`crate::continuity::classify`] calls personal) and this device's
-//! document (every other leaf), in `<root>/records/person.automerge` and
+//! A [`Store`] holds the person's document (the sections
+//! [`crate::placement`] gives the person) and this device's document (every
+//! other section), in `<root>/records/person.automerge` and
 //! `<root>/records/device.automerge`. Each section is a map at the document's
 //! root and each leaf a key in it; a value is stored as what it is (an object
 //! a map, an array a list, a string, number, boolean or `null` a scalar), the
@@ -12,6 +12,10 @@
 //!
 //! A write changes the documents in memory, commits it with its
 //! [`ChangeOrigin`] as the change's message, and shows it to readers at once;
+//! one that needs the document itself (a section's undo, which reads its
+//! history) changes it through [`Store::edit_document`], committed, shown and
+//! saved the same way. Root keys under [`BOOKKEEPING`] are that history's
+//! bookkeeping (what was undone), never a section;
 //! one background thread saves the documents. No write waits for the disk,
 //! so a thread that must keep answering input may write. A save that fails
 //! is reported ([`crate::take_deferred_failures`]) and retried with the next
@@ -33,14 +37,19 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue};
 use serde_json::{Map, Value};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_lock::MutexRecover as _;
 
 use tilo_settings_records::{Door, Hold, Holding, Records, Stamp, Watch};
 
-use crate::continuity::{SettingScope, classify};
+use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
 
 pub use tilo_settings_records::RECORDS_DIR;
+
+/// The prefix of the root keys that keep a document's history (what was
+/// undone) rather than a section.
+pub const BOOKKEEPING: &str = "tilo:";
 
 const PERSON_FILE: &str = "person.automerge";
 const DEVICE_FILE: &str = "device.automerge";
@@ -54,21 +63,6 @@ type Decide<'a> = dyn FnMut(&Map<String, Value>) -> Option<Map<String, Value>> +
 /// `None` when the writer's intent was superseded.
 type DecideSections<'a> =
     dyn FnMut(&Map<String, Value>) -> Option<Vec<(String, Map<String, Value>)>> + 'a;
-
-/// Which of the two documents a leaf lives in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Holder {
-    Person,
-    Device,
-}
-
-fn holder_of(section: &str, leaf: &str) -> Holder {
-    if classify(&format!("tilo.{section}.{leaf}")) == Some(SettingScope::Personal) {
-        Holder::Person
-    } else {
-        Holder::Device
-    }
-}
 
 struct Docs {
     person: AutoCommit,
@@ -95,6 +89,13 @@ impl Docs {
             }
         }
         document
+    }
+
+    /// Note `sections` changed and unsaved: the documents as readers now
+    /// see them.
+    fn keep(&mut self, sections: Vec<String>) -> Arc<Map<String, Value>> {
+        self.unsaved.extend(sections);
+        Arc::new(self.projection())
     }
 }
 
@@ -384,6 +385,7 @@ impl Store {
         let Some(sections) = decide(&document) else {
             return Ok(ConditionalUpdate::Superseded);
         };
+        make_containers(&mut docs, &sections).map_err(std::io::Error::other)?;
         let mut touched: Vec<(Holder, String, String, Value)> = Vec::new();
         for (name, values) in sections {
             let current = document.get(&name).and_then(Value::as_object);
@@ -391,7 +393,7 @@ impl Store {
                 if current.and_then(|section| section.get(&leaf)) == Some(&value) {
                     continue;
                 }
-                let holder = holder_of(&name, &leaf);
+                let holder = placement::holder(&name);
                 let doc = docs.doc(holder);
                 let section = map_at(doc, &ROOT, &name).map_err(std::io::Error::other)?;
                 write_value(doc, &section, &leaf, &value).map_err(std::io::Error::other)?;
@@ -412,12 +414,13 @@ impl Store {
                 );
             }
         }
-        docs.unsaved
-            .extend(touched.iter().map(|(_, section, ..)| section.clone()));
-        let document = Arc::new(docs.projection());
+        let sections = touched
+            .into_iter()
+            .map(|(_, section, ..)| section)
+            .collect();
+        let document = docs.keep(sections);
         drop(docs);
-        self.publish(document);
-        writer().schedule(&self.me);
+        self.show(document);
         Ok(ConditionalUpdate::Stored)
     }
 
@@ -491,6 +494,237 @@ impl Store {
 }
 
 impl Store {
+    /// Change the document holding section `section` (the person's or this
+    /// device's, as [`placement`] places it) through `edit`, as one change
+    /// made by `origin`: what a change that needs the document itself makes
+    /// (a section's undo, which reads its history and marks what it took
+    /// back). The change records the leaves it set, as every write does,
+    /// and is shown and saved like one. `edit` refusing changes nothing.
+    ///
+    /// # Errors
+    /// `edit` refused, or this process may not write the profile.
+    pub fn edit_document(
+        &self,
+        section: &str,
+        origin: &ChangeOrigin,
+        edit: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> std::io::Result<()> {
+        let holder = placement::holder(section);
+        let refused = self.refused.lock_recover().clone();
+        if let Some(why) = refused
+            && !self.take_over(false)
+        {
+            if !self.is_follower() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    why,
+                ));
+            }
+            // Made on a copy of what the holder saved, and sent to it whole.
+            self.take_in_saves();
+            let mut copy = self.docs.lock_recover().doc(holder).fork();
+            let before = copy.get_heads();
+            if commit_edit(&mut copy, origin, edit)?.is_none() {
+                return Ok(());
+            }
+            let bytes: Vec<u8> = copy
+                .get_changes(&before)
+                .iter()
+                .flat_map(|change| change.raw_bytes().to_vec())
+                .collect();
+            let changes = door::Changes {
+                person: holder == Holder::Person,
+                section: section.to_owned(),
+                bytes,
+            };
+            return self.forward_changes(changes, &why);
+        }
+        let mut docs = self.docs.lock_recover();
+        let Some(mut touched) = commit_edit(docs.doc(holder), origin, edit)? else {
+            return Ok(());
+        };
+        // The history moved even where no leaf did (an undo's mark).
+        if touched.is_empty() {
+            touched.push(section.to_owned());
+        }
+        let document = docs.keep(touched);
+        drop(docs);
+        self.show(document);
+        Ok(())
+    }
+
+    /// Show `document`, the documents as changed, and save them.
+    fn show(&self, document: Arc<Map<String, Value>>) {
+        self.publish(document);
+        writer().schedule(&self.me);
+    }
+
+    /// Merge `changes`, which another process made to a copy of one of the
+    /// documents, as the holder.
+    fn take_changes(&self, changes: &door::Changes) -> std::io::Result<()> {
+        let holder = if changes.person {
+            Holder::Person
+        } else {
+            Holder::Device
+        };
+        let mut docs = self.docs.lock_recover();
+        docs.doc(holder)
+            .load_incoming_whole(&changes.bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        let document = docs.keep(vec![changes.section.clone()]);
+        drop(docs);
+        self.show(document);
+        Ok(())
+    }
+
+    /// A follower's change to a copy of one of the documents: made by the
+    /// holder, and read back from its save.
+    fn forward_changes(&self, changes: door::Changes, why: &str) -> std::io::Result<()> {
+        let request = door::Request {
+            origin: ChangeOrigin::default(),
+            expected: Vec::new(),
+            sections: Vec::new(),
+            changes: Some(changes),
+        };
+        match door::send(&self.records, &request) {
+            Ok(_) => {
+                self.take_in_saves();
+                Ok(())
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.take_over(true) => {
+                let Some(changes) = request.changes else {
+                    return Ok(());
+                };
+                self.take_changes(&changes)
+            }
+            Err(error) => Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{why}, which did not take the change: {error}"),
+            )),
+        }
+    }
+}
+
+/// Make the maps `sections` are written into that do not exist yet (each
+/// section's, and each leaf's that is an object), as a change of its own
+/// that nobody made: a change of a leaf, and its undo, then never removes
+/// the map holding it, which a redo of a later change writes into again.
+fn make_containers(
+    docs: &mut Docs,
+    sections: &[(String, Map<String, Value>)],
+) -> Result<(), automerge::AutomergeError> {
+    let is_map = |doc: &AutoCommit, obj: &ObjId, key: &str| {
+        matches!(
+            doc.get(obj, key),
+            Ok(Some((automerge::Value::Object(ObjType::Map), _)))
+        )
+    };
+    let mut made = false;
+    for (name, values) in sections {
+        let doc = docs.doc(placement::holder(name));
+        made |= !is_map(doc, &ROOT, name);
+        let section = map_at(doc, &ROOT, name)?;
+        for (leaf, value) in values {
+            if value.is_object() && !is_map(doc, &section, leaf) {
+                map_at(doc, &section, leaf)?;
+                made = true;
+            }
+        }
+    }
+    if made {
+        let message = change_message(
+            &ChangeOrigin::default(),
+            &[],
+            CHANGES.fetch_add(1, Ordering::Relaxed),
+        );
+        for holder in [Holder::Person, Holder::Device] {
+            docs.doc(holder)
+                .commit_with(CommitOptions::default().with_message(message.clone()));
+        }
+    }
+    Ok(())
+}
+
+/// Run `edit` on `doc` and commit what it made as one change by `origin`,
+/// recording the leaves it set. The sections whose leaves it changed;
+/// `None`, and nothing committed, when it changed nothing at all.
+fn commit_edit(
+    doc: &mut AutoCommit,
+    origin: &ChangeOrigin,
+    edit: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+) -> std::io::Result<Option<Vec<String>>> {
+    let before = read_root(doc);
+    if let Err(error) = edit(doc) {
+        doc.rollback();
+        return Err(std::io::Error::other(error));
+    }
+    if doc.pending_ops() == 0 {
+        return Ok(None);
+    }
+    let after = read_root(doc);
+    let section_of = |document: &Map<String, Value>, name: &str| -> Map<String, Value> {
+        document
+            .get(name)
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut touched: Vec<(Holder, String, String, Value)> = Vec::new();
+    let mut sections: Vec<String> = Vec::new();
+    for name in after
+        .keys()
+        .chain(before.keys().filter(|name| !after.contains_key(*name)))
+    {
+        let (was, now) = (section_of(&before, name), section_of(&after, name));
+        if was == now {
+            continue;
+        }
+        sections.push(name.clone());
+        for (leaf, value) in &now {
+            if was.get(leaf) != Some(value) {
+                touched.push((
+                    placement::holder(name),
+                    name.clone(),
+                    leaf.clone(),
+                    value.clone(),
+                ));
+            }
+        }
+        for leaf in was.keys().filter(|leaf| !now.contains_key(*leaf)) {
+            touched.push((
+                placement::holder(name),
+                name.clone(),
+                leaf.clone(),
+                Value::Null,
+            ));
+        }
+    }
+    let message = change_message(origin, &touched, CHANGES.fetch_add(1, Ordering::Relaxed));
+    let time = i64::try_from(tilo_clock::unix_now_ms() / 1000).unwrap_or(i64::MAX);
+    doc.commit_with(
+        CommitOptions::default()
+            .with_message(message)
+            .with_time(time),
+    );
+    Ok(Some(sections))
+}
+
+/// Whether the change whose message is `message` was made by an action
+/// whose id starts with `action_prefix` (`settings.appearance/`), invoked
+/// by `principal`: what tells a section's steps by one invoker apart in a
+/// document's history.
+#[must_use]
+pub fn made_by(message: &str, action_prefix: &str, principal: &str) -> bool {
+    serde_json::from_str::<Value>(message).is_ok_and(|message| {
+        message
+            .get("action")
+            .and_then(Value::as_str)
+            .is_some_and(|action| action.starts_with(action_prefix))
+            && message.get("principal").and_then(Value::as_str) == Some(principal)
+    })
+}
+
+impl Store {
     /// A follower's write: decided over what it reads now, made by the
     /// holder, and read back from the holder's save.
     fn forward(
@@ -511,6 +745,7 @@ impl Store {
             origin: origin.clone(),
             expected,
             sections,
+            changes: None,
         };
         let answer = match door::send(&self.records, &request) {
             Ok(answer) => answer,
@@ -552,12 +787,25 @@ mod door {
     use crate::{ChangeOrigin, ConditionalUpdate};
 
     /// One write: merge `sections`, provided each section still reads as
-    /// `expected` (what the writer decided over).
+    /// `expected` (what the writer decided over); or take `changes`, made
+    /// to a copy of the document itself.
     #[derive(serde::Serialize, serde::Deserialize)]
     pub(super) struct Request {
         pub(super) origin: ChangeOrigin,
         pub(super) expected: Vec<(String, Option<Value>)>,
         pub(super) sections: Vec<(String, Map<String, Value>)>,
+        #[serde(default)]
+        pub(super) changes: Option<Changes>,
+    }
+
+    /// Changes another process made to a copy of one of the documents.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    pub(super) struct Changes {
+        /// The person's document; else the device's.
+        pub(super) person: bool,
+        /// The section they were made for.
+        pub(super) section: String,
+        pub(super) bytes: Vec<u8>,
     }
 
     #[derive(serde::Serialize, serde::Deserialize)]
@@ -572,10 +820,19 @@ mod door {
             origin,
             expected,
             sections,
+            changes,
         } = match serde_json::from_slice(request) {
             Ok(request) => request,
             Err(error) => return Answer::Refused(error.to_string()),
         };
+        if let Some(changes) = changes {
+            let taken = store.take_changes(&changes);
+            crate::SettingsSource::flush_pending(store);
+            return match taken {
+                Ok(()) => Answer::Stored,
+                Err(error) => Answer::Refused(error.to_string()),
+            };
+        }
         let mut sections = Some(sections);
         let stored = store.write_sections(&origin, &mut |document| {
             expected
@@ -634,6 +891,10 @@ impl SettingsSource for Store {
         (*self.document()).clone()
     }
 
+    fn store(&self) -> Option<&Store> {
+        Some(self)
+    }
+
     fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
         self.update_section_by(name, values, &ChangeOrigin::default())
     }
@@ -676,11 +937,10 @@ impl SettingsSource for Store {
         update: crate::DisplayUpdate,
     ) -> std::io::Result<ConditionalUpdate> {
         let sections = update.clone().sections();
-        if sections.iter().any(|(section, values)| {
-            values
-                .keys()
-                .any(|leaf| holder_of(section, leaf) == Holder::Person)
-        }) {
+        if sections
+            .iter()
+            .any(|(section, _)| placement::holder(section) == Holder::Person)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "display intent must stay in one device record",
@@ -912,8 +1172,15 @@ fn read_map(doc: &AutoCommit, obj: &ObjId) -> Map<String, Value> {
         .collect()
 }
 
+/// The sections of `doc`: its root, without the history's bookkeeping.
 fn read_root(doc: &AutoCommit) -> Map<String, Value> {
-    read_map(doc, &ROOT)
+    doc.keys(&ROOT)
+        .filter(|key| !key.starts_with(BOOKKEEPING))
+        .filter_map(|key| {
+            let (value, id) = doc.get(&ROOT, key.as_str()).ok()??;
+            Some((key, read_value(doc, &value, &id)))
+        })
+        .collect()
 }
 
 /// The map at `key` of `obj`, made where something else or nothing is there.
@@ -1034,14 +1301,14 @@ mod tests {
     }
 
     #[test]
-    fn personal_and_device_leaves_go_to_their_documents() {
+    fn the_persons_and_the_devices_sections_go_to_their_documents() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         store
-            .update_section(
-                "appearance",
-                object(json!({"text_scale": 1.5, "not_a_reviewed_leaf": true})),
-            )
+            .update_section("appearance", object(json!({"text_scale": 1.5})))
+            .unwrap();
+        store
+            .update_section("so.tilo.unknown", object(json!({"x": true})))
             .unwrap();
         let (person, device) = {
             let docs = store.docs.lock_recover();
@@ -1053,7 +1320,7 @@ mod tests {
         );
         assert_eq!(
             Value::Object(device),
-            json!({"appearance": {"not_a_reviewed_leaf": true}})
+            json!({"so.tilo.unknown": {"x": true}})
         );
     }
 
@@ -1155,6 +1422,103 @@ mod tests {
             ConditionalUpdate::Superseded
         ));
         assert_eq!(store.load_section_value("a"), json!({"x": 1}));
+    }
+
+    /// Put `value` at `leaf` of the section `section` of `doc`, and mark
+    /// the history's bookkeeping beside it.
+    fn put_leaf(doc: &mut AutoCommit, section: &str, leaf: &str, value: i64) {
+        let map = map_at(doc, &ROOT, section).unwrap();
+        doc.put(&map, leaf, value).unwrap();
+        doc.put(&ROOT, format!("{BOOKKEEPING}mark"), true).unwrap();
+    }
+
+    #[test]
+    fn a_document_edit_is_one_change_by_its_origin_and_its_bookkeeping_is_no_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        store
+            .edit_document(
+                "appearance",
+                &ChangeOrigin::local("settings.appearance/undo"),
+                |doc| {
+                    put_leaf(doc, "appearance", "text_scale", 2);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            Value::Object(store.load()),
+            json!({"appearance": {"text_scale": 2}})
+        );
+        let log = store.change_log();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0]["action"], "settings.appearance/undo");
+        assert_eq!(log[0]["leaf"], "text_scale");
+        let docs = store.docs.lock_recover();
+        assert!(
+            docs.person.get(&ROOT, "tilo:mark").unwrap().is_some(),
+            "in the person's document"
+        );
+        drop(docs);
+
+        let refused = store.edit_document("appearance", &ChangeOrigin::default(), |doc| {
+            put_leaf(doc, "appearance", "text_scale", 3);
+            Err("no".into())
+        });
+        assert!(refused.is_err());
+        assert_eq!(store.load_section_value("appearance")["text_scale"], 2);
+    }
+
+    #[test]
+    fn a_followers_document_edit_is_made_by_the_holder() {
+        let dir = tempfile::tempdir().unwrap();
+        let holder = Store::open(dir.path()).unwrap();
+        holder
+            .update_section("power", object(json!({"x": 1})))
+            .unwrap();
+        holder.flush_pending();
+        let follower = Store::open(dir.path()).unwrap();
+        assert!(!follower.is_holder());
+        follower
+            .edit_document(
+                "power",
+                &ChangeOrigin::local("settings.power/undo"),
+                |doc| {
+                    put_leaf(doc, "power", "x", 2);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(holder.load_section_value("power"), json!({"x": 2}));
+        assert_eq!(follower.load_section_value("power"), json!({"x": 2}));
+        assert_eq!(
+            holder
+                .change_log()
+                .last()
+                .map(|change| change["action"].clone()),
+            Some(json!("settings.power/undo"))
+        );
+    }
+
+    #[test]
+    fn a_change_names_the_section_action_and_who_made_it() {
+        let message = change_message(&ChangeOrigin::local("settings.power/field-edit"), &[], 0);
+        assert!(made_by(
+            &message,
+            "settings.power/",
+            ChangeOrigin::LOCAL_USER
+        ));
+        assert!(!made_by(
+            &message,
+            "settings.appearance/",
+            ChangeOrigin::LOCAL_USER
+        ));
+        assert!(!made_by(&message, "settings.power/", "someone-else"));
+        assert!(!made_by(
+            "tilo.entry/3 x",
+            "settings.power/",
+            ChangeOrigin::LOCAL_USER
+        ));
     }
 
     impl Store {

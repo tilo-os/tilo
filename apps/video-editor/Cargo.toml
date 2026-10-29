@@ -45,7 +45,7 @@ tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
 [dev-dependencies]
-video-editor = { path = ".", features = ["samples"] }
+video-editor-samples = { package = "video-editor", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 serial_test.workspace = true
 tempfile.workspace = true

@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::*;
 use crate::model::{FormulaError, a1_to_addr};
 use tilo_locale::{Currency, DateStyle};
+use ui::tilo_resource::Id;
 
 fn run(cells: &[(&str, &str)]) -> HashMap<Addr, CellValue> {
     let mut raw = HashMap::new();
@@ -36,8 +38,17 @@ fn sheet(name: &str, cells: &[(&str, &str)]) -> (String, HashMap<Addr, String>) 
 }
 
 fn in_book(sheets: &[(String, HashMap<Addr, String>)], own: usize) -> HashMap<Addr, CellValue> {
+    let inputs: Vec<Inputs> = sheets
+        .iter()
+        .map(|(_, raw)| Arc::new(raw.clone()))
+        .collect();
     let mut calc = Calc::new();
-    calc.update(sheets.iter().map(|(name, raw)| (name.as_str(), raw)));
+    calc.update(
+        sheets
+            .iter()
+            .zip(&inputs)
+            .map(|((name, _), raw)| (name.as_str(), raw)),
+    );
     calc.values(own)
 }
 
@@ -625,7 +636,7 @@ fn updates_rewrite_only_what_changed() {
             ("B1", "=A1:A2*10"),
         ],
     );
-    calc.update([("S", &raw)]);
+    calc.update([("S", &Arc::new(raw.clone()))]);
     let at = |calc: &Calc, a: &str| calc.values(0).get(&a1_to_addr(a).unwrap()).cloned();
     assert_eq!(at(&calc, "A3"), Some(CellValue::Number(3.0)));
     assert_eq!(
@@ -635,18 +646,18 @@ fn updates_rewrite_only_what_changed() {
     );
 
     raw.insert(a1_to_addr("A2").unwrap(), "40".into());
-    calc.update([("S", &raw)]);
+    calc.update([("S", &Arc::new(raw.clone()))]);
     assert_eq!(at(&calc, "A3"), Some(CellValue::Number(41.0)));
     assert_eq!(at(&calc, "B2"), Some(CellValue::Number(400.0)));
 
     raw.insert(a1_to_addr("B2").unwrap(), "x".into());
-    calc.update([("S", &raw)]);
+    calc.update([("S", &Arc::new(raw.clone()))]);
     assert_eq!(at(&calc, "B1"), Some(CellValue::Error(FormulaError::Spill)));
     assert_eq!(at(&calc, "B2"), Some(CellValue::Text("x".into())));
 
     raw.remove(&a1_to_addr("B2").unwrap());
     raw.remove(&a1_to_addr("A1").unwrap());
-    calc.update([("S", &raw)]);
+    calc.update([("S", &Arc::new(raw.clone()))]);
     assert_eq!(at(&calc, "A1"), None);
     assert_eq!(at(&calc, "A3"), Some(CellValue::Number(40.0)));
     assert_eq!(
@@ -657,6 +668,7 @@ fn updates_rewrite_only_what_changed() {
 
     // A renamed sheet: the workbook is built anew under the new name.
     let other = sheet("T", &[("A1", "=S!A3")]).1;
+    let (raw, other) = (Arc::new(raw), Arc::new(other));
     calc.update([("S2", &raw), ("T", &other)]);
     assert_eq!(
         calc.values(1).get(&(0, 0)),
@@ -720,4 +732,158 @@ fn parse_errors_say_what_is_wrong() {
     let m = run(&[("A1", "2"), ("B1", "=SUM(A1"), ("C1", "=")]);
     assert_eq!(val(&m, "B1"), CellValue::Error(FormulaError::Error));
     assert_eq!(val(&m, "C1"), CellValue::Error(FormulaError::Error));
+}
+
+/// Formulas filled down share the parse of the one above; each still reads
+/// its own row, and one that only looks like a copy reads what it names.
+#[test]
+fn formulas_filled_down_read_their_own_rows() {
+    let m = run(&[
+        ("A1", "1"),
+        ("A2", "2"),
+        ("A3", "3"),
+        ("B1", "=A1*10+$A$1"),
+        ("B2", "=A2*10+$A$1"),
+        ("B3", "=A3*10+$A$1"),
+        ("C2", "=SUM(1:1)"),
+        ("C3", "=SUM(1:1)"),
+        ("D2", "=A1"),
+        ("D3", "=A1"),
+        ("E1", "=SUM(A$1:A1)"),
+        ("E2", "=SUM(A$1:A2)"),
+        ("E3", "=SUM(A$1:A3)"),
+    ]);
+    assert_eq!(val(&m, "B2"), CellValue::Number(21.0));
+    assert_eq!(val(&m, "B3"), CellValue::Number(31.0));
+    assert_eq!(val(&m, "C2"), CellValue::Number(13.0));
+    assert_eq!(
+        val(&m, "C3"),
+        CellValue::Number(13.0),
+        "whole rows as written"
+    );
+    assert_eq!(val(&m, "D3"), CellValue::Number(1.0), "no copy: as written");
+    assert_eq!(val(&m, "E3"), CellValue::Number(6.0));
+}
+
+/// Every sheet evaluates in one workbook kept across states: showing
+/// another sheet reads what is computed, and a change re-reads only the
+/// sheet it touched.
+#[test]
+fn a_workbook_calc_rereads_only_the_sheets_a_change_touched() {
+    use crate::resource::CellWrite;
+    use crate::workbook::Workbook;
+    use ui::tilo_resource::Reader;
+
+    let mut book = crate::sample::replica();
+    let mut reader = Reader::<Workbook>::read(book.doc()).unwrap();
+    let budget = Id::from_raw(crate::sample::BUDGET_SHEET_ID);
+    let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
+    let mut calc = WorkbookCalc::default();
+    calc.update(reader.state(), None);
+    let sales_inputs = Arc::clone(&calc.inputs[&sales]);
+    let sales_values = calc.values(&sales);
+    assert!(!sales_values.is_empty());
+
+    book.apply(
+        Workbook::WRITE_CELLS.with(crate::resource::verbs::WriteCells {
+            sheet: budget.clone(),
+            cells: vec![CellWrite {
+                cell: "Z1".to_owned(),
+                input: Some("=1+2".to_owned()),
+                ..CellWrite::default()
+            }],
+        }),
+    )
+    .unwrap();
+    assert!(reader.sync(book.doc()).unwrap());
+    calc.update(reader.state(), None);
+    assert_eq!(
+        calc.values(&budget).get(&a1_to_addr("Z1").unwrap()),
+        Some(&CellValue::Number(3.0))
+    );
+    assert!(
+        Arc::ptr_eq(&calc.inputs[&sales], &sales_inputs),
+        "the untouched sheet is not read again"
+    );
+    assert_eq!(calc.values(&sales), sales_values);
+}
+
+/// Timings at the size of a large sheet, to be read in a release build:
+/// `cargo test --release -p sheets --lib -- --ignored --nocapture
+/// large_workbook_timings`. Opening builds the workbook; showing another
+/// sheet must cost no evaluation; an edit writes one cell and evaluates.
+#[test]
+#[ignore = "a timing run rather than a check; run it in a release build"]
+fn large_workbook_timings() {
+    use std::time::Instant;
+
+    // A number column and three formula columns filled down: `D` adds two
+    // cells of its row, or, chained, the running total above it.
+    let sheet = |rows: u32, chain: bool| -> HashMap<Addr, String> {
+        let mut raw = HashMap::new();
+        for r in 1..=rows {
+            raw.insert((0, r - 1), r.to_string());
+            raw.insert((1, r - 1), format!("=A{r}*2"));
+            raw.insert((2, r - 1), format!("=B{r}+1"));
+            let total = match (chain, r) {
+                (true, 1) => "=B1".to_owned(),
+                (true, _) => format!("=D{}+B{r}", r - 1),
+                (false, _) => format!("=A{r}+C{r}"),
+            };
+            raw.insert((3, r - 1), total);
+        }
+        raw
+    };
+    for chain in [false, true] {
+        for rows in [10_000u32, 100_000] {
+            let big = Arc::new(sheet(rows, chain));
+            let small: Inputs = Arc::new(HashMap::from([((0, 0), format!("=Big!D{rows}"))]));
+            let mut calc = Calc::new();
+
+            let at = Instant::now();
+            calc.update([("Big", &big), ("Small", &small)]);
+            let open = at.elapsed();
+
+            let at = Instant::now();
+            calc.update([("Big", &big), ("Small", &small)]);
+            let small_values = calc.values(1);
+            calc.update([("Big", &big), ("Small", &small)]);
+            let big_values = calc.values(0);
+            let switch = at.elapsed();
+
+            let mut edited = (*big).clone();
+            edited.insert((0, 0), "5".to_owned());
+            let edited = Arc::new(edited);
+            let at = Instant::now();
+            calc.update([("Big", &edited), ("Small", &small)]);
+            let edit = at.elapsed();
+
+            let at = Instant::now();
+            let values = calc.values(0);
+            let read = at.elapsed();
+
+            let money: HashMap<Addr, CellFormat> = (0..rows)
+                .map(|row| ((0, row), CellFormat::Currency(Currency::USD)))
+                .collect();
+            let at = Instant::now();
+            let inferred = big
+                .values()
+                .filter_map(|raw| infer_result_format(raw.strip_prefix('=')?, &money))
+                .count();
+            let formats = at.elapsed();
+
+            eprintln!(
+                "chain={chain} rows={rows} open={open:?} switch={switch:?} edit={edit:?} \
+                 values={read:?} formats={formats:?}"
+            );
+            let last = (3, rows - 1);
+            assert_eq!(small_values.get(&(0, 0)), big_values.get(&last));
+            assert_ne!(
+                values.get(&(3, 0)),
+                big_values.get(&(3, 0)),
+                "the edit is evaluated"
+            );
+            std::hint::black_box(inferred);
+        }
+    }
 }

@@ -26,7 +26,7 @@ impl MountedCloud {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     pub(super) fn converted_description(&self, path: &Path) -> Option<String> {
         let description = self.mounted_cloud.descriptions.get(path)?.as_ref()?;
         if !description.converted || description.content_writable {
@@ -111,7 +111,10 @@ impl FileExplorerWidget {
                         .visible_entry_path(&entry)
                         .filter(|source| self.converted_description(source).is_some())
                         .ok_or_else(|| t("files-import-source-unavailable"))
-                        .and_then(|_| self.import_once(&entry, &path.to_string_lossy()))
+                        .and_then(|_| {
+                            ui::tilo_resource::AbsolutePath::new(path).map_err(String::from)
+                        })
+                        .and_then(|folder| self.import_once(&entry, &folder))
                     {
                         self.status = Some(error);
                     }

@@ -78,20 +78,6 @@ impl ShellOverlayHost {
             .number_by_shared_order(&self.outputs, layout);
     }
 
-    /// Ask the person to keep or revert display transaction `transaction`,
-    /// which a layout tool applied. Settings and the Super+P sheet ask in
-    /// their own UI; this is for changes from anywhere else.
-    pub fn show_display_confirmation(
-        &mut self,
-        transaction: u64,
-        tool: Option<settings_store::display_tools::DisplayTool>,
-    ) {
-        self.layers
-            .display_confirm
-            .show(transaction, tool, Instant::now());
-        self.bump_chrome();
-    }
-
     /// Tell the person `tool` applied a display layout again right after
     /// they reverted it, and was refused instead of asking them again.
     pub fn report_refused_display_reapply(
@@ -112,28 +98,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Whether the keep-or-revert prompt for a tool's display change is up.
-    /// It owns the keyboard and pointer while it is.
-    pub fn display_confirmation_visible(&self) -> bool {
-        self.layers.display_confirm.visible()
-    }
-
-    /// Re-read the transaction the prompt asks about now: close it if it
-    /// was answered elsewhere, revert it if its time ran out. Returns
-    /// whether the prompt closed.
-    pub fn poll_display_confirmation(&mut self) -> bool {
-        let closed = self.layers.display_confirm.poll(Instant::now(), true);
-        if closed && let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
-        closed
-    }
-
-    /// Where the prompt's card sits on each display.
-    pub fn display_confirmation_cards(&self) -> Vec<crate::shell::display_confirm::ConfirmCard> {
-        self.layers.display_confirm.cards(&self.layer_outputs())
-    }
-
     /// Every display's rect; the host's bounds alone before it knows of any.
     pub(in crate::shell) fn layer_outputs(&self) -> Vec<Rect> {
         if self.outputs.is_empty() {
@@ -151,6 +115,12 @@ impl ShellOverlayHost {
             outputs,
             focused_output: self.focused_output().map(|output| output.rect()),
         }
+    }
+
+    /// Where the last frame painted each identify card, in desktop
+    /// coordinates.
+    pub fn display_identify_cards(&self) -> Vec<Rect> {
+        self.display_identify.cards()
     }
 
     /// The identify cards on screen right now, one per display.
@@ -222,7 +192,7 @@ impl ShellOverlayHost {
             let tree = state.tree();
             tree.desktop
                 .active_workspace()
-                .map(|workspace| !workspace.has_windows())
+                .map(tilo_desktop::composition::shows_launchpad)
         });
         self
     }
@@ -258,7 +228,7 @@ impl ShellOverlayHost {
             let active_empty = tree
                 .desktop
                 .active_workspace()
-                .is_some_and(|workspace| !workspace.has_windows());
+                .is_some_and(tilo_desktop::composition::shows_launchpad);
             // A kept workspace that was removed (or became another room)
             // lets go of its apps now, not at the next switch; so does one a
             // tab moved out of, before the reconcile that follows mounts the
@@ -278,7 +248,7 @@ impl ShellOverlayHost {
                 {
                     None
                 }
-                Some(_) => Some((tree.desktop.clone(), st.record_creation_errors(&tree))),
+                Some(_) => Some(tree.desktop.clone()),
             };
             (rebuild, stale)
         };
@@ -286,11 +256,11 @@ impl ShellOverlayHost {
             self.desktop_close_reports
                 .extend(parked_workspaces::close(stale));
         }
-        let Some((desktop, failures)) = rebuild else {
+        let Some(desktop) = rebuild else {
             return false;
         };
         let shown_before = self.content_built_for_ws;
-        let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
+        let swapped = self.rebuild_workspace_content(&chrome, &desktop);
         if swapped {
             // A chord announced its switch before making it; any other
             // switch follows the input that just caused it (a click in the
@@ -316,21 +286,18 @@ impl ShellOverlayHost {
     /// keep their live hosts, so a strip added or removed beside them costs
     /// no app state. A different workspace puts back the content kept for it
     /// ([`parked_workspaces`]) or gets fresh content, and the content it
-    /// replaces is kept. Takes the desktop alone, with `failures` read
-    /// beside it under the same tree lock, so a workspace switch never
-    /// copies the replication documents.
+    /// replaces is kept. Takes the desktop alone, so a workspace switch
+    /// never copies the replication documents.
     pub(super) fn rebuild_workspace_content(
         &mut self,
         chrome: &Chrome,
         desktop: &crate::shell::state::DesktopTree,
-        failures: &std::collections::BTreeMap<u64, String>,
     ) -> bool {
-        let records = chrome.borrow().records().clone();
         let switching = self
             .content_built_for_ws
             .is_some_and(|shown| shown != desktop.active.raw());
         if switching && self.desktop_surface_mut().is_some() {
-            self.switch_workspace_content(chrome, desktop, failures, &records);
+            self.switch_workspace_content(chrome, desktop);
         }
         if let Some(surface) = self.desktop_surface_mut() {
             if !switching {
@@ -338,26 +305,16 @@ impl ShellOverlayHost {
                 let state = chrome.borrow();
                 surface.rebuild_retaining(
                     desktop,
-                    &records,
                     &mut crate::shell::NativeTileResolver {
                         inputs: &state.hosted_inputs,
-                        failures,
                     },
                     surface_chrome,
                 );
             }
-            for id in surface.strip_ids() {
-                if let Some(row) = surface.row_mut(id) {
-                    for group in &mut row.groups {
-                        crate::shell::tab_documents::apply_creation_failures(group, failures);
-                    }
-                }
-            }
             // The rebuild replaced every row; the old addresses are gone.
             self.group_row_ptrs = crate::shell::surface_row_ptrs(surface);
         } else {
-            let (root, ptrs) =
-                crate::shell::build_desktop_root(desktop, &records, chrome, failures);
+            let (root, ptrs) = crate::shell::build_desktop_root(desktop, chrome);
             // Settle outgoing components while the old root still owns them,
             // so their recovery reports survive the swap.
             self.desktop_close_reports
@@ -376,7 +333,7 @@ impl ShellOverlayHost {
         self.content_built_for_ws = Some(desktop.active.raw());
         self.content_built_empty = desktop
             .active_workspace()
-            .map(|workspace| !workspace.has_windows());
+            .map(tilo_desktop::composition::shows_launchpad);
         self.workspace_content_layout_dirty = true;
         true
     }
@@ -389,8 +346,6 @@ impl ShellOverlayHost {
         &mut self,
         chrome: &Chrome,
         desktop: &crate::shell::state::DesktopTree,
-        failures: &std::collections::BTreeMap<u64, String>,
-        records: &ui::record::RecordStore,
     ) {
         use tilo_desktop::composition::{DesktopSurface, ReconcileOutcome};
         // Before the target is mounted: a tab that moved here from a kept
@@ -400,9 +355,7 @@ impl ShellOverlayHost {
             .extend(parked_workspaces::close(moved_on));
         let kept = self.parked_workspaces.take(desktop.active.raw());
         let resumed = kept.is_some();
-        let incoming = kept.unwrap_or_else(|| {
-            crate::shell::build_desktop_root(desktop, records, chrome, failures).0
-        });
+        let incoming = kept.unwrap_or_else(|| crate::shell::build_desktop_root(desktop, chrome).0);
         let mut outgoing = std::mem::replace(&mut self.content, incoming);
         if let Some(shown) = outgoing
             .as_any_mut()
@@ -428,10 +381,8 @@ impl ShellOverlayHost {
             self.desktop_surface_mut().map(|surface| {
                 surface.reconcile(
                     desktop,
-                    records,
                     &mut crate::shell::NativeTileResolver {
                         inputs: &state.hosted_inputs,
-                        failures,
                     },
                 )
             })
@@ -444,10 +395,8 @@ impl ShellOverlayHost {
             if let Some(surface) = self.desktop_surface_mut() {
                 surface.rebuild_retaining(
                     desktop,
-                    records,
                     &mut crate::shell::NativeTileResolver {
                         inputs: &state.hosted_inputs,
-                        failures,
                     },
                     surface_chrome,
                 );

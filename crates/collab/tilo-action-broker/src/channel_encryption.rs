@@ -1,26 +1,32 @@
 //! End-to-end encryption of collaboration channels on this device.
 //!
-//! Every document route is a channel with one MLS group. The device that
-//! governs the route's room is the channel's steward: it creates the group
-//! the first time any allowed device opens the route, and from then on keeps
-//! the group equal to the devices the room's access policy allows. Every
-//! other device holds a member view and asks the steward for access.
+//! Every document route is a channel with one MLS group, whose members are
+//! exactly the devices the room's access policy lets read the route
+//! ([`ChannelDirectory::allowed_devices`]) and the room's governor. Every
+//! such device is a participant and runs the same [`ChannelPeer`]: any of
+//! them writes the commit that brings the group in line with the policy, and
+//! every one refuses a commit the policy does not back (see
+//! [`channel_crypto::peer`]).
 //!
-//! This service runs both roles for every channel this device takes part
-//! in. [`ChannelEncryption::access`] answers an application endpoint that
-//! wants the content keys of a route (creating the steward group or starting
-//! a request as needed), and [`ChannelEncryption::pump`] runs the governance
-//! protocol over the room transport:
+//! [`ChannelEncryption::access`] answers an application endpoint that wants
+//! the content keys of a route, starting to take part in its channel as
+//! needed: the governing device creates the group (on its own endpoint's
+//! first access, or the first request of a device the policy allows), any
+//! other device asks the participants for access. Creating a group is the
+//! governor's alone, so no device that missed a genesis (offline, or before
+//! its room's frames arrived) starts a second group beside one that holds
+//! content. [`ChannelEncryption::pump`] runs the protocol over the room
+//! transport:
 //!
-//! - inbound frames advance member views, access requests queue at the
-//!   steward, acknowledgements complete deliveries;
-//! - stewards reconcile their groups with the access policy, so an invite,
+//! - inbound frames advance the group, inbound access requests are kept for
+//!   the next commit;
+//! - every participant moves its group to the access policy, so an invite,
 //!   a removal, a role change that ends access, a new certified device or a
-//!   revoked one becomes a commit;
-//! - the steward's outbox is redelivered with exponential backoff until each
-//!   device's cumulative acknowledgement covers it, so a network failure
-//!   delays delivery but never loses it; waiting members re-send their
-//!   request the same way.
+//!   revoked one becomes a commit from whichever participant gets there
+//!   first (of two on one epoch, every device keeps the lower digest);
+//! - frames the transport did not take are published again, and waiting
+//!   devices re-send their request with backoff. The room's host keeps each
+//!   channel's newest frame for whoever was away.
 //!
 //! Every change registers the channel's plaintext gate and head epoch with
 //! the broker, which refuses plaintext and stale-epoch content for the
@@ -29,26 +35,22 @@
 //! Every change is also announced ([`ChannelKeyProvider::channel_changed`]):
 //! an application endpoint holding a route's keys waits on that signal and
 //! asks the identity service again only when it fires, rather than on a
-//! timer. A key rotation, an invite, a removal, a role change that ends
-//! reading and a device's enrolment or revocation each become a commit the
-//! steward makes within `RECONCILE_INTERVAL` of the policy change (on its
-//! announcement, or at the expiry, when the directory announces changes:
-//! [`ChannelDirectory::policy_epoch`]); the
-//! commit is announced on the steward the moment it is made and on a member
-//! the moment its frame arrives, and the endpoint asks for keys at once.
+//! timer. A policy change becomes a commit within `RECONCILE_INTERVAL` (on
+//! its announcement, or at the expiry, when the directory announces changes:
+//! [`ChannelDirectory::policy_epoch`]); the commit is announced on the
+//! device that wrote it the moment it is made and on every other the moment
+//! its frame arrives, and the endpoint asks for keys at once.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use channel_crypto::{
-    Access, ChannelContentKeys, ChannelMember, ChannelSteward, MemberEvent, VaultKey,
-};
+use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{
     ChannelId, ChannelRoute, Ed25519PublicKey, EncryptionMetadata, MlsAccessRequestV1,
-    MlsGovernanceAckV1, MlsGovernanceFrameV1, SignedOp,
+    MlsGovernanceFrame, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -57,31 +59,34 @@ use crate::collab_core::BrokerChannels;
 use crate::policy_schedule::{PolicySchedule, RECHECK_INTERVAL};
 use tilo_desktop_model::RoomId;
 
-/// How often stewards re-check the access policy when their directory
+/// How often groups re-check the access policy when their directory
 /// announces no changes, the longest an announced change waits, and how soon
 /// a pass that left work due tries again ([`crate::policy_schedule`]).
 const RECONCILE_INTERVAL: Duration = RECHECK_INTERVAL;
-/// First and longest wait before redelivering unacknowledged frames.
-const REDELIVERY_FIRST: Duration = Duration::from_secs(1);
-const REDELIVERY_LONGEST: Duration = Duration::from_secs(60);
-/// First and longest wait before a waiting member asks again.
+/// First and longest wait before a waiting device asks again.
 const REQUEST_FIRST: Duration = Duration::from_secs(2);
 const REQUEST_LONGEST: Duration = Duration::from_secs(120);
+/// How long a waiting device asks with one member key before it asks with
+/// a fresh one: an admission whose Welcome never reached it is then answered
+/// again.
+const REQUEST_FRESH: Duration = Duration::from_secs(60);
+/// Under the state root, the directory of a room's channels.
+const CHANNELS_DIR: &str = "channels";
 
 /// What an application endpoint may do with a route's content right now.
 #[derive(Clone, Debug)]
 pub enum ChannelAccess {
     /// Admitted: seal new content and open history with these keys.
     Ready(ChannelContentKeys),
-    /// Asked the steward for access and not admitted yet. Nothing can be
-    /// sealed or opened; the endpoint shows a waiting state.
+    /// Asked the participants for access and not admitted yet. Nothing can
+    /// be sealed or opened; the endpoint shows a waiting state.
     Waiting,
     Removed,
-    /// Nobody can admit this device: the room's governor is unknown here.
+    /// Nobody can admit this device: the room's governance is unknown here.
     Unavailable,
     /// This device has no secret store open, so it keeps no channel state
-    /// of its own and cannot join a channel its own room host does not
-    /// steward. Asking again changes nothing while the session runs; the
+    /// of its own and cannot join a channel its own room host does not take
+    /// part in. Asking again changes nothing while the session runs; the
     /// route is told if the room comes to be hosted here.
     NoSecretStore,
 }
@@ -93,20 +98,15 @@ pub enum ChannelAccess {
 pub enum InboundChannelGovernance {
     Frame {
         room: RoomId,
-        frame: Box<collab_types::MlsGovernanceFrameV1>,
+        frame: Box<collab_types::MlsGovernanceFrame>,
     },
-    /// A device asking a channel's steward for membership, with the route
-    /// of the channel's record when the device sent it
+    /// A device asking a channel's participants for membership, with the
+    /// route of the channel's record when the device sent it
     /// ([`NeighbourMsg::MlsRoutedAccessRequest`]).
     AccessRequest {
         room: RoomId,
         request: Box<collab_types::MlsAccessRequestV1>,
         route: Option<Box<ChannelRoute>>,
-    },
-    /// A device's cumulative acknowledgement of a channel's frames.
-    Ack {
-        room: RoomId,
-        ack: Box<collab_types::MlsGovernanceAckV1>,
     },
 }
 
@@ -135,9 +135,6 @@ impl InboundChannelGovernance {
                 request,
                 route: Some(route),
             }),
-            NeighbourMsg::MlsGovernanceAck { room, ack, .. } => {
-                RoomId::parse(&room).map(|room| Self::Ack { room, ack })
-            }
             _ => None,
         }
     }
@@ -154,17 +151,18 @@ pub trait GovernanceTransport {
 
 /// The access policy inputs this service needs from the workspace model.
 pub trait ChannelDirectory: Send {
-    /// Whether this device governs `room`, and so stewards its channels.
+    /// Whether this device governs `room`: it creates a channel's group the
+    /// first time one of its endpoints opens the channel.
     fn governs(&self, room: RoomId) -> bool;
-    /// The device key of `room`'s governor, when this device does not govern
-    /// it and knows who does.
-    fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
-    /// `channel`'s content keys from the steward of the room host this
-    /// device runs, when that host governs `room`. The steward's leaf is
-    /// this device's own, so this device takes its keys there: it is neither
-    /// a second steward nor a member of the group. `route` is the channel's
-    /// record when the endpoint named it; `create` opens the channel when it
-    /// has none yet. `None` for a room no host in this process governs.
+    /// The device key of `room`'s governor, when this device knows the
+    /// room's governance: a participant of every channel of the room.
+    fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
+    /// `channel`'s content keys from the room host this device runs, when
+    /// that host takes part in `room`'s channels. The host's leaf is this
+    /// device's own, so this device takes its keys there rather than being a
+    /// second member of the group. `route` is the channel's record when the
+    /// endpoint named it; `create` opens the channel when it has none yet.
+    /// `None` for a room no host in this process takes part in.
     fn hosted_channel_keys(
         &self,
         room: RoomId,
@@ -179,10 +177,10 @@ pub trait ChannelDirectory: Send {
     /// wall-clock `now` (seconds since the Unix epoch). A channel is one
     /// record's, so a Read Deny on that record, on its app or on any pattern
     /// covering it takes its person's devices out of this channel and no
-    /// other: the steward then never hands them the record's key, and a
-    /// device already holding it is removed in a new epoch.
+    /// other: no participant then hands them the record's key, and a device
+    /// already holding it is removed in a new epoch.
     ///
-    /// `route` is the channel's record when the steward knows it: proven
+    /// `route` is the channel's record when this device knows it: proven
     /// against the channel ([`ChannelRoute::proves`]), from a device's routed
     /// request or this device's own endpoint. Without it the directory names
     /// the record only from grants naming it, and must withhold the channel
@@ -197,7 +195,7 @@ pub trait ChannelDirectory: Send {
     ) -> BTreeSet<Ed25519PublicKey>;
     /// The [`tilo_identity_host::policy_change`] epoch (or a test's own) when
     /// every write to what [`Self::allowed_devices`] reads is announced and
-    /// its expiries can be timed: stewards then re-check on announcements and
+    /// its expiries can be timed: groups then re-check on announcements and
     /// at [`Self::next_policy_change`]. `None` (the default) keeps the
     /// re-check every [`RECHECK_INTERVAL`].
     fn policy_epoch(&self) -> Option<u64> {
@@ -219,10 +217,10 @@ pub trait ChannelDirectory: Send {
 }
 
 /// Durable location and keys of this device's own channel state: what a
-/// steward or member of a channel needs, and only rooms that are not
-/// stewarded by this device's own room host need it.
+/// participant of a channel needs, and only rooms this device's own room
+/// host does not take part in need it.
 pub struct ChannelEncryptionConfig {
-    /// Private directory holding sealed group and member state.
+    /// Private directory holding sealed channel state.
     pub root: PathBuf,
     /// Key sealing that state, held by the platform secret store.
     pub vault: VaultKey,
@@ -254,33 +252,36 @@ impl Backoff {
     }
 }
 
-struct StewardEntry {
+/// One channel this device takes part in.
+struct PeerEntry {
     room: RoomId,
-    steward: ChannelSteward,
-    /// The channel's record, once proven to this steward; kept beside the
-    /// group so a restart decides with it from the first reconcile.
+    peer: ChannelPeer,
+    /// The channel's record, once proven: decides Read on the record, and
+    /// goes with every access request so other participants can too.
     route: Option<ChannelRoute>,
-    requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
-    redelivery: HashMap<Ed25519PublicKey, Backoff>,
+    /// The request this device asks with while it waits, re-sent on `retry`.
+    request: Option<MlsAccessRequestV1>,
+    retry: Backoff,
+    /// When the next request mints a fresh member key: an admission whose
+    /// Welcome never arrived here is then answered again.
+    fresh_at: Instant,
+    /// The group may differ from the policy: reconcile on the next pass.
     dirty: bool,
-    /// Whether this session published the channel's genesis frame to the
-    /// room. Devices that are not members yet learn from it who stewards
-    /// the channel and that it is encrypted, so they ask for access and
-    /// hold their edits instead of writing plaintext the channel refuses.
-    announced: bool,
+    /// An endpoint opened the route after this device was removed: ask
+    /// again, and the policy decides whether access resumes.
+    rejoin: bool,
 }
 
 /// A channel an endpoint asked about that this device could not open: its
-/// room has no steward this device knows of and is not governed here, or
-/// opening its state failed. Its answer changes with nothing arriving for
-/// it, so the service tells the route itself ([`ChannelEncryption::bump`])
-/// rather than leaving the endpoint to ask on a timer.
+/// room has no governor this device knows of, or opening its state failed.
+/// Its answer changes with nothing arriving for it, so the service tells the
+/// route itself ([`ChannelEncryption::bump`]) rather than leaving the
+/// endpoint to ask on a timer.
 struct Unopened {
     room: RoomId,
-    /// `None` while the room has no steward: re-checked whenever the policy
-    /// inputs announce a change (the tree announces when a room's authority
-    /// or governance changes). `Some` after a failed open: retried on its
-    /// own backoff.
+    /// `None` while the room's governance is unknown here: re-checked
+    /// whenever the policy inputs announce a change. `Some` after a failed
+    /// open: retried on its own backoff.
     retry: Option<Backoff>,
 }
 
@@ -295,35 +296,20 @@ impl Unopened {
     }
 }
 
-struct MemberEntry {
-    room: RoomId,
-    member: ChannelMember,
-    /// The channel's record, as this device's endpoint named it: sent beside
-    /// every access request so the steward can decide Read on the record.
-    route: Option<ChannelRoute>,
-    request: Option<MlsAccessRequestV1>,
-    retry: Backoff,
-    ack_due: bool,
-    /// An endpoint opened the route after this device was removed: ask the
-    /// steward again, whose policy decides whether access resumes.
-    rejoin: bool,
-}
-
 /// This device's side of every encrypted channel it takes part in.
 ///
-/// Keys of a room this device's own room host stewards come from that host
-/// and need nothing else. Being a steward or a member of any other room's
-/// channel needs this device's own channel state, kept under a key from the
-/// platform secret store; a service opened without it
-/// ([`Self::without_store`]) answers those rooms [`ChannelAccess::NoSecretStore`].
+/// Keys of a room this device's own room host takes part in come from that
+/// host and need nothing else. Taking part in any other room's channel needs
+/// this device's own channel state, kept under a key from the platform
+/// secret store; a service opened without it ([`Self::without_store`])
+/// answers those rooms [`ChannelAccess::NoSecretStore`].
 pub struct ChannelEncryption {
     /// This device's own channel state; `None` when no secret store opened.
     store: Option<ChannelEncryptionConfig>,
     directory: Box<dyn ChannelDirectory>,
     broker: Arc<Mutex<BrokerChannels>>,
-    stewards: HashMap<ChannelId, StewardEntry>,
-    members: HashMap<ChannelId, MemberEntry>,
-    /// When stewards last re-checked the access policy, and what the next
+    peers: HashMap<ChannelId, PeerEntry>,
+    /// When the groups last re-checked the access policy, and what the next
     /// re-check waits for.
     reconcile: PolicySchedule,
     delivery: u64,
@@ -338,7 +324,7 @@ pub struct ChannelEncryption {
     queued: bool,
     /// Channels asked about that could not be opened; see [`Unopened`].
     unopened: HashMap<ChannelId, Unopened>,
-    /// Channels of rooms this device's own room host stewards, and the
+    /// Channels of rooms this device's own room host takes part in, and the
     /// epoch of the keys last taken from it
     /// ([`ChannelDirectory::hosted_channel_keys`]).
     hosted: HashMap<ChannelId, (RoomId, u64)>,
@@ -369,6 +355,7 @@ impl ChannelEncryption {
         create_private_dir(&config.root)?;
         let state_root = config.root.clone();
         let mut service = Self::with_store(Some(config), directory, broker);
+        let now = Instant::now();
         for room_dir in std::fs::read_dir(&state_root)? {
             let room_dir = room_dir?.path();
             let Some(room) = room_dir
@@ -378,14 +365,9 @@ impl ChannelEncryption {
             else {
                 continue;
             };
-            for channel in channels_in(&room_dir.join("steward"), "group") {
-                if let Err(error) = service.open_steward(room, channel) {
-                    tracing::warn!(%error, %room, "channel steward state could not be opened");
-                }
-            }
-            for channel in channels_in(&room_dir.join("member"), "member") {
-                if let Err(error) = service.open_member(room, channel, Instant::now()) {
-                    tracing::warn!(%error, %room, "channel member state could not be opened");
+            for channel in channels_in(&room_dir.join(CHANNELS_DIR), "peer") {
+                if let Err(error) = service.open_peer(room, channel, now) {
+                    tracing::warn!(%error, %room, "channel state could not be opened");
                 }
             }
         }
@@ -393,7 +375,7 @@ impl ChannelEncryption {
     }
 
     /// The service of a device whose secret store did not open: it hands
-    /// out the keys of rooms its own room host stewards
+    /// out the keys of rooms its own room host takes part in
     /// ([`ChannelDirectory::hosted_channel_keys`]) and answers every other
     /// room [`ChannelAccess::NoSecretStore`].
     pub fn without_store(
@@ -412,8 +394,7 @@ impl ChannelEncryption {
             store,
             directory,
             broker,
-            stewards: HashMap::new(),
-            members: HashMap::new(),
+            peers: HashMap::new(),
             reconcile: PolicySchedule::default(),
             delivery: 0,
             generation: 0,
@@ -438,9 +419,10 @@ impl ChannelEncryption {
     }
 
     /// What an endpoint of this device may do with `channel` in `room`.
-    /// The first call for a route creates its group (when this device
-    /// governs the room) or starts asking the steward for access. The caller
-    /// has already decided the endpoint may read the route.
+    /// The first call for a route starts taking part in its channel: this
+    /// device creates the group when it governs the room, else asks the
+    /// participants for access. The caller has already decided the endpoint
+    /// may read the route.
     pub fn access(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
         self.access_routed(room, channel, None, now)
     }
@@ -463,52 +445,27 @@ impl ChannelEncryption {
             self.note_unopened(channel, Unopened { room, retry: None });
             return ChannelAccess::NoSecretStore;
         }
-        if self.directory.governs(room) {
-            if !self.stewards.contains_key(&channel) {
-                if let Err(error) = self.open_steward(room, channel) {
-                    tracing::warn!(%error, %room, "channel group could not be created");
-                    self.note_unopened(channel, Unopened::failed(room, now));
-                    return ChannelAccess::Unavailable;
-                }
-                self.queued = true;
-            }
-            let access = self
-                .stewards
-                .get(&channel)
-                .map_or(ChannelAccess::Unavailable, |entry| {
-                    entry
-                        .steward
-                        .content_keys()
-                        .map_or(ChannelAccess::Unavailable, ChannelAccess::Ready)
-                });
-            if matches!(access, ChannelAccess::Unavailable) {
-                self.note_unopened(channel, Unopened::failed(room, now));
-            } else {
-                self.unopened.remove(&channel);
-            }
-            return access;
-        }
-        if !self.members.contains_key(&channel) {
-            match self.open_member(room, channel, now) {
+        if !self.peers.contains_key(&channel) {
+            match self.start_peer(room, channel, now) {
                 Ok(true) => self.queued = true,
                 Ok(false) => {
                     self.note_unopened(channel, Unopened { room, retry: None });
                     return ChannelAccess::Unavailable;
                 }
                 Err(error) => {
-                    tracing::warn!(%error, %room, "channel member state could not be created");
+                    tracing::warn!(%error, %room, "channel state could not be created");
                     self.note_unopened(channel, Unopened::failed(room, now));
                     return ChannelAccess::Unavailable;
                 }
             }
         }
         self.unopened.remove(&channel);
-        let Some(entry) = self.members.get_mut(&channel) else {
+        let Some(entry) = self.peers.get_mut(&channel) else {
             return ChannelAccess::Unavailable;
         };
-        match entry.member.access() {
+        match entry.peer.access() {
             Access::Ready { .. } => entry
-                .member
+                .peer
                 .content_keys()
                 .map_or(ChannelAccess::Waiting, ChannelAccess::Ready),
             Access::Waiting => ChannelAccess::Waiting,
@@ -525,8 +482,8 @@ impl ChannelEncryption {
     }
 
     /// [`Self::access`] for the channel of `route`'s record in `room`,
-    /// remembering the route: a steward then decides Read on the record
-    /// itself, and a member sends the route with its access request.
+    /// remembering the route: this device then decides Read on the record
+    /// itself, and sends the route with its access request.
     pub fn access_record(
         &mut self,
         room: RoomId,
@@ -540,9 +497,8 @@ impl ChannelEncryption {
         (channel, access)
     }
 
-    /// Keep `route`, proven to be `channel`'s in `room`, with the steward or
-    /// member state of the channel, durably. A steward that learns it
-    /// re-checks the channel's readers.
+    /// Keep `route`, proven to be `channel`'s in `room`, with the channel's
+    /// state, durably, and re-check the channel's readers with it.
     fn learn_route(&mut self, room: RoomId, channel: ChannelId, route: &ChannelRoute) {
         if !route.proves(&room.to_string(), channel) {
             return;
@@ -550,21 +506,13 @@ impl ChannelEncryption {
         let Some(store) = &self.store else {
             return;
         };
-        let state_root = &store.root;
-        if let Some(entry) = self.stewards.get_mut(&channel)
+        if let Some(entry) = self.peers.get_mut(&channel)
             && entry.room == room
             && entry.route.is_none()
         {
             entry.route = Some(route.clone());
             entry.dirty = true;
-            save_route(&route_path(state_root, room, "steward", channel), route);
-        }
-        if let Some(entry) = self.members.get_mut(&channel)
-            && entry.room == room
-            && entry.route.is_none()
-        {
-            entry.route = Some(route.clone());
-            save_route(&route_path(state_root, room, "member", channel), route);
+            save_route(&route_path(&store.root, room, channel), route);
         }
     }
 
@@ -589,8 +537,8 @@ impl ChannelEncryption {
     }
 
     /// Tell the routes of unopened channels whose answer may now differ:
-    /// on a policy re-check (`recheck`), those whose room now has a steward
-    /// or is governed here; and those whose failed open is due again.
+    /// on a policy re-check (`recheck`), those whose room's governance is
+    /// now known here; and those whose failed open is due again.
     fn wake_unopened(&mut self, now: Instant, recheck: bool) {
         let mut changed = Vec::new();
         let stored = self.store.is_some();
@@ -599,8 +547,7 @@ impl ChannelEncryption {
                 None => {
                     // Without a store only a room now hosted here opens.
                     let opens = if stored {
-                        self.directory.governs(entry.room)
-                            || self.directory.steward_of(entry.room).is_some()
+                        self.directory.governor_of(entry.room).is_some()
                     } else {
                         self.directory
                             .hosted_channel_keys(entry.room, *channel, None, false)
@@ -619,8 +566,9 @@ impl ChannelEncryption {
             }
         }
         for (channel, settled) in changed {
-            // A room that gained a steward is told once; its route asks and
-            // opens the channel. A failed open stays until one succeeds.
+            // A room whose governance is now known is told once; its route
+            // asks and opens the channel. A failed open stays until one
+            // succeeds.
             if settled {
                 self.unopened.remove(&channel);
             }
@@ -641,59 +589,61 @@ impl ChannelEncryption {
         {
             return keys.ok();
         }
-        if self.directory.governs(room) {
-            return self
-                .stewards
-                .get(&channel)
-                .filter(|entry| entry.room == room)
-                .and_then(|entry| entry.steward.content_keys().ok());
-        }
-        self.members
+        self.peers
             .get(&channel)
-            .filter(|entry| {
-                entry.room == room && matches!(entry.member.access(), Access::Ready { .. })
-            })
-            .and_then(|entry| entry.member.content_keys())
+            .filter(|entry| entry.room == room)
+            .and_then(|entry| entry.peer.content_keys())
     }
 
-    /// Run the governance protocol once: apply what arrived, reconcile
-    /// stewarded groups with the access policy, and (re)deliver what is
-    /// due. `wall` is the Unix time the policy is evaluated at.
+    /// The devices whose membership of `channel` the policy backs at `wall`:
+    /// every device it lets read the channel, and the room's governor.
+    fn allowed(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        route: Option<&ChannelRoute>,
+        wall: u64,
+    ) -> BTreeSet<Ed25519PublicKey> {
+        let mut allowed = self.directory.allowed_devices(room, channel, route, wall);
+        allowed.extend(self.directory.governor_of(room));
+        allowed
+    }
+
+    /// Run the governance protocol once: apply what arrived, move groups to
+    /// the access policy, ask for access, and publish what is due. `wall` is
+    /// the Unix time the policy is evaluated at.
     pub fn pump(&mut self, transport: &dyn GovernanceTransport, now: Instant, wall: u64) {
         for inbound in transport.take_inbound() {
             self.receive(inbound, now, wall);
         }
-        // Read before the policy is: a change announced while the stewards
+        // Read before the policy is: a change announced while the groups
         // reconcile has a later epoch and makes the next re-check due.
         let epoch = self.directory.policy_epoch();
         let reconcile_due = self
             .reconcile
             .due(now, epoch.unwrap_or(0))
             .is_some_and(|due| due <= now);
-        let channels: Vec<ChannelId> = self.stewards.keys().copied().collect();
+        let channels: Vec<ChannelId> = self.peers.keys().copied().collect();
         let mut reconciled = false;
         for channel in channels {
-            let due = reconcile_due || self.stewards.get(&channel).is_some_and(|entry| entry.dirty);
+            let due = reconcile_due || self.peers.get(&channel).is_some_and(|entry| entry.dirty);
             if due {
-                self.reconcile(channel, now, wall);
+                self.reconcile(channel, wall);
                 reconciled = true;
             }
-            self.redeliver(channel, transport, now);
+            self.publish(channel, transport);
+            self.ask(channel, transport, now, wall);
         }
-        // Unopened channels are re-checked with the stewards' policy, and
-        // a failed open when its backoff is due.
+        // Unopened channels are re-checked with the policy, and a failed
+        // open when its backoff is due.
         self.wake_unopened(now, reconcile_due);
         if reconcile_due {
             self.reconcile
                 .checked(now, epoch.unwrap_or(0), epoch.is_none());
         }
-        // A new steward's room brings its own expiries.
+        // A newly opened room brings its own expiries.
         if reconciled && epoch.is_some() {
             self.register_next_policy_change(wall);
-        }
-        let channels: Vec<ChannelId> = self.members.keys().copied().collect();
-        for channel in channels {
-            self.drive_member(channel, transport, now, wall);
         }
     }
 
@@ -701,37 +651,40 @@ impl ChannelEncryption {
     /// `None` while there is none, so its caller can park until a message
     /// arrives or an endpoint's access wakes it ([`ChannelKeyAccess::with_wake`]).
     ///
-    /// A steward re-checks its access policy when its directory announces a
+    /// A group re-checks its access policy when the directory announces a
     /// change (`Self::waits_for_policy_change`) and at the next expiry the
     /// last re-check read, which [`Self::pump`] registers with
-    /// [`ChannelDirectory::announce_at`]; neither is a deadline
-    /// here. A directory that announces nothing keeps the re-check every
-    /// `RECONCILE_INTERVAL`. The re-check also redelivers what members have
-    /// not acknowledged (on their own backoff) and retries an unaccepted
-    /// genesis announcement. A member is due only while it still has to
-    /// acknowledge a frame or is asking for access, on its backoff. A member
-    /// holding its keys has nothing to do until a frame arrives.
+    /// [`ChannelDirectory::announce_at`]; neither is a deadline here. A
+    /// directory that announces nothing keeps the re-check every
+    /// `RECONCILE_INTERVAL`, which also retries frames the transport did not
+    /// take. A waiting device is due on its request backoff.
     #[must_use]
     pub fn next_pump_deadline(&self, now: Instant) -> Option<Instant> {
-        let policy_waiters = !self.stewards.is_empty() || self.unopened_waits_for_policy();
-        let steward = if !policy_waiters {
-            None
-        } else if self.stewards.values().any(|entry| entry.dirty) {
+        let joined = self
+            .peers
+            .values()
+            .any(|entry| matches!(entry.peer.access(), Access::Ready { .. }));
+        let policy = if self.peers.values().any(|entry| entry.dirty) {
             Some(now)
+        } else if joined || self.unopened_waits_for_policy() {
+            let unpublished = self
+                .peers
+                .values()
+                .any(|entry| !entry.peer.outbox().is_empty())
+                .then(|| now.checked_add(RECONCILE_INTERVAL).unwrap_or(now));
+            self.reconcile
+                .due(now, self.directory.policy_epoch().unwrap_or(0))
+                .into_iter()
+                .chain(unpublished)
+                .min()
         } else {
-            let policy = self
-                .reconcile
-                .due(now, self.directory.policy_epoch().unwrap_or(0));
-            policy.into_iter().chain(self.next_redelivery(now)).min()
+            None
         };
-        let member = self
-            .members
+        let asking = self
+            .peers
             .values()
             .filter_map(|entry| {
-                if entry.ack_due {
-                    return Some(now);
-                }
-                let asking = match entry.member.access() {
+                let asking = match entry.peer.access() {
                     Access::Waiting => true,
                     Access::Removed => entry.rejoin,
                     Access::Ready { .. } => false,
@@ -744,32 +697,15 @@ impl ChannelEncryption {
             .values()
             .filter_map(|entry| entry.retry.as_ref().map(|retry| retry.due))
             .min();
-        steward.into_iter().chain(member).chain(unopened).min()
+        policy.into_iter().chain(asking).chain(unopened).min()
     }
 
-    /// When a steward next owes a delivery that no message brings, after a
-    /// pass at `now`: a frame a member has not acknowledged, on that
-    /// member's backoff, or a genesis announcement the transport did not
-    /// accept, retried every [`RECONCILE_INTERVAL`] as before.
-    fn next_redelivery(&self, now: Instant) -> Option<Instant> {
-        let retry = now.checked_add(RECONCILE_INTERVAL).unwrap_or(now);
-        self.stewards
-            .values()
-            .filter_map(|entry| {
-                let genesis = (!entry.announced && !entry.steward.journal().frames().is_empty())
-                    .then_some(retry);
-                let frames = entry.redelivery.values().map(|backoff| backoff.due).min();
-                genesis.into_iter().chain(frames).min()
-            })
-            .min()
-    }
-
-    /// Whether stewards wait for their directory to announce a policy
-    /// change: there are some, the directory announces, and nothing changed
+    /// Whether the groups wait for their directory to announce a policy
+    /// change: some exist, the directory announces, and nothing changed
     /// since their last re-check. The host's pump then sleeps until an
     /// announcement wakes it ([`ChannelKeyAccess::arm_policy_watch`]).
     fn waits_for_policy_change(&self) -> bool {
-        (!self.stewards.is_empty() || self.unopened_waits_for_policy())
+        (!self.peers.is_empty() || self.unopened_waits_for_policy())
             && self
                 .directory
                 .policy_epoch()
@@ -777,10 +713,10 @@ impl ChannelEncryption {
     }
 
     /// Register the first instant after `wall` at which the access policy of
-    /// a stewarded room can change by time alone, so the stewards re-check
-    /// then ([`ChannelDirectory::announce_at`]).
+    /// a room this device takes part in can change by time alone, so the
+    /// groups re-check then ([`ChannelDirectory::announce_at`]).
     fn register_next_policy_change(&self, wall: u64) {
-        let rooms: BTreeSet<RoomId> = self.stewards.values().map(|entry| entry.room).collect();
+        let rooms: BTreeSet<RoomId> = self.peers.values().map(|entry| entry.room).collect();
         let next = rooms
             .into_iter()
             .filter_map(|room| self.directory.next_policy_change(room, wall))
@@ -794,27 +730,26 @@ impl ChannelEncryption {
     fn receive(&mut self, inbound: InboundChannelGovernance, now: Instant, wall: u64) {
         match inbound {
             InboundChannelGovernance::Frame { room, frame } => {
-                self.receive_frame(room, *frame, now);
+                self.receive_frame(room, *frame, now, wall);
             }
             InboundChannelGovernance::AccessRequest {
                 room,
                 request,
                 route,
             } => {
-                self.receive_request(room, *request, route.as_deref(), wall);
+                self.receive_request(room, *request, route.as_deref(), now, wall);
             }
-            InboundChannelGovernance::Ack { room, ack } => self.receive_ack(room, &ack, now),
         }
     }
 
-    fn receive_frame(&mut self, room: RoomId, frame: MlsGovernanceFrameV1, now: Instant) {
+    fn receive_frame(&mut self, room: RoomId, frame: MlsGovernanceFrame, now: Instant, wall: u64) {
         let channel = frame.channel;
         if self
             .hosted
             .get(&channel)
             .is_some_and(|(hosted, _)| *hosted == room)
         {
-            // The steward of this device's own host changed the channel.
+            // This device's own host changed the channel.
             if let Some(keys) = self
                 .directory
                 .hosted_channel_keys(room, channel, None, false)
@@ -823,39 +758,43 @@ impl ChannelEncryption {
             }
             return;
         }
-        let (Some(entry), Some(store)) = (self.members.get_mut(&channel), &self.store) else {
+        let Some(route) = self
+            .peers
+            .get(&channel)
+            .filter(|entry| entry.room == room)
+            .map(|entry| entry.route.clone())
+        else {
             return;
         };
-        if entry.room != room {
+        let allowed = self.allowed(room, channel, route.as_ref(), wall);
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
-        }
-        let events = match entry.member.receive(frame, &store.vault) {
-            Ok(events) => events,
+        };
+        let event = match entry.peer.receive(frame, &allowed, &store.vault) {
+            Ok(event) => event,
             Err(error) => {
                 tracing::debug!(%error, %room, "channel frame refused");
                 return;
             }
         };
-        entry.ack_due = true;
-        let mut changed = false;
-        for event in events {
-            match event {
-                MemberEvent::Joined { .. }
-                | MemberEvent::Advanced { .. }
-                | MemberEvent::Removed => {
-                    changed = true;
-                }
-                MemberEvent::Desynchronised => {
-                    // Ask again with a fresh key package; the steward
-                    // re-admits a member whose newer request it sees.
-                    entry.request = None;
-                    entry.retry = Backoff::now(now, REQUEST_FIRST);
-                    changed = true;
-                }
-                MemberEvent::Duplicate | MemberEvent::Buffered | MemberEvent::Recorded => {}
+        let changed = match event {
+            PeerEvent::Joined { .. } | PeerEvent::Advanced { .. } => {
+                // The group may still differ from the policy.
+                entry.dirty = true;
+                true
             }
-        }
-        let gate = entry.member.journal().gate();
+            PeerEvent::Removed => true,
+            PeerEvent::Desynchronised => {
+                // Ask again with a fresh member key; any participant admits
+                // a member asking with another key than it joined with.
+                entry.request = None;
+                entry.retry = Backoff::now(now, REQUEST_FIRST);
+                entry.fresh_at = now;
+                true
+            }
+            PeerEvent::Genesis | PeerEvent::Duplicate | PeerEvent::Ignored => false,
+        };
+        let gate = entry.peer.gate();
         self.register_gate(channel, gate);
         if changed {
             self.bump(channel);
@@ -867,28 +806,26 @@ impl ChannelEncryption {
         room: RoomId,
         request: MlsAccessRequestV1,
         route: Option<&ChannelRoute>,
+        now: Instant,
         wall: u64,
     ) {
-        if self.store.is_none() || !self.directory.governs(room) || request.verify().is_err() {
-            return;
-        }
         let channel = request.channel;
         // A route that is not the channel's is a forgery: the request goes
         // with it, rather than being decided as if it named no record.
         if route.is_some_and(|route| !route.proves(&room.to_string(), channel)) {
             return;
         }
-        if !self.stewards.contains_key(&channel) {
-            // Only a device the policy allows can make this device create a
-            // group, so outsiders cannot make it mint unbounded state.
-            if !self
-                .directory
-                .allowed_devices(room, channel, route, wall)
+        if !self.peers.contains_key(&channel)
+            && self.store.is_some()
+            && self.directory.governs(room)
+            && request.verify().is_ok()
+            && self
+                .allowed(room, channel, route, wall)
                 .contains(&request.device)
-            {
-                return;
-            }
-            if let Err(error) = self.open_steward(room, channel) {
+        {
+            // The governor creates the group of a channel a device the
+            // policy allows asks for, so outsiders cannot make it mint state.
+            if let Err(error) = self.start_peer(room, channel, now) {
                 tracing::warn!(%error, %room, "channel group could not be created");
                 return;
             }
@@ -896,69 +833,33 @@ impl ChannelEncryption {
         if let Some(route) = route {
             self.learn_route(room, channel, route);
         }
-        let (Some(entry), Some(store)) = (self.stewards.get_mut(&channel), &self.store) else {
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
         if entry.room != room {
             return;
         }
-        let newer = entry
-            .requests
-            .get(&request.device)
-            .is_none_or(|known| request.issued_at > known.issued_at);
-        if newer {
-            entry.requests.insert(request.device, request);
-            entry.dirty = true;
-            let path = requests_path(&store.root, room, channel);
-            if let Err(error) = save_requests(&path, &entry.requests) {
-                tracing::warn!(%error, %room, "channel access requests could not be saved");
-            }
+        match entry.peer.learn_request(request, &store.vault) {
+            Ok(true) => entry.dirty = true,
+            Ok(false) => {}
+            Err(error) => tracing::debug!(%error, %room, "channel access request refused"),
         }
     }
 
-    fn receive_ack(&mut self, room: RoomId, ack: &MlsGovernanceAckV1, now: Instant) {
-        let Some(entry) = self.stewards.get_mut(&ack.channel) else {
-            return;
-        };
-        if entry.room != room {
-            return;
-        }
-        match entry.steward.acknowledge(ack) {
-            Ok(completed) if completed > 0 => {
-                // Progress: the next redelivery, if any is still owed,
-                // starts from the shortest wait again.
-                entry
-                    .redelivery
-                    .insert(ack.device, Backoff::now(now, REDELIVERY_FIRST));
-            }
-            Ok(_) => {}
-            Err(error) => tracing::debug!(%error, %room, "channel acknowledgement refused"),
-        }
-    }
-
-    fn reconcile(&mut self, channel: ChannelId, now: Instant, wall: u64) {
+    fn reconcile(&mut self, channel: ChannelId, wall: u64) {
         let Some((room, route)) = self
-            .stewards
+            .peers
             .get(&channel)
             .map(|entry| (entry.room, entry.route.clone()))
         else {
             return;
         };
-        let Some(store) = &self.store else {
-            return;
-        };
-        let mut allowed = self
-            .directory
-            .allowed_devices(room, channel, route.as_ref(), wall);
-        allowed.insert(device_of(store));
-        let Some(entry) = self.stewards.get_mut(&channel) else {
+        let allowed = self.allowed(room, channel, route.as_ref(), wall);
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
         entry.dirty = false;
-        let outcome = match entry
-            .steward
-            .reconcile(&allowed, &entry.requests, &store.vault)
-        {
+        let outcome = match entry.peer.reconcile_now(&allowed, &store.vault) {
             Ok(outcome) => outcome,
             Err(error) => {
                 tracing::warn!(%error, %room, "channel membership change failed");
@@ -969,99 +870,47 @@ impl ChannelEncryption {
             tracing::warn!(%room, refused = outcome.refused.len(), "malformed channel access requests refused");
         }
         if outcome.changed() {
-            // Every device owed the new frames hears about them now rather
-            // than at its backoff deadline.
-            for outgoing in entry.steward.outbox() {
-                entry
-                    .redelivery
-                    .insert(outgoing.recipient, Backoff::now(now, REDELIVERY_FIRST));
-            }
-            let gate = entry.steward.journal().gate();
+            let gate = entry.peer.gate();
             self.register_gate(channel, gate);
             self.bump(channel);
         }
     }
 
-    fn redeliver(&mut self, channel: ChannelId, transport: &dyn GovernanceTransport, now: Instant) {
-        let Some(entry) = self.stewards.get_mut(&channel) else {
+    /// Hand the transport every frame this device wrote or must publish
+    /// again; kept for the next pass while the transport refuses one.
+    fn publish(&mut self, channel: ChannelId, transport: &dyn GovernanceTransport) {
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
-        if !entry.announced
-            && let Some(genesis) = entry.steward.journal().frames().first().cloned()
-        {
+        if entry.peer.outbox().is_empty() {
+            return;
+        }
+        let mut accepted = true;
+        for frame in entry.peer.outbox() {
             self.delivery = self.delivery.wrapping_add(1);
-            entry.announced = transport.publish(NeighbourMsg::MlsGovernance {
+            accepted &= transport.publish(NeighbourMsg::MlsGovernance {
                 room: entry.room.to_string(),
-                frame: Box::new(genesis),
+                frame: Box::new(frame.clone()),
                 delivery: self.delivery,
             });
-            tracing::debug!(room = %entry.room, ?channel, accepted = entry.announced, "channel genesis announced to the room");
         }
-        let outbox = entry.steward.outbox();
-        let owed: BTreeSet<Ed25519PublicKey> =
-            outbox.iter().map(|outgoing| outgoing.recipient).collect();
-        entry.redelivery.retain(|device, _| owed.contains(device));
-        let mut sent = BTreeSet::new();
-        for outgoing in outbox {
-            let backoff = entry
-                .redelivery
-                .entry(outgoing.recipient)
-                .or_insert_with(|| Backoff::now(now, REDELIVERY_FIRST));
-            if !backoff.is_due(now) {
-                continue;
-            }
-            backoff.fired(now, REDELIVERY_LONGEST);
-            for frame in outgoing.frames {
-                let Ok(digest) = frame.digest() else {
-                    continue;
-                };
-                if !sent.insert(digest) {
-                    continue;
-                }
-                // An admission goes out whole for the devices it adds and
-                // without what they join from for everyone else; a host
-                // delivers the whole copy to those devices alone.
-                let Ok(deliveries) = frame.into_deliveries() else {
-                    continue;
-                };
-                for frame in deliveries {
-                    self.delivery = self.delivery.wrapping_add(1);
-                    let _ = transport.publish(NeighbourMsg::MlsGovernance {
-                        room: entry.room.to_string(),
-                        frame: Box::new(frame),
-                        delivery: self.delivery,
-                    });
-                }
-            }
+        if accepted && let Err(error) = entry.peer.published(&store.vault) {
+            tracing::warn!(%error, room = %entry.room, "channel outbox could not be written");
         }
     }
 
-    fn drive_member(
+    /// Ask the participants for access on the request backoff, while waiting.
+    fn ask(
         &mut self,
         channel: ChannelId,
         transport: &dyn GovernanceTransport,
         now: Instant,
         wall: u64,
     ) {
-        let (Some(entry), Some(store)) = (self.members.get_mut(&channel), &self.store) else {
+        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
             return;
         };
-        if entry.ack_due {
-            entry.ack_due = false;
-            match entry.member.acknowledgement(&store.device_key) {
-                Ok(Some(ack)) => {
-                    self.delivery = self.delivery.wrapping_add(1);
-                    let _ = transport.publish(NeighbourMsg::MlsGovernanceAck {
-                        room: entry.room.to_string(),
-                        ack: Box::new(ack),
-                        delivery: self.delivery,
-                    });
-                }
-                Ok(None) => {}
-                Err(error) => tracing::warn!(%error, "channel acknowledgement could not be signed"),
-            }
-        }
-        let asking = match entry.member.access() {
+        let asking = match entry.peer.access() {
             Access::Waiting => true,
             Access::Removed => entry.rejoin,
             Access::Ready { .. } => false,
@@ -1069,14 +918,15 @@ impl ChannelEncryption {
         if !asking || !entry.retry.is_due(now) {
             return;
         }
-        if entry.request.is_none() {
-            match entry
-                .member
-                .access_request(&store.device_key, wall, &store.vault)
-            {
+        let fresh = now >= entry.fresh_at;
+        if entry.request.is_none() || fresh {
+            match entry.peer.access_request_now(wall, fresh, &store.vault) {
                 Ok(request) => {
                     entry.request = request;
                     entry.rejoin = false;
+                    if fresh {
+                        entry.fresh_at = now.checked_add(REQUEST_FRESH).unwrap_or(now);
+                    }
                 }
                 Err(error) => {
                     tracing::warn!(%error, "channel access request could not be prepared");
@@ -1088,7 +938,7 @@ impl ChannelEncryption {
             return;
         };
         entry.retry.fired(now, REQUEST_LONGEST);
-        // Routed when the record is known, so the steward decides Read on it.
+        // Routed when the record is known, so participants decide Read on it.
         self.delivery = self.delivery.wrapping_add(1);
         let message = match entry.route.clone() {
             Some(route) => NeighbourMsg::MlsRoutedAccessRequest {
@@ -1106,76 +956,81 @@ impl ChannelEncryption {
         let _ = transport.publish(message);
     }
 
-    fn open_steward(&mut self, room: RoomId, channel: ChannelId) -> channel_crypto::Result<()> {
-        let store = self.store.as_ref().ok_or_else(no_store)?;
-        let dir = store.root.join(room.to_string()).join("steward");
-        create_private_dir(&dir)?;
-        let steward =
-            ChannelSteward::open_or_create(&dir, channel, store.device_key.clone(), &store.vault)?;
-        let requests = load_requests(&requests_path(&store.root, room, channel));
-        let route = load_route(
-            &route_path(&store.root, room, "steward", channel),
-            room,
-            channel,
-        );
-        let gate = steward.journal().gate();
-        self.stewards.insert(
-            channel,
-            StewardEntry {
-                room,
-                steward,
-                route,
-                requests,
-                redelivery: HashMap::new(),
-                dirty: true,
-                announced: false,
-            },
-        );
-        self.register_gate(channel, gate);
-        self.bump(channel);
-        Ok(())
-    }
-
-    /// Open (or start) the member view. `Ok(false)` when the room's steward
-    /// is not known yet.
-    fn open_member(
+    /// Start taking part in `channel`: create its group when this device
+    /// governs the room, else wait for access. `Ok(false)` while the room's
+    /// governance is not known here.
+    fn start_peer(
         &mut self,
         room: RoomId,
         channel: ChannelId,
         now: Instant,
     ) -> channel_crypto::Result<bool> {
-        let Some(steward) = self.directory.steward_of(room) else {
+        if self.directory.governor_of(room).is_none() {
+            return Ok(false);
+        }
+        if self.open_peer(room, channel, now)? {
+            return Ok(true);
+        }
+        let store = self.store.as_ref().ok_or_else(no_store)?;
+        let dir = channels_dir(&store.root, room);
+        create_private_dir(&dir)?;
+        let signer = Box::new(store.device_key.clone());
+        let peer = if self.directory.governs(room) {
+            ChannelPeer::create_now(Some(&dir), channel, signer, &store.vault)?
+        } else {
+            ChannelPeer::waiting(Some(&dir), channel, signer, &store.vault)?
+        };
+        self.insert_peer(room, channel, peer, now);
+        Ok(true)
+    }
+
+    /// Open the state kept for `channel`. `Ok(false)` when there is none.
+    fn open_peer(
+        &mut self,
+        room: RoomId,
+        channel: ChannelId,
+        now: Instant,
+    ) -> channel_crypto::Result<bool> {
+        let store = self.store.as_ref().ok_or_else(no_store)?;
+        let dir = channels_dir(&store.root, room);
+        let Some(peer) = ChannelPeer::open(
+            &dir,
+            channel,
+            Box::new(store.device_key.clone()),
+            &store.vault,
+        )?
+        else {
             return Ok(false);
         };
-        let store = self.store.as_ref().ok_or_else(no_store)?;
-        let dir = store.root.join(room.to_string()).join("member");
-        create_private_dir(&dir)?;
-        let member = ChannelMember::open(&dir, channel, device_of(store), steward, &store.vault)?;
-        let route = load_route(
-            &route_path(&store.root, room, "member", channel),
-            room,
+        self.insert_peer(room, channel, peer, now);
+        Ok(true)
+    }
+
+    fn insert_peer(&mut self, room: RoomId, channel: ChannelId, peer: ChannelPeer, now: Instant) {
+        let route = self
+            .store
+            .as_ref()
+            .and_then(|store| load_route(&route_path(&store.root, room, channel), room, channel));
+        let gate = peer.gate();
+        self.peers.insert(
             channel,
-        );
-        let gate = member.journal().gate();
-        self.members.insert(
-            channel,
-            MemberEntry {
+            PeerEntry {
                 room,
-                member,
+                peer,
                 route,
                 request: None,
                 retry: Backoff::now(now, REQUEST_FIRST),
-                ack_due: false,
+                fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
+                dirty: true,
                 rejoin: false,
             },
         );
         self.register_gate(channel, gate);
-        Ok(true)
     }
 
     /// What an endpoint may do with `channel`, given the keys this device's
-    /// own host's steward answered: its gate holds at their epoch, and a new
-    /// epoch is announced as any channel change is.
+    /// own host answered: its gate holds at their epoch, and a new epoch is
+    /// announced as any channel change is.
     fn hosted_access(
         &mut self,
         room: RoomId,
@@ -1221,11 +1076,6 @@ impl ChannelEncryption {
         self.changed.insert(channel, self.generation);
         self.changes.send_replace(self.generation);
     }
-}
-
-/// The device key a channel state under `store` is this device's with.
-fn device_of(store: &ChannelEncryptionConfig) -> Ed25519PublicKey {
-    Ed25519PublicKey::from_bytes(store.device_key.verifying_key().to_bytes())
 }
 
 /// Why a channel of this device's own could not be opened: no secret store
@@ -1409,14 +1259,14 @@ impl ChannelKeyAccess {
         wait_after_pass(deadline, now)
     }
 
-    /// Arm `watch` (whose wake pokes this host's pump) when stewards wait
-    /// for a policy announcement, so a revocation, a role change or an
-    /// expiry re-checks their groups with no timer running. Returns `false`
-    /// when a change already arrived that the arming will not wake for: the
-    /// caller pumps again now instead of parking.
+    /// Arm `watch` (whose wake pokes this host's pump) when groups wait for
+    /// a policy announcement, so a revocation, a role change or an expiry
+    /// re-checks them with no timer running. Returns `false` when a change
+    /// already arrived that the arming will not wake for: the caller pumps
+    /// again now instead of parking.
     ///
-    /// A device stewarding no channel never arms it, and so sleeps through
-    /// every announcement.
+    /// A device taking part in no channel never arms it, and so sleeps
+    /// through every announcement.
     pub fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
         let Ok(service) = self.inner.lock() else {
             return true;
@@ -1432,12 +1282,11 @@ impl ChannelKeyAccess {
 
     /// Whether a timer still has to pump governance. An idle device with no
     /// channel parks the drainer until the next inbound frame. A channel
-    /// whose open failed is retried by the pump; one whose room has no
-    /// steward yet is re-checked when the room's frames arrive.
+    /// whose open failed is retried by the pump; one whose room's governance
+    /// is unknown yet is re-checked when the room's frames arrive.
     pub fn has_live_channels(&self) -> bool {
         self.inner.lock().is_ok_and(|service| {
-            !service.stewards.is_empty()
-                || !service.members.is_empty()
+            !service.peers.is_empty()
                 || service.unopened.values().any(|entry| entry.retry.is_some())
         })
     }
@@ -1574,20 +1423,14 @@ impl tilo_identity_host::broker::ChannelKeySource for ChannelKeyProvider {
     }
 }
 
-fn requests_path(state_root: &Path, room: RoomId, channel: ChannelId) -> PathBuf {
-    state_root
-        .join(room.to_string())
-        .join("steward")
-        .join(format!("{}.requests", channel.0))
+/// Where the state of `room`'s channels is kept.
+fn channels_dir(state_root: &Path, room: RoomId) -> PathBuf {
+    state_root.join(room.to_string()).join(CHANNELS_DIR)
 }
 
-/// Where the route of `channel`'s record is kept beside its `role`
-/// (`steward` or `member`) state.
-fn route_path(state_root: &Path, room: RoomId, role: &str, channel: ChannelId) -> PathBuf {
-    state_root
-        .join(room.to_string())
-        .join(role)
-        .join(format!("{}.route", channel.0))
+/// Where the route of `channel`'s record is kept beside its state.
+fn route_path(state_root: &Path, room: RoomId, channel: ChannelId) -> PathBuf {
+    channels_dir(state_root, room).join(format!("{}.route", channel.0))
 }
 
 /// The route kept at `path`, only if it is still `channel`'s in `room`: a
@@ -1608,21 +1451,6 @@ fn save_route(path: &Path, route: &ChannelRoute) {
     if let Err(error) = saved {
         tracing::warn!(%error, "channel route could not be saved");
     }
-}
-
-fn load_requests(path: &Path) -> BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| postcard::from_bytes(&bytes).ok())
-        .unwrap_or_default()
-}
-
-fn save_requests(
-    path: &Path,
-    requests: &BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
-) -> std::io::Result<()> {
-    let bytes = postcard::to_allocvec(requests).map_err(std::io::Error::other)?;
-    tilo_files::native::atomic::write_private(path, &bytes)
 }
 
 /// Channel ids of the `*.{extension}` files in `dir`.
@@ -1664,6 +1492,7 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 )]
 pub mod testing {
     use super::*;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// An in-memory room: every endpoint publishes to all the others while
@@ -1715,9 +1544,6 @@ pub mod testing {
                         route: Some(route),
                     }
                 }
-                NeighbourMsg::MlsGovernanceAck { ack, .. } => {
-                    InboundChannelGovernance::Ack { room, ack }
-                }
                 _ => return false,
             };
             for (id, queue) in self.room.queues.lock().unwrap().iter_mut() {
@@ -1740,15 +1566,15 @@ pub mod testing {
         /// expires.
         pub until: Arc<Mutex<BTreeMap<Ed25519PublicKey, u64>>>,
         /// How the directory announces changes; `None` announces none, and
-        /// stewards keep their one-second re-check.
+        /// groups keep their one-second re-check.
         pub announces: Arc<Mutex<Option<Announcements>>>,
-        /// The instants stewards asked to be announced at, in order; the
+        /// The instants groups asked to be announced at, in order; the
         /// test announces them itself when it moves the wall clock there.
         pub announce_at: Arc<Mutex<Vec<u64>>>,
         /// Devices kept out of one channel alone: a Read Deny on its record.
         pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
         /// Devices kept out of every record of an app: a Read Deny on the
-        /// app. A channel whose route the steward does not know may be any
+        /// app. A channel whose route a device does not know may be any
         /// app's, so they are kept out of it too, as a production directory
         /// keeps out whoever may not read a pattern's witness.
         pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
@@ -1766,7 +1592,7 @@ pub mod testing {
 
     pub struct Directory {
         pub governs: bool,
-        pub steward: Ed25519PublicKey,
+        pub governor: Ed25519PublicKey,
         pub policy: Policy,
     }
 
@@ -1774,8 +1600,8 @@ pub mod testing {
         fn governs(&self, _: RoomId) -> bool {
             self.governs
         }
-        fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
-            (!self.governs).then_some(self.steward)
+        fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+            Some(self.governor)
         }
         fn allowed_devices(
             &self,
@@ -1848,13 +1674,13 @@ mod tests {
         endpoint: Endpoint,
     }
 
-    /// Device `seed` of a room stewarded by device `steward`, with its
+    /// Device `seed` of a room governed by device `governor`, with its
     /// state under `dir` and transport endpoint `id` of `room`.
     fn device(
         room: &Arc<Room>,
         room_id: RoomId,
         id: usize,
-        (seed, steward): (u8, u8),
+        (seed, governor): (u8, u8),
         policy: &Policy,
         dir: &Path,
     ) -> Device {
@@ -1867,8 +1693,8 @@ mod tests {
                 device_key: key(seed),
             },
             Box::new(Directory {
-                governs: seed == steward,
-                steward: public(steward),
+                governs: seed == governor,
+                governor: public(governor),
                 policy: policy.clone(),
             }),
             Arc::clone(&broker),
@@ -1923,8 +1749,7 @@ mod tests {
         for service in [&owner.service, &member.service] {
             let generation = service.generation();
             assert!(service.existing_keys(room_id, channel).is_none());
-            assert!(service.stewards.is_empty());
-            assert!(service.members.is_empty());
+            assert!(service.peers.is_empty());
             assert_eq!(service.generation(), generation);
         }
 
@@ -1950,11 +1775,11 @@ mod tests {
         policy.allowed.lock().unwrap().clear();
         run(&mut [&mut owner, &mut member], &mut now, 3);
         let generation = member.service.generation();
-        let rejoin = member.service.members.get(&channel).unwrap().rejoin;
+        let rejoin = member.service.peers.get(&channel).unwrap().rejoin;
         assert!(!rejoin);
         assert!(member.service.existing_keys(room_id, channel).is_none());
         assert_eq!(member.service.generation(), generation);
-        assert!(!member.service.members.get(&channel).unwrap().rejoin);
+        assert!(!member.service.peers.get(&channel).unwrap().rejoin);
     }
 
     #[test]
@@ -1977,7 +1802,7 @@ mod tests {
         assert_eq!(
             wakes.load(Ordering::SeqCst),
             1,
-            "a new steward group has a genesis to announce"
+            "a new group has a genesis to announce"
         );
         assert!(access.has_live_channels());
         access.access(room_id, channel);
@@ -2038,7 +1863,7 @@ mod tests {
             ChannelAccess::Waiting
         ));
 
-        // Not allowed yet: the request waits at the steward.
+        // Not allowed yet: the request waits at the participants.
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
         assert!(matches!(
             laptop.service.access(room_id, channel, now),
@@ -2047,10 +1872,10 @@ mod tests {
 
         policy.allowed.lock().unwrap().insert(public(2));
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
-        let steward_epoch = ready_epoch(&owner.service.access(room_id, channel, now));
+        let owner_epoch = ready_epoch(&owner.service.access(room_id, channel, now));
         assert_eq!(
             ready_epoch(&laptop.service.access(room_id, channel, now)),
-            steward_epoch
+            owner_epoch
         );
         assert!(refuses_plaintext(&laptop, channel));
 
@@ -2063,9 +1888,9 @@ mod tests {
     }
 
     /// A Read Deny on one record takes the denied device out of that
-    /// record's channel alone: the steward removes it in a new epoch there,
+    /// record's channel alone: a participant removes it in a new epoch there,
     /// the room's other channels keep their epoch and the device keeps their
-    /// keys, and a request of the denied device never makes the steward
+    /// keys, and a request of the denied device never makes a participant
     /// create a group for the denied record.
     #[test]
     fn a_device_withheld_from_one_channel_loses_only_that_channels_key() {
@@ -2113,16 +1938,16 @@ mod tests {
             notes_epoch
         );
         // Asking again for the denied record, or first for another denied
-        // one, admits nothing and creates no group at the steward.
+        // one, admits nothing and creates no group at the owner.
         laptop.service.access(room_id, budget, now);
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
         for channel in [payroll, budget] {
             assert!(ready_epoch(&laptop.service.access(room_id, channel, now)).is_none());
         }
-        assert!(!owner.service.stewards.contains_key(&budget));
+        assert!(!owner.service.peers.contains_key(&budget));
         assert!(
-            !owner.service.stewards[&payroll]
-                .steward
+            !owner.service.peers[&payroll]
+                .peer
                 .members()
                 .contains(&public(2))
         );
@@ -2136,12 +1961,12 @@ mod tests {
     }
 
     /// A Read Deny on an app takes the denied device out of every channel
-    /// of that app whose route the steward knows (from its own endpoint or
+    /// of that app whose route a participant knows (from its own endpoint or
     /// from the device's routed request) in a new epoch of each, and out of
     /// no other app's channel. A record of the app first asked for after the
     /// Deny, and a channel asked for without a route, admit nothing and
     /// create no group. A route that is not its channel's is refused. The
-    /// steward keeps the routes: opened again, it still withholds the app's
+    /// owner keeps the routes: opened again, it still withholds the app's
     /// channels and admits the device to nothing of it.
     #[test]
     fn a_read_deny_on_an_app_withholds_every_routed_channel_of_it() {
@@ -2160,7 +1985,7 @@ mod tests {
         let mut now = Instant::now();
         let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (2, 1), &policy, laptop_dir.path());
-        // The owner's own endpoint opens payroll; q3 and draft the steward
+        // The owner's own endpoint opens payroll; q3 and draft the owner
         // learns from the laptop's routed requests alone.
         owner.service.access_record(room_id, &routes[0], now);
         for route in &routes {
@@ -2176,7 +2001,7 @@ mod tests {
             .collect();
         for channel in [payroll, q3, draft] {
             assert!(epoch(&mut laptop, channel, now).is_some());
-            assert!(owner.service.stewards[&channel].route.is_some());
+            assert!(owner.service.peers[&channel].route.is_some());
         }
 
         policy
@@ -2205,22 +2030,22 @@ mod tests {
         let unrouted = ChannelRoute::new("notes", "plan").channel(&room_name);
         laptop.service.access(room_id, unrouted, now);
         let forged = ChannelRoute::new("notes", "forged").channel(&room_name);
-        let request = member_request(&laptop_dir.path().join("forged"), forged, 2, 1);
+        let request = member_request(&laptop_dir.path().join("forged"), forged, 2);
         owner
             .service
-            .receive_request(room_id, request, Some(&routes[2]), 0);
+            .receive_request(room_id, request, Some(&routes[2]), now, 0);
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
         for channel in [budget.channel(&room_name), unrouted, forged] {
-            assert!(!owner.service.stewards.contains_key(&channel));
+            assert!(!owner.service.peers.contains_key(&channel));
             assert!(epoch(&mut laptop, channel, now).is_none());
         }
 
-        // Opened again, the steward still knows every route and admits the
+        // Opened again, the owner still knows every route and admits the
         // device to nothing of the app, however often it asks.
         drop(owner);
         let mut owner = device(&room, room_id, 0, (1, 1), &policy, owner_dir.path());
         for channel in [payroll, q3, draft] {
-            assert!(owner.service.stewards[&channel].route.is_some());
+            assert!(owner.service.peers[&channel].route.is_some());
         }
         for route in &routes {
             laptop.service.access_record(room_id, route, now);
@@ -2229,8 +2054,8 @@ mod tests {
         for channel in [payroll, q3] {
             assert!(epoch(&mut laptop, channel, now).is_none());
             assert!(
-                !owner.service.stewards[&channel]
-                    .steward
+                !owner.service.peers[&channel]
+                    .peer
                     .members()
                     .contains(&public(2))
             );
@@ -2247,19 +2072,18 @@ mod tests {
         }
     }
 
-    /// The access request device `seed` makes for `channel` of steward
-    /// `steward`, with its member state under `dir`.
-    fn member_request(dir: &Path, channel: ChannelId, seed: u8, steward: u8) -> MlsAccessRequestV1 {
+    /// The access request device `seed` makes for `channel`, with its state
+    /// under `dir`.
+    fn member_request(dir: &Path, channel: ChannelId, seed: u8) -> MlsAccessRequestV1 {
         std::fs::create_dir_all(dir).unwrap();
-        ChannelMember::open(
-            dir,
+        ChannelPeer::waiting(
+            Some(dir),
             channel,
-            public(seed),
-            public(steward),
+            Box::new(key(seed)),
             &VaultKey::new([2; 32]),
         )
         .unwrap()
-        .access_request(&key(seed), 1, &VaultKey::new([2; 32]))
+        .access_request_now(1, false, &VaultKey::new([2; 32]))
         .unwrap()
         .unwrap()
     }
@@ -2313,10 +2137,11 @@ mod tests {
         }
     }
 
-    /// #3998: a member holding its keys has nothing to pump until a frame
-    /// arrives; a steward re-checks its policy once a reconcile interval.
+    /// #3998: a device in a channel's group re-checks its policy once a
+    /// reconcile interval, whoever created the group; a device with no
+    /// channel has nothing to pump.
     #[test]
-    fn only_a_steward_or_an_unfinished_member_has_a_pump_deadline() {
+    fn only_a_group_member_or_an_unfinished_member_has_a_pump_deadline() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();
@@ -2344,14 +2169,11 @@ mod tests {
 
         run(&mut [&mut owner, &mut member], &mut now, 5);
         assert!(ready_epoch(&member.service.access(room_id, channel, now)).is_some());
-        assert_eq!(
-            member.service.next_pump_deadline(now),
-            None,
-            "a member holding its keys parks until a frame arrives"
-        );
-        let reconcile = owner.service.next_pump_deadline(now).unwrap();
-        assert!(reconcile > now.checked_sub(RECONCILE_INTERVAL).unwrap());
-        assert!(reconcile <= now.checked_add(RECONCILE_INTERVAL).unwrap());
+        for device in [&owner, &member] {
+            let reconcile = device.service.next_pump_deadline(now).unwrap();
+            assert!(reconcile > now.checked_sub(RECONCILE_INTERVAL).unwrap());
+            assert!(reconcile <= now.checked_add(RECONCILE_INTERVAL).unwrap());
+        }
         assert_eq!(
             wait_after_pass(Some(now), now),
             Some(RECONCILE_INTERVAL),
@@ -2360,8 +2182,8 @@ mod tests {
         assert_eq!(wait_after_pass(None, now), None);
     }
 
-    /// #3998: a member the steward has not admitted asks again on its
-    /// backoff, and is due exactly then.
+    /// #3998: a device nobody admitted yet asks again on its backoff, and is
+    /// due exactly then.
     #[test]
     fn a_waiting_member_is_due_on_its_request_backoff() {
         let room = Arc::new(Room::default());
@@ -2415,17 +2237,20 @@ mod tests {
 
         policy.allowed.lock().unwrap().insert(public(2));
         run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 5);
-        let steward_epoch = ready_epoch(&owner.service.access(room_id, channel, now));
+        let owner_epoch = ready_epoch(&owner.service.access(room_id, channel, now));
         assert_eq!(
             ready_epoch(&laptop.service.access(room_id, channel, now)),
-            steward_epoch
+            owner_epoch
         );
-        assert_eq!(parked[1], None, "the admitted member parks");
+        assert!(
+            parked[1].is_some(),
+            "the admitted member re-checks the policy as every group member does"
+        );
 
-        // Ten idle seconds cost the member nothing and the steward one
-        // policy re-check a reconcile interval.
+        // Ten idle seconds cost each group member one policy re-check a
+        // reconcile interval.
         let idle = run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 10);
-        assert!(idle <= 11, "{idle} passes in ten idle seconds");
+        assert!(idle <= 22, "{idle} passes in ten idle seconds");
 
         policy.allowed.lock().unwrap().clear();
         run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 3);
@@ -2435,11 +2260,11 @@ mod tests {
         ));
     }
 
-    /// #4022: with a directory that announces its changes, an idle steward
+    /// #4022: with a directory that announces its changes, an idle group
     /// has no deadline at all, and a revocation is enforced as soon as it is
     /// announced, with no clock having run in between.
     #[test]
-    fn an_announced_revocation_is_enforced_at_once_and_idle_stewards_park() {
+    fn an_announced_revocation_is_enforced_at_once_and_idle_groups_park() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();
@@ -2463,10 +2288,10 @@ mod tests {
 
         // A minute with nothing announced runs no pass at all.
         let idle = run_parked(&mut [&mut owner, &mut laptop], &mut parked, &mut now, 60);
-        assert_eq!(idle, 0, "an idle steward polls nothing");
+        assert_eq!(idle, 0, "an idle group polls nothing");
         assert!(owner.service.waits_for_policy_change());
 
-        // The revocation, announced. The steward is due at once, and one
+        // The revocation, announced. The owner is due at once, and one
         // pass removes the member.
         policy.allowed.lock().unwrap().clear();
         epoch.fetch_add(1, Ordering::SeqCst);
@@ -2506,7 +2331,7 @@ mod tests {
     }
 
     /// #4022: a grant that expires while nothing else happens is enforced
-    /// when it expires: the steward registers the expiry to be announced
+    /// when it expires: the owner registers the expiry to be announced
     /// at, parks with no timer of its own, and the announcement at the
     /// expiry wakes the one pass that removes the member. The test thread's
     /// wall clock is held, so the expiry is reached when the test moves it
@@ -2534,7 +2359,7 @@ mod tests {
             let _ = woke.try_send(());
         });
         let parked = |owner: &ChannelKeyAccess| {
-            tilo_test_env::wait_until("the steward parked", || {
+            tilo_test_env::wait_until("the owner parked", || {
                 match owner.pump_until_due(&owner_endpoint) {
                     Some(wait) => {
                         let _ = wakes.recv_timeout(wait);
@@ -2547,7 +2372,7 @@ mod tests {
         let expiry = start.saturating_add(3);
 
         // This thread pumps both devices, so the time it reads is the time
-        // the steward judges the grant by.
+        // the owner judges the grant by.
         tilo_clock::testing::with_wall(at(start), || {
             assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
             tilo_test_env::wait_until("the laptop joined", || {
@@ -2558,7 +2383,7 @@ mod tests {
 
             // Replace the admitted member's permission with an expiring
             // grant, announced through the production watch, and let the
-            // steward register the expiry and park.
+            // owner register the expiry and park.
             policy.until.lock().unwrap().insert(public(2), expiry);
             policy.allowed.lock().unwrap().remove(&public(2));
             tilo_identity_host::policy_change::announce();
@@ -2566,7 +2391,7 @@ mod tests {
             assert_eq!(
                 policy.announce_at.lock().unwrap().last(),
                 Some(&expiry),
-                "the steward registered the expiry"
+                "the owner registered the expiry"
             );
             let _ = laptop.pump_until_due(&laptop_endpoint);
             assert!(ready_epoch(&laptop.access(room_id, channel).0).is_some());
@@ -2584,12 +2409,12 @@ mod tests {
             );
         });
 
-        // The expiry: its announcement wakes the parked steward, whose
+        // The expiry: its announcement wakes the parked owner, whose
         // re-check (at most a reconcile interval after the last) removes the
         // member.
         tilo_clock::testing::with_wall(at(expiry), || {
             tilo_identity_host::policy_change::announce();
-            assert!(wakes.try_recv().is_ok(), "the expiry woke the steward");
+            assert!(wakes.try_recv().is_ok(), "the expiry woke the owner");
             tilo_test_env::wait_until("the member applied the removal", || {
                 let _ = owner.pump_until_due(&owner_endpoint);
                 let _ = laptop.pump_until_due(&laptop_endpoint);
@@ -2716,7 +2541,7 @@ mod tests {
 
     /// A device that is not a member yet (a browser, which learns nothing
     /// about the room's governance but what the host carries) learns from
-    /// the room that the channel exists, is encrypted and who stewards it.
+    /// the room that the channel exists and is encrypted.
     #[test]
     fn a_new_channel_announces_its_genesis_to_the_room() {
         let room = Arc::new(Room::default());
@@ -2739,7 +2564,7 @@ mod tests {
             .into_iter()
             .filter_map(|inbound| match inbound {
                 InboundChannelGovernance::Frame { frame, .. } => Some(frame),
-                _ => None,
+                InboundChannelGovernance::AccessRequest { .. } => None,
             })
             .collect();
         assert_eq!(genesis.len(), 1, "announced once per session");
@@ -2773,13 +2598,13 @@ mod tests {
             phone.service.access(room_id, channel, now),
             ChannelAccess::Waiting
         ));
-        assert!(!owner.service.stewards[&channel].steward.outbox().is_empty());
+        assert!(!owner.service.peers[&channel].peer.outbox().is_empty());
         room.down.store(false, Ordering::SeqCst);
         run(&mut [&mut owner, &mut phone], &mut now, 130);
         assert!(ready_epoch(&phone.service.access(room_id, channel, now)).is_some());
         assert!(
-            owner.service.stewards[&channel].steward.outbox().is_empty(),
-            "the outbox drains once the phone acknowledges"
+            owner.service.peers[&channel].peer.outbox().is_empty(),
+            "the outbox drains once the transport takes it"
         );
     }
 
@@ -2814,7 +2639,7 @@ mod tests {
     /// person's identity backup on a replacement machine brings back the
     /// root identity, not the lost device key; onboarding certifies a new
     /// device key. Once the room's governor knows that certificate, the
-    /// policy allows the new device, the steward admits it, and its key
+    /// policy allows the new device, a participant admits it, and its key
     /// history opens everything written before the loss. The lost device is
     /// removed, so it cannot read what is written afterwards.
     #[test]
@@ -3002,7 +2827,7 @@ mod tests {
         let mut owner = device(&room, room_id, 0, (10, 10), &policy, owner_dir.path());
         let mut laptop = device(&room, room_id, 1, (11, 10), &policy, laptop_dir.path());
         let ChannelAccess::Ready(before) = owner.service.access(room_id, channel, now) else {
-            panic!("the steward holds the channel's keys");
+            panic!("the owner holds the channel's keys");
         };
         let stale = sealed_write(artifact, &before);
         policy.allowed.lock().unwrap().insert(public(11));
@@ -3010,7 +2835,7 @@ mod tests {
         run(&mut [&mut owner, &mut laptop], &mut now, 5);
         let access = ChannelKeyAccess::new(owner.service);
         let (ChannelAccess::Ready(current), _) = access.access(room_id, channel) else {
-            panic!("the steward holds the channel's keys");
+            panic!("the owner holds the channel's keys");
         };
         assert!(
             current.epoch() > before.epoch(),
@@ -3061,7 +2886,7 @@ mod tests {
         let mut owner = device(&room, room_id, 0, (12, 12), &policy, owner_dir.path());
         let laptop = device(&room, room_id, 1, (13, 12), &policy, laptop_dir.path());
         let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
-            panic!("the steward holds the channel's keys");
+            panic!("the owner holds the channel's keys");
         };
         let write = sealed_write(artifact, &keys);
         let waiting = ChannelKeyAccess::new(laptop.service);
@@ -3123,12 +2948,8 @@ mod tests {
         assert!(fresh.open_history_write(room_id, &sealed).is_err());
         let state = fresh.inner.lock().unwrap();
         assert!(
-            state.stewards.is_empty(),
-            "reading history must not mint replacement keys"
-        );
-        assert!(
-            state.members.is_empty(),
-            "reading history must not request access"
+            state.peers.is_empty(),
+            "reading history must not mint replacement keys or request access"
         );
         assert!(
             !state.queued,
@@ -3138,20 +2959,20 @@ mod tests {
         drop(state);
     }
 
-    /// A room whose steward this device learns of later, as the workspace
+    /// A room whose governance this device learns of later, as the workspace
     /// tree does when a room's authority arrives: it announces the change.
     #[derive(Clone, Default)]
-    struct LateSteward {
-        steward: Arc<Mutex<Option<Ed25519PublicKey>>>,
+    struct LateGovernor {
+        governor: Arc<Mutex<Option<Ed25519PublicKey>>>,
         epoch: Arc<std::sync::atomic::AtomicU64>,
     }
 
-    impl ChannelDirectory for LateSteward {
+    impl ChannelDirectory for LateGovernor {
         fn governs(&self, _: RoomId) -> bool {
             false
         }
-        fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
-            *self.steward.lock().unwrap()
+        fn governor_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+            *self.governor.lock().unwrap()
         }
         fn allowed_devices(
             &self,
@@ -3167,7 +2988,7 @@ mod tests {
         }
     }
 
-    fn late_steward_service(dir: &Path, directory: &LateSteward) -> ChannelEncryption {
+    fn late_governor_service(dir: &Path, directory: &LateGovernor) -> ChannelEncryption {
         ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root: dir.join("channels"),
@@ -3180,14 +3001,14 @@ mod tests {
         .unwrap()
     }
 
-    /// A route asked about before its room's steward is known is told when
-    /// the steward is learned, with no timer running meanwhile: the endpoint
-    /// need not ask on one to find out.
+    /// A route asked about before its room's governance is known is told
+    /// when it is learned, with no timer running meanwhile: the endpoint need
+    /// not ask on one to find out.
     #[test]
-    fn a_route_hears_when_its_rooms_steward_is_learned() {
+    fn a_route_hears_when_its_rooms_governance_is_learned() {
         let dir = tempfile::tempdir().unwrap();
-        let directory = LateSteward::default();
-        let mut service = late_steward_service(dir.path(), &directory);
+        let directory = LateGovernor::default();
+        let mut service = late_governor_service(dir.path(), &directory);
         let (room, channel) = (RoomId::new(), ChannelId::new());
         let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
         let mut now = Instant::now();
@@ -3204,25 +3025,29 @@ mod tests {
         assert_eq!(
             service.next_pump_deadline(now),
             None,
-            "nothing is due while the room has no steward"
+            "nothing is due while the room's governance is unknown"
         );
         assert!(
             service.waits_for_policy_change(),
             "the pump waits for an announcement instead"
         );
 
-        // Announcements that do not give the room a steward tell no route.
+        // Announcements that leave the room's governance unknown tell no
+        // route.
         directory.epoch.fetch_add(1, Ordering::SeqCst);
         now = now.checked_add(Duration::from_secs(5)).unwrap();
         service.pump(&transport, now, 1_005);
         assert_eq!(service.channel_change(channel), 0);
 
-        *directory.steward.lock().unwrap() = Some(public(22));
+        *directory.governor.lock().unwrap() = Some(public(22));
         directory.epoch.fetch_add(1, Ordering::SeqCst);
         now = now.checked_add(Duration::from_secs(5)).unwrap();
         service.pump(&transport, now, 1_010);
         let told = service.channel_change(channel);
-        assert_ne!(told, 0, "the route is told its room has a steward now");
+        assert_ne!(
+            told, 0,
+            "the route is told its room's governance is known now"
+        );
         assert!(matches!(
             service.access(room, channel, now),
             ChannelAccess::Waiting
@@ -3244,9 +3069,9 @@ mod tests {
     #[test]
     fn a_failed_open_is_retried_on_the_pumps_backoff() {
         let dir = tempfile::tempdir().unwrap();
-        let directory = LateSteward::default();
-        *directory.steward.lock().unwrap() = Some(public(22));
-        let mut service = late_steward_service(dir.path(), &directory);
+        let directory = LateGovernor::default();
+        *directory.governor.lock().unwrap() = Some(public(22));
+        let mut service = late_governor_service(dir.path(), &directory);
         let (room, channel) = (RoomId::new(), ChannelId::new());
         let transport = Endpoint::join(&Arc::new(Room::default()), room, 0);
         // The room's state directory cannot be created: a file is in its way.
@@ -3281,11 +3106,11 @@ mod tests {
     }
 
     /// A device whose secret store did not open keeps no channel state of
-    /// its own. A room stewarded elsewhere is answered that it has no secret
-    /// store; asking again creates nothing, sends nothing and leaves its pump
+    /// its own. A room its own host does not take part in is answered that
+    /// it has no secret store; asking again creates nothing, sends nothing and leaves its pump
     /// nothing to do, so nobody asks on a timer.
     #[test]
-    fn without_a_store_a_room_stewarded_elsewhere_says_so_and_nothing_is_due() {
+    fn without_a_store_a_room_hosted_elsewhere_says_so_and_nothing_is_due() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
         let channel = ChannelId::new();
@@ -3298,7 +3123,7 @@ mod tests {
         let mut service = ChannelEncryption::without_store(
             Box::new(Directory {
                 governs: false,
-                steward: public(1),
+                governor: public(1),
                 policy: policy.clone(),
             }),
             Arc::clone(&broker),
@@ -3320,7 +3145,7 @@ mod tests {
             assert_eq!(service.next_pump_deadline(now), None, "nothing is due");
         }
         assert_eq!(service.generation(), generation, "nothing changed");
-        assert!(service.stewards.is_empty() && service.members.is_empty());
+        assert!(service.peers.is_empty());
         assert!(service.existing_keys(room_id, channel).is_none());
         assert!(
             room.queues.lock().unwrap().values().all(Vec::is_empty),
@@ -3330,7 +3155,7 @@ mod tests {
         let mut governed = ChannelEncryption::without_store(
             Box::new(Directory {
                 governs: true,
-                steward: public(1),
+                governor: public(1),
                 policy,
             }),
             broker,
@@ -3339,6 +3164,6 @@ mod tests {
             governed.access(room_id, channel, now),
             ChannelAccess::NoSecretStore
         ));
-        assert!(governed.stewards.is_empty());
+        assert!(governed.peers.is_empty());
     }
 }

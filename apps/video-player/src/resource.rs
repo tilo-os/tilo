@@ -1,18 +1,15 @@
 //! Video Player as a resource: the shared library ([`Library`]: playlists,
 //! timestamp annotations, playback watched together) is the document; the
-//! player on this device is the surface over it, with its effects and the
-//! live rows of what it shows.
+//! player on this device is the window over it, and the view answers its
+//! effects and publishes the live rows of what it shows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{ActionDecl, Invoke};
 use ui::widget::Element;
 
-use crate::actions::{self, VideoEffect};
 use crate::app::PlayerApp;
 use crate::shared::{Library, library};
 
@@ -38,7 +35,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "fullscreen",
 ];
 
-/// Framework app: the player widget is the surface over the shared [`Library`].
+/// Framework app: the player window is the view of the shared [`Library`].
 pub struct VideoPlayerShell;
 
 impl ResourceApp for VideoPlayerShell {
@@ -50,15 +47,7 @@ impl ResourceApp for VideoPlayerShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
-        // The playhead is the player's, not the document's, so the player
-        // says what it is on and the view publishes those verbs: neither
-        // holds the other.
-        let playhead = Playhead::default();
-        let published = Rc::clone(&playhead);
-        cx.bind_declarations(move |_| published.borrow().clone());
-        let mut player = PlayerApp::new(cx.mode());
-        player.share_playhead(&playhead);
-        cx.surface(player)
+        crate::app::window(cx, PlayerApp::new(cx.mode()))
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -72,19 +61,23 @@ impl ResourceApp for VideoPlayerShell {
             return Vec::new();
         }
         let media_ref = crate::app::demo_media_ref();
-        vec![
-            Library::CREATE_PLAYLIST.with("Watch later"),
-            Library::ADD_ANNOTATION.with(library::AddAnnotation {
-                media_ref: media_ref.clone(),
-                time_ms: 8_000,
-                text: Some("Opening detail".into()),
-            }),
-            Library::ADD_ANNOTATION.with(library::AddAnnotation {
-                media_ref,
-                time_ms: 45_000,
-                text: None,
-            }),
-        ]
+        let playlist = ui::tilo_resource::NonBlank::parse("Watch later")
+            .map(|name| Library::CREATE_PLAYLIST.with(name));
+        playlist
+            .into_iter()
+            .chain([
+                Library::ADD_ANNOTATION.with(library::AddAnnotation {
+                    media_ref: media_ref.clone(),
+                    time_ms: 8_000,
+                    text: Some("Opening detail".into()),
+                }),
+                Library::ADD_ANNOTATION.with(library::AddAnnotation {
+                    media_ref,
+                    time_ms: 45_000,
+                    text: None,
+                }),
+            ])
+            .collect()
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -96,37 +89,6 @@ impl ResourceApp for VideoPlayerShell {
     }
 }
 
-impl ResourceSurface<Library, VideoEffect> for PlayerApp {
-    fn present(&mut self, state: &Rc<Library>) {
-        self.present_library(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Library>) {
-        self.attach_framework(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        let launched = self.capture_launched.take();
-        self.stage_capture(launched.as_deref(), scenario);
-    }
-
-    fn effect(&mut self, effect: VideoEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        actions::live_rows(&self.player_rows(), actions::CONTEXTUAL_CHILD_LIMIT)
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        actions::live_row(&self.player_rows(), id)
-    }
-}
-
 /// What the view publishes of the player's playhead: the shared library's
 /// verbs bound to the video open and the moment shown, which the player
 /// keeps current and the view reads when the published tree is read.
@@ -135,13 +97,19 @@ pub(crate) type Playhead = Rc<RefCell<Vec<ActionDecl<Library>>>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::VideoEffect;
+    use crate::app::PlayerState;
     use ui::framework::testing::TestApp;
+
+    fn trip_name() -> ui::tilo_resource::NonBlank {
+        "Trip".parse().unwrap()
+    }
 
     fn surface<T>(
         app: &mut TestApp<VideoPlayerShell>,
-        read: impl FnOnce(&mut PlayerApp) -> T,
+        read: impl FnOnce(&mut PlayerState) -> T,
     ) -> T {
-        app.with_surface::<PlayerApp, T>(read)
+        app.with_surface::<PlayerApp, T>(|window| read(&mut window.state()))
             .expect("the window shows the player")
     }
 
@@ -296,7 +264,8 @@ mod tests {
     #[test]
     fn the_shared_library_changes_through_the_door_as_one_step_each() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with(trip_name()))
+            .unwrap();
         assert_eq!(app.state().playlists.values().next().unwrap().name, "Trip");
         assert!(app.undo(), "creating a playlist is one undo step");
         assert!(app.state().playlists.is_empty());
@@ -320,7 +289,8 @@ mod tests {
     #[test]
     fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with(trip_name()))
+            .unwrap();
         let trip = app.state().playlists.ids().next().unwrap().clone();
         for (media_ref, title) in [("clip-1", "Harbour"), ("clip-2", "Lighthouse")] {
             app.invoke(Library::ADD_TO_PLAYLIST.with(library::AddToPlaylist {

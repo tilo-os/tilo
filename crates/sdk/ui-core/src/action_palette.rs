@@ -205,7 +205,7 @@ enum ActionKind {
 struct ArgState {
     bound: Option<crate::bound_dispatch::BoundActionTarget>,
     address: tilo_actions::ActionAddress,
-    history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
+    history_target: Option<crate::bound_dispatch::local_target::LocalResourceTarget>,
     history_draft_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
 }
 
@@ -230,7 +230,7 @@ pub struct PendingOperation {
     input: PendingInput,
     confirmation: ConfirmationPolicy,
     confirmation_evidence: serde_json::Value,
-    pub(crate) history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
+    pub(crate) history_target: Option<crate::bound_dispatch::local_target::LocalResourceTarget>,
     pub(crate) history_draft_identity:
         Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
     pub(crate) history_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
@@ -405,14 +405,14 @@ pub struct ActionPalette {
     /// selected action contract.
     confirm: Option<ConfirmState>,
     confirmation_sheet: crate::widget::ModalSheet,
+    /// The control a confirmation asks about, in window coordinates: the
+    /// question stands beside it as a popover rather than over the window.
+    confirm_anchor: Option<Rect>,
     /// A ready-to-dispatch action, set on activation, drained by `take_operation`.
     pending_dispatch: Option<PendingOperation>,
     history_suspended: bool,
     history_review_required: bool,
     history_resolution_error: Option<String>,
-    /// An invocation of the person's that did not run, said over the
-    /// window ([`Self::show_refusal`]).
-    refusal: Option<String>,
     ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
     pending_nav: Option<(String, Option<crate::bound_dispatch::CallbackBinding>)>,
@@ -624,11 +624,11 @@ impl ActionPalette {
             arg: None,
             confirm: None,
             confirmation_sheet: crate::widget::ModalSheet::new(),
+            confirm_anchor: None,
             pending_dispatch: None,
             history_suspended: false,
             history_review_required: false,
             history_resolution_error: None,
-            refusal: None,
             ambient_context: None,
             pending_nav: None,
             rect: Rect::ZERO,
@@ -749,7 +749,7 @@ impl ActionPalette {
             }
         };
         let bound = match &request.target {
-            crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target) => {
+            crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => {
                 Some(target.clone())
             }
             _ => None,
@@ -772,8 +772,18 @@ impl ActionPalette {
         self.open = true;
         self.arg = None;
         self.pending_dispatch = None;
-        self.refusal = None;
         self.queue_or_confirm(pending.clone(), pending.confirmation);
+    }
+
+    /// Ask the next confirmation beside `anchor`, the control the person
+    /// used, as a popover; `None` asks over the window.
+    pub(crate) fn anchor_confirmation(&mut self, anchor: Option<Rect>) {
+        self.confirm_anchor = anchor;
+    }
+
+    /// The control the open confirmation stands beside, while it asks.
+    pub(crate) fn confirmation_anchor(&self) -> Option<Rect> {
+        self.confirm.as_ref().and(self.confirm_anchor)
     }
 
     /// Whether what was just asked for went ahead unasked (Shift held over
@@ -1019,7 +1029,7 @@ impl ActionPalette {
     pub(crate) fn history_exact_capture_request(
         &self,
     ) -> Option<(
-        crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        crate::bound_dispatch::local_target::LocalResourceTarget,
         tilo_actions::ControlInvocation,
         crate::bound_dispatch::ControlContinuationArguments,
     )> {
@@ -1057,7 +1067,7 @@ impl ActionPalette {
 
     pub(crate) fn retain_history_custody(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
         witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
     ) {
@@ -1150,7 +1160,6 @@ impl ActionPalette {
 
     pub fn open(&mut self) {
         self.history_resolution_error = None;
-        self.refusal = None;
         self.open = true;
         self.arg = None;
         self.confirm = None;
@@ -1224,7 +1233,6 @@ impl ActionPalette {
 
     pub fn close(&mut self) {
         self.history_resolution_error = None;
-        self.refusal = None;
         self.pending_dispatch = None;
         self.open = false;
         self.arg = None;
@@ -2225,7 +2233,7 @@ impl ActionPalette {
     fn rebuild(&mut self, typed: &str) {
         // Resource/provider refreshes must not repopulate a confirmation with
         // unrelated commands. Its retained request is revalidated at dispatch.
-        if self.in_argument_mode() || self.refusal.is_some() || self.history_review_required {
+        if self.in_argument_mode() || self.history_review_required {
             return;
         }
         self.missing_selection = None;
@@ -3151,31 +3159,6 @@ impl ActionPalette {
                 })
                 .unwrap_or(false),
         }
-    }
-
-    /// Say over the window that an invocation the person made did not run,
-    /// and why: a click is never dropped unseen. Replaces what the palette
-    /// showed; closing it, as any palette closes, dismisses the notice.
-    pub(crate) fn show_refusal(&mut self, label: &str, reason: &str) {
-        let message = if label.is_empty() {
-            format!("That didn't run. {reason}")
-        } else {
-            format!("\u{201c}{label}\u{201d} didn't run. {reason}")
-        };
-        self.open = true;
-        self.arg = None;
-        self.confirm = None;
-        self.reset_controls();
-        self.pending_dispatch = None;
-        self.results.set_groups(Vec::new());
-        self.results.set_empty_text(&message);
-        self.search_announcement = Some(message.clone());
-        self.refusal = Some(message);
-    }
-
-    /// The refusal the palette is showing, if any (`Self::show_refusal`).
-    pub fn refusal(&self) -> Option<&str> {
-        self.refusal.as_deref().filter(|_| self.open)
     }
 
     fn route_to_field(

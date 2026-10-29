@@ -825,7 +825,13 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
         for strip in &ws.strips {
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    if !awaits_examination(&tab.tile) {
+                    // A document another of the person's devices has open
+                    // opens as that document when the person goes to it
+                    // ([`crate::shell::doc_open::activate_continuity_file_tab`]),
+                    // never as an empty viewer.
+                    if !awaits_examination(&tab.tile)
+                        || tree.continuation_file_references.contains_key(&tab.id)
+                    {
                         continue;
                     }
                     if let TileContent::PeerWindow { app_id, .. }
@@ -845,30 +851,43 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
     out
 }
 
-/// Older builds persisted a host window's toolkit identity and then marked
-/// the card permanently missing when that identity was not a package id. If
-/// the current desktop-entry catalogue can now resolve that identity, the
-/// error is stale rather than user state: clear it so the normal restore path
-/// can migrate and relaunch the app. A genuinely absent application remains
-/// an answered card and is not retried on every tick.
-pub fn retry_resolvable_host_app_errors(tree: &mut WorkspaceTree) -> bool {
+/// A new session start opens every saved window again. What a card says
+/// about its window (that it did not open, that its app is missing, that it
+/// was opening when the last session ended) answers that session's attempt,
+/// not this one's: the package may have been installed or updated since, a
+/// runtime it named may be back, a host window's identity may resolve now.
+/// Each answered card is cleared once here, before the frame loop starts,
+/// so the normal restore path tries it again and answers it anew; within a
+/// session an answered card is still never retried on its own.
+pub fn retry_saved_windows(tree: &mut WorkspaceTree) -> bool {
     let mut changed = false;
     for workspace in &mut tree.desktop.workspaces {
         for strip in &mut workspace.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
-                    let TileContent::LocalApp { app_id, note, .. } = &mut tab.tile else {
-                        continue;
-                    };
-                    if note == NOT_INSTALLED && crate::shell::host_apps::resolve(app_id).is_some() {
-                        note.clear();
-                        changed = true;
+                    match &mut tab.tile {
+                        TileContent::LocalApp { note, .. } if !note.is_empty() => {
+                            note.clear();
+                            changed = true;
+                        }
+                        TileContent::PeerWindow { note, missing, .. } if !note.is_empty() => {
+                            note.clear();
+                            *missing = None;
+                            changed = true;
+                        }
+                        _ => {}
                     }
                 }
             }
         }
     }
     changed
+}
+
+/// The app a saved window of `app_id` opens: the app itself, or the installed app that took the
+/// place of the id it had before.
+fn launched_as(app_id: &str) -> String {
+    launcher::installed_earlier_ids().current(app_id).to_owned()
 }
 
 /// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
@@ -908,7 +927,10 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     if !item.local && tree.room_tab_record(ws.room(), item.tab).is_some() {
         launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
-    let launched = launcher::launch_in_workspace(&item.app_id, ws)
+    // A window saved under an id its app had before opens the app that took its place; the tab
+    // takes the new id when that window lands in it.
+    let launch_id = launched_as(&item.app_id);
+    let launched = launcher::launch_in_workspace(&launch_id, ws)
         .map(|_| ())
         .or_else(|err| {
             if item.local
@@ -937,7 +959,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     match launched {
         Ok(()) => Ok(()),
         Err(err) => {
-            launcher::clear_pending_placement(&item.app_id);
+            launcher::clear_pending_placement(&launch_id);
             Err(match err {
                 launcher::LaunchError::NotInstalled { .. }
                 | launcher::LaunchError::HostAppNotFound { .. } => Refusal::NotInstalled,
@@ -973,13 +995,13 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
         return;
     }
     // Before the launch, or a note written after races the window's toplevel.
-    launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
+    launcher::set_pending_placement(&launched_as(&item.app_id), Placement::IntoTab(item.tab));
     launcher::clear_staged_continuation(ws.room(), item.tab);
-    let shared = crate::shell::personal_continuity_registry::global_registry();
+    let shared = crate::shell::continuation_registry::global_registry();
     let Ok(mut registry) = shared.lock() else {
         return;
     };
-    let tab = crate::shell::personal_continuity::AppInstanceId(item.tab);
+    let tab = crate::shell::continuation::AppInstanceId(item.tab);
     // The process cache is tab-keyed. Never let a stale local association
     // shadow an exact remote offer after a tab changes kind/room/app.
     registry.forget_local_binding(tab);
@@ -987,13 +1009,9 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
         let Some(record) = tree.local_app_record(item.tab, ws.room(), &item.app_id) else {
             return;
         };
-        registry.bind_tab(
-            tab,
-            crate::shell::personal_continuity::AppInstanceId(record),
-        );
+        registry.bind_tab(tab, crate::shell::continuation::AppInstanceId(record));
     }
-    let Ok(launch) = crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone())
-    else {
+    let Ok(launch) = crate::shell::continuation::LaunchIntent::app(item.app_id.clone()) else {
         return;
     };
     let Some(record_instance) = registry.record_instance_for_tab(ws.room(), tab, &launch) else {
@@ -1018,9 +1036,9 @@ fn continued_record(
     item: &Pending,
     room: crate::shell::state::RoomId,
 ) -> Option<(crate::shell::record_hydration::RecordAddress, u64)> {
-    let launch = crate::shell::personal_continuity::LaunchIntent::app(item.app_id.clone()).ok()?;
-    let tab = crate::shell::personal_continuity::AppInstanceId(item.tab);
-    let continuation = crate::shell::personal_continuity_registry::global_registry()
+    let launch = crate::shell::continuation::LaunchIntent::app(item.app_id.clone()).ok()?;
+    let tab = crate::shell::continuation::AppInstanceId(item.tab);
+    let continuation = crate::shell::continuation_registry::global_registry()
         .lock()
         .ok()?
         .continuation_for_tab(room, tab, &launch)?;
@@ -1397,10 +1415,6 @@ mod tests {
         else {
             panic!("the saved failure card must offer recovery, not only static text");
         };
-        assert!(
-            !card.uses_host_record(),
-            "a recovery control does not acquire scratch custody"
-        );
         let id = format!("reopen-window:{tab}");
         assert!(
             ui::widget::controls::control_action_bindings(card.as_ref())
@@ -2454,22 +2468,9 @@ mod tests {
                 tab,
                 "Not installed on this machine".into()
             ));
-            assert!(retry_resolvable_host_app_errors(&mut tree));
+            assert!(retry_saved_windows(&mut tree));
             assert_eq!(local_app_note(&tree, tab), "");
             assert!(any_pending(&tree));
-
-            assert!(set_note(
-                &mut tree,
-                tab,
-                "Not installed on this machine".into()
-            ));
-            if let TileContent::LocalApp { app_id, .. } =
-                &mut tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile
-            {
-                *app_id = "org.example.ActuallyMissing".into();
-            }
-            assert!(!retry_resolvable_host_app_errors(&mut tree));
-            assert_eq!(local_app_note(&tree, tab), "Not installed on this machine");
 
             crate::shell::host_apps::invalidate_cache();
             drop(env);
@@ -2506,6 +2507,51 @@ mod tests {
 
         stale_missing_note_for_a_resolvable_host_app_is_retried_once();
         timed_out_host_restore_becomes_an_explicit_non_retrying_error();
+    }
+
+    /// A saved window whose launch failed in the last session (its package
+    /// named a runtime no longer installed, it timed out, or it was opening
+    /// when the session ended) opens again when the session starts again,
+    /// rather than coming back as a card that says it did not open. Within
+    /// a session the answered card stays answered.
+    #[test]
+    fn a_new_start_opens_again_every_saved_window_the_last_session_did_not_open() {
+        let (mut tree, tab) = tree_with_local_app("so.tilo.lang.notes");
+        assert!(set_note(
+            &mut tree,
+            tab,
+            "the app's runtime tilo-runtime/old is not installed".into()
+        ));
+        assert!(
+            !any_pending(&tree),
+            "an answered card is not retried by itself"
+        );
+        let saved = serde_json::to_string(&tree.desktop).unwrap();
+        // The next session reads the desktop as this one saved it.
+        let mut restarted = WorkspaceTree {
+            desktop: serde_json::from_str(&saved).unwrap(),
+            ..Default::default()
+        };
+        assert!(retry_saved_windows(&mut restarted));
+        assert_eq!(local_app_note(&restarted, tab), "");
+        assert!(any_pending(&restarted), "the saved window opens again");
+        assert!(
+            !retry_saved_windows(&mut restarted),
+            "a window with nothing answered is left as it is"
+        );
+
+        let (mut tree, peer) = tree_with_peer_window(Workspace::new(WorkspaceId(1), "Shared"));
+        assert!(set_state(
+            &mut tree,
+            peer,
+            NOT_INSTALLED.to_string(),
+            Some(missing_app("org.example.Gone", &[]))
+        ));
+        assert!(retry_saved_windows(&mut tree));
+        assert!(matches!(
+            &tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+            TileContent::PeerWindow { note, missing: None, .. } if note.is_empty()
+        ));
     }
 }
 

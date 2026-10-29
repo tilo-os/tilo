@@ -1,7 +1,7 @@
 //! What a control pressing an [`Action`] is bound to in Music's published
 //! surface, where the action is one.
 
-use super::{Action, MusicApp, View};
+use super::{Action, Music, View};
 use crate::model::Library;
 
 /// What an [`Action`] is in Music's published surface, where it is one:
@@ -70,11 +70,11 @@ impl Action {
     }
 }
 
-/// The published id of a top-level view, as [`MusicApp::top_level_view`]
+/// The published id of a top-level view, as [`Music::top_level_view`]
 /// reads it back.
 fn top_level_id(view: &View) -> Option<&'static str> {
     crate::actions::NAVIGATION_VIEWS
         .iter()
         .map(|(id, _)| *id)
-        .find(|id| MusicApp::top_level_view(id).as_ref() == Some(view))
+        .find(|id| Music::top_level_view(id).as_ref() == Some(view))
 }

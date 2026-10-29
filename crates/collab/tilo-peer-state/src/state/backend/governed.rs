@@ -1,34 +1,22 @@
-//! One governed identity import algorithm for both storage modes.
+//! The governed identity import algorithm.
 use super::{
     AutoCommit, BTreeMap, DeviceCert, GovernedIdentity, RedemptionReceipt, RevocationList,
-    SystemTime, VerifiedCertificate, now_ns, revocations, roster,
-};
-use crate::resources::{
-    PeerResourceError,
-    json::{self, JsonLimits},
+    SystemTime, VerifiedCertificate, now_ns,
 };
 use crate::room::read::{
     self, GovernanceEntry, LegacyRead, ReadError, RoomRead, RoomValue, Selection,
 };
 use tilo_user_identity::{DeviceCertError, RevocationError};
 
-#[derive(Clone, Copy)]
-pub(super) struct ImportLimits {
-    pub(super) collection_bytes: usize,
-    pub(super) certificate_bytes: usize,
-    pub(super) json: JsonLimits,
-}
 #[derive(Debug)]
 pub(in crate::state) enum ImportError {
     Capacity,
-    Decode(PeerResourceError),
     LegacyJson(serde_json::Error),
     Certificate(DeviceCertError),
     Revocation(RevocationError),
     LedgerShape,
     ReceiptShape,
     ReceiptKey,
-    ReceiptConflict,
     IdentityKey,
     CertificateConflict,
     MissingAdmission,
@@ -45,9 +33,6 @@ impl std::fmt::Display for ImportError {
             Self::LedgerShape => f.write_str("governed invitation receipt ledger is not a map"),
             Self::ReceiptShape => f.write_str("governed invitation receipt is not bytes"),
             Self::ReceiptKey => f.write_str("governed invitation receipt key mismatch"),
-            Self::ReceiptConflict => {
-                f.write_str("governed invitation has conflicting redemption receipts")
-            }
             Self::IdentityKey => f.write_str("governed identity key mismatch"),
             Self::CertificateConflict => f.write_str("certificate conflict"),
             Self::MissingAdmission => {
@@ -56,7 +41,6 @@ impl std::fmt::Display for ImportError {
             Self::RevocationRoot => f.write_str("revocation root mismatch"),
             Self::RevocationCrossRoot => f.write_str("revocation cannot cross identity roots"),
             Self::Capacity => f.write_str("governed import exceeds its limit"),
-            Self::Decode(error) => write!(f, "governed import decode refusal: {error:?}"),
             Self::Read => f.write_str("governed import read failed"),
         }
     }
@@ -68,48 +52,32 @@ fn read_error(error: ReadError<ImportError>) -> ImportError {
         ReadError::Malformed => ImportError::Read,
     }
 }
-trait Decode {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, ImportError>;
-    fn receipt(&self, bytes: &[u8]) -> Result<RedemptionReceipt, ImportError>;
-}
-struct Legacy;
-impl Decode for Legacy {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, ImportError> {
-        serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)
-    }
-    fn receipt(&self, bytes: &[u8]) -> Result<RedemptionReceipt, ImportError> {
-        serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)
-    }
-}
-struct Bounded {
-    limits: JsonLimits,
-}
-impl Decode for Bounded {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, ImportError> {
-        json::decode(bytes, self.limits).map_err(ImportError::Decode)
-    }
-    fn receipt(&self, bytes: &[u8]) -> Result<RedemptionReceipt, ImportError> {
-        json::decode(bytes, self.limits).map_err(ImportError::Decode)
-    }
-}
-
 struct Inputs {
     identities: BTreeMap<String, GovernedIdentity>,
+    /// The room's members, by person key.
+    members: std::collections::BTreeSet<String>,
 }
-fn inputs<R: RoomRead, D: Decode>(
-    room: &R,
-    decoder: &D,
-    work: &mut Work,
-) -> Result<Inputs, ImportError> {
+fn inputs<R: RoomRead>(room: &R, work: &mut Work) -> Result<Inputs, ImportError> {
     let mut identities = BTreeMap::new();
+    let mut members = std::collections::BTreeSet::new();
     read::visit_governance_entries(room, |entry| {
-        if let GovernanceEntry::Identity { key, bytes } = entry {
-            // Exact historical winner/ignore traversal. Decode every identity
-            // before checking any receipt, key, certificate or revocation.
-            let value = decoder.identity(bytes)?;
-            let key = work.text(key)?;
-            work.tree::<String, GovernedIdentity>()?;
-            identities.insert(key, value);
+        match entry {
+            GovernanceEntry::Identity { key, bytes } => {
+                // Exact historical winner/ignore traversal. Decode every
+                // identity before checking any receipt, key, certificate or
+                // revocation.
+                let value: GovernedIdentity =
+                    serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)?;
+                let key = work.text(key)?;
+                work.tree::<String, GovernedIdentity>()?;
+                identities.insert(key, value);
+            }
+            GovernanceEntry::Member { key, .. } => {
+                let key = work.text(key)?;
+                work.tree::<String, ()>()?;
+                members.insert(key);
+            }
+            _ => {}
         }
         Ok(())
     })
@@ -175,36 +143,22 @@ fn inputs<R: RoomRead, D: Decode>(
         },
     )
     .map_err(read_error)?;
-    let mut redemptions = BTreeMap::new();
+    // Two participants may admit through one invitation at once, each
+    // before it holds the other's receipt: both receipts stay, as every
+    // receiver holds them alike.
     for (key, values) in &receipts {
         for bytes in values {
-            let receipt = decoder.receipt(bytes)?;
+            let receipt: RedemptionReceipt =
+                serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)?;
             if !is_key(key, &receipt.invite_id) {
                 return Err(ImportError::ReceiptKey);
             }
-            insert_receipt(&mut redemptions, &receipt, work)?;
         }
     }
-    for identity in identities.values() {
-        for receipt in identity.admission.iter().chain(&identity.admissions) {
-            insert_receipt(&mut redemptions, receipt, work)?;
-        }
-    }
-    Ok(Inputs { identities })
-}
-fn insert_receipt(
-    redemptions: &mut BTreeMap<[u8; 32], RedemptionReceipt>,
-    receipt: &RedemptionReceipt,
-    work: &mut Work,
-) -> Result<(), ImportError> {
-    // All receipt fields are fixed arrays and an enum; clone has no backing.
-    work.tree::<[u8; 32], RedemptionReceipt>()?;
-    if let Some(existing) = redemptions.insert(receipt.invite_id, receipt.clone())
-        && existing != *receipt
-    {
-        return Err(ImportError::ReceiptConflict);
-    }
-    Ok(())
+    Ok(Inputs {
+        identities,
+        members,
+    })
 }
 fn is_key(text: &str, key: &[u8; 32]) -> bool {
     let mut encoded = [0; 64];
@@ -244,6 +198,7 @@ fn apply(
         if !original.contains_key(&cert.device_public_key)
             && cert.user_public_key != authority.user_public_key
             && !identity.has_admission()
+            && !inputs.members.contains(&hex::encode(cert.user_public_key))
         {
             return Err(ImportError::MissingAdmission);
         }
@@ -283,7 +238,7 @@ pub(in crate::state) fn legacy(
     now: SystemTime,
 ) -> Result<LegacyImport, ImportError> {
     let mut work = Work::unlimited();
-    let inputs = inputs(&LegacyRead(room), &Legacy, &mut work)?;
+    let inputs = inputs(&LegacyRead(room), &mut work)?;
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
     let changed = apply(
@@ -297,63 +252,6 @@ pub(in crate::state) fn legacy(
     )?;
     Ok((certificates, revocations, changed))
 }
-pub(super) struct Imported {
-    pub(super) certificates: roster::BoundedRoster,
-    pub(super) revocations: revocations::BoundedRevocations,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "restore adopts the import unconditionally; tests assert parity with the legacy import"
-        )
-    )]
-    pub(super) changed: bool,
-}
-pub(super) fn bounded<R: RoomRead>(
-    room: &R,
-    original: &roster::BoundedRoster,
-    revocations: &revocations::BoundedRevocations,
-    authority: &DeviceCert,
-    now: SystemTime,
-    limits: ImportLimits,
-) -> Result<Imported, ImportError> {
-    let mut work = Work::limited(limits.collection_bytes);
-    let inputs = inputs(
-        room,
-        &Bounded {
-            limits: limits.json,
-        },
-        &mut work,
-    )?;
-    let mut cert_work = Work::limited(limits.certificate_bytes);
-    let mut certificates = BTreeMap::new();
-    for (key, certificate) in original.map() {
-        let copied = cert_work.certificate(certificate, None)?;
-        cert_work.tree::<[u8; 32], VerifiedCertificate>()?;
-        certificates.insert(*key, copied);
-    }
-    let mut candidate_revocations = RevocationList::new();
-    for entry in revocations.iter() {
-        candidate_revocations
-            .insert(entry.clone())
-            .map_err(ImportError::Revocation)?;
-    }
-    let changed = apply(
-        &inputs,
-        original.map(),
-        &mut certificates,
-        &mut candidate_revocations,
-        authority,
-        now,
-        &mut cert_work,
-    )?;
-    Ok(Imported {
-        certificates: roster::BoundedRoster::imported(certificates),
-        revocations: revocations::BoundedRevocations::imported(candidate_revocations),
-        changed,
-    })
-}
-
 /// A byte limit on the collections one import builds.
 struct Work {
     remaining: usize,
@@ -363,9 +261,6 @@ impl Work {
         Self {
             remaining: usize::MAX,
         }
-    }
-    fn limited(bytes: usize) -> Self {
-        Self { remaining: bytes }
     }
     fn debit(&mut self, bytes: Option<usize>) -> Result<(), ImportError> {
         self.remaining = self

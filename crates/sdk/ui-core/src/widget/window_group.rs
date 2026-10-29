@@ -1593,18 +1593,6 @@ impl WindowGroup {
         self.pending_new_tab = Some(self.id);
         true
     }
-    /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
-    /// host and by tests with no records at all, where an unbound tile
-    /// keeps editing whatever document the parent pass carries.
-    pub fn bind_tab_records(
-        &mut self,
-        store: &crate::record::RecordStore,
-        record_for: impl Fn(u64) -> crate::record::RecordCheckout,
-    ) {
-        for (tab_id, host) in &mut self.hosts {
-            host.bind_record(store.clone(), record_for(*tab_id));
-        }
-    }
     /// Whether any tab still stands for content whose first frame is not
     /// shown, even when another tab of the window has drawn.
     pub fn any_tile_arriving(&self) -> bool {
@@ -3512,24 +3500,6 @@ impl Widget for WindowGroup {
             })
     }
 
-    // Presentation traversal follows the active tab, while lifecycle and
-    // History ownership must cover every retained tab. Closing a group or
-    // switching tabs must not hide an inactive document from durability or
-    // retire its framework History route.
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners_mut(
-        &mut self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
-        for (_, host) in &mut self.hosts {
-            request.visit(&mut **host)?;
-        }
-        Ok(())
-    }
-
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
@@ -4581,7 +4551,6 @@ mod tests {
         finish: std::cell::Cell<u32>,
         history: std::cell::Cell<u32>,
         history_mut: std::cell::Cell<u32>,
-        resources_mut: std::cell::Cell<u32>,
     }
 
     struct RetainedTraversalProbe {
@@ -4597,15 +4566,6 @@ mod tests {
         );
 
         crate::testing::inert_widget_methods!(name = "RetainedTraversalProbe");
-        fn visit_resource_owners_mut(
-            &mut self,
-            _: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-        ) -> Result<(), tilo_actions::DoorError> {
-            self.hits
-                .resources_mut
-                .set(self.hits.resources_mut.get() + 1);
-            Ok(())
-        }
         fn has_pending_visual_work(&self) -> bool {
             self.pending_control
         }
@@ -4731,11 +4691,6 @@ mod tests {
         assert!(crate::widget::controls::has_pending_control_invocation(
             &group
         ));
-        group
-            .visit_resource_owners_mut(
-                &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,
-            )
-            .unwrap();
 
         assert!(
             !group.has_pending_visual_work(),
@@ -4761,7 +4716,6 @@ mod tests {
             assert_eq!(hits.finish.get(), 1);
             assert_eq!(hits.history.get(), 1);
             assert_eq!(hits.history_mut.get(), 1);
-            assert_eq!(hits.resources_mut.get(), 1);
         }
     }
 

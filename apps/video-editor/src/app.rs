@@ -5063,10 +5063,10 @@ impl VideoEditorApp {
                 }
             }
             VideoEditorEffect::Import { path: Some(path) } => {
-                self.pending_imports.push(PathBuf::from(path));
+                self.pending_imports.push(path.into_path_buf());
             }
             VideoEditorEffect::Export { path: Some(path) } => {
-                self.begin_export_to(PathBuf::from(path));
+                self.begin_export_to(path.into_path_buf());
             }
             VideoEditorEffect::OpenProjectFile { .. }
             | VideoEditorEffect::ExportProjectFile { .. } => {

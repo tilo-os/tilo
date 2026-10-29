@@ -1,10 +1,34 @@
 use super::*;
-use std::{cell::RefCell, collections::VecDeque, os::unix::fs::PermissionsExt, path::Path};
+use crate::setup::flatpak_transfer::portable::{ApplicationsManifest, Deployment, Trust};
+use sha2::Digest as _;
+use std::{
+    cell::RefCell, collections::VecDeque, os::unix::fs::PermissionsExt, path::Path, time::Duration,
+};
 
 struct FixtureRunner {
     replies: RefCell<VecDeque<Result<String, String>>>,
     calls: RefCell<Vec<Vec<String>>>,
     target: PathBuf,
+    applications: Option<Applications>,
+}
+impl FixtureRunner {
+    fn applications(&self) -> Option<Applications> {
+        self.applications.clone()
+    }
+}
+impl OfflineRunner for FixtureRunner {
+    fn ostree(&self, repository: &Path, arguments: &[String]) -> Result<String, String> {
+        self.calls.borrow_mut().push(arguments.to_vec());
+        if arguments.first().map(String::as_str) == Some("pull-local") {
+            std::fs::create_dir_all(repository).unwrap();
+            std::fs::write(
+                repository.join("fixture-object"),
+                b"installed immutable object",
+            )
+            .unwrap();
+        }
+        Ok(String::new())
+    }
 }
 impl Runner for FixtureRunner {
     fn verify_repository(&self, home: &Path) -> Result<(), String> {
@@ -29,24 +53,33 @@ impl Runner for FixtureRunner {
         }
         self.calls.borrow_mut().push(args.to_vec());
         let state = home.join(".local/share/flatpak/.fixture-installed");
+        if home == self.target && args.first().map(String::as_str) == Some("remotes") {
+            return Ok(String::new());
+        }
         if home == self.target && args.first().map(String::as_str) == Some("list") {
             if !state.exists() || args.iter().any(|arg| arg == "--runtime") {
                 return Ok(String::new());
             }
             let value: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(state).unwrap()).unwrap();
-            return Ok(format!(
-                "{}\t{}\n",
-                value["reference"]
-                    .as_str()
-                    .unwrap()
-                    .trim_start_matches("app/"),
-                value["origin"].as_str().unwrap()
-            ));
+            let reference = value["reference"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("app/");
+            let origin = value["origin"].as_str().unwrap();
+            if args.iter().any(|arg| arg.contains("installation:f")) {
+                return Ok(format!("{reference}\t{origin}\tuser\tApp\n"));
+            }
+            return Ok(format!("{reference}\t{origin}\n"));
         }
         if home == self.target && args.iter().any(|arg| arg == "--show-commit") {
             assert!(state.exists());
             return Ok("a".repeat(64));
+        }
+        if home == self.target && args.iter().any(|arg| arg == "--show-origin") {
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(state).unwrap()).unwrap();
+            return Ok(value["origin"].as_str().unwrap().into());
         }
         let result = self
             .replies
@@ -86,7 +119,7 @@ impl Runner for FixtureRunner {
     }
 }
 fn fixture(flatpak: bool) -> (tempfile::TempDir, TransferRequest, FixtureRunner) {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::qualified_tempdir();
     let root = temp.path().canonicalize().unwrap();
     let source = root.join("source");
     let journals = root.join("journals");
@@ -101,28 +134,44 @@ fn fixture(flatpak: bool) -> (tempfile::TempDir, TransferRequest, FixtureRunner)
     )
     .unwrap();
     std::fs::write(source.join("personal"), b"personal").unwrap();
-    let system = root.join("system");
-    std::fs::create_dir_all(system.join("repo")).unwrap();
-    std::fs::write(
-        system.join("repo/flathub.trustedkeys.gpg"),
-        b"existing-key-packets",
-    )
-    .unwrap();
     let target = root.join("new-home");
+    // The sealed unit: one deployment, its exported repository and signing
+    // definition. Applying it adds the remote, then installs the deployment.
+    let selected = InstalledRef {
+        reference: "app/org.example.App/x86_64/stable".into(),
+        origin: "flathub".into(),
+        installation: flatpak::Installation::System("default".into()),
+        name: "App".into(),
+    };
+    let unit = root.join("unit");
+    std::fs::create_dir_all(unit.join("installation-0/.ostree/repo")).unwrap();
+    let definition = b"[Flatpak Repo]\nUrl=https://dl.flathub.org/repo/\nGPGKey=a2V5\n";
+    std::fs::write(unit.join("flathub.flatpakrepo"), definition).unwrap();
+    let manifest = ApplicationsManifest {
+        schema: 1,
+        selected: vec![selected.clone()],
+        deployments: vec![Deployment {
+            installed: selected.clone(),
+            commit: "a".repeat(64),
+            repository: "installation-0".into(),
+            remote: "flathub-sealed".into(),
+        }],
+        trust: vec![Trust {
+            remote: "flathub-sealed".into(),
+            definition: "flathub.flatpakrepo".into(),
+            sha256: sha2::Sha256::digest(definition).into(),
+            source: flatpak::Remote {
+                installation: selected.installation.clone(),
+                name: "flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                options: String::new(),
+            },
+        }],
+        user_state: false,
+        app_state: Vec::new(),
+    };
     let replies = if flatpak {
-        vec![
-            Ok("org.example.App/x86_64/stable\tflathub\tsystem\tApp\n".into()),
-            Ok(String::new()),
-            Ok(String::new()),
-            Ok("flathub\thttps://dl.flathub.org/repo/\t\n".into()),
-            Ok(format!(
-                "{}/app/org.example.App/x86_64/stable/{}\n",
-                system.display(),
-                "a".repeat(64)
-            )),
-            Ok(String::new()),
-            Ok(String::new()),
-        ]
+        vec![Ok(String::new()), Ok(String::new())]
     } else {
         vec![]
     };
@@ -132,21 +181,14 @@ fn fixture(flatpak: bool) -> (tempfile::TempDir, TransferRequest, FixtureRunner)
         private_journals: journals,
         copy_home: true,
         copy_flatpak: flatpak,
-        system_refs: if flatpak {
-            vec![InstalledRef {
-                reference: "app/org.example.App/x86_64/stable".into(),
-                origin: "flathub".into(),
-                installation: flatpak::Installation::System("default".into()),
-                name: "App".into(),
-            }]
-        } else {
-            vec![]
-        },
+        system_refs: if flatpak { vec![selected] } else { vec![] },
     };
     let runner = FixtureRunner {
         replies: RefCell::new(replies.into()),
         calls: RefCell::default(),
         target,
+        applications: flatpak
+            .then(|| Applications::Sealed(SealedApplications::fixture(unit, manifest))),
     };
     (temp, request, runner)
 }
@@ -156,8 +198,8 @@ fn runtime_socket_is_disclosed_without_blocking_home_data() {
     let (_temp, request, runner) = fixture(false);
     let socket_path = request.source_home.join("agent.sock");
     let _socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
-    let reviewed = review(&runner, request.clone()).unwrap();
-    let summary = reviewed.summary().unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
+    let summary = reviewed.summary();
     assert_eq!(summary.runtime_sockets, 1);
     assert_eq!(summary.special_files, 0);
     let report = reviewed
@@ -170,21 +212,16 @@ fn runtime_socket_is_disclosed_without_blocking_home_data() {
         std::fs::read(request.target_home.join("personal")).unwrap(),
         b"personal"
     );
-    assert!(report.copies.iter().any(|copy| {
-        copy.metadata_limitations
-            .iter()
-            .any(|disclosure| disclosure.contains("agent.sock"))
-    }));
 }
 
 #[test]
 fn actual_home_data_precedes_target_flatpak_install_and_originals_stay_unchanged() {
     let (_temp, request, runner) = fixture(true);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     let mut progress = 0;
     let report = reviewed
         .execute(&runner, &AtomicBool::new(false), false, |event| {
-            if matches!(event, TransferEvent::CopyProgress(_)) {
+            if matches!(event, TransferEvent::Progress(_)) {
                 progress += 1;
             }
         })
@@ -226,8 +263,7 @@ fn flatpak_only_transfers_real_data_without_other_home_files() {
         b"permissions",
     )
     .unwrap();
-    let reviewed = review(&runner, request.clone()).unwrap();
-    assert_eq!(reviewed.copy_count(), 2);
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     let report = reviewed
         .execute(&runner, &AtomicBool::new(false), false, |_| {})
         .unwrap();
@@ -257,7 +293,7 @@ fn flatpak_only_transfers_real_data_without_other_home_files() {
 #[test]
 fn changed_source_cancellation_and_remote_failures_never_claim_completion() {
     let (_temp, request, runner) = fixture(true);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     let cancelled = reviewed
         .execute(&runner, &AtomicBool::new(true), false, |_| {})
         .unwrap();
@@ -271,10 +307,10 @@ fn changed_source_cancellation_and_remote_failures_never_claim_completion() {
             .is_err()
     );
     assert!(!request.target_home.exists());
-    assert_eq!(runner.calls.borrow().len(), 5);
+    assert!(runner.calls.borrow().is_empty());
 
     let (_temp, request, runner) = fixture(true);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     *runner.replies.borrow_mut().back_mut().unwrap() = Err("repository offline".into());
     let report = reviewed
         .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -319,25 +355,9 @@ fn changed_source_cancellation_and_remote_failures_never_claim_completion() {
 }
 
 #[test]
-fn copied_user_flatpak_version_cannot_be_replaced_by_system_selection() {
-    let (_temp, request, runner) = fixture(true);
-    *runner.replies.borrow_mut().front_mut().unwrap() = Ok("org.example.App/x86_64/stable\tflathub\tsystem\tApp\norg.example.App/x86_64/stable\tpersonal\tuser\tApp\n".into());
-    let error = match review(&runner, request.clone()) {
-        Ok(_) => panic!("Conflicting system selection was accepted"),
-        Err(error) => error,
-    };
-    assert!(error.contains("already included"));
-    assert!(!request.target_home.exists());
-    assert!(!runner.calls.borrow().iter().any(|args| matches!(
-        args.first().map(String::as_str),
-        Some("install" | "remote-add")
-    )));
-}
-
-#[test]
-fn restarted_home_review_revalidates_receipts_and_source_instead_of_trusting_success() {
+fn restarted_home_review_reopens_the_sealed_unit_instead_of_trusting_success() {
     let (_temp, request, runner) = fixture(false);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -345,8 +365,9 @@ fn restarted_home_review_revalidates_receipts_and_source_instead_of_trusting_suc
             .complete()
     );
     drop(reviewed);
-    let resumed = review(&runner, request.clone()).unwrap();
-    assert!(resumed.phase.lock().unwrap().complete.is_empty());
+    let resumed = review(request.clone(), runner.applications()).unwrap();
+    assert!(resumed.recovered());
+    assert!(resumed.phase.lock().unwrap().home.is_some());
     assert!(
         resumed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -358,40 +379,31 @@ fn restarted_home_review_revalidates_receipts_and_source_instead_of_trusting_suc
             .unwrap()
             .complete()
     );
+    // Once sealed, the unit is the authority: the original may change.
+    std::fs::write(request.source_home.join("personal"), b"source changed").unwrap();
+    recover(&runner, request.clone(), runner.applications()).unwrap();
+    let mut wrong = request.clone();
+    wrong.copy_flatpak = true;
+    assert!(recover(&runner, wrong, runner.applications()).is_err());
     std::fs::write(request.target_home.join("personal"), b"changed target").unwrap();
-    let resumed = recover(&runner, request.clone()).unwrap();
-    if let Ok(report) = resumed.execute(&runner, &AtomicBool::new(false), true, |_| {}) {
-        assert!(!report.complete());
-    }
+    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
     assert_eq!(
         std::fs::read(request.target_home.join("personal")).unwrap(),
         b"changed target"
     );
-    assert_eq!(
-        std::fs::read(request.source_home.join("personal")).unwrap(),
-        b"personal"
-    );
-    let mut wrong = request.clone();
-    wrong.copy_flatpak = true;
-    assert!(recover(&runner, wrong).is_err());
-    std::fs::write(request.source_home.join("personal"), b"source changed").unwrap();
-    assert!(recover(&runner, request).is_err());
 }
 
 #[test]
 fn restart_after_flatpak_mutation_revalidates_real_output_before_promotion() {
     let (_temp, request, runner) = fixture(true);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
             .unwrap()
             .complete()
     );
-    let (_new_temp, _new_request, fresh) = fixture(true);
-    let initial: Vec<_> = fresh.replies.borrow_mut().drain(..5).collect();
-    runner.replies.borrow_mut().extend(initial);
-    let recovered = recover(&runner, request.clone()).unwrap();
+    let recovered = recover(&runner, request.clone(), runner.applications()).unwrap();
     let before = runner
         .calls
         .borrow()
@@ -420,10 +432,7 @@ fn restart_after_flatpak_mutation_revalidates_real_output_before_promotion() {
         b"tampered object",
     )
     .unwrap();
-    let (_other_temp, _other_request, fresh) = fixture(true);
-    let initial: Vec<_> = fresh.replies.borrow_mut().drain(..5).collect();
-    runner.replies.borrow_mut().extend(initial);
-    assert!(recover(&runner, request.clone()).is_err());
+    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
     assert_eq!(
         std::fs::read(request.target_home.join("personal")).unwrap(),
         b"personal"
@@ -442,10 +451,10 @@ fn restart_metadata_fifo_and_symlink_are_refused_without_blocking() {
     let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: terminated fixture path; creates no object outside temporary tree.
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-    assert!(review(&runner, request.clone()).is_err());
+    assert!(review(request.clone(), runner.applications()).is_err());
     std::fs::remove_file(&fifo).unwrap();
     symlink(request.source_home.join("personal"), &fifo).unwrap();
-    assert!(review(&runner, request.clone()).is_err());
+    assert!(review(request.clone(), runner.applications()).is_err());
     assert!(!request.target_home.exists());
     assert_eq!(
         std::fs::read(request.source_home.join("personal")).unwrap(),
@@ -454,10 +463,10 @@ fn restart_metadata_fifo_and_symlink_are_refused_without_blocking() {
 }
 
 #[test]
-fn interrupted_signed_app_phase_repairs_only_reviewed_refs_and_preserves_user_data() {
+fn interrupted_sealed_app_phase_redeploys_only_the_unit_and_preserves_user_data() {
     let (_temp, request, runner) = fixture(true);
     *runner.replies.borrow_mut().back_mut().unwrap() = Err("interrupted transaction".into());
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     let report = reviewed
         .execute(&runner, &AtomicBool::new(false), false, |_| {})
         .unwrap();
@@ -474,20 +483,21 @@ fn interrupted_signed_app_phase_repairs_only_reviewed_refs_and_preserves_user_da
         .replies
         .borrow_mut()
         .extend(fresh.replies.borrow_mut().drain(..));
-    let recovered = recover(&runner, request.clone()).unwrap();
+    let recovered = recover(&runner, request.clone(), runner.applications()).unwrap();
     assert!(
         recovered
             .execute(&runner, &AtomicBool::new(false), true, |_| {})
             .unwrap()
             .complete()
     );
-    assert!(
+    assert_eq!(
         runner
             .calls
             .borrow()
             .iter()
-            .any(|args| args.first().map(String::as_str) == Some("install")
-                && args.iter().any(|arg| arg == "--reinstall"))
+            .filter(|args| args.first().map(String::as_str) == Some("install"))
+            .count(),
+        2
     );
     assert_eq!(
         std::fs::read(request.target_home.join("personal")).unwrap(),
@@ -511,7 +521,7 @@ fn interrupted_signed_app_phase_repairs_only_reviewed_refs_and_preserves_user_da
 fn interrupted_app_phase_refuses_changed_userdata_before_any_retry_command() {
     let (_temp, request, runner) = fixture(true);
     *runner.replies.borrow_mut().back_mut().unwrap() = Err("interrupted transaction".into());
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         !reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -536,7 +546,7 @@ fn interrupted_app_phase_refuses_changed_userdata_before_any_retry_command() {
         .iter()
         .filter(|args| args.first().map(String::as_str) == Some("install"))
         .count();
-    assert!(recover(&runner, request.clone()).is_err());
+    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
     assert_eq!(
         runner
             .calls
@@ -567,7 +577,7 @@ fn headless_worker_join_releases_source_leases_only_after_terminal_event() {
     }
     let (_temp, request, runner) = fixture(false);
     let released = Arc::new(AtomicBool::new(false));
-    let mut reviewed = review(&runner, request).unwrap();
+    let mut reviewed = review(request, runner.applications()).unwrap();
     reviewed.retain_source_guard(Arc::new(Guard(Arc::clone(&released))));
     let mut worker = reviewed.start(false).unwrap();
     drop(reviewed);
@@ -590,7 +600,7 @@ fn headless_worker_join_releases_source_leases_only_after_terminal_event() {
 fn application_retry_preserves_target_user_edits_and_refuses_unverified_adoption() {
     let (_temp, request, runner) = fixture(true);
     *runner.replies.borrow_mut().back_mut().unwrap() = Err("repository offline".into());
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         !reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -634,7 +644,7 @@ fn flatpak_only_restart_validates_output_and_exact_original_subtrees() {
         b"original permissions",
     )
     .unwrap();
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -642,12 +652,7 @@ fn flatpak_only_restart_validates_output_and_exact_original_subtrees() {
             .complete()
     );
     assert!(!request.target_home.join("personal").exists());
-    let (_fresh_temp, _fresh_request, fresh) = fixture(true);
-    runner
-        .replies
-        .borrow_mut()
-        .extend(fresh.replies.borrow_mut().drain(..5));
-    let restarted = recover(&runner, request.clone()).unwrap();
+    let restarted = recover(&runner, request.clone(), runner.applications()).unwrap();
     let calls = runner
         .calls
         .borrow()
@@ -676,12 +681,7 @@ fn flatpak_only_restart_validates_output_and_exact_original_subtrees() {
         b"user edit",
     )
     .unwrap();
-    let (_fresh_temp2, _fresh_request2, fresh2) = fixture(true);
-    runner
-        .replies
-        .borrow_mut()
-        .extend(fresh2.replies.borrow_mut().drain(..5));
-    assert!(recover(&runner, request.clone()).is_err());
+    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
     assert_eq!(
         std::fs::read(
             request
@@ -702,7 +702,7 @@ fn flatpak_only_interrupted_apps_repair_without_whole_home_or_original_repositor
     let (_temp, mut request, runner) = fixture(true);
     request.copy_home = false;
     *runner.replies.borrow_mut().back_mut().unwrap() = Err("interrupted signed transaction".into());
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         !reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -715,25 +715,26 @@ fn flatpak_only_interrupted_apps_repair_without_whole_home_or_original_repositor
         .replies
         .borrow_mut()
         .extend(fresh.replies.borrow_mut().drain(..));
-    let restarted = recover(&runner, request.clone()).unwrap();
+    let restarted = recover(&runner, request.clone(), runner.applications()).unwrap();
     assert!(
         restarted
             .execute(&runner, &AtomicBool::new(false), true, |_| {})
             .unwrap()
             .complete()
     );
-    assert!(
+    assert_eq!(
         runner
             .calls
             .borrow()
             .iter()
-            .any(|args| args.first().map(String::as_str) == Some("install")
-                && args.iter().any(|arg| arg == "--reinstall"))
+            .filter(|args| args.first().map(String::as_str) == Some("install"))
+            .count(),
+        2
     );
     assert!(!request.target_home.join("personal").exists());
     std::fs::write(request.target_home.join(".local/outsider"), b"unreviewed").unwrap();
     let before = runner.calls.borrow().len();
-    assert!(recover(&runner, request.clone()).is_err());
+    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
     assert_eq!(runner.calls.borrow().len(), before);
     assert_eq!(
         std::fs::read(request.target_home.join(".local/outsider")).unwrap(),
@@ -742,18 +743,18 @@ fn flatpak_only_interrupted_apps_repair_without_whole_home_or_original_repositor
 }
 
 #[test]
-fn flatpak_only_data_restart_replays_journals_and_refuses_changed_permissions() {
+fn flatpak_only_data_restart_reopens_the_unit_and_refuses_changed_permissions() {
     let (_temp, mut request, runner) = fixture(false);
     request.copy_home = false;
     request.copy_flatpak = true;
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
             .unwrap()
             .complete()
     );
-    let restarted = recover(&runner, request.clone()).unwrap();
+    let restarted = recover(&runner, request.clone(), runner.applications()).unwrap();
     assert!(
         restarted
             .execute(&runner, &AtomicBool::new(false), true, |_| {})
@@ -761,16 +762,16 @@ fn flatpak_only_data_restart_replays_journals_and_refuses_changed_permissions() 
             .complete()
     );
     std::fs::set_permissions(
-        request.target_home.join(".local"),
+        request.target_home.join(".var"),
         std::fs::Permissions::from_mode(0o777),
     )
     .unwrap();
-    assert!(recover(&runner, request).is_err());
+    assert!(recover(&runner, request, runner.applications()).is_err());
     assert!(runner.calls.borrow().is_empty());
 }
 
 #[test]
-fn flatpak_only_restart_before_subtree_workers_start_uses_original_retained_review() {
+fn flatpak_only_restart_before_sealing_reviews_the_source_again() {
     let (_temp, mut request, runner) = fixture(false);
     request.copy_home = false;
     request.copy_flatpak = true;
@@ -782,13 +783,10 @@ fn flatpak_only_restart_before_subtree_workers_start_uses_original_retained_revi
         b"original permissions",
     )
     .unwrap();
-    let reviewed = review(&runner, request.clone()).unwrap();
-    for copy in &reviewed.copies {
-        copy.retain_review().unwrap();
-    }
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     durable::save(&request).unwrap();
     drop(reviewed);
-    let restarted = recover(&runner, request.clone()).unwrap();
+    let restarted = recover(&runner, request.clone(), runner.applications()).unwrap();
     assert!(
         restarted
             .execute(&runner, &AtomicBool::new(false), true, |_| {})
@@ -850,7 +848,7 @@ fn source_user_repository(request: &TransferRequest) {
 fn partial_adoption_revalidates_relocated_signed_apps_original_objects_and_userdata() {
     let (_temp, request, runner) = fixture(true);
     source_user_repository(&request);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -869,11 +867,11 @@ fn partial_adoption_revalidates_relocated_signed_apps_original_objects_and_userd
             .join(".var/app/org.example.App/data/session")
             .exists()
     );
-    let (_fresh_temp, _fresh_request, fresh) = fixture(true);
     let mapped = FixtureRunner {
-        replies: RefCell::new(fresh.replies.borrow_mut().drain(..5).collect()),
+        replies: RefCell::default(),
         calls: RefCell::default(),
         target: active.clone(),
+        applications: None,
     };
     let (_, recovered) =
         recover_promotion_with_runner(&mapped, request.clone(), &active, &journal).unwrap();
@@ -929,7 +927,7 @@ fn partial_adoption_revalidates_relocated_signed_apps_original_objects_and_userd
 fn partial_adoption_refuses_changed_application_output_without_reinstall_or_overwrite() {
     let (_temp, request, runner) = fixture(true);
     source_user_repository(&request);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -943,34 +941,22 @@ fn partial_adoption_refuses_changed_application_output_without_reinstall_or_over
         .unwrap();
     let witness = promotion.witness().unwrap();
     assert_eq!(witness.application_home().unwrap(), active);
-    let (_fresh_temp, _fresh_request, fresh) = fixture(true);
     let mapped = FixtureRunner {
-        replies: RefCell::new(fresh.replies.borrow_mut().drain(..5).collect()),
+        replies: RefCell::default(),
         calls: RefCell::default(),
         target: active.clone(),
+        applications: None,
     };
-    let (remotes, failures) = storage::prepare_remotes(&mapped, &request).unwrap();
-    assert!(failures.is_empty());
-    let approved = storage::publish_remotes(&request.private_journals, &remotes).unwrap();
     // First qualify the real mapped repository and exact ref context, so the
     // later refusal cannot be caused by missing fixture replies or wrong home.
-    applications::verify_adopted_output(
-        &request,
-        witness.application_home().unwrap(),
-        &mapped,
-        &approved,
-    )
-    .unwrap();
+    applications::verify_adopted_output(&request, witness.application_home().unwrap(), &mapped)
+        .unwrap();
     let object = active.join(".local/share/flatpak/repo/fixture-object");
     std::fs::write(&object, b"altered output").unwrap();
     let calls = mapped.calls.borrow().len();
-    let error = applications::verify_adopted_output(
-        &request,
-        witness.application_home().unwrap(),
-        &mapped,
-        &approved,
-    )
-    .unwrap_err();
+    let error =
+        applications::verify_adopted_output(&request, witness.application_home().unwrap(), &mapped)
+            .unwrap_err();
     assert_eq!(
         error,
         "Relocated application output differs from the verified signed transaction"
@@ -1004,7 +990,7 @@ fn app_only_partial_adoption_recovers_moved_data_without_copying_personal_home_o
     request.copy_home = false;
     request.copy_flatpak = true;
     source_user_repository(&request);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -1065,7 +1051,7 @@ fn app_only_promotion_refuses_unreviewed_home_data_and_changed_original_subtrees
     let (_temp, mut request, runner) = fixture(false);
     request.copy_home = false;
     request.copy_flatpak = true;
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -1105,7 +1091,7 @@ fn app_only_partial_adoption_revalidates_signed_output_and_original_subtree_rece
     let (_temp, mut request, runner) = fixture(true);
     request.copy_home = false;
     source_user_repository(&request);
-    let reviewed = review(&runner, request.clone()).unwrap();
+    let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
         reviewed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -1124,11 +1110,11 @@ fn app_only_partial_adoption_revalidates_signed_output_and_original_subtree_rece
             .join(".var/app/org.example.App/data/session")
             .exists()
     );
-    let (_fresh_temp, _fresh_request, fresh) = fixture(true);
     let mapped = FixtureRunner {
-        replies: RefCell::new(fresh.replies.borrow_mut().drain(..5).collect()),
+        replies: RefCell::default(),
         calls: RefCell::default(),
         target: active.clone(),
+        applications: None,
     };
     let (_, recovered) =
         recover_promotion_with_runner(&mapped, request.clone(), &active, &journal).unwrap();

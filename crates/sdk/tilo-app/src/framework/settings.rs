@@ -105,10 +105,9 @@ where
         &self,
         storage: super::record::sealed::Storage<'_>,
     ) -> Option<super::record::sealed::Door> {
-        storage
-            .0
-            .section(&self.settings)
-            .map(|door| super::record::sealed::Door(door as Rc<dyn RecordDoor>))
+        Some(super::record::sealed::Door(
+            storage.0.section(&self.settings) as Rc<dyn RecordDoor>,
+        ))
     }
 }
 
@@ -408,40 +407,34 @@ impl ViewStorage {
         super::record::answer(&doors, me, payload)
     }
 
-    /// The settings section `T` held as a record, opened on first use: a
-    /// record of the person's, whose edits they undo and redo, or in a
-    /// window that keeps nothing of theirs (a private one) one that lives as
-    /// long as the window.
-    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Option<Rc<SectionDoor>>
+    /// The settings section `T` held as a record, opened on first use: with
+    /// the undo and redo of the person's steps on it, unless the window
+    /// keeps nothing of theirs (a private one).
+    pub(crate) fn section<T>(&self, settings: &Settings<T>) -> Rc<SectionDoor>
     where
         T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
     {
         super::controls::opened::<T>();
         if let Some(open) = self.sections.borrow().get(T::KIND) {
-            return Some(Rc::clone(open));
+            return Rc::clone(open);
         }
         self.open_section(SectionKind::of(settings))
     }
 
     /// [`Self::section`] of the section `kind` describes.
-    fn open_section(&self, kind: Rc<SectionKind>) -> Option<Rc<SectionDoor>> {
+    fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionDoor> {
         let name = kind.kind;
         let door = if let Some(person) = &self.person {
-            person.open_section(kind, self.device())?
+            person.open_section(kind)
         } else {
-            let door = SectionDoor::window(kind, true)
-                .map_err(
-                    |error| tracing::warn!(kind = name, %error, "settings section unavailable"),
-                )
-                .ok()?;
-            let door = Rc::new(door);
+            let door = Rc::new(SectionDoor::new(kind));
             self.section_doors
                 .borrow_mut()
                 .push(Rc::clone(&door) as Rc<dyn RecordDoor>);
             door
         };
         self.sections.borrow_mut().insert(name, Rc::clone(&door));
-        Some(door)
+        door
     }
 
     /// The settings section `T` as a record a view part edits through its
@@ -453,12 +446,7 @@ impl ViewStorage {
         if let Some(held) = self.held_sections.borrow().get(&TypeId::of::<T>()) {
             return Rc::clone(held).downcast::<Held<T>>().ok();
         }
-        let held = self
-            .section(settings)?
-            .held::<T>()
-            .map_err(|error| tracing::warn!(kind = T::KIND, %error, "settings section unavailable"))
-            .ok()?;
-        let held = Rc::new(held);
+        let held = Rc::new(self.section(settings).held::<T>());
         self.held_sections
             .borrow_mut()
             .insert(TypeId::of::<T>(), Rc::clone(&held) as Rc<dyn Any>);

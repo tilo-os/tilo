@@ -28,7 +28,7 @@ required = ["network.http"]
 optional = ["app-files", "files.paths", "location", "threads"]
 
 [resources]
-kinds = ["maps.workspace"]
+kinds = ["maps.workspace", "maps.offline-areas"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -67,7 +67,7 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@11"
 tilo-fs = "optional@11"
-shell-ui = "optional@17"
+shell-ui = "optional@18"
 
 [entrypoint]
 bin             = "bin/maps"

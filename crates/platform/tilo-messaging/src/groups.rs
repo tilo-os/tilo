@@ -7,26 +7,31 @@ pub const MAX_GROUP_MEMBERS: usize = 2048;
 const MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupSummary {
     pub id: String,
     pub title: String,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum GroupRole {
     Member,
     Admin,
     SuperAdmin,
 }
 #[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupMember {
     /// The service's canonical identity; not a display name or inferred contact.
     pub address: String,
     pub role: GroupRole,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupList {
     pub account: ServiceAccount,
     pub groups: Vec<GroupSummary>,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupMembership {
     pub account: ServiceAccount,
     pub group: GroupSummary,
@@ -37,33 +42,39 @@ pub struct GroupMembership {
     /// Opaque, short-lived review bound to this account's exact service roster.
     pub review: String,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum GroupChange {
     Add(tilo_contact_directory::routing::Route),
     Remove(String),
     Leave,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupChangeRequest {
     pub group: String,
     pub review: String,
     pub operation: String,
     pub change: GroupChange,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupSendRequest {
     pub group: String,
     pub review: String,
     pub operation: String,
     pub text: zeroize::Zeroizing<String>,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupReceipt {
     pub account: ServiceAccount,
     pub group: String,
     pub operation: String,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupHistory {
     pub account: ServiceAccount,
     pub group: String,
     pub messages: Vec<GroupMessage>,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct GroupMessage {
     pub author: String,
     pub message: crate::Message,

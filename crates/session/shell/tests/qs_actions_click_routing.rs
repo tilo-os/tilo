@@ -173,10 +173,11 @@ fn open_quick_settings(
 
 /// A volume slider shows only once the sound output has been read, as a
 /// real session reads it on open.
-const SOUND_OUTPUT_READING: os_actions::VolumeState = os_actions::VolumeState {
-    level: 0.4,
-    muted: false,
-};
+const SOUND_OUTPUT_READING: media::audio::default_node::VolumeState =
+    media::audio::default_node::VolumeState {
+        level: 0.4,
+        muted: false,
+    };
 
 #[test]
 #[allow(
@@ -871,7 +872,7 @@ fn every_quick_settings_destination_click_lands_on_its_surface() {
     let centre = quick_settings_target(&host, "quick_settings_power").center();
     click(&mut host, &taffy, host_node, centre);
     assert!(!chrome.borrow().overlays.quick_settings);
-    assert!(!host.power_menu_semantic_rects().is_empty());
+    assert!(host.power_menu_open());
 }
 
 /// Tab visits every root stop in turn, and at each one exactly one node of

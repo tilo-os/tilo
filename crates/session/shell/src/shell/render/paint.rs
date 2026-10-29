@@ -34,7 +34,6 @@ pub use tilo_output_passes::xrgb_history::{
 };
 
 mod bridge;
-mod damage;
 mod diagnostics;
 mod output_view;
 mod retained_target;
@@ -49,7 +48,6 @@ mod tests;
 #[cfg(target_os = "linux")]
 mod window_cycle_memory_tests;
 mod xrgb;
-pub(crate) use damage::{coalesce_damage, damage_area};
 use diagnostics::DispatchStageObserver;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
@@ -59,6 +57,7 @@ pub use subrect::{
     swizzle_subrect_rgba_to_xrgb8888_composited, swizzle_subrect_rgba_to_xrgb8888_transformed,
 };
 use tilo_lock::MutexRecover as _;
+pub(crate) use ui::damage::{coalesce_damage, damage_area};
 
 /// Errors the bridge can return; each variant maps to an operator-visible message and the DRM backend logs+skips the frame.
 #[derive(Debug, thiserror::Error)]
@@ -705,11 +704,9 @@ pub struct RetainedGpuTarget {
     /// available when that submission overflows and is followed by a dense recovery, so
     /// diagnostics describe the submitted sparse work rather than guessing from capability.
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
-    /// The layers strip pans are composited from, allocated by the first
-    /// frame that comes as layers ([`Self::render_layers_until`]).
-    strip_layers: Option<super::strip_layers::StripLayers>,
-    /// The work the latest layered frame did.
-    last_layer_work: Option<super::strip_layers::LayerWork>,
+    /// The layers strip pans are composited from
+    /// ([`Self::render_layers_until`]).
+    layers: ui::strip_layers::LayerPresenter,
     /// The scroll copies of the frame of the revision named, for the next
     /// render of it ([`Self::stage_scroll_copies`]).
     staged_copies: Option<(u64, crate::shell::frame::ScrollCopies)>,

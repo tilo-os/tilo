@@ -101,8 +101,20 @@ struct ChannelAuthorizationPayload<'a> {
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SnapshotError {
-    #[error("registry snapshot is not at this device's package format version")]
-    Protocol,
+    /// The snapshot is at another package format than the one this build
+    /// reads. Nothing in it can be verified, so no install or update from
+    /// the registry can proceed until one side catches up.
+    #[error(
+        "the registry publishes its catalogue in package format {served}, and this device reads \
+         only format {expected}, so nothing can be installed or updated from it. One side is out \
+         of date: the registry has to publish its catalogue at format {expected}, or Tilo has to \
+         be updated to a release that reads format {served}",
+        expected = PACKAGE_FORMAT_VERSION
+    )]
+    Protocol {
+        /// The format the registry's snapshot says it is in.
+        served: u32,
+    },
     #[error("registry snapshot sequence or predecessor is invalid")]
     Sequence,
     #[error("registry snapshot is expired, not yet valid, or valid for too long")]
@@ -283,7 +295,9 @@ pub fn verify_snapshot(
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
     if snapshot.protocol != PACKAGE_FORMAT_VERSION {
-        return Err(SnapshotError::Protocol);
+        return Err(SnapshotError::Protocol {
+            served: snapshot.protocol,
+        });
     }
     let header = SignedHeader {
         sequence: snapshot.sequence,
@@ -726,12 +740,26 @@ mod tests {
                     continue;
                 }
                 snapshot.protocol = other;
+                let refused = verify_snapshot(&snapshot, &owner_hex, 15);
                 assert_eq!(
-                    verify_snapshot(&snapshot, &owner_hex, 15),
-                    Err(SnapshotError::Protocol),
+                    refused,
+                    Err(SnapshotError::Protocol { served: other }),
                     "nothing is read at package format {other}"
                 );
+                // The refusal names both formats and what either side can
+                // do about it, not a bare "proof failed".
+                let message = refused.unwrap_err().to_string();
+                assert!(
+                    message.contains(&format!("package format {other}"))
+                        && message.contains(&format!("reads only format {PACKAGE_FORMAT_VERSION}"))
+                        && message.contains("Tilo has to be updated"),
+                    "{message}"
+                );
             }
+            // phase: the_format_this_build_reads_is_accepted
+            snapshot.protocol = PACKAGE_FORMAT_VERSION;
+            sign_snapshot(&mut snapshot, &owner).unwrap();
+            assert_eq!(verify_snapshot(&snapshot, &owner_hex, 15), Ok(()));
         }
         // phase: expired_and_unauthorized_snapshots_fail_closed
         {

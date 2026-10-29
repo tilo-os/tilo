@@ -47,8 +47,8 @@ pub fn decide<'g>(
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
-            || !subjects.contains(&grant.subject)
-            || !grant.node.covers(node)
+            || !cx.subject_matches(&grant.subject, subjects)
+            || !cx.covers(&grant.node, node)
             || !grant.is_live(cx)
         {
             continue;
@@ -138,14 +138,45 @@ impl<'g> Party<'g> {
 
     #[must_use]
     pub fn decide(&self, node: &TreePath, kind: ActionKind, cx: &Context<'_>) -> Decision<'g> {
-        if self.owns.iter().any(|owned| owned.covers(node)) {
+        // A member's own record is that person's alone, whatever the room's
+        // grants or owner say ([`crate::member_record`]). A delegation, known
+        // by no person, is decided by its grants as anywhere else.
+        if let Some(member) = crate::member_record::owner_of(node)
+            && self
+                .subjects
+                .iter()
+                .any(|subject| matches!(subject, Subject::Person(_)))
+        {
+            let theirs = self
+                .subjects
+                .iter()
+                .any(|subject| matches!(subject, Subject::Person(person) if person == member));
+            let held_off = self.held_off.iter().copied().find(|grant| {
+                grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
+            });
+            return match (theirs, held_off) {
+                (true, None) => Decision {
+                    answer: Answer::Allow,
+                    basis: Basis::Owner,
+                },
+                (_, Some(deny)) => Decision {
+                    answer: Answer::Deny,
+                    basis: Basis::Grant(deny),
+                },
+                (false, None) => Decision {
+                    answer: Answer::Deny,
+                    basis: Basis::NoGrant,
+                },
+            };
+        }
+        if self.owns.iter().any(|owned| cx.covers(owned, node)) {
             return Decision {
                 answer: Answer::Allow,
                 basis: Basis::Owner,
             };
         }
         if let Some(deny) = self.held_off.iter().copied().find(|grant| {
-            grant.kinds.contains(kind) && grant.node.covers(node) && grant.is_live(cx)
+            grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
         }) {
             return Decision {
                 answer: Answer::Deny,

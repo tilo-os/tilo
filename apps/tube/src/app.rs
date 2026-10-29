@@ -191,8 +191,10 @@ enum ShellAsk {
     /// Close the sidebar when it covers the content.
     DismissOverlayRail,
     /// Show the sidebar now, without its motion (the narrow still).
+    #[cfg(feature = "samples")]
     OpenSidebar,
     /// The sidebar dragged out to this width (the sidebar-list still).
+    #[cfg(feature = "samples")]
     SidebarWidth(f64),
 }
 
@@ -299,12 +301,10 @@ impl TubeApp {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        live.with(|library| self.tube.borrow_mut().present_library(library));
+        };
+        self.tube.borrow_mut().present_library(&shown);
     }
 
     /// Do what the shell was asked to: from an effect, a staged scenario or
@@ -319,10 +319,12 @@ impl TubeApp {
                         self.shell.toggle_sidebar();
                     }
                 }
+                #[cfg(feature = "samples")]
                 ShellAsk::OpenSidebar => {
                     self.shell.open_sidebar();
                     self.shell.snap();
                 }
+                #[cfg(feature = "samples")]
                 ShellAsk::SidebarWidth(width) => self.shell.stage_sidebar_width(width),
             }
         }
@@ -444,11 +446,7 @@ impl Tube {
                 self.request_live(Request::PlaylistPage(playlist));
             }
             TubeEffect::Search { query } => {
-                let query = query.trim();
-                if query.is_empty() {
-                    return Err("Say what to search for".into());
-                }
-                self.search_query.set(query.to_owned());
+                self.search_query.set(query.into_string());
                 self.apply(Action::SubmitSearch);
                 self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }

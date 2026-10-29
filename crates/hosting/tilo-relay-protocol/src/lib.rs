@@ -93,7 +93,8 @@ pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 
-/// Stable private relay shard for same-identity continuation checkpoints.
+/// Stable private relay workspace of one person: their devices reach their
+/// hosts' verbs and each other's sessions on it before they hold any room.
 /// This is not a user-visible workspace and is derived only from the root
 /// identity so every enrolled device/home peer agrees after restart.
 pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
@@ -131,57 +132,15 @@ pub fn room_workspace_id_matches(room: &str, workspace: u64) -> bool {
     room_workspace_id(room).is_ok_and(|id| id == workspace)
 }
 
-/// The person's own room: the workspace that is theirs alone, synced
-/// across their devices through any host that carries it. Derived from
-/// their root only, so every one of their devices names the same room and
-/// a host admits exactly that person's devices to it without being told:
-/// see [`own_room_workspace_id_matches`].
-#[must_use]
-pub fn own_room(user_public_key: &[u8; 32]) -> String {
-    let mut bytes = [0_u8; 16];
-    bytes.copy_from_slice(&blake3::derive_key("tilo-own-room-v1\0", user_public_key)[..16]);
-    uuid::Builder::from_random_bytes(bytes)
-        .into_uuid()
-        .hyphenated()
-        .to_string()
-}
-
-/// Whether `workspace` is the own room ([`own_room`]) of the person whose
-/// root is `user_public_key`.
-#[must_use]
-pub fn own_room_workspace_id_matches(user_public_key: &[u8; 32], workspace: u64) -> bool {
-    room_workspace_id_matches(&own_room(user_public_key), workspace)
-}
-
-/// Only the shard derived from this authenticated identity is private.
-pub fn personal_continuity_workspace_id_matches(
-    user_public_key: &[u8; 32],
-    workspace: u64,
-) -> bool {
-    workspace == personal_continuity_workspace_id(user_public_key)
-}
-
 #[cfg(test)]
 mod binding_tests {
     #[test]
-    fn bindings_are_scoped_to_exact_room_and_root_identity() {
+    fn bindings_are_scoped_to_the_exact_room() {
         let room = "11111111-1111-4111-8111-111111111111";
         let other = "22222222-2222-4222-8222-222222222222";
         let id = super::room_workspace_id(room).unwrap();
         assert!(super::room_workspace_id_matches(room, id));
         assert!(!super::room_workspace_id_matches(other, id));
         assert!(!super::room_workspace_id_matches("invalid", id));
-        let id = super::personal_continuity_workspace_id(&[7; 32]);
-        assert!(super::personal_continuity_workspace_id_matches(
-            &[7; 32], id
-        ));
-        assert!(!super::personal_continuity_workspace_id_matches(
-            &[8; 32], id
-        ));
-        let own = super::own_room(&[7; 32]);
-        let id = super::room_workspace_id(&own).unwrap();
-        assert!(super::own_room_workspace_id_matches(&[7; 32], id));
-        assert!(!super::own_room_workspace_id_matches(&[8; 32], id));
-        assert_ne!(own, super::own_room(&[8; 32]));
     }
 }

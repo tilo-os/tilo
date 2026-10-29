@@ -82,6 +82,11 @@ pub const SYSTEM_SERVICE: &str = "system";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
+/// The person's messaging accounts (`tilo-messaging`). Its connection is
+/// stamped with the app id before the app holds it, as the model gateway's
+/// is: the service serves Messages its accounts and Passwords the
+/// permission requests it makes, and nobody else.
+pub const MESSAGING_SERVICE: &str = "messaging";
 /// The shell runtime's supervisor. Its connection is stamped with the app id
 /// before the app holds it, so the supervisor knows which app is asking —
 /// the device's own shell is answered for Terminal and nobody else.
@@ -188,14 +193,10 @@ fn child_fd_reserved(fd: i32) -> bool {
     false
 }
 const STORE_APP_ID: &str = "so.tilo.store";
-/// The Browser holds `app-host` too, but is served only the request for a
-/// runtime its own manifest declares (its engine), never the Store's
-/// package-management interface: the host decides by the app id stamped on
-/// the connection.
-const BROWSER_APP_ID: &str = "so.tilo.browser";
 /// Settings holds `app-host` for the person's languages alone: the host
-/// answers it which language packs are offered and installs one, nothing
-/// else.
+/// answers it which language packs are offered and installs one, never the
+/// Store's package-management interface (the host decides by the app id
+/// stamped on the connection).
 const SETTINGS_APP_ID: &str = "so.tilo.settings";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
@@ -278,7 +279,7 @@ pub enum ServiceError {
         source: std::io::Error,
     },
     #[error(
-        "service `app-host` is restricted to the Store, and to Browser and Settings for their own narrow requests"
+        "service `app-host` is restricted to the Store, and to Settings for its language packs"
     )]
     AppHostUnauthorized,
 }
@@ -794,13 +795,13 @@ fn authenticate_service(
         };
     }
 
-    if name == MODEL_GATEWAY_SERVICE {
+    if name == MODEL_GATEWAY_SERVICE || name == MESSAGING_SERVICE {
         let Some(launch) = context else {
             let error = ServiceError::OpenFailed {
                 path: path.to_path_buf(),
-                source: std::io::Error::other("model gateway requires launcher context"),
+                source: std::io::Error::other(format!("{name} requires launcher context")),
             };
-            return handoff_failure(required, error, "optional model gateway skipped");
+            return handoff_failure(required, error, "optional app-named service skipped");
         };
         return match write_model_gateway_handoff(stream, launch.app_id) {
             Ok(()) => Ok(HandoffOutcome::Ready),
@@ -810,7 +811,7 @@ fn authenticate_service(
                     path: path.to_path_buf(),
                     source,
                 },
-                "optional model gateway rejected launch handoff",
+                "optional app-named service rejected launch handoff",
             ),
         };
     }
@@ -889,9 +890,8 @@ fn resolve_service_binds_inner(
         let path = socket_for(name);
 
         if name == APP_HOST_SERVICE
-            && context.is_none_or(|launch| {
-                ![STORE_APP_ID, BROWSER_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id)
-            })
+            && context
+                .is_none_or(|launch| ![STORE_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id))
         {
             return Err(ServiceError::AppHostUnauthorized);
         }

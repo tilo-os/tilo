@@ -1,8 +1,6 @@
 //! How long [`ShellNetwork::frame_tick`] holds the compositor's loop while the
 //! desktop keeps changing: every turn moves a tab, so each tick has room
-//! changes to announce and, at every upkeep, a new continuity checkpoint to
-//! make durable. The store lives on a real disk (under the target
-//! directory, not a tmpfs), so its fsyncs cost what they cost.
+//! changes to announce.
 //!
 //! A measurement, not a check: run it with
 //! `cargo test -p shell network_tick_latency -- --ignored --nocapture`
@@ -29,15 +27,11 @@ fn percentile(sorted: &[Duration], fraction: f64) -> Duration {
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn network_tick_latency_while_the_desktop_changes() {
-    let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target");
-    std::fs::create_dir_all(&target).expect("target directory");
-    let dir = tempfile::tempdir_in(&target).expect("store directory on disk");
     let tree = WorkspaceTree::bootstrap_demo().shared();
     let (mut net, mut commands) = shell_network_for_test(tree.clone(), 0xBE7C);
-    net.personal_continuity_user = Some([0x5A; 32]);
-    net.personal_continuity_device =
+    net.local_person = Some([0x5A; 32]);
+    net.local_device =
         Some(tilo_network_actor::fabric::DeviceId::new("bench-device").expect("device id"));
-    net.personal_continuity_path = Some(dir.path().join("personal-continuity.postcard"));
     net.continuity_policy_override = Some(
         crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
             serde_json::json!({ "continuity": { "enabled": true, "app_continuations": true } })

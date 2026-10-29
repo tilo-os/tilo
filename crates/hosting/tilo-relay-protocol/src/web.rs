@@ -169,6 +169,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::Compacted { statement, .. } => statement.len(),
         Envelope::Live { frame, .. }
         | Envelope::RemoteAction { frame, .. }
+        | Envelope::HostAction { frame }
         | Envelope::RecordContent { frame, .. } => frame.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
@@ -422,7 +423,8 @@ pub fn live_room(workspace_id: u64) -> String {
 /// Route a spectator of a public room takes a channel's content keys from,
 /// to open what the room's members sealed there. Only a device of the room's
 /// spectator person is answered, only in a public room and only while it is
-/// subscribed; a member is admitted to a channel by its steward instead.
+/// subscribed; a member is admitted to a channel by its participants
+/// instead.
 pub const CHANNEL_KEYS_PATH: &str = "/channel-keys";
 
 /// The route of the host's workspace join exchange over HTTPS.

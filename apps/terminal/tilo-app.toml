@@ -38,7 +38,7 @@ required = ["processes"]
 optional = ["clipboard", "files.paths", "app-files", "threads", "settings", "open-uri"]
 
 [resources]
-kinds = ["terminal.history", "terminal.session", "environment"]
+kinds = ["terminal.history", "terminal.session", "environment", "terminal.recent-environments"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -73,7 +73,7 @@ open-uri = "via-host"
 # `TILO_SVC_USH_FD`.
 ush    = "required@11"
 # Authenticated permission prompt for the device shell.
-shell-ui = "optional@17"
+shell-ui = "optional@18"
 collab = "optional@11"
 tilo-fs = "optional@11"
 

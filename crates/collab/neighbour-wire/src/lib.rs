@@ -22,9 +22,7 @@ pub mod unit_chain;
 
 pub use presence_slot::PresenceSlot;
 pub use record_sync::{RecordSync, on_demand_record, record_part, record_sync};
-pub use retention::{
-    Retention, app_document_channel, audience, retention, standalone, steward_only,
-};
+pub use retention::{Retention, app_document_channel, audience, retention, standalone};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 16;
+pub const PEER_PROTOCOL_VERSION: u32 = 19;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -83,11 +81,6 @@ pub fn peer_handle(device_public_key: &[u8; 32]) -> PeerId {
     }
     h
 }
-
-/// Continuation is portable metadata, never an application backup. Keep this
-/// limit at the wire boundary so every transport (direct or store-forward)
-/// applies the same bound before decoding or retaining it.
-pub const MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Wayland surface identifier — local handle used for streaming/input routing.
 pub type SurfaceId = u64;
@@ -385,26 +378,6 @@ pub enum NeighbourMsg {
         /// announcing device, so omission can never resurrect a device.
         revocations: Vec<tilo_user_identity::RevocationEntry>,
     },
-    /// Ask another certified device of the same person for its latest
-    /// continuation checkpoints. This rides a user-root-derived topic, never
-    /// a collaboration room: personal session state must not become visible to
-    /// collaborators merely because they share a workspace.
-    ///
-    /// Appended to preserve all existing Postcard discriminants.
-    PersonalContinuityRequest {
-        user_public_key: [u8; 32],
-        requester: PeerId,
-    },
-    /// A bounded, validated aggregate of per-device
-    /// personal continuity snapshots.
-    /// The receiving shell accepts it only when the authenticated transport
-    /// certificate has `user_public_key`. Certified devices may relay the
-    /// aggregate so an always-on peer retains the latest state for all of them.
-    PersonalContinuityCheckpoint {
-        user_public_key: [u8; 32],
-        publisher: PeerId,
-        snapshot: Vec<u8>,
-    },
     /// One remote-action frame (`tilo_actions::remote::RemoteActionFrame`
     /// bytes) for exactly one authenticated device: a request to list,
     /// invoke, observe or cancel its actions, or the answer to one.
@@ -429,38 +402,27 @@ pub enum NeighbourMsg {
         software_encode: Vec<String>,
     },
     /// One governance frame of a channel in `room`, published by the
-    /// channel's steward. Its Welcome, commit and key-history bytes are
-    /// opaque MLS material: sealed to their recipients, never content.
-    /// Receivers apply it only when the steward's signature and the hash
-    /// chain check out, so replaying or reordering it is harmless. Appended
+    /// participant that wrote its commit. Its Welcome, commit and key-history
+    /// bytes are opaque MLS material: sealed to their recipients, never
+    /// content. Receivers apply it only when its signer is a participant and
+    /// its changes match the membership, so replaying or reordering it is
+    /// harmless. Appended
     /// to preserve every existing Postcard discriminant.
     MlsGovernance {
         room: String,
-        frame: Box<collab_types::MlsGovernanceFrameV1>,
+        frame: Box<collab_types::MlsGovernanceFrame>,
         /// Chosen by the sender for each delivery attempt. Redelivering the
         /// same content with a new value keeps transports that drop
         /// byte-identical messages from swallowing the retry; receivers
         /// ignore it.
         delivery: u64,
     },
-    /// A device asking a channel's steward for membership, with a key
+    /// A device asking a channel's participants for membership, with a key
     /// package signed by the device's certified key. Appended to preserve
     /// every existing Postcard discriminant.
     MlsAccessRequest {
         room: String,
         request: Box<collab_types::MlsAccessRequestV1>,
-        /// Chosen by the sender for each delivery attempt. Redelivering the
-        /// same content with a new value keeps transports that drop
-        /// byte-identical messages from swallowing the retry; receivers
-        /// ignore it.
-        delivery: u64,
-    },
-    /// A device's signed, cumulative acknowledgement of a channel's
-    /// governance frames. Appended to preserve every existing Postcard
-    /// discriminant.
-    MlsGovernanceAck {
-        room: String,
-        ack: Box<collab_types::MlsGovernanceAckV1>,
         /// Chosen by the sender for each delivery attempt. Redelivering the
         /// same content with a new value keeps transports that drop
         /// byte-identical messages from swallowing the retry; receivers
@@ -506,9 +468,9 @@ pub enum NeighbourMsg {
         bytes: Vec<u8>,
     },
     /// [`Self::MlsAccessRequest`] with the route of the record the channel
-    /// carries, so a steward can decide Read on that record, a Deny over its
-    /// app or any pattern covering it included. The route proves itself: the
-    /// steward refuses it unless it hashes, with `room`, to the request's
+    /// carries, so a participant can decide Read on that record, a Deny over
+    /// its app or any pattern covering it included. The route proves itself:
+    /// a participant refuses it unless it hashes, with `room`, to the request's
     /// channel ([`collab_types::ChannelRoute::proves`]). A device that knows
     /// the route sends this form only. Appended to preserve every existing
     /// Postcard discriminant.
@@ -624,14 +586,11 @@ impl NeighbourMsg {
             | Self::ScrollbackRequest { .. }
             | Self::ScrollbackResponse { .. }
             | Self::IdentityAnnouncementV2 { .. }
-            | Self::PersonalContinuityRequest { .. }
-            | Self::PersonalContinuityCheckpoint { .. }
             | Self::RemoteAction { .. }
             | Self::MediaCapabilities { .. }
             | Self::MlsGovernance { .. }
             | Self::MlsAccessRequest { .. }
             | Self::MlsRoutedAccessRequest { .. }
-            | Self::MlsGovernanceAck { .. }
             | Self::PersonalWorkspaces { .. }
             | Self::RecordContentWant { .. }
             | Self::RecordContentPiece { .. }
@@ -680,13 +639,10 @@ impl NeighbourMsg {
             Self::ScrollbackResponse { .. } => "ScrollbackResponse",
             Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
             Self::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
-            Self::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
-            Self::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
             Self::RemoteAction { .. } => "RemoteAction",
             Self::MediaCapabilities { .. } => "MediaCapabilities",
             Self::MlsGovernance { .. } => "MlsGovernance",
             Self::MlsAccessRequest { .. } => "MlsAccessRequest",
-            Self::MlsGovernanceAck { .. } => "MlsGovernanceAck",
             Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
             Self::RecordContentWant { .. } => "RecordContentWant",
             Self::RecordContentPiece { .. } => "RecordContentPiece",
@@ -827,8 +783,8 @@ mod tests {
     /// bytes stay reproducible (these fixtures are not verified).
     fn fixtures_channel_governance() -> Vec<(&'static str, NeighbourMsg)> {
         use collab_types::{
-            ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1,
-            MlsGovernanceAction, MlsGovernanceFrameV1, Signature,
+            ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction,
+            MlsGovernanceFrame, Signature,
         };
         let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
         vec![
@@ -836,16 +792,16 @@ mod tests {
                 "channel governance frame",
                 NeighbourMsg::MlsGovernance {
                     room: ROOM.into(),
-                    frame: Box::new(MlsGovernanceFrameV1 {
-                        version: 1,
-                        transaction_id: [6; 32],
+                    frame: Box::new(MlsGovernanceFrame {
+                        version: 2,
                         channel,
-                        membership_revision: 2,
                         previous_frame_digest: [7; 32],
                         epoch: 3,
-                        action: MlsGovernanceAction::Remove {
-                            removed: Ed25519PublicKey::from_bytes([8; 32]),
+                        action: MlsGovernanceAction::Commit {
+                            removed: vec![Ed25519PublicKey::from_bytes([8; 32])],
+                            added: Vec::new(),
                             commit: vec![0xC0, 0x33],
+                            joining: None,
                         },
                         signed_by: Ed25519PublicKey::from_bytes([9; 32]),
                         signature: Signature::from_bytes([0xAB; 64]),
@@ -866,20 +822,6 @@ mod tests {
                         signature: Signature::from_bytes([0xCD; 64]),
                     }),
                     delivery: 8,
-                },
-            ),
-            (
-                "channel governance ack",
-                NeighbourMsg::MlsGovernanceAck {
-                    room: ROOM.into(),
-                    ack: Box::new(MlsGovernanceAckV1 {
-                        version: 1,
-                        channel,
-                        device: Ed25519PublicKey::from_bytes([2; 32]),
-                        through_digest: [0xEE; 32],
-                        signature: Signature::from_bytes([0xEF; 64]),
-                    }),
-                    delivery: 9,
                 },
             ),
             (
@@ -1058,21 +1000,6 @@ mod tests {
                 },
             ),
             (
-                "personal continuity request",
-                NeighbourMsg::PersonalContinuityRequest {
-                    user_public_key: [7; 32],
-                    requester: 0x00AB_CDEF,
-                },
-            ),
-            (
-                "personal continuity checkpoint",
-                NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key: [7; 32],
-                    publisher: 0x00AB_CDEF,
-                    snapshot: vec![1, 2, 3],
-                },
-            ),
-            (
                 "personal workspaces",
                 NeighbourMsg::PersonalWorkspaces {
                     user_public_key: [7; 32],
@@ -1233,7 +1160,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 34;
+    const VARIANT_COUNT: usize = 31;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1278,11 +1205,11 @@ mod tests {
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
-        ("surface keyframe request", "1d0307ac02"),
+        ("surface keyframe request", "1a0307ac02"),
         (
             "surface view request",
             concat!(
-                "1f032430373834386666652d313839382d346637322d383431392d3062353463",
+                "1c032430373834386666652d313839382d346637322d383431392d3062353463",
                 "3933653664616401878080808080c0f65e800ad00501046832363401800fb808",
             ),
         ),
@@ -1294,7 +1221,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b10",
+                "0b12",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1326,34 +1253,20 @@ mod tests {
             ),
         ),
         (
-            "personal continuity request",
-            concat!(
-                "1207070707070707070707070707070707070707070707070707070707070707",
-                "07ef9baf05",
-            ),
-        ),
-        (
-            "personal continuity checkpoint",
-            concat!(
-                "1307070707070707070707070707070707070707070707070707070707070707",
-                "07ef9baf0503010203",
-            ),
-        ),
-        (
             "personal workspaces",
             concat!(
-                "1907070707070707070707070707070707070707070707070707070707070707",
+                "1607070707070707070707070707070707070707070707070707070707070707",
                 "0702020202020202020202020202020202020202020202020202020202020202",
                 "020a030102034003030303030303030303030303030303030303030303030303",
                 "0303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303",
             ),
         ),
-        ("remote action", "14027b7d"),
+        ("remote action", "12027b7d"),
         (
             "media capabilities",
             concat!(
-                "15cdd702020361763103767039010468323634010361763101",
+                "13cdd702020361763103767039010468323634010361763101",
                 "03767039",
             ),
         ),
@@ -1379,11 +1292,14 @@ mod tests {
         ),
         (
             "record content want",
-            "1aef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+            "17ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
         ),
         (
             "record content piece",
-            "1bd6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162030003010203",
+            concat!(
+                "18d6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d02616203",
+                "0003010203",
+            ),
         ),
         (
             "scrollback request",
@@ -1407,20 +1323,20 @@ mod tests {
         (
             "channel governance frame",
             concat!(
-                "162436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630106060606060606060606060606060606060606060606060606",
-                "0606060606060610555555555555555555555555555555550207070707070707",
-                "0707070707070707070707070707070707070707070707070703010808080808",
-                "08080808080808080808080808080808080808080808080808080802c0330909",
-                "09090909090909090909090909090909090909090909090909090909090940ab",
+                "142436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630210555555555555555555555555555555550707070707070707",
+                "0707070707070707070707070707070707070707070707070301010808080808",
+                "0808080808080808080808080808080808080808080808080808080002c03300",
+                "0909090909090909090909090909090909090909090909090909090909090909",
+                "40ababababababababababababababababababababababababababababababab",
                 "abababababababababababababababababababababababababababababababab",
-                "ababababababababababababababababababababababababababababababab07",
+                "ab07",
             ),
         ),
         (
             "channel access request",
             concat!(
-                "172436623366396131302d303030302d343030302d383030302d303030303030",
+                "152436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630110555555555555555555555555555555550202020202020202",
                 "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
@@ -1429,20 +1345,9 @@ mod tests {
             ),
         ),
         (
-            "channel governance ack",
-            concat!(
-                "182436623366396131302d303030302d343030302d383030302d303030303030",
-                "3030303030630110555555555555555555555555555555550202020202020202",
-                "020202020202020202020202020202020202020202020202eeeeeeeeeeeeeeee",
-                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee40efefefefefefef",
-                "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
-                "efefefefefefefefefefefefefefefefefefefefefefefefef09",
-            ),
-        ),
-        (
             "channel routed access request",
             concat!(
-                "1c2436623366396131302d303030302d343030302d383030302d303030303030",
+                "192436623366396131302d303030302d343030302d383030302d303030303030",
                 "3030303030630110555555555555555555555555555555550202020202020202",
                 "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
                 "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
@@ -1450,15 +1355,15 @@ mod tests {
                 "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
             ),
         ),
-        ("live presence", "1e0303010203"),
+        ("live presence", "1b0303010203"),
         (
             "record content lacks",
-            "2003040e736f2e74696c6f2e736c6964657304726f6f6d026162",
+            "1d03040e736f2e74696c6f2e736c6964657304726f6f6d026162",
         ),
         (
             "room archive",
             concat!(
-                "215e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+                "1e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
                 "5e2430373834386666652d313839382d346637322d383431392d306235346339",
                 "3365366461640103010203",
             ),

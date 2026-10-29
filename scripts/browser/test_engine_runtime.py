@@ -20,16 +20,7 @@ class EngineRuntimeNameTests(unittest.TestCase):
         built = re.findall(r"^ARG CHROMIUM_RUNTIME_VERSION=(\S+)$", containerfile, re.MULTILINE)
         self.assertEqual(built, [rust_const("RUNTIME_VERSION")])
 
-
-    def test_the_browser_install_link_requests_the_exact_declared_runtime(self):
-        source = (ROOT / "apps/browser/src/browser_widget/engine_runtime.rs").read_text()
-        match = re.search(r'const ENGINE_INSTALL_URI: &str =\s*"tilo-store:runtime/([^"\s]+)";', source)
-        self.assertIsNotNone(match)
-        owner, runtime = match.group(1).split("/", 1)
-        self.assertEqual(owner, "so.tilo.browser")
-        self.assertEqual(runtime, rust_const("RUNTIME_REF"))
-
-    def test_the_browser_manifest_asks_for_that_runtime(self):
+    def test_the_browser_manifest_requires_that_runtime(self):
         manifest = (ROOT / "apps/browser/tilo-app.toml").read_text()
         self.assertIn(f'optional-runtimes = ["{rust_const("RUNTIME_REF")}"]', manifest)
 

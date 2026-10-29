@@ -2034,12 +2034,9 @@ impl WindowsWindow {
         let Some(live) = &self.live else {
             return false;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(routes) = live.changed_since(&mut self.presented) else {
             return false;
-        }
-        self.presented = Some(held);
-        let routes = live.get();
+        };
         self.app.borrow_mut().follow_routes(&routes);
         true
     }

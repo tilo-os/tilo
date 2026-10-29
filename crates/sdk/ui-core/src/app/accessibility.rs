@@ -406,7 +406,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
             let node = self.layout.node_map.keys().copied().find(|&node| {
@@ -423,19 +423,17 @@ impl App {
             self.hand_focus_to(node);
             return;
         }
+        // Focus travels the laid out tree: a widget can lay its children out
+        // under nodes of its own (a shell's columns), and a component or
+        // History lays out nodes no widget lists as a child, so a walk of the
+        // widgets beside the layout pairs controls with the wrong nodes.
         if self.close_admission.dialog.is_none() {
             let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            if crate::focus_navigation::walks_layout_map(
-                self.root_widget.as_ref(),
-                self.history.is_some(),
-                &restrictions,
-            ) {
-                self.update_history_focus_order(&restrictions);
-                return;
-            }
+            self.update_history_focus_order(&restrictions);
+            return;
         }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
@@ -556,7 +554,6 @@ impl App {
                 sweep.nodes.iter().copied(),
                 &self.bindings,
                 &self.collaboration.local_author,
-                &self.permission_ctx,
             )
         };
         // What the whole view says about history is read once per sweep, not
@@ -618,15 +615,6 @@ impl App {
                         .history_request(&mut self.state.doc, request)
                         .ok()
                         .flatten()
-                } else if let Some(owner) = self.bindings.legacy_for(node) {
-                    crate::bound_dispatch::legacy_history_request(
-                        &owner,
-                        request,
-                        &self.permission_ctx,
-                        &self.collaboration.local_author,
-                    )
-                    .ok()
-                    .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => self.state.undo_as(
@@ -657,23 +645,17 @@ impl App {
             }
             // Bound histories intentionally keep completed-action labels warm
             // across pending edits and dynamically mounted controls.
-            let bound_status = binding
-                .as_ref()
-                .map(|binding| {
-                    if let Some((_, status)) = bound_statuses
-                        .iter()
-                        .find(|(seen, _)| seen.same_component(binding))
-                    {
-                        return status.clone();
-                    }
-                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
-                    bound_statuses.push((binding.clone(), status.clone()));
-                    status
-                })
-                .or_else(|| {
-                    self.bindings
-                        .legacy_status(node, &self.collaboration.local_author)
-                });
+            let bound_status = binding.as_ref().map(|binding| {
+                if let Some((_, status)) = bound_statuses
+                    .iter()
+                    .find(|(seen, _)| seen.same_component(binding))
+                {
+                    return status.clone();
+                }
+                let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                bound_statuses.push((binding.clone(), status.clone()));
+                status
+            });
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
@@ -865,6 +847,26 @@ impl App {
             self.focused_node = Some(node);
             self.layout.layout_dirty = true;
             self.needs_sync = true;
+        }
+    }
+
+    /// Give the keyboard to the control a widget asked for
+    /// ([`Widget::take_focus_request`]), in the tree just built: as a press
+    /// focuses it, so no other control keeps drawing or typing as focused.
+    /// A dialog holding the keyboard keeps it.
+    pub(super) fn apply_focus_request(&mut self) {
+        let Some(id) = self.root_widget.take_focus_request() else {
+            return;
+        };
+        if self.accessibility.focus_trap_active {
+            return;
+        }
+        let target = self.focusable_order.iter().copied().find(|&node| {
+            self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
+                .unwrap_or(false)
+        });
+        if target.is_some() {
+            self.set_focused_node(target);
         }
     }
 
@@ -1110,18 +1112,6 @@ impl App {
         )
     }
 
-    /// Tab normally belongs to the host's focus order. A focused editor-like
-    /// widget may explicitly claim it first (for indentation or completion),
-    /// without broadening that exception to arbitrary widgets or escaping an
-    /// active focus trap.
-    #[cfg(feature = "native")]
-    fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused_node.is_some_and(|node| {
-            self.inspect_node(node, |widget| widget.wants_tab_input())
-                .unwrap_or(false)
-        })
-    }
-
     /// Shared native Tab admission, preserving text-input and modal capture.
     #[cfg(feature = "native")]
     fn handle_tab_navigation(
@@ -1156,21 +1146,8 @@ impl App {
         if self.accessibility.focus_trap_active {
             return self.focusable_order.clone();
         }
-        let scopes: Vec<taffy::NodeId> = self
-            .layout
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .collect();
-        crate::focus_navigation::within_keyboard_scope(
-            self.focusable_order.clone(),
-            &scopes,
-            &self.layout.taffy,
-        )
+        self.tree()
+            .within_keyboard_scope(self.focusable_order.clone())
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {
@@ -1210,7 +1187,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|p| p.is_presented())
         {
             return crate::accesskit_bridge::build_presentation_with_resources_bound(
@@ -1399,14 +1376,18 @@ impl App {
             self.bindings.clear();
             self.layout.node_map.clear();
             self.focused_node = None;
-            let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
-                palette.perform_semantic_action(
-                    target,
-                    action,
-                    &mut crate::widget::Edits::lend(&mut self.state.doc),
-                    &self.state.root,
-                )
-            });
+            let handled = self
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .is_some_and(|palette| {
+                    palette.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(&mut self.state.doc),
+                        &self.state.root,
+                    )
+                });
             self.finish_action_palette_input(handled);
             return None;
         }
@@ -1439,7 +1420,7 @@ impl App {
             })
             .flatten();
         let handled = self
-            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     crate::a11y_child_route::perform(
                         widget,
@@ -1556,6 +1537,30 @@ impl App {
         }
     }
 
+    /// Activate the control whose test id is `test_id`, as an assistive
+    /// technology activates a hand-hit-tested control: the press a person
+    /// makes on it, through the window's own input path. Whether the window
+    /// shows such a control.
+    pub(super) fn activate_test_id(&mut self, test_id: &str) -> bool {
+        fn find(widget: &dyn Widget, test_id: &str) -> Option<KurboRect> {
+            if widget.test_id() == Some(test_id) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find(child, test_id))
+        }
+        let Some(rect) = find(self.root_widget.as_ref(), test_id)
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+        else {
+            return false;
+        };
+        let centre = rect.center();
+        self.dispatch_semantic_click(centre.x, centre.y);
+        true
+    }
+
     /// Complete an accessibility activation for legacy hand-hit-tested
     /// controls that do not implement `perform_action` yet. The semantic
     /// target has already resolved to this exact point; routing the usual
@@ -1660,7 +1665,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(|palette| palette.is_presented())
     }
 
@@ -1698,7 +1703,7 @@ impl App {
         if let Some(palette) = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .filter(|p| p.is_presented())
         {
             return self.accessibility.semantic_tree.refresh_bound(
@@ -1765,7 +1770,7 @@ impl App {
                         crate::bound_dispatch::ControlContinuationArguments::Text(value.to_owned())
                     };
                     return Ok(self.open_ordinary_confirmation(
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(
                             target.clone(),
                         ),
                         target.address.address.clone(),
@@ -1776,7 +1781,7 @@ impl App {
                 let activated = self
                     .actions
                     .action_palette
-                    .as_mut()
+                    .as_deref_mut()
                     .is_some_and(|palette| palette.activate_bound(target));
                 self.capture_ordinary_palette_request();
                 Ok(activated)
@@ -1875,14 +1880,18 @@ impl App {
                         self.bindings.clear();
                         self.layout.node_map.clear();
                         self.focused_node = None;
-                        let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
-                            palette.perform_semantic_action(
-                                &semantic_target,
-                                &verb,
-                                &mut crate::widget::Edits::lend(&mut self.state.doc),
-                                &self.state.root,
-                            )
-                        });
+                        let handled =
+                            self.actions
+                                .action_palette
+                                .as_deref_mut()
+                                .is_some_and(|palette| {
+                                    palette.perform_semantic_action(
+                                        &semantic_target,
+                                        &verb,
+                                        &mut crate::widget::Edits::lend(&mut self.state.doc),
+                                        &self.state.root,
+                                    )
+                                });
                         self.finish_action_palette_input(handled);
                         return Ok(handled);
                     }

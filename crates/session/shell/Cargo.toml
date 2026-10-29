@@ -9,9 +9,6 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-# Explicit native RAM custody qualification: requires a qualified tmpfs backing
-# or permission to create a noswap fixture in a private mount namespace.
-signal-profile-native-test = []
 # Provisioning against the current Linux account requires a disposable root fixture.
 native-current-device-qualification = []
 # Wall-clock idle qualification belongs to the scheduled performance lane.
@@ -52,14 +49,12 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 # Draw the packaged first-party apps (Terminal, Files, Notes, Editor, Word,
-# Browser, Messages, Passwords, Activity) inside this process, from their
+# Browser, Activity) inside this process, from their
 # crates: what the macOS runner, the `shots` captures and the tests that
 # drive those apps through the shell need. The Wayland session runs them as
 # their own processes, so its compositor is built without them.
 in-process-apps = [
     "dep:terminal",
-    "dep:messages",
-    "dep:passwords",
     "dep:browser",
     "dep:notes",
     "dep:activity",
@@ -127,6 +122,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] 
 bounded-command = { path = "../../system/bounded-command" }
 # The wire format of the network-answers helper search runs (exchange rates).
 tilo-net-answers = { path = "../../system/net-answers", default-features = false }
+# The line format of the session audio helper it starts (src/shell/audio_service.rs).
+tilo-audio-service = { path = "../audio-service", default-features = false }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
 tempfile.workspace = true
@@ -145,7 +142,6 @@ tilo-control = { path = "../control-cli" }
 emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
 # written to settings.
-tilo-secret-vault = { path = "../../system/secret-vault" }
 # The speech backend the toolkit screen reader uses, for narrating chrome.
 tilo-tts = { path = "../../system/tts" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
@@ -224,13 +220,17 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
+# Search: the launcher the shell hosts as its search surface, always: it is
+# the shell's own surface, not a user app.
+launcher-app = { path = "../../../apps/launcher" }
 terminal = { path = "../../../apps/terminal", optional = true }
-messages = { path = "../../../apps/messages", optional = true }
-passwords = { path = "../../../apps/passwords", optional = true }
+messages = { path = "../../../apps/messages" }
+passwords = { path = "../../../apps/passwords" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 accounts = { path = "../../system/accounts" }
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
-tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"] }
+# The messaging service's door and the client Messages shown here uses.
+tilo-messaging-service = { path = "../messaging-service", default-features = false }
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser", optional = true }
 notes = { path = "../../../apps/notes", optional = true }
@@ -333,6 +333,8 @@ tilo-network-actor = { path = "../network-actor" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }
+# The sheets over the desktop (the power menu), as apps this process mounts.
+tilo-sheets = { path = "../sheets" }
 # The share session, encoders, viewer registry and counters of a window
 # shared with the workspace's other devices.
 tilo-window-share = { path = "../window-share" }
@@ -501,7 +503,8 @@ p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+# `mpris`: the now-playing tests publish a player the way an app does.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support", "mpris"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # The NTFS mount service's socket loop, served by a stand-in backend, for

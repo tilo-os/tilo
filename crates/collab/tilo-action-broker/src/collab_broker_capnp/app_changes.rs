@@ -34,7 +34,7 @@ impl super::CapnpChannelHandle {
         params: &super::channel_handle::ApplicationsChangedParams,
         results: super::channel_handle::ApplicationsChangedResults,
     ) -> capnp::capability::Promise<(), capnp::Error> {
-        let route = super::CrdtRoute::from_channel_key(&self.channel_id);
+        let route = self.route();
         if let Err(error) = self
             .state
             .revalidate_admission(&route, &self.verified_identity)

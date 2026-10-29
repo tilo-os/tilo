@@ -22,6 +22,14 @@ name = "tilo-prepared-setup"
 path = "src/bin/tilo-prepared-setup.rs"
 required-features = ["installation"]
 
+# The destination side of the guided setup: the installer on the live medium
+# (`/usr/libexec/tilo/tilo-installer`, the `installer` component in
+# os/components.toml).
+[[bin]]
+name = "tilo-installer"
+path = "src/bin/tilo-installer.rs"
+required-features = ["destination"]
+
 [[bin]]
 name = "tilo-home-export"
 path = "src/bin/tilo-home-export.rs"
@@ -48,6 +56,11 @@ installation = ["dep:launcher", "imager-backend/installation"]
 # without it (`tilo-app dev`) links them statically, because an engine library
 # links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-fuse-engine/thin"]
+# The destination side of the guided setup, on the live installer medium:
+# keyboard, network, disk, account and the install itself, consuming the
+# profile and staged handoff the host side produced. It does not need the
+# host side (`installation`). Linux only, like the live medium it runs on.
+destination = ["imager-backend/destination", "dep:url"]
 capture-worker = ["installation", "imager-backend/capture-worker"]
 # Explicit new signed cohort; default capture-worker preserves shipped Home5.
 capture-worker-applications = ["capture-worker", "imager-backend/capture-worker-applications"]
@@ -115,6 +128,10 @@ bounded-command = { path = "../../crates/system/bounded-command" }
 workspace-hack = { version = "0.1" }
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
+# The destination side (`destination`): checks a self-hosted account server's
+# address.
+url = { workspace = true, optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
@@ -149,11 +166,19 @@ path = "tests/prepared_setup_cli.rs"
 required-features = ["installation"]
 
 [[test]]
+name = "destination_headless_wizard"
+path = "tests/destination_headless_wizard.rs"
+required-features = ["destination"]
+
+[[test]]
 name = "profile_transport"
 path = "tests/profile_transport.rs"
-required-features = ["installation"]
+required-features = ["installation", "destination"]
 
 [dev-dependencies]
+# The destination's capacity test asks the same compiled rule that
+# `tilo-guided-partition` delegates to.
+tilo-install-helpers = { path = "../../crates/system/install-helpers" }
 accounts = { path = "../../crates/system/accounts" }
 account-custody = { path = "../../crates/system/account-custody" }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

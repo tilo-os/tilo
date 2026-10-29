@@ -270,7 +270,7 @@ impl FolderReads {
     }
 }
 
-impl super::FileExplorerWidget {
+impl super::FilesState {
     /// The job that reads `path` the way this window lists it.
     pub(super) fn folder_job(&self, path: PathBuf, entries_only: bool) -> Job {
         let source = if crate::recent::is_location(&path) {

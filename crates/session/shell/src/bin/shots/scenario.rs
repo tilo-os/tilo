@@ -32,6 +32,7 @@ use super::driver::ShellDriver;
 
 #[cfg(feature = "test-support")]
 mod catch_up;
+mod desk_gestures;
 mod file_chooser;
 pub mod film;
 mod keyboard;
@@ -1655,7 +1656,6 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
     if let Action::AddHostedTab { app, title } = action {
         let app = *app;
         let title = *title;
-        let mut added = None;
         driver.with_chrome(|st: &mut ChromeState| {
             let mut tree = st.tree_mut();
             // One past the highest tab id anywhere in the tree.
@@ -1697,14 +1697,9 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
                 app_title: None,
             });
             group.active_tab = id;
-            added = Some(id);
             drop(tree);
             st.bump();
         });
-        // Opening the tab makes its document, as the open-app action does.
-        if let Some(added) = added {
-            driver.open_tab_records(&[added]);
-        }
     }
 }
 
@@ -1715,7 +1710,6 @@ fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
         Action::OpenHostedWindow { app, title } => {
             let kind = app_kind_for(app);
             let title = *title;
-            let mut opened = None;
             driver.with_chrome(|st: &mut ChromeState| {
                 // Where the window goes is decided now, against the
                 // layout on screen — the same rule a launch applies. A
@@ -1730,17 +1724,12 @@ fn apply_hosted_window(driver: &mut ShellDriver, action: &Action) {
                         st.strip_viewport(),
                     )
                 };
-                let tab = {
+                {
                     let mut tree = st.tree_mut();
-                    shell::shell::tab_binding::open_hosted_app(&mut tree, kind, title, placement)
-                };
+                    shell::shell::tab_binding::open_hosted_app(&mut tree, kind, title, placement);
+                }
                 st.bump();
-                opened = Some(tab);
             });
-            // The window's document, made by its opening as in a session.
-            if let Some(tab) = opened {
-                driver.open_tab_records(&[tab]);
-            }
         }
         Action::EnableNativeAppSearch => {
             match shell::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
@@ -2368,7 +2357,8 @@ const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 /// landed. A typo therefore shows up as a visibly empty tray in the
 /// capture rather than as a silently wrong one.
 fn status_preset(name: &str) -> tilo_quick_settings::SystemStatus {
-    use os_actions::{LinkKind, LinkStatus, VolumeState};
+    use media::audio::default_node::VolumeState;
+    use os_actions::{LinkKind, LinkStatus};
     use tilo_power_mgmt::{BatterySnapshot, BatteryState};
     use tilo_quick_settings::SystemStatus;
 
@@ -2461,8 +2451,8 @@ fn osd_preset(name: &str) -> shell::shell::osd::Osd {
 }
 
 /// The desk widgets through a working minute: at rest, typing, a pause, a
-/// pass along the edge and a reach for it, the caret near a widget, and
-/// the Super surface tapped, typed into and held. A pause is three real
+/// pass along the edge and a reach for it, and the Super surface tapped,
+/// typed into and held. A pause is three real
 /// seconds of frames.
 fn desk_widgets_scenario() -> Scenario {
     use shell::shell::desk_widgets::GLANCE_AFTER_PAUSE;
@@ -2481,7 +2471,7 @@ fn desk_widgets_scenario() -> Scenario {
         .collect();
     Scenario {
         name: "desk_widgets",
-        description: "Desk widgets: glance at rest, away while typing, back after a pause, transit vs reach at the edge, the caret rule, and the Super surface tapped and held.",
+        description: "Desk widgets: glance at rest, away while typing, back after a pause, transit vs reach at the edge, and the Super surface tapped and held.",
         actions: vec![
             Action::SeedDesk,
             Action::MoveCursor(Point::new(700.0, 420.0)),
@@ -2512,11 +2502,6 @@ fn desk_widgets_scenario() -> Scenario {
             },
             Action::MoveCursor(Point::new(700.0, 420.0)),
             Action::Wait(pause_frames),
-            Action::SetTextCaret(Some(vello::kurbo::Rect::new(1440.0, 846.0, 1442.0, 866.0))),
-            Action::Wait(16),
-            Action::Snapshot("06-caret-near-music-keeps-it-away"),
-            Action::SetTextCaret(None),
-            Action::Wait(16),
             Action::Super(SuperGesture::Tap),
             Action::SnapshotSequence {
                 prefix: "07-super-tap",
@@ -4276,10 +4261,14 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "display_identify",
-            description: "Settings' Identify: every display shows a large card \
-             with its number in the accent and its name, as its canvas tile in \
-             Settings does. Run with `--outputs docked-laptop`.",
+            description: "Settings' Identify: every display shows a small card \
+             in a corner with its number in the accent and its short name, as \
+             its canvas tile in Settings does, in the corner the focused \
+             window covers least. Run with `--outputs docked-laptop`.",
             actions: vec![
+                // The window the person asked from holds the focus, as
+                // Settings does when its Identify is pressed.
+                Action::ClickAt(Point::new(900.0, 500.0)),
                 Action::Wait(2),
                 Action::IdentifyDisplays,
                 Action::Wait(12),

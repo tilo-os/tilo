@@ -514,7 +514,7 @@ doc = false
 "igd-next-0_17_1" = { package = "igd-next", version = "^0.17.1", default-features = false, features = ["aio_tokio", "bytes", "default", "futures", "http", "http-body-util", "hyper", "hyper-util", "tokio"] }
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
-"imager" = { path = "../../../apps/imager", default-features = false, features = ["installation"] }
+"imager" = { path = "../../../apps/imager", default-features = false, features = ["destination", "installation"] }
 "imager-backend" = { path = "../../../crates/platform/imager-backend", default-features = false, features = ["installation", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
@@ -531,7 +531,6 @@ doc = false
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
-"installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -1113,6 +1112,7 @@ doc = false
 "tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-archive" = { path = "../../../crates/platform/tilo-archive", default-features = false, features = [] }
 "tilo-ask-password" = { path = "../../../crates/system/ask-password", default-features = false, features = [] }
+"tilo-audio-service" = { path = "../../../crates/session/audio-service", default-features = false, features = ["default", "service"] }
 "tilo-auth" = { path = "../../../crates/system/tilo-auth", default-features = false, features = ["default", "service"] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
@@ -1206,8 +1206,9 @@ doc = false
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-lockdown-policy" = { path = "../../../crates/session/tilo-lockdown-policy", default-features = false, features = [] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
-"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["room"] }
+"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["room", "service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
+"tilo-messaging-service" = { path = "../../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
@@ -1271,6 +1272,7 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
+"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }
@@ -1412,6 +1414,7 @@ doc = false
 "urlencoding-2_1_3" = { package = "urlencoding", version = "^2.1.3", default-features = false, features = [] }
 "ush" = { path = "../../../crates/runtime/ush", default-features = false, features = [] }
 "ush-shell" = { path = "../../../crates/runtime/ush-shell", default-features = false, features = [] }
+"ush-tilo" = { path = "../../../crates/runtime/ush-tilo", default-features = false, features = [] }
 "usvg-0_47_0" = { package = "usvg", version = "^0.47.0", default-features = false, features = ["default", "fontdb", "memmap-fonts", "rustybuzz", "system-fonts", "text", "ttf-parser", "unicode-bidi", "unicode-script", "unicode-vo"] }
 "utf-8-0_7_6" = { package = "utf-8", version = "^0.7.6", default-features = false, features = [] }
 "utf16_iter-1_0_5" = { package = "utf16_iter", version = "^1.0.5", default-features = false, features = [] }
@@ -2931,7 +2934,7 @@ doc = false
 "igd-next-0_17_1" = { package = "igd-next", version = "^0.17.1", default-features = false, features = ["aio_tokio", "bytes", "default", "futures", "http", "http-body-util", "hyper", "hyper-util", "tokio"] }
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
-"imager" = { path = "../../../apps/imager", default-features = false, features = ["installation"] }
+"imager" = { path = "../../../apps/imager", default-features = false, features = ["destination", "installation"] }
 "imager-backend" = { path = "../../../crates/platform/imager-backend", default-features = false, features = ["installation", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
@@ -2946,7 +2949,6 @@ doc = false
 "input-sys-1_18_0" = { package = "input-sys", version = "^1.18.0", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
-"installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -3513,6 +3515,7 @@ doc = false
 "tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-archive" = { path = "../../../crates/platform/tilo-archive", default-features = false, features = [] }
 "tilo-ask-password" = { path = "../../../crates/system/ask-password", default-features = false, features = [] }
+"tilo-audio-service" = { path = "../../../crates/session/audio-service", default-features = false, features = ["default", "service"] }
 "tilo-auth" = { path = "../../../crates/system/tilo-auth", default-features = false, features = ["default", "service"] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
@@ -3603,8 +3606,9 @@ doc = false
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-lockdown-policy" = { path = "../../../crates/session/tilo-lockdown-policy", default-features = false, features = [] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
-"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = [] }
+"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
+"tilo-messaging-service" = { path = "../../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
@@ -3665,6 +3669,7 @@ doc = false
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
+"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }

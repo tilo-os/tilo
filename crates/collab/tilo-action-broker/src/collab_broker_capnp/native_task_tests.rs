@@ -302,7 +302,6 @@ impl Fixture {
             .owner
             .commit_workspace_membership_command(
                 membership,
-                &native.certificate,
                 &native.key,
                 std::time::SystemTime::now(),
             )
@@ -400,7 +399,6 @@ impl Fixture {
             .owner
             .commit_workspace_membership_command(
                 removal,
-                &self.native.certificate,
                 &self.native.key,
                 std::time::SystemTime::now(),
             )
@@ -481,6 +479,7 @@ impl Fixture {
             .unwrap();
         }
         capnp_rpc::new_client(CapnpChannelHandle {
+            as_app: None,
             person_chat_views: std::cell::RefCell::default(),
             committed_read: Rc::new(std::cell::RefCell::new(committed_document::Slot::default())),
             state: self.state.clone(),

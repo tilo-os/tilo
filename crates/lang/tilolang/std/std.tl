@@ -185,20 +185,9 @@ view document<R>(of: R, content: View) {
                 page {
                     stack(gap: .section) {
                         content
-                        std.edited(of)
                     }
                 }
             }
-        }
-    }
-}
-
-/// When `of` was last changed and by whom, from its history: what a document says at its foot.
-view edited<R>(of: R) {
-    if let u = updated(of) {
-        ui.PropertyList {
-            ui.Property(phrase("tilolang-edited"), u.at)
-            ui.Property(phrase("tilolang-edited-by"), u.who.name())
         }
     }
 }
@@ -281,5 +270,26 @@ view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
                 }
             }
         }
+    }
+}
+
+/// A message quoted where another answers it: who wrote it and the start of what it says;
+/// activating it opens it.
+view quote<T>(of: T) {
+    ui.Quote(meta(of).title, author: created(of)?.who)
+}
+
+/// Over a composer while it answers `to`: the message being answered, quoted, and a close
+/// button that runs `cancel` (stop replying).
+view reply_banner<T>(to: T, cancel: Action) {
+    ui.Quote(meta(to).title, author: created(to)?.who, caption: phrase("tilolang-replying-to")) {
+        on dismiss: cancel
+    }
+}
+
+/// Under a message that started a thread: how many replies it has, opening the thread.
+view thread_chip<T>(thread: T, count: Int) {
+    ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {
+        on press: open(thread)
     }
 }

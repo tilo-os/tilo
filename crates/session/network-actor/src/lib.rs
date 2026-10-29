@@ -11,11 +11,11 @@ pub mod behaviour;
 pub mod fabric;
 pub mod governor_lane;
 pub mod held_log;
+pub mod host_ask;
 pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
 mod opened_records;
-pub mod own_device_host;
 pub mod private_messages;
 pub mod room_sync;
 pub mod services;
@@ -78,7 +78,7 @@ use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use neighbour_wire::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
+use neighbour_wire::{NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_lock::MutexRecover as _;
@@ -429,9 +429,9 @@ pub enum NetCmd {
     },
     NativeMedia(services::ServiceCommand),
     NativeEnrollment(services::ServiceCommand),
-    /// Invoke what a relay answers itself (a room's governance, a member's
-    /// own business in it, or the host's own operations) on a relay session,
-    /// and answer the relay's receipt.
+    /// Invoke what a relay answers itself (a room's governance, or a
+    /// member's own business in it) on a room's relay session, and answer
+    /// the relay's receipt.
     RoomGovernance(Box<room_governance::Request>),
     /// Tell `ended` once workspace `ws` has no session with a host left: at
     /// once when it has none now. What waits on a room's host lasts as long
@@ -440,9 +440,9 @@ pub enum NetCmd {
         ws: u64,
         ended: tokio::sync::oneshot::Sender<()>,
     },
-    /// Ask another of the person's devices for one of its host's own
-    /// operations, on a session opened for it.
-    OwnDeviceHost(Box<own_device_host::Request>),
+    /// Ask a host of the person for one of its own operations, directly,
+    /// on a session opened for it.
+    AskHost(Box<host_ask::Request>),
     /// Take part in workspace `ws`: its events reach `on_event`, and its
     /// workspace hosts are dialled. A room's traffic travels over its host
     /// sessions alone.
@@ -1208,7 +1208,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
         NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
-        NetCmd::OwnDeviceHost(_) => "asking one of the person's devices",
+        NetCmd::AskHost(_) => "asking one of the person's hosts",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1840,7 +1840,7 @@ impl ActorState {
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
-            Some(NetCmd::OwnDeviceHost(request)) => self.ask_own_device_host(*request),
+            Some(NetCmd::AskHost(request)) => self.ask_host(*request),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
             }
@@ -2939,9 +2939,8 @@ impl ActorState {
         }
     }
 
-    /// Send `request` to whoever it is addressed to ([`room_governance`]): a
-    /// room's relay device on any session of the room, or a host on its own
-    /// session of the workspace once that session is subscribed.
+    /// Send `request` to the room's relay device it is addressed to
+    /// ([`room_governance`]), on any session of the room.
     fn send_room_governance(&mut self, request: room_governance::Request) {
         let (ws, to) = (request.ws, request.to);
         room_governance::trace::note(|| {
@@ -2960,49 +2959,30 @@ impl ActorState {
                     .collect::<Vec<_>>()
             )
         });
-        match to {
-            room_governance::Addressee::Device(host) => {
-                // Its answer comes on a session of its workspace: with none
-                // up it waits for one being established, and with none of
-                // those there is nothing to wait for.
-                match self.sessions_of(ws) {
-                    room_governance::Sessions::Open => {}
-                    room_governance::Sessions::Connecting => {
-                        self.room_governance.hold_for_session(request);
-                        return;
-                    }
-                    room_governance::Sessions::Closed => {
-                        let _ = request.reply.send(Err(
-                            "this device holds no session with the room's host".into(),
-                        ));
-                        return;
-                    }
-                }
-                if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
-                    self.publish_to_host_sessions(ws, host, &frame);
-                }
+        // Its answer comes on a session of its workspace: with none up it
+        // waits for one being established, and with none of those there is
+        // nothing to wait for.
+        match self.sessions_of(ws) {
+            room_governance::Sessions::Open => {}
+            room_governance::Sessions::Connecting => {
+                self.room_governance.hold_for_session(request);
+                return;
             }
-            room_governance::Addressee::Host(endpoint) => {
-                let subscribed = self
-                    .host_sessions
-                    .get(&(ws, endpoint))
-                    .is_some_and(|runtime| {
-                        !runtime.replaying.load(std::sync::atomic::Ordering::Acquire)
-                    });
-                if subscribed {
-                    self.send_to_host(request, endpoint);
-                } else {
-                    // Its session is dialled with every topic this device
-                    // joined; the request goes once it is subscribed.
-                    self.room_governance.hold(request, Instant::now());
-                }
+            room_governance::Sessions::Closed => {
+                let _ = request.reply.send(Err(
+                    "this device holds no session with the room's host".into(),
+                ));
+                return;
             }
+        }
+        if let Some(frame) = self.room_governance.send(request, to, Instant::now()) {
+            self.publish_to_host_sessions(ws, to, &frame);
         }
     }
 
     /// The host at `peer` subscribed this device to `ws`: refresh what its
-    /// native session holds and send the requests that waited for it.
-    fn host_ready(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+    /// native session holds.
+    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
         // The room's own host caught this device up: the room holds what it
         // holds. Another host on the topic (a personal relay, a peer) says
         // nothing about the room's host.
@@ -3026,36 +3006,7 @@ impl ActorState {
             queue.push(native_ingress::ChannelTraffic::Replayed(ws));
         }
         self.request_native_refresh(ws);
-        for request in self.room_governance.ready_for(ws, peer) {
-            self.send_to_host(request, peer);
-        }
         NetEvent::HostReady { ws, peer }
-    }
-
-    /// Send `request` on the session of its workspace with the host at
-    /// `endpoint`, to the device that session's handshake authenticated.
-    fn send_to_host(&mut self, request: room_governance::Request, endpoint: EndpointId) {
-        let Some(session) = self
-            .host_sessions
-            .get(&(request.ws, endpoint))
-            .map(|runtime| Arc::clone(&runtime.session))
-        else {
-            let _ = request.reply.send(Err("the host's session closed".into()));
-            return;
-        };
-        let device = session.relay_device_public_key();
-        let Ok(host) = EndpointId::from_bytes(&device) else {
-            let _ = request
-                .reply
-                .send(Err("the host named an invalid device".into()));
-            return;
-        };
-        if let Some(frame) = self.room_governance.send(request, host, Instant::now())
-            && let Err(error) = session.publish_remote_action(device, frame)
-        {
-            // Its caller hears nothing and gives up in its own time.
-            tracing::warn!(%error, host = %endpoint, "a request to a host was not sent");
-        }
     }
 
     /// Send `frame`, addressed to the room host whose device is `host`, on a
@@ -4411,11 +4362,7 @@ impl ActorState {
                     })
                 })
             }
-            NetCmd::RoomGovernance(request) => matches!(
-                request.to,
-                room_governance::Addressee::Device(host) | room_governance::Addressee::Host(host)
-                    if host == own
-            ),
+            NetCmd::RoomGovernance(request) => request.to == own,
             NetCmd::GovernorAction { ws, .. } => self.native_routes.is_local(*ws),
             _ => false,
         }
@@ -5376,16 +5323,6 @@ fn publish(
     broadcast_gossip: bool,
     publish_hosts: bool,
 ) {
-    if let NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. } = &msg
-        && snapshot.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES
-    {
-        tracing::warn!(
-            ws,
-            bytes = snapshot.len(),
-            "personal continuity checkpoint exceeds transport limit"
-        );
-        return;
-    }
     let retention = retention(msg, shell_checkpoint);
     // Live traffic (pointers, carets, presence) is for whoever hears it now:
     // in a room with no session up there is no one, and nothing keeps it.
@@ -5481,7 +5418,6 @@ fn remember_governance(
         NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. }
     ) {
         return;
     }

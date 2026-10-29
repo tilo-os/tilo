@@ -15,9 +15,11 @@
 //! - the host's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
 //!   creating, listing and entering rooms and letting an app author one,
 //!   which only devices of the relay's own person may, decided as
-//!   [`Rooms::authorize`] decides every [`RoomOp::Host`]. They are asked on any workspace the device holds on
-//!   the relay (its person's continuity workspace, before it holds a room),
-//!   and need the device's certificate as the relay's handshake verified it,
+//!   [`Rooms::authorize`] decides every [`RoomOp::Host`]. They are asked of
+//!   the host itself over the device's session with it, naming no workspace
+//!   (`Envelope::HostAction`, [`AppServingPlane::serve_host`]), or on a room
+//!   the device holds there, and need the device's certificate as the
+//!   relay's handshake verified it,
 //!   which entering admits to the room. Creating a room may issue its first
 //!   invitation and entering answers the invitation the device redeems, so
 //!   a desktop shares a workspace without any governance before it holds
@@ -68,12 +70,11 @@ use tokio::sync::Mutex as AsyncMutex;
 
 mod host;
 mod member;
-mod owner;
 
 use super::authority::RoomOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
-    RemoveMemberRequest, Rooms, SetMemberRoleRequest,
+    RemoveMemberRequest, Rooms,
 };
 use crate::app_serving::AppServingPlane;
 use tilo_lock::MutexRecover as _;
@@ -105,10 +106,6 @@ pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
 pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
 /// Hand the room's host a piece of an app version's package file.
 pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
-/// Adding an agent to the room, with its preset's grants.
-pub(crate) const ADD_AGENT: &str = "add-agent";
-/// Removing an agent from the room, and every grant it held there.
-pub(crate) const REMOVE_AGENT: &str = "remove-agent";
 /// Giving the host a secret a requested bot's connector needs (a Discord
 /// bot token): kept in the host's secret store for that connector, never in
 /// the room's governance, a record or a log.
@@ -123,19 +120,14 @@ const DOOR_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
-/// How long a restriction lasts when the caller does not say.
-const DEFAULT_RESTRICTION_MINUTES: u64 = 60;
 const HOUR_NS: u64 = 3_600 * 1_000_000_000;
 const SECOND_NS: u64 = 1_000_000_000;
-const MINUTE_MS: u64 = 60 * 1_000;
 
 /// Derives each invocation's idempotency key, so a retry of one invocation
 /// is the same request to the room's request records.
 const REQUEST_ID_CONTEXT: &str = "tilo-relay room governance action request v1";
 
 const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "moderator"];
-/// The presets an agent added to a room holds.
-const AGENT_PRESETS: [&str; 4] = ["observer", "contributor", "operator", "custom"];
 const CALL_OPERATIONS: [&str; 4] = ["start", "restart", "set-directions", "set-denial"];
 /// The call operation that is destructive, and so not served yet.
 const END_CALL: &str = "end";
@@ -152,7 +144,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 22] = [
+const VERBS: [Verb; 17] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -194,41 +186,6 @@ const VERBS: [Verb; 22] = [
         gate: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: join_request_params,
-    },
-    Verb {
-        id: governance::SET_ROLE,
-        label: "Set role",
-        gate: governance::SET_ROLE,
-        kind: roles::GOVERNANCE_KIND,
-        params: set_role_params,
-    },
-    Verb {
-        id: ADD_AGENT,
-        label: "Add agent",
-        gate: governance::GRANT,
-        kind: roles::GOVERNANCE_KIND,
-        params: add_agent_params,
-    },
-    Verb {
-        id: REMOVE_AGENT,
-        label: "Remove agent",
-        gate: governance::REVOKE,
-        kind: roles::GOVERNANCE_KIND,
-        params: agent_params,
-    },
-    Verb {
-        id: governance::RESTRICT,
-        label: "Restrict",
-        gate: governance::RESTRICT,
-        kind: roles::GOVERNANCE_KIND,
-        params: restrict_params,
-    },
-    Verb {
-        id: governance::UNRESTRICT,
-        label: "Lift restriction",
-        gate: governance::UNRESTRICT,
-        kind: roles::GOVERNANCE_KIND,
-        params: person_params,
     },
     Verb {
         id: governance::UNBAN,
@@ -337,10 +294,6 @@ fn person_param() -> ActionParam {
     )
 }
 
-fn role_param() -> ActionParam {
-    ActionParam::required("role", ParamType::Text, "The role.").with_choices(ROLES)
-}
-
 fn invite_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
@@ -393,43 +346,8 @@ fn join_request_params() -> Vec<ActionParam> {
     )]
 }
 
-fn set_role_params() -> Vec<ActionParam> {
-    vec![person_param(), role_param()]
-}
-
-fn add_agent_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "agent",
-            ParamType::Text,
-            "The agent's stable id, as the room's agents name it.",
-        ),
-        ActionParam::required("preset", ParamType::Text, "What the agent may do here.")
-            .with_choices(AGENT_PRESETS),
-    ]
-}
-
-fn agent_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "agent",
-        ParamType::Text,
-        "The agent's stable id, as the room's agents name it.",
-    )]
-}
-
 fn person_params() -> Vec<ActionParam> {
     vec![person_param()]
-}
-
-fn restrict_params() -> Vec<ActionParam> {
-    vec![
-        person_param(),
-        ActionParam::optional(
-            "minutes",
-            ParamType::Integer,
-            "How long they may change nothing; 60 minutes when omitted. They keep reading.",
-        ),
-    ]
 }
 
 fn bot_entry_param() -> ActionParam {
@@ -996,12 +914,13 @@ impl Rooms {
     }
 
     /// What `caller`, on the device `certificate` when the transport named
-    /// it, may do here about workspace `workspace_id`: the governance of
-    /// the room it carries, their own business in that room, and the host's
-    /// operations when they are its person's.
+    /// it, may do here about workspace `workspace_id` (`None` when asked of
+    /// the host itself): the governance of the room it carries, their own
+    /// business in that room, and the host's operations when they are its
+    /// person's.
     async fn catalogue(
         &self,
-        workspace_id: u64,
+        workspace_id: Option<u64>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         query: &CatalogueQuery,
@@ -1014,6 +933,7 @@ impl Rooms {
         };
         let mut offer = Offer::default();
         if (wants(ROOM_GOVERNANCE_PROVIDER) || wants(MEMBER_ACTIONS_PROVIDER))
+            && let Some(workspace_id) = workspace_id
             && let Some((governed, device)) = self.governed_by(workspace_id, caller).await
         {
             let room = governed.lock().await;
@@ -1023,7 +943,7 @@ impl Rooms {
                 let resource = room_governance_resource(room.room());
                 let owner = device.user_public_key == self.inner.host.cert.user_public_key;
                 let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
-                let mut rows: Vec<CatalogueRow> = VERBS
+                let rows: Vec<CatalogueRow> = VERBS
                     .iter()
                     .chain(confirmed)
                     .filter(|verb| {
@@ -1031,7 +951,6 @@ impl Rooms {
                     })
                     .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
                     .collect();
-                rows.extend(self.owner_rows(&room, &device, &resource, now));
                 offer.add(GOVERNANCE, room.room(), rows);
             }
             if wants(MEMBER_ACTIONS_PROVIDER) {
@@ -1047,21 +966,24 @@ impl Rooms {
     }
 
     /// Run `request` from `caller`, on the device `certificate` when the
-    /// transport named it, by the provider it names.
+    /// transport named it, by the provider it names: a room's on the
+    /// workspace carrying it, the host's own on any workspace or asked of
+    /// the host itself (`None`).
     async fn invoke(
         &self,
-        workspace_id: u64,
+        workspace_id: Option<u64>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
-        match request.target.provider.as_str() {
-            ROOM_GOVERNANCE_PROVIDER if owner::serves(&request.target.address.action) => {
-                self.owner_invoke(workspace_id, caller, request).await
+        match (request.target.provider.as_str(), workspace_id) {
+            (ROOM_GOVERNANCE_PROVIDER, Some(workspace_id)) => {
+                self.governance_invoke(workspace_id, caller, request).await
             }
-            ROOM_GOVERNANCE_PROVIDER => self.governance_invoke(workspace_id, caller, request).await,
-            MEMBER_ACTIONS_PROVIDER => self.member_invoke(workspace_id, caller, request).await,
-            HOST_ACTIONS_PROVIDER => {
+            (MEMBER_ACTIONS_PROVIDER, Some(workspace_id)) => {
+                self.member_invoke(workspace_id, caller, request).await
+            }
+            (HOST_ACTIONS_PROVIDER, _) => {
                 // Unknown and forbidden are the same answer.
                 let certificate = certificate
                     .filter(|certificate| {
@@ -1383,7 +1305,7 @@ impl Rooms {
         }
     }
 
-    /// Who holds which role, and the room's calls.
+    /// Removing, banning and unbanning members, and the room's calls.
     async fn governance_members(
         &self,
         action: &str,
@@ -1404,34 +1326,6 @@ impl Rooms {
                 .map_err(|error| refused(&error))
         };
         match action {
-            governance::SET_ROLE => {
-                let request = SetMemberRoleRequest {
-                    request_id,
-                    user_public_key: args.required_key("person")?,
-                    role: args.role()?,
-                };
-                generation(self.set_member_role(room, device, request).await)
-            }
-            ADD_AGENT | REMOVE_AGENT => {
-                let command = membership_command(action, args)?;
-                generation(
-                    self.govern_room_membership(room, device, request_id, command)
-                        .await,
-                )
-            }
-            governance::RESTRICT => {
-                let minutes = args
-                    .integer("minutes")?
-                    .unwrap_or(DEFAULT_RESTRICTION_MINUTES);
-                let until_ms =
-                    tilo_clock::unix_now_ms().saturating_add(minutes.saturating_mul(MINUTE_MS));
-                let person = member(args.required_key("person")?);
-                generation(self.restrict_member(room, device, person, until_ms).await)
-            }
-            governance::UNRESTRICT => {
-                let person = member(args.required_key("person")?);
-                generation(self.unrestrict_member(room, device, person).await)
-            }
             governance::UNBAN => {
                 let person = member(args.required_key("person")?);
                 generation(self.unban_member(room, device, person).await)
@@ -1460,25 +1354,6 @@ impl Rooms {
             _ => Err(ActionHostError::UnknownAction),
         }
     }
-}
-
-/// The membership command governance `action` carries with `args`.
-fn membership_command(
-    action: &str,
-    args: &Args,
-) -> Result<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand, ActionHostError> {
-    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-    Ok(match action {
-        ADD_AGENT => Command::AddAgent {
-            agent: args.required_text("agent")?.trim().to_lowercase(),
-            preset: tilo_action_policy::roles::AgentPreset::parse(args.required_text("preset")?)
-                .ok_or_else(|| invalid("no such agent preset"))?,
-        },
-        REMOVE_AGENT => Command::RemoveAgent {
-            agent: args.required_text("agent")?.trim().to_lowercase(),
-        },
-        other => return Err(invalid(format!("`{other}` is no membership command"))),
-    })
 }
 
 /// One governance invocation, as its room method takes it.
@@ -1523,8 +1398,7 @@ impl HostRoomActions {
     }
 
     /// This host for requests about workspace `workspace_id`, from a caller
-    /// whose device certificate the transport did not name: everything but
-    /// the host's own operations.
+    /// whose device certificate the transport did not name.
     #[must_use]
     pub(crate) fn in_workspace(
         &self,
@@ -1532,7 +1406,7 @@ impl HostRoomActions {
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
-            workspace_id,
+            workspace_id: Some(workspace_id),
             certificate: None,
         }
     }
@@ -1548,7 +1422,21 @@ impl HostRoomActions {
     ) -> impl ActionHost + Clone + Send + 'static {
         InWorkspace {
             host: self.clone(),
-            workspace_id,
+            workspace_id: Some(workspace_id),
+            certificate: Some(certificate.clone()),
+        }
+    }
+
+    /// This host for its own operations, asked of it directly by the device
+    /// whose certificate the relay's handshake verified as `certificate`.
+    #[must_use]
+    pub(crate) fn as_host(
+        &self,
+        certificate: &DeviceCert,
+    ) -> impl ActionHost + Clone + Send + 'static {
+        InWorkspace {
+            host: self.clone(),
+            workspace_id: None,
             certificate: Some(certificate.clone()),
         }
     }
@@ -1576,12 +1464,12 @@ impl HostRoomActions {
     }
 }
 
-/// [`HostRoomActions`] for the room one workspace carries, and for the
-/// host's own operations asked on it.
+/// [`HostRoomActions`] for the room one workspace carries, or (with no
+/// workspace) for the host's own operations asked of it directly.
 #[derive(Clone)]
 struct InWorkspace {
     host: HostRoomActions,
-    workspace_id: u64,
+    workspace_id: Option<u64>,
     /// The caller's device certificate, as the transport verified it.
     certificate: Option<DeviceCert>,
 }
@@ -1774,6 +1662,18 @@ impl AppServingPlane for GovernedPlane {
         self.apps
             .as_ref()?
             .serve_certified(workspace_id, caller, certificate, message)
+    }
+
+    fn serve_host(
+        &self,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        if !self.governs(caller, &message) {
+            return None;
+        }
+        tilo_actions::remote::serve(&self.governance.as_host(certificate), caller, message)
     }
 }
 

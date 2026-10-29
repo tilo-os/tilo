@@ -7,6 +7,9 @@
                                              payload, not by its package id
     signed-records.py store STORE OUT        move the store's records that name a
                                              package by its id from STORE to OUT
+    signed-records.py image STORE ID OUT     name image ID's tree by its payload and
+                                             copy it to OUT/tree, its record to
+                                             OUT/record
 
 A build that publishes nothing signs the runtime bundles and the app store with
 keys it generates and discards. Its signatures, and every name derived from
@@ -26,6 +29,13 @@ integrity::verify); a row's payload_root may name any tree in the store. Its
 tree is named here by the payload root hash its signed root commits to, so a
 tree holding the same files has the same name in every build. The image
 build runs `tilo-install verify` over the store afterwards.
+
+An environment image has no registry row: the store finds its tree at
+pkgs/<id>/. A dev image seals the env-runtime of its own tree with a key it
+mints, so that id is new in every build; its tree moves to trees/<payload
+root hash> and pkgs/<id> becomes a link to it, which the store follows like
+the directory it replaces, every file still checked against the signed
+collection when it is read.
 """
 
 from __future__ import annotations
@@ -111,6 +121,30 @@ def store(store: Path, out: Path) -> None:
     print(f"signed-records: {len(records)} records naming packages by id moved to {out}")
 
 
+def image(store: Path, package: str, out: Path) -> None:
+    meta = store / "pkgs" / f"{package}.pkg"
+    signed = (meta / "signed-root").read_bytes()
+    if len(signed) != SIGNED_ROOT_LEN:
+        raise SystemExit(f"signed-records: {meta}/signed-root is not a signed root")
+    link = store / "pkgs" / package
+    if link.is_symlink() or not link.is_dir():
+        raise SystemExit(f"signed-records: {link} is not an installed image tree")
+    tree = store / TREES / signed[PAYLOAD_HASH].hex()
+    tree.parent.mkdir(exist_ok=True)
+    os.rename(link, tree)
+    link.symlink_to(Path("..") / TREES / tree.name)
+    root = Path(store.anchor)
+    shutil.copytree(tree, out / "tree" / tree.relative_to(root), symlinks=True)
+    record = out / "record" / store.relative_to(root)
+    (record / "pkgs").mkdir(parents=True)
+    shutil.copytree(meta, record / "pkgs" / meta.name, symlinks=True)
+    shutil.copy2(link, record / "pkgs" / package, follow_symlinks=False)
+    publishers = store / "image-publishers"
+    if publishers.exists():
+        shutil.copy2(publishers, record / publishers.name)
+    print(f"signed-records: image {package} named by its payload in {tree}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 4 and argv[1] == "runtimes":
         runtimes(Path(argv[2]), Path(argv[3]))
@@ -118,8 +152,10 @@ def main(argv: list[str]) -> int:
         name_trees(Path(argv[2]))
     elif len(argv) == 4 and argv[1] == "store":
         store(Path(argv[2]), Path(argv[3]))
+    elif len(argv) == 5 and argv[1] == "image":
+        image(Path(argv[2]), argv[3], Path(argv[4]))
     else:
-        print("\n".join(__doc__.strip().splitlines()[2:8]), file=sys.stderr)
+        print("\n".join(__doc__.strip().splitlines()[2:11]), file=sys.stderr)
         return 2
     return 0
 

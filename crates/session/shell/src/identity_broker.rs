@@ -3,10 +3,10 @@
 use crate::shell::channel_encryption::ChannelKeyProvider;
 use crate::shell::state::{RoomId, Workspace, WorkspaceTreeHandle};
 use std::{io, path::PathBuf, sync::Arc};
-use tilo_identity_host::broker::WorkspaceMembership;
 pub use tilo_identity_host::broker::{
     IdentityBrokerHandle, LocalDeviceIdentity, trusted_current_device_public,
 };
+use tilo_identity_host::broker::{PersonRecordKinds, WorkspaceMembership};
 
 /// Start the identity broker at `path`, authorizing against `tree` and
 /// handing out route keys from `channels` once the collaboration broker
@@ -26,8 +26,24 @@ pub fn spawn(
         path,
         Arc::new(Membership(tree)),
         Arc::new(channels),
-        Arc::new(tilo_action_broker::SurfacePersonRecords),
+        Arc::new(InstalledApps),
     )
+}
+
+/// What the identity service knows of the apps it signs for: the person records their surfaces
+/// declare, and the ids each had before as the installed catalogue believes them.
+struct InstalledApps;
+
+impl PersonRecordKinds for InstalledApps {
+    fn person_record_kinds(&self, app_id: &str) -> Vec<String> {
+        tilo_action_broker::SurfacePersonRecords.person_record_kinds(app_id)
+    }
+
+    fn earlier_ids(&self, app_id: &str) -> Vec<String> {
+        crate::shell::launcher::installed_earlier_ids()
+            .of(app_id)
+            .to_vec()
+    }
 }
 
 struct Membership(WorkspaceTreeHandle);

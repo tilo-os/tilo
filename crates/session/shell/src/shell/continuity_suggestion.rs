@@ -1,31 +1,41 @@
 //! "Continue what you were doing on another device".
 //!
-//! Personal continuity already mirrors every tab a person's other devices
-//! have open into this desktop, and each device publishes which of those tabs
-//! it is focused on. This module turns that into one quiet offer: the tab the
-//! person most recently moved to on another of their certified devices, if
-//! this desktop has it and is not already showing it.
+//! Each of a person's devices notes, in its own part of each workspace's
+//! layout record, which window it is on
+//! ([`tilo_desktop_model::shared_record::continuation`]), and every other
+//! device of the person holds that record. This module turns those notes into
+//! one quiet offer: the window the person most recently moved to on another
+//! of their certified devices, if this desktop has it and is not already
+//! showing it.
 //!
 //! Nothing here moves focus. The offer is a value the top bar and the palette
 //! present; only an explicit accept focuses the tab.
 //!
-//! Recency needs wall time, which a Lamport stamp does not carry, so
+//! Recency needs wall time, which the record does not carry, so
 //! [`FocusRecency`] records the local monotonic instant at which each
-//! device's focus was first seen to change. Focus loaded from disk at start-up
-//! has no such instant and is never offered: it describes an earlier session,
-//! not what the person is doing now.
+//! device's focus was first seen to change. Focus already held when this
+//! device first looks has no such instant and is never offered: it describes
+//! an earlier session, not what the person is doing now.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use crate::shell::personal_continuity::{
-    AppInstanceId, ContinuityStamp, DeviceFocus, PersonalContinuity,
-};
+use crate::shell::continuation::AppInstanceId;
 use crate::shell::state::{GroupId, RoomId, StripId, TabId, WorkspaceId, WorkspaceTree};
 use tilo_network_actor::fabric::DeviceId;
 
 /// How long after another device moved to a tab this desktop offers it.
 pub const SUGGESTION_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// One device's focus as a workspace's layout record holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceFocus {
+    pub device: DeviceId,
+    pub room: RoomId,
+    pub app: AppInstanceId,
+    /// The window has since been closed: the record no longer holds it.
+    pub withdrawn: bool,
+}
 
 /// One device's current focus, as last observed here.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,38 +43,33 @@ pub struct FocusObservation {
     pub device: DeviceId,
     pub room: RoomId,
     pub app: AppInstanceId,
-    /// The snapshot stamp that carried this focus; orders concurrent offers.
-    pub stamp: ContinuityStamp,
-    /// When this focus was first seen here. `None` for focus restored from
-    /// disk, which is never fresh enough to offer.
+    /// When this focus was first seen here. `None` for focus already held
+    /// when this device first looked, which is never fresh enough to offer.
     pub observed_at: Option<Instant>,
     /// Changes exactly when this device's focus moves to a different tab, so
     /// a dismissal can last until the next move.
     pub revision: u64,
-    /// The focused app has since been closed (tombstoned) by some device.
+    /// The focused app has since been closed.
     pub withdrawn: bool,
 }
 
-/// Tracks when each device's focus last changed, fed from the merged
-/// personal-continuity checkpoint.
+/// Tracks when each device's focus last changed, fed from the layout
+/// records' focus notes.
 #[derive(Debug, Default)]
 pub struct FocusRecency {
     entries: BTreeMap<DeviceId, FocusObservation>,
     next_revision: u64,
+    /// Whether the focus already held at start was recorded (as stale).
+    seeded: bool,
 }
 
 impl FocusRecency {
-    /// Start from state that was already known (restored from disk). Every
-    /// focus seeded this way is recorded as stale.
-    pub fn seeded(continuity: &PersonalContinuity) -> Self {
-        let mut recency = Self::default();
-        recency.record(continuity, None);
-        recency
-    }
-
-    /// Fold in a newly merged checkpoint observed at `now`.
-    pub fn observe(&mut self, continuity: &PersonalContinuity, now: Instant) {
-        self.record(continuity, Some(now));
+    /// Fold in the focus the records hold at `now`. The first look records
+    /// every focus as stale: it was already there.
+    pub fn observe(&mut self, focus: &[DeviceFocus], now: Instant) {
+        let at = self.seeded.then_some(now);
+        self.seeded = true;
+        self.record(focus, at);
     }
 
     /// Forget everything, e.g. when app continuation is switched off.
@@ -76,39 +81,29 @@ impl FocusRecency {
         self.entries.values().cloned().collect()
     }
 
-    fn record(&mut self, continuity: &PersonalContinuity, at: Option<Instant>) {
+    fn record(&mut self, focus: &[DeviceFocus], at: Option<Instant>) {
         let mut focused = BTreeSet::new();
-        for (device, snapshot) in continuity.snapshots() {
-            let Some(DeviceFocus {
-                room,
-                app: Some(app),
-            }) = snapshot.focus
-            else {
+        for note in focus {
+            // A device's focus is in one workspace at a time; a stale note in
+            // another record does not replace the one it moved to.
+            if !focused.insert(note.device.clone()) {
                 continue;
-            };
-            focused.insert(device.clone());
-            let withdrawn = continuity.newest_app_state_in_room(room, app).is_none();
-            match self.entries.get_mut(device) {
-                Some(entry) if entry.room == room && entry.app == app => {
-                    // Same tab: a later snapshot (other topology changes)
-                    // must not make an old focus look fresh again.
-                    entry.withdrawn = withdrawn;
-                    if snapshot.stamp.is_newer_than(&entry.stamp) {
-                        entry.stamp = snapshot.stamp.clone();
-                    }
+            }
+            match self.entries.get_mut(&note.device) {
+                Some(entry) if entry.room == note.room && entry.app == note.app => {
+                    entry.withdrawn = note.withdrawn;
                 }
                 _ => {
                     self.next_revision = self.next_revision.saturating_add(1);
                     self.entries.insert(
-                        device.clone(),
+                        note.device.clone(),
                         FocusObservation {
-                            device: device.clone(),
-                            room,
-                            app,
-                            stamp: snapshot.stamp.clone(),
+                            device: note.device.clone(),
+                            room: note.room,
+                            app: note.app,
                             observed_at: at,
                             revision: self.next_revision,
-                            withdrawn,
+                            withdrawn: note.withdrawn,
                         },
                     );
                 }
@@ -181,7 +176,8 @@ fn local_tab(tree: &WorkspaceTree, room: RoomId, tab: TabId) -> Option<LocalTab>
 
 /// Choose the offer, if any.
 ///
-/// The newest focus (by continuity stamp) wins among observations that are
+/// The newest focus (first seen last, then by device) wins among
+/// observations that are
 /// from another certified device of this identity, changed within
 /// [`SUGGESTION_WINDOW`] of `now`, were not closed since, were not
 /// dismissed at this revision, and name a tab this desktop has but is not
@@ -215,10 +211,9 @@ pub fn select(
         if tab.focused {
             continue;
         }
-        if best
-            .as_ref()
-            .is_some_and(|(current, _)| !observation.stamp.is_newer_than(&current.stamp))
-        {
+        if best.as_ref().is_some_and(|(current, _)| {
+            (current.observed_at, &current.device) >= (observation.observed_at, &observation.device)
+        }) {
             continue;
         }
         let suggestion = ContinuitySuggestion {
@@ -285,10 +280,6 @@ pub fn continue_label(suggestion: &ContinuitySuggestion) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::personal_continuity::{
-        AppInstanceState, DeviceContinuationSnapshot, LaunchIntent, TabPlacement,
-        WorkspaceContinuation,
-    };
     use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
 
     const NOTES: TabId = 7_001;
@@ -345,43 +336,20 @@ mod tests {
         tree.desktop.workspaces[0].room()
     }
 
-    fn snapshot(
-        owner: &DeviceId,
-        counter: u64,
-        room: RoomId,
-        focus: TabId,
-    ) -> DeviceContinuationSnapshot {
-        let stamp = ContinuityStamp {
-            counter,
+    fn on(owner: &DeviceId, room: RoomId, focus: TabId) -> DeviceFocus {
+        DeviceFocus {
             device: owner.clone(),
-        };
-        let apps = [NOTES, TERMINAL]
-            .into_iter()
-            .enumerate()
-            .map(|(index, id)| {
-                AppInstanceState::new(
-                    AppInstanceId(id),
-                    TabPlacement {
-                        strip: 0,
-                        group: u32::try_from(index).unwrap(),
-                        tab: 0,
-                    },
-                    LaunchIntent::app("so.tilo.notes").unwrap(),
-                    None,
-                    stamp.clone(),
-                )
-            })
-            .collect();
-        DeviceContinuationSnapshot::new(
-            owner.clone(),
-            counter,
-            Some(DeviceFocus {
-                room,
-                app: Some(AppInstanceId(focus)),
-            }),
-            vec![WorkspaceContinuation { room, apps }],
-        )
-        .unwrap()
+            room,
+            app: AppInstanceId(focus),
+            withdrawn: false,
+        }
+    }
+
+    /// A recency that already took its first, stale look.
+    fn looking() -> FocusRecency {
+        let mut recency = FocusRecency::default();
+        recency.observe(&[], Instant::now());
+        recency
     }
 
     fn feed(recency: &FocusRecency, devices: &[(&DeviceId, &str)]) -> ContinuityFeed {
@@ -399,13 +367,9 @@ mod tests {
     fn a_fresh_foreign_focus_on_an_unfocused_local_tab_is_offered() {
         let tree = tree();
         let laptop = device("laptop");
-        let mut continuity = PersonalContinuity::default();
-        continuity
-            .upsert(snapshot(&laptop, 3, room(&tree), NOTES))
-            .unwrap();
         let now = Instant::now();
-        let mut recency = FocusRecency::default();
-        recency.observe(&continuity, now);
+        let mut recency = looking();
+        recency.observe(&[on(&laptop, room(&tree), NOTES)], now);
 
         let offer = select(
             &tree,
@@ -421,16 +385,14 @@ mod tests {
     }
 
     #[test]
-    fn own_uncertified_stale_and_focused_tabs_are_never_offered() {
+    fn own_uncertified_stale_closed_and_focused_tabs_are_never_offered() {
         let mut tree = tree();
         let desk = device("desk");
         let laptop = device("laptop");
         let now = Instant::now();
 
-        let mut own = PersonalContinuity::default();
-        own.upsert(snapshot(&desk, 3, room(&tree), NOTES)).unwrap();
-        let mut recency = FocusRecency::default();
-        recency.observe(&own, now);
+        let mut recency = looking();
+        recency.observe(&[on(&desk, room(&tree), NOTES)], now);
         assert!(
             select(
                 &tree,
@@ -442,12 +404,8 @@ mod tests {
             "this device's own focus is not offered back to it"
         );
 
-        let mut continuity = PersonalContinuity::default();
-        continuity
-            .upsert(snapshot(&laptop, 3, room(&tree), NOTES))
-            .unwrap();
-        let mut recency = FocusRecency::default();
-        recency.observe(&continuity, now);
+        let mut recency = looking();
+        recency.observe(&[on(&laptop, room(&tree), NOTES)], now);
         assert!(
             select(&tree, &feed(&recency, &[]), &BTreeMap::new(), now).is_none(),
             "a device outside the certified set is not offered"
@@ -463,15 +421,56 @@ mod tests {
             .is_none(),
             "focus older than the window is stale"
         );
+        let mut first_look = FocusRecency::default();
+        first_look.observe(&[on(&laptop, room(&tree), NOTES)], now);
         assert!(
             select(
                 &tree,
-                &feed(&FocusRecency::seeded(&continuity), &[(&laptop, "Laptop")]),
+                &feed(&first_look, &[(&laptop, "Laptop")]),
                 &BTreeMap::new(),
                 now
             )
             .is_none(),
-            "focus restored from disk describes an earlier session"
+            "focus held before this device looked describes an earlier session"
+        );
+        let mut closed = looking();
+        closed.observe(
+            &[DeviceFocus {
+                withdrawn: true,
+                ..on(&laptop, room(&tree), NOTES)
+            }],
+            now,
+        );
+        assert!(
+            select(
+                &tree,
+                &feed(&closed, &[(&laptop, "Laptop")]),
+                &BTreeMap::new(),
+                now
+            )
+            .is_none(),
+            "a closed window is not offered"
+        );
+        assert!(
+            select(
+                &tree,
+                &feed(&recency, &[(&laptop, "Laptop")]),
+                &BTreeMap::new(),
+                now
+            )
+            .is_some()
+        );
+        let mut elsewhere = looking();
+        elsewhere.observe(&[on(&laptop, RoomId::new(), NOTES)], now);
+        assert!(
+            select(
+                &tree,
+                &feed(&elsewhere, &[(&laptop, "Laptop")]),
+                &BTreeMap::new(),
+                now
+            )
+            .is_none(),
+            "a room this desktop does not have offers nothing"
         );
 
         let strip = tree.desktop.workspaces[0].strips[0].id;
@@ -483,76 +482,28 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_this_desktop_lacks_or_that_was_closed_is_not_offered() {
-        let tree = tree();
-        let laptop = device("laptop");
-        let phone = device("phone");
-        let now = Instant::now();
-        let mut continuity = PersonalContinuity::default();
-        continuity
-            .upsert(snapshot(&laptop, 3, RoomId::new(), NOTES))
-            .unwrap();
-        let mut recency = FocusRecency::default();
-        recency.observe(&continuity, now);
-        assert!(
-            select(
-                &tree,
-                &feed(&recency, &[(&laptop, "Laptop")]),
-                &BTreeMap::new(),
-                now
-            )
-            .is_none(),
-            "a room this desktop does not have offers nothing"
-        );
-
-        // The laptop focuses Notes, then the phone (which took Notes over
-        // earlier) closes it: the tombstone outranks the laptop's offer.
-        let mut continuity = PersonalContinuity::default();
-        continuity
-            .upsert(snapshot(&laptop, 3, room(&tree), NOTES))
-            .unwrap();
-        let mut closing = snapshot(&phone, 2, room(&tree), NOTES);
-        let mut closed = snapshot(&phone, 9, room(&tree), TERMINAL);
-        closed.workspaces[0]
-            .apps
-            .retain(|app| app.id != AppInstanceId(NOTES));
-        closing.focus = None;
-        closed.record_closures_from(&closing).unwrap();
-        continuity.upsert(closed).unwrap();
-        let mut recency = FocusRecency::default();
-        recency.observe(&continuity, now);
-        let offer = select(
-            &tree,
-            &feed(&recency, &[(&laptop, "Laptop")]),
-            &BTreeMap::new(),
-            now,
-        );
-        assert!(offer.is_none(), "a closed app is not offered: {offer:?}");
-    }
-
-    #[test]
-    fn the_newest_stamp_wins_across_devices() {
+    fn the_latest_move_wins_across_devices() {
         let tree = tree();
         let laptop = device("laptop");
         let tablet = device("tablet");
         let now = Instant::now();
-        let mut continuity = PersonalContinuity::default();
-        continuity
-            .upsert(snapshot(&laptop, 4, room(&tree), NOTES))
-            .unwrap();
-        continuity
-            .upsert(snapshot(&tablet, 8, room(&tree), NOTES))
-            .unwrap();
-        let mut recency = FocusRecency::default();
-        recency.observe(&continuity, now);
+        let mut recency = looking();
+        recency.observe(&[on(&tablet, room(&tree), NOTES)], now);
+        recency.observe(
+            &[
+                on(&tablet, room(&tree), NOTES),
+                on(&laptop, room(&tree), NOTES),
+            ],
+            now + Duration::from_secs(1),
+        );
         let offer = select(
             &tree,
             &feed(&recency, &[(&laptop, "Laptop"), (&tablet, "Tablet")]),
             &BTreeMap::new(),
-            now,
+            now + Duration::from_secs(1),
         )
         .unwrap();
-        assert_eq!(offer.device, tablet);
+        assert_eq!(offer.device, laptop);
     }
 
     #[test]
@@ -560,38 +511,31 @@ mod tests {
         let tree = tree();
         let laptop = device("laptop");
         let start = Instant::now();
-        let mut continuity = PersonalContinuity::default();
-        continuity
-            .upsert(snapshot(&laptop, 3, room(&tree), NOTES))
-            .unwrap();
-        let mut recency = FocusRecency::default();
-        recency.observe(&continuity, start);
+        let mut recency = looking();
+        recency.observe(&[on(&laptop, room(&tree), NOTES)], start);
         let mut offers = ContinuitySuggestions::default();
         assert!(offers.set_feed(feed(&recency, &[(&laptop, "Laptop")])));
         let offer = offers.current(&tree, start).unwrap();
         offers.dismiss(&offer);
         assert!(offers.current(&tree, start).is_none());
 
-        // An unrelated republish of the same focus neither revives the
-        // offer nor refreshes its age.
-        continuity
-            .upsert(snapshot(&laptop, 5, room(&tree), NOTES))
-            .unwrap();
-        recency.observe(&continuity, start + Duration::from_secs(60));
+        // Looking again at the same focus neither revives the offer nor
+        // refreshes its age.
+        recency.observe(
+            &[on(&laptop, room(&tree), NOTES)],
+            start + Duration::from_secs(60),
+        );
         offers.set_feed(feed(&recency, &[(&laptop, "Laptop")]));
         assert!(offers.current(&tree, start).is_none());
 
         // Moving away and back is a new focus: it is offered again.
-        continuity
-            .upsert(snapshot(&laptop, 6, room(&tree), TERMINAL))
-            .unwrap();
-        recency.observe(&continuity, start + Duration::from_secs(61));
+        recency.observe(
+            &[on(&laptop, room(&tree), TERMINAL)],
+            start + Duration::from_secs(61),
+        );
         offers.set_feed(feed(&recency, &[(&laptop, "Laptop")]));
-        continuity
-            .upsert(snapshot(&laptop, 7, room(&tree), NOTES))
-            .unwrap();
         let later = start + Duration::from_secs(62);
-        recency.observe(&continuity, later);
+        recency.observe(&[on(&laptop, room(&tree), NOTES)], later);
         offers.set_feed(feed(&recency, &[(&laptop, "Laptop")]));
         assert_eq!(
             offers.current(&tree, later).map(|offer| offer.tab),

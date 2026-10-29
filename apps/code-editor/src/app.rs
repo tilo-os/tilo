@@ -1676,7 +1676,7 @@ impl CodeApp {
                 self.search_opener
                     .open(ui::search::SearchRequest::this_app().with_query(seed));
             }
-            Command::GoToLine => Self::ask_for_line(),
+            Command::GoToLine => self.ask_for_line(),
             Command::DuplicateLine => self.editor.duplicate_lines(doc, true),
             Command::MoveLineUp => self.editor.move_lines(doc, true),
             Command::MoveLineDown => self.editor.move_lines(doc, false),
@@ -1862,13 +1862,15 @@ impl CodeApp {
         }
     }
 
-    /// Ask for a line to go to in the host palette, on the project's
-    /// go-to-line effect.
-    pub(crate) fn ask_for_line() {
-        ui::host_palette::action(
-            crate::effects::CodeEditorEffect::GO_TO_LINE
-                .on(<crate::project::Project as ui::tilo_resource::Resource>::KIND),
-        );
+    /// Ask for a line to go to in search, on the project's go-to-line
+    /// effect: search opens on it, asking for the line.
+    pub(crate) fn ask_for_line(&mut self) {
+        let address = crate::effects::CodeEditorEffect::GO_TO_LINE
+            .on(<crate::project::Project as ui::tilo_resource::Resource>::KIND);
+        self.search_opener.open(ui::search::SearchRequest::asking(
+            ui::search::ScopeDecl::new(address.resource, String::new()),
+            address.action,
+        ));
     }
 
     /// Stage the "save changes before closing?" prompt for the active buffer.

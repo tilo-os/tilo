@@ -47,6 +47,11 @@ pub struct ApplicationDefinition {
     /// everyone in the room shares), rather than a record per window: every
     /// window of the app in the room opens it, and the first creates it.
     pub room_record: bool,
+    /// The record a window opens when it names none is the person's own record of the
+    /// workspace ([`RecordId::of_member`]) rather than the workspace's record of the app: what
+    /// it keeps there (their mail) only their devices read. A person without a root identity
+    /// is a member of no workspace and opens the workspace's record as before.
+    pub member_record: bool,
     /// The app's window shows before the room's record is read: a record this device holds
     /// opens off the frame, and the component takes it in when it is decoded
     /// ([`HostContext::record_opening`]). Only for an app that
@@ -1097,6 +1102,16 @@ impl Drop for HostContext {
     }
 }
 impl ApplicationDefinition {
+    /// The record a window of `author` opens when it names none, when the app keeps each
+    /// member's own ([`Self::member_record`]): their own record of the workspace.
+    #[must_use]
+    pub fn member_record_of(&self, author: &UserId) -> Option<RecordCheckout> {
+        self.member_record
+            .then(|| RecordId::of_member(&author.0, self.record_kind.as_str()))
+            .flatten()
+            .map(|id| RecordCheckout::new(id, self.record_kind.clone()))
+    }
+
     /// Whether the app keeps one record per room, its package primary,
     /// rather than a record per window ([`Self::room_record`]).
     pub fn keeps_room_record(&self) -> bool {
@@ -1264,8 +1279,8 @@ pub struct ComponentBehaviour {
     /// remote viewers, as [`crate::App::set_capture_protected`] does: for
     /// apps that show secrets, such as a password manager.
     pub capture_protected: bool,
-    /// What the window is to the session: an ordinary app window, or the
-    /// session's on-screen input surface.
+    /// What the window is to the session: an ordinary app window, the
+    /// session's on-screen input surface, or a sheet over the desktop.
     pub window: WindowRole,
 }
 
@@ -1283,6 +1298,10 @@ pub enum WindowRole {
     /// attaches to no workspace runtime. Its controls type into other apps'
     /// fields, so no headless drive may operate it.
     InputSurface,
+    /// A sheet the shell shows over the desktop (the power menu). It stands
+    /// on no ground of its own: what it does not paint shows the desktop
+    /// under it.
+    Sheet,
 }
 
 impl ComponentBehaviour {
@@ -2484,6 +2503,7 @@ mod bound_lifetime_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: factory,
         };
@@ -2534,6 +2554,7 @@ mod bound_lifetime_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: factory,
         };
@@ -2597,6 +2618,7 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                member_record: false,
                 opens_before_record: false,
                 create: factory,
             };
@@ -2688,6 +2710,7 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                member_record: false,
                 opens_before_record: false,
                 create: factory,
             };

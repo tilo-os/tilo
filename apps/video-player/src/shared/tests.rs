@@ -13,7 +13,9 @@ fn edit(library: &mut Replica<Library>, edit: &Edit<Library>) -> Result<(), Stri
 }
 
 fn playlist(library: &mut Replica<Library>, name: &str) -> Id {
-    library.apply(Library::CREATE_PLAYLIST.with(name)).unwrap();
+    library
+        .apply(Library::CREATE_PLAYLIST.with(name.parse::<NonBlank>().unwrap()))
+        .unwrap();
     library
         .state()
         .unwrap()

@@ -50,7 +50,7 @@ pub(super) struct ReactionsMeasure {
 pub(super) struct RowReactions {
     measure: ReactionsMeasure,
     strip: ReactionStrip,
-    picker: EmojiPicker,
+    picker: Box<EmojiPicker>,
     /// The add button was pressed here: the picker opens at the next paint
     /// of the row's popups, which knows the theme.
     opening: Option<Rect>,
@@ -61,7 +61,7 @@ impl Default for RowReactions {
         Self {
             measure: ReactionsMeasure::default(),
             strip: ReactionStrip::new(),
-            picker: EmojiPicker::framed(),
+            picker: Box::new(EmojiPicker::framed()),
             opening: None,
         }
     }
@@ -341,7 +341,7 @@ impl ToolbarRow {
         }
         if self.reactions.picker.is_open() {
             Widget::draw(
-                &mut self.reactions.picker,
+                &mut *self.reactions.picker,
                 scene,
                 transform,
                 tr,

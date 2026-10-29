@@ -496,3 +496,88 @@ fn a_device_and_a_browser_page_moving_one_window_at_once_agree_where_it_is() {
         );
     }
 }
+
+/// What a device notes beside its windows (how each resumes, which one it is
+/// on) reaches the person's other devices with the layout, and nowhere else:
+/// another device adds nothing until it has something of its own to say, and
+/// turning app continuations off takes the notes out.
+#[test]
+fn where_a_device_left_off_travels_with_the_layout() {
+    use crate::shell::continuation::{AppInstanceId, AppInstanceState, LaunchIntent};
+    use crate::shell::continuation_registry::{ContinuationRegistry, replace_test_registry};
+    use tilo_desktop_model::shared_record::continuation as notes;
+
+    let previous = replace_test_registry(Some(std::sync::Arc::new(std::sync::Mutex::new(
+        ContinuationRegistry::default(),
+    ))));
+    let (mut laptop, mut desk, room) = two_devices();
+    let laptop_device = tilo_network_actor::fabric::DeviceId::new(key(LAPTOP)).unwrap();
+    laptop.continuation_device = Some(laptop_device.clone());
+    desk.continuation_device = Some(tilo_network_actor::fabric::DeviceId::new(key(DESK)).unwrap());
+    let workspace = workspace_mut(&mut laptop, room).id;
+    laptop.desktop.active = workspace;
+    laptop
+        .desktop
+        .active_strip
+        .insert(workspace, StripId(laptop_id(1)));
+    laptop
+        .desktop
+        .set_active_group(StripId(laptop_id(1)), laptop_id(2));
+
+    assert!(laptop.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface
+    ));
+    assert!(
+        !laptop.capture_continuations(
+            room,
+            crate::shell::doc_open::continuation_file_reference_for_surface
+        ),
+        "nothing changed since"
+    );
+    hear(&mut desk, &mut laptop, room, LAPTOP);
+    desk.apply_continuations(room);
+
+    let doc = &desk.layout_docs[&room];
+    let person = hex::encode(PERSON);
+    assert_eq!(
+        notes::focus(doc).get(&LAPTOP),
+        Some(&notes::Focus {
+            window: laptop_id(3),
+            author: person,
+        })
+    );
+    let noted = notes::windows(doc);
+    let resume = AppInstanceState::from_record(laptop_id(3), &noted[&laptop_id(3)]).unwrap();
+    assert_eq!(resume.launch, LaunchIntent::app("so.tilo.notes").unwrap());
+    assert_eq!(resume.stamp.device, laptop_device);
+    // A legacy editor resumes by its app id; its surface stays on the laptop.
+    assert!(noted.contains_key(&laptop_id(5)));
+    let launch = LaunchIntent::app("so.tilo.notes").unwrap();
+    assert_eq!(
+        crate::shell::continuation_registry::global_registry()
+            .lock()
+            .unwrap()
+            .record_instance_for_tab(room, AppInstanceId(laptop_id(3)), &launch),
+        Some(AppInstanceId(laptop_id(3))),
+        "the desk opens the laptop's window on the record it showed"
+    );
+
+    // The desk has nothing of its own to add about the laptop's windows.
+    desk.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface,
+    );
+    assert_eq!(notes::windows(&desk.layout_docs[&room]), noted);
+    assert!(!notes::focus(&desk.layout_docs[&room]).contains_key(&DESK));
+
+    // Off on the laptop: its notes go.
+    laptop.continuation_device = None;
+    assert!(laptop.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface
+    ));
+    assert!(notes::windows(&laptop.layout_docs[&room]).is_empty());
+    assert!(notes::focus(&laptop.layout_docs[&room]).is_empty());
+    replace_test_registry(previous);
+}

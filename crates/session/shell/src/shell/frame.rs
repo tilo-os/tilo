@@ -160,76 +160,7 @@ pub struct ScrollCopies {
     pub raster: Vec<FineDamageRect>,
 }
 
-/// A strip drawn in canvas coordinates. The presenter shows the workspace
-/// layer `scroll_x` pixels to the right of `dest_*`, in scene pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StripBlit {
-    pub dest_x: u32,
-    pub dest_y: u32,
-    pub dest_w: u32,
-    pub dest_h: u32,
-    pub scroll_x: u32,
-}
-
-/// A frame as layers a presenter retains between frames.
-#[derive(Clone)]
-pub struct FrameCache {
-    /// Width of the widest strip's canvas in scene pixels: wider than the
-    /// screen when a strip's content is wider than its viewport.
-    pub width: u32,
-    /// Where each strip of [`FrameLayers::strips`] is shown, and how far it
-    /// is panned, in the same order.
-    pub strips: Vec<StripBlit>,
-    pub layers: FrameLayers,
-    /// Tells this drawing of the desktop as layers apart from every other
-    /// one its producer made, so a presenter knows which drawing each of
-    /// its layer textures holds.
-    pub generation: u64,
-    /// Where [`FrameLayers::chrome`] differs from an earlier drawing's
-    /// chrome; `None` when that is not known.
-    pub chrome_damage: Option<ChromeDamage>,
-}
-
-/// Where the chrome of a drawing of the desktop as layers differs from the
-/// chrome of the drawing `since` ([`FrameCache::generation`]), in scene
-/// pixels and whole 16-pixel tiles: a presenter whose chrome texture still
-/// holds that drawing's chrome brings it up to date by rasterising only
-/// these rects. Measured on a pan's frames from the frame before and on the
-/// layers drawn while the desktop rests ([`FrameBuilder::layers_at_rest`])
-/// from the drawing at rest before, so the strip rail moving during a pan or
-/// a clock tick at rest rasterises a few tiles, not the whole layer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChromeDamage {
-    pub since: u64,
-    pub rects: Vec<FineDamageRect>,
-}
-
-/// The desktop's sections as layers, bottom to top, in scene pixels.
-/// Drawing them over each other in order (source over) gives the frame's
-/// scene ([`crate::shell::render::strip_layers::compose`]), so a presenter
-/// can rasterize each into its own retained buffer and composite the
-/// buffers: a strip's pan then moves that strip's pixels over a backdrop and
-/// chrome that stay put, without drawing any of them again.
-#[derive(Clone)]
-pub struct FrameLayers {
-    /// The wallpaper and anything drawn behind every window.
-    pub backdrop: Scene,
-    /// What of the workspace no strip carries, in place, below the strips.
-    pub workspace: Scene,
-    /// Each strip on screen, top to bottom, drawn on its own in canvas
-    /// coordinates with the surfaces floating over it: shown inside its
-    /// [`FrameCache::strips`] destination, read at its pan. Strips whose
-    /// drawings meet (each draws its shadows past its row) each draw over
-    /// the other there, as on screen.
-    pub strips: Vec<Scene>,
-    /// The damage parts each of `strips` marked, in the same order: one per
-    /// window group, so a presenter rasterises only where a group's drawing
-    /// changed. `None` for a strip drawn without well-nested parts.
-    pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    /// Everything above: notices over the desktop, the top bar, quick
-    /// settings and every overlay above them.
-    pub chrome: Scene,
-}
+pub use ui::strip_layers::{ChromeDamage, FrameCache, FrameLayers, StripBlit};
 
 /// The strips the host drew apart for a frame drawn as layers, in scene
 /// pixels ([`FrameBuilder::panned_pieces`]).
@@ -484,7 +415,7 @@ impl FramePaint {
             (Some(newer), Some(earlier)) if chained => {
                 let mut union = earlier.clone();
                 union.extend_from_slice(newer);
-                Some(without_contained_regions(&union))
+                Some(ui::damage::without_contained(union))
             }
             _ => None,
         };
@@ -1887,6 +1818,10 @@ impl FrameBuilder {
         if !self.host.palette_visible() || self.has_focus_trap() {
             return None;
         }
+        // The launcher app takes search's keys in the node it is shown in.
+        if let Some(node) = self.host.launcher_node() {
+            return Some(node);
+        }
         self.node_map.iter().find_map(|(&node, &widget)| {
             // SAFETY: the map belongs to this frame's current live tree.
             (unsafe { (*widget).test_id() } == Some("command_palette_input")).then_some(node)
@@ -2952,7 +2887,7 @@ impl FrameBuilder {
         };
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
-            .map(|regions| without_contained_regions(&regions));
+            .map(ui::damage::without_contained);
         phases.mark("scene/damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
@@ -3045,7 +2980,7 @@ impl FrameBuilder {
         // fullscreen client is up.
         let (scene, scanout, cache) = if let Some(cache) = layered {
             (
-                crate::shell::render::strip_layers::compose(&cache),
+                ui::strip_layers::compose(&cache),
                 None,
                 separable.then_some(cache),
             )
@@ -3300,7 +3235,7 @@ impl FrameBuilder {
             Some(changed),
             Some(ScrollCopies {
                 copies: presented.copies,
-                raster: without_contained_regions(&raster),
+                raster: ui::damage::without_contained(raster),
             }),
         )
     }
@@ -3753,6 +3688,11 @@ impl FrameBuilder {
     /// strip's pixels by whole pixels.
     fn strip_plan(&self) -> Option<StripPlan> {
         use crate::shell::state::StripId;
+        // A canvas is no strip a presenter pans: its windows stand anywhere
+        // and the camera moves them all, so it is drawn as it is on screen.
+        if self.host.canvas_shown() {
+            return None;
+        }
         let to_scene = self.lone_output_transform()?;
         let screen_w = scene_px(self.scene_size.0).max(1);
         let screen_h = scene_px(self.scene_size.1).max(1);
@@ -3830,6 +3770,7 @@ impl FrameBuilder {
                 dest_w: x1.saturating_sub(x0).max(1),
                 dest_h: y1.saturating_sub(y0).max(1),
                 scroll_x: scene_px(shift.round()),
+                scroll_y: 0,
             });
             plan.ids.push(strip);
         }
@@ -4215,8 +4156,12 @@ impl FrameBuilder {
 
     fn refresh_display_comfort(&mut self) {
         let settings = settings_store::load();
-        let scheduled_night_light =
-            settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
+        let scheduled_night_light = settings_store::bool_at(
+            &settings,
+            settings_store::hardware::DISPLAY_PERSON_SECTION,
+            "night_light_schedule",
+        )
+        .unwrap_or(false);
         let automatic_theme = settings_store::str_at(
             &settings,
             "appearance",
@@ -4228,7 +4173,12 @@ impl FrameBuilder {
             (schedule, schedule.is_night(ui::theme::local_moment()))
         });
         self.night_light = night_light_on(
-            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false),
+            settings_store::bool_at(
+                &settings,
+                settings_store::hardware::DISPLAY_PERSON_SECTION,
+                "night_light",
+            )
+            .unwrap_or(false),
             scheduled_night_light,
             self.day_phase.map(|(_, night)| night),
         );
@@ -4240,7 +4190,7 @@ impl FrameBuilder {
         {
             self.night_light_temperature = settings_store::f64_in(
                 &settings,
-                "display",
+                settings_store::hardware::DISPLAY_PERSON_SECTION,
                 "night_light_temperature",
                 2_000.0..=6_500.0,
                 3_700.0,
@@ -4817,7 +4767,7 @@ impl FrameBuilder {
             return Vec::new();
         };
         let limit = due
-            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .checked_add(ui::app::animation_schedule::WAKE_MATCH_SLACK)
             .unwrap_or(due);
         let holds = |deadline: Option<Instant>| deadline.is_some_and(|at| at <= limit);
         let mut owners = self.host.wake_deadline_owners(due);
@@ -10744,33 +10694,6 @@ pub(super) use native_tab_scenarios::rect_named;
 )]
 #[path = "frame_transition_tests.rs"]
 mod transition_tests;
-
-/// `regions` without any region another one contains (the first of two
-/// equal ones stays): the same pixels, rasterised once. A changed card's
-/// old and new bounds and the blurred surface on it often nest.
-fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
-    let rect = |region: &FineDamageRect| {
-        Rect::new(
-            f64::from(region.x),
-            f64::from(region.y),
-            f64::from(region.x) + f64::from(region.width),
-            f64::from(region.y) + f64::from(region.height),
-        )
-    };
-    let contains = |outer: &FineDamageRect, inner: &FineDamageRect| {
-        rect(outer).union(rect(inner)) == rect(outer)
-    };
-    regions
-        .iter()
-        .enumerate()
-        .filter(|&(index, region)| {
-            !regions.iter().enumerate().any(|(other, outer)| {
-                other != index && contains(outer, region) && (outer != region || other < index)
-            })
-        })
-        .map(|(_, region)| *region)
-        .collect()
-}
 
 /// `scene`, drawn in logical coordinates, magnified by `to_scene` into
 /// scene pixels without clipping it to the display: a strip's canvas runs

@@ -5,6 +5,7 @@ use zeroize::Zeroizing;
 
 /// An ephemeral linking presentation. No serialization, logs or shared record
 /// represent its payload. The shared QR widget must render it as secret.
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct Pairing {
     pub account: ServiceAccount,
     pub attempt: String,
@@ -37,6 +38,7 @@ impl std::fmt::Debug for Pairing {
 /// Verified account identity; linking alone never grants a message route or
 /// promises an installed, ready sender and receiver.
 #[derive(Clone)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct LinkedAccount {
     pub account: ServiceAccount,
     pub generation: u64,

@@ -139,12 +139,12 @@ impl ShellNetwork {
             .clone())
     }
 
-    /// Who stewards each room's channels, as the native owner, once open,
-    /// has the room: this device's enrolled device and the room's governor.
-    /// The same device when this one governs it.
-    pub(crate) fn room_stewards(
+    /// Who governs each room, as the native owner, once open, has the room:
+    /// this device's enrolled device and the room's governor. The same
+    /// device when this one governs it.
+    pub(crate) fn room_governors(
         network: &std::sync::Arc<Self>,
-    ) -> crate::shell::channel_policy::Stewards {
+    ) -> crate::shell::channel_policy::Governors {
         let network = std::sync::Arc::clone(network);
         Box::new(move |room| {
             network
@@ -289,6 +289,11 @@ impl ShellNetwork {
             if let Err(error) = self.connect_native_room(owner.clone(), room) {
                 tracing::warn!(%error, "native owner restored while data transport is unavailable");
             }
+        }
+        // Whichever of the owner and this device's host opens second mends
+        // the replicas of the rooms that host governs.
+        if let Some(host) = self.room_host() {
+            self.mend_own_rooms(&host);
         }
         owner
     }

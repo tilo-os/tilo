@@ -134,6 +134,11 @@ pub(crate) struct ResourceRoot {
     nested_views: std::cell::RefCell<Option<NestedViews>>,
     /// Whether the resource keeps document state History shows.
     history: bool,
+    /// Whether the window stands on the framework's ground: every window but
+    /// a sheet the shell shows over the desktop ([`WindowRole::Sheet`]).
+    ///
+    /// [`WindowRole::Sheet`]: ui_core::application::WindowRole::Sheet
+    ground: bool,
     /// Platform presentation actions; the browser implementation has no state.
     native_presentation: crate::runner::Presentation,
     /// The links `share-link` is minting.
@@ -141,8 +146,13 @@ pub(crate) struct ResourceRoot {
 }
 
 impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
+    /// Asked through the root's own door, or by the app's view: a view whose app runs
+    /// elsewhere (a tilolang host's instance) hears the request there.
     fn take_window_activation_intent(&self) -> bool {
-        self.native_presentation.take_window_activation_intent()
+        let own = self.native_presentation.take_window_activation_intent();
+        let view = app_view_in(self.content.as_ref())
+            .is_some_and(ui_core::component_lifecycle::take_window_activation_intent);
+        own || view
     }
 }
 
@@ -274,12 +284,10 @@ pub fn reserved_action_ids() -> Vec<String> {
 }
 
 /// The operation type of the framework's `read` view.
-pub(crate) const READ_TYPE: &str = "tilo.resource.read";
+pub(crate) const READ_TYPE: &str = tilo_resource::read::TYPE;
 
 /// `read`: what a [readable](Resource::READABLE) resource holds, as typed
-/// data. With no `item` it answers the resource itself; with an `item` id, the
-/// nested resource of that id. It is a view: it changes nothing, needs only
-/// read permission and is checked like every other action.
+/// data ([`tilo_resource::read::spec`]).
 fn read_spec() -> tilo_actions::ActionSpec {
     read_spec_for(None)
 }
@@ -298,52 +306,7 @@ fn offer_document_reads(resource: &mut ResourceSpec, eligible: &dyn Fn(&str) -> 
 }
 
 fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
-    let item = item.map(str::to_owned);
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        "read",
-        "Read the content",
-        "Read the content",
-        tilo_actions::OperationKind::View,
-        READ_TYPE,
-        vec![
-            tilo_actions::ActionParam::optional(
-                "item",
-                tilo_actions::ParamType::Text,
-                "A nested resource's id, as the first read lists it (default: the whole resource)",
-            )
-            .nullable(),
-            tilo_actions::ActionParam::optional(
-                "version",
-                tilo_actions::ParamType::Text,
-                "A change id, exact causal frontier, or checkpoint name (default: current)",
-            )
-            .nullable(),
-        ]
-        .into_iter()
-        .filter(|param| item.is_none() || param.name != "item")
-        .collect(),
-        move |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                READ_TYPE,
-                &serde_json::json!({ "item": item.as_deref().or_else(|| args.text("item")), "version": args.text("version") }),
-            )
-            .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                type_id: READ_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description(
-        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
-    )
-    // Typed data for a program to reason about; a person reads what the
-    // app shows.
-    .for_audience(tilo_actions::Audience::Agents);
-    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec.reads_document()
+    tilo_resource::read::spec(item)
 }
 
 /// Answer a `read` request against the committed document of the resource
@@ -461,7 +424,8 @@ impl ResourceRoot {
     }
 
     /// The window ground is the framework's: an app never fills it, and one
-    /// that paints nothing still stands on it.
+    /// that paints nothing still stands on it. A sheet over the desktop
+    /// stands on nothing ([`Self::without_ground`]).
     fn paint_ground(
         &mut self,
         scene: &mut Scene,
@@ -470,13 +434,15 @@ impl ResourceRoot {
         presence: &PresenceCtx,
     ) {
         self.native_presentation.track_theme(theme);
-        scene.fill(
-            ui_core::vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            None,
-            &self.content.get_rect(),
-        );
+        if self.ground {
+            scene.fill(
+                ui_core::vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.content,
+                None,
+                &self.content.get_rect(),
+            );
+        }
         self.run.people.follow(presence);
     }
 
@@ -586,6 +552,7 @@ impl ResourceRoot {
             document_children: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             history: true,
+            ground: true,
             native_presentation,
             share: super::share_link::ShareLinks::default(),
         }
@@ -595,6 +562,13 @@ impl ResourceRoot {
     /// History actions and its window offers no History.
     pub(crate) fn without_history(mut self) -> Self {
         self.history = false;
+        self
+    }
+
+    /// Stand on nothing: what the view does not paint shows what is under
+    /// the window.
+    pub(crate) fn without_ground(mut self) -> Self {
+        self.ground = false;
         self
     }
 
@@ -1828,7 +1802,11 @@ impl RootModel for ResourceRoot {
         if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
-        if let Some(started) = self.typed.start_effect(op)? {
+        let view: &mut dyn Widget = match &mut self.unreadable {
+            Some((_, shown)) => shown.as_mut(),
+            None => self.content.as_mut(),
+        };
+        if let Some(started) = self.typed.start_effect(op, doc.doc(), view)? {
             return Ok(Some(started));
         }
         if let Some(started) =

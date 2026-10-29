@@ -60,9 +60,7 @@ browser-service-forget-fence-failed = Das ausgewählte Konto konnte zum Vergesse
 
 browser-service-forget-retry = Vergessen dieses Kontos erneut versuchen
 browser-service-forget-retry-failed = Das Konto konnte nicht gelöscht werden. Gespeicherte Zugangsdaten wurden nicht widerrufen; versuche erneut, dieses Konto zu vergessen.
-browser-engine-repair-message = Die eingebaute Webkomponente fehlt. Prüfe ihre Reparatur im Store; ohne deine Zustimmung wird nichts heruntergeladen.
-browser-engine-repair-action = Reparatur prüfen
-browser-engine-reopen = Schließe Browser und öffne ihn erneut.
+browser-engine-failed = Schließe Browser und öffne ihn erneut. Startet er weiterhin nicht, aktualisiere Browser im Store oder installiere ihn neu.
 
 ## Toolbar
 browser-back = Zurück; gedrückt halten oder Rechtsklick für den Verlauf

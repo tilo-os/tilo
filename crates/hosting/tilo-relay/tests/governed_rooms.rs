@@ -73,29 +73,15 @@ async fn session(relay: &Relay, device: &TestDevice, workspace_id: u64) -> Relay
 }
 
 /// Alice's `device` creates a room named `name` on her relay and enters it
-/// as its owner, through the relay's own host actions on a workspace she
-/// holds there.
-async fn create_and_enter(
-    relay: &Relay,
-    host: &TestDevice,
-    device: &TestDevice,
-    name: &str,
-) -> RoomListing {
-    use governance_actions::{HOME_WORKSPACE, host_action, subscribed};
-    let home = subscribed(relay, device, HOME_WORKSPACE).await;
-    let created: CreatedRoom = host_action(
-        &home,
-        host,
-        HOME_WORKSPACE,
-        CREATE_ROOM,
-        serde_json::json!({ "name": name }),
-    )
-    .await;
+/// as its owner, through the relay's own host actions asked of it directly.
+async fn create_and_enter(relay: &Relay, device: &TestDevice, name: &str) -> RoomListing {
+    use governance_actions::{connected, host_action};
+    let home = connected(relay, device).await;
+    let created: CreatedRoom =
+        host_action(&home, CREATE_ROOM, serde_json::json!({ "name": name })).await;
     assert_eq!(created.room.name, name);
     let entered: EnteredRoom = host_action(
         &home,
-        host,
-        HOME_WORKSPACE,
         ENTER_ROOM,
         serde_json::json!({ "room": created.room.room }),
     )
@@ -220,7 +206,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
     // (That Bob's device cannot is `governance_actions`'s to show.)
-    let room = create_and_enter(&relay, &host, &laptop, "Design review").await;
+    let room = create_and_enter(&relay, &laptop, "Design review").await;
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
@@ -701,7 +687,7 @@ type = "String"
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
     // (That Bob's device cannot is `governance_actions`'s to show.)
-    let room = create_and_enter(&relay, &host, &laptop, "Design review").await;
+    let room = create_and_enter(&relay, &laptop, "Design review").await;
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
@@ -882,7 +868,7 @@ params = []
 
     // Alice's laptop creates a room on her relay and enters it as its owner.
     // (That Bob's device cannot is `governance_actions`'s to show.)
-    let room = create_and_enter(&relay, &host, &laptop, "Design review").await;
+    let room = create_and_enter(&relay, &laptop, "Design review").await;
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
@@ -1057,7 +1043,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let room = create_and_enter(&relay, &host, &laptop, "Demo").await;
+    let room = create_and_enter(&relay, &laptop, "Demo").await;
     let mut guests = Vec::new();
     for (seed, name) in [(17, "Ada"), (18, "Bea"), (19, "Cy")] {
         let guest = TestUser::fresh(name);
@@ -1138,9 +1124,6 @@ mod spectators;
 
 #[path = "governed_rooms/app_authorship.rs"]
 mod app_authorship;
-
-#[path = "governed_rooms/membership_governance.rs"]
-mod membership_governance;
 
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;

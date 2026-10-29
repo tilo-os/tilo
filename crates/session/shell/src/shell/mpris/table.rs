@@ -293,12 +293,25 @@ impl PlayerTable {
                     can_go_next: entry.flag("CanGoNext"),
                     can_go_previous: entry.flag("CanGoPrevious"),
                 };
-                now_playing_from_properties(
+                let (mut player, art) = now_playing_from_properties(
                     bus_name,
                     &properties,
                     &entry.metadata(),
                     entry.observed_at,
-                )
+                )?;
+                // A sandboxed Tilo app's player is named after its package
+                // (`org.mpris.MediaPlayer2.so.tilo.music`).
+                player.app = entry
+                    .package_id
+                    .clone()
+                    .or_else(|| entry.string("DesktopEntry"))
+                    .or_else(|| {
+                        bus_name
+                            .strip_prefix("org.mpris.MediaPlayer2.")
+                            .filter(|rest| rest.contains('.'))
+                            .map(str::to_string)
+                    });
+                Some((player, art))
             })
             .take(MAX_NOW_PLAYING_PLAYERS)
             .collect()
@@ -337,15 +350,6 @@ impl PlayerTable {
             .iter()
             .max_by_key(|(_, entry)| (entry.is_playing(), entry.played, entry.appeared))
             .map(|(bus_name, entry)| (bus_name.clone(), entry.is_playing()))
-    }
-
-    /// Every player playing right now.
-    pub(super) fn playing(&self) -> Vec<String> {
-        self.players
-            .iter()
-            .filter(|(_, entry)| entry.is_playing())
-            .map(|(bus_name, _)| bus_name.clone())
-            .collect()
     }
 
     /// The players verified to belong to `package_id`, each with the source
@@ -621,7 +625,6 @@ mod tests {
             table.active_player(),
             Some(("org.mpris.MediaPlayer2.b".to_string(), true))
         );
-        assert_eq!(table.playing(), ["org.mpris.MediaPlayer2.b".to_string()]);
     }
 
     #[test]

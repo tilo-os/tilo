@@ -215,15 +215,20 @@ impl HostedRoom {
         });
     }
 
-    /// Grant `grant` in the room, as its owner gives it.
+    /// Grant `grant` in the room, as its owner gives it at the room's host.
     fn grant(&self, grant: &tilo_action_policy::Grant) {
         let id = grant.id.clone();
-        self.govern(
-            tilo_action_policy::roles::governance::GRANT,
-            json!({ "grant": grant }),
-            "the grant to reach the room",
-            |workspace| workspace.policy.grants.iter().any(|held| held.id == id),
-        );
+        self.device
+            .grant_at_host(self.room, vec![grant.clone()])
+            .unwrap_or_else(|error| panic!("the room's host takes the grant: {error}"));
+        until(&[&self.device], "the grant to reach the room", || {
+            room_workspace(&self.device.tree.read(), self.room)
+                .policy
+                .grants
+                .iter()
+                .any(|held| held.id == id)
+                .then_some(())
+        });
     }
 
     /// Let `app` keep records in the room, as opening the app there first

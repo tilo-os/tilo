@@ -1,14 +1,14 @@
-//! The Authenticator's surface over the [`Totp`] resource: the account list,
+//! The Authenticator's window over the [`Totp`] resource: the account list,
 //! its status surfaces and the add sheet.
 //!
 //! The document holds account metadata (names, order and lifecycle
 //! collaborate without credentials entering history); this device's secret
-//! store holds each account's seed (`Seeds`). The surface joins the two into
-//! the accounts it shows and submits every metadata change as a field edit or verb
-//! through the framework's dispatcher. The window's header row, with its
-//! search and add buttons, belongs to the framework's navigation shell around
-//! this widget (see [`crate::resource`]); this widget paints what stands under
-//! it:
+//! store holds each account's seed (`Seeds`). The [`Store`] the window shares
+//! with the view's effect handler joins the two into the accounts it shows
+//! and submits every metadata change as a field edit or verb through the
+//! framework's dispatcher. The window's header row, with its search and add
+//! buttons, belongs to the framework's navigation shell around this widget
+//! (see [`crate::resource`]); this widget paints what stands under it:
 //!
 //!  * the [`AccountList`] (main screen), with a banner above it when a
 //!    secret could not be saved on this device,
@@ -19,6 +19,7 @@
 //! the codes and their countdown rings change every frame and the rows are
 //! faces of the toolkit's list row, ring and button.
 
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::{Duration, Instant};
@@ -32,7 +33,7 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
-use ui::framework::Dispatcher;
+use ui::framework::{Dispatcher, Live};
 use ui::paint::PaintCtx;
 use ui::portal::{ContentsOutcome, FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
@@ -59,7 +60,7 @@ const CAPTURE_ELAPSED: u64 = 11;
 const CAPTURE_EXPIRING_ELAPSED: u64 = 27;
 
 /// What the window's toast should do next, for the shell around the
-/// surface.
+/// window.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Notice {
     Show(String, ToastKind),
@@ -85,37 +86,33 @@ fn qr_image_request() -> PickRequest {
 const UNSAVED_TITLE: &str = "Changes aren\u{2019}t saved";
 const UNSAVED_DETAIL: &str = "Restore keyring or storage access on this device, then retry.";
 
-#[allow(clippy::struct_excessive_bools, reason = "independent UI/frame flags")]
-pub struct AuthenticatorApp {
+/// What an effect asked of the sheet or the list, which the window does on
+/// its next frame.
+enum Asked {
+    /// Open the add sheet.
+    Add,
+    /// Open the sheet for an account: its details, or its key's setup.
+    Account(AccountId),
+    /// Scroll an account's row into view.
+    Reveal(AccountId),
+}
+
+/// The accounts the window shows and the view's effects act on: the
+/// document's metadata joined with this device's seeds, the selection, and
+/// what the window should do next.
+pub(crate) struct Store {
+    /// The vault as the document holds it, followed as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<Live<Totp>>,
+    presented: Option<(u64, u64)>,
     /// The accounts as the document holds them: metadata, no secrets.
     accounts: Rc<Vec<Account>>,
     seeds: Seeds,
     /// The accounts joined with this device's seeds: what the list shows and
     /// codes are computed from.
     vault: Vault,
-    list: AccountList,
-    add_panel: AddAccountPanel,
-    /// An in-flight XDG-portal file-open for QR-image import. When the user
-    /// taps "Scan a QR image" the portal round-trip runs on a worker thread
-    /// and hands the chosen path back over this channel, drained once per
-    /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
-    /// never draws its own picker (HIG §5).
-    portal_rx: Option<ui::portal::ContentsChannel>,
-
-    rect: Rect,
-    /// The readable column the banner and rows stand in, from the last paint.
-    column: Rect,
-    banner_rect: Rect,
-    retry_rect: Rect,
-    root_node: Option<NodeId>,
-    /// This tree's node of each of the open sheet's text fields, in tree order.
-    field_nodes: Vec<NodeId>,
-    /// The open sheet changed the layout tree (it opened or closed).
-    structure_dirty: bool,
-
-    last_mouse: Point,
     selected: Option<AccountId>,
-    /// Where the surface raises its notices; the shell shows them.
+    /// Where the window raises its notices; the shell shows them.
     notice: ui::LocalState<Option<Notice>>,
     /// The exact code string most recently written to the clipboard by a copy
     /// action. Lets callers (and tests) observe what was copied without
@@ -123,112 +120,66 @@ pub struct AuthenticatorApp {
     last_copied: Option<String>,
     /// The last copy, whose outcome can arrive after its confirmation.
     copy: ui::CopyWatch,
-    /// An account this view asked to delete, confirmed once it leaves the
-    /// document.
-    pending_delete: Option<AccountId>,
     /// The visible (ordered) list must be recomputed — set when the vault
     /// changes.
     list_dirty: bool,
-    /// Effective host motion preference. Normal mode uses a smooth countdown;
-    /// reduced motion sleeps between whole-second updates.
-    reduce_motion: bool,
     /// A secret this device's store refused or could not read: shown as a
     /// banner until a retry the user asks for succeeds, never retried in a
     /// frame loop.
     persistence_message: Option<String>,
     /// Where account metadata changes go.
     dispatch: Option<Dispatcher<Totp>>,
-    /// Whether the list has accounts, for the window's header row to follow.
-    has_accounts: Option<ui::LocalState<bool>>,
-    /// How many accounts the list has, for the header row's count.
-    account_count: Option<ui::LocalState<usize>>,
-    /// A capture's clock was moved to its scenario's step already.
-    clock_staged: bool,
-    /// Why codes may be rejected because this device's clock is not
-    /// synchronised, when the platform can say so.
-    clock_warning: Option<&'static str>,
+    asked: Vec<Asked>,
+    /// A capture scenario the window stages on its next frame.
+    scenario: Option<Staged>,
 }
 
-impl Default for AuthenticatorApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// A capture's scenario, by name (`None` for a plain capture).
+struct Staged(Option<String>);
 
-impl AuthenticatorApp {
-    #[cfg(test)]
-    pub(crate) fn test_panel(&mut self) -> &mut AddAccountPanel {
-        &mut self.add_panel
-    }
+/// The store as the window and the view's effect handler share it.
+pub(crate) type Shared = Rc<RefCell<Store>>;
 
-    /// The surface before the framework attaches it to its resource and this
-    /// device's secret store.
-    pub fn new() -> Self {
-        crate::i18n::ensure();
-        Self {
+impl Store {
+    /// A store following `live` (none outside the framework) that edits
+    /// through `dispatch`, with the seeds in `seeds` and notices raised
+    /// through `notice`.
+    pub(crate) fn shared(
+        live: Option<Live<Totp>>,
+        dispatch: Option<Dispatcher<Totp>>,
+        seeds: Seeds,
+        notice: ui::LocalState<Option<Notice>>,
+    ) -> Shared {
+        let mut store = Self {
+            live,
+            presented: None,
             accounts: Rc::default(),
-            seeds: Seeds::new(SecretStore::memory("so.tilo.totp"), false),
+            seeds,
             vault: Vault::new(),
-            list: AccountList::new(),
-            add_panel: AddAccountPanel::new(),
-            portal_rx: None,
-            rect: Rect::ZERO,
-            column: Rect::ZERO,
-            banner_rect: Rect::ZERO,
-            retry_rect: Rect::ZERO,
-            root_node: None,
-            field_nodes: Vec::new(),
-            structure_dirty: false,
-            last_mouse: Point::ZERO,
             selected: None,
-            notice: ui::LocalState::new(None),
+            notice,
             last_copied: None,
             copy: ui::CopyWatch::default(),
-            pending_delete: None,
             list_dirty: false,
-            reduce_motion: false,
             persistence_message: None,
-            dispatch: None,
-            has_accounts: None,
-            account_count: None,
-            clock_staged: false,
-            clock_warning: totp::clock_drift_warning(),
-        }
+            dispatch,
+            asked: Vec::new(),
+            scenario: None,
+        };
+        store.follow_document();
+        Rc::new(RefCell::new(store))
     }
 
-    /// Report through `signal` whether the list has accounts, so the header
-    /// row's actions can step aside for the empty state.
-    #[must_use]
-    pub(crate) fn with_account_signal(mut self, signal: ui::LocalState<bool>) -> Self {
-        self.has_accounts = Some(signal);
-        self
-    }
-
-    /// Report through `signal` how many accounts the list has, for the
-    /// header row's count.
-    #[must_use]
-    pub(crate) fn with_count_signal(mut self, signal: ui::LocalState<usize>) -> Self {
-        self.account_count = Some(signal);
-        self
-    }
-
-    /// Raise notices through `signal`, for the shell's toast.
-    #[must_use]
-    pub(crate) fn with_notice_signal(mut self, signal: ui::LocalState<Option<Notice>>) -> Self {
-        self.notice = signal;
-        self
-    }
-
-    /// Edit through `dispatch`, with the seeds in `store`. A view that is not
-    /// `live` (a past version, a screenshot) never writes or forgets one.
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatch: Dispatcher<Totp>,
-        store: SecretStore,
-        live: bool,
-    ) {
-        self.dispatch = Some(dispatch);
-        self.seeds = Seeds::new(store, live);
+    /// Show the accounts the document holds when it changed.
+    pub(crate) fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(shown) = live.changed_since(&mut self.presented) else {
+            return;
+        };
+        let accounts = Rc::new(shown.list());
+        self.present_accounts(&accounts);
     }
 
     /// Submit one account change through the framework: checked, applied,
@@ -240,7 +191,7 @@ impl AuthenticatorApp {
     }
 
     /// Show the accounts the document holds now, with this device's seeds.
-    pub(crate) fn present_accounts(&mut self, state: &Rc<Vec<Account>>) {
+    fn present_accounts(&mut self, state: &Rc<Vec<Account>>) {
         self.accounts = Rc::clone(state);
         let ids: Vec<AccountId> = state.iter().map(|account| account.id).collect();
         self.seeds.follow(&ids);
@@ -254,11 +205,6 @@ impl AuthenticatorApp {
             }
         }
         self.join_seeds();
-        if let Some(id) = self.pending_delete
-            && !ids.contains(&id)
-        {
-            self.pending_delete = None;
-        }
         if self.selected.is_none_or(|id| !ids.contains(&id)) {
             self.selected = self.vault.ordered().first().map(|account| account.id);
         }
@@ -323,18 +269,6 @@ impl AuthenticatorApp {
         }
     }
 
-    /// Recompute the ordered visible set and push it to the list.
-    fn refresh_list(&mut self) {
-        self.list.set_selected(self.selected);
-        self.list.set_accounts(self.vault.ordered());
-        if let Some(signal) = &self.has_accounts {
-            signal.set(!self.list.is_empty());
-        }
-        if let Some(signal) = &self.account_count {
-            signal.set(self.list.len());
-        }
-    }
-
     fn toast(&self, msg: impl Into<String>, kind: ToastKind) {
         self.notice.set(Some(Notice::Show(msg.into(), kind)));
     }
@@ -365,23 +299,209 @@ impl AuthenticatorApp {
         }
     }
 
+    pub(crate) fn has_local_secret(&self, id: AccountId) -> bool {
+        self.vault
+            .get(id)
+            .is_some_and(crate::model::Account::secret_is_valid)
+    }
+
+    /// Stage `scenario` on the window's next frame.
+    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
+        self.scenario = Some(Staged(scenario.map(str::to_owned)));
+    }
+
+    /// Answer an effect invoked by a control, the palette, an agent or a
+    /// script.
+    pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
+        self.follow_document();
+        match effect {
+            TotpEffect::AddAccount => self.asked.push(Asked::Add),
+            TotpEffect::OpenAccount { account } => {
+                let id = self.known_account(&account)?;
+                self.reveal(id);
+            }
+            TotpEffect::CopyCode { account } => {
+                let id = self.known_account(&account)?;
+                self.reveal(id);
+                if !self.has_local_secret(id) {
+                    return Err("Set up this account on this device before copying a code".into());
+                }
+                self.copy_account(id);
+            }
+            TotpEffect::SetUpLocal { account } => {
+                let id = self.known_account(&account)?;
+                self.selected = Some(id);
+                self.asked.push(Asked::Account(id));
+            }
+            TotpEffect::RetrySave => {
+                if !self.retry_persist() {
+                    return Err(self.persistence_message.clone().unwrap_or_default());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn known_account(&self, raw: &str) -> Result<AccountId, String> {
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid authenticator account id".to_string())?;
+        if self.vault.get(id).is_none() {
+            return Err("Authenticator account is no longer available".into());
+        }
+        Ok(id)
+    }
+
+    /// Select `id` and scroll its row into view.
+    fn reveal(&mut self, id: AccountId) {
+        self.selected = Some(id);
+        self.asked.push(Asked::Reveal(id));
+        self.list_dirty = true;
+    }
+}
+
+#[allow(clippy::struct_excessive_bools, reason = "independent UI/frame flags")]
+pub struct AuthenticatorApp {
+    store: Shared,
+    list: AccountList,
+    add_panel: AddAccountPanel,
+    /// An in-flight XDG-portal file-open for QR-image import. When the user
+    /// taps "Scan a QR image" the portal round-trip runs on a worker thread
+    /// and hands the chosen path back over this channel, drained once per
+    /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
+    /// never draws its own picker (HIG §5).
+    portal_rx: Option<ui::portal::ContentsChannel>,
+
+    rect: Rect,
+    /// The readable column the banner and rows stand in, from the last paint.
+    column: Rect,
+    banner_rect: Rect,
+    retry_rect: Rect,
+    root_node: Option<NodeId>,
+    /// This tree's node of each of the open sheet's text fields, in tree order.
+    field_nodes: Vec<NodeId>,
+    /// The open sheet changed the layout tree (it opened or closed).
+    structure_dirty: bool,
+
+    last_mouse: Point,
+    /// Effective host motion preference. Normal mode uses a smooth countdown;
+    /// reduced motion sleeps between whole-second updates.
+    reduce_motion: bool,
+    /// Whether the list has accounts, for the window's header row to follow.
+    has_accounts: Option<ui::LocalState<bool>>,
+    /// How many accounts the list has, for the header row's count.
+    account_count: Option<ui::LocalState<usize>>,
+    /// A capture's clock was moved to its scenario's step already.
+    clock_staged: bool,
+    /// Why codes may be rejected because this device's clock is not
+    /// synchronised, when the platform can say so.
+    clock_warning: Option<&'static str>,
+}
+
+impl Default for AuthenticatorApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AuthenticatorApp {
+    #[cfg(test)]
+    pub(crate) fn test_panel(&mut self) -> &mut AddAccountPanel {
+        &mut self.add_panel
+    }
+
+    /// A window outside the framework, which edits nothing and keeps its
+    /// seeds in memory.
+    pub fn new() -> Self {
+        Self::over(Store::shared(
+            None,
+            None,
+            Seeds::new(SecretStore::memory("so.tilo.totp"), false),
+            ui::LocalState::new(None),
+        ))
+    }
+
+    /// The window showing `store`.
+    pub(crate) fn over(store: Shared) -> Self {
+        crate::i18n::ensure();
+        Self {
+            store,
+            list: AccountList::new(),
+            add_panel: AddAccountPanel::new(),
+            portal_rx: None,
+            rect: Rect::ZERO,
+            column: Rect::ZERO,
+            banner_rect: Rect::ZERO,
+            retry_rect: Rect::ZERO,
+            root_node: None,
+            field_nodes: Vec::new(),
+            structure_dirty: false,
+            last_mouse: Point::ZERO,
+            reduce_motion: false,
+            has_accounts: None,
+            account_count: None,
+            clock_staged: false,
+            clock_warning: totp::clock_drift_warning(),
+        }
+    }
+
+    /// The accounts the window shows, shared with the view's effects.
+    pub(crate) fn state(&self) -> RefMut<'_, Store> {
+        self.store.borrow_mut()
+    }
+
+    /// Report through `signal` whether the list has accounts, so the header
+    /// row's actions can step aside for the empty state.
+    #[must_use]
+    pub(crate) fn with_account_signal(mut self, signal: ui::LocalState<bool>) -> Self {
+        self.has_accounts = Some(signal);
+        self
+    }
+
+    /// Report through `signal` how many accounts the list has, for the
+    /// header row's count.
+    #[must_use]
+    pub(crate) fn with_count_signal(mut self, signal: ui::LocalState<usize>) -> Self {
+        self.account_count = Some(signal);
+        self
+    }
+
+    /// Recompute the ordered visible set and push it to the list.
+    fn refresh_list(&mut self) {
+        let store = self.store.borrow();
+        self.list.set_selected(store.selected);
+        self.list.set_accounts(store.vault.ordered());
+        drop(store);
+        if let Some(signal) = &self.has_accounts {
+            signal.set(!self.list.is_empty());
+        }
+        if let Some(signal) = &self.account_count {
+            signal.set(self.list.len());
+        }
+    }
+
+    /// Recompute the visible set when the vault changed.
+    fn refresh_list_if_dirty(&mut self) {
+        if std::mem::take(&mut self.state().list_dirty) {
+            self.refresh_list();
+        }
+    }
+
     /// The exact code string the most recent copy action placed on the
     /// clipboard, if any. Observability for the copy path (the system
     /// clipboard can't be read back in a headless test).
-    pub fn last_copied(&self) -> Option<&str> {
-        self.last_copied.as_deref()
+    pub fn last_copied(&self) -> Option<String> {
+        self.store.borrow().last_copied.clone()
     }
 
     /// The account currently selected, if any. Lets a test observe where a
     /// Ctrl+K activation navigated.
     pub fn selected_account(&self) -> Option<AccountId> {
-        self.selected
+        self.store.borrow().selected
     }
 
-    pub(crate) fn has_local_secret(&self, id: AccountId) -> bool {
-        self.vault
-            .get(id)
-            .is_some_and(crate::model::Account::secret_is_valid)
+    fn persistence_pending(&self) -> bool {
+        self.store.borrow().persistence_pending()
     }
 
     /// Show the add sheet.
@@ -393,10 +513,14 @@ impl AuthenticatorApp {
     /// Open the sheet for `id`: its details when the key is here, the key's
     /// setup when it is not.
     fn open_for(&mut self, id: AccountId) -> bool {
-        let Some(account) = self.vault.get(id).cloned() else {
-            return false;
+        let account = {
+            let mut store = self.state();
+            let Some(account) = store.vault.get(id).cloned() else {
+                return false;
+            };
+            store.selected = Some(id);
+            account
         };
-        self.selected = Some(id);
         if account.secret_is_valid() {
             self.add_panel.open_for_edit(&account);
         } else {
@@ -407,26 +531,45 @@ impl AuthenticatorApp {
     }
 
     fn open_selected_for_edit(&mut self) -> bool {
-        self.selected.is_some_and(|id| self.open_for(id))
+        let selected = self.selected_account();
+        selected.is_some_and(|id| self.open_for(id))
+    }
+
+    /// Do what effects asked of the sheet and the list since the last frame;
+    /// whether there was anything.
+    fn take_asked(&mut self) -> bool {
+        let asked = std::mem::take(&mut self.state().asked);
+        let any = !asked.is_empty();
+        for ask in asked {
+            match ask {
+                Asked::Add => self.open_add(),
+                Asked::Account(id) => {
+                    self.open_for(id);
+                }
+                Asked::Reveal(id) => self.list.reveal(id),
+            }
+        }
+        any
     }
 
     /// Move the selected account through the same ordered list the pointer
     /// paints. This keeps keyboard selection in step with the list rather
     /// than introducing a second focus model.
     fn move_selection(&mut self, delta: isize) -> bool {
-        let visible = self.vault.ordered();
+        let mut store = self.store.borrow_mut();
+        let visible = store.vault.ordered();
         if visible.is_empty() {
             return false;
         }
-        let current = self
+        let current = store
             .selected
             .and_then(|id| visible.iter().position(|account| account.id == id))
             .unwrap_or(0);
         let next = (current as isize + delta).clamp(0, visible.len() as isize - 1) as usize;
-        if let Some(account) = visible.get(next) {
-            self.selected = Some(account.id);
-            self.list.set_selected(self.selected);
-            self.list.reveal(account.id);
+        if let Some(id) = visible.get(next).map(|account| account.id) {
+            store.selected = Some(id);
+            self.list.set_selected(Some(id));
+            self.list.reveal(id);
         }
         true
     }
@@ -440,13 +583,14 @@ impl AuthenticatorApp {
     }
 
     /// Copy the selected account (or the first one) — the Enter shortcut.
-    fn copy_focused(&mut self) {
-        let target = self
+    fn copy_focused(&self) {
+        let mut store = self.state();
+        let target = store
             .selected
-            .filter(|id| self.vault.get(*id).is_some())
-            .or_else(|| self.vault.ordered().first().map(|a| a.id));
+            .filter(|id| store.vault.get(*id).is_some())
+            .or_else(|| store.vault.ordered().first().map(|a| a.id));
         if let Some(id) = target {
-            self.copy_account(id);
+            store.copy_account(id);
         }
     }
 
@@ -455,30 +599,30 @@ impl AuthenticatorApp {
     fn apply_list_event(&mut self, ev: ListEvent) {
         match ev {
             ListEvent::Copy(id) => {
-                self.selected = Some(id);
-                self.copy_account(id);
-                self.list_dirty = true;
+                let mut store = self.state();
+                store.selected = Some(id);
+                store.copy_account(id);
+                store.list_dirty = true;
             }
             ListEvent::Reveal(id) => {
-                self.selected = Some(id);
                 self.list.show_code(id);
-                self.list_dirty = true;
+                let mut store = self.state();
+                store.selected = Some(id);
+                store.list_dirty = true;
             }
             ListEvent::Select(id) => {
-                self.selected = Some(id);
-                self.list_dirty = true;
+                let mut store = self.state();
+                store.selected = Some(id);
+                store.list_dirty = true;
             }
             ListEvent::Edit(id) | ListEvent::SetUp(id) => {
                 self.open_for(id);
             }
-            ListEvent::MoveUp(id) => self.submit(Totp::MOVE_UP.with(Totp::item(id))),
-            ListEvent::MoveDown(id) => self.submit(Totp::MOVE_DOWN.with(Totp::item(id))),
-            ListEvent::Delete(id) => {
-                // Deleting asks first; the account (and with it this device's
-                // key) goes once the document drops it.
-                self.pending_delete = Some(id);
-                self.submit(Totp::DELETE.with(Totp::item(id)));
-            }
+            ListEvent::MoveUp(id) => self.state().submit(Totp::MOVE_UP.with(Totp::item(id))),
+            ListEvent::MoveDown(id) => self.state().submit(Totp::MOVE_DOWN.with(Totp::item(id))),
+            // Deleting asks first; the account (and with it this device's
+            // key) goes once the document drops it.
+            ListEvent::Delete(id) => self.state().submit(Totp::DELETE.with(Totp::item(id))),
         }
     }
 
@@ -488,30 +632,33 @@ impl AuthenticatorApp {
     /// deterministic.
     fn apply_add_panel_event(&mut self, ev: AddPanelEvent) {
         self.structure_dirty = true;
+        if matches!(ev, AddPanelEvent::PickImageForQr) {
+            self.request_qr_via_portal();
+        }
+        let mut store = self.state();
         match ev {
-            AddPanelEvent::Cancel => {}
-            AddPanelEvent::PickImageForQr => self.request_qr_via_portal(),
+            AddPanelEvent::Cancel | AddPanelEvent::PickImageForQr => {}
             AddPanelEvent::Save(mut acc) => {
-                acc.color = (self.vault.len() % 7) as u8;
-                let order = self.vault.next_order();
+                acc.color = (store.vault.len() % 7) as u8;
+                let order = store.vault.next_order();
                 acc.order = order;
                 let id = acc.id;
-                self.keep_seed(
+                store.keep_seed(
                     id,
                     &acc.secret,
                     "The account was added, but its key isn\u{2019}t saved. Keep this window open, restore access, then retry.",
                 );
-                self.submit(Totp::paths().accounts.insert_as(
+                store.submit(Totp::paths().accounts.insert_as(
                     &Totp::item(id),
                     usize::MAX,
                     &StoredAccount::of(&acc),
                 ));
-                self.selected = Some(id);
+                store.selected = Some(id);
             }
             AddPanelEvent::Edit(mut acc) => {
-                let Some(before) = self.vault.get(acc.id).cloned() else {
-                    self.toast("That account is no longer available", ToastKind::Error);
-                    self.list_dirty = true;
+                let Some(before) = store.vault.get(acc.id).cloned() else {
+                    store.toast("That account is no longer available", ToastKind::Error);
+                    store.list_dirty = true;
                     return;
                 };
                 // The form edits identity, key and code parameters; the list
@@ -519,41 +666,41 @@ impl AuthenticatorApp {
                 acc.color = before.color;
                 acc.order = before.order;
                 if acc.secret != before.secret {
-                    self.keep_seed(
+                    store.keep_seed(
                         acc.id,
                         &acc.secret,
                         "The account changed, but its new key isn\u{2019}t saved on this device. Restore access, then retry.",
                     );
                 }
                 let edits = account_edits(&before, &acc);
-                if let Some(dispatch) = &self.dispatch {
+                if let Some(dispatch) = &store.dispatch {
                     dispatch.group(|| {
                         for edit in edits {
                             dispatch.submit(edit);
                         }
                     });
                 }
-                self.join_seeds();
-                self.selected = Some(acc.id);
+                store.join_seeds();
+                store.selected = Some(acc.id);
             }
             AddPanelEvent::Provision(acc) => {
-                if self.vault.get(acc.id).is_none() {
-                    self.toast("That account is no longer available", ToastKind::Error);
-                    self.list_dirty = true;
+                if store.vault.get(acc.id).is_none() {
+                    store.toast("That account is no longer available", ToastKind::Error);
+                    store.list_dirty = true;
                     return;
                 }
                 // Only the local key is installed; the shared identity, order
                 // and colour stay as the document has them, and the form
                 // checked the code parameters against them.
-                self.keep_seed(
+                store.keep_seed(
                     acc.id,
                     &acc.secret,
                     "The key works for this session, but it isn\u{2019}t saved on this device. Restore access, then retry.",
                 );
-                self.join_seeds();
+                store.join_seeds();
             }
         }
-        self.list_dirty = true;
+        store.list_dirty = true;
     }
 
     /// Resolve a published canvas target to the existing list/app action.
@@ -566,13 +713,19 @@ impl AuthenticatorApp {
         let Ok(id) = raw_id.parse() else {
             return false;
         };
-        if self.vault.get(id).is_none() {
+        let Some(ready) = self
+            .store
+            .borrow()
+            .vault
+            .get(id)
+            .map(Account::secret_is_valid)
+        else {
             return false;
-        }
+        };
         if matches!(action, A11yAction::Focus) {
             if verb == "totp.select" {
                 self.apply_list_event(ListEvent::Select(id));
-                self.list.set_selected(self.selected);
+                self.list.set_selected(self.selected_account());
                 return true;
             }
             return false;
@@ -581,10 +734,7 @@ impl AuthenticatorApp {
             return false;
         }
         if verb == "totp.setup" {
-            let Some(account) = self.vault.get(id) else {
-                return false;
-            };
-            if account.secret_is_valid() {
+            if ready {
                 return false;
             }
             return self.open_for(id);
@@ -600,7 +750,7 @@ impl AuthenticatorApp {
             _ => return false,
         };
         self.apply_list_event(event);
-        self.list.set_selected(self.selected);
+        self.list.set_selected(self.selected_account());
         true
     }
 
@@ -692,7 +842,7 @@ impl AuthenticatorApp {
                     // A cancel is a no-op — the sheet is left as it was.
                     ContentsOutcome::Cancelled => {}
                     ContentsOutcome::Failed(reason) => {
-                        self.toast(
+                        self.state().toast(
                             format!("Couldn\u{2019}t open the file chooser: {reason}"),
                             ToastKind::Error,
                         );
@@ -714,11 +864,12 @@ impl AuthenticatorApp {
         match crate::qr::decode_image_bytes(bytes) {
             Ok(uri) => {
                 self.add_panel.apply_uri(&uri);
-                self.toast("QR code read", ToastKind::Success);
+                self.state().toast("QR code read", ToastKind::Success);
             }
             Err(reason) => {
                 tracing::debug!(%reason, "totp: no code read from the chosen image");
-                self.toast(crate::i18n::t("totp-scan-unreadable"), ToastKind::Error);
+                self.state()
+                    .toast(crate::i18n::t("totp-scan-unreadable"), ToastKind::Error);
             }
         }
     }
@@ -736,7 +887,10 @@ impl AuthenticatorApp {
     }
 
     pub(crate) fn seed_open_selected_setup(&mut self) {
-        self.selected = self.vault.ordered().first().map(|account| account.id);
+        {
+            let mut store = self.state();
+            store.selected = store.vault.ordered().first().map(|account| account.id);
+        }
         let _ = self.open_selected_for_edit();
     }
 
@@ -770,72 +924,34 @@ impl AuthenticatorApp {
             Some("add") => self.seed_open_add(),
             Some("add-advanced") => self.seed_open_add_advanced(),
             Some("provision") => self.seed_open_selected_setup(),
-            Some("persistence-error") => self.describe_persistence_failure(UNSAVED_DETAIL),
+            Some("persistence-error") => self.state().describe_persistence_failure(UNSAVED_DETAIL),
             _ => {}
         }
         self.refresh_list();
         // The states a pointer causes: a hovered row shows its actions, a
         // hovered code is where a click copies.
-        let account_at = |index: usize| self.vault.ordered().get(index).map(|a| a.id);
         match scenario {
             Some("hover") => self.list.stage_hover(2, false),
             Some("copied") => {
-                if let Some(id) = account_at(1) {
-                    self.selected = Some(id);
-                    self.list.set_selected(self.selected);
+                let mut store = self.store.borrow_mut();
+                if let Some(id) = store.vault.ordered().get(1).map(|a| a.id) {
+                    store.selected = Some(id);
+                    self.list.set_selected(Some(id));
                     self.list.stage_hover(1, true);
-                    self.copy_account(id);
+                    store.copy_account(id);
                 }
             }
             _ => {}
         }
     }
 
-    /// Answer an effect invoked by a control, the palette, an agent or a
-    /// script.
-    pub(crate) fn perform_effect(&mut self, effect: TotpEffect) -> Result<(), String> {
-        match effect {
-            TotpEffect::AddAccount => self.open_add(),
-            TotpEffect::OpenAccount { account } => {
-                let id = self.known_account(&account)?;
-                self.reveal(id);
-            }
-            TotpEffect::CopyCode { account } => {
-                let id = self.known_account(&account)?;
-                self.reveal(id);
-                if !self.has_local_secret(id) {
-                    return Err("Set up this account on this device before copying a code".into());
-                }
-                self.copy_account(id);
-            }
-            TotpEffect::SetUpLocal { account } => {
-                let id = self.known_account(&account)?;
-                self.open_for(id);
-            }
-            TotpEffect::RetrySave => {
-                if !self.retry_persist() {
-                    return Err(self.persistence_message.clone().unwrap_or_default());
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn known_account(&self, raw: &str) -> Result<AccountId, String> {
-        let id = raw
-            .parse()
-            .map_err(|_| "Invalid authenticator account id".to_string())?;
-        if self.vault.get(id).is_none() {
-            return Err("Authenticator account is no longer available".into());
-        }
-        Ok(id)
-    }
-
-    /// Select `id` and scroll its row into view.
-    fn reveal(&mut self, id: AccountId) {
-        self.selected = Some(id);
-        self.list.reveal(id);
-        self.list_dirty = true;
+    /// Stage the scenario a capture asked for, once.
+    fn stage_pending_scenario(&mut self) -> bool {
+        let Some(Staged(scenario)) = self.state().scenario.take() else {
+            return false;
+        };
+        self.stage_scenario(scenario.as_deref());
+        true
     }
 
     /// The readable strip the banner and rows stand in: the window less its
@@ -857,10 +973,11 @@ impl AuthenticatorApp {
         let mut top = self.rect.y0;
         self.banner_rect = Rect::ZERO;
         self.retry_rect = Rect::ZERO;
-        if self.persistence_pending() || self.clock_warning.is_some() {
+        let message = self.store.borrow().persistence_message.clone();
+        if message.is_some() || self.clock_warning.is_some() {
             // The banner spans the column the rows stand in; the unsaved
             // changes banner holds Retry, the clock warning holds no action.
-            let content = self.banner_content();
+            let content = self.banner_content(message.as_deref());
             let banner_h = Banner::height(&content, self.column.width(), ctx.text, theme);
             let y0 = top + f64::from(spacing.s2);
             let banner = Rect::new(self.column.x0, y0, self.column.x1, y0 + banner_h);
@@ -875,16 +992,12 @@ impl AuthenticatorApp {
         self.list.set_viewport(list_rect, self.column);
     }
 
-    /// The banner in the window: unsaved changes with Retry, or the clock
-    /// warning that explains codes every server may reject.
-    fn banner_content(&self) -> BannerContent<'_> {
-        if self.persistence_pending() {
+    /// The banner in the window: unsaved changes (`unsaved`) with Retry, or
+    /// the clock warning that explains codes every server may reject.
+    fn banner_content<'a>(&'a self, unsaved: Option<&'a str>) -> BannerContent<'a> {
+        if let Some(message) = unsaved {
             return BannerContent::new(BannerKind::Warning, UNSAVED_TITLE)
-                .with_message(Some(
-                    self.persistence_message
-                        .as_deref()
-                        .unwrap_or(UNSAVED_DETAIL),
-                ))
+                .with_message(Some(message))
                 .action(RETRY_LABEL);
         }
         BannerContent::new(BannerKind::Warning, "This device’s clock may be off")
@@ -892,13 +1005,14 @@ impl AuthenticatorApp {
     }
 
     fn paint_banner(&self, ctx: &mut PaintCtx<'_>) {
-        if !self.persistence_pending() && self.clock_warning.is_none() {
+        let message = self.store.borrow().persistence_message.clone();
+        if message.is_none() && self.clock_warning.is_none() {
             return;
         }
         Banner::paint(
             ctx,
             self.banner_rect,
-            &self.banner_content(),
+            &self.banner_content(message.as_deref()),
             self.last_mouse,
         );
     }
@@ -928,10 +1042,15 @@ impl Widget for AuthenticatorApp {
         // leaves nothing else changed when it closes, so the answer is
         // taken here, where every frame looks.
         let answered = self.drain_portal();
+        // The document, an effect or a capture may have changed what the
+        // window shows since the last frame.
+        self.state().follow_document();
+        let asked = self.take_asked();
+        let staged = self.stage_pending_scenario();
         // A glide moves the list's rows, which the frame repaints; it
         // changes no model.
         self.list.advance_scroll();
-        let mut changed = answered;
+        let mut changed = answered | asked | staged;
         for child in self.children_mut() {
             changed |= child.update(state, path);
         }
@@ -949,9 +1068,14 @@ impl Widget for AuthenticatorApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        if self.copy.failed() {
-            self.toast("Could not copy to the clipboard", ToastKind::Error);
+        {
+            let mut store = self.state();
+            store.follow_document();
+            if store.copy.failed() {
+                store.toast("Could not copy to the clipboard", ToastKind::Error);
+            }
         }
+        self.take_asked();
         // Sheets that left the tree last frame can go now.
         if self.add_panel.reap() {
             self.structure_dirty = true;
@@ -961,10 +1085,7 @@ impl Widget for AuthenticatorApp {
             sheet.sync(state, path);
         }
         // Recompute the visible set only when the vault changed.
-        if self.list_dirty {
-            self.refresh_list();
-            self.list_dirty = false;
-        }
+        self.refresh_list_if_dirty();
     }
 
     fn build_layout(
@@ -1071,7 +1192,7 @@ impl Widget for AuthenticatorApp {
             }
         ) && self.persistence_pending()
             && self.retry_rect.contains(self.last_mouse)
-            && self.retry_persist()
+            && self.state().retry_persist()
         {
             *ctx.handled = true;
             return;
@@ -1084,15 +1205,20 @@ impl Widget for AuthenticatorApp {
             self.apply_list_event(ev);
         }
         // Keep the list's selection mirror current.
-        self.list.set_selected(self.selected);
-        if self.list_dirty {
-            self.refresh_list();
-            self.list_dirty = false;
-        }
+        self.list.set_selected(self.selected_account());
+        self.refresh_list_if_dirty();
     }
 
     fn name(&self) -> &'static str {
         "AuthenticatorApp"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
@@ -1133,21 +1259,18 @@ impl Widget for AuthenticatorApp {
                     .with_bounds(self.rect),
             );
         }
-        let visible = self.vault.ordered();
+        let store = self.store.borrow();
+        let visible = store.vault.ordered();
         let total = visible.len();
         let mut children = Vec::new();
-        if self.persistence_pending() {
+        if let Some(message) = &store.persistence_message {
             children.push(
                 AccessNode::new(Role::Toolbar)
                     .with_name("Key status")
                     .with_children(vec![
                         AccessNode::new(Role::Button)
                             .with_name("Retry saving keys")
-                            .with_description(
-                                self.persistence_message
-                                    .as_deref()
-                                    .unwrap_or("Retry saving this device\u{2019}s keys"),
-                            )
+                            .with_description(message.as_str())
                             .with_state(AccessState::new().focusable(true))
                             .with_bounds(self.retry_rect)
                             .with_action_target("totp.retry-persist"),
@@ -1234,7 +1357,7 @@ impl Widget for AuthenticatorApp {
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
-                                .selected(self.selected == Some(id)),
+                                .selected(store.selected == Some(id)),
                         )
                         .with_position(index + 1, total)
                         .with_bounds(row)
@@ -1270,7 +1393,7 @@ impl Widget for AuthenticatorApp {
         _path: &ModelPath,
     ) -> bool {
         if target == "totp.retry-persist" {
-            return matches!(action, A11yAction::Activate) && self.retry_persist();
+            return matches!(action, A11yAction::Activate) && self.state().retry_persist();
         }
         self.perform_a11y_target(target, action)
     }
@@ -1279,7 +1402,10 @@ impl Widget for AuthenticatorApp {
     /// one-second deadline instead, so the app remains current without a vsync
     /// loop.
     fn needs_animation_frame(&self) -> bool {
-        !self.reduce_motion || self.list.needs_animation_frame()
+        // A capture keeps frames coming until its scenario is staged.
+        !self.reduce_motion
+            || self.list.needs_animation_frame()
+            || self.store.borrow().scenario.is_some()
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -1341,7 +1467,7 @@ pub(crate) mod tests {
     use ui::a11y::Politeness;
     use ui::headless::Framed;
 
-    /// The surface over the demo accounts, every seed on this device, as the
+    /// The window over the demo accounts, every seed on this device, as the
     /// framework presents them: for tests of layout, input and semantics,
     /// which change nothing in the document.
     fn app_with_state() -> (AuthenticatorApp, ui::State) {
@@ -1350,12 +1476,12 @@ pub(crate) mod tests {
 
     /// As [`app_with_state`], without seeds for the first `missing` accounts.
     fn app_with_seeds(missing: usize) -> (AuthenticatorApp, ui::State) {
-        let mut app = AuthenticatorApp::new();
+        let app = AuthenticatorApp::new();
         let mut seeds = Seeds::new(SecretStore::memory("so.tilo.totp"), true);
         for account in demo_accounts().iter().skip(missing) {
             seeds.put(account.id, &account.secret);
         }
-        app.seeds = seeds;
+        app.state().seeds = seeds;
         let metadata: Vec<Account> = demo_accounts()
             .into_iter()
             .map(|mut account| {
@@ -1363,7 +1489,7 @@ pub(crate) mod tests {
                 account
             })
             .collect();
-        app.present_accounts(&Rc::new(metadata));
+        app.state().present_accounts(&Rc::new(metadata));
         (app, ui::State::new())
     }
 
@@ -1413,7 +1539,7 @@ pub(crate) mod tests {
         {
             let mut framed = framed(app_with_state(), 640, 700);
             let (app, state) = Framed::split(&mut framed);
-            let id = app.vault.ordered()[0].id;
+            let id = app.state().vault.ordered()[0].id;
             assert!(app.perform_semantic_action(
                 &format!("totp.copy:{id}"),
                 &A11yAction::Activate,
@@ -1426,13 +1552,17 @@ pub(crate) mod tests {
 
         {
             let (mut app, _state) = app_with_state();
-            let id = app.vault.ordered()[0].id;
-            let acc = app.vault.get(id).cloned().unwrap();
+            let id = app.state().vault.ordered()[0].id;
+            let acc = app.state().vault.get(id).cloned().unwrap();
             let before = totp::current_code(&acc);
             app.apply_list_event(ListEvent::Copy(id));
             let after = totp::current_code(&acc);
-            assert_eq!(app.selected, Some(id), "the copied row becomes selected");
-            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+            assert_eq!(
+                app.selected_account(),
+                Some(id),
+                "the copied row becomes selected"
+            );
+            let Some(Notice::Show(msg, kind)) = app.state().notice.with(Clone::clone) else {
                 panic!("copying shows a confirmation toast");
             };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
@@ -1448,7 +1578,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 recorder.secret_copies().last().map(String::as_str),
-                Some(copied),
+                Some(copied.as_str()),
                 "a code is copied as a secret, out of history and device sync"
             );
         }
@@ -1456,9 +1586,9 @@ pub(crate) mod tests {
         {
             let mut app = framed(app_with_state(), 1000, 800);
             let id = app
-                .selected
+                .selected_account()
                 .expect("the first account is selected when shown");
-            let acc = app.vault.get(id).cloned().unwrap();
+            let acc = app.state().vault.get(id).cloned().unwrap();
 
             let before = totp::current_code(&acc);
             dispatch(&mut app, &named_press(NamedKey::Enter), no_mods());
@@ -1469,7 +1599,7 @@ pub(crate) mod tests {
                 copied == before || copied == after,
                 "Enter copies the account's live TOTP code ({copied:?} vs {before:?}/{after:?})"
             );
-            let Some(Notice::Show(msg, kind)) = app.notice.with(Clone::clone) else {
+            let Some(Notice::Show(msg, kind)) = app.state().notice.with(Clone::clone) else {
                 panic!("Enter shows a copy toast");
             };
             assert!(msg.starts_with("Copied"), "toast confirms the copy: {msg}");
@@ -1478,11 +1608,11 @@ pub(crate) mod tests {
 
         {
             let (mut app, _state) = app_with_seeds(demo_accounts().len());
-            let id = app.vault.ordered()[0].id;
+            let id = app.state().vault.ordered()[0].id;
             app.apply_list_event(ListEvent::Copy(id));
             assert!(app.last_copied().is_none(), "no secret, no code");
             assert!(matches!(
-                app.notice.with(Clone::clone),
+                app.state().notice.with(Clone::clone),
                 Some(Notice::Show(_, ToastKind::Error))
             ));
         }
@@ -1704,7 +1834,9 @@ pub(crate) mod tests {
         let mut framed = Framed::new(state, app, (390, 720), Theme::dark());
         let (app, state) = Framed::split(&mut framed);
         assert!(
-            app.notice.with(|notice| notice == &Some(Notice::Clear)),
+            app.state()
+                .notice
+                .with(|notice| notice == &Some(Notice::Clear)),
             "durable banner replaces duplicate toast"
         );
         assert!(app.retry_rect.x0 >= app.rect.x0 && app.retry_rect.x1 <= app.rect.x1);
@@ -1712,9 +1844,16 @@ pub(crate) mod tests {
             app.banner_rect.contains_rect(app.retry_rect),
             "retry is inside banner"
         );
+        let first = app
+            .state()
+            .vault
+            .ordered()
+            .first()
+            .expect("seeded account")
+            .id;
         assert!(
             app.list
-                .account_bounds(app.vault.ordered().first().expect("seeded account").id)
+                .account_bounds(first)
                 .expect("first row painted")
                 .y0
                 >= app.banner_rect.y1,
@@ -1767,7 +1906,7 @@ pub(crate) mod tests {
         assert!(app.update(&state.doc, &state.root), "the answer is news");
         assert!(app.portal_rx.is_none(), "the chooser is done");
         assert_eq!(
-            app.notice.with(Clone::clone),
+            app.state().notice.with(Clone::clone),
             Some(Notice::Show(
                 "Couldn\u{2019}t read a code from that image".into(),
                 ToastKind::Error

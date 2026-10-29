@@ -9,8 +9,7 @@ use super::{
     PreparedRecipients, PublicationFrames, PublicationScope, ReplayCatchup, ReplayPendingTarget,
     ReplayPendingWork, SelectedPublication, SessionLease, SharedWorkspace, StateCommit,
     StateSource, Step, StoreError, WorkLimit, captured_live_current, live_budget,
-    retention_publication_kind, steward_audience, steward_only_delta, test_point,
-    trace_native_publication,
+    retention_publication_kind, test_point, trace_native_publication,
 };
 
 pub(super) async fn enqueue_state(
@@ -326,7 +325,7 @@ fn state_timing_steps(host: bool, delta: &[u8]) -> (&'static str, &'static str) 
 }
 
 /// [`state_timing_steps`] for a member's checkpoint: the governance it
-/// carries, when it is a channel request, acknowledgement or certificate.
+/// carries, when it is a channel request, commit or certificate.
 fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
     use neighbour_wire::NeighbourMsg;
     let plain = ("state.checkpoint.persist", "state.checkpoint.publish");
@@ -344,9 +343,9 @@ fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
             "state.checkpoint.routed_request.persist",
             "state.checkpoint.routed_request.publish",
         ),
-        Ok(NeighbourMsg::MlsGovernanceAck { .. }) => (
-            "state.checkpoint.ack.persist",
-            "state.checkpoint.ack.publish",
+        Ok(NeighbourMsg::MlsGovernance { .. }) => (
+            "state.checkpoint.commit.persist",
+            "state.checkpoint.commit.publish",
         ),
         Ok(NeighbourMsg::IdentityHello { .. }) => (
             "state.checkpoint.hello.persist",
@@ -381,17 +380,11 @@ pub(super) async fn enqueue_state_inner(
     let persist_ended = persist_begun.clone();
     let timed_bytes = delta_len as u64;
     trace_native_publication("admission_started", &envelope, None);
-    let (payloads, store) = authorize_admission(workspace, &envelope, source.as_ref()).await?;
-    // What only a channel's steward reads goes to the room's governor alone
-    // when this relay governs the room (`steward_audience`).
-    let steward_only = steward_only_delta(&*payloads, delta);
+    let store = authorize_admission(workspace, &envelope, source.as_ref()).await?;
     let owner = crate::persistence::handle(workspace).await;
-    let continuity_evidence = source.as_ref().and_then(|source| {
-        crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
-    });
     // A checkpoint that may start its lineage is staged before its turn;
     // the turn commits the stage, or retains it as usual if it cannot.
-    let fresh = if sync || continuity_evidence.is_some() {
+    let fresh = if sync {
         UntakenStage(None)
     } else {
         stage_fresh_checkpoint(&store, &envelope).await
@@ -401,19 +394,11 @@ pub(super) async fn enqueue_state_inner(
     let admission_trace = StateAdmissionTrace::new(&envelope);
     let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let preparation = prepare_admission(
-        workspace.clone(),
-        source.clone(),
-        author,
-        role,
-        delta_len,
-        steward_only,
-    );
+    let preparation = prepare_admission(workspace.clone(), source.clone(), author, role, delta_len);
     let mut turn = StateTurn {
         envelope: Some(envelope),
         sync,
         fresh,
-        continuity_evidence,
         durable_sequence: durable.clone(),
         trace: admission_trace.clone(),
         metrics: metrics.clone(),
@@ -496,19 +481,13 @@ fn admitted_delta(envelope: &Envelope) -> Result<([u8; 32], &[u8]), PeerError> {
     Ok((*author, delta))
 }
 
-/// The room's payload codecs and store, read under a membership check that
-/// the source may still write to it.
-type AuthorizedAdmission = (
-    Arc<dyn crate::payloads::ShellPayloads>,
-    crate::store::WorkspaceStore,
-);
-
-/// Check the source may still write to the room before anything is staged.
+/// The room's store, read under a membership check that the source may still
+/// write to it.
 async fn authorize_admission(
     workspace: &SharedWorkspace,
     envelope: &Envelope,
     source: Option<&StateSource>,
-) -> Result<AuthorizedAdmission, PeerError> {
+) -> Result<crate::store::WorkspaceStore, PeerError> {
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
     if source.is_some_and(|source| !source.authorized(&runtime)) {
         trace_native_publication("admission_source_changed", envelope, None);
@@ -517,10 +496,9 @@ async fn authorize_admission(
         ));
     }
     trace_native_publication("admission_authorized", envelope, None);
-    let payloads = runtime.store.payloads().clone();
     let store = runtime.store.clone();
     drop(runtime);
-    Ok((payloads, store))
+    Ok(store)
 }
 
 /// Who an admitted delta goes to, captured in its owner turn's order.
@@ -539,7 +517,6 @@ async fn prepare_admission(
     author: [u8; 32],
     role: crate::auth::PeerRole,
     delta_len: usize,
-    steward_only: bool,
 ) -> Result<AdmissionRecipients, crate::store::StoreError> {
     let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
     if source
@@ -568,9 +545,6 @@ async fn prepare_admission(
     }
     // Include admitted cross-user live members; explicit device membership is
     // not the only signed-room authority supported by subscriptions.
-    // A change only the steward reads reaches no other session, live
-    // or through a catch-up.
-    let steward = steward_audience(&runtime, steward_only);
     // A device's own change is not sent back to it. What the host commits
     // itself (the governor's decisions, a room bot's writes) no session
     // sent, so it reaches the host device's own session too: the room
@@ -583,9 +557,6 @@ async fn prepare_admission(
         .filter(|(key, sub)| {
             (**key != author || host_commit)
                 && !(role == crate::auth::PeerRole::PeerRelay && runtime.federated(key, sub))
-                && steward
-                    .as_ref()
-                    .is_none_or(|steward| steward.contains(*key))
         })
         .map(|(key, sub)| (*key, sub.tx.clone()))
         .collect::<Vec<_>>();
@@ -678,7 +649,6 @@ struct StateTurn {
     envelope: Option<Envelope>,
     sync: bool,
     fresh: UntakenStage,
-    continuity_evidence: Option<crate::store::continuity::Evidence>,
     durable_sequence: Arc<std::sync::atomic::AtomicU64>,
     trace: Option<StateAdmissionTrace>,
     metrics: Arc<crate::metrics::Metrics>,
@@ -745,18 +715,12 @@ impl StateTurn {
         };
         let publish = !self.sync || state.would_materialize(delta);
         if !publish {
-            return Ok(Step::Done(admitted_commit(
-                None, envelope, captured, publish,
-            )));
+            return Ok(Step::Done(admitted_commit(envelope, captured, publish)));
         }
         let seq = crate::timing::windowed("owner.commit.sequence", || state.next_sequence())?;
         self.sequence = Some(seq);
         self.durable_sequence
             .store(seq, std::sync::atomic::Ordering::SeqCst);
-        let continuity = self
-            .continuity_evidence
-            .clone()
-            .map(|evidence| evidence.accept(seq));
         let raw = crate::transport::encode(&envelope)
             .map_err(|e| crate::persistence::error(e.to_string()))?;
         let retention =
@@ -774,8 +738,7 @@ impl StateTurn {
             }
             let build = crate::timing::windowed("owner.commit.retain_start", || {
                 retain_or_commit_stage(state, &channel, seq, raw, self.fresh.take())
-            })?
-            .with_continuity(continuity.clone());
+            })?;
             let build = if seq.is_some() {
                 build.deferring(state.group.records())?
             } else {
@@ -786,7 +749,7 @@ impl StateTurn {
         } else {
             self.pending_work = Some((raw, recipients.into_iter()));
         }
-        self.commit = Some(admitted_commit(continuity, envelope, captured, publish));
+        self.commit = Some(admitted_commit(envelope, captured, publish));
         Ok(Step::More)
     }
 
@@ -899,14 +862,8 @@ impl StateTurn {
 }
 
 /// The commit an admitted delta makes, before anything of it is written.
-fn admitted_commit(
-    continuity: Option<crate::store::continuity::Receipt>,
-    envelope: Envelope,
-    prepared: PreparedRecipients,
-    publish: bool,
-) -> StateCommit {
+fn admitted_commit(envelope: Envelope, prepared: PreparedRecipients, publish: bool) -> StateCommit {
     StateCommit {
-        continuity,
         envelope: Arc::new(envelope),
         pending: HashMap::new(),
         persisted_bytes: 0,
@@ -953,7 +910,6 @@ fn select_retained_publication(
                 return Ok(Some(ReplayPendingWork::original(
                     current.envelope.clone(),
                     current.replay_targets.clone(),
-                    current.continuity.clone(),
                 )));
             }
         }

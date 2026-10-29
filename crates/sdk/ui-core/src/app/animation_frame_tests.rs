@@ -297,68 +297,6 @@ fn model_change_during_an_animation_is_published() {
     assert!(after.walks.is_empty(), "{:?}", after.walks);
 }
 
-/// A History surface in the tree at rest is not looked at on the frames of
-/// an animation beside it; news reaching it (here a request to open it, as
-/// a reply another thread delivers would be) is looked at in the next frame
-/// only.
-static BESIDE_HISTORY: crate::history_mode::HistoryDefinition =
-    crate::history_mode::HistoryDefinition {
-        app_id: "fixture.history",
-        scopes: &[crate::history_mode::HistoryScopeDefinition {
-            key: "document",
-            title: "Beside",
-            presentation: crate::history_mode::HistoryPresentation::Domain {
-                create: crate::history_mode::host_tests::preview,
-            },
-            content_schema: None,
-        }],
-    };
-
-#[test]
-fn animation_frame_beside_a_history_surface_at_rest_walks_nothing() {
-    use automerge::transaction::Transactable as _;
-    let temp = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
-    let store = owners.open("fixture.history", "room").unwrap();
-    let checkout = crate::record::RecordCheckout::new(
-        crate::RecordId::for_tab(912),
-        crate::record::RecordKind::new("note"),
-    );
-    store
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|doc| {
-            doc.put(automerge::ROOT, "body", "live").unwrap();
-            Ok(())
-        })
-        .unwrap();
-    let probe =
-        crate::history_mode::isolation_tests::native_effect_probe_parts("beside", "fixture.beside");
-    let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(probe.root));
-    tile.bind_record(store, checkout);
-    tile.register_document_history(&BESIDE_HISTORY).unwrap();
-    let history = tile;
-    let root = rows(
-        Column::new()
-            .push(Box::new(Spinner::new()))
-            .push(Box::new(history)),
-    );
-    let mut app = shown(Box::new(root));
-    let start = crate::time::now();
-    let at = |tick: u64| start + std::time::Duration::from_nanos(tick * FRAME_NS);
-    let frames: Vec<_> = (1..=30)
-        .map(|tick| with_monotonic_time(at(tick), || native_frame(&mut app)))
-        .collect();
-    report("spinner-beside-history", &frames);
-    let walked: Vec<_> = frames.iter().flat_map(|f| f.walks.clone()).collect();
-    assert!(walked.is_empty(), "frames walked the tree: {walked:?}");
-    crate::history_mode::note_news();
-    let news = with_monotonic_time(at(31), || native_frame(&mut app));
-    assert!(news.walks.contains(&"walk.history"), "{:?}", news.walks);
-    let after = with_monotonic_time(at(32), || native_frame(&mut app));
-    assert!(after.walks.is_empty(), "{:?}", after.walks);
-}
-
 /// A row opening its body grows on the disclose motion: each frame of it
 /// lays the window out again, at the row's height for that frame, without
 /// rebuilding the tree.

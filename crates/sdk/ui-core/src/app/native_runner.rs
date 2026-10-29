@@ -143,6 +143,13 @@ struct AppHandler {
     /// The last submitted frame painted something over the widgets that
     /// their damage does not describe; the next frame must erase it.
     top_layer_drawn: bool,
+    /// A view panned in the last frame: the next is drawn as layers
+    /// (`crate::strip_layers`), so its worker pans the view by copying.
+    panning: bool,
+    /// The generation of the last frame drawn as layers, and whether it was
+    /// the frame submitted just before: what the next one's chrome damage is
+    /// measured from.
+    layers_drawn: (u64, bool),
     /// The collaborators' marks painted over the widgets, as last submitted,
     /// so a frame damages only the marks that changed.
     presence_layer: crate::presence::PresenceLayer,
@@ -1435,6 +1442,7 @@ impl AppHandler {
                 full_redraw: true,
                 partial: false,
                 backdrop: crate::backdrop::BackdropFrame::default(),
+                layers: None,
             })
             .is_err()
         {
@@ -1829,6 +1837,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
@@ -2081,6 +2090,7 @@ impl AppHandler {
                 // The compositor puts this window over the desktop; nothing
                 // under its surfaces is in this scene to blur.
                 backdrop: crate::backdrop::BackdropFrame::default(),
+                layers: None,
             })
             .is_err()
         {
@@ -2129,7 +2139,7 @@ impl AppHandler {
         let mut handled = false;
         let mut focus_target = None;
         app.mark_semantic_tree_stale();
-        app.track_pointer_buttons(&event);
+        app.input.pointer.track_buttons(&event);
         app.refresh_controls_before_input(&event);
         let resources_before = app.resource_input_mark(&event);
         let capture = app.begin_local_input_event(&event);
@@ -2347,14 +2357,14 @@ impl AppHandler {
         // Continue one bounded provider page per frame. Re-querying resets the
         // palette generation/cursors, so stale work cannot leak into a newer
         // query. A follow-up redraw is requested only while more pages exist.
-        let (search_pending, search_announcement) =
-            app.actions
-                .action_palette
-                .as_mut()
-                .map_or((false, None), |palette| {
-                    let progress = palette.advance_search_page();
-                    (progress.pending, palette.take_search_announcement())
-                });
+        let (search_pending, search_announcement) = app
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .map_or((false, None), |palette| {
+                let progress = palette.advance_search_page();
+                (progress.pending, palette.take_search_announcement())
+            });
         needs_followup_redraw |= search_pending;
         if let (Some(reader), Some(announcement)) = (
             app.accessibility.screen_reader.as_mut(),
@@ -2577,7 +2587,13 @@ impl AppHandler {
             && app.history.is_none()
             && app.history_layout.is_none()
             && !crate::render_thread::remote::requested();
-        let mut culling = culls.then(|| std::mem::take(&mut app.layout.cull));
+        // While a view pans, the frame is drawn as layers instead of culled:
+        // its worker copies what the pan keeps of the view and rasterises
+        // only what it uncovered, under chrome it keeps too.
+        let layer_recording = (culls && std::mem::take(&mut self.panning))
+            .then(crate::strip_layers::LayerRecording::begin);
+        let mut culling =
+            (culls && layer_recording.is_none()).then(|| std::mem::take(&mut app.layout.cull));
         let culled = culling.is_some();
         let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
@@ -2712,6 +2728,10 @@ impl AppHandler {
             let mut offers = crate::scroll_copy::accepting(|| {
                 collect_submitted_widget_damage(root, &mut damage_regions);
             });
+            // A view drawn whole (a canvas its own closure draws) offers no
+            // copy, but says when it panned.
+            let panned = crate::strip_layers::take_panned();
+            self.panning = panned || !offers.is_empty();
             // Widget damage is logical, like the spinner's slot once the
             // scale is taken out of it; both are scaled back together.
             damage_regions.extend(
@@ -2924,6 +2944,27 @@ impl AppHandler {
             } else {
                 crate::input_frame::Repaint::Damage(&damage_regions)
             });
+            let layers = layer_recording.and_then(|recording| {
+                let (generation, consecutive) = self.layers_drawn;
+                let generation = generation.wrapping_add(1);
+                let chrome_damage = (consecutive && !full_redraw_required).then(|| {
+                    crate::strip_layers::ChromeDamage {
+                        since: generation.wrapping_sub(1),
+                        rects: crate::strip_layers::tiles(&damage_regions, (width, height)),
+                    }
+                });
+                let cache = recording.finish(&mut scene, width, generation, chrome_damage)?;
+                self.layers_drawn = (generation, true);
+                Some(cache)
+            });
+            if layers.is_none() {
+                self.layers_drawn.1 = false;
+            }
+            // A floating surface recorded what lay below it in the frame's
+            // chrome alone: what is under the chrome goes under that.
+            if let Some(cache) = layers.as_ref() {
+                crate::strip_layers::put_under(cache, &mut backdrop);
+            }
             let req = RenderRequest::Frame {
                 cpu_frame_id,
                 scene,
@@ -2934,6 +2975,7 @@ impl AppHandler {
                 scroll_copies,
                 full_redraw: full_redraw_required,
                 partial,
+                layers: layers.filter(|_| backdrop.is_empty()),
                 backdrop,
                 on_present: present_hook(self.dev_reload_timing.take(), key_record),
             };
@@ -3434,7 +3476,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 if self
                     .app
                     .invoke_host_shortcut(crate::platform::HostShortcut::Search)
-                    && let Some(palette) = self.app.actions.action_palette.as_mut()
+                    && let Some(palette) = self.app.actions.action_palette.as_deref_mut()
                 {
                     palette.set_query(&query);
                 }
@@ -3856,9 +3898,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
-        if self.app.open_requested_palette() {
-            request_primary_redraw();
-        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
@@ -4287,7 +4326,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             if scheduled_due {
                 askers.push(format!(
                     "deadline:{}",
-                    animation_schedule::waking_leaves(self.app.root_widget.as_ref()).join("+")
+                    animation_schedule::waking_leaves(
+                        self.app.root_widget.as_ref(),
+                        crate::time::now()
+                    )
+                    .join("+")
                 ));
             }
             if retry_due || auxiliary_retry_due {
@@ -4987,6 +5030,8 @@ impl App {
             primary_frames_sent: 0,
             primary_frames_completed: 0,
             top_layer_drawn: false,
+            panning: false,
+            layers_drawn: (0, false),
             presence_layer: crate::presence::PresenceLayer::new(),
             mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,

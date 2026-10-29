@@ -47,8 +47,9 @@ struct Held {
     route: RouteDocument,
     /// Set when the route sent something since the last pump.
     woken: Arc<AtomicBool>,
-    /// The tree's generation the last pump wrote from.
-    generation: Option<u64>,
+    /// The tree's generation the last pump wrote from, and the app reports'
+    /// revision it read.
+    generation: Option<(u64, (u64, u64))>,
 }
 
 /// Opens a room's record route.
@@ -123,10 +124,16 @@ impl WorkspaceLayouts {
                 }
             });
             let woken = held.woken.swap(false, Ordering::AcqRel);
-            if !woken && held.generation == Some(tree.generation()) {
+            // What this device's windows resume with changes with its apps'
+            // reports as well as with the tree.
+            let reports = crate::shell::continuation_registry::global_registry()
+                .lock()
+                .map(|registry| registry.revision())
+                .unwrap_or_default();
+            if !woken && held.generation == Some((tree.generation(), reports)) {
                 continue;
             }
-            held.generation = Some(pump_room(tree, room, &mut held.route));
+            held.generation = Some((pump_room(tree, room, &mut held.route), reports));
         }
     }
 }
@@ -139,6 +146,10 @@ fn pump_room(handle: &WorkspaceTreeHandle, room: RoomId, route: &mut RouteDocume
     // Read while this write holds the tree: its release is the next one.
     let after = handle.generation().wrapping_add(1);
     let captured = tree.capture_workspace_layout(room);
+    let captured = tree.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface,
+    ) || captured;
     let judge = tree.layout_judge(room);
     let mut doc = tree.layout_docs.remove(&room).unwrap_or_default();
     let pumped = route.pump(&mut doc, &mut |doc, arrival| {
@@ -151,6 +162,7 @@ fn pump_room(handle: &WorkspaceTreeHandle, room: RoomId, route: &mut RouteDocume
     if pumped.merged {
         tree.fold_workspace_layout(room);
     }
+    tree.apply_continuations(room);
     if captured || pumped.merged {
         tree.queue_save();
     }

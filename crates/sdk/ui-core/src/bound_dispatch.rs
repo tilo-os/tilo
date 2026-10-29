@@ -1,5 +1,5 @@
 //! Lifetime and canonical-record routing shared by retained and raw widget dispatch.
-pub(crate) mod legacy_document;
+pub(crate) mod local_target;
 
 mod executing_host;
 use executing_host::{ExecutingHostDevice, ExecutingHostPerson, ExecutingHostScope};
@@ -1923,6 +1923,19 @@ pub(crate) fn encode_resource_action(
     }
 }
 
+/// Resolve an invocation's arguments against `resources` and encode it.
+pub(crate) fn encode_resource_invocation(
+    resources: &[ResourceSpec],
+    address: &tilo_actions::ActionAddress,
+    argument: Option<&str>,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+    confirmed: bool,
+) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
+    let (arguments, _, _) =
+        resolve_resource_invocation(resources, address, argument, arguments, confirmed)?;
+    encode_resource_action(resources, address, arguments.as_ref(), None)
+}
+
 /// Ordinary confirmation guarantees declared meaning and arguments in the same
 /// owner. Hidden referent continuity is additional evidence, only when the
 /// provider supplied it at emission; this is deliberately not History custody.
@@ -1948,7 +1961,7 @@ struct OrdinaryConfirmationSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct OrdinaryConfirmation {
-    pub(crate) target: legacy_document::LocalResourceTarget,
+    pub(crate) target: local_target::LocalResourceTarget,
     pub(crate) address: tilo_actions::ActionAddress,
     pub(crate) arguments: ControlContinuationArguments,
     domain: crate::control_custody::WeakControlDomain,
@@ -2072,7 +2085,7 @@ impl ControlContinuationArguments {
 pub(crate) fn control_witness(
     root: &dyn Widget,
     doc: &AutoCommit,
-    target: &legacy_document::LocalResourceTarget,
+    target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
 ) -> Result<ControlWitness, tilo_actions::DoorError> {
     control_witness_with_arguments(
@@ -2087,7 +2100,7 @@ pub(crate) fn control_witness(
 pub(crate) fn control_witness_with_arguments(
     root: &dyn Widget,
     doc: &AutoCommit,
-    target: &legacy_document::LocalResourceTarget,
+    target: &local_target::LocalResourceTarget,
     invocation: &tilo_actions::ControlInvocation,
     original_arguments: &ControlContinuationArguments,
 ) -> Result<ControlWitness, tilo_actions::DoorError> {
@@ -2140,7 +2153,7 @@ pub(crate) struct ControlDeclaration {
 pub(crate) fn control_declaration(
     root: &dyn Widget,
     doc: &AutoCommit,
-    target: &legacy_document::LocalResourceTarget,
+    target: &local_target::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
 ) -> Option<ControlDeclaration> {
     let resources = resources_for_control_target(root, doc, target, address).ok()?;
@@ -2158,11 +2171,11 @@ pub(crate) fn control_declaration(
 fn resources_for_control_target(
     root: &dyn Widget,
     doc: &AutoCommit,
-    target: &legacy_document::LocalResourceTarget,
+    target: &local_target::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
 ) -> Result<Vec<ResourceSpec>, tilo_actions::DoorError> {
     match target {
-        legacy_document::LocalResourceTarget::Component(target) => {
+        local_target::LocalResourceTarget::Component(target) => {
             if target.address.address != *address {
                 return Err(tilo_actions::DoorError::Unknown(address.clone()));
             }
@@ -2182,13 +2195,7 @@ fn resources_for_control_target(
                 .filter_map(|resource| filter_resource(&binding, resource))
                 .collect())
         }
-        legacy_document::LocalResourceTarget::Legacy(target) => {
-            if target.address != *address {
-                return Err(tilo_actions::DoorError::Unknown(address.clone()));
-            }
-            Ok(legacy_document::resolve_legacy_invocation(root, target)?)
-        }
-        legacy_document::LocalResourceTarget::Outer => {
+        local_target::LocalResourceTarget::Outer => {
             let mut resources = Vec::new();
             collect_unbound_resources(root, doc, &mut resources);
             if tilo_actions::door::resolve(&resources, address).is_none()
@@ -2273,7 +2280,7 @@ fn control_identity_from_spec(
 pub(crate) fn control_draft_identity(
     root: &dyn Widget,
     doc: &AutoCommit,
-    target: &legacy_document::LocalResourceTarget,
+    target: &local_target::LocalResourceTarget,
     address: &tilo_actions::ActionAddress,
 ) -> Result<ControlIdentity, tilo_actions::DoorError> {
     let resources = resources_for_control_target(root, doc, target, address)?;
@@ -4948,13 +4955,13 @@ struct BoundNode {
     semantic_name: String,
     /// One binding shared by every node admitted under the same boundary.
     binding: Option<Rc<CallbackBinding>>,
-    legacy: Option<crate::history_mode::HistoryOwner>,
     inactive: bool,
 }
 
-/// Legacy tiles retain their real record custody; they do not impersonate a
-/// canonical component. The existing owned guard still supplies the only write.
-pub(crate) fn restore_legacy_history(
+/// Record owners outside a component (person records, routed records) keep
+/// their real record custody; they do not impersonate a canonical component.
+/// The existing owned guard still supplies the only write.
+pub(crate) fn restore_record_history(
     store: &RecordStore,
     checkout: &RecordCheckout,
     admitted: &crate::state::owned_restore::ConfirmedRestore<'_>,
@@ -5154,254 +5161,30 @@ pub(crate) fn merge_remote_owned_document(
         .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?
 }
 
-/// Legacy semantic delivery retains the actual record and ordinary `UndoLog`.
-/// Presentation-only verbs use a non-committing loan. Mutating verbs authorize
-/// at execution and finish exactly one addressed record action, never outer `State`.
+/// Deliver a semantic (accessibility) action to one admitted node, refused
+/// while History holds its live content inert.
 /// # Safety
 /// Same stable, exclusive tree contract as `invoke_bound_node`.
 pub(crate) unsafe fn invoke_bound_semantic_node<R>(
     bindings: &BoundNodeMap,
     nodes: &HashMap<NodeId, *mut dyn Widget>,
     node: NodeId,
-    action: &crate::a11y::Action,
     outer: &mut crate::state::State,
-    caller: SemanticCaller<'_>,
     callback: impl FnOnce(&mut dyn Widget, &mut AutoCommit, &ObjId) -> R,
 ) -> Result<R, String> {
-    use crate::a11y::Action;
-    let SemanticCaller { authority, author } = caller;
     let admitted = bindings
         .admitted(nodes, node)
         .map_err(|error| format!("{error:?}"))?;
     if admitted.inactive {
         return Err("This live control is hidden by History.".into());
     }
-    let effect = matches!(
-        action,
-        Action::Activate
-            | Action::ToggleCheck
-            | Action::Increment
-            | Action::Decrement
-            | Action::SetValue(_)
-    );
-    let Some(owner) = admitted.legacy.as_ref().filter(|_| effect) else {
-        return unsafe {
-            invoke_bound_node(bindings, nodes, node, &mut outer.doc, &outer.root, callback)
-        }
-        .map_err(|error| format!("{error:?}"));
-    };
-    let app = authorize_legacy_owner(owner, authority, author)?;
-    let (store, checkout) = owner.store_checkout();
-    let pointer = admitted.pointer;
-    let context =
-        tilo_actions::ActionContext::for_resource(checkout.id.as_str(), "document", "Document")
-            .with_app(&app, &app);
-    let (result, changed) = store
-        .with_action_state(&checkout.id, |doc, history, state| {
-            if state.pending.is_some() {
-                return Err("The document has an unfinished owned action.".to_owned());
-            }
-            let next = state
-                .generation
-                .and_then(|generation| generation.checked_add(1))
-                .ok_or("document generation exhausted")?;
-            if history.revision() == u64::MAX {
-                return Err("document history exhausted".into());
-            }
-            let before = (doc.base_heads(), doc.pending_ops());
-            let widget = unsafe { &mut *pointer };
-            let result = callback(widget, doc, &ROOT);
-            let frontier_changed = (doc.base_heads(), doc.pending_ops()) != before;
-            // Typed actions close their transaction at dispatch. Forwarding
-            // controls can leave the bracket on a descendant, so retain the
-            // admitted owner's frontier as a fallback for committed edits.
-            let committed = crate::undo::take_committed_action(widget)
-                .or_else(|| (doc.pending_ops() == 0).then_some(before.0));
-            let changed = if !frontier_changed {
-                false
-            } else if let Some(committed) = committed {
-                history.record_committed_action_authored(
-                    doc,
-                    committed,
-                    None,
-                    crate::undo::get_state(widget),
-                    Some(author.clone()),
-                )
-            } else {
-                history.commit_action_authored_with_message(
-                    doc,
-                    None,
-                    crate::undo::get_state(widget),
-                    Some(author.clone()),
-                    context.change_message(),
-                )
-            };
-            if changed {
-                state.generation = Some(next);
-                state.statuses.clear();
-            }
-            Ok((result, changed))
-        })
-        .map_err(|error| error.to_string())??;
-    if changed {
-        store.schedule_committed_history(&checkout.id);
-    }
-    Ok(result)
-}
-
-/// The local user a semantic action runs as, and the permissions that gate
-/// its effect on an owner-bound node.
-#[derive(Clone, Copy)]
-pub(crate) struct SemanticCaller<'a> {
-    pub(crate) authority: &'a crate::permissions::PermissionContext,
-    pub(crate) author: &'a UserId,
-}
-
-fn authorize_legacy_owner(
-    owner: &crate::history_mode::HistoryOwner,
-    authority: &crate::permissions::PermissionContext,
-    author: &UserId,
-) -> Result<String, String> {
-    use crate::permissions::{Access, ActionKind, Principal};
-    owner.validate().map_err(|error| error.to_string())?;
-    let (store, checkout) = owner.store_checkout();
-    let (_, app, _) = store
-        .history_namespace(&checkout.id)
-        .map_err(|error| error.to_string())?;
-    let current = authority.at_current_time()?;
-    let mapped = current.actor().principals.contains(&author.principal())
-        || current
-            .actor()
-            .principals
-            .contains(&Principal::Person(crate::permissions::LOCAL_USER.into()));
-    if !mapped
-        || app.is_empty()
-        || !current.check(&crate::permissions::PermissionScope::app(
-            app.clone(),
-            ActionKind::Undoable,
-        ))
-    {
-        return Err("You do not have permission to edit this document.".into());
-    }
-    if let Some(path) = checkout.id.file_path()
-        && !current.check(&crate::permissions::PermissionScope::path(
-            path.to_string_lossy().into_owned(),
-            Access::Write,
-        ))
-    {
-        return Err("You do not have permission to edit this file.".into());
-    }
-    Ok(app)
-}
-
-pub(crate) fn legacy_history_request(
-    owner: &crate::history_mode::HistoryOwner,
-    request: crate::undo::UndoRequest,
-    authority: &crate::permissions::PermissionContext,
-    author: &UserId,
-) -> Result<Option<crate::state::UndoEntry>, String> {
-    authorize_legacy_owner(owner, authority, author)?;
-    let (store, checkout) = owner.store_checkout();
-    let result = store
-        .with_action_state(&checkout.id, |doc, history, state| {
-            if state.pending.is_some() {
-                return Err("The document has an unfinished owned action.".to_owned());
-            }
-            let next = state
-                .generation
-                .and_then(|generation| generation.checked_add(1))
-                .ok_or("document generation exhausted")?;
-            if matches!(request, crate::undo::UndoRequest::Undo) && doc.pending_ops() != 0 {
-                history.commit_action_authored(doc, None, None, Some(author.clone()));
-            }
-            let result = match request {
-                crate::undo::UndoRequest::Undo => {
-                    history.undo_as(doc, Some(author), None, None, None)
-                }
-                crate::undo::UndoRequest::Redo => {
-                    history.redo_as(doc, Some(author), None, None, None)
-                }
-            };
-            if result.is_some() {
-                state.generation = Some(next);
-                state.statuses.clear();
-            }
-            Ok(result)
-        })
-        .map_err(|error| error.to_string())??;
-    if result.is_some() {
-        store.schedule_committed_history(&checkout.id);
-    }
-    Ok(result)
-}
-
-/// # Safety
-/// Caller owns the exact stable node map exclusively, as for `invoke_bound_node`.
-pub(crate) unsafe fn drain_legacy_node_action(
-    bindings: &BoundNodeMap,
-    nodes: &HashMap<NodeId, *mut dyn Widget>,
-    node: NodeId,
-    authority: &crate::permissions::PermissionContext,
-    author: &UserId,
-) -> Result<bool, String> {
-    let admitted = bindings
-        .admitted(nodes, node)
-        .map_err(|error| format!("{error:?}"))?;
-    if admitted.inactive {
-        return Ok(false);
-    }
-    let Some(owner) = &admitted.legacy else {
-        return Ok(false);
-    };
-    authorize_legacy_owner(owner, authority, author)?;
-    let (store, checkout) = owner.store_checkout();
-    let pointer = admitted.pointer;
-    let changed = store
-        .with_action_state(&checkout.id, |doc, history, state| {
-            if state.pending.is_some() {
-                return Err("The document has an unfinished owned action.".to_owned());
-            }
-            let next = state
-                .generation
-                .and_then(|generation| generation.checked_add(1))
-                .ok_or("document generation exhausted")?;
-            let widget = unsafe { &mut *pointer };
-            let Some(before) = crate::undo::take_committed_action(widget) else {
-                return Ok(false);
-            };
-            // A successful pure resource action may have already recorded the
-            // frontier while an older no-op notification remains on the widget.
-            // Retire that notification without duplicating or rebasing history.
-            if doc.pending_ops() == 0 && history.matches_recorded_frontier(doc) {
-                return Ok(false);
-            }
-            let changed = history.record_committed_action_authored(
-                doc,
-                before,
-                None,
-                crate::undo::get_state(widget),
-                Some(author.clone()),
-            );
-            if changed {
-                state.generation = Some(next);
-                state.statuses.clear();
-            }
-            Ok(changed)
-        })
-        .map_err(|error| error.to_string())??;
-    if changed {
-        store.schedule_committed_history(&checkout.id);
-    }
-    Ok(changed)
+    unsafe { invoke_bound_node(bindings, nodes, node, &mut outer.doc, &outer.root, callback) }
+        .map_err(|error| format!("{error:?}"))
 }
 
 #[cfg(test)]
 #[path = "bound_dispatch/document_action_ack_tests.rs"]
 mod document_action_ack_tests;
-
-#[cfg(test)]
-#[path = "bound_dispatch/legacy_document_tests.rs"]
-pub(crate) mod legacy_document_tests;
 
 #[cfg(test)]
 #[path = "bound_dispatch/author_writer_tests.rs"]

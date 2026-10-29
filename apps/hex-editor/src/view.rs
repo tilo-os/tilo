@@ -18,12 +18,13 @@
 //!     edited bytes, size); "Opened" and failures are transient notices
 //!   * go to     — a popover with one field, anchored at the status bar
 //!
-//! The bytes are the [`HexEditor`] resource's: the view shows the state it
-//! is presented, edits its own copy as a key is pressed so typing stays
-//! immediate, and submits each edit as the resource's action through the
-//! framework's dispatcher. Opening and saving a file are the
-//! [`HexEffect`]s it answers. The path a save writes back to stays on this
-//! device, in the view.
+//! The bytes are the [`HexEditor`] resource's: the [`Editor`] the window
+//! shares with the view's effect handler follows the document, edits its
+//! own copy as a key is pressed so typing stays immediate, and submits each
+//! edit as the resource's action through the framework's dispatcher.
+//! Opening and saving a file are the [`HexEffect`]s it answers. The path a
+//! save writes back to stays on this device, in the editor. The
+//! [`HexView`] window hosts it, with the go-to prompt over it.
 
 mod clipboard;
 mod find;
@@ -31,7 +32,7 @@ mod layout;
 mod paint;
 mod window_bar;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell, RefMut};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -65,8 +66,7 @@ use ui::widget::{
 use ui::window_toolbar::SearchOpening;
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live, ResourceSurface,
-    SurfaceCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Live,
 };
 use ui::tilo_resource::ActionDecl;
 
@@ -104,7 +104,7 @@ enum FileIo {
 const NEW_FILE_NAME: &str = "Untitled.bin";
 
 /// The no-file zero-state: what the editor is for, opening a file, and
-/// (beside it, [`HexView::new_empty_file`]) starting an empty one.
+/// (beside it, [`Editor::new_empty_file`]) starting an empty one.
 fn empty_state() -> EmptyState {
     EmptyState::new("No file open")
         .with_icon(Icon::File)
@@ -132,7 +132,7 @@ fn strip(id: &str, labels: &[&str], pick: &Rc<Cell<Option<usize>>>) -> ToggleGro
     clippy::struct_excessive_bools,
     reason = "unrelated view flags (dirty/has_file/focused/expect_open), not a combinatorial option set"
 )]
-pub struct HexView {
+pub(crate) struct Editor {
     /// The view's copy of the buffer and its editor state.
     model: HexModel,
     /// The file's name, the window's location.
@@ -150,7 +150,8 @@ pub struct HexView {
     revision: u64,
 
     // --- go to ---
-    goto: Popover<PopoverPrompt>,
+    /// The window opens the go-to prompt on its next turn.
+    goto_asked: bool,
     /// The offset readout in the status bar, which opens the prompt.
     offset_readout: Rect,
 
@@ -170,7 +171,7 @@ pub struct HexView {
     scrollbar: ui::widget::scrollbar::Scrollbar,
     /// A capture asks for the inspector open once the window size is known.
     reveal_inspector: bool,
-    /// Where everything is; refreshed by [`HexView::relayout`].
+    /// Where everything is; refreshed by [`Editor::relayout`].
     geo: Geo,
     /// The monospace advance and line height measured from the renderer that
     /// paints the grid. Layout, paint and hit-testing all derive their
@@ -218,12 +219,18 @@ pub struct HexView {
     focused: bool,
     /// Where edits and effects go, once the framework attached the view.
     dispatch: Option<Dispatcher<HexEditor>>,
-    /// The resource's state, to show again when an edit is refused.
+    /// The resource's state, followed as it changes and shown again when an
+    /// edit is refused; `None` for an editor outside the framework.
     live: Option<Live<HexEditor>>,
+    /// The document as last shown.
+    presented: Option<(u64, u64)>,
 }
 
-impl HexView {
-    pub fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
+/// The editor as the window and the view's effect handler share it.
+pub(crate) type Shared = Rc<RefCell<Editor>>;
+
+impl Editor {
+    pub(crate) fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
         let endian_pick = Rc::new(Cell::new(None));
         Self {
             model: HexModel::new(bytes),
@@ -234,14 +241,7 @@ impl HexView {
             matches: Vec::new(),
             match_idx: None,
             revision: 0,
-            goto: Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
-                .with_field_chars(16)
-                .with_field(|input| {
-                    input
-                        .with_kind(ui::widget::TextInputKind::Code)
-                        .with_id("hex.goto")
-                })
-                .side(PopoverSide::Above),
+            goto_asked: false,
             offset_readout: Rect::ZERO,
             drawer: SidebarDrawer::new()
                 .right()
@@ -269,28 +269,37 @@ impl HexView {
             focused: false,
             dispatch: None,
             live: None,
+            presented: None,
         }
     }
 
     /// The editor with no file loaded — the honest live default. Shows a
     /// composed empty state whose only affordance is opening a file; it never
     /// fabricates a buffer.
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         let mut v = Self::new(Vec::new(), "No file");
         v.has_file = false;
         v
     }
 
-    /// The file on this device a save writes back to without a chooser.
-    #[must_use]
-    pub fn with_path(mut self, path: Option<PathBuf>) -> Self {
-        self.path = path;
-        self
+    /// Follow the document `live` holds, editing it through `dispatch`.
+    pub(crate) fn attach(&mut self, live: Live<HexEditor>, dispatch: Dispatcher<HexEditor>) {
+        self.live = Some(live);
+        self.dispatch = Some(dispatch);
+        self.follow_document();
     }
 
-    /// Test/read accessor for the decoded model.
-    pub fn model(&self) -> &HexModel {
-        &self.model
+    /// Show the buffer the document holds when it changed since it was
+    /// last shown.
+    pub(crate) fn follow_document(&mut self) {
+        let Some(state) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return;
+        };
+        self.present(&state);
     }
 
     /// Mutable accessor for the decoded model — used by tests to position the
@@ -298,16 +307,6 @@ impl HexView {
     #[cfg(test)]
     pub fn model_mut(&mut self) -> &mut HexModel {
         &mut self.model
-    }
-
-    /// Whether a real buffer is loaded (false in the empty state).
-    pub fn has_file(&self) -> bool {
-        self.has_file
-    }
-
-    /// The on-disk path currently backing the buffer, if any.
-    pub fn path(&self) -> Option<&std::path::Path> {
-        self.path.as_deref()
     }
 
     /// Show the bundled sample as a capture does: the cursor on the IHDR
@@ -595,13 +594,10 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// Open the go-to prompt (Ctrl+G, or a click on the offset readout) at
-    /// the status bar's offset readout.
-    fn open_goto(&mut self) {
-        let anchor = self.goto_anchor();
-        // The current offset, selected: typing replaces it, Enter keeps it.
-        let cursor = self.model.cursor();
-        self.goto.open_prompt(anchor, &format!("0x{cursor:X}"));
+    /// Have the window open the go-to prompt (Ctrl+G, a click on the offset
+    /// readout, the effect) at the status bar's offset readout.
+    fn ask_goto(&mut self) {
+        self.goto_asked = true;
         self.dirty = true;
     }
 
@@ -736,7 +732,7 @@ impl HexView {
                     return true;
                 }
                 if self.offset_readout.contains(p) {
-                    self.open_goto();
+                    self.ask_goto();
                     return true;
                 }
                 if self.over_inspector(p) {
@@ -757,15 +753,6 @@ impl HexView {
             self.route_to_strips(event, ctx);
         }
         false
-    }
-
-    /// Events while the go-to popover is open: it captures input.
-    fn handle_goto_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        Widget::handle_event(&mut self.goto, event, ctx);
-        if let Some(query) = self.goto.take_submitted() {
-            self.commit_goto(&query);
-        }
-        self.dirty = true;
     }
 
     /// Events while no file is open: the empty state's action and Ctrl+O.
@@ -799,10 +786,10 @@ impl HexView {
     }
 }
 
-impl Widget for HexView {
-    ui::provides!(dyn ui::widget::Findable);
-
-    fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
+/// The editor's turn in each frame, which its window gives it.
+impl Editor {
+    fn sync(&mut self) {
+        self.follow_document();
         // Drain a closed file chooser first, so a freshly opened buffer is
         // submitted before this frame lays out.
         self.drain_chooser();
@@ -813,7 +800,7 @@ impl Widget for HexView {
             .publish(|(text, kind)| ToolbarNotice::new(text.clone(), *kind));
     }
 
-    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+    fn settle(&mut self) {
         self.run_window_toolbar();
     }
 
@@ -831,18 +818,9 @@ impl Widget for HexView {
         self.is_busy() || (self.has_file && self.drawer.is_animating())
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.layout_theme = theme.clone();
-        taffy.fill_leaf(node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    /// Lay the editor out in `rect`.
+    fn place(&mut self, rect: Rect) {
+        self.rect = rect;
         self.relayout_now();
     }
 
@@ -860,10 +838,6 @@ impl Widget for HexView {
         // A key (Insert, Ctrl+I) changes what the bar shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
         self.relayout(text_renderer, theme, true);
-        if self.goto.is_open() {
-            let anchor = self.goto_anchor();
-            self.goto.set_anchor(anchor);
-        }
         self.paint(scene, transform, text_renderer, theme, presence);
     }
 
@@ -873,10 +847,6 @@ impl Widget for HexView {
 
         if !self.has_file {
             self.handle_empty_event(event, ctx);
-            return;
-        }
-        if self.goto.is_open() {
-            self.handle_goto_event(event, ctx);
             return;
         }
         if self.handle_chrome_pointer(event, ctx) {
@@ -908,62 +878,8 @@ impl Widget for HexView {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "HexView"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("hex_view")
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::new();
-        if self.goto.is_open() {
-            children.push(&self.goto);
-        }
-        children
-    }
-
-    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        if self.goto.is_open() {
-            visitor(&self.goto);
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        if self.goto.is_open() {
-            children.push(&mut self.goto);
-        }
-        children
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.goto.is_open() {
-            return Widget::ime_cursor_rect(self.goto.content());
-        }
-        None
-    }
-
-    fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        if self.goto.is_open() {
-            return Widget::ime_content(self.goto.content());
-        }
-        None
-    }
-
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.goto.is_open() {
-            return Widget::cursor_shape(self.goto.content(), point);
-        }
-        None
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    /// The editor's semantics, with the go-to prompt's while it is open.
+    fn accessibility(&self, goto: &Popover<PopoverPrompt>) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
         let mut children = vec![
@@ -992,8 +908,8 @@ impl Widget for HexView {
             if self.geo.inspector_visible {
                 children.extend(self.endian_group.accessibility());
             }
-            if self.goto.is_open() {
-                children.extend(self.goto.content().accessibility());
+            if goto.is_open() {
+                children.extend(goto.content().accessibility());
             }
         } else {
             children.push(
@@ -1013,17 +929,11 @@ impl Widget for HexView {
                     .with_action_target("hex.new"),
             );
         }
-        Some(
-            AccessNode::new(Role::Document)
-                .with_name("Hex editor")
-                .with_description("The bytes of one file, edited byte by byte.")
-                .with_state(AccessState::default().focusable(true).focused(self.focused))
-                .with_children(children),
-        )
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
+        AccessNode::new(Role::Document)
+            .with_name("Hex editor")
+            .with_description("The bytes of one file, edited byte by byte.")
+            .with_state(AccessState::default().focusable(true).focused(self.focused))
+            .with_children(children)
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1035,13 +945,7 @@ impl Widget for HexView {
         self.focused
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
+    fn perform_semantic_action(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "hex.open" => self.invoke(&HexEffect::OpenFile { path: None }),
@@ -1065,11 +969,11 @@ impl Widget for HexView {
     }
 }
 
-impl ResourceSurface<HexEditor, HexEffect> for HexView {
+impl Editor {
     /// Show the buffer the resource holds now. A newly opened file loads
     /// fresh; any other change (an undo, a collaborator, the palette) is
     /// shown in place, keeping the cursor and the view settings.
-    fn present(&mut self, state: &Rc<HexEditor>) {
+    fn present(&mut self, state: &HexEditor) {
         let fresh = state.opened != self.opened || (!self.has_file && state.has_file());
         let name = state.name().unwrap_or("No file").to_owned();
         if fresh {
@@ -1093,18 +997,14 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         self.dirty = true;
     }
 
-    fn attach(&mut self, cx: SurfaceCx<HexEditor>) {
-        self.dispatch = Some(cx.dispatcher());
-        self.live = Some(cx.live());
-    }
-
-    /// A capture shows the bundled sample the scenario opened; the scenario
-    /// then stages its view state.
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: HexEffect, cx: &mut EffectCx<HexEditor, Self>) -> EffectAnswer {
+    /// Answer an effect invoked by a control, the palette, an agent or a
+    /// script, on the buffer the document holds now.
+    pub(crate) fn answer(
+        &mut self,
+        effect: HexEffect,
+        cx: &mut EffectCx<HexEditor>,
+    ) -> EffectAnswer {
+        self.follow_document();
         let panel = match effect {
             HexEffect::Search => Some(HexPanel::Search),
             HexEffect::GotoOffset => Some(HexPanel::GotoOffset),
@@ -1123,7 +1023,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         match effect {
             HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
             HexEffect::OpenFile { path: Some(path) } => {
-                self.open_path(PathBuf::from(path))?;
+                self.open_path(path.into_path_buf())?;
                 Ok(Effected::done())
             }
             HexEffect::OpenFile { path: None } => {
@@ -1134,15 +1034,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
                 Err("open a file first".into())
             }
             HexEffect::SaveAs { path } => {
-                let path = std::path::Path::new(&path);
-                // A relative path would land wherever this process runs.
-                if !path.is_absolute() {
-                    return Err(format!(
-                        "the path to save to must be absolute: {}",
-                        path.display()
-                    ));
-                }
-                self.write_to(path)?;
+                self.write_to(&path)?;
                 Ok(Effected::done())
             }
             HexEffect::Save => {
@@ -1157,7 +1049,8 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         }
     }
 
-    fn effects(&self) -> Vec<EffectStatus> {
+    /// Which effects have nothing to act on.
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.has_file {
             Vec::new()
         } else {
@@ -1170,7 +1063,8 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         }
     }
 
-    fn bound_declarations(&self) -> Vec<ActionDecl<HexEditor>> {
+    /// The edits at the cursor and the selection, as the resource's actions.
+    pub(crate) fn bound_declarations(&self) -> Vec<ActionDecl<HexEditor>> {
         if !self.has_file {
             return Vec::new();
         }
@@ -1182,7 +1076,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
     }
 }
 
-impl HexView {
+impl Editor {
     /// Left-click handling for the byte grid: a hit-test that moves the
     /// cursor (optionally extending the selection). Split out of `Widget::handle_event` to keep that dispatch
     /// under the line-count limit.
@@ -1252,7 +1146,7 @@ impl HexView {
     fn open_panel(&mut self, panel: HexPanel) {
         match panel {
             HexPanel::Search => Self::open_find(SearchOpening::Find),
-            HexPanel::GotoOffset => self.open_goto(),
+            HexPanel::GotoOffset => self.ask_goto(),
         }
     }
 
@@ -1377,11 +1271,12 @@ impl HexView {
     }
 }
 
-impl HexView {
+impl Editor {
     /// Stage a screenshot scenario (`None` for a plain `--shots`) over the
     /// bundled sample the scenario opened: the view state the scenario
     /// shows. Never runs in a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.follow_document();
         if scenario == Some("empty") {
             return;
         }
@@ -1395,7 +1290,7 @@ impl HexView {
                 ui::widget::Findable::find(self, "49 48 44 52", hex);
                 ui::widget::Findable::reveal(self, 0);
             }
-            Some("goto") => self.open_goto(),
+            Some("goto") => self.ask_goto(),
             Some("edited") => {
                 for (off, value) in [(0x1D_usize, 0x01_u8), (0x1E, 0x00), (0x25, 0xFF)] {
                     self.model.set_byte(off, value);
@@ -1422,6 +1317,244 @@ fn byte_edit(edit: &BufferEdit) -> Option<ui::tilo_resource::Edit<HexEditor>> {
     HexEditor::paths().bytes.perform(edit).ok()
 }
 
+/// The hex editor's window: the [`Editor`] it shares with the view's effect
+/// handler, with the go-to prompt over it while it is open.
+pub struct HexView {
+    editor: Shared,
+    goto: Popover<PopoverPrompt>,
+}
+
+impl HexView {
+    /// The window over `editor`.
+    fn over(editor: Editor) -> Self {
+        Self {
+            editor: Rc::new(RefCell::new(editor)),
+            goto: Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
+                .with_field_chars(16)
+                .with_field(|input| {
+                    input
+                        .with_kind(ui::widget::TextInputKind::Code)
+                        .with_id("hex.goto")
+                })
+                .side(PopoverSide::Above),
+        }
+    }
+
+    /// A window on `bytes`, read from the file `file_name`, outside the
+    /// framework.
+    pub fn new(bytes: Vec<u8>, file_name: impl Into<String>) -> Self {
+        Self::over(Editor::new(bytes, file_name))
+    }
+
+    /// The window with no file loaded — the honest live default. Shows a
+    /// composed empty state whose only affordance is opening a file; it never
+    /// fabricates a buffer.
+    pub fn empty() -> Self {
+        Self::over(Editor::empty())
+    }
+
+    /// The file on this device a save writes back to without a chooser.
+    #[must_use]
+    pub fn with_path(self, path: Option<PathBuf>) -> Self {
+        self.state().path = path;
+        self
+    }
+
+    /// The editor, shared with the view's effect handler.
+    pub(crate) fn shared(&self) -> Shared {
+        Rc::clone(&self.editor)
+    }
+
+    /// What the window shows, shared with the view's effect handler.
+    pub(crate) fn state(&self) -> RefMut<'_, Editor> {
+        self.editor.borrow_mut()
+    }
+
+    /// Open the go-to prompt when the editor asked for it, with the current
+    /// offset selected: typing replaces it, Enter keeps it.
+    fn open_asked_goto(&mut self) {
+        let mut editor = self.editor.borrow_mut();
+        if !std::mem::take(&mut editor.goto_asked) {
+            return;
+        }
+        let cursor = editor.model.cursor();
+        self.goto
+            .open_prompt(editor.goto_anchor(), &format!("0x{cursor:X}"));
+        editor.dirty = true;
+    }
+
+    /// Events while the go-to popover is open: it captures input.
+    fn handle_goto_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        Widget::handle_event(&mut self.goto, event, ctx);
+        let mut editor = self.editor.borrow_mut();
+        if let Some(query) = self.goto.take_submitted() {
+            editor.commit_goto(&query);
+        }
+        editor.dirty = true;
+    }
+}
+
+impl Widget for HexView {
+    ui::provides!(dyn ui::widget::Findable);
+
+    fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
+        self.state().sync();
+        self.open_asked_goto();
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
+        self.state().settle();
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.editor.borrow().next_wake_deadline()
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.editor.borrow().needs_idle_sync()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.editor.borrow().needs_animation_frame()
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.state().layout_theme = theme.clone();
+        taffy.fill_leaf(node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.state()
+            .place(ui::widget::layout_rect(taffy, node, origin));
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let mut editor = self.editor.borrow_mut();
+        editor.draw(scene, transform, text_renderer, theme, presence);
+        if self.goto.is_open() {
+            self.goto.set_anchor(editor.goto_anchor());
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.goto.is_open() && self.editor.borrow().has_file {
+            self.handle_goto_event(event, ctx);
+            return;
+        }
+        self.state().handle_event(event, ctx);
+        self.open_asked_goto();
+    }
+
+    fn name(&self) -> &'static str {
+        "HexView"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("hex_view")
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.editor.borrow().rect
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if self.goto.is_open() {
+            children.push(&self.goto);
+        }
+        children
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.goto.is_open() {
+            visitor(&self.goto);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if self.goto.is_open() {
+            children.push(&mut self.goto);
+        }
+        children
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if self.goto.is_open() {
+            return Widget::ime_cursor_rect(self.goto.content());
+        }
+        None
+    }
+
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
+        if self.goto.is_open() {
+            return Widget::ime_content(self.goto.content());
+        }
+        None
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.goto.is_open() {
+            return Widget::cursor_shape(self.goto.content(), point);
+        }
+        None
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.editor.borrow().accessibility(&self.goto))
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.state().set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.editor.borrow().is_focused()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> bool {
+        self.state().perform_semantic_action(target, action)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.editor.borrow().needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.state().mark_drawn();
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1432,13 +1565,14 @@ mod tests {
     fn staged(scenario: Option<&str>) -> HexView {
         let mut view = HexView::empty();
         if scenario != Some("empty") {
-            view.present(&Rc::new(HexEditor {
+            view.state().present(&HexEditor {
                 name: Some(ui::tilo_resource::Atom("sample.png".into())),
                 bytes: crate::buffer::ByteBuffer::of(&crate::sample::png_image()),
                 opened: 1,
-            }));
+            });
         }
-        view.stage_scenario(scenario);
+        view.state().stage_scenario(scenario);
+        view.open_asked_goto();
         view
     }
 
@@ -1447,8 +1581,8 @@ mod tests {
     /// opened bytes.
     #[test]
     fn presented_state_loads_an_open_and_shows_later_changes_in_place() {
-        let mut view = HexView::empty();
-        assert!(!view.has_file());
+        let mut view = Editor::empty();
+        assert!(!view.has_file);
         let state = |bytes: &[u8], opened| {
             Rc::new(HexEditor {
                 name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
@@ -1457,7 +1591,7 @@ mod tests {
             })
         };
         view.present(&state(&[1, 2, 3, 4], 1));
-        assert!(view.has_file());
+        assert!(view.has_file);
         assert_eq!(view.model.bytes(), &[1, 2, 3, 4]);
         view.model.move_to(3, false);
         view.present(&state(&[1, 9, 3, 4], 1));
@@ -1470,7 +1604,7 @@ mod tests {
 
     #[test]
     fn presented_local_edits_clear_highlights_when_saved_bytes_are_restored() {
-        let mut view = HexView::empty();
+        let mut view = Editor::empty();
         let state = |bytes: &[u8]| {
             Rc::new(HexEditor {
                 name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
@@ -1498,13 +1632,13 @@ mod tests {
 
     /// A view on `bytes`, with the grid in the hex column (`ascii` false) or
     /// the ASCII one.
-    fn editing(bytes: &[u8], ascii: bool) -> HexView {
-        let mut view = HexView::empty();
-        view.present(&Rc::new(HexEditor {
+    fn editing(bytes: &[u8], ascii: bool) -> Editor {
+        let mut view = Editor::empty();
+        view.present(&HexEditor {
             name: Some(ui::tilo_resource::Atom("bytes.bin".into())),
             bytes: crate::buffer::ByteBuffer::of(bytes),
             opened: 1,
-        }));
+        });
         if ascii {
             view.model.toggle_column();
         }
@@ -1549,7 +1683,7 @@ mod tests {
     fn find_matches_bytes_in_hex_and_text_modes() {
         use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
 
-        let mut view = HexView::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
+        let mut view = Editor::new(vec![0xde, 0xad, 0x00, 0xde, 0xad], "bytes.bin");
         let hex = FindOptions {
             mode: FindMode::Hex,
             ..FindOptions::default()
@@ -1563,7 +1697,7 @@ mod tests {
         // A text query that is not in the buffer finds nothing.
         assert!(Findable::find(&mut view, "Þ", FindOptions::default()).is_empty());
 
-        let mut view = HexView::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
+        let mut view = Editor::new(b"IHDR ihdr IHDRx".to_vec(), "text.bin");
         let any = FindOptions::default();
         assert_eq!(Findable::find(&mut view, "ihdr", any).len(), 3);
         let exact = FindOptions {
@@ -1577,7 +1711,7 @@ mod tests {
         };
         assert_eq!(Findable::find(&mut view, "ihdr", word).len(), 2);
 
-        let mut view = HexView::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
+        let mut view = Editor::new(vec![0; search::MAX_RETAINED_MATCHES + 50], "large.bin");
         let found = Findable::find(&mut view, "00", hex);
         assert_eq!(found.len(), search::MAX_RETAINED_MATCHES);
 
@@ -1588,7 +1722,7 @@ mod tests {
     /// The go-to form keeps the editor's own offset policies.
     #[test]
     fn goto_accepts_hex_and_decimal_offsets() {
-        let mut view = HexView::new(vec![0; 64], "bytes.bin");
+        let mut view = Editor::new(vec![0; 64], "bytes.bin");
         view.commit_goto("0x1f");
         assert_eq!(view.model.cursor(), 31);
         view.commit_goto(" 12 ");
@@ -1636,8 +1770,6 @@ mod tests {
     /// grid fills the content width and the inspector docks beside it.
     #[test]
     fn surface_geometry_follows_measured_metrics_width_and_state() {
-        use ui::a11y::Role;
-
         let mut tr = TextRenderer::new();
         for scale in [1.0_f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -1645,9 +1777,10 @@ mod tests {
             let mut view = HexView::new(vec![0xAB; 960], "scale.bin");
             // Wide at every text scale: the inspector docks beside a grid
             // that keeps a full row.
-            view.rect = Rect::new(0.0, 0.0, 1600.0 * f64::from(scale), 1000.0);
+            view.state().rect = Rect::new(0.0, 0.0, 1600.0 * f64::from(scale), 1000.0);
             let before = CellMetrics::measure(&mut tr, &theme);
             paint_frame(&mut view, &mut tr, &theme);
+            let view = view.state();
             assert_eq!(view.cell, before, "draw measures the same cell metrics");
             let g = view.geo.clone();
             assert!(g.inspector_visible, "a wide window docks the inspector");
@@ -1701,20 +1834,23 @@ mod tests {
         let theme = Theme::dark();
         tr.set_text_scale(1.0);
         let mut view = HexView::new(vec![0; 128], "narrow.bin");
-        view.rect = Rect::new(0.0, 0.0, 540.0, 500.0);
+        view.state().rect = Rect::new(0.0, 0.0, 540.0, 500.0);
         paint_frame(&mut view, &mut tr, &theme);
-        assert!(!view.geo.inspector_visible, "closed by default when narrow");
-        assert!((view.geo.content.x1 - view.rect.x1).abs() < 1e-6);
-        assert!(view.model.bytes_per_row() >= 8);
+        {
+            let view = view.state();
+            assert!(!view.geo.inspector_visible, "closed by default when narrow");
+            assert!((view.geo.content.x1 - view.rect.x1).abs() < 1e-6);
+            assert!(view.model.bytes_per_row() >= 8);
+        }
 
         // The grid fills every width: whatever the window, the gaps absorb
         // what a whole number of bytes leaves over.
         let lane = f64::from(theme.tokens.metrics.scrollbar_gutter + theme.tokens.spacing.s1);
         for width in (640..=1600).step_by(37) {
             let mut view = HexView::new(vec![0; 4096], "fill.bin");
-            view.rect = Rect::new(0.0, 0.0, f64::from(width), 700.0);
+            view.state().rect = Rect::new(0.0, 0.0, f64::from(width), 700.0);
             paint_frame(&mut view, &mut tr, &theme);
-            let g = &view.geo;
+            let g = &view.state().geo.clone();
             assert!(
                 (g.content.x1 - g.ascii_x1 - lane).abs() < 1.0,
                 "width {width}: dead space right of the ASCII column: {g:?}"
@@ -1723,21 +1859,29 @@ mod tests {
 
         // An 800 px window keeps 16 bytes a row by floating the inspector.
         let mut view = HexView::new(vec![0; 4096], "compact.bin");
-        view.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        view.state().rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         paint_frame(&mut view, &mut tr, &theme);
-        assert!(!view.geo.docked, "too narrow for a docked inspector");
-        assert!(view.model.bytes_per_row() >= 16);
-
-        view.toggle_inspector();
-        view.drawer.snap(true);
+        {
+            let mut view = view.state();
+            assert!(!view.geo.docked, "too narrow for a docked inspector");
+            assert!(view.model.bytes_per_row() >= 16);
+            view.toggle_inspector();
+            view.drawer.snap(true);
+        }
         paint_frame(&mut view, &mut tr, &theme);
+        let view = view.state();
         assert!(view.geo.inspector_visible, "the toggle opens the drawer");
         assert!(
             (view.geo.content.x1 - view.rect.x1).abs() < 1e-6,
             "a floating drawer leaves the grid its full width"
         );
+    }
 
-        // A closed editor exposes a local-document a11y summary.
+    /// A closed editor exposes a local-document a11y summary.
+    #[test]
+    fn a_closed_editor_summarises_the_local_document() {
+        use ui::a11y::Role;
+
         let view = HexView::empty();
         let tree = Widget::accessibility(&view).expect("semantic root");
         assert_eq!(tree.role, Role::Document);
@@ -1783,11 +1927,11 @@ mod tests {
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
         let mut view = staged(None);
-        view.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        view.state().rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         paint_frame(&mut view, &mut tr, &theme);
-        assert_eq!(view.model.endian(), Endian::Big);
+        assert_eq!(view.state().model.endian(), Endian::Big);
 
-        let g = view.geo.clone();
+        let g = view.state().geo.clone();
         let cell = Rect::new(
             g.hex_x(3),
             g.grid.y0 + g.row_h,
@@ -1795,22 +1939,27 @@ mod tests {
             g.grid.y0 + 2.0 * g.row_h,
         );
         assert!(click(&mut view, cell));
-        assert_eq!(view.model.cursor(), view.model.bytes_per_row() + 3);
-        assert_eq!(view.model.column(), Column::Hex);
+        {
+            let view = view.state();
+            assert_eq!(view.model.cursor(), view.model.bytes_per_row() + 3);
+            assert_eq!(view.model.column(), Column::Hex);
+        }
 
         let left = |strip: Rect| Rect::new(strip.x0, strip.y0, strip.center().x, strip.y1);
         assert!(click(&mut view, left(g.endian)));
-        assert_eq!(view.model.endian(), Endian::Little);
+        assert_eq!(view.state().model.endian(), Endian::Little);
         paint_frame(&mut view, &mut tr, &theme);
 
         // The sample overflows the grid, so a bar shows its position and a
         // dragged thumb scrolls it.
-        let metrics = view.scroll_metrics();
-        assert!(metrics.overflows());
-        let thumb = view
-            .scrollbar
-            .thumb_rect(view.geo.scroll_track, metrics)
-            .expect("a thumb");
+        let thumb = {
+            let view = view.state();
+            let metrics = view.scroll_metrics();
+            assert!(metrics.overflows());
+            view.scrollbar
+                .thumb_rect(view.geo.scroll_track, metrics)
+                .expect("a thumb")
+        };
         let device_id = winit::event::DeviceId::dummy();
         let at = |p: Point| WindowEvent::CursorMoved {
             device_id,
@@ -1827,13 +1976,24 @@ mod tests {
             &mut view,
             &at(Point::new(thumb.center().x, thumb.center().y + 40.0)),
         );
-        assert!(view.model.top_row() > 0, "dragging the thumb scrolls");
+        assert!(
+            view.state().model.top_row() > 0,
+            "dragging the thumb scrolls"
+        );
         send(&mut view, &button(ElementState::Released));
-        assert!(!view.scrollbar.is_dragging());
-        let max = view.model.row_count() - view.visible_rows;
-        view.model.scroll_by(1000);
+        let max = {
+            let mut view = view.state();
+            assert!(!view.scrollbar.is_dragging());
+            let max = view.model.row_count() - view.visible_rows;
+            view.model.scroll_by(1000);
+            max
+        };
         paint_frame(&mut view, &mut tr, &theme);
-        assert_eq!(view.model.top_row(), max, "never past the last full page");
+        assert_eq!(
+            view.state().model.top_row(),
+            max,
+            "never past the last full page"
+        );
     }
 
     /// Every scenario paints in both polarities at a wide and a narrow size
@@ -1853,9 +2013,12 @@ mod tests {
             for theme in [Theme::dark(), Theme::light()] {
                 for (w, h) in [(1280.0, 800.0), (640.0, 720.0)] {
                     let mut view = staged(name);
-                    view.rect = Rect::new(0.0, 0.0, w, h);
-                    assert_eq!(view.has_file(), name != Some("empty"));
-                    assert_eq!(!view.matches.is_empty(), found, "{name:?}");
+                    {
+                        let mut editor = view.state();
+                        editor.rect = Rect::new(0.0, 0.0, w, h);
+                        assert_eq!(editor.has_file, name != Some("empty"));
+                        assert_eq!(!editor.matches.is_empty(), found, "{name:?}");
+                    }
                     assert_eq!(view.goto.is_open(), goto, "{name:?}");
                     paint_frame(&mut view, &mut tr, &theme);
                     paint_frame(&mut view, &mut tr, &theme);
@@ -1863,13 +2026,14 @@ mod tests {
             }
         }
         let mut view = staged(Some("narrow-inspector"));
-        view.rect = Rect::new(0.0, 0.0, 640.0, 720.0);
+        view.state().rect = Rect::new(0.0, 0.0, 640.0, 720.0);
         paint_frame(&mut view, &mut tr, &Theme::dark());
         assert!(
-            view.geo.inspector_visible,
+            view.state().geo.inspector_visible,
             "the narrow scenario opens the drawer"
         );
         let view = staged(Some("edited"));
+        let view = view.state();
         assert_eq!(view.model.dirty_count(), 3);
         assert_eq!(view.model.selection_len(), 4);
     }

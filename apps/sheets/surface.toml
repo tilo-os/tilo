@@ -61,7 +61,7 @@ params = [
 id = "set-title"
 kind = "undoable"
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

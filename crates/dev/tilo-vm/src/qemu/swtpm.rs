@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::QemuError;
+use super::{Arch, QemuError};
 
 pub struct Swtpm {
     pub dir: PathBuf,
@@ -19,9 +19,10 @@ impl Swtpm {
         self.dir.join("swtpm-ctrl.sock")
     }
 
-    /// The QEMU arguments attaching it to the guest.
+    /// The QEMU arguments attaching it to the guest: a TIS interface on the
+    /// PC's LPC bus, or on the ARM virt machine its sysbus device.
     #[must_use]
-    pub fn qemu_args(&self) -> Vec<String> {
+    pub fn qemu_args(&self, arch: Arch) -> Vec<String> {
         vec![
             "-chardev".into(),
             format!(
@@ -31,7 +32,10 @@ impl Swtpm {
             "-tpmdev".into(),
             "emulator,id=tpm0,chardev=chrtpm".into(),
             "-device".into(),
-            "tpm-tis,tpmdev=tpm0".into(),
+            match arch {
+                Arch::X86_64 => "tpm-tis,tpmdev=tpm0".into(),
+                Arch::Aarch64 => "tpm-tis-device,tpmdev=tpm0".into(),
+            },
         ]
     }
 
@@ -183,4 +187,24 @@ fn processes(socket: &Path) -> Vec<(u32, String)> {
                 .map(|line| (pid, line))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tpm_sits_on_each_machines_own_interface() {
+        let tpm = Swtpm {
+            dir: "/run/t/tpm".into(),
+        };
+        assert_eq!(
+            tpm.qemu_args(Arch::X86_64).last().unwrap(),
+            "tpm-tis,tpmdev=tpm0"
+        );
+        assert_eq!(
+            tpm.qemu_args(Arch::Aarch64).last().unwrap(),
+            "tpm-tis-device,tpmdev=tpm0"
+        );
+    }
 }

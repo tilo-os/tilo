@@ -3,9 +3,10 @@
 //! framework mounts it.
 
 use super::*;
-use crate::model::{BlockKind, ContentBlock};
+use crate::FeedsApp;
+use crate::model::{BlockKind, ContentBlock, ReadFont, ReadSettings, ReadTheme};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionSpec, OperationKind, Resource as Published};
+use ui::tilo_actions::{ActionSpec, OperationKind, ResourceSpec as Published};
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Edit, Replica, Resource};
 
@@ -20,7 +21,7 @@ fn edit(library: &mut Replica<Library>, edit: &Edit<Library>) -> Result<(), Stri
 fn subscribe(library: &mut Replica<Library>, url: &str, folder: Option<&Id>) -> Id {
     library
         .apply(Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
-            url: url.to_owned(),
+            url: url.parse().unwrap(),
             folder: folder.cloned(),
         }))
         .unwrap();
@@ -33,7 +34,9 @@ fn subscribe(library: &mut Replica<Library>, url: &str, folder: Option<&Id>) -> 
 }
 
 fn folder(library: &mut Replica<Library>, name: &str) -> Id {
-    library.apply(Library::NEW_FOLDER.with(name)).unwrap();
+    library
+        .apply(Library::NEW_FOLDER.with(name.parse::<ui::tilo_resource::NonBlank>().unwrap()))
+        .unwrap();
     library
         .state()
         .unwrap()
@@ -112,18 +115,14 @@ fn verbs_and_field_edits_change_the_library() {
     assert_eq!(state.folder(&reading).unwrap().name, "Reading");
 
     assert!(
-        library
-            .apply(Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
-                url: "   ".into(),
-                folder: None,
-            }))
+        serde_json::from_value::<library::AddSubscription>(serde_json::json!({"url": "   "}))
             .is_err(),
         "a blank address subscribes to nothing"
     );
     assert!(
         library
             .apply(Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
-                url: "gemini://example.test/feed".into(),
+                url: "gemini://example.test/feed".parse().unwrap(),
                 folder: None,
             }))
             .is_err(),
@@ -233,7 +232,10 @@ fn the_invariants_refuse_unnormalized_tags_and_blank_folders() {
         )
         .is_err()
     );
-    assert!(library.apply(Library::NEW_FOLDER.with(" ")).is_err());
+    assert!(
+        serde_json::from_value::<library::NewFolder>(serde_json::json!({"name": " "})).is_err(),
+        "a folder keeps a name"
+    );
 }
 
 /// Unsubscribing removes the subscription with its articles; deleting a
@@ -1157,7 +1159,7 @@ fn subscribed(app: &TestApp<FeedsShell>) -> Vec<String> {
 fn a_feed_added_is_there_after_reopening_and_in_every_window() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
     app.invoke(Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
-        url: "https://example.org/feed.xml".into(),
+        url: "https://example.org/feed.xml".parse().unwrap(),
         folder: None,
     }))
     .unwrap();

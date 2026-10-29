@@ -7,17 +7,17 @@ use automerge::AutoCommit;
 use ui::ArgValue;
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::tilo_resource::Id;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{EmptyState, TextInput, Widget};
 use vello::kurbo::Rect;
 
 use super::{
     AlbumEditorHit, CollectionPageHit, DIRECTORY_FAILURE_DETAIL_LIMIT, DirectoryImportMode,
     DirectoryStatusHit, LibraryAnalysisHit, LibraryDestination, MetadataEditorHit,
-    MetadataEditorSection, PhotosApp, PlacesHit, SELECTION_ALBUMS_PER_PAGE, SelectionHit,
+    MetadataEditorSection, Photos, PlacesHit, SELECTION_ALBUMS_PER_PAGE, SelectionHit,
     card_action_controls, chrome, metadata_filter_id,
 };
 
-impl PhotosApp {
+impl Photos {
     /// The canvas has no intrinsic source name — it is raw pixel data — so the
     /// app supplies the file name and current edit state that a sighted person
     /// gets from the status bar. The status remains a polite live region for
@@ -26,7 +26,7 @@ impl PhotosApp {
         clippy::too_many_lines,
         reason = "the synthetic canvas accessibility tree keeps each visual hit target beside its stable semantic route"
     )]
-    pub(super) fn accessibility_tree(&self) -> AccessNode {
+    pub(super) fn accessibility_tree(&self, empty: Option<&EmptyState>) -> AccessNode {
         let image_label = || {
             self.original.as_ref().map_or_else(
                 || tr("photos-image"),
@@ -823,8 +823,7 @@ impl PhotosApp {
         };
         let mut children = vec![canvas];
         children.extend(
-            self.empty_state
-                .as_ref()
+            empty
                 .and_then(Widget::accessibility)
                 .map(|node| node.with_hashed_key("photos:empty-state")),
         );

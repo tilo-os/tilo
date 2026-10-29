@@ -1087,7 +1087,7 @@ impl ShellOverlayHost {
         };
         let text = strip.name.clone();
         let end = text.len();
-        self.overview_naming = Some(OverviewNaming {
+        self.overview_naming = Some(Box::new(OverviewNaming {
             strip: strip.id,
             text,
             selection: Selection {
@@ -1095,7 +1095,7 @@ impl ShellOverlayHost {
                 cursor: end,
             },
             input: None,
-        });
+        }));
     }
 
     /// Do what strip `si`'s `control` says.

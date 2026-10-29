@@ -90,7 +90,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
             version = release.runtime_version(root)
             manifest = root / 'apps/browser/tilo-app.toml'
             manifest.write_text(manifest.read_text().replace(version, 'wrong-chromium'))
-            with self.assertRaisesRegex(ValueError, 'Browser optional runtime differs'):
+            with self.assertRaisesRegex(ValueError, 'Browser engine runtime differs'):
                 release.runtime_version(root)
 
     def test_native_payload_rejects_foreign_machine_missing_elf_and_escape(self):

@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::PathStep;
+pub use crate::field_type::{FieldType, NamedType, TypeCase, TypeField, TypeSet};
 use tilo_action_policy::ActionKind;
 
 #[allow(
@@ -44,6 +45,10 @@ pub struct Surface {
     /// model shape.
     #[serde(default)]
     pub fields: Vec<FieldSurface>,
+    /// The records and enums its fields' types name ([`FieldType::Named`]),
+    /// each declared once, by name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub types: Vec<NamedType>,
 }
 
 /// One verb.
@@ -98,24 +103,16 @@ pub struct ParamSurface {
     /// Its JSON Schema, from its type.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub schema: serde_json::Value,
-}
-
-/// Whether `ty`, a field's type as written (`Outbox<Upload>`,
-/// `tilo_resource::Outbox<Removal>`), is an outbox: what a change queues
-/// there reaches outside the record once delivered.
-#[must_use]
-pub fn is_outbox_type(ty: &str) -> bool {
-    let head = ty.split('<').next().unwrap_or_default().trim();
-    head.rsplit("::").next() == Some("Outbox") && ty.contains('<')
-}
-
-/// Whether `ty`, a field's type as written (`Reactions`,
-/// `ui::tilo_resource::Reactions`), is the framework's reactions: changed
-/// only by the react and unreact field edits, which store their invoker
-/// as the author, so a read-only item still takes them.
-#[must_use]
-pub fn is_reactions_type(ty: &str) -> bool {
-    ty.trim().rsplit("::").next() == Some("Reactions")
+    /// Its type ([`FieldType`]), its named records and enums declared in
+    /// the surface's types; left out of a file, and absent from one written
+    /// before parameters had it, when the schema says all there is.
+    #[serde(
+        rename = "type",
+        default,
+        skip_serializing_if = "FieldType::is_any",
+        deserialize_with = "crate::field_type::field_type_or_text"
+    )]
+    pub ty: FieldType,
 }
 
 /// One stored field.
@@ -133,9 +130,14 @@ pub struct FieldSurface {
     /// `collection`.
     #[serde(default = "stored_value")]
     pub stored: String,
-    /// Its Rust type as written.
-    #[serde(rename = "type")]
-    pub ty: String,
+    /// Its type ([`FieldType`]); a surface file written before the
+    /// vocabulary holds its Rust type's text, read as
+    /// [`FieldType::from_rust_text`].
+    #[serde(
+        rename = "type",
+        deserialize_with = "crate::field_type::field_type_or_text"
+    )]
+    pub ty: FieldType,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub readonly: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -152,6 +154,12 @@ pub struct FieldSurface {
 /// and tree field, which paths offer field edits, and which storage units
 /// an action may write (`*` for any item).
 impl Surface {
+    /// The named type `name` of [`Self::types`].
+    #[must_use]
+    pub fn named(&self, name: &str) -> Option<&NamedType> {
+        self.types.iter().find(|ty| ty.name == name)
+    }
+
     /// The kind of the verb `action` and the field it sits under, or `None`
     /// when the app publishes no such verb.
     #[must_use]
@@ -192,7 +200,7 @@ impl Surface {
         let Some(field) = self.field_at(path) else {
             return false;
         };
-        if is_reactions_type(&field.ty) {
+        if field.ty.is_reactions() {
             return true;
         }
         !self.fields.iter().any(|candidate| {

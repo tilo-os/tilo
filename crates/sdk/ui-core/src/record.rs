@@ -2455,7 +2455,8 @@ impl RecordStore {
     }
 
     /// The route native component admission joins before the factory runs:
-    /// the open record's, a live New reservation's, or an exact native original
+    /// the open record's, a live New reservation's, the room's record while
+    /// it opens off the frame ([`Self::begin_opening`]), or an exact native original
     /// creation capture whose genesis the factory has yet to write. This does
     /// not make the record publishable before the owner's Initialize reply.
     pub(crate) fn admission_route(
@@ -2469,6 +2470,9 @@ impl RecordStore {
                     return Err(RecordOpenError::IdentityMismatch);
                 }
                 return set.wire_route(&checkout.id);
+            }
+            if let Some(route) = set.opening_route(checkout) {
+                return route;
             }
             if set
                 .open
@@ -3132,20 +3136,6 @@ impl RecordStore {
         Ok(())
     }
 
-    /// Resolve legacy tile intent without panicking on an overlapping record borrow.
-    /// Canonical stores retain their Existing-only identity/storage errors;
-    /// legacy stores retain the existing open/create behavior.
-    pub(crate) fn open_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
-        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.backend.is_some() || set.portable.is_some() {
-            return set.try_open_record_with_recovery(want, false).map(|_| ());
-        }
-        set.open_record(want, None);
-        set.document_mut(&want.id)
-            .map(|_| ())
-            .ok_or(RecordOpenError::MissingRecord)
-    }
-
     /// Existing-only admission for presentation owners. Loads a saved graph
     /// without seeding missing content. Package-global records retain the
     /// existing explicit one-room migration claim and their original history.
@@ -3248,20 +3238,6 @@ impl RecordStore {
     /// Exact runtime owner identity; namespace equality is insufficient for reentry.
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.0, &other.0)
-    }
-
-    pub(crate) fn verified_checkout(
-        &self,
-        id: &RecordId,
-    ) -> Result<RecordCheckout, RecordOpenError> {
-        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
-        let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
-        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
-        let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
-        if checkout.id != *id || checkout.kind != slot.kind {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        Ok(checkout)
     }
 
     pub(crate) fn admission(
@@ -3461,6 +3437,14 @@ impl RecordStore {
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        // The room's record may still be decoding off the frame when its
+        // route's committed history arrives: take it in first, as every open
+        // of it does, so the history lands on it.
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy.to_string())?
+            .take_in_opening(&checkout.id, true)
+            .map_err(|error| error.to_string())?;
         let identity = self.replica_identity_stamp(checkout)?;
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();

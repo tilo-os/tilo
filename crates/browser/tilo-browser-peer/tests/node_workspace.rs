@@ -10,7 +10,7 @@
 //! their rooms: the page's own device connects, creates the company
 //! workspace and writes a document, which leaves the page sealed and is
 //! retained on the node only as ciphertext, under channel keys the node
-//! stewards. A second person, invited by name, is admitted and reads the
+//! holds. A second person, invited by name, is admitted and reads the
 //! document's whole history. A third, whom the founder pre-admitted for a
 //! token someone else vouched with, is admitted without the founder, who
 //! finds a notice and removes her.
@@ -144,7 +144,7 @@ fn holds(dir: &Path, needle: &[u8]) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
+async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let driver = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/node_workspace/driver.mjs");
     let mut browser = tokio::process::Command::new("node")
@@ -322,8 +322,8 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     ada.join(acme.workspace_id).unwrap();
     ready(&[&ada]).await;
 
-    // A document, sealed before it leaves the page: the node stewards its
-    // channel, so the page gets keys and the writes go out.
+    // A document, sealed before it leaves the page: the node takes part in
+    // its channel, so the page gets keys and the writes go out.
     let route = DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: acme.room.clone(),

@@ -5,7 +5,8 @@
 //! one record of its kind: it grows, it has history, edits to it are undone.
 //! That record is kept with the app's other records in the workspace it is
 //! open in ([`PersonRecords::in_workspace`]), and syncs with the workspace like
-//! any of them.
+//! any of them. It is each member's own there ([`RecordId::of_member`]): one
+//! per member, read and changed by that person's devices alone.
 //!
 //! The person's shared records — their accounts, which Settings keeps for
 //! all of their apps, their contacts — and the settings sections are kept in
@@ -28,7 +29,7 @@ use super::{
     RecordStore,
 };
 use crate::history_mode::HistoryOwner;
-use crate::history_mode::owner::LegacyHistoryLifetime;
+use crate::history_mode::owner::RecordOwnerLifetime;
 use crate::permissions::UserId;
 
 #[cfg(test)]
@@ -68,6 +69,9 @@ pub struct PersonRecords {
     /// these: a host that holds them itself lends them to the apps it shows
     /// ([`Self::sharing`]).
     others: Option<RecordOwners>,
+    /// These are the app's own records in a workspace, each the author's
+    /// own there ([`RecordId::of_member`]).
+    member: bool,
 }
 
 impl PersonRecords {
@@ -86,6 +90,7 @@ impl PersonRecords {
             replica: false,
             author,
             others: None,
+            member: false,
         })
     }
 
@@ -109,6 +114,7 @@ impl PersonRecords {
             replica: true,
             author,
             others: None,
+            member: false,
         })
     }
 
@@ -132,30 +138,57 @@ impl PersonRecords {
             replica: self.replica,
             author: self.author.clone(),
             others: None,
+            member: false,
         })
     }
 
     /// The app's own records of a kind in the workspace `workspace`, kept
-    /// where these are: one per kind, the same on every device, synced on
-    /// the ordinary route of a record of the app in that workspace. They
-    /// are kept apart from the store of the record the app shows, so an
-    /// edit of one while that one is being changed waits for nothing.
+    /// where these are: one per kind and member ([`RecordId::of_member`]),
+    /// the same on each of the author's devices, synced on the ordinary
+    /// route of a record of the app in that workspace and read or changed
+    /// by the author's devices alone. They are kept apart from the store of
+    /// the record the app shows, so an edit of one while that one is being
+    /// changed waits for nothing. An author without a root identity is a
+    /// member of no workspace: theirs stay on this device.
     ///
     /// # Errors
     /// Rejects an invalid workspace.
     pub fn in_workspace(&self, workspace: &str) -> Result<Self, RecordOpenError> {
-        let (package, _) = self.store.package_and_home();
-        if self.store.backend().is_none() {
-            return Self::replica_in(&package, workspace, self.author.clone());
+        if RecordId::of_member(&self.author.0, "kind").is_none() {
+            return Ok(Self {
+                others: None,
+                ..self.clone()
+            });
         }
-        let mut owners = self.owners.clone();
+        let (package, _) = self.store.package_and_home();
+        let records = if self.store.backend().is_none() {
+            Self::replica_in(&package, workspace, self.author.clone())?
+        } else {
+            let mut owners = self.owners.clone();
+            Self {
+                store: owners.open_person(&package, workspace)?,
+                owners,
+                replica: self.replica,
+                author: self.author.clone(),
+                others: None,
+                member: false,
+            }
+        };
         Ok(Self {
-            store: owners.open_person(&package, workspace)?,
-            owners,
-            replica: self.replica,
-            author: self.author.clone(),
-            others: None,
+            member: true,
+            ..records
         })
+    }
+
+    /// The id of the record of `kind` these keep: the author's own in the
+    /// workspace for an app's own records ([`Self::in_workspace`] keeps
+    /// them only for a root identity), else the one every device derives
+    /// alike.
+    fn id_of(&self, kind: &RecordKind) -> RecordId {
+        self.member
+            .then(|| RecordId::of_member(&self.author.0, kind.as_str()))
+            .flatten()
+            .unwrap_or_else(|| record_id(kind))
     }
 
     /// These records, with the person's records of other apps
@@ -205,13 +238,16 @@ impl PersonRecords {
         kind: RecordKind,
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredRecord, RecordOpenError> {
-        let checkout = RecordCheckout::new(record_id(&kind), kind);
+        let checkout = RecordCheckout::new(self.id_of(&kind), kind);
         match open_in(&self.store, &checkout, initialize) {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
                 let (package, home) = self.store.package_and_home();
-                let replica = Self::replica_in(&package, &home, self.author.clone())?;
+                let replica = Self {
+                    member: self.member,
+                    ..Self::replica_in(&package, &home, self.author.clone())?
+                };
                 open_in(&replica.store, &checkout, initialize)?;
                 Ok(StoredRecord::new(
                     replica.store,
@@ -238,7 +274,7 @@ impl PersonRecords {
         &self,
         kind: RecordKind,
     ) -> Result<Option<StoredRecord>, RecordOpenError> {
-        let checkout = RecordCheckout::new(record_id(&kind), kind);
+        let checkout = RecordCheckout::new(self.id_of(&kind), kind);
         let store = match self.store.try_open_record(&checkout) {
             Ok(_) => self.store.clone(),
             Err(RecordOpenError::MissingRecord) => return Ok(None),
@@ -246,7 +282,10 @@ impl PersonRecords {
                 if !self.replica =>
             {
                 let (package, home) = self.store.package_and_home();
-                let replica = Self::replica_in(&package, &home, self.author.clone())?;
+                let replica = Self {
+                    member: self.member,
+                    ..Self::replica_in(&package, &home, self.author.clone())?
+                };
                 match replica.store.try_open_record(&checkout) {
                     Ok(_) => replica.store,
                     Err(RecordOpenError::MissingRecord) => return Ok(None),
@@ -273,7 +312,7 @@ impl PersonRecords {
         if self.replica {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        let checkout = RecordCheckout::new(record_id(&kind), kind);
+        let checkout = RecordCheckout::new(self.id_of(&kind), kind);
         open_in(&self.store, &checkout, &initialize)?;
         Ok(StoredRecord::new(
             self.store.clone(),
@@ -306,7 +345,7 @@ pub struct StoredRecord {
     checkout: RecordCheckout,
     author: UserId,
     /// Keeps the record's route installed while the record is open.
-    lifetime: Rc<LegacyHistoryLifetime>,
+    lifetime: Rc<RecordOwnerLifetime>,
 }
 
 impl StoredRecord {
@@ -315,7 +354,7 @@ impl StoredRecord {
             store,
             checkout,
             author,
-            lifetime: LegacyHistoryLifetime::new(),
+            lifetime: RecordOwnerLifetime::new(),
         }
     }
 
@@ -446,7 +485,7 @@ impl StoredRecord {
     /// it is open.
     #[must_use]
     pub fn history_owner(&self) -> HistoryOwner {
-        HistoryOwner::legacy(self.store.clone(), self.checkout.clone(), &self.lifetime)
+        HistoryOwner::record(self.store.clone(), self.checkout.clone(), &self.lifetime)
     }
 
     /// Merge a whole document of this record another device holds, as its

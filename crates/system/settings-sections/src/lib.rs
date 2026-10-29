@@ -22,6 +22,24 @@ pub const APP_ID: &str = "so.tilo.settings";
 /// The app's title, which the person's steps on their sections name.
 pub const APP_TITLE: &str = "Settings";
 
+/// Bring a section's record of version 1 up to 2: the leaves another section
+/// holds now (the device's part of a section the person holds, or the
+/// person's of one the device holds) are no longer read, and nothing else
+/// changed.
+///
+/// # Errors
+/// Never: there is nothing to rewrite.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the signature every resource migration has"
+)]
+pub(crate) fn leaves_moved_out(
+    _doc: &mut ui::tilo_resource::Doc,
+    _from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    Ok(())
+}
+
 /// Every section the session keeps, once: what [`declare`] declares and
 /// [`kept`] lists.
 macro_rules! sections {
@@ -45,20 +63,27 @@ macro_rules! sections {
 
 sections!(
     prefs::AppearancePrefs,
+    prefs::AppearanceDevicePrefs,
     accessibility::AccessibilitySettings,
+    accessibility::AccessibilityDevicePrefs,
     prefs::InputPrefs,
+    prefs::InputDevicePrefs,
     ui::text_assistance::TextAssistancePrefs,
     prefs::PowerPrefs,
     prefs::DeskWidgetsPrefs,
     prefs::UpdatePrefs,
     prefs::NotificationPrefs,
     prefs::AudioPrefs,
+    prefs::AudioDevicePrefs,
     prefs::DisplayPrefs,
+    prefs::NightLightPrefs,
     tilo_locale::Locale,
     continuity::ContinuityPrivacy,
     shortcuts::ShortcutPrefs,
     desktop::DesktopControls,
+    desktop::DesktopControlsDevice,
     providers::AgentProviders,
+    providers::HostedAgentProviders,
     desktop::DefaultApps,
     desktop::ClockPrefs,
     desktop::SharedDisplayPrefs,

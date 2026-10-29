@@ -290,7 +290,8 @@ pub struct MailState {
     /// coming, not an empty mailbox.
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
     /// The senders (lower-case addresses) whose remote images the person
-    /// allowed. Part of the person's Mail preferences, so it follows them.
+    /// allowed: the trusted senders record ([`crate::trusted_senders`]),
+    /// synced with the workspace.
     pub remote_senders: std::collections::BTreeSet<String>,
     /// The messages whose remote images the person loaded while this window
     /// is open: one message's, not its sender's.
@@ -324,8 +325,8 @@ pub struct MailState {
     /// The framework dispatcher every change of the mailbox (mark
     /// read/unread, star, move/archive/delete-to-trash) goes through, so it
     /// is checked, one undo step, replayed on peers and the same field edit
-    /// or verb the palette and agents invoke. `None` until the surface is
-    /// attached; edits before then change nothing.
+    /// or verb the palette and agents invoke. `None` until the view
+    /// attaches it; edits before then change nothing.
     pub(crate) dispatcher: Option<Dispatcher<Mail>>,
 
     intents: Vec<Intent>,

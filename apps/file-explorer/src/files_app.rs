@@ -9,7 +9,6 @@
 //! frame. See [`crate::command`].
 
 use ui::num::i64_of_usize;
-use ui::widget::TaffyTreeExt;
 
 use crate::command::{CommandSink, FileCommand, new_sink};
 use crate::i18n::{arg, t, t_args};
@@ -24,8 +23,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use thumbnail::{ThumbKey, ThumbnailService};
+use ui::SelectionModel;
 use ui::lock::MutexRecover as _;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
@@ -34,10 +34,8 @@ use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, SidebarPlacement,
-    Stack, TextInput, Widget,
+    Button, Column, EmptyState, NavShell, ScrollAxis, Scrollable, Stack, TextInput, Widget,
 };
-use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
@@ -49,9 +47,12 @@ mod entry_rows;
 mod mounted_cloud;
 mod native_open_with;
 mod selected_open;
+mod window;
 mod window_bar;
 pub use clipboard_client::Receipt as ClipboardReceipt;
 pub(crate) use clipboard_client::UndoRequest;
+pub use window::FileExplorerWidget;
+use window::{Chrome, MenuChange};
 mod archives;
 #[cfg(test)]
 use archives::archive_member_copy;
@@ -606,11 +607,15 @@ enum FileServices {
     Hosted(HostedFileServices),
 }
 
+/// What a Files window shows and does, shared between the window and the
+/// view's effect handler and publications: the folder shown, its entries
+/// and selection, the clipboard, the work in flight. The [`FileExplorerWidget`]
+/// lays it out in its shell.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each boolean is independent named UI state for loading, clipboard, rename, layout, or visibility"
 )]
-pub struct FileExplorerWidget {
+pub struct FilesState {
     framework_history: ui::history_mode::checked_files::FileHistorySource,
     framework_history_binding: Option<(PathBuf, fs_protocol::FileRecordId)>,
     services: FileServices,
@@ -736,13 +741,6 @@ pub struct FileExplorerWidget {
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
     rect: vello::kurbo::Rect,
-    /// The window shell: `[ places | file view ]` under one header row.
-    /// Held persistently (NOT rebuilt inside `build_layout`) so its docked
-    /// state and eased reveal survive the per-structure-change rebuild of the
-    /// panes — the two panes are swapped in via `NavShell::set_sidebar` /
-    /// `set_content` each rebuild. A narrow window turns the places list into
-    /// a drawer the shell summons.
-    nav: NavShell,
     /// The app's side of the toolbar the shell's content header owns: the nav
     /// cluster, the editable path bar and the view / sort controls. The toolbar
     /// itself lives for the window's lifetime (the path bar carries live edit
@@ -796,15 +794,11 @@ pub struct FileExplorerWidget {
     /// The preferences last shown, so a change from another window or device
     /// is adopted once.
     shown_preferences: Option<crate::resource::FilesPreferences>,
-    /// Right-click menu, owned here (not in the rebuilt composition) so it
-    /// stays open across frames. `menu_commands[i]` is the command to run
-    /// for menu item `i` (None for separators).
-    context_menu: ContextMenu,
-    menu_commands: Vec<Option<FileCommand>>,
-    /// The "New File ▸" flyout submenu, populated from the Templates dir when
-    /// the main menu opens; empty (and closed) when there are no templates.
-    submenu: ContextMenu,
-    submenu_commands: Vec<Option<FileCommand>>,
+    /// The menus opened or closed since the window last looked, for it to
+    /// show over its shell.
+    menus: Vec<MenuChange>,
+    /// The screenshot scenario to stage on the window's next sync.
+    staged: Option<StagedScenario>,
     /// Set while draining commands from a right-press when the press landed on
     /// a sidebar favourite, so the right-press handler opens the favourite menu
     /// (not the file context menu) at the cursor. Consumed each right-press.
@@ -974,8 +968,8 @@ pub struct FileExplorerWidget {
     /// Recently opened or changed files, newest first.
     /// The Recent list of a window no framework hosts.
     recent: crate::recent::RecentFiles,
-    /// This device's Recent list, in a hosted window.
-    recent_setting: Option<ui::framework::Setting<crate::recent::RecentFiles>>,
+    /// Every device's Recent list, in a hosted window.
+    recent_record: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
     /// "Open With" candidates per file type, asked of the host once per
     /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
@@ -989,6 +983,10 @@ pub struct FileExplorerWidget {
     app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
+
+/// A screenshot scenario (or none) the view staged, for the window to
+/// stage once it is laid out.
+struct StagedScenario(Option<String>);
 
 /// One test at a time: the waiting stack and the ledger are the process's,
 /// so two tests running at once would see each other's rows.
@@ -1037,12 +1035,6 @@ impl StatusText {
     }
 }
 
-impl Default for FileExplorerWidget {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl FileExplorerWidget {
     pub fn new() -> Self {
         // The same home the start directory is resolved against
@@ -1055,26 +1047,371 @@ impl FileExplorerWidget {
         // `format_path` abbreviates a path to `~` only when it lies
         // under the home it was handed, so a home it does not recognise
         // renders as an absolute trail from the filesystem root.
-        let mut widget =
+        let widget =
             Self::with_persistence(config::config_dir().as_deref(), crate::model::user_home());
-        widget.accounts_root = accounts::config_root();
-        widget.refresh_external_search_catalogs();
+        {
+            let mut state = widget.state();
+            state.accounts_root = accounts::config_root();
+            state.refresh_external_search_catalogs();
+        }
         widget
     }
 
+    /// Construct with an explicit persistence directory + home, resolving the
+    /// XDG user dirs from the real environment. `new` uses the real per-user
+    /// config dir; tests pass a `tempdir` (or `None`) so they never read or
+    /// write the user's real preview cache.
+    #[doc(hidden)]
+    pub fn with_persistence(config_dir: Option<&Path>, home: Option<PathBuf>) -> Self {
+        Self::with_persistence_dirs(config_dir, home, favorites::UserDirs::from_system())
+    }
+
+    /// Construct with an explicit persistence directory, home, and injected
+    /// XDG user directories. Tests inject a known (e.g. German-localized) set
+    /// so the standard favourites are deterministic without depending on the
+    /// build machine's locale.
+    #[doc(hidden)]
+    pub fn with_persistence_dirs(
+        config_dir: Option<&Path>,
+        home: Option<PathBuf>,
+        user_dirs: favorites::UserDirs,
+    ) -> Self {
+        Self::with_inputs(config_dir, home, user_dirs, None, FileServices::Legacy)
+    }
+
+    /// Build with host-supplied startup data and legacy thumbnail/opener services.
+    /// Use [`Self::with_startup_inputs_and_services`] to supply services explicitly,
+    /// including their absence.
+    pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
+        Self::with_inputs(
+            None,
+            None,
+            favorites::UserDirs::default(),
+            Some(inputs),
+            FileServices::Legacy,
+        )
+    }
+
+    /// Build with exact host services; absent services remain unavailable.
+    pub fn with_startup_inputs_and_services(
+        inputs: StartupInputs,
+        services: HostedFileServices,
+    ) -> Self {
+        Self::with_inputs(
+            None,
+            None,
+            favorites::UserDirs::default(),
+            Some(inputs),
+            FileServices::Hosted(services),
+        )
+    }
+
+    /// The window a screenshot shows: the scene's made-up home and folders,
+    /// previews cached in the scene, and nothing read from the machine the
+    /// capture is taken on.
+    #[cfg(feature = "samples")]
+    pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
+        enable_pdf_previews();
+        let thumbnails = ThumbnailService::open(&scene.thumbnails, 4)
+            .ok()
+            .map(Arc::new);
+        let widget = Self::with_inputs(
+            None,
+            Some(scene.home.clone()),
+            favorites::UserDirs::default(),
+            Some(StartupInputs {
+                initial_dir: scene.home.clone(),
+                workspace_roots: scene.workspace_roots.clone(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
+            }),
+            FileServices::Hosted(HostedFileServices {
+                thumbnails,
+                document_opener: DocumentOpenRoute::Unavailable,
+                open_with: None,
+                local_clipboard: false,
+            }),
+        );
+        {
+            let mut state = widget.state();
+            state.templates =
+                templates::Catalog::new(Some(scene.home.join("Templates")), ui::WakeHandle::new());
+            if scene.start != scene.home {
+                state.navigate(scene.start.clone());
+            }
+        }
+        widget
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Declare the complete stable widget state in one auditable constructor."
+    )]
+    fn with_inputs(
+        config_dir: Option<&Path>,
+        home: Option<PathBuf>,
+        user_dirs: favorites::UserDirs,
+        inputs: Option<StartupInputs>,
+        services: FileServices,
+    ) -> Self {
+        let injected = inputs.is_some();
+        let inputs = inputs.unwrap_or_else(|| StartupInputs {
+            initial_dir: initial_path(),
+            workspace_roots: crate::model::workspace_roots(),
+            record_roots: crate::model::workspace_record_authority_roots(),
+            remote_accounts: Vec::new(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
+                .unwrap_or_default(),
+        });
+        let cwd = inputs.initial_dir;
+
+        let zoom_level = 0;
+        // The standard places until the resource presents the stored ones;
+        // a widget no framework hosts keeps them.
+        let favorites = home
+            .as_deref()
+            .map(|home| favorites::defaults(home, &user_dirs))
+            .unwrap_or_default();
+        let show_hidden = false;
+        let workspace_roots = inputs.workspace_roots;
+        // Construct each durable namespace once. Subsequent refreshes are
+        // revision-gated by `refresh_external_search_catalogs`, never by palette input.
+        let places_search = crate::search_provider::PlacesSearch::new(&favorites);
+        let mut collaborative_record_pager =
+            crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
+        let initial_collaborative_page = collaborative_record_pager.next_page();
+        let collaborative_search = crate::search_provider::CollaborativeRecordSearch::new(
+            &initial_collaborative_page.records,
+        );
+        let remote_accounts = inputs.remote_accounts;
+        let remote_accounts_search =
+            crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
+        let cmds = new_sink();
+        // The places list and the file view are swapped in on the first
+        // `build_layout`; the toolbar is the content header's one action and
+        // stays for the window's lifetime.
+        let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        // window-bar: fallback, the header the bar takes over once it hosts the window
+        let nav = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
+            .with_id("files.shell")
+            .content_header("", vec![Box::new(actions_widget)])
+            .content_header_leading(Box::new(path_widget));
+        let thumbs = match &services {
+            FileServices::Legacy => build_thumb_service(config_dir).map(Arc::new),
+            FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
+        };
+        let trusted_humans = inputs.trusted_humans;
+        let startup_accounts = injected.then_some(remote_accounts);
+        let mut state = FilesState {
+            services,
+            startup_accounts,
+            current_path: cwd.clone(),
+            home_path: home,
+            // Shown once the first read of `cwd` is (see below).
+            entries: Vec::new(),
+            find: String::new(),
+            selection: SelectionModel::new(),
+            shown_selection: shown_selection::ShownSelection::default(),
+            shown_folder: None,
+            shown_is_folder: false,
+            folder_reads: folder_read::FolderReads::new(ui::WakeHandle::new()),
+            error: None,
+            is_loading: false,
+            archive_listing: {
+                let wake = ui::WakeHandle::new();
+                crate::archive::Listing::new(move || wake.wake())
+            },
+            extract_chooser: None,
+            staged_transfer: None,
+            archive_members: {
+                let wake = ui::WakeHandle::new();
+                ArchiveMembers::new(move || wake.wake())
+            },
+            last_click: None,
+            sort_by: SortBy::Name,
+            sort_order: SortOrder::Ascending,
+            view_mode: ViewMode::List,
+            history: Vec::new(),
+            forward: Vec::new(),
+            clipboard: Vec::new(),
+            clipboard_cut: false,
+            notice: Notice::default(),
+            clash: None,
+            preview: None,
+            incoming: Vec::new(),
+            undo: ui::UndoAccess::default(),
+            typing: ui::type_ahead::TypeAhead::default(),
+            device: None,
+            ops_drain: None,
+            awaiting_ops: Vec::new(),
+            op_replies: Vec::new(),
+            answering_op: None,
+            settled_ops: std::collections::HashSet::new(),
+            ops_presented: false,
+            local_outcomes: HashMap::new(),
+            status: None,
+            // Scheduled by the first sync, once the watches exist.
+            next_metadata_refresh: None,
+            directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
+            folder_counts: {
+                let wake = ui::WakeHandle::new();
+                Arc::new(crate::folder_counts::FolderCounts::new(move || wake.wake()))
+            },
+            identity_watch: crate::directory_watch::AwaitedDirectoryWatch::new(
+                ui::WakeHandle::new(),
+            ),
+            catalog_watch: crate::directory_watch::RootsWatch::new(ui::WakeHandle::new()),
+            directory_changed: false,
+            last_directory_read: ui::time::now(),
+            renaming: None,
+            rename_buffer: String::new(),
+            rename_seed_pending: false,
+            rename_input: TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Name)
+                .with_id("files.rename_input")
+                .with_placeholder(t("files-new-name-placeholder")),
+            rename_rect: Rc::new(Cell::new(None)),
+            rename_paint: ui::own_paint::OwnPaint::default(),
+            rename_select_pending: false,
+            rect: vello::kurbo::Rect::ZERO,
+            // Placeholder panes; the real places list + file view are swapped
+            // in on the first `build_layout`. The places list is the shell's
+            // *sidebar*, not a content overview: docked beside the file view
+            // when wide, an overlay drawer over it when narrow. Sidebar width
+            // matches the historical fixed sidebar so the docked layout is
+            // pixel-stable.
+            toolbar,
+            header_in_bar: false,
+            bar_query: None,
+            declared_bar: None,
+            bar_entries: window_bar::BarEntries::new(),
+            status_notice: StatusText::default(),
+            needs: ui::attention::Presses::new(),
+            status_said: None,
+            archive_said: None,
+            staged_hover: None,
+            staged_move_drag: false,
+            templates: crate::templates::Catalog::new(
+                crate::templates::templates_dir(),
+                ui::WakeHandle::new(),
+            ),
+
+            composed_once: false,
+            cmds,
+            opened: Rc::default(),
+            structure_dirty: false,
+            dispatcher: None,
+            preferences: None,
+            shown_preferences: None,
+            menus: Vec::new(),
+            staged: None,
+            last_cursor: Point::ZERO,
+            favs: places_sidebar::new_store(favorites),
+            places_shown: None,
+            places_choice: Rc::new(RefCell::new(None)),
+            places_context: Rc::default(),
+            stage_favorite_drag: false,
+            zoom_level,
+            show_hidden,
+            user_dirs,
+            workspace_roots,
+            places_search_revision: 0,
+            collaborative_search_revision: Cell::new(0),
+            remote_accounts_search_revision: 0,
+            places_search,
+            collaborative_search,
+            collaborative_record_pager: RefCell::new(collaborative_record_pager),
+            remote_accounts_search,
+            pin_drag: None,
+            drag_paths: Vec::new(),
+            armed_drag: None,
+            drag_seed: Vec::new(),
+            collapse_on_release: None,
+            spring: None,
+            drag_origin_is_dir: false,
+            drag_hover: None,
+            nearby_send: crate::nearby_send::NearbySendState::default(),
+            nearby_send_path: None,
+            shortcut_menu: crate::shortcut_menu::ShortcutMenuState::default(),
+            collab_panel: None,
+            collab_panel_focused: false,
+            collab_layout: None,
+            share_result: ui::LatestRequest::new(),
+            share_pending_path: None,
+            received_share: ui::LatestRequest::new(),
+            received_share_link: None,
+            trusted_humans,
+            framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
+            framework_history_binding: None,
+            history_result: Arc::new(std::sync::Mutex::new(None)),
+            history_pending_path: None,
+            history_pending_success: None,
+
+            merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
+            merge_preflight_pending: None,
+            effect_reply: None,
+            local_clipboard: clipboard_client::Client::new(),
+            selected_open: selected_open::Client::default(),
+            accounts_root: None,
+            accounts_cache: Vec::new(),
+            cloud: cloud_browse::CloudView::default(),
+            #[cfg(test)]
+            cloud_fixture_consent: false,
+            mounted_cloud: mounted_cloud::MountedCloud::default(),
+            drives: drives::Drives::default(),
+            applications: applications::Applications::default(),
+            host_intent: None,
+            pending_document_open: None,
+            open_queue: std::collections::VecDeque::new(),
+            document_open_path: None,
+            pending_launch: None,
+            next_document_open_token: 0,
+            drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
+            item_rects: Rc::new(std::cell::RefCell::new(Vec::new())),
+            marquee: None,
+            scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
+            list_slot: crate::views::file_list::ListSlot::default(),
+            widths_at_press: None,
+            thumbs,
+            recent: crate::recent::RecentFiles::default(),
+            recent_record: None,
+            open_with_cache: RefCell::new(HashMap::new()),
+            entry_ids: RefCell::default(),
+            entry_rows: RefCell::default(),
+            // window-bar: picker, the Open with chooser
+            app_chooser: ui::widget::command_palette::CommandPalette::commands(),
+            app_chooser_target: None,
+            thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
+        };
+        // Nothing is shown yet: until the first read is, that is the
+        // loading state.
+        state.is_loading = true;
+        state.read_shown_folder(cwd, Then::Nothing);
+        Self {
+            state: Rc::new(RefCell::new(state)),
+            chrome: Chrome::new(nav),
+            live: None,
+            presented: None,
+        }
+    }
+}
+
+impl FilesState {
     /// Take part in the resource: bookmark edits go through `dispatcher`,
     /// and the view follows the person's `preferences`.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
-        recent: ui::framework::Setting<crate::recent::RecentFiles>,
+        recent: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
         device: Option<String>,
         ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
-        self.recent_setting = Some(recent);
+        self.recent_record = recent;
         self.device = device;
         self.ops_drain = ops_drain;
         self.adopt_preferences();
@@ -1542,7 +1879,11 @@ impl FileExplorerWidget {
         if self.is_trash_view() || !self.shown_is_folder {
             return Vec::new();
         }
-        let folder = self.current_path.display().to_string();
+        // The folder shown is where these act; a relative one names none.
+        let Ok(here) = ui::tilo_resource::AbsolutePath::new(&self.current_path) else {
+            return Vec::new();
+        };
+        let folder = here.to_string_lossy();
         let names: Vec<serde_json::Value> = self
             .entries
             .iter()
@@ -1572,7 +1913,7 @@ impl FileExplorerWidget {
         };
         let new_folder = FileExplorer::NEW_FOLDER
             .bind(file_explorer::NewFolder::paths().device, device.clone())
-            .and(file_explorer::NewFolder::paths().parent, folder.clone())
+            .and(file_explorer::NewFolder::paths().parent, here.clone())
             .declaration("new-folder-here", t("files-menu-new-folder"));
         let rename = FileExplorer::RENAME
             .bind(file_explorer::Rename::paths().device, device.clone())
@@ -1588,22 +1929,22 @@ impl FileExplorerWidget {
             .declaration("move-here", "Move entries from here to a folder");
         let copying = FileExplorer::COPY_INTO
             .bind(file_explorer::CopyInto::paths().device, device.clone())
-            .and(file_explorer::CopyInto::paths().from, folder.clone())
+            .and(file_explorer::CopyInto::paths().from, folder)
             .declaration("copy-here", "Copy entries from here to a folder");
         let writing = FileExplorer::WRITE_FILE
             .bind(file_explorer::WriteFile::paths().device, device.clone())
-            .and(file_explorer::WriteFile::paths().folder, folder.clone())
+            .and(file_explorer::WriteFile::paths().folder, here.clone())
             .declaration("write-file-here", "Write a file here");
         let compressing = FileExplorer::COMPRESS
             .bind(file_explorer::Compress::paths().device, device.clone())
-            .and(file_explorer::Compress::paths().from, folder.clone())
+            .and(file_explorer::Compress::paths().from, here.clone())
             .declaration(
                 "compress-here",
                 "Compress entries here to a zip or tar.zst archive",
             );
         let extracting = FileExplorer::EXTRACT
             .bind(file_explorer::Extract::paths().device, device)
-            .and(file_explorer::Extract::paths().to, Some(folder))
+            .and(file_explorer::Extract::paths().to, Some(here))
             .declaration("extract-here", "Extract an archive into this folder");
         // Each of these names the entries it changes by name or path, which
         // an agent or a script passes and a person picks in the listing: a
@@ -1819,341 +2160,6 @@ impl FileExplorerWidget {
             _ => self.show_remote_account_panel(&account, reauthenticate),
         }
         true
-    }
-
-    /// Construct with an explicit persistence directory + home, resolving the
-    /// XDG user dirs from the real environment. `new` uses the real per-user
-    /// config dir; tests pass a `tempdir` (or `None`) so they never read or
-    /// write the user's real preview cache.
-    #[doc(hidden)]
-    pub fn with_persistence(config_dir: Option<&Path>, home: Option<PathBuf>) -> Self {
-        Self::with_persistence_dirs(config_dir, home, favorites::UserDirs::from_system())
-    }
-
-    /// Construct with an explicit persistence directory, home, and injected
-    /// XDG user directories. Tests inject a known (e.g. German-localized) set
-    /// so the standard favourites are deterministic without depending on the
-    /// build machine's locale.
-    #[doc(hidden)]
-    pub fn with_persistence_dirs(
-        config_dir: Option<&Path>,
-        home: Option<PathBuf>,
-        user_dirs: favorites::UserDirs,
-    ) -> Self {
-        Self::with_inputs(config_dir, home, user_dirs, None, FileServices::Legacy)
-    }
-
-    /// Build with host-supplied startup data and legacy thumbnail/opener services.
-    /// Use [`Self::with_startup_inputs_and_services`] to supply services explicitly,
-    /// including their absence.
-    pub fn with_startup_inputs(inputs: StartupInputs) -> Self {
-        Self::with_inputs(
-            None,
-            None,
-            favorites::UserDirs::default(),
-            Some(inputs),
-            FileServices::Legacy,
-        )
-    }
-
-    /// Build with exact host services; absent services remain unavailable.
-    pub fn with_startup_inputs_and_services(
-        inputs: StartupInputs,
-        services: HostedFileServices,
-    ) -> Self {
-        Self::with_inputs(
-            None,
-            None,
-            favorites::UserDirs::default(),
-            Some(inputs),
-            FileServices::Hosted(services),
-        )
-    }
-
-    /// The window a screenshot shows: the scene's made-up home and folders,
-    /// previews cached in the scene, and nothing read from the machine the
-    /// capture is taken on.
-    #[cfg(feature = "samples")]
-    pub fn for_scene(scene: &crate::scenarios::Scene) -> Self {
-        enable_pdf_previews();
-        let thumbnails = ThumbnailService::open(&scene.thumbnails, 4)
-            .ok()
-            .map(Arc::new);
-        let mut widget = Self::with_inputs(
-            None,
-            Some(scene.home.clone()),
-            favorites::UserDirs::default(),
-            Some(StartupInputs {
-                initial_dir: scene.home.clone(),
-                workspace_roots: scene.workspace_roots.clone(),
-                record_roots: Vec::new(),
-                remote_accounts: Vec::new(),
-                trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
-            }),
-            FileServices::Hosted(HostedFileServices {
-                thumbnails,
-                document_opener: DocumentOpenRoute::Unavailable,
-                open_with: None,
-                local_clipboard: false,
-            }),
-        );
-        widget.templates =
-            templates::Catalog::new(Some(scene.home.join("Templates")), ui::WakeHandle::new());
-        if scene.start != scene.home {
-            widget.navigate(scene.start.clone());
-        }
-        widget
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "Declare the complete stable widget state in one auditable constructor."
-    )]
-    fn with_inputs(
-        config_dir: Option<&Path>,
-        home: Option<PathBuf>,
-        user_dirs: favorites::UserDirs,
-        inputs: Option<StartupInputs>,
-        services: FileServices,
-    ) -> Self {
-        let injected = inputs.is_some();
-        let inputs = inputs.unwrap_or_else(|| StartupInputs {
-            initial_dir: initial_path(),
-            workspace_roots: crate::model::workspace_roots(),
-            record_roots: crate::model::workspace_record_authority_roots(),
-            remote_accounts: Vec::new(),
-            trusted_humans: crate::identity_directory::TrustedHumanDirectory::load_default()
-                .unwrap_or_default(),
-        });
-        let cwd = inputs.initial_dir;
-
-        let zoom_level = 0;
-        // The standard places until the resource presents the stored ones;
-        // a widget no framework hosts keeps them.
-        let favorites = home
-            .as_deref()
-            .map(|home| favorites::defaults(home, &user_dirs))
-            .unwrap_or_default();
-        let show_hidden = false;
-        let workspace_roots = inputs.workspace_roots;
-        // Construct each durable namespace once. Subsequent refreshes are
-        // revision-gated by `refresh_external_search_catalogs`, never by palette input.
-        let places_search = crate::search_provider::PlacesSearch::new(&favorites);
-        let mut collaborative_record_pager =
-            crate::model::WorkspaceRecordIndexPager::new(&inputs.record_roots);
-        let initial_collaborative_page = collaborative_record_pager.next_page();
-        let collaborative_search = crate::search_provider::CollaborativeRecordSearch::new(
-            &initial_collaborative_page.records,
-        );
-        let remote_accounts = inputs.remote_accounts;
-        let remote_accounts_search =
-            crate::search_provider::RemoteAccountSearch::new(&remote_accounts);
-        let cmds = new_sink();
-        // The places list and the file view are swapped in on the first
-        // `build_layout`; the toolbar is the content header's one action and
-        // stays for the window's lifetime.
-        let (path_widget, actions_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
-        // window-bar: fallback, the header the bar takes over once it hosts the window
-        let nav = NavShell::new()
-            .content_kind(ui::widget::ContentKind::List)
-            .with_id("files.shell")
-            .content_header("", vec![Box::new(actions_widget)])
-            .content_header_leading(Box::new(path_widget));
-        let thumbs = match &services {
-            FileServices::Legacy => build_thumb_service(config_dir).map(Arc::new),
-            FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
-        };
-        let trusted_humans = inputs.trusted_humans;
-        let startup_accounts = injected.then_some(remote_accounts);
-        let mut widget = Self {
-            services,
-            startup_accounts,
-            current_path: cwd.clone(),
-            home_path: home,
-            // Shown once the first read of `cwd` is (see below).
-            entries: Vec::new(),
-            find: String::new(),
-            selection: SelectionModel::new(),
-            shown_selection: shown_selection::ShownSelection::default(),
-            shown_folder: None,
-            shown_is_folder: false,
-            folder_reads: folder_read::FolderReads::new(ui::WakeHandle::new()),
-            error: None,
-            is_loading: false,
-            archive_listing: {
-                let wake = ui::WakeHandle::new();
-                crate::archive::Listing::new(move || wake.wake())
-            },
-            extract_chooser: None,
-            staged_transfer: None,
-            archive_members: {
-                let wake = ui::WakeHandle::new();
-                ArchiveMembers::new(move || wake.wake())
-            },
-            last_click: None,
-            sort_by: SortBy::Name,
-            sort_order: SortOrder::Ascending,
-            view_mode: ViewMode::List,
-            history: Vec::new(),
-            forward: Vec::new(),
-            clipboard: Vec::new(),
-            clipboard_cut: false,
-            notice: Notice::default(),
-            clash: None,
-            preview: None,
-            incoming: Vec::new(),
-            undo: ui::UndoAccess::default(),
-            typing: ui::type_ahead::TypeAhead::default(),
-            device: None,
-            ops_drain: None,
-            awaiting_ops: Vec::new(),
-            op_replies: Vec::new(),
-            answering_op: None,
-            settled_ops: std::collections::HashSet::new(),
-            ops_presented: false,
-            local_outcomes: HashMap::new(),
-            status: None,
-            // Scheduled by the first sync, once the watches exist.
-            next_metadata_refresh: None,
-            directory_watch: crate::directory_watch::DirectoryWatch::new(ui::WakeHandle::new()),
-            folder_counts: {
-                let wake = ui::WakeHandle::new();
-                Arc::new(crate::folder_counts::FolderCounts::new(move || wake.wake()))
-            },
-            identity_watch: crate::directory_watch::AwaitedDirectoryWatch::new(
-                ui::WakeHandle::new(),
-            ),
-            catalog_watch: crate::directory_watch::RootsWatch::new(ui::WakeHandle::new()),
-            directory_changed: false,
-            last_directory_read: ui::time::now(),
-            renaming: None,
-            rename_buffer: String::new(),
-            rename_seed_pending: false,
-            rename_input: TextInput::local()
-                .with_kind(ui::widget::TextInputKind::Name)
-                .with_id("files.rename_input")
-                .with_placeholder(t("files-new-name-placeholder")),
-            rename_rect: Rc::new(Cell::new(None)),
-            rename_paint: ui::own_paint::OwnPaint::default(),
-            rename_select_pending: false,
-            rect: vello::kurbo::Rect::ZERO,
-            // Placeholder panes; the real places list + file view are swapped
-            // in on the first `build_layout`. The places list is the shell's
-            // *sidebar*, not a content overview: docked beside the file view
-            // when wide, an overlay drawer over it when narrow. Sidebar width
-            // matches the historical fixed sidebar so the docked layout is
-            // pixel-stable.
-            nav,
-            toolbar,
-            header_in_bar: false,
-            bar_query: None,
-            declared_bar: None,
-            bar_entries: window_bar::BarEntries::new(),
-            status_notice: StatusText::default(),
-            needs: ui::attention::Presses::new(),
-            status_said: None,
-            archive_said: None,
-            staged_hover: None,
-            staged_move_drag: false,
-            templates: crate::templates::Catalog::new(
-                crate::templates::templates_dir(),
-                ui::WakeHandle::new(),
-            ),
-
-            composed_once: false,
-            cmds,
-            opened: Rc::default(),
-            structure_dirty: false,
-            dispatcher: None,
-            preferences: None,
-            shown_preferences: None,
-            context_menu: ContextMenu::new(),
-            menu_commands: Vec::new(),
-            submenu: ContextMenu::new(),
-            submenu_commands: Vec::new(),
-            last_cursor: Point::ZERO,
-            favs: places_sidebar::new_store(favorites),
-            places_shown: None,
-            places_choice: Rc::new(RefCell::new(None)),
-            places_context: Rc::default(),
-            stage_favorite_drag: false,
-            zoom_level,
-            show_hidden,
-            user_dirs,
-            workspace_roots,
-            places_search_revision: 0,
-            collaborative_search_revision: Cell::new(0),
-            remote_accounts_search_revision: 0,
-            places_search,
-            collaborative_search,
-            collaborative_record_pager: RefCell::new(collaborative_record_pager),
-            remote_accounts_search,
-            pin_drag: None,
-            drag_paths: Vec::new(),
-            armed_drag: None,
-            drag_seed: Vec::new(),
-            collapse_on_release: None,
-            spring: None,
-            drag_origin_is_dir: false,
-            drag_hover: None,
-            nearby_send: crate::nearby_send::NearbySendState::default(),
-            nearby_send_path: None,
-            shortcut_menu: crate::shortcut_menu::ShortcutMenuState::default(),
-            collab_panel: None,
-            collab_panel_focused: false,
-            collab_layout: None,
-            share_result: ui::LatestRequest::new(),
-            share_pending_path: None,
-            received_share: ui::LatestRequest::new(),
-            received_share_link: None,
-            trusted_humans,
-            framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
-            framework_history_binding: None,
-            history_result: Arc::new(std::sync::Mutex::new(None)),
-            history_pending_path: None,
-            history_pending_success: None,
-
-            merge_preflight_result: Arc::new(std::sync::Mutex::new(None)),
-            merge_preflight_pending: None,
-            effect_reply: None,
-            local_clipboard: clipboard_client::Client::new(),
-            selected_open: selected_open::Client::default(),
-            accounts_root: None,
-            accounts_cache: Vec::new(),
-            cloud: cloud_browse::CloudView::default(),
-            #[cfg(test)]
-            cloud_fixture_consent: false,
-            mounted_cloud: mounted_cloud::MountedCloud::default(),
-            drives: drives::Drives::default(),
-            applications: applications::Applications::default(),
-            host_intent: None,
-            pending_document_open: None,
-            open_queue: std::collections::VecDeque::new(),
-            document_open_path: None,
-            pending_launch: None,
-            next_document_open_token: 0,
-            drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
-            item_rects: Rc::new(std::cell::RefCell::new(Vec::new())),
-            marquee: None,
-            scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
-            list_slot: crate::views::file_list::ListSlot::default(),
-            widths_at_press: None,
-            thumbs,
-            recent: crate::recent::RecentFiles::default(),
-            recent_setting: None,
-            open_with_cache: RefCell::new(HashMap::new()),
-            entry_ids: RefCell::default(),
-            entry_rows: RefCell::default(),
-            // window-bar: picker, the Open with chooser
-            app_chooser: ui::widget::command_palette::CommandPalette::commands(),
-            app_chooser_target: None,
-            thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
-        };
-        // Nothing is shown yet: until the first read is, that is the
-        // loading state.
-        widget.is_loading = true;
-        widget.read_shown_folder(cwd, Then::Nothing);
-        widget
     }
 
     /// The thumbnail context (service + peniko memo) handed to each rebuilt file
@@ -2388,10 +2394,7 @@ impl FileExplorerWidget {
                 return Ok(self.answer_when_settled(queued));
             }
             FilesEffect::GoTo { path } | FilesEffect::OpenFolder { path } => {
-                let path = PathBuf::from(path);
-                if !path.is_absolute() {
-                    return Err(format!("{} is not an absolute path", path.display()));
-                }
+                let path = path.into_path_buf();
                 if !path.is_dir() {
                     return Err(format!("{} is not a folder Files can open", path.display()));
                 }
@@ -2960,7 +2963,7 @@ impl FileExplorerWidget {
     fn import_once(
         &mut self,
         entry: &str,
-        folder: &str,
+        folder: &Path,
     ) -> Result<Option<crate::file_ops::FileOp>, String> {
         let source = self
             .visible_entry_path(entry)
@@ -2968,11 +2971,9 @@ impl FileExplorerWidget {
         if !self.importable_cloud_entry(&source) {
             return Err(t("files-import-source-unavailable"));
         }
-        let folder = Path::new(folder);
-        // Validate the submitted spelling before canonicalization makes even a
-        // relative path absolute. Retain the validated target, not its alias,
-        // when the document outbox executes the copy on a later frame.
-        if !folder.is_absolute() || !folder.is_dir() {
+        // Retain the validated target, not its alias, when the document
+        // outbox executes the copy on a later frame.
+        if !folder.is_dir() {
             return Err(format!("{} is not an existing folder.", folder.display()));
         }
         let destination = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
@@ -2997,13 +2998,12 @@ impl FileExplorerWidget {
     fn copy_into_folder(
         &mut self,
         entry: &str,
-        folder: &str,
+        folder: &Path,
     ) -> Result<Option<crate::file_ops::FileOp>, String> {
         let source = self
             .visible_entry_path(entry)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
-        let folder = PathBuf::from(folder);
-        if !folder.is_absolute() || !folder.is_dir() {
+        if !folder.is_dir() {
             return Err(format!("{} is not an existing folder.", folder.display()));
         }
         self.queue_copy(crate::file_ops::FileOp::Copy {
@@ -3183,7 +3183,7 @@ impl FileExplorerWidget {
     /// keeps its own keyboard focus and scroll, so it is replaced only when
     /// what it shows changes: its places, or the chosen one when the choice
     /// did not come from the list itself.
-    fn refresh_places_pane(&mut self) {
+    fn refresh_places_pane(&mut self, chrome: &mut Chrome) {
         let places = self.current_places();
         let sections = places.sections();
         let selected = places.selected_id();
@@ -3208,7 +3208,7 @@ impl FileExplorerWidget {
         if let Some((dragged, before)) = drag {
             list.stage_drag(&dragged, &before);
         }
-        self.nav.set_sidebar(Some(list.into_widget()));
+        chrome.nav.set_sidebar(Some(list.into_widget()));
         *self.places_choice.borrow_mut() = None;
         self.places_shown = Some((sections, selected));
     }
@@ -3621,28 +3621,9 @@ impl FileExplorerWidget {
 
     /// Whether the content column is narrower than the direct toolbar
     /// controls need; they move into the overflow when it is.
-    fn sync_toolbar_compact(&self) {
-        let column = self.nav.geometry().content_column;
+    fn sync_toolbar_compact(&self, chrome: &Chrome) {
+        let column = chrome.nav.geometry().content_column;
         self.toolbar.set_content_width(column.width());
-    }
-
-    /// Whether `point` is over the places list (docked, or the places
-    /// screen of a narrow window).
-    fn in_places_list(&self, point: Point) -> bool {
-        self.nav.is_sidebar_open() && self.nav.geometry().sidebar_column.contains(point)
-    }
-
-    /// The content column below the shell's header row: where the file view
-    /// and the empty, loading and error surfaces stand.
-    fn content_body_rect(&self) -> vello::kurbo::Rect {
-        let geometry = self.nav.geometry();
-        let column = geometry.content_column;
-        vello::kurbo::Rect::new(
-            column.x0,
-            column.y0 + geometry.header_height,
-            column.x1,
-            column.y1,
-        )
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -5530,10 +5511,13 @@ impl FileExplorerWidget {
         if added {
             self.refresh_places_search();
             self.status = Some(t("files-added-favourite"));
-            self.submit(
-                crate::resource::FileExplorer::ADD_BOOKMARK
-                    .with(crate::resource::file_explorer::AddBookmark { place, at: None }),
-            );
+            // A place is a path or a stored place's name, never blank.
+            if let Some(place) = ui::tilo_resource::NonBlank::parse(&place) {
+                self.submit(
+                    crate::resource::FileExplorer::ADD_BOOKMARK
+                        .with(crate::resource::file_explorer::AddBookmark { place, at: None }),
+                );
+            }
         }
         true
     }
@@ -5751,36 +5735,22 @@ impl FileExplorerWidget {
         // real right-click rather than visually competing with the toolbar ⋯.
         self.last_cursor = at;
         self.open_context_menu(at);
-        let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, at.y + 66.0);
+        let anchor = Point::new(self.opened_menu_rect().x1 - 6.0, at.y + 66.0);
         self.open_templates_submenu(anchor);
     }
 
-    /// Bring the places list in front (a narrow window's places screen),
-    /// settled deterministically for a headless screenshot. In the wide
-    /// layout the places list is already docked.
-    #[doc(hidden)]
-    pub fn debug_show_places(&mut self) {
-        self.nav.open_sidebar();
-        self.nav.snap();
+    /// The main menu last opened, before the window shows it.
+    fn opened_menu(&mut self) -> Option<&mut ContextMenu> {
+        self.menus.iter_mut().rev().find_map(|change| match change {
+            MenuChange::Main(menu, _) => Some(menu),
+            _ => None,
+        })
     }
 
-    /// Whether the places drawer / docked sidebar is currently revealed.
-    #[doc(hidden)]
-    pub fn debug_places_open(&self) -> bool {
-        self.nav.is_sidebar_open()
-    }
-
-    /// The file-view pane's resolved rect — what a test asserts against to
-    /// prove the file list is actually on screen.
-    #[doc(hidden)]
-    pub fn debug_content_rect(&self) -> vello::kurbo::Rect {
-        self.nav.geometry().content_column
-    }
-
-    /// The docked sidebar's resolved rect — the drag-to-pin drop target.
-    #[doc(hidden)]
-    pub fn debug_sidebar_rect(&self) -> vello::kurbo::Rect {
-        self.nav.geometry().sidebar_column
+    /// Where the main menu last opened is.
+    fn opened_menu_rect(&mut self) -> vello::kurbo::Rect {
+        self.opened_menu()
+            .map_or(vello::kurbo::Rect::ZERO, |menu| menu.get_rect())
     }
 
     /// Whether a drag-to-pin is currently in flight (a folder is being carried
@@ -5840,14 +5810,6 @@ impl FileExplorerWidget {
         self.toolbar.up_button_rect()
     }
 
-    /// Where the places list is (docked beside the file view, or a drawer
-    /// over it) — for tests asserting the sidebar reflows with the window
-    /// width.
-    #[doc(hidden)]
-    pub fn debug_body_mode(&self) -> SidebarPlacement {
-        self.nav.geometry().sidebar
-    }
-
     /// Select the given displayed-entry indices (headless shots demo).
     #[doc(hidden)]
     pub fn debug_select(&mut self, indices: &[usize]) {
@@ -5901,13 +5863,18 @@ impl FileExplorerWidget {
         }
     }
 
+    /// Stage `scenario` on the window's next sync, once it is laid out.
+    pub(crate) fn stage_on_next_sync(&mut self, scenario: Option<&str>) {
+        self.staged = Some(StagedScenario(scenario.map(str::to_owned)));
+    }
+
     /// Stage the view state screenshot `scenario` shows, once the window is
     /// laid out: a selection, an open menu, a drag in flight.
     #[expect(
         clippy::too_many_lines,
         reason = "one table of the screenshot scenarios, an arm each"
     )]
-    pub fn stage_scenario(&mut self, scenario: Option<&str>) {
+    pub(crate) fn stage_scenario(&mut self, chrome: &mut Chrome, scenario: Option<&str>) {
         let rect = self.rect;
         self.wait_for_archive();
         match scenario {
@@ -5925,7 +5892,9 @@ impl FileExplorerWidget {
                 );
                 self.last_cursor = at;
                 self.open_context_menu(at);
-                self.context_menu.focus_first_action();
+                if let Some(menu) = self.opened_menu() {
+                    menu.focus_first_action();
+                }
             }
             Some("extract-progress") => self.debug_show_extract_progress(),
             Some("selection-actions") => self.stage_published_selection(),
@@ -5948,7 +5917,9 @@ impl FileExplorerWidget {
                             rect.x0 + rect.width() * 0.45,
                             rect.y0 + rect.height() * 0.34,
                         ));
-                        self.context_menu.focus_first_action();
+                        if let Some(menu) = self.opened_menu() {
+                            menu.focus_first_action();
+                        }
                     }
                     "recent-revealed" => {
                         if let Err(error) = self
@@ -5982,7 +5953,7 @@ impl FileExplorerWidget {
                 self.debug_select(&[11]);
                 self.begin_rename();
             }
-            Some("places") => self.debug_show_places(),
+            Some("places") => chrome.show_places(),
             Some("remote-account") => {
                 // A made-up account that needs signing in again: no real
                 // account store or vault is read.
@@ -6015,7 +5986,9 @@ impl FileExplorerWidget {
                     );
                     self.last_cursor = at;
                     self.open_context_menu(at);
-                    self.context_menu.focus_first_action();
+                    if let Some(menu) = self.opened_menu() {
+                        menu.focus_first_action();
+                    }
                 }
             }
             Some("loading") => self.debug_show_loading_state(),
@@ -6032,10 +6005,12 @@ impl FileExplorerWidget {
                     rect.y0 + rect.height() * 0.34,
                 );
                 self.debug_show_templates_menu(at);
-                self.context_menu.focus_first_action();
+                if let Some(menu) = self.opened_menu() {
+                    menu.focus_first_action();
+                }
             }
             Some("reorder") => {
-                self.debug_begin_favorite_drag(4, 1);
+                self.debug_begin_favorite_drag(chrome, 4, 1);
             }
             Some("pindrag") => {
                 let folder = self.current_path.join("Development");
@@ -6268,7 +6243,7 @@ impl FileExplorerWidget {
     /// The folder a drag released at `pt` would move into: a folder row under
     /// the cursor (never one of the dragged items), else the parent directory
     /// when the cursor is over the Up affordance. `None` over anything else.
-    fn folder_target_at(&self, pt: Point) -> Option<PathBuf> {
+    fn folder_target_at(&self, chrome: &Chrome, pt: Point) -> Option<PathBuf> {
         for t in self.drop_targets.borrow().iter() {
             if t.rect.contains(pt) && !self.drag_paths.contains(&t.path) {
                 return Some(t.path.clone());
@@ -6286,7 +6261,7 @@ impl FileExplorerWidget {
         {
             return Some(path);
         }
-        self.place_target_at(pt).map(|(path, _)| path)
+        self.place_target_at(chrome, pt).map(|(path, _)| path)
     }
 
     /// Show the copy or move under way once it has run long enough to be
@@ -6413,20 +6388,19 @@ impl FileExplorerWidget {
             commands.push(Some(FileCommand::Navigate(path)));
         }
         menu.open_at([at.x as f32, at.y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = commands;
-        layout_menu_widget(&mut self.context_menu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Main(menu, commands));
         self.structure_dirty = true;
     }
 
     /// Files dragged in from another app: the folder under the pointer (or
     /// the one shown) lights up, and the drop copies them there. Each file
     /// arrives as its own event; they are gathered and copied as one.
-    fn route_incoming_drop(&mut self, event: &winit::event::WindowEvent) -> bool {
+    fn route_incoming_drop(&mut self, chrome: &Chrome, event: &winit::event::WindowEvent) -> bool {
         use winit::event::WindowEvent;
         match event {
             WindowEvent::HoveredFile(_) => {
-                self.drag_hover = self.folder_target_at(self.last_cursor);
+                self.drag_hover = self.folder_target_at(chrome, self.last_cursor);
                 self.structure_dirty = true;
                 true
             }
@@ -6540,6 +6514,7 @@ impl FileExplorerWidget {
     /// A press on empty space in the file view starts a box selection.
     fn maybe_start_marquee(
         &mut self,
+        chrome: &Chrome,
         event: &winit::event::WindowEvent,
         ctx: &ui::widget::EventCtx<'_>,
     ) {
@@ -6561,7 +6536,7 @@ impl FileExplorerWidget {
         if *ctx.handled
             || on_item
             || self.pin_drag.is_some()
-            || !self.content_body_rect().contains(at)
+            || !chrome.content_body_rect().contains(at)
         {
             return;
         }
@@ -6642,11 +6617,11 @@ impl FileExplorerWidget {
     /// The sidebar place a drop at `pt` lands in, with its row: the middle
     /// of a place's row, where a drop moves into it. The band between rows
     /// stays the gap a folder is pinned into.
-    fn place_target_at(&self, pt: Point) -> Option<(PathBuf, vello::kurbo::Rect)> {
-        if !self.in_places_list(pt) {
+    fn place_target_at(&self, chrome: &Chrome, pt: Point) -> Option<(PathBuf, vello::kurbo::Rect)> {
+        if !chrome.in_places_list(pt) {
             return None;
         }
-        let list = self.nav.sidebar_ref::<ui::widget::NavList>()?;
+        let list = chrome.nav.sidebar_ref::<ui::widget::NavList>()?;
         list.visible_item_ids().into_iter().find_map(|id| {
             let row = list.row_rect(&id)?;
             let band = row.height() / 4.0;
@@ -6670,11 +6645,11 @@ impl FileExplorerWidget {
     /// Resolve and apply a drag's drop: move the carried row(s) into a folder
     /// (a row, or the parent via the Up target), else pin a single folder to
     /// Favourites when released over the sidebar. Clears the drag state.
-    fn finish_drag(&mut self, copy: bool) {
+    fn finish_drag(&mut self, chrome: &Chrome, copy: bool) {
         crate::external_drag::end();
-        let target = self.folder_target_at(self.last_cursor);
-        let over_sidebar = self.nav.is_sidebar_open()
-            && self
+        let target = self.folder_target_at(chrome, self.last_cursor);
+        let over_sidebar = chrome.nav.is_sidebar_open()
+            && chrome
                 .nav
                 .geometry()
                 .sidebar_column
@@ -7379,6 +7354,7 @@ impl FileExplorerWidget {
     /// the ghost.
     fn draw_drop_highlight(
         &self,
+        chrome: &Chrome,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         theme: &ui::Theme,
@@ -7406,7 +7382,7 @@ impl FileExplorerWidget {
                     .map(|(_, rect)| rect)
             })
             .or_else(|| {
-                self.place_target_at(self.last_cursor)
+                self.place_target_at(chrome, self.last_cursor)
                     .filter(|(path, _)| path == hover)
                     .map(|(_, row)| row)
             });
@@ -7618,7 +7594,7 @@ fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
     DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// What "Open Terminal Here" asks the shell for: Terminal, started in
     /// the current directory when that is a path the request can carry.
     pub fn terminal_intent(&self) -> runtime_portal::tools::ToolIntent {
@@ -7738,7 +7714,7 @@ impl FileExplorerWidget {
     }
 
     fn open_context_menu(&mut self, at: Point) {
-        self.submenu.close();
+        self.menus.push(MenuChange::CloseSub);
         let spec = self.context_menu_spec(&self.available_templates());
         let mut menu = self.new_overlay_menu();
         let mut cmds = Vec::with_capacity(spec.len());
@@ -7761,9 +7737,8 @@ impl FileExplorerWidget {
             }
         }
         menu.open_at([at.x as f32, at.y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = cmds;
-        layout_menu_widget(&mut self.context_menu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Main(menu, cmds));
     }
 
     /// Open the "New File" flyout listing one "New <name>" entry per template.
@@ -7773,8 +7748,7 @@ impl FileExplorerWidget {
         // leave a focusable, visually empty flyout behind when its last
         // template vanishes (and keep headless action-state shots truthful).
         if tpls.is_empty() {
-            self.submenu.close();
-            self.submenu_commands.clear();
+            self.menus.push(MenuChange::CloseSub);
             return;
         }
         let mut menu = self.new_overlay_menu();
@@ -7784,9 +7758,8 @@ impl FileExplorerWidget {
             cmds.push(Some(FileCommand::NewFromTemplate(t)));
         }
         menu.open_at([at.x as f32, at.y as f32]);
-        self.submenu = menu;
-        self.submenu_commands = cmds;
-        layout_menu_widget(&mut self.submenu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Sub(menu, cmds));
     }
 
     /// Open the "Run shortcut" flyout: one row per shortcut that runs on the
@@ -7800,8 +7773,7 @@ impl FileExplorerWidget {
             .map(|offer| (offer.label().to_string(), offer.id().to_string()))
             .collect();
         if offered.is_empty() {
-            self.submenu.close();
-            self.submenu_commands.clear();
+            self.menus.push(MenuChange::CloseSub);
             return;
         }
         let mut menu = self.new_overlay_menu();
@@ -7811,9 +7783,8 @@ impl FileExplorerWidget {
             cmds.push(Some(FileCommand::RunShortcut { shortcut }));
         }
         menu.open_at([at.x as f32, at.y as f32]);
-        self.submenu = menu;
-        self.submenu_commands = cmds;
-        layout_menu_widget(&mut self.submenu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Sub(menu, cmds));
     }
 
     /// Say on the status line what became of a shortcut run from the menu,
@@ -7845,7 +7816,7 @@ impl FileExplorerWidget {
             self.status = Some(t("files-nearby-no-devices"));
             return;
         }
-        self.submenu.close();
+        self.menus.push(MenuChange::CloseSub);
         let mut menu = self.new_overlay_menu();
         let mut commands = Vec::with_capacity(online.len());
         for target in online {
@@ -7861,9 +7832,8 @@ impl FileExplorerWidget {
             }));
         }
         menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = commands;
-        layout_menu_widget(&mut self.context_menu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Main(menu, commands));
         self.status = Some(t("files-nearby-choose-device"));
     }
 
@@ -7876,7 +7846,7 @@ impl FileExplorerWidget {
             self.status = Some(t("files-nearby-no-destinations"));
             return;
         }
-        self.submenu.close();
+        self.menus.push(MenuChange::CloseSub);
         let mut menu = self.new_overlay_menu();
         let mut commands = Vec::with_capacity(destinations.len().saturating_mul(2));
         for destination in destinations {
@@ -7908,13 +7878,12 @@ impl FileExplorerWidget {
             }
         }
         menu.open_at([self.last_cursor.x as f32, self.last_cursor.y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = commands;
-        layout_menu_widget(&mut self.context_menu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Main(menu, commands));
         self.status = Some(t("files-nearby-choose-destination"));
     }
 
-    /// Open `self.context_menu` from a `(label, command)` spec, right-aligned so
+    /// Open the context menu from a `(label, command)` spec, right-aligned so
     /// its right edge sits at `anchor` (a toolbar control's bottom-right). Used
     /// by the labelled View / Sort menus, whose triggers hug the window's right
     /// edge where a left-anchored menu would spill off-screen. A `None` command
@@ -7925,7 +7894,7 @@ impl FileExplorerWidget {
         anchor: Point,
         flip_y: f64,
     ) {
-        self.submenu.close();
+        self.menus.push(MenuChange::CloseSub);
         let spec = tidy_groups(
             spec,
             |item| item.0.is_empty() && item.1.is_none(),
@@ -7966,9 +7935,8 @@ impl FileExplorerWidget {
             (flip_y - h).max(self.rect.y0)
         };
         menu.open_at([x as f32, y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = cmds;
-        layout_menu_widget(&mut self.context_menu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Main(menu, cmds));
     }
 
     /// Construct a menu constrained to Files' live window rect. Overlay menus
@@ -8122,32 +8090,32 @@ impl FileExplorerWidget {
 
     /// If either menu is open, route a left-press to it. Returns true when the
     /// press was consumed (item fired, submenu opened, or a menu dismissed).
-    fn route_menu_click(&mut self, p: Point) -> bool {
+    fn route_menu_click(&mut self, chrome: &mut Chrome, p: Point) -> bool {
         // The submenu takes priority while it is up.
-        if self.submenu.is_open() {
-            if let Some(idx) = self.submenu.item_at([p.x, p.y]) {
-                let cmd = self.submenu_commands.get(idx).cloned().flatten();
-                self.submenu.close();
-                self.context_menu.close();
+        if chrome.submenu.is_open() {
+            if let Some(idx) = chrome.submenu.item_at([p.x, p.y]) {
+                let cmd = chrome.submenu_commands.get(idx).cloned().flatten();
+                chrome.submenu.close();
+                chrome.context_menu.close();
                 if let Some(cmd) = cmd {
                     self.apply_command(cmd);
                 }
                 return true;
             }
             // A click outside the submenu closes both menus.
-            self.submenu.close();
-            self.context_menu.close();
+            chrome.submenu.close();
+            chrome.context_menu.close();
             return true;
         }
-        if !self.context_menu.is_open() {
+        if !chrome.context_menu.is_open() {
             return false;
         }
-        if let Some(idx) = self.context_menu.item_at([p.x, p.y]) {
-            let cmd = self.menu_commands.get(idx).cloned().flatten();
+        if let Some(idx) = chrome.context_menu.item_at([p.x, p.y]) {
+            let cmd = chrome.menu_commands.get(idx).cloned().flatten();
             if let Some(FileCommand::OpenTemplatesMenu | FileCommand::OpenShortcutsMenu) = cmd {
                 // Open the flyout to the right of the clicked row; keep the
                 // main menu open behind it.
-                let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
+                let anchor = Point::new(chrome.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
                 if cmd == Some(FileCommand::OpenShortcutsMenu) {
                     self.open_shortcuts_submenu(anchor);
                 } else {
@@ -8156,18 +8124,18 @@ impl FileExplorerWidget {
                 return true;
             }
             if cmd == Some(FileCommand::OpenWithMenu) {
-                let anchor = Point::new(self.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
+                let anchor = Point::new(chrome.context_menu.get_rect().x1 - 6.0, p.y - 10.0);
                 self.open_open_with_submenu(anchor);
                 return true;
             }
-            self.context_menu.close();
+            chrome.context_menu.close();
             if let Some(cmd) = cmd {
                 self.apply_command(cmd);
             }
             return true;
         }
         // Click outside the open menu dismisses it.
-        self.context_menu.close();
+        chrome.context_menu.close();
         true
     }
 
@@ -8177,16 +8145,17 @@ impl FileExplorerWidget {
     /// event propagation cannot reach it.
     fn route_menu_keyboard(
         &mut self,
+        chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let submenu = self.submenu.is_open();
+        let submenu = chrome.submenu.is_open();
         let mut menu_handled = false;
         let selected = {
             let menu = if submenu {
-                &mut self.submenu
+                &mut chrome.submenu
             } else {
-                &mut self.context_menu
+                &mut chrome.context_menu
             };
             menu.handle_event(
                 event,
@@ -8204,26 +8173,26 @@ impl FileExplorerWidget {
             return true;
         };
         let command = if submenu {
-            self.submenu_commands.get(index).cloned().flatten()
+            chrome.submenu_commands.get(index).cloned().flatten()
         } else {
-            self.menu_commands.get(index).cloned().flatten()
+            chrome.menu_commands.get(index).cloned().flatten()
         };
         if command == Some(FileCommand::OpenTemplatesMenu) {
-            let rect = self.context_menu.get_rect();
+            let rect = chrome.context_menu.get_rect();
             self.open_templates_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
         } else if command == Some(FileCommand::OpenShortcutsMenu) {
-            let rect = self.context_menu.get_rect();
+            let rect = chrome.context_menu.get_rect();
             self.open_shortcuts_submenu(Point::new(rect.x1 - 6.0, rect.y0 + 28.0));
         } else if command == Some(FileCommand::OpenWithMenu) {
-            let rect = self.context_menu.get_rect();
-            let row = self
+            let rect = chrome.context_menu.get_rect();
+            let row = chrome
                 .context_menu
                 .item_rect(index)
                 .map_or(rect.y0 + 28.0, |row| row.y0);
             self.open_open_with_submenu(Point::new(rect.x1 - 6.0, row));
         } else {
-            self.submenu.close();
-            self.context_menu.close();
+            chrome.submenu.close();
+            chrome.context_menu.close();
             if let Some(command) = command {
                 self.apply_command(command);
             }
@@ -8234,7 +8203,7 @@ impl FileExplorerWidget {
     /// Put a keyboard-opened context menu beside the selected row. Falling
     /// back to the content area's upper-left keeps the action available when
     /// the row is virtualized or the composition has not painted yet.
-    fn keyboard_context_anchor(&self) -> Point {
+    fn keyboard_context_anchor(&self, chrome: &Chrome) -> Point {
         fn find_named_rect(widget: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
             if let Some((_, rect)) = widget
                 .test_rects()
@@ -8256,7 +8225,7 @@ impl FileExplorerWidget {
         });
         if let Some(rect) = row_name
             .as_deref()
-            .and_then(|name| find_named_rect(&self.nav, name))
+            .and_then(|name| find_named_rect(&chrome.nav, name))
         {
             return Point::new(rect.x0 + 24.0, rect.y0 + 24.0);
         }
@@ -8534,27 +8503,6 @@ impl FileExplorerWidget {
         true
     }
 
-    /// Forward an event to the three body children in visual order — chrome
-    /// above, the responsive `nav` body, chrome below — stopping at the first
-    /// that consumes it. `node_id`'s taffy children are `[above, nav, below]`
-    /// (see `build_layout`).
-    fn forward_to_body(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        let Some(&nav_n) = children.first() else {
-            return;
-        };
-        if !*ctx.handled {
-            self.nav
-                .handle_event(event, &mut ctx.reborrow(ctx.path, nav_n));
-        }
-    }
-
     /// App-level keyboard navigation, applied when a key isn't consumed by
     /// a focused child (search field, etc.). Returns whether it acted.
     #[allow(
@@ -8563,6 +8511,7 @@ impl FileExplorerWidget {
     )]
     fn handle_app_key(
         &mut self,
+        chrome: &Chrome,
         ke: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
     ) -> bool {
@@ -8623,7 +8572,7 @@ impl FileExplorerWidget {
                 true
             }
             Key::Named(NamedKey::ContextMenu) if !self.selection.is_empty() => {
-                self.open_context_menu(self.keyboard_context_anchor());
+                self.open_context_menu(self.keyboard_context_anchor(chrome));
                 true
             }
             // F2 renames the current selection in place.
@@ -8751,6 +8700,7 @@ impl FileExplorerWidget {
     /// caller should stop routing it further).
     fn handle_live_drag_event(
         &mut self,
+        chrome: &Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
@@ -8765,7 +8715,7 @@ impl FileExplorerWidget {
                 self.drag_hover = if crate::external_drag::is_handed_off() {
                     None
                 } else {
-                    self.folder_target_at(self.last_cursor)
+                    self.folder_target_at(chrome, self.last_cursor)
                 };
                 if self.spring.as_ref().map(|(path, _)| path) != self.drag_hover.as_ref() {
                     self.spring = self.drag_hover.clone().map(|path| (path, ui::time::now()));
@@ -8786,7 +8736,7 @@ impl FileExplorerWidget {
                 } else {
                     // Ctrl copies, as on every desktop; so does a drop onto
                     // another disk, where a move would be a copy and delete.
-                    self.finish_drag(ctx.modifiers.state().control_key());
+                    self.finish_drag(chrome, ctx.modifiers.state().control_key());
                 }
                 *ctx.handled = true;
                 self.structure_dirty = true;
@@ -8800,16 +8750,17 @@ impl FileExplorerWidget {
     /// Escape. Returns whether the event was consumed.
     fn handle_open_menu_event(
         &mut self,
+        chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::{ElementState, MouseButton, WindowEvent};
-        if !(self.context_menu.is_open() || self.submenu.is_open()) {
+        if !(chrome.context_menu.is_open() || chrome.submenu.is_open()) {
             return false;
         }
         match event {
             WindowEvent::KeyboardInput { .. } => {
-                if self.route_menu_keyboard(event, ctx) {
+                if self.route_menu_keyboard(chrome, event, ctx) {
                     *ctx.handled = true;
                     self.structure_dirty = true;
                     let _ = self.drain_commands();
@@ -8822,7 +8773,7 @@ impl FileExplorerWidget {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.route_menu_click(self.last_cursor) {
+                if self.route_menu_click(chrome, self.last_cursor) {
                     *ctx.handled = true;
                     self.structure_dirty = true;
                     let _ = self.drain_commands();
@@ -8842,6 +8793,7 @@ impl FileExplorerWidget {
     /// event was consumed.
     fn handle_right_click_open_menu(
         &mut self,
+        chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
@@ -8855,7 +8807,7 @@ impl FileExplorerWidget {
             return false;
         };
         let mut child_handled = false;
-        self.forward_to_body(
+        chrome.forward_to_body(
             event,
             &mut ui::widget::EventCtx {
                 handled: &mut child_handled,
@@ -8885,7 +8837,7 @@ impl FileExplorerWidget {
             }
             // Use the same shared, viewport-constrained menu as the toolbar.
             self.open_menu_right_aligned(spec, at, at.y);
-        } else if !self.in_places_list(self.last_cursor) {
+        } else if !chrome.in_places_list(self.last_cursor) {
             self.open_context_menu(self.last_cursor);
         }
         *ctx.handled = true;
@@ -8898,6 +8850,7 @@ impl FileExplorerWidget {
     /// Returns whether the event was consumed.
     fn handle_zoom_wheel(
         &mut self,
+        chrome: &Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
@@ -8909,7 +8862,7 @@ impl FileExplorerWidget {
         }
         // An open popup of the window (a dropdown's list, a menu) takes
         // every wheel over the window, held keys or not.
-        if Widget::modal_capture(&self.nav).is_some() {
+        if Widget::modal_capture(&chrome.nav).is_some() {
             return false;
         }
         let dy = match delta {
@@ -9011,6 +8964,7 @@ impl FileExplorerWidget {
     /// follows a place navigation.
     fn finish_event(
         &mut self,
+        chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
@@ -9018,11 +8972,11 @@ impl FileExplorerWidget {
         if self.route_marquee_event(event, ctx) {
             return;
         }
-        self.forward_to_body(event, ctx);
-        self.maybe_start_marquee(event, ctx);
+        chrome.forward_to_body(event, ctx);
+        self.maybe_start_marquee(chrome, event, ctx);
         if !*ctx.handled
             && let winit::event::WindowEvent::KeyboardInput { event: ke, .. } = event
-            && self.handle_app_key(ke, *ctx.modifiers)
+            && self.handle_app_key(chrome, ke, *ctx.modifiers)
         {
             *ctx.handled = true;
             self.structure_dirty = true;
@@ -9033,15 +8987,15 @@ impl FileExplorerWidget {
         // Going somewhere from the places screen of a narrow window shows
         // the folder.
         if self.current_path != path_before
-            && self.nav.front_pane() == ui::widget::NavPane::Sidebar
-            && !self.nav.geometry().stack.is_empty()
+            && chrome.nav.front_pane() == ui::widget::NavPane::Sidebar
+            && !chrome.nav.geometry().stack.is_empty()
         {
-            self.nav.show(ui::widget::NavPane::Content);
+            chrome.nav.show(ui::widget::NavPane::Content);
         }
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// What showing a folder answers: its resource id, its path and its
     /// first entries (a folder's name ends in `/`), so a caller acts on
     /// the folder without querying it again.
@@ -9267,7 +9221,7 @@ impl FileExplorerWidget {
     }
 }
 
-/// The listing's entries by resource id ([`FileExplorerWidget::entry_resource_id`]).
+/// The listing's entries by resource id ([`FilesState::entry_resource_id`]).
 /// An id is a pure function of an entry's path and record, so an id found
 /// here names the entry at its index whenever that entry still has the
 /// path and record it had when the ids were made; anything else (another
@@ -9301,7 +9255,7 @@ impl EntryIds {
         self.by_id = entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| (FileExplorerWidget::entry_resource_id(entry), index))
+            .map(|(index, entry)| (FilesState::entry_resource_id(entry), index))
             .collect();
         self.lookup(entries, id)
     }
@@ -9317,7 +9271,7 @@ impl EntryIds {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// When the listing is next read: its poll, or the read a reported
     /// change asked for once its gap has passed
     /// ([`Self::refresh_metadata_if_due`]).
@@ -9335,7 +9289,7 @@ impl FileExplorerWidget {
     }
 
     /// Every deadline besides the listing's, which the sync serves.
-    fn other_deadline(&self) -> Option<Instant> {
+    fn other_deadline(&self, chrome: &Chrome) -> Option<Instant> {
         let document_open_reply = self
             .pending_document_open
             .as_ref()
@@ -9378,7 +9332,7 @@ impl FileExplorerWidget {
                     }),
             )
             .chain(self.spring.as_ref().map(|(_, since)| *since + SPRING_OPEN))
-            .chain(self.nav.next_wake_deadline())
+            .chain(chrome.nav.next_wake_deadline())
             .min()
     }
 }
@@ -9386,17 +9340,7 @@ impl FileExplorerWidget {
 #[path = "native_observer.rs"]
 mod native_observer;
 
-impl FileExplorerWidget {
-    fn native_input_snapshot_impl(
-        &self,
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> serde_json::Value {
-        native_observer::snapshot(self)
-    }
-}
-
-impl Collaborative for FileExplorerWidget {
+impl FilesState {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         self.retire_cancelled_effect();
         let now = ui::time::now();
@@ -9434,7 +9378,7 @@ impl Collaborative for FileExplorerWidget {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     fn handle_nearby_event(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let mut changed = false;
         for effect in self.nearby_send.handle_event(event) {
@@ -9531,10 +9475,10 @@ impl FileExplorerWidget {
     }
 }
 
-/// The selected files and folders, for asking an agent about them: each
-/// row's published resource as a whole item, in the order shown, and their
-/// names listed.
-impl ui::presence::capability::PublishesPresence for FileExplorerWidget {
+impl FilesState {
+    /// The selected files and folders, for asking an agent about them: each
+    /// row's published resource as a whole item, in the order shown, and
+    /// their names listed.
     fn shared_selection(&self) -> Option<ui::shared_selection::SharedSelection> {
         let displayed = self.displayed_entries();
         let picked: Vec<&Entry> = self
@@ -9557,20 +9501,8 @@ impl ui::presence::capability::PublishesPresence for FileExplorerWidget {
     }
 }
 
-/// The window's undo, which the notice's and the menu's Undo ask for.
-impl ui::undo::UndoControl for FileExplorerWidget {
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> ui::UndoStatus) {
-        self.undo.publish(&status());
-    }
-
-    fn take_undo_request(&mut self) -> Option<ui::UndoRequest> {
-        self.undo.take_request()
-    }
-}
-
-/// The window's search narrows the folder open: what a person types in the
-/// bar filters the listing they are looking at, and nothing else.
-impl ui::widget::Filterable for FileExplorerWidget {
+impl FilesState {
+    /// Narrow the listing to what `query` finds.
     fn set_filter(&mut self, query: &str) {
         if self.find == query {
             return;
@@ -9578,27 +9510,13 @@ impl ui::widget::Filterable for FileExplorerWidget {
         query.clone_into(&mut self.find);
         self.structure_dirty = true;
     }
-
-    fn filter_count(&self) -> Option<ui::widget::FilterCount> {
-        Some(self.find_count())
-    }
 }
 
-impl Widget for FileExplorerWidget {
-    ui::provides!(
-        dyn ui::undo::UndoControl,
-        dyn ui::widget::Collaborative,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::widget::Filterable
-    );
-
-    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
-        let (doc, path) = ui::doc::document_ref(doc, path);
-        Some(self.native_input_snapshot_impl(doc, path))
-    }
-
-    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+/// What the window's frame asks of the state.
+impl FilesState {
+    /// Take in what finished on the app runtime since; whether the window
+    /// shows something new.
+    fn poll_frame(&mut self) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
         let transfers = self.follow_transfers(ui::time::now());
@@ -9625,7 +9543,7 @@ impl Widget for FileExplorerWidget {
             | self.poll_applications(ui::time::now())
     }
 
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+    fn sync_frame(&mut self, chrome: &mut Chrome, state: &AppModel, path: &ModelPath) {
         self.adopt_preferences();
         // A control a caller invoked through the door (a toolbar button)
         // queued its command, and a search hit or an agent's `open` queued
@@ -9635,7 +9553,7 @@ impl Widget for FileExplorerWidget {
         }
         // The window's bar shows the toolbar's slots, and what the person did
         // with them runs here, before this frame is laid out.
-        if self.sync_window_toolbar() {
+        if self.sync_window_toolbar(chrome) {
             self.structure_dirty = true;
         }
         self.poll_cloud();
@@ -9678,7 +9596,7 @@ impl Widget for FileExplorerWidget {
             self.rename_select_pending = false;
         }
 
-        self.nav.sync(state, path);
+        chrome.nav.sync(state, path);
 
         // `TextInput` also accepts accessibility SetValue; absorb any local
         // edit after sync so every input route feeds the same command.
@@ -9704,88 +9622,16 @@ impl Widget for FileExplorerWidget {
         self.notice.publish();
     }
 
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        [self.listing_deadline(), self.other_deadline()]
+    fn wake_deadline(&self, chrome: &Chrome) -> Option<Instant> {
+        [self.listing_deadline(), self.other_deadline(chrome)]
             .into_iter()
             .flatten()
             .min()
     }
 
-    // The listing's poll and change reads are served here: the directory is
-    // read again and compared, and only a listing that changed (or trusted
-    // identities, or the collaborative catalogue) asks for a sync. Any other
-    // due deadline is the sync's.
-    fn serve_deadline(&mut self, now: Instant) -> bool {
-        if self.other_deadline().is_some_and(|due| due <= now) {
-            return true;
-        }
-        self.refresh_metadata_if_due(now)
-    }
-
-    fn build_layout(
+    fn draw_overlay_frame(
         &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        // Refresh the toolbar's context, then swap the freshly built body
-        // panes into the persistent `nav`. `nav` and the toolbar it owns keep
-        // their state across the swap (docked state; the path bar's
-        // in-progress edit), so a rebuild triggered by navigation / sort
-        // doesn't snap the body or the path bar back mid-interaction.
-        self.update_toolbar();
-        self.composed_once = true;
-        self.refresh_places_pane();
-        self.refresh_cloud_header();
-        self.nav.set_content(self.build_content_pane(theme));
-
-        // The shell fills the window.
-        let nav_node = self.nav.build_layout(taffy, theme, node_map);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size::from_percent(1.0, 1.0),
-            ..Default::default()
-        };
-        // `new_with_children` only fails when a child belongs to a
-        // different tree; the shell was just built in this one above.
-        taffy.widget_node(style, &[nav_node], node_map, self)
-    }
-
-    fn apply_layout(
-        &mut self,
-        taffy: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
-        if let Ok(children) = taffy.children(node)
-            && let Some(&nav_n) = children.first()
-        {
-            self.nav.apply_layout(taffy, nav_n, base);
-            self.sync_toolbar_compact();
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.poll_share_result();
-        self.poll_history_result();
-        self.paint_background(theme);
-        self.nav
-            .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_overlay(
-        &mut self,
+        chrome: &mut Chrome,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         text_renderer: &mut ui::text_render::TextRenderer,
@@ -9795,7 +9641,8 @@ impl Widget for FileExplorerWidget {
         // Child overlays (the path bar's completion popover, dropdowns) first,
         // then our top-layer context menu (and its flyout) so they composite
         // above everything.
-        self.nav
+        chrome
+            .nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         let window = self.rect;
@@ -9805,20 +9652,22 @@ impl Widget for FileExplorerWidget {
         if let Some(pending) = self.clash.as_mut() {
             pending.paint(scene, transform, text_renderer, theme, window);
         }
-        if self.context_menu.is_open() {
-            layout_menu_widget(&mut self.context_menu);
-            self.context_menu
+        if chrome.context_menu.is_open() {
+            layout_menu_widget(&mut chrome.context_menu);
+            chrome
+                .context_menu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        if self.submenu.is_open() {
-            layout_menu_widget(&mut self.submenu);
-            self.submenu
+        if chrome.submenu.is_open() {
+            layout_menu_widget(&mut chrome.submenu);
+            chrome
+                .submenu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // The drop-target highlight sits on the target folder; the drag ghost
         // floats above everything else.
         self.resolve_staged_move_drag();
-        self.draw_drop_highlight(scene, transform, theme);
+        self.draw_drop_highlight(chrome, scene, transform, theme);
         self.draw_marquee(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
         self.draw_app_chooser(scene, transform, text_renderer, theme, presence);
@@ -9830,8 +9679,9 @@ impl Widget for FileExplorerWidget {
         clippy::too_many_lines,
         reason = "root event dispatcher orders pointer, keyboard, drag, menu, and retained-child routing"
     )]
-    fn handle_event(
+    fn handle_window_event(
         &mut self,
+        chrome: &mut Chrome,
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
@@ -9888,7 +9738,7 @@ impl Widget for FileExplorerWidget {
             *ctx.handled = true;
             return;
         }
-        if self.route_incoming_drop(event) {
+        if self.route_incoming_drop(chrome, event) {
             *ctx.handled = true;
             return;
         }
@@ -9979,16 +9829,16 @@ impl Widget for FileExplorerWidget {
         // A live drag, the open context menu, a right-click, a zoom wheel,
         // and an in-place rename all get first dibs on the event, in that
         // priority order; the first that consumes it stops routing.
-        if self.handle_live_drag_event(event, ctx)
-            || self.handle_open_menu_event(event, ctx)
-            || self.handle_right_click_open_menu(event, ctx)
-            || self.handle_zoom_wheel(event, ctx)
+        if self.handle_live_drag_event(chrome, event, ctx)
+            || self.handle_open_menu_event(chrome, event, ctx)
+            || self.handle_right_click_open_menu(chrome, event, ctx)
+            || self.handle_zoom_wheel(chrome, event, ctx)
             || self.handle_rename_mode_event(event, ctx)
         {
             return;
         }
 
-        self.finish_event(event, ctx);
+        self.finish_event(chrome, event, ctx);
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -10012,113 +9862,7 @@ impl Widget for FileExplorerWidget {
         }
     }
 
-    fn has_pending_visual_work(&self) -> bool {
-        let mut pending = self
-            .thumbs
-            .as_deref()
-            .is_some_and(|thumbs| !thumbs.is_idle());
-        self.for_each_child(&mut |child| pending |= child.has_pending_visual_work());
-        pending
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mut d = std::mem::take(&mut self.structure_dirty);
-        d |= self.nav.take_structure_dirty();
-        d
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // The body's docked→push / reveal slide must keep the host pumping
-        // frames while it settles; the floating status bubble likewise while it
-        // lingers / fades.
-        self.cloud.pending.is_some()
-            || self.mounted_cloud.is_pending()
-            || self.cloud.chooser.is_some()
-            || self.cloud_import_pending()
-            || self.nav.needs_animation_frame()
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        self.collaborative_record_pager.borrow().has_more() || self.nav.needs_idle_sync()
-    }
-
-    /// What the shell changed, and the rename editor where it changed. The
-    /// window's other paint (menus, the preview, the drag ghost) is in its
-    /// overlay, which the host repaints whole.
-    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        if self.collab_panel.is_none() {
-            self.nav.collect_damage(regions);
-        }
-        self.rename_paint.damage(regions);
-    }
-
-    fn mark_drawn(&mut self) {
-        self.rename_paint.present();
-        self.rename_input.mark_drawn();
-        for child in self.children_mut() {
-            child.mark_drawn();
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        if self.collab_panel.is_some() {
-            return Vec::new();
-        }
-        let v: Vec<&dyn Widget> = vec![
-            &self.nav,
-            // Standalone overlays are not taffy children, but they are semantic
-            // children: expose their menu/item nodes while open (closed nodes carry
-            // `hidden`, so assistive technology drops them).
-            &self.context_menu,
-            &self.submenu,
-        ];
-        v
-    }
-
-    /// The shell is laid out whether or not a panel covers it, so the
-    /// retained layout check walks it even while the panel keeps it from
-    /// routing.
-    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        visitor(&self.nav);
-        true
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.collab_panel.is_some() {
-            return Vec::new();
-        }
-        let v: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.nav, &mut self.context_menu, &mut self.submenu];
-        v
-    }
-
-    fn name(&self) -> &'static str {
-        "FileExplorerWidget"
-    }
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
-    }
-
-    fn traps_focus(&self) -> bool {
-        self.collab_panel.is_some() || self.app_chooser_open()
-    }
-
-    fn is_focusable(&self) -> bool {
-        self.collab_panel.is_some()
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.collab_panel_focused = focused && self.collab_panel.is_some();
-    }
-
-    fn is_focused(&self) -> bool {
-        self.collab_panel.is_some() && self.collab_panel_focused
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn window_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         if self.app_chooser_open() {
             return self.app_chooser.accessibility();
@@ -10182,13 +9926,7 @@ impl Widget for FileExplorerWidget {
         Some(root)
     }
 
-    fn perform_semantic_action(
-        &mut self,
-        target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
+    fn perform_window_action(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
         use ui::a11y::Action;
         if let Some(index) = target.strip_prefix(CLASH_TARGET)
             && matches!(action, Action::Activate)
@@ -10220,7 +9958,7 @@ impl Widget for FileExplorerWidget {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// The places, collaborative records and remote accounts as search
     /// entries. Collaborative entries carry stable record UUIDs; their
     /// current paths are provenance, never identity.
@@ -10234,7 +9972,7 @@ impl FileExplorerWidget {
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// The live rows the window shows beneath the resource: listing entries,
     /// remote accounts, nearby transfers and the retry of a failed listing.
     /// The folder, its places and templates and its folder-wide work are the
@@ -10281,53 +10019,10 @@ impl FileExplorerWidget {
     }
 }
 
-impl ui::widget::controls::ActionControls for FileExplorerWidget {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.selected_open.control.take() {
-            return Some(invocation);
-        }
-        if let Some(invocation) = self.app_chooser.take_control_invocation() {
-            return Some(invocation);
-        }
-        self.children_mut()
-            .into_iter()
-            .find_map(ui::widget::controls::take_control_invocation)
-    }
-    fn has_action_control_bindings(&self) -> bool {
-        // Own accessibility actions are semantic; only children emit actions.
-        ui::widget::controls::children_have_action_control_bindings(self)
-    }
-    // A control a caller invoked through the door (a toolbar button) queued
-    // its command; apply it now, as the click it stands for would.
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &ui::widget::controls::ControlResult,
-    ) {
-        for child in self.children_mut() {
-            ui::widget::controls::on_control_invocation_result(child, address, result);
-        }
-        if self.drain_commands() {
-            self.structure_dirty = true;
-        }
-    }
-}
-
-impl AppWidget for FileExplorerWidget {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Files
-    }
-    fn app_title(&self) -> &'static str {
-        static TITLE: OnceLock<String> = OnceLock::new();
-        TITLE.get_or_init(|| t("files-app-title")).as_str()
-    }
-    fn app_icon(&self) -> IconDescriptor {
-        IconDescriptor::Glyph("󰉋")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        Some(AppKind::Files)
-    }
-    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+impl FilesState {
+    /// What the window asks of the host next: a document to open in its
+    /// own app.
+    pub(crate) fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
         self.host_intent.take()
     }
 }
@@ -10354,7 +10049,7 @@ mod sidebar_button_tests;
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's
 /// publication with the window's effects beside it and its live rows
-/// beneath, and the routing the framework's surface host does.
+/// beneath, and the routing the framework does for its view.
 #[cfg(test)]
 pub(crate) mod published {
     use super::FileExplorerWidget;
@@ -10376,17 +10071,13 @@ pub(crate) mod published {
             &FileExplorer::default(),
         );
         // What the window binds over the folder shown and the selection,
-        // as the framework's surface host publishes it.
-        for decl in <FileExplorerWidget as ui::framework::ResourceSurface<
-            FileExplorer,
-            FilesEffect,
-        >>::bound_declarations(files)
-        {
+        // as its view publishes it.
+        for decl in files.state().bound_declarations() {
             root = ui::tilo_resource::bind_declaration(root, &decl);
         }
         root.actions.extend(FilesEffect::specs());
         let _ = doc;
-        root.children.extend(files.published_rows());
+        root.children.extend(files.state().published_rows());
         vec![root]
     }
 
@@ -10429,8 +10120,8 @@ pub(crate) mod published {
     /// to finish later.
     pub(crate) type Started = ui::framework::Effected;
 
-    /// Start the encoded operation on the window as the surface host does:
-    /// the effect vocabulary to the surface's handler, anything else to the
+    /// Start the encoded operation on the window as the framework does:
+    /// the effect vocabulary to the view's handler, anything else to the
     /// toolkit's widgets inside it.
     ///
     /// # Errors
@@ -10445,7 +10136,10 @@ pub(crate) mod published {
     ) -> Result<Option<Started>, String> {
         if type_id == FilesEffect::OPERATION {
             return Ok(Some(
-                match files.run_effect(FilesEffect::from_payload(payload)?)? {
+                match files
+                    .state()
+                    .run_effect(FilesEffect::from_payload(payload)?)?
+                {
                     super::Ran::Done(value) => Started::Done(ui::tilo_actions::ActionOutput {
                         value,
                         ..ui::tilo_actions::ActionOutput::default()
@@ -10463,8 +10157,13 @@ pub(crate) mod published {
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
 
-impl FileExplorerWidget {
-    pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {
+impl FilesState {
+    pub(crate) fn debug_begin_favorite_drag(
+        &self,
+        chrome: &mut Chrome,
+        from: usize,
+        to: usize,
+    ) -> bool {
         let (source, before) = {
             let favs = self.favs.borrow();
             let Some(source) = favs.favorites.get(from) else {
@@ -10481,7 +10180,7 @@ impl FileExplorerWidget {
                 format!("fav:{}", before.path.display()),
             )
         };
-        let Some(list) = self.nav.sidebar_mut::<ui::widget::NavList>() else {
+        let Some(list) = chrome.nav.sidebar_mut::<ui::widget::NavList>() else {
             return false;
         };
         list.stage_drag(&source, &before);

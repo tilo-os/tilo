@@ -17,7 +17,8 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Reactions, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, NonBlank, Reactions, Refusal, Set,
+    resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -545,13 +546,10 @@ impl Notebook {
     pub fn create_page(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The note's title")] title: String,
+        #[param("The note's title")] title: NonBlank,
         #[param("The note's body as Markdown")] markdown: Option<String>,
     ) -> Result<(), Refusal> {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(Refusal::new("give the note a title"));
-        }
+        let title = title.as_str();
         let markdown =
             crate::markdown::strip_matching_title_heading(&markdown.unwrap_or_default(), title);
         check_markdown_import(&markdown).map_err(Refusal::new)?;

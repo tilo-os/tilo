@@ -36,6 +36,7 @@ use crate::shell::state::{
 use tilo_action_broker::collab_core::BrokerChannels;
 
 mod adopted_fields;
+mod agent_invite;
 mod channels;
 mod chat_seed;
 pub(crate) mod cold_reads;
@@ -941,7 +942,7 @@ impl Device {
 
     /// Let the notes app keep records in `room`, as opening the app there
     /// first does: the room's host lets it author, and the note's record is
-    /// its sealed channel, which this device asks the room's steward for.
+    /// its sealed channel, which this device asks the room's participants for.
     /// Every hosted room is sealed, wherever it is hosted. Whoever opens
     /// the app later finds the record.
     pub(crate) fn open_notes_first(&self, room: RoomId) {
@@ -1068,14 +1069,14 @@ impl Device {
         assert!(
             sealed,
             "{} holds {room} as a sealed room (its records committed instead: {committed}; \
-             its enrollment names a governor that stewards them: {}, the governor {governor}; \
+             its enrollment names a governor that takes part in them: {}, the governor {governor}; \
              its native owner is {standing} {failure})",
             self.label,
             self.net().native_room_seals_records(room)
         );
     }
 
-    /// The note's channel keys in `room`, once the room's steward admitted
+    /// The note's channel keys in `room`, once a participant admitted
     /// this device: what the identity service answers the notes app.
     fn note_keys(&self, room: RoomId) -> Option<channel_crypto::ChannelContentKeys> {
         let Some((channels, _)) = self.channels.as_ref() else {
@@ -1433,23 +1434,51 @@ impl Device {
         net.govern(&target, action, arguments)
     }
 
-    /// Change `person`'s role in `room` from the workspace's people
-    /// settings: the room's `set-role` governance action, asked of the
-    /// room's host.
-    pub(crate) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
+    /// Give `grants` in `room` at this device's own host, as the room's
+    /// owner: written by the host into its copy of the room.
+    pub(crate) fn grant_at_host(
+        &self,
+        room: RoomId,
+        grants: Vec<tilo_action_policy::Grant>,
+    ) -> Result<(), String> {
         let net = self.net();
-        let target = net
-            .administered_room(room)
-            .unwrap_or_else(|| panic!("{} administers the room it owns", self.label));
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("person".into(), hex::encode(person.user()).into());
-        arguments.insert("role".into(), role.into());
-        net.govern(
-            &target,
-            tilo_action_policy::roles::governance::SET_ROLE,
-            arguments,
-        )
-        .unwrap_or_else(|error| panic!("the room's host changes the role: {error}"));
+        let host = net.local_host()?;
+        let owner = self.cert();
+        let request_id = *uuid::Uuid::new_v4().as_bytes();
+        let mut request = [0; 32];
+        request[..16].copy_from_slice(&request_id);
+        net.wait_on(async move {
+            host.rooms()
+                .put_room_grants(&room.to_string(), &owner, request, grants)
+                .await
+                .map(drop)
+                .map_err(|error| error.to_string())
+        })?
+    }
+
+    /// Change `person`'s role in `room` from the workspace's people
+    /// settings: written by this device into its replica of the room.
+    pub(crate) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
+        let role = match role {
+            "viewer" => tilo_action_policy::Role::Viewer,
+            "commenter" => tilo_action_policy::Role::Commenter,
+            "editor" => tilo_action_policy::Role::Editor,
+            "moderator" => tilo_action_policy::Role::Moderator,
+            other => panic!("no role {other}"),
+        };
+        self.net()
+            .write_governance_change(
+                room,
+                crate::shell::state::GovernanceRequest::Policy(
+                    tilo_action_policy::Change::SetRole {
+                        person: hex::encode(person.user()),
+                        role,
+                    },
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!("this device changes the role: {}", String::from(error))
+            });
     }
 
     /// Remove `person` from `room`, as its owner on this device.

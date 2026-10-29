@@ -18,7 +18,7 @@ use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
 /// The mapped nodes that take part in history: those inside a bound
-/// component or a legacy tile, and widgets that show or ask for undo or
+/// component or a record owner, and widgets that show or ask for undo or
 /// report an action bracket. Found once per admitted map, so a frame's
 /// history sweep visits them and not every row of a long list.
 #[derive(Default)]
@@ -50,9 +50,9 @@ pub(super) struct LayoutRuntime {
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree
-    /// (`app::retained_layout`).
+    /// ([`crate::host_core::HostCore::layout_maps_stale`]).
     pub(super) adopted: crate::retained_widgets::Adopted,
-    /// How many builds' maps were admitted (`App::admit_layout_maps`).
+    /// How many builds' maps were admitted ([`crate::host_core::HostCore::admit_layout_maps`]).
     pub(super) admissions: u64,
     /// The mapped nodes the history sweep visits, and the admission and map
     /// size they were found for (`App::history_sweep_nodes`).
@@ -289,17 +289,14 @@ pub(super) struct InputRuntime {
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
-    /// The pointer buttons held down, one bit each; see `input_publication`.
-    pub(super) pointer_buttons: u32,
+    /// Where the pointer is, which buttons it holds and where it last pressed.
+    pub(super) pointer: crate::host_core::PointerPlace,
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
-    /// Where the pointer is, in logical pixels of the app's surface.
-    pub(super) pointer_at: Option<vello::kurbo::Point>,
-    /// Where the person last pressed, while a press (not a key) is the last
-    /// thing they did: what they pressed is in the window there, which is the
-    /// window that asked for whatever the press opens.
-    pub(super) pressed_at: Option<vello::kurbo::Point>,
+    /// The window has the keyboard: the one a person (or a test control's
+    /// activation) addresses among the app's windows.
+    pub(super) window_focused: bool,
 }
 
 impl InputRuntime {
@@ -307,6 +304,7 @@ impl InputRuntime {
         Self {
             modifiers: winit::event::Modifiers::default(),
             keyboard_layout: None,
+            window_focused: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -314,10 +312,8 @@ impl InputRuntime {
             tooltip_host: crate::widget::TooltipHost::new(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
-            pointer_buttons: 0,
+            pointer: crate::host_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
-            pointer_at: None,
-            pressed_at: None,
         }
     }
 }
@@ -329,15 +325,24 @@ impl InputRuntime {
 /// capabilities.
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
-    pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     /// The window the palette was opened from, when the app hosts several
     /// (the desktop's tiles): the palette centres on it, not on the screen.
     pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
-    /// Why invocations the person made this pass did not run, said over the
-    /// window once the pass ends ([`super::App::refuse_visibly`]).
-    pub(super) refusals: Vec<String>,
+    /// Why invocations the person made this pass did not run, and the
+    /// control each came from when one is on screen: said at that control,
+    /// else in the window's bar, once the pass ends
+    /// ([`super::App::refuse_visibly`]).
+    pub(super) refusals: Vec<(String, Option<vello::kurbo::Rect>)>,
+    /// What stands at the control the person last used, until their next
+    /// press or key ([`crate::control_notice`]).
+    pub(super) control_notice: Option<crate::control_notice::ControlNotice>,
+    /// The window is a tile its host lays out in its own process (the
+    /// shell): searches go to the host's one search through the app's
+    /// component ([`super::App::hand_search_to_session`]).
+    pub(super) search_in_host: bool,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
     pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
@@ -345,10 +350,6 @@ pub(super) struct ActionRuntime {
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
-    /// The local transport is usable only until an authoritative host transport
-    /// has been installed. Legacy document controls use this to avoid treating
-    /// a host-backed action as a process-local fallback.
-    pub(super) legacy_local_transport: bool,
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
@@ -456,11 +457,12 @@ impl ActionRuntime {
             palette_window: None,
             ordinary_palette_return_focus: None,
             refusals: Vec::new(),
+            control_notice: None,
+            search_in_host: false,
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
-            legacy_local_transport: true,
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_record_sync: None,

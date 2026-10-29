@@ -34,8 +34,9 @@ impl Host for SpecHost {
         &self,
         path: &Path,
         mode: ush_shell::WriteMode,
+        run: Option<&ush_shell::Run>,
     ) -> std::io::Result<Box<dyn std::io::Write + Send>> {
-        self.0.open_write(path, mode)
+        self.0.open_write(path, mode, run)
     }
     fn file_action(&self, call: &ush_shell::FileCall<'_>) -> i32 {
         self.0.file_action(call)

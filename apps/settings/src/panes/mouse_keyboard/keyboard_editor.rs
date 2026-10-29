@@ -58,8 +58,9 @@ impl InputArea {
         scopes(self.devices().as_ref(), self.osk_always)
     }
 
-    fn profile(&self, input: &InputPrefs, scope: &str) -> KeyboardProfile {
+    fn profile(&self, input: &Input, scope: &str) -> KeyboardProfile {
         if let Some(profile) = input
+            .device
             .keyboard_assignments
             .get(scope)
             .filter(|_| scope != OSK && scope != ALL)
@@ -70,7 +71,7 @@ impl InputArea {
             return osk_profile(&self.document);
         }
         let mut profile = KeyboardProfile::from_input(&input.rich_input());
-        if let Some(defaults) = input.keyboard_assignments.get(ALL) {
+        if let Some(defaults) = input.device.keyboard_assignments.get(ALL) {
             profile.options.clone_from(&defaults.options);
         }
         profile
@@ -134,7 +135,7 @@ pub(super) fn scopes(
 /// shared ones, with their titles, in key order.
 pub(super) fn keyboards_with_own_sources(
     snapshot: Option<&InputHardwareSnapshot>,
-    input: &InputPrefs,
+    input: &Input,
 ) -> Vec<(String, String)> {
     let Some(snapshot) = snapshot else {
         return Vec::new();
@@ -144,7 +145,7 @@ pub(super) fn keyboards_with_own_sources(
         .into_iter()
         .filter(|device| {
             !matches!(device.key.as_str(), ALL | OSK)
-                && input.keyboard_assignments.contains_key(&device.key)
+                && input.device.keyboard_assignments.contains_key(&device.key)
         })
         .map(|device| (device.key.clone(), device_title(device)))
         .collect();
@@ -157,24 +158,24 @@ pub(super) fn keyboards_with_own_sources(
 /// when that keyboard is not offered for editing on its own: its retained
 /// list would otherwise keep overriding the edit with nothing on screen
 /// saying so. Disconnected keyboards keep their lists.
-fn drop_hidden_assignments(input: &mut InputPrefs, area: &InputArea) {
+fn drop_hidden_assignments(input: &mut Input, area: &InputArea) {
     let offered = area.keyboard_scopes();
     for (key, _) in keyboards_with_own_sources(area.devices().as_ref(), input) {
         if !offered.iter().any(|(scope, _)| scope == &key) {
-            input.keyboard_assignments.remove(&key);
+            input.device.keyboard_assignments.remove(&key);
         }
     }
 }
 
 /// Make one keyboard type the shared sources again.
 fn use_shared_sources(app: &SettingsApp, scope: &str) -> EffectAnswer {
-    let settings = app.host().settings::<InputPrefs>();
-    let mut input = settings.get();
-    if matches!(scope, ALL | OSK) || input.keyboard_assignments.remove(scope).is_none() {
+    let settings = app.host().settings::<InputDevicePrefs>();
+    let mut device = settings.get();
+    if matches!(scope, ALL | OSK) || device.keyboard_assignments.remove(scope).is_none() {
         return Err(t("input-error-keyboard-shared"));
     }
     settings
-        .set(&input)
+        .set(&device)
         .map(|()| Effected::done())
         .map_err(|error| error.to_string())
 }
@@ -188,7 +189,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
         return Some(use_shared_sources(app, scope));
     }
     let mut editor = area.editor.get();
-    let input = app.host().settings::<InputPrefs>().get();
+    let input = Input::load(app.host());
     let profile = area.profile(&input, &editor.scope);
     if !matches!(
         operation,
@@ -279,14 +280,14 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
 
 fn inspect_sources(app: &SettingsApp) -> EffectAnswer {
     let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
-    let input = app.host().settings::<InputPrefs>().get();
+    let input = Input::load(app.host());
     let scopes: Vec<_> = area
         .keyboard_scopes()
         .into_iter()
         .map(|(id, label)| {
             let profile = area.profile(&input, &id);
             let own = !matches!(id.as_str(), ALL | OSK)
-                && input.keyboard_assignments.contains_key(&id);
+                && input.device.keyboard_assignments.contains_key(&id);
             serde_json::json!({"id": id, "label": label, "sources": profile.sources, "active": profile.active, "own": own})
         })
         .collect();
@@ -299,7 +300,7 @@ fn inspect_sources(app: &SettingsApp) -> EffectAnswer {
 fn confirm_added_source(
     app: &SettingsApp,
     editor: &mut EditorState,
-    input: InputPrefs,
+    input: Input,
     mut profile: KeyboardProfile,
 ) -> EffectAnswer {
     let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
@@ -332,12 +333,11 @@ fn confirm_added_source(
         if editor.scope == ALL {
             updated.keyboard_layout.clone_from(&active);
         }
-        if let Some(profile) = updated.keyboard_assignments.get_mut(&editor.scope) {
+        if let Some(profile) = updated.device.keyboard_assignments.get_mut(&editor.scope) {
             profile.active = active;
         }
-        app.host()
-            .settings::<InputPrefs>()
-            .set(&updated)
+        updated
+            .store(app.host())
             .map_err(|error| error.to_string())?;
     }
     editor.selected = Some(source);
@@ -373,7 +373,7 @@ fn available(area: &InputArea, profile: &KeyboardProfile, scope: &str) -> Vec<Ca
 }
 
 pub(super) fn apply_scoped(
-    input: &mut InputPrefs,
+    input: &mut Input,
     operation: InputEffect,
     area: &InputArea,
 ) -> Result<(), String> {
@@ -393,7 +393,7 @@ pub(super) fn apply_scoped(
     // a configured selection and never creates this independent preview state.
     if editor.selected.is_none()
         && !editor.adding
-        && input.keyboard_preview.is_some()
+        && input.device.keyboard_preview.is_some()
         && matches!(operation, InputEffect::SetKeyboardModel { .. })
     {
         return apply(input, operation, area.catalog());
@@ -460,12 +460,15 @@ pub(super) fn apply_scoped(
         input.keyboard_layout.clone_from(&profile.active);
         drop_hidden_assignments(input, area);
     }
-    input.keyboard_assignments.insert(editor.scope, profile);
+    input
+        .device
+        .keyboard_assignments
+        .insert(editor.scope, profile);
     Ok(())
 }
 
 fn apply_source_options(
-    input: &mut InputPrefs,
+    input: &mut Input,
     profile: &mut KeyboardProfile,
     selected: String,
     operation: InputEffect,
@@ -492,8 +495,8 @@ fn apply_source_options(
         }
         InputEffect::SetKeyboardModel { model } if crate::keyboard_preview::valid_model(&model) => {
             options.model = Some(model);
-            input.keyboard_inspected_key = "AD01".into();
-            input.keyboard_preview_level = 0;
+            input.device.keyboard_inspected_key = "AD01".into();
+            input.device.keyboard_preview_level = 0;
         }
         _ => return Err(t("input-error-source-option")),
     }
@@ -501,7 +504,7 @@ fn apply_source_options(
 }
 
 fn apply_selected_inspection(
-    input: &mut InputPrefs,
+    input: &mut Input,
     operation: InputEffect,
     area: &InputArea,
     editor: &EditorState,
@@ -512,23 +515,24 @@ fn apply_selected_inspection(
         .as_ref()
         .filter(|_| editor.adding)
         .or(editor.selected.as_ref())
-        .or(input.keyboard_preview.as_ref())
+        .or(input.device.keyboard_preview.as_ref())
         .filter(|source| {
             profile.sources.contains(source)
                 || editor.adding
-                || (editor.selected.is_none() && input.keyboard_preview.as_ref() == Some(source))
+                || (editor.selected.is_none()
+                    && input.device.keyboard_preview.as_ref() == Some(source))
         })
         .unwrap_or(&profile.active);
     let mut selected_profile = profile.clone();
     selected_profile.active.clone_from(selected);
     let effective = selected_profile.effective(&input.rich_input());
     let mut preview = input.clone();
-    preview.keyboard_preview = Some(selected.clone());
-    preview.keyboard_model = effective.keyboard_model;
+    preview.device.keyboard_preview = Some(selected.clone());
+    preview.device.keyboard_model = effective.keyboard_model;
     apply(&mut preview, operation, area.catalog())?;
-    input.keyboard_preview_level = preview.keyboard_preview_level;
-    input.keyboard_preview_extra_levels = preview.keyboard_preview_extra_levels;
-    input.keyboard_inspected_key = preview.keyboard_inspected_key;
+    input.device.keyboard_preview_level = preview.device.keyboard_preview_level;
+    input.device.keyboard_preview_extra_levels = preview.device.keyboard_preview_extra_levels;
+    input.device.keyboard_inspected_key = preview.device.keyboard_inspected_key;
     Ok(())
 }
 
@@ -636,12 +640,12 @@ fn mutate_sources(
 }
 
 impl MouseKeyboardPane {
-    pub(super) fn preview_input(&self, source: &str) -> InputPrefs {
+    pub(super) fn preview_input(&self, source: &str) -> Input {
         let mut input = self.last.clone();
         let mut profile = self.editor_profile();
         profile.active = source.into();
         let effective = profile.effective(&input.rich_input());
-        input.keyboard_model = effective.keyboard_model;
+        input.device.keyboard_model = effective.keyboard_model;
         input.compose_key = effective.compose_key;
         input.caps_lock = effective.caps_lock;
         input
@@ -650,6 +654,7 @@ impl MouseKeyboardPane {
     fn editor_profile(&self) -> KeyboardProfile {
         if let Some(profile) = self
             .last
+            .device
             .keyboard_assignments
             .get(&self.editor.get().scope)
             .filter(|_| !matches!(self.editor.get().scope.as_str(), ALL | OSK))
@@ -660,7 +665,7 @@ impl MouseKeyboardPane {
             return osk_profile(self.cx.storage().settings_document());
         }
         let mut profile = KeyboardProfile::from_input(&self.last.rich_input());
-        if let Some(defaults) = self.last.keyboard_assignments.get(ALL) {
+        if let Some(defaults) = self.last.device.keyboard_assignments.get(ALL) {
             profile.options.clone_from(&defaults.options);
         }
         profile
@@ -674,6 +679,7 @@ impl MouseKeyboardPane {
             .filter(|source| profile.sources.contains(source))
             .or_else(|| {
                 self.last
+                    .device
                     .keyboard_preview
                     .clone()
                     .filter(|_| !self.editor.get().adding)
@@ -859,7 +865,7 @@ impl MouseKeyboardPane {
         match map {
             Some(Ok(map)) => {
                 let levels = map.level_count().clamp(1, 4);
-                let level = self.last.keyboard_preview_level.min(levels - 1);
+                let level = self.last.device.keyboard_preview_level.min(levels - 1);
                 let layers = ui::widget::ToggleGroup::new(
                     (0..levels)
                         .map(|index| {
@@ -876,8 +882,8 @@ impl MouseKeyboardPane {
                     effect(InputEffect::SET_PREVIEW_LEVEL).map(|index: usize| index.to_string()),
                 );
                 let live = self.editor.get().view == SourceView::Live;
-                let map = if live || self.last.keyboard_preview.is_some() {
-                    map.with_inspected_key(&self.last.keyboard_inspected_key)
+                let map = if live || self.last.device.keyboard_preview.is_some() {
+                    map.with_inspected_key(&self.last.device.keyboard_inspected_key)
                 } else {
                     map
                 }
@@ -1063,7 +1069,7 @@ impl MouseKeyboardPane {
                             ("jp106".into(), t("input-map-jis")),
                             ("kr106".into(), t("input-map-korean")),
                         ],
-                        &input.keyboard_model,
+                        &input.device.keyboard_model,
                         "input.map.model",
                         &t("input-map-model"),
                     ),
@@ -1295,11 +1301,18 @@ mod tests {
         let stored = app.settings::<InputPrefs>().get();
         assert_eq!(stored.keyboard_layout, "us");
         assert_eq!(
-            settings_store::keyboard_sources::effective(&stored.rich_input(), ALL).compose_key,
+            settings_store::keyboard_sources::effective(
+                &stored.rich_input(&app.settings::<InputDevicePrefs>().get()),
+                ALL
+            )
+            .compose_key,
             input.compose_key
         );
         assert_eq!(
-            stored.keyboard_assignments[ALL].options["de"]
+            app.settings::<InputDevicePrefs>()
+                .get()
+                .keyboard_assignments[ALL]
+                .options["de"]
                 .compose_key
                 .as_deref(),
             Some("ralt")
@@ -1348,9 +1361,12 @@ mod tests {
         let stored = app.settings::<InputPrefs>().get();
         assert_eq!(stored.keyboard_layout, "de");
         assert_eq!(
-            settings_store::keyboard_sources::effective(&stored.rich_input(), ALL)
-                .compose_key
-                .as_deref(),
+            settings_store::keyboard_sources::effective(
+                &stored.rich_input(&app.settings::<InputDevicePrefs>().get()),
+                ALL
+            )
+            .compose_key
+            .as_deref(),
             Some("ralt")
         );
         perform(
@@ -1525,7 +1541,12 @@ mod tests {
                 let stored = app.settings::<InputPrefs>().get();
                 assert_eq!(stored.keyboard_layouts, ["us", "fr", "de"]);
                 assert_eq!(stored.keyboard_layout, "us");
-                assert!(!stored.keyboard_assignments.contains_key("fixture-input-0"));
+                assert!(
+                    !app.settings::<InputDevicePrefs>()
+                        .get()
+                        .keyboard_assignments
+                        .contains_key("fixture-input-0")
+                );
                 app.harness().render_png(&directory.join("reordered.png"));
             }
             if matches!(scenario, "keyboard-many" | "keyboard-touch") {
@@ -1562,11 +1583,11 @@ mod tests {
     #[test]
     fn the_only_keyboard_edits_the_shared_sources_and_loses_its_hidden_list() {
         let mut app = fixture_app("keyboard-single", (1200, 900));
-        let mut input = app.settings::<InputPrefs>().get();
+        let mut input = app.settings::<InputDevicePrefs>().get();
         input
             .keyboard_assignments
             .insert("fixture-input-0".into(), fork(&["us"]));
-        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settings::<InputDevicePrefs>().set(&input).unwrap();
         app.settle();
         // What the built-in keyboard types differs from the shared list: say so.
         assert!(
@@ -1589,10 +1610,18 @@ mod tests {
         let stored = app.settings::<InputPrefs>().get();
         assert_eq!(stored.keyboard_layout, "de");
         assert!(stored.keyboard_layouts.contains(&"de".to_string()));
-        assert!(!stored.keyboard_assignments.contains_key("fixture-input-0"));
+        assert!(
+            !app.settings::<InputDevicePrefs>()
+                .get()
+                .keyboard_assignments
+                .contains_key("fixture-input-0")
+        );
         assert_eq!(
-            settings_store::keyboard_sources::effective(&stored.rich_input(), "fixture-input-0")
-                .keyboard_layout,
+            settings_store::keyboard_sources::effective(
+                &stored.rich_input(&app.settings::<InputDevicePrefs>().get()),
+                "fixture-input-0"
+            )
+            .keyboard_layout,
             "de",
             "the keyboard types what the page edited"
         );
@@ -1606,11 +1635,11 @@ mod tests {
     #[test]
     fn a_keyboard_with_its_own_list_is_shown_and_can_use_the_shared_one() {
         let mut app = fixture_app("keyboard-many", (1200, 900));
-        let mut input = app.settings::<InputPrefs>().get();
+        let mut input = app.settings::<InputDevicePrefs>().get();
         input
             .keyboard_assignments
             .insert("fixture-input-1".into(), fork(&["fr"]));
-        app.settings::<InputPrefs>().set(&input).unwrap();
+        app.settings::<InputDevicePrefs>().set(&input).unwrap();
         app.settle();
         let result = app
             .effect(&SettingsEffect::from(InputEffect::InspectKeyboardSources))
@@ -1635,7 +1664,7 @@ mod tests {
             },
         );
         assert!(
-            app.settings::<InputPrefs>()
+            app.settings::<InputDevicePrefs>()
                 .get()
                 .keyboard_assignments
                 .contains_key("fixture-input-1")
@@ -1645,7 +1674,7 @@ mod tests {
             .unwrap();
         app.settle();
         assert!(
-            !app.settings::<InputPrefs>()
+            !app.settings::<InputDevicePrefs>()
                 .get()
                 .keyboard_assignments
                 .contains_key("fixture-input-1")
@@ -1673,8 +1702,11 @@ mod tests {
                 source: "de".into(),
             },
         );
-        let assigned =
-            app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-1"].clone();
+        let assigned = app
+            .settings::<InputDevicePrefs>()
+            .get()
+            .keyboard_assignments["fixture-input-1"]
+            .clone();
         app.surface::<SettingsApp, _>(|surface| {
             crate::panes::mouse_keyboard::area(surface)
                 .unwrap()
@@ -1685,7 +1717,9 @@ mod tests {
         .unwrap();
         app.settle();
         assert_eq!(
-            app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-1"],
+            app.settings::<InputDevicePrefs>()
+                .get()
+                .keyboard_assignments["fixture-input-1"],
             assigned
         );
         assert!(
@@ -1716,12 +1750,16 @@ mod tests {
             },
         );
         assert_eq!(
-            app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-1"],
+            app.settings::<InputDevicePrefs>()
+                .get()
+                .keyboard_assignments["fixture-input-1"],
             assigned
         );
         let app = app.reopen().unwrap();
         assert_eq!(
-            app.settings::<InputPrefs>().get().keyboard_assignments["fixture-input-1"],
+            app.settings::<InputDevicePrefs>()
+                .get()
+                .keyboard_assignments["fixture-input-1"],
             assigned
         );
         assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "us");

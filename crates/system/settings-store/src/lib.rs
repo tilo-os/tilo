@@ -74,12 +74,12 @@ pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
 pub mod clock;
-pub mod continuity;
 pub mod continuity_privacy;
 pub mod control_hints;
 pub mod day_schedule;
 pub mod desk_widgets;
 pub mod desktop_control;
+pub mod desktop_controls;
 pub mod device_class;
 pub mod device_displays;
 pub mod device_vpn;
@@ -104,6 +104,7 @@ pub mod notification_policy;
 pub mod paste_shortcut;
 pub mod person_displays;
 pub mod personal_dictionary;
+pub mod placement;
 pub mod power;
 pub mod published;
 pub mod roaming_provenance;
@@ -125,7 +126,7 @@ pub use source::{
     flush_pending_writes, install_source, installed_source, merge_section, note_deferred_failure,
     take_deferred_failures,
 };
-pub use store::{RECORDS_DIR, Store, profile};
+pub use store::{BOOKKEEPING, RECORDS_DIR, Store, made_by, profile};
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
@@ -217,6 +218,29 @@ pub fn section(text: &str, name: &str) -> Map<String, Value> {
 /// object, yields an empty map.
 pub fn load_section(name: &str) -> Map<String, Value> {
     object_section(load(), name)
+}
+
+/// Sections `names` of this process's settings read as one: the leaves of
+/// each, a later section's over an earlier's. A setting whose leaves the
+/// person and the device hold apart (`input` and `input_device`) reads
+/// through it.
+pub fn load_sections(names: &[&str]) -> Map<String, Value> {
+    merged_sections(&load(), names)
+}
+
+/// Sections `names` of `document` read as one, as [`load_sections`] does.
+pub fn merged_sections(document: &Map<String, Value>, names: &[&str]) -> Map<String, Value> {
+    let mut merged = Map::new();
+    for name in names {
+        if let Some(Value::Object(leaves)) = document.get(*name) {
+            merged.extend(
+                leaves
+                    .iter()
+                    .map(|(leaf, value)| (leaf.clone(), value.clone())),
+            );
+        }
+    }
+    merged
 }
 
 /// Section `name` of `source`'s document.

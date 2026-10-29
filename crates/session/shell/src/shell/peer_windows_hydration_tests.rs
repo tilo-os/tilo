@@ -1,8 +1,8 @@
 //! A window continuing from another device brings the record it showed
 //! there before it opens, and waits visibly while that record is on its way.
 use super::*;
-use crate::shell::personal_continuity::{AppInstanceId, ResumeMetadata, ResumeSensitivity};
-use crate::shell::personal_continuity_registry::{ContinuationRegistry, global_registry};
+use crate::shell::continuation::{AppInstanceId, ResumeMetadata, ResumeSensitivity};
+use crate::shell::continuation_registry::{ContinuationRegistry, global_registry};
 use crate::shell::record_hydration::{RecordAddress, RecordSource, profile_root, set_source};
 use crate::shell::state::{
     Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceId, next_id,
@@ -37,7 +37,7 @@ impl RecordSource for Device {
 struct Reset(Option<Arc<Mutex<ContinuationRegistry>>>);
 impl Drop for Reset {
     fn drop(&mut self) {
-        crate::shell::personal_continuity_registry::replace_test_registry(self.0.take());
+        crate::shell::continuation_registry::replace_test_registry(self.0.take());
     }
 }
 
@@ -73,11 +73,9 @@ fn kept_elsewhere(room: crate::shell::state::RoomId) -> (RecordCheckout, Vec<u8>
 
 #[test]
 fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
-    let _reset = Reset(
-        crate::shell::personal_continuity_registry::replace_test_registry(Some(Arc::new(
-            Mutex::new(ContinuationRegistry::default()),
-        ))),
-    );
+    let _reset = Reset(crate::shell::continuation_registry::replace_test_registry(
+        Some(Arc::new(Mutex::new(ContinuationRegistry::default()))),
+    ));
     let data = tempfile::tempdir().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_DATA_HOME", data.path());
@@ -179,11 +177,9 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
 
 #[test]
 fn refused_cold_record_never_opens_a_default_or_binds_a_saved_view() {
-    let _reset = Reset(
-        crate::shell::personal_continuity_registry::replace_test_registry(Some(Arc::new(
-            Mutex::new(ContinuationRegistry::default()),
-        ))),
-    );
+    let _reset = Reset(crate::shell::continuation_registry::replace_test_registry(
+        Some(Arc::new(Mutex::new(ContinuationRegistry::default()))),
+    ));
     let data = tempfile::tempdir().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_DATA_HOME", data.path());

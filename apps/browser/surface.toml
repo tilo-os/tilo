@@ -97,7 +97,7 @@ fields = [
 id = "visit"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
+  { name = "url", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "title", required = true, schema = { type = "string" } },
   { name = "at", required = true, schema = { type = "integer", minimum = 0 } },
 ]
@@ -114,7 +114,7 @@ id = "name-visit"
 kind = "undoable"
 params = [
   { name = "url", required = true, schema = { type = "string" } },
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

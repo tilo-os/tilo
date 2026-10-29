@@ -18,6 +18,7 @@ mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
 mod bar_popovers;
+mod canvas;
 mod control_hints;
 mod cursor_chat;
 mod feedback_pick;
@@ -56,6 +57,7 @@ use ui::TextRole;
 
 mod controller;
 mod desk;
+mod desk_paint;
 mod desktop_control_chips;
 mod fullscreen_hint;
 pub use desk::SuperSurface;
@@ -71,6 +73,7 @@ mod history;
 // (docs/architecture/surfaces.md, "Migration"). Nothing reads the model to
 // make a decision yet, so the arms no overlay uses are declared here, once,
 // rather than per type; the last migration step removes this.
+mod launcher_host;
 #[allow(
     dead_code,
     reason = "the surface model's vocabulary, published before input, scrim and focus are served from it; docs/architecture/surfaces.md, Migration"
@@ -84,6 +87,7 @@ mod parked_workspaces;
 mod peer_sync_dispatch;
 mod shared_window_follow;
 mod sheet_accessibility;
+pub(crate) mod sheet_apps;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
@@ -124,12 +128,9 @@ use history::{
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
 use shortcuts::{
-    configured_shortcut_action, shortcut_action_label, shortcut_action_rows,
-    shortcut_action_summary, shortcut_app_tab_note, shortcut_chord_from_event,
-    shortcut_chord_keycaps, shortcut_guide_chord, shortcut_guide_content_height,
-    shortcut_navigation_columns, shortcut_navigation_height, shortcut_navigation_step,
-    shortcut_note_lines, shortcut_reference_columns, shortcut_reference_group_height,
-    shortcut_reference_groups, shortcut_reference_rows, shortcut_reference_step,
+    configured_shortcut_action, shortcut_action_label, shortcut_action_summary,
+    shortcut_app_tab_note, shortcut_chord_from_event, shortcut_chord_keycaps,
+    shortcut_reference_groups,
 };
 #[cfg(test)]
 use std::path::PathBuf;
@@ -164,9 +165,6 @@ pub use crate::shell::peer_sync_overlay::{
 };
 use crate::shell::peer_sync_overlay::{InviteContext, PeerSyncOverlay};
 use crate::shell::portal_dialog::PortalDialogController;
-use crate::shell::power_menu::PowerMenu;
-#[cfg(test)]
-use crate::shell::power_menu::PowerMenuClick;
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
@@ -174,6 +172,7 @@ use crate::shell::window_menu::WindowMenuAction;
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
+#[cfg(test)]
 use tilo_desktop::drill_in as qs;
 use tilo_desktop::drill_in::DrillInList;
 use tilo_desktop::notifications::{
@@ -268,9 +267,11 @@ mod palette_run;
 mod palette_search;
 mod people_overlay;
 use palette_search::LaunchpadMark;
+mod display_confirm_sheet;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
+mod power_sheet;
 mod projection;
 mod qs_device_input;
 mod qs_device_rows;
@@ -287,6 +288,7 @@ mod qs_wifi_radio_tests;
 mod queries;
 mod room_activity;
 mod scene;
+mod shortcut_guide_sheet;
 pub(crate) use scene::take_section_spans;
 mod services;
 mod setup;
@@ -326,7 +328,7 @@ use room_activity::{
     ACTIVITY_AWARENESS_FALLBACK, enter_activity_workspace, grounded_intent_fallback,
     prepare_status_evidence, should_reveal_activity_on_entry, take_pending_activity_reveal,
 };
-use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS, ShortcutGuideFocus};
+use shortcut_config::{DesktopControlsSource, SHORTCUT_GUIDE_ROWS};
 
 /// Side-effect dispatcher for a peer-sync request (`/invite`, `/connect`),
 /// bridging the transport-agnostic widget layer to `ShellNetwork`.
@@ -390,12 +392,12 @@ struct OverlayInputs {
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
     qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
-    room_activity: crate::shell::room_activity::RoomActivityPane,
-    projection_overlay: ProjectionOverlay,
+    room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
+    projection_overlay: Box<ProjectionOverlay>,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     history_describer: crate::shell::history_narrative::HistoryDescriber,
-    portal_dialogs: PortalDialogController,
+    portal_dialogs: Box<PortalDialogController>,
     session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     now_playing: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
 }
@@ -471,29 +473,10 @@ pub struct ShellOverlayHost {
     /// Direct-touch arena for shell-owned three-finger navigation and pinch
     /// overview. One-finger streams continue to the ordinary widget tree.
     touch_gestures: ui::gesture::TouchGestureArena,
-    /// Geometry painted by the keyboard guide, reused by pointer dispatch so
-    /// the visible keycaps themselves are the edit targets.
-    shortcut_binding_rects: Vec<(settings_store::hardware::ShortcutAction, Rect)>,
-    shortcut_reset_rects: Vec<(
-        settings_store::hardware::ShortcutAction,
-        settings_store::hardware::ShortcutAction,
-        Rect,
-    )>,
     /// The action waiting for its next pressed chord. Escape clears this
     /// without touching the persisted binding.
     shortcut_rebind: Option<settings_store::hardware::ShortcutAction>,
     shortcut_rebind_message: Option<String>,
-    shortcut_guide_focus: Option<ShortcutGuideFocus>,
-    /// How far the keyboard guide's body is scrolled, in logical pixels.
-    /// Only non-zero when the window is shorter than the guide's content.
-    shortcut_guide_scroll: f64,
-    /// The scroll range measured by the last paint, so the wheel clamps to
-    /// what is actually there.
-    shortcut_guide_max_scroll: f64,
-    /// The guide's Done button as wide as its label, measured by the last
-    /// paint (the label is localised and the type scale is the person's),
-    /// so the button never elides it and hit-testing matches what is drawn.
-    shortcut_help_done_width: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
     /// Saved preferences, kept separate from windowed-session defaults so
@@ -518,7 +501,7 @@ pub struct ShellOverlayHost {
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
     /// user dismisses the result screen.
-    onboarding: Option<crate::onboarding_view::OnboardingView>,
+    onboarding: Option<Box<crate::onboarding_view::OnboardingView>>,
     /// Layout node for the modal setup/tour surface. A reopened desktop tour
     /// shares the normal desktop tree; first-login setup still owns the root.
     onboarding_node: Option<NodeId>,
@@ -530,7 +513,7 @@ pub struct ShellOverlayHost {
     onboarding_focus_reset: bool,
     /// The strip ribbon (grown into the strip switcher on intent) and the
     /// strip rail; see [`strip_switcher`].
-    strip_navigator: tilo_desktop::strip_navigator::StripNavigator,
+    strip_navigator: Box<tilo_desktop::strip_navigator::StripNavigator>,
     /// The desktop's control hints, and what the last frame showed them;
     /// see [`control_hints`].
     control_hints: tilo_desktop::control_hints::ControlHints,
@@ -543,6 +526,12 @@ pub struct ShellOverlayHost {
     outputs: Vec<OutputGeometry>,
     palette: CommandPalette,
     palette_visible: bool,
+    /// Search as the launcher app shows it, once the session lends the apps
+    /// it mounts in its own process; until then (and in a host without
+    /// them) the palette above draws itself.
+    launcher: Option<launcher_host::LauncherHost>,
+    /// The launcher cannot be mounted here: the palette draws itself.
+    launcher_unavailable: bool,
     /// Search providers the palette fans out to. Built once at
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
@@ -654,7 +643,7 @@ pub struct ShellOverlayHost {
     /// the windows are drawn.
     overview_zoom: ui::motion::Presence,
     /// A strip's name being typed in the overview.
-    overview_naming: Option<overview_grid::OverviewNaming>,
+    overview_naming: Option<Box<overview_grid::OverviewNaming>>,
     /// The overview's live pictures of shell-drawn windows, painted once and
     /// kept while nothing they show changes, so every frame of the zoom
     /// draws the same paint instead of painting each window again.
@@ -689,9 +678,6 @@ pub struct ShellOverlayHost {
     overview_metrics: OverviewMetrics,
     /// Layout-only theme snapshot for the shared compact-modal rule.
     overview_layout_theme: Theme,
-    /// The keyboard guide's navigation row step for the theme of the last
-    /// layout pass, so the guide's hit-testing and paint share one answer.
-    shortcut_navigation_step: f64,
     overview_layout_viewport: Rect,
     /// Quick Settings' appear, drill and height motion (`ui::motion`).
     qs_motion: qs_motion::QsMotion,
@@ -748,7 +734,7 @@ pub struct ShellOverlayHost {
     /// ordering, dismissal and release bookkeeping they share. The tab menu
     /// is opened by `harvest_pending_tab_context_menus` from the tab bar's
     /// request; the power flyout by its chord and the Quick Settings tile.
-    layers: OverlayStack,
+    layers: Box<OverlayStack>,
     /// Results from session helpers run off the frame thread. Failures must
     /// return to chrome instead of disappearing into the journal.
     session_action_channel: (
@@ -790,7 +776,7 @@ pub struct ShellOverlayHost {
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     /// Workspace-settings transition, geometry, painting chrome, and typed
     /// hit targets. Policy outcomes are applied by this host.
-    workspace_settings_overlay: WorkspaceSettingsOverlay,
+    workspace_settings_overlay: Box<WorkspaceSettingsOverlay>,
     /// The active workspace's emoji as workspace settings' Emoji tab holds
     /// them, opened on first use.
     ws_emoji: Option<ws_emoji::WsEmoji>,
@@ -861,7 +847,7 @@ pub struct ShellOverlayHost {
     file_picker_overlay: FilePickerOverlay,
     /// Compositor-owned sheets for portal app choices and consent/review
     /// flows. A chooser is a concrete user selection, not a broad grant.
-    portal_dialogs: PortalDialogController,
+    portal_dialogs: Box<PortalDialogController>,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced. It follows the live session transport and can be enabled
     /// when first-login provisioning completes.
@@ -905,9 +891,9 @@ pub struct ShellOverlayHost {
     local_status_origin: ui::StatusOrigin,
     status_sharing: ui::StatusSharing,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
-    peer_sync_overlay: PeerSyncOverlay,
+    peer_sync_overlay: Box<PeerSyncOverlay>,
     /// "Join a workspace…": the public workspaces, as a sheet in place.
-    directory_sheet: crate::shell::directory_sheet::DirectorySheet,
+    directory_sheet: Box<crate::shell::directory_sheet::DirectorySheet>,
     /// The faces the bar pulses for an arrival, until the frame bounces
     /// them (`arrival::say_arrived`).
     arrival_pulses: Vec<String>,
@@ -994,10 +980,10 @@ pub struct ShellOverlayHost {
     status_copied: std::cell::RefCell<tilo_quick_settings::SystemStatus>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
     /// Present only in compositor sessions; omitted from shots and unit tests.
-    session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
+    audio_service: Option<crate::shell::audio_service::AudioService>,
     /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
     /// filter state, placed by hand like the notification stack.
-    room_activity: crate::shell::room_activity::RoomActivityPane,
+    room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -1023,10 +1009,10 @@ pub struct ShellOverlayHost {
     activity_pending_reveal: Option<u64>,
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
-    collaborators_overlay: CollaboratorsOverlay,
+    collaborators_overlay: Box<CollaboratorsOverlay>,
     /// The roster pinned out of the dropdown, floating over the windows at
     /// an edge as a desk widget does.
-    people_overlay: tilo_desktop::people_overlay::PeopleOverlay,
+    people_overlay: Box<tilo_desktop::people_overlay::PeopleOverlay>,
     /// Where each person's windows are, as the room's live presence says,
     /// and where this person's are (`ShellNetwork`'s layouts).
     live_layout_bridge: Option<LiveLayoutBridge>,
@@ -1068,9 +1054,9 @@ pub struct ShellOverlayHost {
     follow_cursor_targets: Vec<(String, Rect)>,
     agent_markers: agent_markers::AgentMarkers,
     person_markers: tilo_desktop::person_cursor::PersonCursors,
-    person_quick_composer: crate::shell::person_quick_composer::PersonQuickComposer,
+    person_quick_composer: Box<crate::shell::person_quick_composer::PersonQuickComposer>,
     /// This person's cursor chat: `/` over a shared window.
-    cursor_chat: cursor_chat::CursorChatComposer,
+    cursor_chat: Box<cursor_chat::CursorChatComposer>,
     /// You, as the people in each workspace see you.
     self_presence: presence_self::SelfPresence,
     /// Who was here when the bar last said someone arrived.
@@ -1083,10 +1069,10 @@ pub struct ShellOverlayHost {
     peer_sync_node: Option<NodeId>,
     /// The question about one of the person's apps on screen, "Uninstall
     /// \<name\>?" or "Add \<name\> to apps?" ([`app_sheets`]).
-    app_sheet: Option<app_sheets::AppSheet>,
+    app_sheet: Option<Box<app_sheets::AppSheet>>,
     /// The question just answered, drawn leaving until it has gone; it
     /// takes no input.
-    app_sheet_leaving: Option<app_sheets::AppSheet>,
+    app_sheet_leaving: Option<Box<app_sheets::AppSheet>>,
     /// The sheet's window node and its own, while it is laid out.
     app_sheet_nodes: Option<(NodeId, NodeId)>,
     /// The sheet opened or closed since the tree was last built.
@@ -1095,12 +1081,18 @@ pub struct ShellOverlayHost {
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     /// The rooms' trackers, where the composer follows the runs it asked for.
     tracker: Option<std::sync::Arc<crate::shell::broker_services::NativeTrackerRuns>>,
-    agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
+    agent_quick_composer: Box<crate::shell::agent_quick_composer::AgentQuickComposer>,
     agent_quick_composer_node: Option<NodeId>,
     /// The workspace menu and the profile card the top bar opens.
-    bar_popovers: bar_popovers::BarPopovers,
+    bar_popovers: Box<bar_popovers::BarPopovers>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
+    /// Controls a development session's test control asked to activate in
+    /// the focused window, by their test ids, not yet sent to its app.
+    test_activations: Vec<String>,
+    /// This device's side of the canvas: the lens, the caret, a selection
+    /// and the answers on their way to a window ([`canvas`]).
+    canvas: canvas::CanvasLayer,
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,
@@ -1132,11 +1124,11 @@ pub struct ShellOverlayHost {
     shared_desk: Option<crate::shell::peer_presence::SharedDesk>,
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
-    projection_overlay: ProjectionOverlay,
+    projection_overlay: Box<ProjectionOverlay>,
     /// The Wi-Fi join prompt — its passphrase field is the only place the
     /// passphrase lives — and the prompt (`WifiPasswordPrompt::id`) it is
     /// typed for.
-    wifi_prompt: SecretPrompt,
+    wifi_prompt: Box<SecretPrompt>,
     wifi_password_prompt: Option<u64>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.

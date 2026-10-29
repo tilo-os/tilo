@@ -184,3 +184,206 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
     );
     assert!(!is_administrator(&peer, user, now));
 }
+
+#[test]
+fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_their_grants() {
+    use crate::workspace_membership::WorkspaceMembershipCommand;
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    let demote = WorkspaceMembershipCommand::Member {
+        change: tilo_action_policy::Change::SetRole {
+            person: hex::encode(user),
+            role: Role::Viewer,
+        },
+    };
+    assert!(
+        peer.clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
+            .is_err(),
+        "an editor's grants change no role"
+    );
+    peer.governance_mut()
+        .set_member_administrator(user, &host_key, now)
+        .unwrap();
+    assert!(
+        peer.clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(
+                &editor,
+                &demote,
+                &SigningKey::from_bytes(&[7; 32]),
+                now
+            )
+            .is_err(),
+        "another key does not sign for the caller's device"
+    );
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(editor.device_public_key, now)
+            .unwrap()
+            .role,
+        Role::Viewer
+    );
+}
+
+/// The room's own settings an editor's device writes as `change`.
+fn change_settings(
+    peer: &mut StatePeer,
+    editor: &DeviceCert,
+    change: crate::workspace_membership::SettingsChange,
+    now: SystemTime,
+) -> Result<bool, String> {
+    peer.workspace_mut().apply_workspace_membership_command(
+        editor,
+        &crate::workspace_membership::WorkspaceMembershipCommand::Settings(change),
+        &SigningKey::from_bytes(&[6; 32]),
+        now,
+    )
+}
+
+fn readers() -> tilo_action_policy::Preset {
+    tilo_action_policy::Preset::new(
+        "Readers",
+        "Read notes.",
+        vec![tilo_action_policy::Rule::new(
+            tilo_action_policy::TreePath::root().app("so.tilo.notes"),
+            KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+        )],
+    )
+}
+
+/// A member changes the room's own settings from their own device as far as
+/// their grants reach: an administrator renames the room, saves and assigns
+/// its grant sets and grants and takes back its apps' sandbox capabilities;
+/// an editor does none of it.
+#[test]
+fn an_administrators_own_device_changes_the_rooms_settings_and_an_editors_cannot() {
+    use crate::workspace_membership::SettingsChange;
+    use collab_types::caps::{Access, CapOverride, Principal, Scope, Subject as CapSubject};
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let rename = SettingsChange::Rename {
+        name: "Plans".into(),
+    };
+    let capability = CapOverride::grant(
+        CapSubject::app("so.tilo.reader"),
+        Scope::NetHost("example.org".into()),
+        Access::Read,
+    );
+    let sandbox = SettingsChange::GrantSandbox {
+        capability: capability.clone(),
+    };
+    let save = SettingsChange::SavePreset { preset: readers() };
+    for change in [rename.clone(), sandbox.clone(), save.clone()] {
+        assert!(
+            change_settings(&mut peer.clone(), &editor, change.clone(), now).is_err(),
+            "an editor does not {change:?}"
+        );
+    }
+
+    peer.governance_mut()
+        .set_member_administrator(user, &host_key, now)
+        .unwrap();
+    assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
+    assert_eq!(peer.governance().room_name().as_deref(), Some("Plans"));
+    assert!(change_settings(&mut peer, &editor, sandbox, now).unwrap());
+    let granted = peer.governance().governed_sandbox().unwrap();
+    let [held] = granted.as_slice() else {
+        panic!("one capability: {granted:?}");
+    };
+    assert_eq!(held.granted_by, Some(Principal::Person(hex::encode(user))));
+    assert!(change_settings(&mut peer, &editor, save, now).unwrap());
+    assert!(
+        change_settings(
+            &mut peer,
+            &editor,
+            SettingsChange::AssignPreset {
+                preset: "Readers".into(),
+                subject: tilo_action_policy::Subject::agent("scribe"),
+                lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+            },
+            now,
+        )
+        .unwrap()
+    );
+    let policy = peer
+        .permissions(editor.device_public_key, now)
+        .unwrap()
+        .policy;
+    assert!(
+        policy
+            .grants
+            .iter()
+            .any(|grant| grant.subject == tilo_action_policy::Subject::agent("scribe"))
+    );
+    assert!(
+        change_settings(
+            &mut peer,
+            &editor,
+            SettingsChange::RevokeSandbox {
+                capability: held.id.clone(),
+            },
+            now,
+        )
+        .unwrap()
+    );
+    assert!(peer.governance().governed_sandbox().unwrap().is_empty());
+}
+
+/// A Moderator names the room by their role; a grant on one saved set's
+/// assign node lets an editor assign that set, and nothing else.
+#[test]
+fn a_moderator_renames_the_room_and_a_grant_on_a_set_assigns_only_it() {
+    use crate::workspace_membership::SettingsChange;
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    peer.governance_mut()
+        .put_governed_presets(&[readers()], &host_key, now)
+        .unwrap();
+    let assign = SettingsChange::AssignPreset {
+        preset: "Readers".into(),
+        subject: tilo_action_policy::Subject::agent("scribe"),
+        lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+    };
+    assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());
+    let owner = hex::encode(peer.authority().user_public_key);
+    let on_set = tilo_action_policy::Grant::new(
+        "assign-readers",
+        tilo_action_policy::Subject::person(hex::encode(user)),
+        tilo_desktop_model::preset_assign_node(peer.room(), "Readers"),
+        KindSet::OUTSIDE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person(owner),
+    );
+    peer.governance_mut()
+        .put_governed_grants(&[on_set], &host_key, now)
+        .unwrap();
+    assert!(change_settings(&mut peer, &editor, assign, now).unwrap());
+    assert!(
+        change_settings(
+            &mut peer.clone(),
+            &editor,
+            SettingsChange::SavePreset { preset: readers() },
+            now
+        )
+        .is_err(),
+        "assigning one set saves none"
+    );
+
+    let rename = SettingsChange::Rename {
+        name: "Plans".into(),
+    };
+    assert!(change_settings(&mut peer.clone(), &editor, rename.clone(), now).is_err());
+    peer.governance_mut()
+        .set_member_role(user, crate::join::MemberRole::Moderator, &host_key, now)
+        .unwrap();
+    assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
+    assert_eq!(peer.governance().room_name().as_deref(), Some("Plans"));
+}

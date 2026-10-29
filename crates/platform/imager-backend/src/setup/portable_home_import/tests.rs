@@ -76,7 +76,7 @@ fn fixture() -> Fixture {
 fn fixture_with_root_acl(root_acl: bool) -> Fixture {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    let temporary = tempfile::tempdir().unwrap();
+    let temporary = crate::test_support::qualified_tempdir();
     let root = temporary.path().canonicalize().unwrap();
     private(&root);
     let source = root.join("source");

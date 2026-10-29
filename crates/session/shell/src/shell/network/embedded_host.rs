@@ -32,12 +32,9 @@ use tilo_relay_session::rooms::{
     HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
 };
 
-use super::{
-    NetCmd, RoomId, ShellNetwork, personal_continuity_topic_id, relay_rooms, room_topic_id,
-};
+use super::{NetCmd, RoomId, ShellNetwork, relay_rooms, room_topic_id};
 use crate::shell::state::WorkspaceId;
 use tilo_network_actor::local_host::LocalHost;
-use tilo_network_actor::room_governance;
 
 /// The directory, beside the native owner's state file, that this device's
 /// room host keeps its rooms in.
@@ -194,13 +191,14 @@ impl ShellNetwork {
         })
     }
 
-    /// `channel`'s content keys from the steward of this device's own room
-    /// host, when `room` is hosted here: what this device's broker seals and
+    /// `channel`'s content keys from this device's own room host, which takes
+    /// part in the channel with this device's leaf, when `room` is hosted
+    /// here: what this device's broker seals and
     /// opens the room's records with. `None` for a room hosted elsewhere, or
     /// while the host is not open. Blocks on the host: call it off the frame
     /// loop.
     ///
-    /// The steward answers on this network's runtime, never on the caller's
+    /// The host answers on this network's runtime, never on the caller's
     /// thread: the broker asks from its connections' own runtime, where
     /// entering another runtime to wait panics and takes the asking app's
     /// connection with it.
@@ -227,7 +225,7 @@ impl ShellNetwork {
         runtime.spawn(async move {
             let keys = host
                 .rooms()
-                .steward_channel_keys(&room, channel, route.as_ref(), create)
+                .own_channel_keys(&room, channel, route.as_ref(), create)
                 .await;
             let _ = answer.send(keys);
         });
@@ -318,19 +316,14 @@ impl ShellNetwork {
             .private_chat_endpoint
             .clone()
             .ok_or("this device's endpoint is not up")?;
-        let (certificate, entries) = identity.current_native_material(0)?;
+        let (certificate, entries) = identity.current_person_material()?;
         let mut revocations = tilo_user_identity::RevocationList::new();
         for entry in entries {
             revocations
                 .insert(entry)
                 .map_err(|error| error.to_string())?;
         }
-        let mut config = HostConfig::new(root, HostMode::Device);
-        config.persons_hosts = Some(Arc::new(DeviceSessions {
-            cmd_tx: self.cmd_tx.clone(),
-            event_tx: self.event_tx.clone(),
-            user: certificate.user_public_key,
-        }));
+        let config = HostConfig::new(root, HostMode::Device);
         Ok(HostOpening {
             handle,
             lock: Arc::clone(&self.embedded_host.opening),
@@ -359,9 +352,110 @@ impl ShellNetwork {
         if let Err(error) = self.install_own_governor(&host) {
             tracing::warn!(%error, "the rooms hosted on this device are governed over the network only");
         }
+        self.mend_own_rooms(&host);
         // The rooms hosted here that the native owner holds join now.
         let _ = self.cmd_tx.try_send(NetCmd::LocalHostReady);
         host
+    }
+
+    /// Bring this device's replica of each room its own `host` governs back
+    /// to the host's history where it diverged from it
+    /// ([`tilo_joined_room::NativeWorkspaceOwner::adopt_own_host_history`]):
+    /// a replica an earlier build wrote membership changes into under this
+    /// device's key refused the host's every write since, and no app opened
+    /// there. The membership changes only that replica held (an agent
+    /// invited, a grant given) are the person's: the host commits each
+    /// again, as it was made. One the host refuses is said to the person,
+    /// as any refused governance change is, to be made again. On the
+    /// network's runtime; nothing waits for it.
+    pub(super) fn mend_own_rooms(&self, host: &Arc<RoomHost>) {
+        let (Some(owner), Ok(runtime)) = (self.opened_native_owner(), self.runtime_handle()) else {
+            return;
+        };
+        let own = *self.local_peer_id.as_bytes();
+        let rooms: Vec<(RoomId, tilo_user_identity::DeviceCert)> = owner
+            .rooms()
+            .into_iter()
+            .filter_map(|room| {
+                owner
+                    .with_current(room, |view| {
+                        Ok((view.device() == view.governor()
+                            && view.transport_hint().is_ok_and(|hint| {
+                                tilo_joined_room::session::hosted_by(hint, &own)
+                            }))
+                        .then(|| (room, view.device().clone())))
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .collect();
+        if rooms.is_empty() {
+            return;
+        }
+        let host = Arc::clone(host);
+        let tree = self.tree.clone();
+        runtime.spawn(async move {
+            for (room, device) in rooms {
+                let history = match host.rooms().governed_history(&room.to_string()).await {
+                    Ok(history) => history,
+                    Err(error) => {
+                        tracing::debug!(%room, %error, "a room this device's host governs has no history to mend from");
+                        continue;
+                    }
+                };
+                let adopting = owner.clone();
+                let adopted = tokio::task::spawn_blocking(move || {
+                    adopting.adopt_own_host_history(room, &history, std::time::SystemTime::now())
+                })
+                .await;
+                let beyond = match adopted {
+                    Ok(Ok(Some(beyond))) => beyond,
+                    Ok(Ok(None)) => continue,
+                    Ok(Err(error)) => {
+                        tracing::error!(
+                            %room,
+                            %error,
+                            "this device's replica of a room its host governs could not take the host's history"
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::error!(%room, %error, "mending a room's replica stopped");
+                        continue;
+                    }
+                };
+                tracing::warn!(
+                    %room,
+                    changes = beyond.len(),
+                    "this device's replica of a room its host governs had diverged from the host's history; it took the host's, and the host commits the membership changes only the replica held"
+                );
+                for change in beyond {
+                    let command =
+                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
+                            change: change.clone(),
+                        };
+                    if let Err(error) = host
+                        .rooms()
+                        .commit_own_membership(&room.to_string(), &device, command)
+                        .await
+                    {
+                        tracing::error!(
+                            %room,
+                            ?change,
+                            %error,
+                            "a membership change only this device's replica held did not take"
+                        );
+                        tree.write().refuse_room_change(
+                            room,
+                            crate::shell::state::RoomChange::Governance(
+                                crate::shell::state::GovernanceRequest::Policy(change),
+                            ),
+                            format!("it did not reach the workspace ({error}); make it again"),
+                        );
+                    }
+                }
+            }
+        });
     }
 
     /// Run the host operation `action` with `arguments` at this device's own
@@ -369,7 +463,6 @@ impl ShellNetwork {
     /// `tilo.host` action a relay answers over a session.
     pub(super) fn local_host_action(
         &self,
-        ws: u64,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
@@ -384,7 +477,12 @@ impl ShellNetwork {
             action,
             arguments,
         );
-        serve_in_process(&host, identity, &self.runtime_handle()?, ws, invoke)
+        let pending = host_operation_pending(&host, identity, invoke)?;
+        drop(host);
+        receipt_of(super::native_enrollment::wait_on_runtime(
+            &self.runtime_handle()?,
+            pending,
+        )?)
     }
 
     /// [`Self::local_host_action`] for a caller already on the network's
@@ -392,7 +490,6 @@ impl ShellNetwork {
     /// awaited rather than blocked on. Waits on nothing but this device.
     pub(super) async fn local_host_action_awaited(
         &self,
-        ws: u64,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
@@ -407,7 +504,7 @@ impl ShellNetwork {
             action,
             arguments,
         );
-        let pending = serve_in_process_pending(&host, identity, ws, invoke)?;
+        let pending = host_operation_pending(&host, identity, invoke)?;
         drop(host);
         receipt_of(pending.await)
     }
@@ -669,7 +766,6 @@ impl ShellNetwork {
             .as_ref()
             .ok_or("native identity unavailable")?;
         let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
-        let ws = personal_continuity_topic_id(&certificate.user_public_key);
         // A placement cut short after the host made the room goes on from
         // there: the room it is, never another.
         let held = self.wait_on({
@@ -677,11 +773,9 @@ impl ShellNetwork {
             async move { host.rooms().summary(&room).await.is_ok() }
         })?;
         if !held {
-            let created: CreatedRoom = relay_rooms::answer_of(self.local_host_action(
-                ws,
-                CREATE_ROOM,
-                relay_rooms::create_arguments(name, room),
-            )?)?;
+            let created: CreatedRoom = relay_rooms::answer_of(
+                self.local_host_action(CREATE_ROOM, relay_rooms::create_arguments(name, room))?,
+            )?;
             if RoomId::parse(&created.room.room) != Some(room) {
                 return Err("this device's host made another room than the workspace's".into());
             }
@@ -690,7 +784,7 @@ impl ShellNetwork {
         arguments.insert("room".into(), room.to_string().into());
         arguments.insert("expires_in_seconds".into(), OWN_INVITATION_SECONDS.into());
         let entered: EnteredRoom =
-            relay_rooms::answer_of(self.local_host_action(ws, ENTER_ROOM, arguments)?)?;
+            relay_rooms::answer_of(self.local_host_action(ENTER_ROOM, arguments)?)?;
         let own = tilo_peer_state::join::encode_invitation_text(
             &entered.invitation.decode()?.signed_invitation,
         );
@@ -745,7 +839,7 @@ impl ShellNetwork {
     /// person has no home relay, or the relay could not be reached or
     /// refused the room.
     pub fn add_hosting_member(&self, room: RoomId) -> Result<(), String> {
-        let (ws, relay) = self.home_relay_for(room)?;
+        let relay = self.home_relay_for(room)?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.to_string().into());
         arguments.insert(
@@ -756,7 +850,7 @@ impl ShellNetwork {
             "host_addr".into(),
             serde_json::to_value(&relay.addr).map_err(|error| error.to_string())?,
         );
-        self.local_host_action(ws, ATTACH_HOST, arguments).map(drop)
+        self.local_host_action(ATTACH_HOST, arguments).map(drop)
     }
 
     /// Take this person's home relay off as a host of `room` again: it no
@@ -768,7 +862,7 @@ impl ShellNetwork {
     /// This device's host is not open or does not govern the room, or the
     /// person has no home relay.
     pub fn remove_hosting_member(&self, room: RoomId) -> Result<(), String> {
-        let (ws, relay) = self.home_relay_for(room)?;
+        let relay = self.home_relay_for(room)?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.to_string().into());
         arguments.insert(
@@ -779,72 +873,13 @@ impl ShellNetwork {
             "host_addr".into(),
             serde_json::to_value(&relay.addr).map_err(|error| error.to_string())?,
         );
-        self.local_host_action(ws, DETACH_HOST, arguments).map(drop)
+        self.local_host_action(DETACH_HOST, arguments).map(drop)
     }
 
-    /// The workspace this device's own host operations are asked on, and
-    /// the person's home relay to serve `room`.
-    pub(super) fn home_relay_for(
-        &self,
-        room: RoomId,
-    ) -> Result<(u64, super::RegisteredHomePeer), String> {
+    /// The person's home relay to serve `room`.
+    pub(super) fn home_relay_for(&self, room: RoomId) -> Result<super::RegisteredHomePeer, String> {
         self.home_relay_of(room)?
             .ok_or_else(|| "this person has no home relay".into())
-    }
-}
-
-/// This device's sessions with its person's other hosts, as its network
-/// keeps them: what this device's host asks those hosts goes on them
-/// ([`room_host::PersonsHostSessions`]).
-struct DeviceSessions {
-    cmd_tx: tokio::sync::mpsc::Sender<NetCmd>,
-    event_tx: tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
-    user: [u8; 32],
-}
-
-impl room_host::PersonsHostSessions for DeviceSessions {
-    fn ask(
-        &self,
-        device: [u8; 32],
-        addr: iroh::EndpointAddr,
-        invoke: tilo_actions::remote::InvokeRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<tilo_actions::remote::ReceiptStatus, String>>
-                + Send,
-        >,
-    > {
-        let ws = personal_continuity_topic_id(&self.user);
-        let host = addr.id;
-        let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        // The network dials each host it knows with each topic it joined,
-        // the person's own among them; neither is done twice. The request
-        // waits for that session to be subscribed.
-        let send = |command| self.cmd_tx.try_send(command).is_ok();
-        let queued = send(NetCmd::ConnectHost {
-            addr,
-            expectation: Some(tilo_network_actor::HomePeerExpectation {
-                user_public_key: self.user,
-                device_public_key: device,
-            }),
-        }) && send(NetCmd::JoinPersonalTopic {
-            ws,
-            on_event: self.event_tx.clone(),
-        }) && send(NetCmd::RoomGovernance(Box::new(room_governance::Request {
-            ws,
-            to: room_governance::Addressee::Host(host),
-            invoke,
-            reply,
-        })));
-        Box::pin(async move {
-            if !queued {
-                return Err("the network queue is unavailable".into());
-            }
-            tokio::task::spawn_blocking(move || answer.recv())
-                .await
-                .map_err(|error| error.to_string())?
-                .map_err(|_| "the host's session closed before it answered".to_string())?
-        })
     }
 }
 
@@ -885,6 +920,20 @@ fn serve_in_process_pending(
         .ok_or_else(|| "this device's host does not answer its own operations".into())
 }
 
+/// Ask this device's open `host` its own operation `invoke` as this device,
+/// in process: the answer, to wait for.
+fn host_operation_pending(
+    host: &RoomHost,
+    identity: &tilo_network_actor::HostIdentity,
+    invoke: tilo_actions::remote::InvokeRequest,
+) -> Result<tilo_actions::remote::Pending<RemoteActionMessage>, String> {
+    let (certificate, _) = identity.current_person_material()?;
+    let caller = room_host::local_caller(&certificate);
+    host.actions()
+        .serve_host(&caller, &certificate, RemoteActionMessage::Invoke(invoke))
+        .ok_or_else(|| "this device's host does not answer its own operations".into())
+}
+
 /// What this device's host answered an operation asked in process.
 fn receipt_of(answer: Option<RemoteActionMessage>) -> Result<serde_json::Value, String> {
     match answer {
@@ -895,8 +944,8 @@ fn receipt_of(answer: Option<RemoteActionMessage>) -> Result<serde_json::Value, 
 }
 
 /// This device's room host as the governor of the rooms placed on it: a
-/// governance change to one of them is the host's own room governance
-/// action, asked through its in-process caller.
+/// receipt for one of them is recorded there, through its in-process
+/// caller.
 struct OwnHostGovernor {
     host: Arc<RoomHost>,
     identity: tilo_network_actor::HostIdentity,
@@ -911,27 +960,6 @@ impl super::governance_requests::LocalGovernor for OwnHostGovernor {
             .read()
             .native_authority
             .hosted_on(room, &self.device)
-    }
-
-    fn ask(
-        &self,
-        room: RoomId,
-        route: super::governance_requests::GovernanceRoute,
-    ) -> Result<(), String> {
-        let invoke = relay_rooms::invocation(
-            tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER,
-            tilo_actions::remote::room_governance_resource(&room.to_string()),
-            route.action,
-            route.arguments,
-        );
-        serve_in_process(
-            &self.host,
-            &self.identity,
-            &self.runtime,
-            room_topic_id(room),
-            invoke,
-        )
-        .map(drop)
     }
 
     fn record_receipt(

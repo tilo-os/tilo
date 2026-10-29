@@ -105,12 +105,14 @@ impl Checker<'_> {
             "person" => return self.builtin_person(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "members" => return self.builtin_members(args, span),
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "dated" => return self.builtin_dated(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -297,29 +299,90 @@ impl Checker<'_> {
             .collect()
     }
 
-    /// An argument of an action a view applies, of type `want`: view state given as itself is
-    /// read when the event fires, so a press right after a keystroke sends the keystroke too.
-    /// An argument that reads view state any other way would be read when the view drew, a
-    /// value the press may have outrun, so it is refused.
+    /// An argument of an action a view applies, of type `want`. An action's arguments are
+    /// evaluated when it is invoked, on what the invoker sees, as its parameter defaults are:
+    /// view state given as itself is read when the event fires, and an argument that computes
+    /// from view state (`set(open, not open)`, `send(c, "{draft}!")`) is a function the
+    /// runtime runs then ([`Self::at_event`]), so a press right after a keystroke, or a second
+    /// press before the view drew again, sees what came before it. Any other argument is the
+    /// value the view drew with.
     pub(super) fn arg_at_press(&mut self, e: &ast::Expr, want: &Ty) -> Ex {
         if let ExprKind::Ident(name) = &e.kind
             && let Some(state) = self.state_named(name)
+            && (state.ty == *want || want.is_error())
         {
-            if state.ty == *want || want.is_error() {
-                return Self::state_at(&state);
-            }
-            let (have, want) = (self.show(&state.ty), self.show(want));
-            self.err("E111", e.span, format!("`{name}` is {have} and the parameter is {want}: an action takes view state as it is, read when it is pressed. Declare `{name}` as {want}"));
-            return Ex::error();
+            return Self::state_at(&state);
         }
         let mut names = std::collections::BTreeSet::new();
         super::boundary::names_in(e, &mut names);
-        if let Some(name) = names.iter().find(|n| self.state_named(n).is_some()) {
-            self.err("E111", e.span, format!("an action applied here runs when it is pressed, and reads the view state it takes then; this argument reads `{name}` when the view draws, which a quick press outruns. Give `{name}` itself and compute from it in the action"));
-            let _ = self.expr(e, None);
-            return Ex::error();
+        // An action value computes nothing from view state itself: the applications in it
+        // take their own arguments at the press.
+        let reads_state = names.iter().any(|n| self.state_named(n).is_some());
+        if reads_state && !matches!(want, Ty::Action) {
+            return self.at_event(e, want, &names);
         }
         self.expr_as(e, want)
+    }
+
+    /// The argument `e` of type `want`, which reads view state among `names`, as a function
+    /// of its own the runtime runs when the event fires ([`ir::AtEventFn`]): it takes each view
+    /// state `e` reads, read then, and each value from around it, as the view drew it. It is
+    /// checked in the discipline of a `fn`, as a parameter default is.
+    fn at_event(
+        &mut self,
+        e: &ast::Expr,
+        want: &Ty,
+        names: &std::collections::BTreeSet<String>,
+    ) -> Ex {
+        let mut params = Vec::new();
+        let mut args = Vec::new();
+        for name in names {
+            let (ty, arg) = if let Some(state) = self.state_named(name) {
+                (state.ty.clone(), Self::state_at(&state))
+            } else if let Some((local, ty)) = self.lookup(name) {
+                (ty.clone(), Ex::local(local, ty))
+            } else {
+                // A name of the package (a fn, a type, an enum), seen the same from anywhere.
+                continue;
+            };
+            params.push(crate::resolve::ParamInfo {
+                name: name.clone(),
+                ty,
+                default: None,
+            });
+            args.push(arg);
+        }
+        let n = self.at_event.len();
+        let id = format!("{}~arg{n}", self.st.view_id);
+        let outer = std::mem::take(&mut self.st);
+        self.begin(Ctx::Fn, &params, want.clone(), "");
+        self.st.ns.clone_from(&outer.ns);
+        self.st.types.clone_from(&outer.types);
+        let value = self.expr_as(e, want);
+        self.emit(Stmt::Return(Some(value)));
+        let name = format!("{} at the event", outer.view_id);
+        let export = ir::at_event_export(&id);
+        let mut f = self.end(ir::FuncKind::Fn, &name, &export);
+        f.nparams = params.len();
+        self.st = outer;
+        self.at_event.push((
+            f,
+            ir::AtEventFn {
+                func: 0,
+                id: id.clone(),
+                name,
+                params,
+                result: want.clone(),
+            },
+        ));
+        let list = self.arg_list(args);
+        let scalar = Ex::new(Ek::I32(i32::from(want.is_scalar())), Ty::Bool);
+        let ty = if want.is_scalar() {
+            Ty::Option(Box::new(want.clone()))
+        } else {
+            want.clone()
+        };
+        Ex::host(Imp::ArgAt, vec![Ex::str(&id), list, scalar], ty)
     }
 
     /// The view state `state` as an action's argument, read when the event fires: a handle
@@ -523,6 +586,18 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
+            if f.role.as_deref() == Some("previously") {
+                self.err(
+                    "E115",
+                    a.value.span,
+                    format!(
+                        "`{}` is what `{}` held previously: nothing writes it any more; give the value where the type keeps it now",
+                        f.name, key.name
+                    ),
+                );
+                let _ = self.expr(&a.value, None);
+                continue;
+            }
             if f.ty.is_container() {
                 self.err(
                     "E033",
@@ -657,6 +732,20 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        if !crate::origin::is_capability(name) {
+            let known: Vec<&str> = crate::origin::CAPABILITIES
+                .iter()
+                .map(|(n, _)| *n)
+                .collect();
+            self.err(
+                "E022",
+                cap.value.span,
+                format!(
+                    "no capability `{name}` takes outside effects; the capabilities are: {}",
+                    known.join(", ")
+                ),
+            );
+        }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
         Ex::host(
@@ -881,6 +970,7 @@ impl Checker<'_> {
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
+            && !self.names_platform(base)
         {
             let b = self.expr(base, None);
             if let Some((key, f)) = self.container_field(&b, fname) {
@@ -895,6 +985,12 @@ impl Checker<'_> {
             return self.container_method(r, &key, &f, name, args, span);
         }
         self.value_method(r, name, args, span)
+    }
+
+    /// Whether `e` is `space` or `workspace`, read only through their fields (`space.width`,
+    /// `workspace.members`), and not a variable of that name.
+    fn names_platform(&self, e: &ast::Expr) -> bool {
+        matches!(&e.kind, ExprKind::Ident(n) if (n == "space" || n == "workspace") && self.lookup(n).is_none())
     }
 
     fn container_field(&self, b: &Ex, fname: &ast::Ident) -> Option<(TypeKey, FieldInfo)> {
@@ -951,6 +1047,11 @@ impl Checker<'_> {
                     | "first"
                     | "last"
                     | "matching"
+                    | "count_by"
+                    | "group"
+                    | "take"
+                    | "each"
+                    | "single"
             )
         {
             let t = self.show(&f.ty);
@@ -961,10 +1062,38 @@ impl Checker<'_> {
                 Ty::Set(_) => "add, remove, len and the list methods",
                 _ => "put, remove, get (an Option of the value) and keys",
             };
+            let methods = [
+                "insert",
+                "remove",
+                "remove_where",
+                "move",
+                "add",
+                "put",
+                "get",
+                "keys",
+                "len",
+                "is_empty",
+                "map",
+                "filter",
+                "any",
+                "all",
+                "find",
+                "count",
+                "sort_by",
+                "first",
+                "last",
+                "matching",
+                "count_by",
+                "group",
+                "take",
+                "each",
+                "single",
+            ];
+            let hint = crate::diag::suggestion(m, methods);
             self.err(
                 "E027",
                 name.span,
-                format!("`{}` is a {t} field; its methods are: {ops}", f.name),
+                format!("`{}` is a {t} field{hint}; its methods are: {ops}", f.name),
             );
             return Ex::error();
         }
@@ -997,8 +1126,20 @@ impl Checker<'_> {
                 let Some(a) = args.first() else {
                     return Ex::error();
                 };
-                let v = self.expr_as(&a.value, t);
-                Ex::host(Imp::CollInsert, vec![b, fid, v], (**t).clone())
+                // Into a collection of a union, an item of one of its types is inserted as
+                // that type: `channels.insert(Category(...))` gives the Category.
+                let v = self.expr(&a.value, Some(t));
+                let case = (matches!(**t, Ty::Union(_))
+                    && !v.ty.is_error()
+                    && !v.ty.same(t)
+                    && v.ty.fits(t))
+                .then(|| v.ty.clone());
+                let v = self.coerce(v, t, a.value.span);
+                Ex::host(
+                    Imp::CollInsert,
+                    vec![b, fid, v],
+                    case.unwrap_or_else(|| (**t).clone()),
+                )
             }
             (Ty::Collection(t), "remove") => {
                 if !self.arity(name, args, 1, span) {
@@ -1197,6 +1338,12 @@ impl Checker<'_> {
             (Ty::Principal, "name") if args.is_empty() => {
                 Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
             }
+            (Ty::Principal, "kind") if args.is_empty() => {
+                Ex::host(Imp::PrincipalKind, vec![r], Ty::Choice("principal_kind"))
+            }
+            (Ty::Principal, "role") if args.is_empty() => {
+                Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
+            }
             (Ty::Int, "to_float") if args.is_empty() => {
                 Ex::new(Ek::Conv(Conv::IntToFloat, Box::new(r)), Ty::Float)
             }
@@ -1248,6 +1395,17 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.sort_by(r, &elem, name, args, span)
             }
+            (
+                Ty::List(t) | Ty::Set(t) | Ty::Collection(t),
+                "count_by" | "group" | "take" | "each" | "single",
+            ) => {
+                let elem = (**t).clone();
+                self.list_chain(r, &elem, name, args, span)
+                    .unwrap_or_else(Ex::error)
+            }
+            (Ty::Record(k), "group") if k.app == crate::host::HOST_APP && k.name == "Match" => {
+                self.match_group(r, args, span)
+            }
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
@@ -1261,15 +1419,19 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count"
+                        "len, is_empty, first, last, map, filter, any, all, find, count, sort_by, count_by, group, take, each, single"
                     }
                     _ => "none",
                 };
+                let words = known.split([',', ' ', '(', ')']).filter(|w| {
+                    !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                });
+                let hint = crate::diag::suggestion(m, words);
                 self.err(
                     "E027",
                     name.span,
                     format!(
-                        "{t} has no method `{m}` taking {} argument(s); its methods: {known}",
+                        "{t} has no method `{m}` taking {} argument(s){hint}; its methods: {known}",
                         args.len()
                     ),
                 );
@@ -1285,7 +1447,7 @@ impl Checker<'_> {
 
     /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop: a
     /// lambda is only ever a direct argument of these, so there are no closures at run time.
-    fn higher_order(
+    pub(super) fn higher_order(
         &mut self,
         list: Ex,
         elem: &Ty,

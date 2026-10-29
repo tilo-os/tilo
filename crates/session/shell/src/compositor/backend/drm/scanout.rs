@@ -1582,11 +1582,15 @@ fn mode_refresh_mhz(mode: &Mode) -> u32 {
 pub struct HwCursor {
     card: Card,
     crtc: crtc::Handle,
+    gate: std::sync::Arc<super::cursor_plane::CursorGate>,
 }
 
 impl PlaneMover for HwCursor {
     /// Move the cursor so its top-left (hot-spot) sits at `(x, y)` in output pixels; a failing ioctl is logged and ignored — a missed move must never crash input.
     fn move_plane(&self, x: i32, y: i32) {
+        if !self.gate.request(x, y) {
+            return;
+        }
         #[allow(
             deprecated,
             reason = "The legacy KMS cursor ioctl moves this cursor plane at input rate independently of framebuffer page flips."
@@ -1962,10 +1966,12 @@ pub struct DrmScanout {
     /// ([`super::output_link`]). `None` where modesets stay a blocking
     /// legacy `set_crtc`: flips are legacy, so nothing commits atomically.
     link: Option<(OutputLink, LinkTarget)>,
-    /// The cursor plane holds this output's cursor buffer. An atomic output
-    /// binds it once proven up: the legacy cursor ioctl commits, and on a
-    /// CRTC still modesetting that commit waits for the modeset.
-    cursor_bound: bool,
+    /// Whether the cursor plane holds this output's cursor buffer, shared
+    /// with its mover. An atomic output binds it once proven up: the legacy
+    /// cursor ioctl commits, and on a CRTC still modesetting that commit
+    /// waits for the modeset or, on amdgpu, oopses
+    /// ([`super::cursor_plane::CursorGate`]).
+    cursor_gate: std::sync::Arc<super::cursor_plane::CursorGate>,
     /// How this output's wakes are checked ([`super::wake_check`]).
     wake: OutputWake,
 }
@@ -2139,7 +2145,8 @@ impl DrmScanout {
                 }
             };
 
-        let cursor_bound = link.is_none() && hw_cursor_active;
+        let cursor_gate = std::sync::Arc::new(super::cursor_plane::CursorGate::default());
+        cursor_gate.set_bound(link.is_none() && hw_cursor_active);
         Ok(Self {
             card,
             pci_bus_id,
@@ -2184,7 +2191,7 @@ impl DrmScanout {
             client_plane: ClientPlane::with_plane(flip.plane().cloned()),
             flip,
             link,
-            cursor_bound,
+            cursor_gate,
             wake: OutputWake::new(builtin),
         })
     }
@@ -2357,7 +2364,8 @@ impl DrmScanout {
         if let Ok(mut map) = self.card.map_dumb_buffer(buffer) {
             paint_cursor_argb(map.as_mut(), pitch, bitmap.as_deref());
         }
-        if self.hw_cursor_active {
+        // An unbound plane takes the new image when it is bound.
+        if self.hw_cursor_active && self.cursor_gate.bound() {
             #[allow(
                 deprecated,
                 reason = "The legacy KMS cursor plane carries the hotspot virtual GPUs use to place the host pointer."
@@ -2709,7 +2717,7 @@ impl DrmScanout {
             self.adaptive_sync.forget_applied();
             self.crtc_gamma.forget_applied();
             self.hdr_signal.forget();
-            self.cursor_bound = false;
+            self.cursor_gate.set_bound(false);
             self.wake.check = None;
             self.wake.reason = Some("resume");
             self.with_link(|link, device| link.resume(device, false));
@@ -2781,6 +2789,7 @@ impl DrmScanout {
             Ok(fd) => Some(HwCursor {
                 card: Card(fd),
                 crtc: self.crtc,
+                gate: std::sync::Arc::clone(&self.cursor_gate),
             }),
             Err(e) => {
                 tracing::warn!(
@@ -3833,7 +3842,54 @@ impl DrmScanout {
     /// one of a new output). `flip_unread`: a flip queued on this CRTC has
     /// not had its event read.
     pub fn service_link(&mut self, flip_unread: bool) {
-        self.with_link(|link, device| link.service(device, flip_unread));
+        let failed_before = self.link_failure().is_some();
+        if self
+            .with_link(|link, device| link.service(device, flip_unread))
+            .is_some()
+        {
+            self.journal_link_commit(failed_before);
+        }
+    }
+
+    /// After the link committed on the caller's behalf: journal a re-light
+    /// the driver refused (the link modesets from scratch instead) and an
+    /// output it failed, which a refused commit does without any event.
+    fn journal_link_commit(&mut self, failed_before: bool) {
+        self.journal_relight_refusal();
+        if !failed_before && self.link_failure().is_some() {
+            self.note_link_failed();
+        }
+    }
+
+    /// The driver refused to re-light the CRTC with its routing and mode
+    /// kept; the link modesets it from scratch instead.
+    fn journal_relight_refusal(&mut self) {
+        if let Some(error) = self
+            .link
+            .as_mut()
+            .and_then(|(link, _)| link.take_relight_refusal())
+        {
+            eprintln!(
+                "tilo compositor: DRM scanout: re-light refused connector={} error={error:?}; modesetting it from scratch",
+                u32::from(self.connector)
+            );
+        }
+    }
+
+    /// The link just failed: say why, and judge the wake it was in.
+    fn note_link_failed(&mut self) {
+        let reason = self
+            .link_failure()
+            .map_or_else(String::new, LinkFailure::describe);
+        eprintln!(
+            "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
+            u32::from(self.connector)
+        );
+        let stage = match self.link_failure() {
+            Some(LinkFailure::Refused(_)) => WakeStage::Commit,
+            _ => WakeStage::Link,
+        };
+        self.judge_wake(Some(stage));
     }
 
     /// Take a page-flip event for this output's CRTC. `true` when it was
@@ -3843,31 +3899,21 @@ impl DrmScanout {
         let Some(completion) = self.with_link(|link, device| link.complete(frame, device)) else {
             return false;
         };
+        self.journal_relight_refusal();
         let Completion::Link(step) = completion else {
             return false;
         };
         match step {
             LinkStep::Up => self.on_link_up(),
-            LinkStep::Failed => {
-                let reason = self
-                    .link_failure()
-                    .map_or_else(String::new, LinkFailure::describe);
-                eprintln!(
-                    "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
-                    u32::from(self.connector)
-                );
-                let stage = match self.link_failure() {
-                    Some(LinkFailure::Refused(_)) => WakeStage::Commit,
-                    _ => WakeStage::Link,
-                };
-                self.judge_wake(Some(stage));
-            }
+            LinkStep::Failed => self.note_link_failed(),
             LinkStep::Redone => {
                 eprintln!(
                     "tilo compositor: DRM scanout: no vblank after the modeset connector={}; redoing it from the CRTC switched off",
                     u32::from(self.connector)
                 );
-                // The link already switches the CRTC off and modesets it again.
+                // The link already switches the CRTC off and modesets it
+                // again; the cursor plane waits for it to be up.
+                self.cursor_gate.set_bound(false);
                 self.judge_wake(Some(WakeStage::Link));
             }
             LinkStep::Pending | LinkStep::Off => {}
@@ -3902,11 +3948,12 @@ impl DrmScanout {
         );
         if let Some(WakeVerdict::Redo(_)) = self.judge_wake(None) {
             let flip_unread = self.flip_pending;
+            self.cursor_gate.set_bound(false);
             self.with_link(|link, device| link.redo(device, flip_unread));
             return;
         }
         if self.hw_cursor_active
-            && !self.cursor_bound
+            && !self.cursor_gate.bound()
             && let Some(buf) = self.cursor_buffer.as_ref()
         {
             #[allow(
@@ -3917,7 +3964,13 @@ impl DrmScanout {
                 .card
                 .set_cursor2(self.crtc, Some(buf), self.cursor_hotspot())
             {
-                Ok(()) => self.cursor_bound = true,
+                Ok(()) => self.cursor_gate.bind(|position| {
+                    #[allow(
+                        deprecated,
+                        reason = "The legacy KMS cursor ioctl places the plane just bound where the pointer is."
+                    )]
+                    let _ = self.card.move_cursor(self.crtc, position);
+                }),
                 Err(error) => {
                     tracing::warn!(
                         "DRM scanout: binding the cursor plane failed ({error}); \
@@ -3953,6 +4006,8 @@ impl DrmScanout {
             self.wake.reason = None;
             if let Some((link, _)) = self.link.as_mut() {
                 link.disarm_wake_redo();
+                // Lit again by a modeset; the plane is bound once that is up.
+                self.cursor_gate.set_bound(false);
             }
         }
         if let Some((link, _)) = self.link.as_ref()
@@ -3962,10 +4017,12 @@ impl DrmScanout {
         {
             self.begin_wake();
         }
+        let failed_before = self.link_failure().is_some();
         if self
             .with_link(|link, device| link.want(power, device, flip_unread))
             .is_some()
         {
+            self.journal_link_commit(failed_before);
             return;
         }
         self.set_dpms_property(on);

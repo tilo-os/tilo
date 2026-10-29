@@ -651,6 +651,102 @@ impl Rooms {
         Ok(completion)
     }
 
+    /// Commit `command`, a membership change `device` makes itself, in
+    /// `room` on its behalf, as the room's governor: for the device whose
+    /// own host this is. That device and this host sign with one key, so
+    /// the room's history has one writer under it, this host, and the
+    /// device's own replica only ever receives what is written here. The
+    /// room's policy decides the change against `device`'s grants, as it
+    /// decides any member's.
+    ///
+    /// Answers the room's generation that carries the change, and the
+    /// changes it added to the room's document, for the device's replica
+    /// to take in at once (none when the room carried it already).
+    ///
+    /// # Errors
+    /// Refuses a command that is not a member's own membership change, one
+    /// the room's policy does not let `device` make, and a change that
+    /// could not commit.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked until its change is committed and published"
+    )]
+    pub async fn commit_own_membership(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<(GovernanceCompletion, Vec<Vec<u8>>), CollaborationError> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+        if !matches!(
+            command,
+            Command::Member { .. }
+                | Command::Settings(_)
+                | Command::Grant { .. }
+                | Command::Revoke { .. }
+                | Command::AddAgent { .. }
+                | Command::RemoveAgent { .. }
+        ) {
+            return Err(CollaborationError::new(
+                "only a member's own membership change is committed for its device",
+            ));
+        }
+        if device.device_public_key != self.inner.host.cert.device_public_key {
+            return Err(CollaborationError::new(
+                "a membership change is committed here only for this host's own device",
+            ));
+        }
+        command.validate()?;
+        let now = tilo_clock::unix_now_ns();
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let key = self.inner.host.key.clone();
+        let mut changed = room.peer().clone();
+        if !changed.workspace_mut().apply_workspace_membership_command(
+            device,
+            &command,
+            &key,
+            system_time(now),
+        )? {
+            return Ok((
+                GovernanceCompletion {
+                    generation: room.record.generation,
+                },
+                Vec::new(),
+            ));
+        }
+        let before = room.peer().room_heads().unwrap_or_default();
+        // A member removed takes every way in the room handed them with
+        // them, as when a member's own device sends the removal.
+        let removed: std::collections::BTreeSet<_> =
+            super::member_roots(room.peer(), system_time(now))
+                .difference(&super::member_roots(&changed, system_time(now)))
+                .copied()
+                .collect();
+        let generation = room.commit(changed, &key, system_time(now), |record, _| {
+            let mut state = record.collaboration.clone();
+            state.withdraw_invitations(&removed);
+            Ok(state)
+        })?;
+        self.settle(&mut room).await?;
+        let added = room.peer().room_changes_since(&before);
+        Ok((GovernanceCompletion { generation }, added))
+    }
+
+    /// `room`'s whole history as its governor here holds it: what the
+    /// replica of this host's own device takes when it diverged from it.
+    ///
+    /// # Errors
+    /// The room is not hosted here.
+    pub async fn governed_history(&self, room: &str) -> Result<Vec<Vec<u8>>, CollaborationError> {
+        let room = self.room(room).await?;
+        let room = room.lock().await;
+        match room.peer().room_message() {
+            neighbour_wire::NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
+            _ => Err(CollaborationError::new("room governance missing")),
+        }
+    }
+
     /// Commit application authorship under the current owner's authority.
     ///
     /// # Errors
@@ -699,67 +795,6 @@ impl Rooms {
             |peer| {
                 peer.workspace_mut().apply_workspace_membership_command(
                     administrator,
-                    &command,
-                    &key,
-                    system_time(now),
-                )
-            },
-            now,
-        )
-        .await
-    }
-
-    /// Add an agent to `room`, remove one, or give and take back a grant,
-    /// as `device`: the room's own membership changes, which its governance
-    /// decides. A room whose host stewards its channels commits these
-    /// here, because the host is the one party that may; the same typed
-    /// command is what a room a device governs applies itself.
-    ///
-    /// # Errors
-    /// Refuses a member the room does not let make the change, a malformed
-    /// command, and a change that could not commit.
-    pub async fn govern_room_membership(
-        &self,
-        room: &str,
-        device: &DeviceCert,
-        request_id: [u8; 32],
-        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if request_id == [0; 32] {
-            return Err(CollaborationError::new(
-                "request identifier must be nonzero",
-            ));
-        }
-        // Adding an agent puts its preset's grants on the room, removing it
-        // takes them back, and a grant or revocation is itself one: both
-        // are the room's grant and revoke actions.
-        let gate = match &command {
-            Command::AddAgent { .. } | Command::Grant { .. } => governance::GRANT,
-            Command::RemoveAgent { .. } | Command::Revoke { .. } => governance::REVOKE,
-            _ => {
-                return Err(CollaborationError::new(
-                    "only an agent's membership and the room's grants govern membership",
-                ));
-            }
-        };
-        command.validate()?;
-        let now = tilo_clock::unix_now_ns();
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
-        let by = self.authorize(device, Some(&room), RoomOp::Govern(gate), now)?;
-        tracing::debug!(room = %room.room(), %by, operation = gate, "workspace membership change");
-        let key = self.inner.host.key.clone();
-        // The change names itself: the same command sent again is the same
-        // administration request, answered with what the first committed.
-        let digest = request_digest(&("room.membership", &command))?;
-        self.administer(
-            &mut room,
-            request_id,
-            digest,
-            |peer| {
-                peer.workspace_mut().apply_workspace_membership_command(
-                    device,
                     &command,
                     &key,
                     system_time(now),

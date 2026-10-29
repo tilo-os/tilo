@@ -4,7 +4,7 @@
 //! The vault hands the channel encryption service
 //! (`crate::shell::channel_encryption`) one key derived from the master key
 //! and the directory where sealed channel state lives. MLS group membership
-//! follows the room's access policy through that service's steward; nothing
+//! follows the room's access policy through that service's participants; nothing
 //! here writes membership.
 
 use getrandom::{SysRng, rand_core::UnwrapErr};

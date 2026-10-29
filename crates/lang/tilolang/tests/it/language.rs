@@ -164,6 +164,30 @@ fn typing_in_a_composer_is_personal() {
 }
 
 #[test]
+fn an_item_inserted_into_a_collection_of_a_union_is_of_its_own_type() {
+    let src = "app t.x \"X\"\ntype A {\n    a: Text\n}\ntype B {\n    b: Text\n}\ntype Both = Collection<A | B>\nroot both: Both\ndefault view shown for both\nview shown(all: Both) {\n    text(\"{all.len()}\")\n}\naction add_a(all: Both) -> A {\n    all.insert(A(a: \"x\"))\n}\naction named(all: Both) -> Text {\n    let b = all.insert(B(b: \"y\"))\n    b.b\n}\n";
+    let compiled = crate::common::compile_with(src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+}
+
+#[test]
+fn an_item_block_names_the_other_slots_beside_the_row() {
+    // The row sees the item and the view's state; the composer beside it sees the state only.
+    let src = format!(
+        "app t.x \"X\"\n{TALK}view said(t: Talk, l: Line, draft: State<Text>) {{\n    text(l.said)\n}}\nview talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        said(t, l, draft)\n        composer: {{\n            input(bind: draft, fill)\n        }}\n    }}\n}}\n"
+    );
+    let compiled = crate::common::compile_with(&src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let item_in_composer = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        text(l.said)\n        composer: {{\n            text(l.said)\n        }}\n    }}\n}}"
+    );
+    assert!(
+        !codes(&item_in_composer).is_empty(),
+        "the composer does not see the item"
+    );
+}
+
+#[test]
 fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     // Given as itself, view state is read when the event fires.
     let pressed = format!(
@@ -171,22 +195,42 @@ fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     );
     let compiled = crate::common::compile_with(&pressed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
-    // Read any other way, it would be the value the view drew with, which a press outruns.
-    let drawn = format!(
-        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, \"{{draft}}!\"))\n}}"
+    // An argument computed from view state is a function of the module, run at the press on
+    // the view state as it is then: a toggle, a count, a draft with more around it.
+    let computed = format!(
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    lens open: Bool = false\n    lens n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, \"{{draft}}!\"))\n        button(\"Toggle\", on: set(open, not open))\n        button(\"More\", on: set(n, n + 1))\n    }}\n}}"
+    );
+    let compiled = crate::common::compile_with(&computed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let at_event: Vec<(&str, Vec<&str>, &str)> = compiled
+        .meta
+        .at_event
+        .iter()
+        .map(|f| {
+            let params = f.params.iter().map(|p| p.name.as_str()).collect();
+            (f.name.as_str(), params, f.result.as_str())
+        })
+        .collect();
+    assert_eq!(
+        at_event
+            .iter()
+            .map(|(_, params, result)| (params.clone(), *result))
+            .collect::<Vec<_>>(),
+        [
+            (vec!["draft"], "Text"),
+            (vec!["open"], "Bool"),
+            (vec!["n"], "Int"),
+        ],
+        "each takes the view state it reads: {at_event:?}"
+    );
+    // Its discipline is a fn's, as a parameter default's: it computes, it changes nothing.
+    let acting = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, said(t, draft)))\n}}\naction said(t: Talk, d: Text) -> Text {{\n    d\n}}"
     );
     assert!(
-        codes(&drawn).iter().any(|c| c == "E111"),
+        codes(&acting).iter().any(|c| c == "E043"),
         "{:?}",
-        codes(&drawn)
-    );
-    let counted = format!(
-        "{TALK}view talk(t: Talk) {{\n    lens n: Int = 1\n    button(\"More\", on: set(n, n + 1))\n}}"
-    );
-    assert!(
-        codes(&counted).iter().any(|c| c == "E111"),
-        "{:?}",
-        codes(&counted)
+        codes(&acting)
     );
     // A flow or an action reads its own arguments as they are.
     ok(

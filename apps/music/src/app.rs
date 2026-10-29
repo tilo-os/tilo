@@ -1,4 +1,5 @@
-//! Root widget for the Music app.
+//! The Music page: [`Music`], which the window ([`MusicApp`]) and the
+//! view's effect handler share.
 //!
 //! The whole UI is drawn directly into the Vello scene (nav rail, library
 //! grids, track lists, detail pages, search and the now-playing transport
@@ -303,6 +304,18 @@ struct TrackTableSlot {
     queue_offset: Option<usize>,
 }
 
+/// The widgets embedded in the page: its track tables, cover grids and
+/// other parts in the order the frame drew them, and the source buttons.
+#[derive(Default)]
+pub(crate) struct Page {
+    /// The track tables, each with what its rows play and belong to.
+    track_tables: Vec<TrackTableSlot>,
+    media_grids: Vec<media_grid::MediaGridHost>,
+    /// The other embedded parts (a detail page's actions, the genre cards).
+    parts: Vec<page_part::PagePart>,
+    source_buttons: Vec<ui::widget::Button>,
+}
+
 /// An Open audio file chooser in flight: a path where files have them,
 /// else the chosen file's contents.
 enum LocalFilePick {
@@ -324,7 +337,10 @@ struct PendingMediaHandoff {
               large app-state struct; grouping them into a sub-struct would only rename the \
               ~50 call sites across app.rs and render.rs, not reduce them"
 )]
-pub struct MusicApp {
+/// What Music shows and plays on this device, and the page it draws of it:
+/// the library as the document holds it, playback, the catalogue, search
+/// and what effects started.
+pub(crate) struct Music {
     lib: Library,
     /// Anchors a search hit or an agent's `open` named, shown on the next
     /// sync as their rows' own effects.
@@ -368,7 +384,6 @@ pub struct MusicApp {
     /// The exchange with the platform search's live-catalogue provider.
     pending_catalogue_query: Option<String>,
     catalogue_invocation: Option<tilo_actions::InvocationId>,
-    source_buttons: Vec<ui::widget::Button>,
     spotify_catalogue: bool,
     /// Whether the person connected an online catalogue on this device; Home
     /// fetches nothing until they have.
@@ -536,17 +551,15 @@ pub struct MusicApp {
     /// How many of `hits` belong to the page body; the rest are the chrome
     /// painted over it, which takes the pointer first.
     body_hits: usize,
-    /// The page's track tables, in the order this frame drew them, each
-    /// with what its rows play and belong to.
-    track_tables: Vec<TrackTableSlot>,
-    /// How many of them this frame has drawn so far.
+    /// The widgets embedded in the page. In a window they are the
+    /// window's children, lent here while it draws, lays out, syncs or
+    /// takes input through this ([`MusicApp`]).
+    page: Page,
+    /// Where the Sources button was last drawn, which its menu opens from.
+    sources_anchor: Option<Rect>,
+    /// How many of the page's track tables this frame has drawn so far.
     track_tables_drawn: usize,
-    /// The page's cover grids, in the order this frame drew them.
-    media_grids: Vec<media_grid::MediaGridHost>,
     media_grids_drawn: usize,
-    /// The page's other embedded parts (a detail page's actions, the genre
-    /// cards), in the order this frame drew them.
-    page_parts: Vec<page_part::PagePart>,
     page_parts_drawn: usize,
     /// The name of the row control under the pointer, for its tooltip.
     table_tooltip: Option<String>,
@@ -710,7 +723,7 @@ pub struct MusicApp {
     _test_cache_dir: tempfile::TempDir,
 }
 
-/// A deferred screenshot staging action (see [`MusicApp::stage_scenario`]).
+/// A deferred screenshot staging action (see [`Music::stage_scenario`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ShotStage {
     TrackMenu,
@@ -752,7 +765,7 @@ struct NameDlg {
     cancel: Rc<Cell<bool>>,
 }
 
-impl MusicApp {
+impl Music {
     pub(crate) fn queue_catalogue_query(&mut self, query: &str) {
         let query = query.trim();
         if !query.is_empty() && query != self.search_query {
@@ -830,7 +843,7 @@ impl MusicApp {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "flat struct-literal initializing every MusicApp field once; splitting it would only relocate the field assignments, not reduce them"
+        reason = "flat struct-literal initializing every Music field once; splitting it would only relocate the field assignments, not reduce them"
     )]
     fn from_device_profile(
         device_profile: crate::storage::DeviceProfile,
@@ -875,7 +888,10 @@ impl MusicApp {
             search_query: query,
             pending_catalogue_query: None,
             catalogue_invocation: None,
-            source_buttons: Self::make_source_buttons(),
+            page: Page {
+                source_buttons: Self::make_source_buttons(),
+                ..Page::default()
+            },
             spotify_catalogue: device_profile.spotify_catalogue,
             catalogue_connected: device_profile.catalogue_connected
                 || device_profile.spotify_catalogue,
@@ -949,11 +965,9 @@ impl MusicApp {
             mouse: Point::ZERO,
             hits: Vec::new(),
             body_hits: 0,
-            track_tables: Vec::new(),
+            sources_anchor: None,
             track_tables_drawn: 0,
-            media_grids: Vec::new(),
             media_grids_drawn: 0,
-            page_parts: Vec::new(),
             page_parts_drawn: 0,
             table_tooltip: None,
             dirty: true,
@@ -5300,7 +5314,7 @@ impl MusicApp {
     }
 }
 
-impl Default for MusicApp {
+impl Default for Music {
     fn default() -> Self {
         Self::new()
     }
@@ -5635,7 +5649,11 @@ mod stream_cut;
 use shell::place_id as shell_place;
 mod spotify;
 mod track_table;
+mod window;
 mod window_bar;
+
+pub use window::MusicApp;
+pub(crate) use window::window;
 
 #[cfg(test)]
 #[path = "app/home_arrival_tests.rs"]
@@ -5651,14 +5669,14 @@ mod stream_start_tests;
 mod tests;
 
 #[cfg(test)]
-impl MusicApp {
+impl Music {
     /// The page the window shows.
     pub(crate) fn view_for_test(&self) -> View {
         self.view.clone()
     }
 }
 
-impl MusicApp {
+impl Music {
     /// What opens a row's anchor for [`ui::framework::ViewCx::on_open`]: a
     /// song plays, an album, artist, playlist, membership or place is shown.
     /// An anchor naming no row Music opens is refused.
@@ -5691,7 +5709,7 @@ impl MusicApp {
     }
 }
 
-impl MusicApp {
+impl Music {
     /// The library's field edits bound to the row `row`, as the document
     /// holds it now: an album is saved or unsaved, an artist followed or
     /// unfollowed (a Spotify artist through its provider effect), a song

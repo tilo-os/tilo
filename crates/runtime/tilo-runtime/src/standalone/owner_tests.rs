@@ -435,9 +435,9 @@ fn a_profile_adopted_from_the_desktop_session_refuses_every_commit() {
     assert!(!dir.path().join(ROOM_OWNER).exists(), "no owner is created");
 }
 
-/// Channel keys as this device holds them stewarding the room, with
+/// Channel keys as this device holds them governing the room, with
 /// `readers` allowed to read its channels, kept under `state`.
-fn steward_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> ChannelKeyProvider {
+fn governor_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> ChannelKeyProvider {
     use tilo_action_broker::channel_encryption::{
         ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
         testing::{Directory, Policy},
@@ -454,7 +454,7 @@ fn steward_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> Chann
         },
         Box::new(Directory {
             governs: true,
-            steward: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
+            governor: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
             policy: Policy {
                 allowed: Arc::new(Mutex::new(readers)),
                 ..Policy::default()
@@ -484,7 +484,7 @@ fn seal(
     let channel = collab_types::document_channel_id(APP, &profile.room, RECORD);
     let room = RoomId::parse(&profile.room).unwrap();
     let (ChannelAccess::Ready(content), _) = keys.get().unwrap().access(room, channel) else {
-        panic!("the steward holds the room's channel keys")
+        panic!("the governor holds the room's channel keys")
     };
     let (metadata, sealed) = content
         .seal_content(
@@ -502,7 +502,7 @@ fn seal(
 #[test]
 fn a_sealed_write_is_opened_after_its_checks_and_reads_back_after_reopen() {
     let profile = profile();
-    let keys = steward_keys(&profile, "channels", std::slice::from_ref(&profile.key));
+    let keys = governor_keys(&profile, "channels", std::slice::from_ref(&profile.key));
     let owner = open_with(&profile, creation(true, false), keys.clone());
     let mut doc = automerge::AutoCommit::new();
     let request = seal(
@@ -525,7 +525,7 @@ fn a_sealed_write_is_opened_after_its_checks_and_reads_back_after_reopen() {
 #[test]
 fn a_sealed_write_the_owner_cannot_open_under_the_current_epoch_is_refused() {
     let profile = profile();
-    let keys = steward_keys(&profile, "channels", std::slice::from_ref(&profile.key));
+    let keys = governor_keys(&profile, "channels", std::slice::from_ref(&profile.key));
     let owner = open_with(&profile, creation(true, false), keys.clone());
     let mut doc = automerge::AutoCommit::new();
     let mut stale = seal(&profile, &keys, write(&profile, &mut doc, "stale"));
@@ -556,7 +556,7 @@ fn a_sealed_write_the_owner_cannot_open_under_the_current_epoch_is_refused() {
 #[test]
 fn without_a_current_key_the_owner_admits_no_sealed_write() {
     let profile = profile();
-    let keys = steward_keys(&profile, "channels", std::slice::from_ref(&profile.key));
+    let keys = governor_keys(&profile, "channels", std::slice::from_ref(&profile.key));
     let mut doc = automerge::AutoCommit::new();
     let request = seal(&profile, &keys, write(&profile, &mut doc, "sealed"));
     let unkeyed = open_with(
@@ -569,7 +569,7 @@ fn without_a_current_key_the_owner_admits_no_sealed_write() {
         "no channel service"
     );
     drop(unkeyed);
-    let revoked = steward_keys(&profile, "unread-channels", &[]);
+    let revoked = governor_keys(&profile, "unread-channels", &[]);
     let owner = open_with(&profile, creation(true, false), revoked);
     assert!(
         commit(&owner, &request, Some(KIND)).is_err(),

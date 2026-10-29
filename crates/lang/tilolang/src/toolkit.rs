@@ -4,7 +4,7 @@
 //! are the toolkit's own (`tilo_ui_graph::component`), generated from each widget's Rust
 //! definition, so `ui.ListRow(title: ...)` is checked against the widget as it is.
 
-pub use tilo_ui_graph::component::{Accepts, Catalogue, Description, Type};
+pub use tilo_ui_graph::component::{Accepts, Catalogue, Description, Offered, Type};
 
 /// The app id of the toolkit's package.
 pub const UI_APP: &str = "tilo.ui";
@@ -35,6 +35,7 @@ pub fn prim_component(prim: &str) -> Option<&'static str> {
         "rich_text" => "RichText",
         "button" => "Button",
         "input" => "TextInput",
+        "rich_input" => "RichInput",
         "section" => "Section",
         "card" => "Card",
         "facts" => "PropertyList",

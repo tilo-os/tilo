@@ -4,15 +4,15 @@
 //! The library is the toolkit's leading drawer. Wide, it docks beside the
 //! picture at its own width and the picture is laid out beside it. Narrower,
 //! the library takes the window's content area as a screen of its own
-//! ([`PlayerApp::library_takes_the_window`]), with "Back to video" leading its
+//! ([`PlayerState::library_takes_the_window`]), with "Back to video" leading its
 //! tabs, so the picture is one press away and the sidebar toggle or `Escape`
 //! puts it away again. The window bar's sidebar toggle and `Escape` show and
 //! hide it, so it has no close of its own. Its rows are list rows: choosing a
 //! row plays it, and the actions a row offers show on hover and focus.
 
 use super::{
-    Affine, Button, ButtonFace, Icon, LibraryRowHit, LibraryTab, LocalMediaEntry, PlayerApp, Point,
-    Rect, Scene, SharedRowHit, TextRenderer, Theme,
+    Affine, Button, ButtonFace, Icon, LibraryRowHit, LibraryTab, LocalMediaEntry, PlayerState,
+    Point, Rect, Scene, SharedRowHit, TextRenderer, Theme,
 };
 use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
@@ -115,7 +115,7 @@ fn paint_rows(
     placed
 }
 
-impl PlayerApp {
+impl PlayerState {
     /// Follow `library_visible` with the sheet. The resource action is what
     /// changes the flag; the drawer only animates it.
     pub(super) fn sync_library_sheet(&mut self) {
@@ -556,7 +556,7 @@ impl PlayerApp {
     }
 }
 
-pub(super) fn shared_accessibility_targets(app: &PlayerApp) -> Vec<(String, String, Rect)> {
+pub(super) fn shared_accessibility_targets(app: &PlayerState) -> Vec<(String, String, Rect)> {
     let mut targets = Vec::new();
     for row in &app.shared_row_hits {
         if row.annotation {
@@ -583,7 +583,7 @@ pub(super) fn shared_accessibility_targets(app: &PlayerApp) -> Vec<(String, Stri
     targets
 }
 
-pub(super) fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
+pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::AccessNode> {
     use ui::a11y::{AccessNode, AccessState, Role};
     let mut nodes = vec![
         AccessNode::new(Role::Button)
@@ -632,7 +632,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::Acces
     nodes
 }
 
-pub(super) fn local_library_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
+pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::AccessNode> {
     use ui::a11y::{AccessNode, AccessState, Role};
     let mut nodes: Vec<_> = app
         .library_row_hits

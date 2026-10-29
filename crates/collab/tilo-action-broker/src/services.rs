@@ -285,11 +285,21 @@ pub trait WorkspaceMemberships: Send + Sync {
         false
     }
 
-    /// Whether `room` is held here but governed by the node that stewards
-    /// it, where this device asks that host to commit the room's own
+    /// Whether `room` is held here but governed by the node that takes part
+    /// in its channels, where this device asks that host to commit the room's own
     /// membership changes, decided by the room's governance as they are
     /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {
+        false
+    }
+
+    /// Whether `room`'s membership actions are still to come here: this
+    /// device holds the room, joins it or has it placed on its host, and its
+    /// replica is not projected yet ([`Self::requires_room`] or
+    /// [`Self::grants_authorship_at_host`] turns true once it is, which
+    /// announces a policy change). An app opening in such a room waits for
+    /// them; one opening in any other room unpublished is refused.
+    fn membership_pending(&self, _room: &str) -> bool {
         false
     }
 
@@ -635,6 +645,12 @@ pub trait LauncherServices: Send + Sync {
     /// neither challenge bytes nor credentials, document or application output.
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
+    /// The ids installed apps were published under before, as the installed catalogue believes
+    /// them (`tilo_installed_apps::earlier_ids`): an application target naming one opens the app
+    /// that took its place. None where no app was renamed.
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        tilo_action_policy::EarlierIds::default()
+    }
     /// The same installed entries as `applications`, narrowed to an exact ID.
     /// Hosts may avoid constructing unrelated entries. This is discovery only;
     /// the broker still decides which rows the caller may see or invoke.

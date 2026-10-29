@@ -182,8 +182,8 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
     let Ok(watched) = Watched::start("desktop-entries", dirs.clone(), read) else {
         // Unwatchable directories are scanned per call, never served stale.
         *guard = None;
-        let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-        return (generation, scan_dirs(&dirs, &desktop));
+        drop(guard);
+        return unwatched_snapshot(dirs, desktop, scan_dirs);
     };
     let programs = std::sync::Arc::new(Mutex::new(ProgramWatches::default()));
     let follow = std::sync::Arc::clone(&programs);
@@ -215,6 +215,50 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
     (generation, scan)
 }
 
+/// The last scan of directories that could not be watched, with the
+/// generation it was served under.
+struct Unwatched {
+    dirs: Vec<PathBuf>,
+    desktop: Vec<String>,
+    scan: Scan,
+    generation: u64,
+}
+
+fn unwatched() -> &'static Mutex<Option<Unwatched>> {
+    static UNWATCHED: OnceLock<Mutex<Option<Unwatched>>> = OnceLock::new();
+    UNWATCHED.get_or_init(|| Mutex::new(None))
+}
+
+/// Scan `dirs`, which cannot be watched (no inotify instance left, say), on
+/// this call. The generation moves only when the scan differs from the last
+/// one served: an index built from a scan stays current until the entries
+/// change, rather than going stale on its own next read and being rebuilt
+/// for ever.
+fn unwatched_snapshot(
+    dirs: Vec<PathBuf>,
+    desktop: Vec<String>,
+    scan: impl FnOnce(&[PathBuf], &[String]) -> Scan,
+) -> (u64, Scan) {
+    let scan = scan(&dirs, &desktop);
+    let mut last = unwatched().lock_recover();
+    if let Some(last) = last.as_ref()
+        && last.dirs == dirs
+        && last.desktop == desktop
+        && last.scan == scan
+    {
+        return (last.generation, scan);
+    }
+    let generation = REVISION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+    *last = Some(Unwatched {
+        dirs,
+        desktop,
+        scan: scan.clone(),
+        generation,
+    });
+    drop(last);
+    (generation, scan)
+}
+
 /// Current desktop-entry source generation, without cloning the scan.
 #[must_use]
 pub fn cached_scan_generation() -> u64 {
@@ -234,6 +278,25 @@ pub fn invalidate() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Directories that cannot be watched are scanned on every call, and the
+    /// scan's generation moves only when what it found changed: an index
+    /// built from it is not stale the moment it is read again.
+    #[test]
+    fn an_unwatched_scan_keeps_its_generation_until_its_entries_change() {
+        let dirs = vec![PathBuf::from("/nonexistent/tilo-unwatched/applications")];
+        let desktop = vec!["Tilo".to_owned()];
+        let empty = |_: &[PathBuf], _: &[String]| Scan::default();
+        let (first, _) = unwatched_snapshot(dirs.clone(), desktop.clone(), empty);
+        let (again, _) = unwatched_snapshot(dirs.clone(), desktop.clone(), empty);
+        assert_eq!(again, first, "an unchanged scan is the same generation");
+        let one_hidden = |_: &[PathBuf], _: &[String]| Scan {
+            hidden: vec!["org.example.Gone.desktop".to_owned()],
+            ..Scan::default()
+        };
+        let (changed, _) = unwatched_snapshot(dirs, desktop, one_hidden);
+        assert_ne!(changed, first, "a changed scan is a new generation");
+    }
 
     #[test]
     fn the_scan_is_warm_after_the_first_call_and_cold_after_invalidate() {

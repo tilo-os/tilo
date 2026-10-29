@@ -346,6 +346,23 @@ pub fn place_anchored(
     place_aligned(anchor, size, side, PanelAlign::Leading, gap, viewport)
 }
 
+/// Where a sheet of `size` that asks about the control at `anchor` stands:
+/// under it where there is room (else over it), `gap` from it, inside
+/// `window` and within `room` vertically.
+#[must_use]
+pub fn place_sheet_beside(
+    anchor: Rect,
+    (w, h): (f64, f64),
+    window: Rect,
+    room: Rect,
+    gap: f64,
+) -> Rect {
+    let (placed, _) = place_anchored(anchor, (w, h), PopoverSide::Below, gap, window.inset(-gap));
+    let x0 = placed.x0.clamp(window.x0, (window.x1 - w).max(window.x0));
+    let y0 = placed.y0.clamp(room.y0, (room.y1 - h).max(room.y0));
+    Rect::new(x0, y0, x0 + w, y0 + h)
+}
+
 /// [`place_anchored`] with the cross-axis edge it lines up with: a panel
 /// aligned [`PanelAlign::Trailing`] hangs from the anchor's trailing edge
 /// and flips to the leading edge only when it would run past the

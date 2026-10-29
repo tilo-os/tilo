@@ -2,14 +2,13 @@
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
-// Account custody and the IMAP client come from their engine library, not
-// the runtime; the libraries only Settings uses from theirs, not the tapp.
-#[cfg(feature = "runtime-engine")]
-extern crate tilo_accounts_engine;
-#[cfg(feature = "runtime-engine")]
-extern crate tilo_settings_engine;
 
+// The release build runs the whole app from the Settings engine library in
+// the runtime bundle (libtilo_settings_engine.so, crates/runtime/engines/
+// settings), which carries this package's library: the binary in the package
+// is only that call.
 ui::main!(
     settings::SettingsShell,
-    init = settings::enable_provider_administration
+    init = settings::enable_provider_administration,
+    engine = "tilo_settings_engine"
 );

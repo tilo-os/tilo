@@ -1,7 +1,7 @@
 //! The Clocks window: a view over the person's [`Clocks`]. It shows the
 //! document as it changes and changes it only through the resource's
-//! actions; what stays on this device (floating clocks, the delivery
-//! ledger) goes through the app's device-local settings.
+//! actions; what each device keeps for itself (floating clocks, the
+//! delivery ledger) is its entry in a record beside the clocks.
 //!
 //! A live window also rings what is due, hands running timers to the
 //! platform's notification scheduler, and keeps the shell's floating clock
@@ -12,11 +12,11 @@ use crate::native_timers::{
     ALARMS_URI, TIMERS_URI, alarm_id as native_alarm_id, timer_id as native_timer_id,
 };
 use crate::resource::ClocksEffect;
-use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
+use crate::schedule::{DeviceChoices, DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
 use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
-use ui::framework::{Actions, Dispatcher, Live, Setting};
+use ui::framework::{Actions, Dispatcher, Live};
 use ui::icons::Icon;
 use ui::prelude::Id;
 use ui::widget::Filterable;
@@ -1266,7 +1266,7 @@ pub(crate) const SNOOZE_MINUTES: u32 = 5;
 #[derive(Clone)]
 pub(crate) struct Store {
     pub(crate) state: ui::LocalState<Shown>,
-    pub(crate) device: Setting<OnThisDevice>,
+    pub(crate) device: DeviceChoices,
     pub(crate) notice: ui::LocalState<Option<DueNotice>>,
     /// The open section: World, Alarms, Timers, Stopwatch.
     pub(crate) mode: ui::LocalState<usize>,
@@ -1290,7 +1290,7 @@ impl Store {
     /// Change this device's choices and show them at once.
     pub(crate) fn update_device(&self, change: impl FnOnce(&mut OnThisDevice)) {
         if let Err(error) = self.device.update(change) {
-            tracing::warn!(%error, "Clocks could not keep its device settings");
+            tracing::warn!(%error, "Clocks could not keep what this device keeps");
         }
         self.refresh_device();
     }
@@ -1340,7 +1340,7 @@ impl ClocksApp {
     /// opens it through `opener`.
     pub(crate) fn new(
         controls: Controls,
-        device: Setting<OnThisDevice>,
+        device: DeviceChoices,
         document: Live<Clocks>,
         live: bool,
         (record, opener): (
@@ -1412,12 +1412,9 @@ impl ClocksApp {
     /// time, open the section that most likely brought the person back; a
     /// quiet first launch begins with the at-a-glance world view.
     fn follow_document(&mut self) {
-        let held = (self.document.revision(), self.document.loads());
-        if self.presented == Some(held) {
+        let Some(clocks) = self.document.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let clocks = self.document.get();
+        };
         if !self.opened {
             self.opened = true;
             self.store.set_mode(if !clocks.timers.is_empty() {
@@ -1529,11 +1526,7 @@ impl ClocksApp {
             &mut delivery,
             &*host,
             now,
-            |d| {
-                device
-                    .update(|device| device.delivery = d.clone())
-                    .map_err(|error| error.to_string())
-            },
+            |d| device.update(|device| device.delivery = d.clone()),
         );
         self.store.refresh_device();
         match result {

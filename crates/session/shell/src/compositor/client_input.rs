@@ -770,16 +770,15 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
+        let routed = target.and_then(|(id, origin)| {
+            self.routable_surface(id)
+                .map(|(surface, owner)| (surface, SmithayPoint::from(origin), owner))
+        });
+        let owner = routed.as_ref().map(|(_, _, owner)| *owner);
         let focus: Option<(WlSurface, SmithayPoint<f64, Logical>)> =
-            target.and_then(|(id, origin)| {
-                self.client_input
-                    .surfaces
-                    .get(&id)
-                    .cloned()
-                    .map(|s| (s, SmithayPoint::from(origin)))
-            });
+            routed.map(|(surface, origin, _)| (surface, origin));
         let previous_focus = self.client_input.pointer_focus;
-        self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
+        self.client_input.pointer_focus = owner;
         self.client_input.pointer_focus_origin = focus
             .as_ref()
             .and_then(|_| target.map(|(_, origin)| origin));
@@ -989,6 +988,29 @@ impl State {
         self.client_input.touch_down_taken
     }
 
+    /// The protocol object pointer or touch input aimed at `surface_id`
+    /// goes to: a registered toplevel or transient, or a subsurface of one.
+    /// A window that draws into subsurfaces (a browser's page, a video
+    /// player's picture, a toolkit's offloaded widget) takes input on them
+    /// wherever their input region covers the point; without this, the hit
+    /// test found the subsurface and the press was handed to nobody.
+    ///
+    /// Returned with the registered surface that owns it — the subsurface's
+    /// root — which is what focus, activation and liveness bookkeeping is
+    /// filed under.
+    fn routable_surface(&self, surface_id: u64) -> Option<(WlSurface, u64)> {
+        if let Some(surface) = self.client_input.surfaces.get(&surface_id) {
+            return Some((surface.clone(), surface_id));
+        }
+        let surface = self.surface_handles.get(&surface_id)?;
+        let root =
+            crate::compositor::state::surface_id(&crate::compositor::state::foreign_root(surface)?);
+        self.client_input
+            .surfaces
+            .contains_key(&root)
+            .then(|| (surface.clone(), root))
+    }
+
     /// Forward one touch point to the focused client over `wl_touch`.
     /// `target` is `(surface id, tile origin)` for a `Down` landing inside a client tile; touch focus is set on `down` only (per protocol).
     pub fn forward_client_touch(
@@ -999,11 +1021,8 @@ impl State {
         let handle = self.seat.get_touch();
         let focus: Option<(WlSurface, SmithayPoint<f64, Logical>)> =
             target.and_then(|(id, origin)| {
-                self.client_input
-                    .surfaces
-                    .get(&id)
-                    .cloned()
-                    .map(|s| (s, SmithayPoint::from(origin)))
+                self.routable_surface(id)
+                    .map(|(surface, _)| (surface, SmithayPoint::from(origin)))
             });
         if matches!(touch, BackendTouchEvent::Down { .. })
             && let Some((id, _)) = target
@@ -2134,6 +2153,7 @@ fn route_keyboard_input(
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
             || fb.host().banner_owns_key(&key.logical_key)
+            || fb.host().desk_owns_key(&key.logical_key)
             || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
                 && (configured_shortcut || is_shell_chord(event, &modifiers, overlay_open)))
@@ -2199,10 +2219,14 @@ fn route_keyboard_input(
     if opens_chat {
         fb.host_mut().arm_cursor_chat();
     }
+    // Escape folds a desk card the person opened, rather than reaching the
+    // window under it.
+    let desk_owns = fb.host().desk_owns_key(&key.logical_key);
     let shell_owns = captured
         || shell_chord
         || granted
         || banner_owns
+        || desk_owns
         || opens_chat
         || fb.host().dictation_owns_key(&key.logical_key);
     let forward = track_forwarded_key(

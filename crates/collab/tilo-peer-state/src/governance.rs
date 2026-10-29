@@ -44,13 +44,21 @@ pub enum GovernanceOutcome {
 }
 
 /// Apply certificate, role and immutable redemption receipt to the caller's
-/// existing canonical room document as one transaction. On error `document`
-/// remains byte-for-byte unchanged.
+/// existing canonical room document as one transaction, written by any
+/// participant's device. The invitation is checked on its own: it
+/// verifies, has not expired, names this room and the joiner when narrowed,
+/// was issued by a member who may invite with its role, and was not
+/// redeemed before. Whether its writer may admit is decided as every receiver
+/// decides it ([`crate::room::membership`]). On error `document` remains
+/// byte-for-byte unchanged.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
-/// Returns an error if the redemption conflicts with recorded governance or the
-/// document cannot be updated.
+/// Returns an error if the invitation does not admit the redemption here, it
+/// conflicts with recorded governance or the document cannot be updated.
 #[expect(
     clippy::too_many_lines,
     reason = "one atomic governance transaction; on error the document stays unchanged"
@@ -58,7 +66,6 @@ pub enum GovernanceOutcome {
 pub fn admit_invited_member(
     document: &mut AutoCommit,
     redemption: &crate::join::VerifiedRedemption,
-    authority_key: &SigningKey,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
     let now_ns: u64 = now
@@ -67,99 +74,57 @@ pub fn admit_invited_member(
         .as_nanos()
         .try_into()
         .unwrap_or(u64::MAX);
-    let grant = redemption.join().grant();
-    if authority_key.verifying_key().to_bytes() != grant.issuer.device_public_key {
-        return Err("governance writer is not invitation issuer".into());
-    }
-    tilo_user_identity::verify_device_cert_at(&grant.authority, now_ns)
-        .map_err(|error| error.to_string())?;
-    tilo_user_identity::verify_device_cert_at(redemption.certificate(), now_ns)
-        .map_err(|error| error.to_string())?;
-    if now_ns >= grant.expires_at_ns {
-        return Err("invitation has expired".into());
-    }
+    let cert = redemption.certificate();
+    tilo_user_identity::verify_device_cert_at(cert, now_ns).map_err(|error| error.to_string())?;
     let declared_room = document
         .get(ROOT, "room")
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed room id is missing")?;
-    if declared_room != grant.room {
-        return Err("invitation room does not match governed document".into());
-    }
-    let governance = crate::room::governance_of(Some(document));
-    if governance.owner.as_deref() != Some(&hex::encode(grant.authority.user_public_key)) {
-        return Err("invitation authority is not the structural owner".into());
-    }
-    if let Some(delegation) = &grant.delegation {
-        crate::join::verify_workspace_delegation(
-            delegation,
-            &grant.authority,
-            &tilo_user_identity::RevocationList::new(),
-            now_ns,
-        )?;
-        let persisted = governance.identities.values().any(|bytes| {
-            serde_json::from_slice::<GovernedIdentity>(bytes).is_ok_and(|identity| {
-                identity
-                    .workspace_delegations
-                    .iter()
-                    .any(|known| known == delegation)
-            })
-        });
-        if !persisted
-            || delegation.delegate != grant.issuer
-            || !delegation.permissions.admit_invited_members
-        {
-            return Err("invitation issuer lacks persisted room admission delegation".into());
-        }
-    } else if grant.issuer != grant.authority {
-        return Err("invitation issuer lacks room delegation".into());
-    }
+    let policy = tilo_desktop_model::projection::room_policy_of(document, &declared_room);
+    let grant = crate::room::membership::invitation_admits(
+        &policy,
+        &declared_room,
+        redemption.join().signed_invitation(),
+        cert.user_public_key,
+        now_ns,
+    )
+    .map_err(|refusal| refusal.to_string())?;
     let receipt = RedemptionReceipt {
         invite_id: redemption.join().invite_id(),
-        user_public_key: redemption.certificate().user_public_key,
-        device_public_key: redemption.certificate().device_public_key,
+        user_public_key: cert.user_public_key,
+        device_public_key: cert.device_public_key,
         request_id: redemption.request_id(),
         role: grant.role,
+        invitation: Some(crate::join::encode_invitation_text(
+            redemption.join().signed_invitation(),
+        )),
     };
+    let governance = crate::room::governance_of(Some(document));
     let invitation_receipts = crate::room::invitation_receipts(document)?;
     let mut exact_redemption = false;
-    for (key, values) in &invitation_receipts {
-        for bytes in values {
-            let existing: RedemptionReceipt =
-                serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-            if *key != hex::encode(existing.invite_id) {
-                return Err("governed invitation receipt key mismatch".into());
+    let spent = invitation_receipts
+        .values()
+        .flatten()
+        .map(|bytes| serde_json::from_slice::<RedemptionReceipt>(bytes))
+        .chain(governance.identities.values().flat_map(|bytes| {
+            match serde_json::from_slice::<GovernedIdentity>(bytes) {
+                Ok(identity) => identity
+                    .admission
+                    .into_iter()
+                    .chain(identity.admissions)
+                    .map(Ok)
+                    .collect::<Vec<_>>(),
+                Err(error) => vec![Err(error)],
             }
-            if existing.invite_id == receipt.invite_id {
-                if existing != receipt {
-                    return Err(
-                        "invitation was already redeemed by another request or device".into(),
-                    );
-                }
-                exact_redemption = true;
+        }));
+    for existing in spent {
+        let existing = existing.map_err(|error| error.to_string())?;
+        if existing.invite_id == receipt.invite_id {
+            if existing.on_row() != receipt.on_row() {
+                return Err("invitation was already redeemed by another request or device".into());
             }
-        }
-    }
-    let mut legacy_receipts = Vec::new();
-    for bytes in governance.identities.values() {
-        let identity: GovernedIdentity =
-            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-        for existing in identity.admission.iter().chain(&identity.admissions) {
-            if existing.invite_id == receipt.invite_id {
-                if *existing != receipt {
-                    return Err(
-                        "invitation was already redeemed by another request or device".into(),
-                    );
-                }
-                exact_redemption = true;
-            }
-            // A receipt kept only on its identity row moves into the
-            // per-invite ledger once. Every admission keeps its receipt on
-            // the row too, so writing them all again made each admission
-            // rewrite the whole roster's receipts.
-            if !invitation_receipts.contains_key(&hex::encode(existing.invite_id)) {
-                legacy_receipts.push(existing.clone());
-            }
+            exact_redemption = true;
         }
     }
     if exact_redemption {
@@ -167,17 +132,9 @@ pub fn admit_invited_member(
     }
     // A banned person stays out whatever invitation they hold, an older one
     // or a new one, until the room unbans them.
-    let banned = tilo_action_policy::roles::block_grant_id(&hex::encode(
-        redemption.certificate().user_public_key,
-    ));
-    if crate::room::policy::legacy(document)
-        .grants
-        .iter()
-        .any(|grant| grant.id == banned)
-    {
+    if policy.is_banned(&hex::encode(cert.user_public_key)) {
         return Err("this person is banned from the room".into());
     }
-    let cert = redemption.certificate();
     let id = hex::encode(cert.device_public_key);
     let prior = governance
         .identities
@@ -205,10 +162,7 @@ pub fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .ok_or("governed members missing")?
         .1;
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
-    let invitation_receipts = match candidate
+    let ledger = match candidate
         .get(ROOT, "invitation_receipts_v1")
         .map_err(|error| error.to_string())?
     {
@@ -217,17 +171,15 @@ pub fn admit_invited_member(
             .put_object(ROOT, "invitation_receipts_v1", automerge::ObjType::Map)
             .map_err(|error| error.to_string())?,
     };
-    for legacy in legacy_receipts.iter().chain([&receipt]) {
-        candidate
-            .put(
-                &invitation_receipts,
-                hex::encode(legacy.invite_id),
-                automerge::ScalarValue::Bytes(
-                    serde_json::to_vec(legacy).map_err(|error| error.to_string())?,
-                ),
-            )
-            .map_err(|error| error.to_string())?;
-    }
+    candidate
+        .put(
+            &ledger,
+            hex::encode(receipt.invite_id),
+            automerge::ScalarValue::Bytes(
+                serde_json::to_vec(&receipt).map_err(|error| error.to_string())?,
+            ),
+        )
+        .map_err(|error| error.to_string())?;
     // An agent identity stays bound to its delegation whatever else it
     // redeems: the delegation's window and withdrawal still apply.
     let (revocations, mut admission, mut admissions, workspace_delegations, delegate) = prior
@@ -244,9 +196,9 @@ pub fn admit_invited_member(
             },
         );
     if admission.is_none() {
-        admission = Some(receipt);
+        admission = Some(receipt.on_row());
     } else {
-        admissions.push(receipt);
+        admissions.push(receipt.on_row());
         retain_latest_admissions(&mut admissions);
     }
     let identity = GovernedIdentity {
@@ -267,7 +219,7 @@ pub fn admit_invited_member(
         )
         .map_err(|error| error.to_string())?;
     candidate
-        .put(&names, &id, member_display_name(grant, cert))
+        .put(&names, &id, member_display_name(&grant, cert))
         .map_err(|error| error.to_string())?;
     put_member(
         &mut candidate,
@@ -315,6 +267,9 @@ fn member_display_name<'a>(
 }
 
 /// Record a verified workspace delegation in the governed room document.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
@@ -370,9 +325,6 @@ pub fn install_workspace_delegation(
     identity
         .workspace_delegations
         .sort_by_key(|item| (item.delegate.device_public_key, item.nonce));
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
     candidate
         .put(
             &identities,
@@ -387,6 +339,9 @@ pub fn install_workspace_delegation(
 }
 
 /// Change a governed collaborator's role in the room document.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
@@ -418,15 +373,15 @@ pub fn set_member_role(
         .map_err(|error| error.to_string())?
         .ok_or("governed members missing")?
         .1;
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
     put_member(&mut candidate, &members, user_public_key, role.into())?;
     candidate.commit();
     finish(document, candidate, &before)
 }
 
 /// Remove a governed collaborator from the room document.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
@@ -466,9 +421,6 @@ pub fn remove_member(
         return Ok(GovernanceOutcome::Unchanged);
     }
     let before = candidate.get_heads();
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
     if member {
         candidate
             .delete(&members, person.as_str())

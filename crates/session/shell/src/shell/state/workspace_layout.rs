@@ -166,7 +166,7 @@ impl WorkspaceTree {
         if let Some(hosting) = &self.window_hosting {
             published.strips = hosting.published(&workspace.strips, &self.package_launches);
         }
-        let layout = serde_json::to_vec(&(&published.strips, personal))
+        let layout = serde_json::to_vec(&(&published.strips, &published.arrangement, personal))
             .map_or_else(|_| blake3::hash(&[]), |bytes| blake3::hash(&bytes));
         let doc = self.layout_docs.entry(room).or_default();
         let looked_at = Captured {
@@ -292,6 +292,287 @@ impl WorkspaceTree {
         changed
     }
 
+    /// Note in `room`'s layout record how each window this device runs for
+    /// its person resumes, and which window this device is on
+    /// ([`shared_record::continuation`]): what the person's other devices
+    /// read to continue here. A window's note changes only when this device's
+    /// own state of it changed since it last noted it, so two devices running
+    /// one window do not take turns rewriting it. With app continuations off
+    /// (no [`Self::continuation_device`]), this device's notes are taken out.
+    /// `file_reference` names the record a surface shows, from the session's
+    /// open documents, which live above this layer. Returns whether it wrote.
+    pub(crate) fn capture_continuations(
+        &mut self,
+        room: RoomId,
+        file_reference: impl Fn(u64) -> Option<crate::shell::continuation::LaunchIntent>,
+    ) -> bool {
+        use crate::shell::continuation::AppInstanceState;
+        use shared_record::continuation::{self as notes, Focus};
+
+        let salt = self.local_salt();
+        let (Some(person), true) = (self.local_person.map(hex::encode), salt != 0) else {
+            return false;
+        };
+        if !self.layout_docs.contains_key(&room) || self.room_layout(room).is_personal() {
+            return false;
+        }
+        let device = self.continuation_device.clone();
+        let doc = self.layout_docs.entry(room).or_default();
+        let held: HashMap<u64, AppInstanceState> = notes::windows(doc)
+            .into_iter()
+            .filter_map(|(tab, text)| Some((tab, AppInstanceState::from_record(tab, &text)?)))
+            .collect();
+        let shared = shared_record::read(&*doc, None).unwrap_or_default();
+        let in_record = |tab: u64| {
+            shared
+                .tree
+                .workspaces
+                .iter()
+                .flat_map(|ws| &ws.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .any(|group| group.tabs.iter().any(|t| t.id == tab))
+        };
+        let mut writes: Vec<(u64, Option<String>)> = Vec::new();
+        let mut written: Vec<(u64, AppInstanceState)> = Vec::new();
+        let mut acknowledged = Vec::new();
+        let mut focus = None;
+        let mut claims = 0;
+        if let Some(device) = device.as_ref() {
+            let Some(running) =
+                self.note_running_windows(room, &person, device, &held, &shared, &file_reference)
+            else {
+                return false;
+            };
+            claims = running.claims;
+            writes = running.writes;
+            written = running.written;
+            acknowledged = running.acknowledged;
+            focus = self
+                .focused_window(room)
+                .filter(|tab| in_record(*tab))
+                .map(|window| Focus {
+                    window,
+                    author: person.clone(),
+                });
+        } else {
+            let own = |state: &AppInstanceState| {
+                shared.authors.get(&state.id.0) == Some(&person)
+                    && device_of_this_tree(&self.continuation_written, room, state)
+            };
+            for (tab, _) in held.iter().filter(|(_, state)| own(state)) {
+                writes.push((*tab, None));
+            }
+        }
+        let doc = self.layout_docs.entry(room).or_default();
+        let mut wrote = false;
+        let mut failed = None;
+        for (tab, text) in &writes {
+            match notes::write_window(doc, *tab, text.as_deref()) {
+                Ok(changed) => wrote |= changed,
+                Err(error) => failed = Some(error),
+            }
+        }
+        match notes::write_focus(doc, salt, focus.as_ref()) {
+            Ok(changed) => wrote |= changed,
+            Err(error) => failed = Some(error),
+        }
+        if let Some(error) = failed {
+            tracing::error!(%room, %error, "the workspace's continuations were not written");
+            doc.rollback();
+            return false;
+        }
+        if wrote {
+            doc.commit_with(
+                CommitOptions::default().with_message(shared_record::change_message(Some(&person))),
+            );
+        }
+        self.continuation_written
+            .retain(|(held, _), _| *held != room);
+        if device.is_some() {
+            self.continuation_written
+                .extend(written.into_iter().map(|(tab, state)| ((room, tab), state)));
+        }
+        if !acknowledged.is_empty()
+            && let Ok(mut registry) = crate::shell::continuation_registry::global_registry().lock()
+        {
+            registry.acknowledge_owner_claims(claims, room, &acknowledged);
+        }
+        wrote
+    }
+
+    /// How each window this device runs for `person` in `room` resumes, as
+    /// notes to write: a window whose state is unchanged since this device
+    /// last noted it, or that adds nothing to another device's note, is left
+    /// as it is. `None` while the continuation registry is unusable.
+    fn note_running_windows(
+        &self,
+        room: RoomId,
+        person: &str,
+        device: &tilo_network_actor::fabric::DeviceId,
+        held: &HashMap<u64, crate::shell::continuation::AppInstanceState>,
+        shared: &ownership::SharedDesktop,
+        file_reference: &impl Fn(u64) -> Option<crate::shell::continuation::LaunchIntent>,
+    ) -> Option<RunningNotes> {
+        use crate::shell::continuation::{AppInstanceId, AppInstanceState, ContinuityStamp};
+
+        let registry = crate::shell::continuation_registry::global_registry();
+        let registry = registry.lock().ok()?;
+        let mut running = RunningNotes {
+            claims: registry.owner_claim_revision(),
+            ..RunningNotes::default()
+        };
+        let mut counter = held
+            .values()
+            .map(|state| state.stamp.counter)
+            .max()
+            .unwrap_or(0);
+        let tabs = self
+            .workspace_in_room(room)
+            .into_iter()
+            .flat_map(|ws| &ws.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs);
+        for tab in tabs {
+            if shared.authors.get(&tab.id).map(String::as_str) != Some(person) {
+                continue;
+            }
+            let Some(launch) = crate::shell::continuation::launch_for_tab(tab, file_reference)
+            else {
+                continue;
+            };
+            let id = AppInstanceId(tab.id);
+            let mut state = AppInstanceState::new(
+                id,
+                launch.clone(),
+                registry.resume_for_tab(room, id, &launch),
+                ContinuityStamp {
+                    counter: 0,
+                    device: device.clone(),
+                },
+            );
+            state.record_instance = registry.record_instance_for_tab(room, id, &launch);
+            let claimed = registry.owner_claimed(room, &state);
+            let noted = self.continuation_written.get(&(room, tab.id));
+            let held_here = held.get(&tab.id);
+            if !claimed {
+                if let Some(noted) = noted.filter(|noted| noted.same_as(&state)) {
+                    running.written.push((tab.id, noted.clone()));
+                    continue;
+                }
+                // Nothing to add to what another device noted: a window
+                // opened here has not reported its state yet, and the
+                // record it shows is the one read from that note.
+                if let Some(held_here) = held_here
+                    && held_here.launch == state.launch
+                    && state.resume.is_none()
+                    && state
+                        .record_instance
+                        .is_none_or(|instance| held_here.record_instance.unwrap_or(id) == instance)
+                {
+                    continue;
+                }
+            }
+            counter = counter.saturating_add(1);
+            state.stamp.counter = counter;
+            running.writes.push((tab.id, state.to_record()));
+            if claimed {
+                running.acknowledged.push(state.clone());
+            }
+            running.written.push((tab.id, state));
+        }
+        drop(registry);
+        Some(running)
+    }
+
+    /// The window this device is on in `room`, if its active workspace is
+    /// that room's.
+    fn focused_window(&self, room: RoomId) -> Option<u64> {
+        let desktop = &self.desktop;
+        desktop
+            .active_workspace()
+            .filter(|ws| ws.room() == room)
+            .and_then(|ws| {
+                let strip = desktop.active_strip.get(&ws.id)?;
+                let group = desktop.active_group.get(strip)?;
+                ws.strips
+                    .iter()
+                    .find(|s| s.id == *strip)?
+                    .window_groups
+                    .iter()
+                    .find(|g| g.id == *group)
+                    .map(|g| g.active_tab)
+            })
+    }
+
+    /// Read what this person's other devices noted in `room`'s layout record
+    /// about resuming its windows: an app's resume state waits for the window
+    /// to open here, and a document card opens the document it names. Nothing
+    /// while app continuations are off.
+    pub(crate) fn apply_continuations(&mut self, room: RoomId) {
+        use crate::shell::continuation::{AppInstanceId, AppInstanceState, LaunchIntent};
+
+        let tabs_here: BTreeSet<u64> = self
+            .workspace_in_room(room)
+            .into_iter()
+            .flat_map(|ws| &ws.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        self.continuation_file_references
+            .retain(|tab, _| !tabs_here.contains(tab));
+        let mut offered = BTreeSet::new();
+        let registry = crate::shell::continuation_registry::global_registry();
+        let Ok(mut registry) = registry.lock() else {
+            return;
+        };
+        if let (Some(device), Some(person), Some(doc)) = (
+            self.continuation_device.as_ref(),
+            self.local_person.map(hex::encode),
+            self.layout_docs.get(&room),
+        ) {
+            let authors = shared_record::read(doc, None)
+                .map(|shared| shared.authors)
+                .unwrap_or_default();
+            for (tab, text) in shared_record::continuation::windows(doc) {
+                if authors.get(&tab) != Some(&person) || !tabs_here.contains(&tab) {
+                    continue;
+                }
+                let Some(state) = AppInstanceState::from_record(tab, &text) else {
+                    continue;
+                };
+                if &state.stamp.device == device {
+                    continue;
+                }
+                let record_instance = state.record_instance.unwrap_or(AppInstanceId(tab));
+                match state.launch {
+                    LaunchIntent::App { app_id } => {
+                        match state.resume {
+                            Some(resume) => registry.store_remote_resume(
+                                room,
+                                AppInstanceId(tab),
+                                app_id,
+                                resume,
+                                record_instance,
+                            ),
+                            None => registry.store_remote_record(
+                                room,
+                                AppInstanceId(tab),
+                                app_id,
+                                record_instance,
+                            ),
+                        }
+                        offered.insert(AppInstanceId(tab));
+                    }
+                    reference @ LaunchIntent::FileReference { .. } => {
+                        self.continuation_file_references.insert(tab, reference);
+                    }
+                }
+            }
+        }
+        registry.retain_remote_in_room(room, &offered);
+    }
+
     /// How this device decides writes of `room`'s layout that other devices
     /// made ([`LayoutJudge`]).
     pub(crate) fn layout_judge(&self, room: RoomId) -> LayoutJudge {
@@ -360,6 +641,29 @@ impl WorkspaceTree {
         (bound.and_then(|doc| tilo_desktop_model::apps::record_routes(doc).remove(&tab)))
             .or_else(|| self.shared_window_record(room, tab))
     }
+}
+
+/// The notes [`WorkspaceTree::capture_continuations`] writes for the windows
+/// this device runs: the registry's claim revision they answer, the record
+/// writes, what this device then holds as noted, and the claims they settle.
+#[derive(Default)]
+struct RunningNotes {
+    claims: u64,
+    writes: Vec<(u64, Option<String>)>,
+    written: Vec<(u64, crate::shell::continuation::AppInstanceState)>,
+    acknowledged: Vec<crate::shell::continuation::AppInstanceState>,
+}
+
+/// Whether `state` is a note this device wrote: one it still remembers
+/// writing for its window in `room`.
+fn device_of_this_tree(
+    written: &HashMap<(RoomId, u64), crate::shell::continuation::AppInstanceState>,
+    room: RoomId,
+    state: &crate::shell::continuation::AppInstanceState,
+) -> bool {
+    written
+        .get(&(room, state.id.0))
+        .is_some_and(|noted| noted.stamp.device == state.stamp.device)
 }
 
 #[cfg(test)]

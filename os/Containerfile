@@ -846,11 +846,11 @@ RUN --mount=type=cache,id=tilo-font-artifacts,target=/var/cache/tilo-font-artifa
 # The splash's PNGs are rendered at build time by os/dev/make-plymouth-assets.py,
 # so the source remains reviewable. It needs Pillow, which the frozen snapshot
 # carries through systemd-ukify, and fc-match to find the login screen's face
-# (look.json's family, Tilo Sans) in the font catalog, mounted where the rootfs
-# carries it. From that one file it also cuts the two static faces Plymouth
-# draws run-time text in, with the libharfbuzz-subset Pillow's FreeType brings.
-# Rendering here rather than in the rootfs keeps Pillow out of the image and a
-# theme edit out of its package layer; rootfs-base copies /out/tilo.
+# (Tilo Sans) in the font catalog, mounted where the rootfs carries it; the text
+# is drawn from static cuts of it made with the libharfbuzz-subset Pillow's
+# FreeType brings. Rendering here rather than in the rootfs keeps Pillow out of
+# the image and a theme edit out of its package layer; rootfs-base copies
+# /out/tilo.
 FROM ${BASE_REF} AS plymouth-assets
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -1277,8 +1277,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
     # shell binary links directly; keep them explicit so compositor startup never
     # depends on build-stage or transitive browser dependencies.
-    # `plymouth-plugin-label` draws the boot sign-in screen's names and
-    # messages; Plymouth carries only its FreeType half into the initramfs.
     && dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
@@ -1287,7 +1285,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     libatomic \
     at-spi2-core \
     plymouth \
-    plymouth-plugin-label \
     plymouth-plugin-script \
     plymouth-scripts \
     && dnf clean all \
@@ -2031,10 +2028,6 @@ COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remot
 # remains reviewable and the initramfs does not depend on a desktop image
 # stack; a theme edit changes only this small layer.
 COPY --from=plymouth-assets /out/tilo/ /usr/share/plymouth/themes/tilo/
-# Points Plymouth's two text faces at the login screen's face, which the theme
-# carries cut to its two weights (boot-face.ttf, boot-face-strong.ttf).
-COPY --chmod=0755 os/usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh \
-    /usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh
 # The desktop's wallpapers (os-wallpapers) and their credits.
 COPY --from=os-wallpapers /out/backgrounds/tilo/ /usr/share/backgrounds/tilo/
 COPY --from=os-wallpapers /out/licenses/tilo-wallpapers/ /usr/share/licenses/tilo-wallpapers/
@@ -3037,6 +3030,9 @@ COPY --from=native-builder-payload \
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
+# The image takes each app's tree (trees/<payload root hash>) as a layer of its
+# own (tools/ci/os/oci_layers.py, APART), so an update sends the apps that
+# changed rather than every app.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
 # The registry and each app's signed record, apart from the trees above.
 COPY --from=app-store /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/

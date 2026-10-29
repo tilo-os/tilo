@@ -34,7 +34,7 @@ use serde_json::{Map, Value};
 /// where an in-process app runs, may not: there an app reads and lists on a
 /// worker and shows the result on a later frame.
 pub use durable_store::waiting;
-pub use settings_store::{ChangeOrigin, DeviceClass, InvokingAction};
+pub use settings_store::{ChangeOrigin, DeviceClass, InvokingAction, made_by};
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -110,16 +110,16 @@ pub enum Scope {
     /// Follows the person to every device they sign in on: the device fabric
     /// carries the app's whole personal section between the person's own
     /// devices, the most recent write winning. Keep it small (at most
-    /// [`settings_store::continuity::MAX_PERSONAL_VALUE_BYTES`] serialized):
+    /// [`settings_store::placement::MAX_PERSONAL_VALUE_BYTES`] serialized):
     /// a confirmation preference, a refresh interval, a default sort.
     Personal,
     /// Kept on this device and never sent anywhere: a hardware choice, a
     /// path, a window placement.
     DeviceLocal,
     /// A per-user section shared across apps that another owner declares
-    /// (`locale`, `text_assistance`). How each of its keys travels is that
-    /// section's, reviewed in `settings_store::continuity`. Only its owner
-    /// writes it: a sandboxed app reads it and nothing more.
+    /// (`locale`, `text_assistance`). Whether it follows the person or
+    /// stays on the device is that section's ([`settings_store::placement`]).
+    /// Only its owner writes it: a sandboxed app reads it and nothing more.
     Shared(&'static str),
 }
 
@@ -128,8 +128,8 @@ impl Scope {
     #[must_use]
     pub const fn section(self) -> &'static str {
         match self {
-            Self::Personal => settings_store::continuity::APP_PERSONAL_SECTION,
-            Self::DeviceLocal => settings_store::continuity::APP_DEVICE_LOCAL_SECTION,
+            Self::Personal => settings_store::placement::APP_PERSONAL_SECTION,
+            Self::DeviceLocal => settings_store::placement::APP_DEVICE_LOCAL_SECTION,
             Self::Shared(name) => name,
         }
     }
@@ -317,6 +317,32 @@ impl SettingsDocument {
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
         SettingsRevision(self.source().map(|source| source.revision()))
+    }
+
+    /// Change the document holding section `name` itself through `edit`,
+    /// as one change made by `origin`: what a change reading the document's
+    /// history makes (a section's undo). See `settings_store::Store::edit_document`.
+    ///
+    /// # Errors
+    /// `edit` refused, the write failed, or this process holds only the
+    /// values of the settings (an app's channel to the session's), not the
+    /// document.
+    pub fn edit_document(
+        &self,
+        name: &str,
+        origin: &settings_store::ChangeOrigin,
+        edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
+    ) -> std::io::Result<()> {
+        let source = self
+            .source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        let store = source.store().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the settings' history is kept by the session",
+            )
+        })?;
+        store.edit_document(name, origin, edit)
     }
 }
 
@@ -604,7 +630,7 @@ fn store_in(
                 let size = serde_json::to_vec(&object)
                     .map_err(std::io::Error::other)?
                     .len();
-                if size > settings_store::continuity::MAX_PERSONAL_VALUE_BYTES {
+                if size > settings_store::placement::MAX_PERSONAL_VALUE_BYTES {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!(
@@ -915,15 +941,14 @@ mod tests {
                 "app_device_local": {"so.tilo.example": {"x": 40}}
             })
         );
-        // The device fabric carries the personal sections and nothing else.
+        // The device fabric carries the person's section and not the device's.
         assert_eq!(
-            settings_store::continuity::personal_values(&document)
-                .keys()
-                .collect::<Vec<_>>(),
-            [
-                "tilo.app_personal.so.tilo.example",
-                "tilo.app_personal.so.tilo.other"
-            ]
+            settings_store::placement::holder("app_personal"),
+            settings_store::placement::Holder::Person
+        );
+        assert_eq!(
+            settings_store::placement::holder("app_device_local"),
+            settings_store::placement::Holder::Device
         );
         assert_eq!(
             storage.settings::<Prefs>().get(),

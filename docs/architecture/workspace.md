@@ -186,6 +186,15 @@ What one device decided for itself stays on that device: which strip and group
 are focused, widths, maximized groups, outputs, local file paths. That is the
 device's desktop, never a second copy of the workspace.
 
+**Continuing on another device.** Beside its windows, a device notes in its
+part of the layout how each window it runs resumes (the app's small,
+path-free resume state and the record it shows) and which window it is on.
+Only the window's maker writes its note, and only a device's person its
+focus. The person's other devices hold the layout already, so they offer to
+continue there and open the window where it was left, with no channel of
+their own. The note never holds a surface id, local path, file contents or
+credentials.
+
 **Sharing a window.** A window of an outside program (a terminal, any Wayland
 or X client) keeps its state in its process, so its device streams that window
 alone to the members viewing it, end-to-end encrypted, only while someone
@@ -255,12 +264,15 @@ the model but instead of it:
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
-- **Stewards.** A device that alone admits devices to a channel, steward
-  takeover and genesis epochs, in the broker, the host and the browser. Any
-  participant with the grant admits.
-- **Per-person spaces.** The own room, the person room and the personal
-  continuity shard, each derived from the root key under its own domain
-  string, and the gossip-only personal fabric lane.
+- **Channel creation by the governor.** Only the governing device creates
+  a channel's group; any participant admits and removes devices
+  (`channel_crypto::ChannelPeer`). The browser follows and checks commits
+  but writes none, since it does not hold record-level Read grants.
+- **Per-person spaces.** The own room, the person room and the person's
+  relay workspace (`personal_continuity_workspace_id`, which carries host
+  verbs, own-device sessions and the workspace directory), each derived from
+  the root key under its own domain string, and the gossip-only personal
+  fabric lane.
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.

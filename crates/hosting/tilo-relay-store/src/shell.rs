@@ -126,18 +126,6 @@ pub trait ShellStore: Send + Sync {
     /// Install `binding` as this handle's shell authority. Only the adapter's
     /// bind, after it checked and persisted the authority, calls this.
     fn install_shell_binding(&mut self, binding: Arc<dyn ShellBinding>);
-    /// Copy the continuity association of the retained record `source` to
-    /// the selected link `destination`, accounting the work in `stats`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the association cannot be read or written.
-    fn copy_measured(
-        &self,
-        source: &Path,
-        destination: &Path,
-        stats: &mut WorkStats,
-    ) -> Result<(), StoreError>;
     fn handle(&self) -> Arc<dyn ShellStore>;
 }
 

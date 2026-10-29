@@ -442,6 +442,7 @@ fn a_text_is_found_by_what_it_refers_to_as_that_is_called_now() {
         !titles(&query(&provider, "fix build", &chrome)).contains(&"Plan for Monday"),
         "the old name is not what it is found by"
     );
+    drop(provider);
 
     // Which texts refer to the task: the system's backlinks, in any app.
     let links = index.backlinks(&room, TASKS, "tasks.task:t1");
@@ -453,4 +454,81 @@ fn a_text_is_found_by_what_it_refers_to_as_that_is_called_now() {
     // Removing the note removes its backlink.
     publish(&index, &mut notes, &room, NOTES, state(2, None), Vec::new());
     assert!(index.backlinks(&room, TASKS, "tasks.task:t1").is_empty());
+}
+
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+fn a_text_is_never_found_by_the_title_of_what_the_searcher_does_not_hold() {
+    const BOARD: &str = "so.tilo.lang.board";
+    let task = "tl:so.tilo.lang.board:plans/tasks:t1";
+    let reference = reference_to(BOARD, "tl.so.tilo.lang.board.Task", task);
+    // Two people's sessions, each indexing what their own apps publish: Ada holds the task, so
+    // her app publishes it and reads the post's reference by its title; Bea does not, so hers
+    // publishes no task and reads the reference as not shared.
+    let (chrome, room) = chrome();
+    let post = |text: &str| IndexEntry {
+        references: vec![reference.clone()],
+        ..note("tl:so.tilo.lang.board:board/posts:p1", text)
+    };
+    let ada = Arc::new(AppContentIndex::in_memory());
+    let bea = Arc::new(AppContentIndex::in_memory());
+    let (mut ada_board, mut bea_board) = (Publisher::default(), Publisher::default());
+    let ada_has = |task_title: &str| {
+        vec![
+            note(task, task_title),
+            post(&format!("The notes are in {task_title}")),
+        ]
+    };
+    publish(
+        &ada,
+        &mut ada_board,
+        &room,
+        BOARD,
+        state(1, None),
+        ada_has("Acquisition plan"),
+    );
+    publish(
+        &bea,
+        &mut bea_board,
+        &room,
+        BOARD,
+        state(1, None),
+        vec![post("The notes are in Not shared with you")],
+    );
+    let ada_finds = AppContentProvider::without_broker(Arc::clone(&ada));
+    let bea_finds = AppContentProvider::without_broker(Arc::clone(&bea));
+    assert!(
+        titles(&query(&ada_finds, "acquisition", &chrome))
+            .contains(&"The notes are in Acquisition plan")
+    );
+    let bea_found = query(&bea_finds, "acquisition", &chrome);
+    assert!(bea_found.is_empty(), "{:?}", titles(&bea_found));
+    let links = bea.backlinks(&room, BOARD, task);
+    assert_eq!(links.len(), 1, "the post still refers to the task");
+    assert!(
+        links[0].referenced.is_empty(),
+        "and names no title of it she cannot read"
+    );
+
+    // Renamed in Ada's app: she finds the post by the new name; Bea by nothing of it.
+    publish(
+        &ada,
+        &mut ada_board,
+        &room,
+        BOARD,
+        state(2, None),
+        ada_has("Merger timeline"),
+    );
+    assert!(
+        titles(&query(&ada_finds, "merger", &chrome)).contains(&"The notes are in Merger timeline")
+    );
+    assert_eq!(
+        ada.backlinks(&room, BOARD, task)[0].referenced,
+        ["Merger timeline"]
+    );
+    assert!(query(&bea_finds, "merger", &chrome).is_empty());
+    assert!(query(&bea_finds, "acquisition", &chrome).is_empty());
 }

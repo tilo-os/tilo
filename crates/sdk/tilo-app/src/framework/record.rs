@@ -370,10 +370,9 @@ pub(crate) struct Sections {
     pub(crate) app_id: &'static str,
     /// The settings document they are stored in.
     pub(crate) document: ui_core::storage::SettingsDocument,
-    /// The person's records they are kept in, with this device: their edits
-    /// are the person's steps. Without, each is kept in a document of the
-    /// host's own.
-    pub(crate) person: Option<(Rc<super::person::PersonState>, Option<String>)>,
+    /// The person they are changed by: each invoker's steps on them are
+    /// published to undo and redo beside them.
+    pub(crate) person: Option<Rc<super::person::PersonState>>,
     pub(crate) doors: Vec<Rc<super::section::SectionDoor>>,
 }
 
@@ -556,24 +555,17 @@ impl<'a> Records<'a> {
             let settings = ui_core::storage::Settings::<T>::for_app(sections.app_id)
                 .in_document(sections.document.clone());
             let kind = super::section::SectionKind::of(&settings);
-            let door = match &sections.person {
-                Some((person, device)) => person.open_section(kind, device.as_deref()),
-                None => super::section::SectionDoor::window(kind, true)
-                    .map(Rc::new)
-                    .map_err(|error| {
-                        tracing::warn!(kind = T::KIND, %error, "settings section unavailable");
-                    })
-                    .ok(),
-            };
-            sections.doors.extend(door);
+            sections.doors.push(match &sections.person {
+                Some(person) => person.open_section(kind),
+                None => Rc::new(super::section::SectionDoor::new(kind)),
+            });
         }
         let Some(storage) = self.storage else {
             return self;
         };
         let settings = storage.storage().settings::<T>();
-        if let Some(door) = storage.section(&settings)
-            && let Some(provider) = self.provider
-        {
+        let door = storage.section(&settings);
+        if let Some(provider) = self.provider {
             storage.keep_by(door.id(), provider);
         }
         self

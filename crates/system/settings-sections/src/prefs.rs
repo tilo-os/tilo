@@ -43,8 +43,8 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
 
-/// Remembered default audio devices, persistent transforms and which system
-/// events make a sound.
+/// The person's persistent audio transforms and which system events make a
+/// sound.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(defaults)]
 pub struct AudioPrefs {
@@ -52,14 +52,6 @@ pub struct AudioPrefs {
     /// The compositor plays them; see [`settings_store::system_sounds`].
     #[serde(default)]
     pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
-    /// Label of the last chosen default sink (output device), if any.
-    #[serde(default)]
-    #[model(readonly)]
-    pub output_device: Option<String>,
-    /// Label of the last chosen default source (input device), if any.
-    #[serde(default)]
-    #[model(readonly)]
-    pub input_device: Option<String>,
     /// Persistent left/right balance in UI space (`0` left, `0.5` centre,
     /// `1` right). The compositor session, not this pane, owns actuation.
     #[serde(default = "default_audio_balance")]
@@ -85,8 +77,6 @@ impl Default for AudioPrefs {
     fn default() -> Self {
         Self {
             system_sounds: settings_store::system_sounds::SystemSoundPrefs::default(),
-            output_device: None,
-            input_device: None,
             balance: default_audio_balance(),
             mono_output: false,
             echo_cancellation: true,
@@ -94,13 +84,26 @@ impl Default for AudioPrefs {
     }
 }
 
-/// Display comfort preferences applied by the compositor's output layer.
+/// This device's remembered default audio devices.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(defaults)]
+#[serde(default)]
+pub struct AudioDevicePrefs {
+    /// Label of the last chosen default sink (output device), if any.
+    #[model(readonly)]
+    pub output_device: Option<String>,
+    /// Label of the last chosen default source (input device), if any.
+    #[model(readonly)]
+    pub input_device: Option<String>,
+}
+
+/// The night light: a comfort of every display the person uses, applied by
+/// the compositor's output layer.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(defaults)]
-pub struct DisplayPrefs {
-    #[model(readonly)]
-    pub auto_brightness: bool,
+pub struct NightLightPrefs {
     /// Warm the whole screen to [`Self::night_light_temperature`].
+    #[serde(default)]
     pub night_light: bool,
     /// Target correlated colour temperature used by the compositor's
     /// whole-output Night Light transform.
@@ -111,6 +114,25 @@ pub struct DisplayPrefs {
     /// on from sunset, off from sunrise.
     #[serde(default)]
     pub night_light_schedule: bool,
+}
+
+impl Default for NightLightPrefs {
+    fn default() -> Self {
+        Self {
+            night_light: false,
+            night_light_schedule: false,
+            night_light_temperature: default_night_light_temperature(),
+        }
+    }
+}
+
+/// This device's display preferences, applied by the compositor's output
+/// layer.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(defaults)]
+pub struct DisplayPrefs {
+    #[model(readonly)]
+    pub auto_brightness: bool,
     /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
@@ -134,9 +156,6 @@ impl Default for DisplayPrefs {
     fn default() -> Self {
         Self {
             auto_brightness: false,
-            night_light: false,
-            night_light_schedule: false,
-            night_light_temperature: default_night_light_temperature(),
             scale: 1.0,
         }
     }
@@ -197,12 +216,6 @@ pub struct InputPrefs {
     /// Three- and four-finger gestures switch workspaces and show the
     /// overview.
     pub touchpad_gestures: bool,
-    /// Whether touchpads send events at all. The touchpad-toggle key writes
-    /// the same key, so both stay in agreement.
-    pub touchpad_enabled: bool,
-    /// Switch touchpads off while an external mouse is connected;
-    /// capability-gated by libinput.
-    pub touchpad_disabled_on_external_mouse: bool,
     /// Which button a clickpad press means; capability-gated by libinput.
     pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
     /// Two-finger or edge scrolling; capability-gated by libinput.
@@ -221,29 +234,6 @@ pub struct InputPrefs {
     /// for backward compatibility with old sessions.
     #[model(readonly)]
     pub keyboard_layouts: Vec<String>,
-    /// Explicit physical model; no hardware detection is implied.
-    #[model(readonly)]
-    pub keyboard_model: String,
-    #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
-    #[model(readonly)]
-    pub keyboard_assignments:
-        std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
-    /// Layout being inspected without changing the active input source.
-    #[model(readonly)]
-    pub keyboard_preview: Option<String>,
-    /// Inspect the higher native XKB levels without changing typed input.
-    #[model(readonly)]
-    pub keyboard_preview_extra_levels: bool,
-    /// Ordered native level inspected without changing the live seat.
-    #[model(readonly)]
-    pub keyboard_preview_level: usize,
-    /// Explicit physical position inspected; never follows or records key presses.
-    #[model(readonly)]
-    pub keyboard_inspected_key: String,
-    /// Per-tablet mapping, pressure and buttons, keyed by device identity.
-    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
-    #[model(readonly)]
-    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
     /// Per-app paste chord the shell presses when it pastes for the person
     /// (`ctrl_v` or `ctrl_shift_v`), keyed by app id; apps not listed get
     /// [`settings_store::paste_shortcut::default_for`].
@@ -277,14 +267,68 @@ impl Default for InputPrefs {
             left_handed: false,
             accel_profile: "adaptive".into(),
             touchpad_gestures: true,
-            touchpad_enabled: true,
-            touchpad_disabled_on_external_mouse: false,
             touchpad_click_method: settings_store::hardware::TouchpadClickMethod::Default,
             touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
             scroll_speed: 1.0,
             compose_key: None,
             caps_lock: None,
             keyboard_layouts,
+            paste_shortcuts: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// The person's pointer and keyboard choices, read by the compositor's input
+/// layer.
+impl ui::storage::SettingsSchema for InputPrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::hardware::INPUT_SECTION);
+    ui::settings_codec!();
+}
+
+/// This device's input: whether its touchpads are on, its physical
+/// keyboards, its tablets and what the keyboard inspector shows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(defaults)]
+#[serde(default)]
+pub struct InputDevicePrefs {
+    /// Whether touchpads send events at all. The touchpad-toggle key writes
+    /// the same key, so both stay in agreement.
+    pub touchpad_enabled: bool,
+    /// Switch touchpads off while an external mouse is connected;
+    /// capability-gated by libinput.
+    pub touchpad_disabled_on_external_mouse: bool,
+    /// Explicit physical model; no hardware detection is implied.
+    #[model(readonly)]
+    pub keyboard_model: String,
+    /// The layouts each of this device's keyboards types, by its identity.
+    #[serde(deserialize_with = "settings_store::keyboard_sources::lenient_profiles")]
+    #[model(readonly)]
+    pub keyboard_assignments:
+        std::collections::BTreeMap<String, settings_store::keyboard_sources::KeyboardProfile>,
+    /// Layout being inspected without changing the active input source.
+    #[model(readonly)]
+    pub keyboard_preview: Option<String>,
+    /// Inspect the higher native XKB levels without changing typed input.
+    #[model(readonly)]
+    pub keyboard_preview_extra_levels: bool,
+    /// Ordered native level inspected without changing the live seat.
+    #[model(readonly)]
+    pub keyboard_preview_level: usize,
+    /// Explicit physical position inspected; never follows or records key presses.
+    #[model(readonly)]
+    pub keyboard_inspected_key: String,
+    /// Per-tablet mapping, pressure and buttons, keyed by device identity.
+    #[serde(deserialize_with = "settings_store::hardware::lenient_tablets")]
+    #[model(readonly)]
+    pub tablets: std::collections::BTreeMap<String, settings_store::hardware::TabletConfig>,
+}
+
+impl Default for InputDevicePrefs {
+    fn default() -> Self {
+        Self {
+            touchpad_enabled: true,
+            touchpad_disabled_on_external_mouse: false,
             keyboard_model: "pc105".into(),
             keyboard_assignments: std::collections::BTreeMap::new(),
             keyboard_preview: None,
@@ -292,19 +336,25 @@ impl Default for InputPrefs {
             keyboard_preview_level: 0,
             keyboard_inspected_key: "AD01".into(),
             tablets: std::collections::BTreeMap::new(),
-            paste_shortcuts: std::collections::BTreeMap::new(),
         }
     }
 }
 
-/// The person's pointer and keyboard choices, and this device's touchpad
-/// and tablets, read by the compositor's input layer.
-impl ui::storage::SettingsSchema for InputPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
+impl ui::storage::SettingsSchema for InputDevicePrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::hardware::INPUT_DEVICE_SECTION);
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.input", label = "Input")]
+#[ui::tilo_resource::resource(kind = "settings.input-device", label = "Input on this device")]
+impl InputDevicePrefs {}
+
+#[ui::tilo_resource::resource(
+    kind = "settings.input",
+    label = "Input",
+    version = 2,
+    migrate = crate::leaves_moved_out
+)]
 impl InputPrefs {
     /// Set how fast held keys repeat, from slow (0) to fast (1); an exact
     /// delay and rate taken from another system no longer apply.
@@ -326,9 +376,11 @@ impl InputPrefs {
         &mut self,
         #[param("An XKB layout or layout:variant (de, us:intl)")] layout: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        let next =
-            settings_store::keyboard_sources::plan_active_source(&self.rich_input(), &layout)
-                .map_err(ui::tilo_resource::Refusal::new)?;
+        let next = settings_store::keyboard_sources::plan_active_source(
+            &self.rich_input(&InputDevicePrefs::default()),
+            &layout,
+        )
+        .map_err(ui::tilo_resource::Refusal::new)?;
         self.keyboard_layouts = next.keyboard_layouts;
         self.keyboard_layout = next.keyboard_layout;
         Ok(())
@@ -367,9 +419,12 @@ impl InputPrefs {
 }
 
 impl InputPrefs {
-    /// Reconcile the legacy active layout with the ordered source list using
-    /// the same validation and bounds the compositor enforces.
-    pub fn rich_input(&self) -> settings_store::hardware::RichInputConfig {
+    /// These choices on a device with `device`'s keyboards and tablets, as
+    /// the compositor reads them.
+    pub fn rich_input(
+        &self,
+        device: &InputDevicePrefs,
+    ) -> settings_store::hardware::RichInputConfig {
         settings_store::hardware::RichInputConfig {
             pointer_speed: self.pointer_speed,
             touchpad_pointer_speed: self.touchpad_pointer_speed,
@@ -392,22 +447,23 @@ impl InputPrefs {
             key_repeat_rate_hz: self.key_repeat_rate_hz,
             keyboard_layout: self.keyboard_layout.clone(),
             keyboard_layouts: self.keyboard_layouts.clone(),
-            keyboard_model: self.keyboard_model.clone(),
-            keyboard_assignments: self.keyboard_assignments.clone(),
+            keyboard_model: device.keyboard_model.clone(),
+            keyboard_assignments: device.keyboard_assignments.clone(),
             compose_key: self.compose_key.clone(),
             caps_lock: self.caps_lock.clone(),
             touchpad_gestures: self.touchpad_gestures,
             touchpad_click_method: self.touchpad_click_method,
             touchpad_scroll_method: self.touchpad_scroll_method,
             scroll_speed: self.scroll_speed,
-            tablets: self.tablets.clone(),
+            tablets: device.tablets.clone(),
         }
     }
 
+    /// Reconcile the legacy active layout with the ordered source list using
+    /// the same validation and bounds the compositor enforces.
     pub fn normalise_keyboard_sources(&mut self) {
-        let mut config = self.rich_input();
+        let mut config = self.rich_input(&InputDevicePrefs::default());
         config.normalise_sources();
-        self.keyboard_model = config.keyboard_model;
         self.keyboard_layout = config.keyboard_layout;
         self.keyboard_layouts = config.keyboard_layouts;
     }
@@ -545,9 +601,9 @@ pub struct PowerPrefs {
 }
 
 /// The person's desk widgets: which they keep, when each shows itself and
-/// at which edge. The compositor reads the same leaves
-/// ([`settings_store::desk_widgets`]), and the desk writes a pin or a
-/// widget dragged to another edge back here.
+/// where each rests. The compositor reads the same leaves
+/// ([`settings_store::desk_widgets`]), and the desk writes back a pin,
+/// where a widget was dropped, its card's width and its removal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[model(defaults)]
 pub struct DeskWidgetsPrefs {
@@ -866,11 +922,6 @@ pub struct AppearancePrefs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[model(choices = tilo_wallpapers::values())]
     pub wallpaper: Option<String>,
-    /// Palette and pins shipped with the OS image.
-    /// Absent on a settings file written before the layer existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[model(readonly)]
-    pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
     /// Force theme tokens onto content surfaces, with high contrast.
     #[serde(default)]
     pub forced_colors: bool,
@@ -960,7 +1011,6 @@ impl Default for AppearancePrefs {
             wallpaper_scope: default_wallpaper_scope(),
             wallpaper_target: default_wallpaper_target(),
             wallpaper: None,
-            distribution_defaults: None,
             forced_colors: false,
             distinct_letters: None,
             language: None,
@@ -1005,9 +1055,13 @@ impl AppearancePrefs {
         ui::theme::user_document(&self.settings_value(), ui::theme::local_moment())
     }
 
-    fn layers(&self, accessibility: ui::theme::AccessibilityLayer) -> ui::theme::ThemeLayerStack {
+    fn layers(
+        &self,
+        device: &AppearanceDevicePrefs,
+        accessibility: ui::theme::AccessibilityLayer,
+    ) -> ui::theme::ThemeLayerStack {
         ui::theme::ThemeLayerStack {
-            distribution_defaults: self.distribution_defaults.clone(),
+            distribution_defaults: device.distribution_defaults.clone(),
             user_theme: self.user_document(),
             window: ui::WindowAppearance::default(),
             accessibility,
@@ -1015,40 +1069,74 @@ impl AppearancePrefs {
     }
 
     /// Resolve these preferences into the concrete [`ui::Theme`] the OS would
-    /// apply: the theme the mode shows, with the accessibility comforts
-    /// folded in. This is the real "apply" contract — a consumer that wants
+    /// apply on a device with `device`'s defaults: the theme the mode shows,
+    /// with the accessibility comforts folded in. This is the real "apply" contract — a consumer that wants
     /// the user's look calls this rather than hard-coding [`ui::Theme::dark`].
     #[allow(
         clippy::cast_possible_truncation,
         reason = "scales are small factors well inside f32's range"
     )]
-    pub fn resolve_theme(&self) -> ui::Theme {
+    pub fn resolve_theme(&self, device: &AppearanceDevicePrefs) -> ui::Theme {
         // The same function the compositor uses. UI scale grows the whole
         // system first; text scale then layers extra type growth on top.
-        ui::theme::resolve_theme_layers(&self.layers(ui::theme::AccessibilityLayer {
-            high_contrast: self.high_contrast,
-            forced_colors: self.forced_colors,
-            text_scale: self.text_scale as f32,
-            ui_scale: self.ui_scale as f32,
-            reduce_motion: self.reduce_motion,
-            reduce_transparency: self.reduce_transparency,
-            distinct_letters: self.distinct_letters,
-            ..ui::theme::AccessibilityLayer::default()
-        }))
+        ui::theme::resolve_theme_layers(&self.layers(
+            device,
+            ui::theme::AccessibilityLayer {
+                high_contrast: self.high_contrast,
+                forced_colors: self.forced_colors,
+                text_scale: self.text_scale as f32,
+                ui_scale: self.ui_scale as f32,
+                reduce_motion: self.reduce_motion,
+                reduce_transparency: self.reduce_transparency,
+                distinct_letters: self.distinct_letters,
+                ..ui::theme::AccessibilityLayer::default()
+            },
+        ))
     }
 
-    /// The chosen theme before the accessibility comforts.
-    pub fn base_theme(&self) -> ui::Theme {
-        ui::theme::resolve_theme_layers(&self.layers(ui::theme::AccessibilityLayer::default()))
+    /// The chosen theme before the accessibility comforts, on a device with
+    /// `device`'s defaults.
+    pub fn base_theme(&self, device: &AppearanceDevicePrefs) -> ui::Theme {
+        ui::theme::resolve_theme_layers(
+            &self.layers(device, ui::theme::AccessibilityLayer::default()),
+        )
     }
 }
+
+/// This device's appearance: what its OS image ships.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[model(defaults)]
+#[serde(default)]
+pub struct AppearanceDevicePrefs {
+    /// Palette and pins shipped with the OS image.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[model(readonly)]
+    pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
+}
+
+impl ui::storage::SettingsSchema for AppearanceDevicePrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::appearance::DEVICE_SECTION);
+    ui::settings_codec!();
+}
+
+#[ui::tilo_resource::resource(
+    kind = "settings.appearance-device",
+    label = "Appearance on this device"
+)]
+impl AppearanceDevicePrefs {}
 
 impl ui::storage::SettingsSchema for AppearancePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.appearance", label = "Appearance")]
+#[ui::tilo_resource::resource(
+    kind = "settings.appearance",
+    label = "Appearance",
+    version = 2,
+    migrate = crate::leaves_moved_out
+)]
 impl AppearancePrefs {
     /// Set the theme every app draws with; Automatic is light by day and
     /// dark by night.
@@ -1243,16 +1331,43 @@ impl ui::storage::SettingsSchema for AudioPrefs {
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.audio", label = "Sound")]
+#[ui::tilo_resource::resource(
+    kind = "settings.audio",
+    label = "Sound",
+    version = 2,
+    migrate = crate::leaves_moved_out
+)]
 impl AudioPrefs {}
+
+impl ui::storage::SettingsSchema for AudioDevicePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio_device");
+    ui::settings_codec!();
+}
+
+#[ui::tilo_resource::resource(kind = "settings.audio-device", label = "Sound on this device")]
+impl AudioDevicePrefs {}
 
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
     ui::settings_codec!();
 }
 
-#[ui::tilo_resource::resource(kind = "settings.display", label = "Displays")]
+#[ui::tilo_resource::resource(
+    kind = "settings.display",
+    label = "Displays",
+    version = 2,
+    migrate = crate::leaves_moved_out
+)]
 impl DisplayPrefs {}
+
+impl ui::storage::SettingsSchema for NightLightPrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::hardware::DISPLAY_PERSON_SECTION);
+    ui::settings_codec!();
+}
+
+#[ui::tilo_resource::resource(kind = "settings.night-light", label = "Night light")]
+impl NightLightPrefs {}
 
 /// Refused unless `time` is a time of day, `HH:MM`.
 fn time_of_day(time: &str, what: &str) -> Result<(), ui::tilo_resource::Refusal> {

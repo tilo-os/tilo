@@ -335,6 +335,122 @@ pub enum WorkspaceMembershipCommand {
     UninstallApp {
         app: String,
     },
+    /// A change to the room's members, as the caller makes it: a role, a
+    /// removal, a ban or a restriction, or a grant given or taken back. The
+    /// room's admission decides it against the caller's own grants where
+    /// they made it, on every device that receives it.
+    Member {
+        change: tilo_action_policy::Change,
+    },
+    /// A change to the room's own settings, as the caller makes it
+    /// ([`SettingsChange`]): decided against the caller's own grants where
+    /// they made it, on every device that receives it.
+    Settings(SettingsChange),
+}
+
+/// A change to the room's own settings: its name, its saved grant sets and
+/// their assignment, the actions its apps may use of each other and its
+/// apps' sandbox capabilities.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettingsChange {
+    /// Name the room `name`.
+    Rename { name: String },
+    /// Save a named grant set, replacing the one with the same name.
+    SavePreset { preset: tilo_action_policy::Preset },
+    /// Give `subject` the grants the saved set `preset` expands to, until
+    /// `lifetime` ends.
+    AssignPreset {
+        preset: String,
+        subject: tilo_action_policy::Subject,
+        lifetime: tilo_action_policy::Lifetime,
+    },
+    /// Let an app use one action of another app here.
+    GrantAppAction(AppAction),
+    /// Take back every grant letting an app use that action.
+    RevokeAppAction(AppAction),
+    /// Record a sandbox capability for the room's apps.
+    GrantSandbox {
+        capability: collab_types::caps::CapOverride,
+    },
+    /// Take back the sandbox capability with this id.
+    RevokeSandbox { capability: String },
+}
+
+/// The action an app-action grant is about: `action` on `target_app`'s
+/// resource `resource`, wherever in the app that resource sits, used by
+/// `app`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppAction {
+    pub app: String,
+    pub target_app: String,
+    pub resource: String,
+    pub action: String,
+}
+
+impl AppAction {
+    /// The action named, each part trimmed.
+    ///
+    /// # Errors
+    /// A part is empty.
+    pub fn new(app: &str, target_app: &str, resource: &str, action: &str) -> Result<Self, String> {
+        let named = Self {
+            app: app.trim().to_owned(),
+            target_app: target_app.trim().to_owned(),
+            resource: resource.trim().to_owned(),
+            action: action.trim().to_owned(),
+        };
+        if named.app.is_empty()
+            || named.target_app.is_empty()
+            || named.resource.is_empty()
+            || named.action.is_empty()
+        {
+            return Err(
+                "name the application, the other application, its resource and the action".into(),
+            );
+        }
+        Ok(named)
+    }
+
+    /// The node the grant names, inside `room`'s node.
+    #[must_use]
+    pub fn node(&self, room: &TreePath) -> TreePath {
+        room.join(
+            &TreePath::root()
+                .app(self.target_app.as_str())
+                .rest()
+                .resource(self.resource.as_str())
+                .rest()
+                .action(self.action.as_str()),
+        )
+    }
+}
+
+/// How long an app-action grant lasts, from the word a person picked.
+///
+/// # Errors
+/// A `session` grant, which a room has no session to end with, and any
+/// other word but `always`.
+pub fn app_action_lifetime(lifetime: &str) -> Result<tilo_action_policy::Lifetime, String> {
+    match lifetime.trim().to_ascii_lowercase().as_str() {
+        "always" => Ok(tilo_action_policy::Lifetime::UntilRevoked),
+        "session" => {
+            Err("a room has no session to end a session grant with: grant it always".into())
+        }
+        _ => Err("lifetime must be always".into()),
+    }
+}
+
+/// The room's name, trimmed, when it is 1 to 80 characters and no control
+/// characters.
+///
+/// # Errors
+/// It is not.
+pub fn valid_room_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if !(1..=80).contains(&name.chars().count()) || name.chars().any(char::is_control) {
+        return Err("workspace name must contain 1–80 characters".into());
+    }
+    Ok(name)
 }
 
 impl WorkspaceMembershipCommand {
@@ -357,7 +473,9 @@ impl WorkspaceMembershipCommand {
             | Self::RequestBot(_)
             | Self::WithdrawBotRequest { .. }
             | Self::InstallApp(_)
-            | Self::UninstallApp { .. } => None,
+            | Self::UninstallApp { .. }
+            | Self::Member { .. }
+            | Self::Settings(_) => None,
         }
     }
 
@@ -412,6 +530,28 @@ impl WorkspaceMembershipCommand {
         if matches!(self, Self::Grant { .. } | Self::Revoke { .. }) {
             return Ok(());
         }
+        if let Self::Member { change } = self {
+            return validate_member_change(change);
+        }
+        if let Self::Settings(change) = self {
+            return match change {
+                SettingsChange::Rename { name } => valid_room_name(name).map(drop),
+                SettingsChange::SavePreset { preset } => {
+                    preset.validate().map_err(|error| error.to_string())
+                }
+                SettingsChange::GrantAppAction(action)
+                | SettingsChange::RevokeAppAction(action) => AppAction::new(
+                    &action.app,
+                    &action.target_app,
+                    &action.resource,
+                    &action.action,
+                )
+                .map(drop),
+                SettingsChange::AssignPreset { .. }
+                | SettingsChange::GrantSandbox { .. }
+                | SettingsChange::RevokeSandbox { .. } => Ok(()),
+            };
+        }
         if let Self::GrantAppAuthorship { app } = self {
             return validate_app_id(app);
         }
@@ -426,6 +566,29 @@ impl WorkspaceMembershipCommand {
         }
         Ok(())
     }
+}
+
+/// A member change names its person by their user root key, and a grant
+/// it gives by an id.
+fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), String> {
+    use tilo_action_policy::Change;
+    let person = match change {
+        Change::AddMember { person, .. }
+        | Change::RemoveMember { person }
+        | Change::Ban { person }
+        | Change::Unban { person }
+        | Change::Restrict { person, .. }
+        | Change::Unrestrict { person }
+        | Change::SetRole { person, .. } => person,
+        Change::Grant(grant) if grant.id.as_str().trim().is_empty() => {
+            return Err("a grant needs an id".into());
+        }
+        Change::Grant(_) | Change::Revoke(_) => return Ok(()),
+    };
+    if person.len() != 64 || hex::decode(person).is_err() {
+        return Err("a member is named by their user root key".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

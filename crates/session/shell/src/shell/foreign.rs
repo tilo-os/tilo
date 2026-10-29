@@ -794,6 +794,11 @@ struct ForeignEntry {
     /// publishing into `placement`, so clearing this falls straight back to
     /// the tab size.
     pinned: Option<Rect>,
+    /// Screen pixels per window pixel while the window stands on a zoomed
+    /// canvas: the client is configured to its canvas size and its frames
+    /// are drawn scaled into the tab, so zooming never resizes it. `1.0`
+    /// everywhere else.
+    canvas_zoom: f64,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
     /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
@@ -807,6 +812,12 @@ struct ForeignEntry {
     resize_anchor: Option<ResizeAnchor>,
     /// What the client declared its window to be with `xdg_surface.set_window_geometry` — everything outside it is shadow or resize border, which a tile never shows.
     geometry: Option<WindowGeometry>,
+    /// The `wl_surface.set_input_region` the client's last commit applied;
+    /// `None` is the protocol's default, the whole surface. A browser draws
+    /// its page into a subsurface with an empty input region so the press
+    /// lands on the toolkit's toplevel underneath, which is the only surface
+    /// it handles input on.
+    input_region: Option<InputRegion>,
     /// How the client's buffer lies on the surface, as its last commit said.
     scale: SurfaceScale,
     /// When this surface was first heard of (toplevel adoption) — start of the window [`ForeignFrameStore::mark_presented`] waits before giving up.
@@ -946,12 +957,14 @@ impl ForeignEntry {
             last_error: None,
             placement: None,
             pinned: None,
+            canvas_zoom: 1.0,
             configured: None,
             configured_extent: None,
             min_size: (0, 0),
             max_size: (0, 0),
             resize_anchor: None,
             geometry: None,
+            input_region: None,
             scale: SurfaceScale::default(),
             first_seen: Instant::now(),
             mapped: false,
@@ -1268,6 +1281,31 @@ fn blend_over(destination: &mut [u8; 4], [sr, sg, sb, sa]: [u8; 4]) {
     *db = blend(sb, *db);
     *da = u8::try_from(alpha.saturating_add(u32::from(*da).saturating_mul(inverse) / 255))
         .unwrap_or(u8::MAX);
+}
+
+/// A `wl_region` as a client built it: rectangles added and subtracted in
+/// order, surface-local logical pixels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InputRegion {
+    /// `(added, x, y, width, height)`; a later rectangle wins over an
+    /// earlier one where they overlap.
+    pub rects: Vec<(bool, i32, i32, i32, i32)>,
+}
+
+impl InputRegion {
+    /// Whether surface-local `(x, y)` lies in the region.
+    #[must_use]
+    pub fn contains(&self, x: f64, y: f64) -> bool {
+        self.rects
+            .iter()
+            .fold(false, |inside, &(added, rx, ry, rw, rh)| {
+                let hit = x >= f64::from(rx)
+                    && y >= f64::from(ry)
+                    && x < f64::from(rx) + f64::from(rw)
+                    && y < f64::from(ry) + f64::from(rh);
+                if hit { added } else { inside }
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3837,6 +3875,14 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| e.geometry = geometry);
     }
 
+    /// Record the input region `id`'s last commit applied (`None`: the whole
+    /// surface). Kept only for surfaces the store already tracks.
+    pub fn note_input_region(&self, id: SurfaceId, region: Option<InputRegion>) {
+        if let Some(entry) = self.entries.lock_recover().get_mut(&id) {
+            entry.input_region = region;
+        }
+    }
+
     /// Record how `id`'s buffer lies on the surface — buffer scale and
     /// viewport — as the commit just applied them.
     pub fn note_surface_scale(&self, id: SurfaceId, scale: SurfaceScale) {
@@ -3971,12 +4017,19 @@ impl ForeignFrameStore {
             let (width, height) = frame.buffer_placement()?.logical;
             let local_x = x - f64::from(child.x);
             let local_y = y - f64::from(child.y);
+            // A subsurface whose input region leaves the point out is not
+            // there for input: the press falls through to whatever is below
+            // it, ultimately the root, as Wayland routes it.
             (local_x >= 0.0
                 && local_y >= 0.0
                 && local_x < width
                 && local_y < height
-                && frame.mapped)
-                .then_some((child.surface, local_x, local_y))
+                && frame.mapped
+                && frame
+                    .input_region
+                    .as_ref()
+                    .is_none_or(|region| region.contains(local_x, local_y)))
+            .then_some((child.surface, local_x, local_y))
         })
     }
 
@@ -4190,6 +4243,20 @@ impl ForeignFrameStore {
         });
     }
 
+    /// Show the window at `zoom` screen pixels per window pixel: it stands on
+    /// a canvas zoomed that far, keeps its canvas size and is drawn scaled
+    /// into its tab ([`Self::take_pending_configure`]).
+    pub fn set_canvas_zoom(&self, id: SurfaceId, zoom: f64) {
+        let zoom = if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
+        self.with_entry(id, |e| {
+            e.canvas_zoom = zoom;
+        });
+    }
+
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock_recover();
@@ -4254,9 +4321,16 @@ impl ForeignFrameStore {
     pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
             let rect = e.pinned.or(e.placement)?;
+            // On a zoomed canvas the tab is the window drawn scaled: the
+            // window itself keeps the size it has on the canvas.
+            let zoom = e.canvas_zoom;
             let logical = (
-                rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
-                rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
+                (rect.width() / zoom)
+                    .round()
+                    .clamp(0.0, f64::from(i32::MAX)) as i32,
+                (rect.height() / zoom)
+                    .round()
+                    .clamp(0.0, f64::from(i32::MAX)) as i32,
             );
             if logical.0 == 0 || logical.1 == 0 {
                 return None;
@@ -4265,7 +4339,7 @@ impl ForeignFrameStore {
                 honour_size_limits(logical.0, e.min_size.0, e.max_size.0),
                 honour_size_limits(logical.1, e.min_size.1, e.max_size.1),
             );
-            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
+            e.configured_extent = Some((f64::from(logical.0) * zoom, f64::from(logical.1) * zoom));
             if e.configured == Some(logical) {
                 return None;
             }
@@ -5318,10 +5392,6 @@ impl Widget for ForeignSurfaceWidget {
 }
 
 impl AppWidget for ForeignSurfaceWidget {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
-
     fn app_kind(&self) -> AppKind {
         // No `AppKind` describes "arbitrary external client"; `Settings` is the catch-all `to_ui_kind` already uses for unknown kinds.
         AppKind::Settings
@@ -6914,6 +6984,42 @@ mod tests {
         // Input finds the page by its logical extent too.
         assert_eq!(frames.child_at(root, 69.5, 10.5), Some((page, 59.5, 0.5)));
         assert_eq!(frames.child_at(root, 70.5, 10.5), None);
+    }
+
+    /// A subsurface is hit only where its input region takes the point: an
+    /// empty region passes every press to what is below it, and a region
+    /// built from added and subtracted rectangles is followed in order.
+    #[test]
+    fn a_subsurface_is_hit_only_inside_its_input_region() {
+        let frames = ForeignFrameStore::default();
+        let (root, page) = (sid(66), sid(67));
+        frames.publish_rgba(root, &solid_frame(100, 100, [0, 0, 200]), 100, 100);
+        frames.publish_rgba(page, &solid_frame(80, 80, [200, 0, 0]), 80, 80);
+        frames.set_children(
+            root,
+            vec![ChildFrame {
+                surface: page,
+                x: 10,
+                y: 10,
+            }],
+        );
+        assert_eq!(frames.child_at(root, 15.0, 15.0), Some((page, 5.0, 5.0)));
+
+        frames.note_input_region(page, Some(InputRegion::default()));
+        assert_eq!(frames.child_at(root, 15.0, 15.0), None);
+        assert_eq!(frames.route_point(root, 15.0, 15.0), PointRoute::Root);
+
+        frames.note_input_region(
+            page,
+            Some(InputRegion {
+                rects: vec![(true, 0, 0, 80, 80), (false, 0, 0, 80, 20)],
+            }),
+        );
+        assert_eq!(frames.child_at(root, 15.0, 15.0), None, "subtracted band");
+        assert_eq!(frames.child_at(root, 15.0, 45.0), Some((page, 5.0, 35.0)));
+
+        frames.note_input_region(page, None);
+        assert_eq!(frames.child_at(root, 15.0, 15.0), Some((page, 5.0, 5.0)));
     }
 
     /// The other way round, and through a viewport: a dense subsurface on a

@@ -15,6 +15,7 @@ use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::presence::ParticipantKind;
+use ui::tilo_resource::NonBlank;
 use ui::widget::{Badge, ChipStyle, Dropdown, Fact, Facts, Tone};
 
 use crate::{Nav, reference, tr, tr_with};
@@ -347,17 +348,25 @@ fn labels(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         Box::new(row) as Element
     });
     let draft = cx.local(String::new());
-    let input = TextInput::from_state(&draft)
-        .with_id("tasks-issue-label")
-        .with_accessible_name(tr("tasks-issue-add-label"))
-        .with_placeholder("tasks-issue-label-placeholder");
     let label_id = id.clone();
-    let add = cx.actions().bind(
-        Button::new("tasks-issue-add-label", "tasks-issue-add-label"),
-        Tracker::ADD_LABEL.map(move |()| tracker::AddLabel {
+    let label = Tracker::ADD_LABEL.try_map(move |label: String| {
+        Some(tracker::AddLabel {
             issue: label_id.clone(),
-            label: take(&draft),
-        }),
+            label: NonBlank::parse(&label)?,
+        })
+    });
+    let input = cx.actions().submit_draft(
+        TextInput::from_state(&draft)
+            .with_id("tasks-issue-label")
+            .with_accessible_name(tr("tasks-issue-add-label"))
+            .with_placeholder("tasks-issue-label-placeholder"),
+        &draft,
+        label.clone(),
+    );
+    let add = cx.actions().bind_draft(
+        Button::new("tasks-issue-add-label", "tasks-issue-add-label"),
+        &draft,
+        label,
     );
     Box::new(
         Row::new()
@@ -787,13 +796,15 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     // One message, sent with one button: to the run while one reads it, and
     // into the thread otherwise, so a task nobody is running still carries
     // the conversation its collaborators have about it.
-    let send_draft = draft;
     let send_id = id.clone();
-    let send = cx.actions().bind(
+    let send = cx.actions().bind_draft(
         Button::new("tasks-thread-send", "tasks-thread-send"),
-        Tracker::SEND_MESSAGE.map(move |()| tracker::SendMessage {
-            issue: send_id.clone(),
-            text: take(&send_draft),
+        &draft,
+        Tracker::SEND_MESSAGE.try_map(move |text: String| {
+            Some(tracker::SendMessage {
+                issue: send_id.clone(),
+                text: NonBlank::parse(&text)?,
+            })
         }),
     );
     let label = cx.switch(&running, move |_, running| {
@@ -820,13 +831,6 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                     .push(label),
             )),
     )
-}
-
-/// The draft as it is sent, emptied for the next message.
-fn take(draft: &LocalState<String>) -> String {
-    let text = draft.get();
-    draft.set(String::new());
-    text
 }
 
 fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &Message) -> Element {

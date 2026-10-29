@@ -37,6 +37,8 @@ mod argb_opaque_region;
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]
 mod bluetooth_pairing;
+#[path = "canvas.rs"]
+mod canvas;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
 #[path = "capture_protection.rs"]
@@ -71,6 +73,8 @@ mod dbus_runtime_context;
 mod desktop_env_interactions;
 #[path = "desktop_smoke.rs"]
 mod desktop_smoke;
+#[path = "display_change_answers.rs"]
+mod display_change_answers;
 #[path = "display_layout_switcher.rs"]
 mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
@@ -147,6 +151,8 @@ mod key_repeat_wire;
 mod keyboard_focus_wire;
 #[path = "keyboard_layout_wire.rs"]
 mod keyboard_layout_wire;
+#[path = "launcher_search.rs"]
+mod launcher_search;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "legacy_window_between_devices.rs"]

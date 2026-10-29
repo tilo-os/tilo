@@ -7,7 +7,7 @@ use ui::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use automerge::ROOT;
+use automerge::{AutoCommit, ROOT};
 
 /// Present `doc`'s library to `app` as the framework does after a change,
 /// then sync it.
@@ -20,7 +20,7 @@ fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
 /// Apply what `app` submitted to `doc`, as the host does after a pass,
 /// and show it the result.
 fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
-    let Some(dispatch) = app.dispatch.clone() else {
+    let Some(dispatch) = app.state().dispatch.clone() else {
         return;
     };
     if !ui::framework::testing::resolve(&dispatch, doc)
@@ -33,10 +33,10 @@ fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
 }
 
 /// Present `doc`'s library to `app`, as the framework does after a change.
-fn present(app: &mut PhotosApp, doc: &AutoCommit) {
+fn present(app: &PhotosApp, doc: &AutoCommit) {
     let state =
         <PhotoLibrary as ui::tilo_resource::Resource>::read(doc).expect("the library reads");
-    app.adopt_resource_state(&Rc::new(state));
+    app.state().adopt_resource_state(&Rc::new(state));
 }
 
 fn test_app() -> PhotosApp {
@@ -60,7 +60,7 @@ fn setup() -> (PhotosApp, AutoCommit, String) {
     let image = OpenImage::fixture("historical-missing.png", 4, 3);
     let id = crate::test_doc::put_image(&mut doc, &image);
     let mut app = test_app();
-    app.show_photo(&id);
+    app.state().show_photo(&id);
     sync(&mut app, &mut doc);
     (app, doc, id)
 }
@@ -83,29 +83,52 @@ fn thumbnails_follow_photo_identity_and_visibility() {
         let target = library.photos.values().nth(2).unwrap().clone();
         crate::test_doc::set_library(&mut doc, &library);
         let mut app = test_app();
-        app.show_library();
-        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
+        app.state().show_library();
+        app.state().canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
         sync(&mut app, &mut doc);
-        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
-        app.view_timeline(
-            &crate::test_doc::library(&doc),
-            Some(&crate::actions::TimelineAnchor::Day {
-                day: target.captured_at.clone().unwrap(),
-            }),
-        )
-        .unwrap();
+        assert!(!app.state().thumbnail_resource_keys.contains_key(&target.id));
+        app.state()
+            .view_timeline(
+                &crate::test_doc::library(&doc),
+                Some(&crate::actions::TimelineAnchor::Day {
+                    day: target.captured_at.clone().unwrap(),
+                }),
+            )
+            .unwrap();
         let mut text = TextRenderer::new();
         let mut missing = Scene::new();
-        app.draw_library(&mut missing, Affine::IDENTITY, &mut text, &Theme::dark());
-        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
-        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
-        app.library_thumbnails.insert(
+        app.state().draw_library(
+            None,
+            &mut missing,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
+        assert!(
+            app.state()
+                .library_cards
+                .iter()
+                .any(|(id, _, _)| id == &target.id)
+        );
+        assert!(!app.state().thumbnail_resource_keys.contains_key(&target.id));
+        app.state().library_thumbnails.insert(
             thumbnail_key(&target.image),
             to_peniko(&crate::shots_pattern(30, 20)),
         );
         let mut hydrated = Scene::new();
-        app.draw_library(&mut hydrated, Affine::IDENTITY, &mut text, &Theme::dark());
-        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+        app.state().draw_library(
+            None,
+            &mut hydrated,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
+        assert!(
+            app.state()
+                .library_cards
+                .iter()
+                .any(|(id, _, _)| id == &target.id)
+        );
         let images = |scene: &Scene| {
             scene
                 .encoding()
@@ -125,20 +148,21 @@ fn thumbnails_follow_photo_identity_and_visibility() {
     eprintln!("phase changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result");
     {
         let (mut app, mut doc, id) = setup();
-        let old = app.thumbnail_generation.unwrap();
-        app.library_thumbnails
+        let old = app.state().thumbnail_generation.unwrap();
+        app.state()
+            .library_thumbnails
             .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
         let mut lib = crate::test_doc::library(&doc);
         lib.photos.iter_mut().next().unwrap().1.image.content = "a".repeat(64);
         crate::test_doc::set_library(&mut doc, &lib);
         sync(&mut app, &mut doc);
-        assert!(!app.library_thumbnails.contains_key(&id));
-        app.accept_thumbnail_result(ThumbnailResult {
+        assert!(!app.state().library_thumbnails.contains_key(&id));
+        app.state().accept_thumbnail_result(ThumbnailResult {
             generation: old,
             id: id.clone(),
             preview: Some(crate::shots_pattern(4, 3)),
         });
-        assert!(!app.library_thumbnails.contains_key(&id));
+        assert!(!app.state().library_thumbnails.contains_key(&id));
     }
 }
 
@@ -167,21 +191,21 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
         lib.photos.iter_mut().next().unwrap().1.tags = crate::model::labels(["live".to_owned()]);
         crate::test_doc::set_library(&mut doc, &lib);
         sync(&mut app, &mut doc);
-        app.begin_metadata_editor(&id);
-        app.metadata_tags_input.set_text("unsaved draft");
+        app.state().begin_metadata_editor(&id);
+        app.state().metadata_tags_input.set_text("unsaved draft");
         crate::test_doc::set_photo_edits(&mut doc, &id, Edits::default().rotated_right());
         sync(&mut app, &mut doc);
-        assert!(app.metadata_editor);
-        assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
+        assert!(app.state().metadata_editor);
+        assert_eq!(app.state().metadata_tags_input.value(), "unsaved draft");
         restore(&mut doc, &selected);
-        present(&mut app, &doc);
-        present(&mut app, &doc);
+        present(&app, &doc);
+        present(&app, &doc);
         dispatch_unmatched_action(&mut app, &mut doc);
         assert!(
-            !app.metadata_editor,
+            !app.state().metadata_editor,
             "stale draft must detach before any new input"
         );
-        app.save_metadata_editor();
+        app.state().save_metadata_editor();
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::library(&doc)
@@ -192,9 +216,9 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
                 .tags(),
             vec!["restored"]
         );
-        app.begin_metadata_editor(&id);
-        app.metadata_tags_input.set_text("next edit");
-        app.save_metadata_editor();
+        app.state().begin_metadata_editor(&id);
+        app.state().metadata_tags_input.set_text("next edit");
+        app.state().save_metadata_editor();
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::library(&doc)
@@ -217,19 +241,22 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
         library.add_photo(second);
         crate::test_doc::set_library(&mut doc, &library);
         sync(&mut app, &mut doc);
-        app.begin_metadata_editor_for_ids(vec![first, second_id.clone()]);
-        app.metadata_tags_input.set_text("unsaved batch draft");
+        app.state()
+            .begin_metadata_editor_for_ids(vec![first, second_id.clone()]);
+        app.state()
+            .metadata_tags_input
+            .set_text("unsaved batch draft");
         library.photos.iter_mut().nth(1).unwrap().1.tags =
             crate::model::labels(["remote edit".to_owned()]);
         crate::test_doc::set_library(&mut doc, &library);
-        present(&mut app, &doc);
+        present(&app, &doc);
         dispatch_unmatched_action(&mut app, &mut doc);
         assert!(
-            !app.metadata_editor,
+            !app.state().metadata_editor,
             "a changed non-first batch target invalidates the draft before input"
         );
-        app.save_metadata_editor();
-        present(&mut app, &doc);
+        app.state().save_metadata_editor();
+        present(&app, &doc);
         assert_eq!(
             crate::test_doc::library(&doc)
                 .photo(&second_id)
@@ -251,19 +278,19 @@ fn changed_targets_invalidate_metadata_and_album_drafts() {
         });
         crate::test_doc::set_library(&mut doc, &lib);
         sync(&mut app, &mut doc);
-        app.active_album = Some("photos.album:membership".into());
-        app.begin_edit_album();
-        app.album_name_input.set_text("stale draft");
+        app.state().active_album = Some("photos.album:membership".into());
+        app.state().begin_edit_album();
+        app.state().album_name_input.set_text("stale draft");
         restore(&mut doc, &selected);
-        present(&mut app, &doc);
+        present(&app, &doc);
         sync(&mut app, &mut doc);
-        assert!(!app.album_editor);
-        app.save_album_editor();
+        assert!(!app.state().album_editor);
+        app.state().save_album_editor();
         settle(&mut app, &mut doc);
         assert!(crate::test_doc::library(&doc).albums.is_empty());
-        app.begin_new_album();
-        app.album_name_input.set_text("Next album");
-        app.save_album_editor();
+        app.state().begin_new_album();
+        app.state().album_name_input.set_text("Next album");
+        app.state().save_album_editor();
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::library(&doc)
@@ -290,24 +317,28 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         )
         .unwrap();
         let invocation = tilo_actions::InvocationId::new();
-        app.answer_effect(
-            PhotosEffect::Import {
-                path: Some(path.to_string_lossy().into()),
-            },
-            invocation,
-            &crate::test_doc::library(&doc),
-        )
-        .unwrap();
+        app.state()
+            .answer_effect(
+                PhotosEffect::Import {
+                    path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
+                },
+                invocation,
+                &crate::test_doc::library(&doc),
+            )
+            .unwrap();
         empty_library(&mut doc);
         let heads = doc.get_heads();
         sync(&mut app, &mut doc);
         assert!(crate::test_doc::library(&doc).photos.is_empty());
         assert_eq!(doc.get_heads(), heads);
         assert!(matches!(
-            app.take_settled(invocation),
+            app.state().take_settled(invocation),
             Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
-        assert!(app.take_settled(invocation).is_none(), "it settles once");
+        assert!(
+            app.state().take_settled(invocation).is_none(),
+            "it settles once"
+        );
     }
 
     eprintln!(
@@ -318,9 +349,9 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
             let (mut app, mut doc, _) = setup();
             let invocation = tilo_actions::InvocationId::new();
             let (tx, rx) = std::sync::mpsc::channel();
-            app.picker = Some(rx);
-            app.resource_invocation = Some(invocation);
-            app.import_content = Some(LiveContent {
+            app.state().picker = Some(rx);
+            app.state().resource_invocation = Some(invocation);
+            app.state().import_content = Some(LiveContent {
                 library: crate::test_doc::library(&doc),
             });
             empty_library(&mut doc);
@@ -335,7 +366,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
             sync(&mut app, &mut doc);
             assert_eq!(doc.get_heads(), heads);
             assert!(crate::test_doc::library(&doc).photos.is_empty());
-            match app.take_settled(invocation).unwrap() {
+            match app.state().take_settled(invocation).unwrap() {
                 tilo_actions::InvocationUpdate::Failed {
                     invocation: id,
                     error,
@@ -361,7 +392,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
                 }
                 other => panic!("unexpected settlement {other:?}"),
             }
-            assert!(app.take_settled(invocation).is_none());
+            assert!(app.state().take_settled(invocation).is_none());
         }
     }
 
@@ -373,25 +404,29 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         let open = OpenImage::new("existing.png", 6, 4, store.put(&bytes).unwrap());
         let id = crate::test_doc::put_image(&mut doc, &open);
         let mut app = test_app_on(store);
-        app.show_photo(&id);
+        app.state().show_photo(&id);
         sync(&mut app, &mut doc);
-        assert!(app.open_image_path().is_some());
+        assert!(app.state().open_image_path().is_some());
         let invocation = tilo_actions::InvocationId::new();
         let tmp = tempfile::tempdir().unwrap();
-        app.answer_effect(
-            PhotosEffect::Import {
-                path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
-            },
-            invocation,
-            &crate::test_doc::library(&doc),
-        )
-        .unwrap();
+        app.state()
+            .answer_effect(
+                PhotosEffect::Import {
+                    path: Some(
+                        ui::tilo_resource::AbsolutePath::new(tmp.path().join("absent.png"))
+                            .unwrap(),
+                    ),
+                },
+                invocation,
+                &crate::test_doc::library(&doc),
+            )
+            .unwrap();
         sync(&mut app, &mut doc);
         assert!(matches!(
-            app.take_settled(invocation),
+            app.state().take_settled(invocation),
             Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
-        assert_eq!(app.open_photo_id(), Some(id.as_str()));
+        assert_eq!(app.state().open_photo_id(), Some(id.as_str()));
         assert_eq!(crate::test_doc::library(&doc).photos.len(), 1);
     }
 
@@ -406,7 +441,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         let selected = doc.get_heads();
         crate::test_doc::set_photo_edits(&mut doc, &id, Edits::default());
         let mut app = test_app_on(store);
-        app.show_photo(&id);
+        app.state().show_photo(&id);
         sync(&mut app, &mut doc);
         let mut taffy = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -431,7 +466,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
             )
             .unwrap();
         app.apply_layout(&taffy, node, Point::ZERO);
-        let center = app.viewer.as_ref().unwrap().get_rect().center();
+        let center = app.state().viewer.as_ref().unwrap().get_rect().center();
         let device_id = winit::event::DeviceId::dummy();
         let mut handled = false;
         let mut focus = None;
@@ -446,7 +481,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
                 button: winit::event::MouseButton::Left,
             },
         ] {
-            app.viewer.as_mut().unwrap().handle_event(
+            app.state().viewer.as_mut().unwrap().handle_event(
                 &event,
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.,
@@ -461,7 +496,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
             );
         }
         restore(&mut doc, &selected);
-        present(&mut app, &doc);
+        present(&app, &doc);
         app.handle_event(
             &winit::event::WindowEvent::CursorMoved {
                 device_id,
@@ -478,9 +513,13 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
                 taffy: &taffy,
             },
         );
-        assert_eq!(app.viewer.as_ref().unwrap().pan(), vello::kurbo::Vec2::ZERO);
-        assert!((app.viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
-        app.edit_shown(|photo| PhotoLibrary::ROTATE_RIGHT.with(photo));
+        assert_eq!(
+            app.state().viewer.as_ref().unwrap().pan(),
+            vello::kurbo::Vec2::ZERO
+        );
+        assert!((app.state().viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
+        app.state()
+            .edit_shown(|photo| PhotoLibrary::ROTATE_RIGHT.with(photo));
         sync(&mut app, &mut doc);
         assert_eq!(crate::test_doc::photo_edits(&doc, &id).rotate_quarters, 2);
     }
@@ -506,7 +545,7 @@ fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
         &crate::model::PhotoLibrary::of(photos, Vec::new()),
     );
     let mut app = test_app();
-    app.library_mode = true;
+    app.state().library_mode = true;
     sync(&mut app, &mut doc);
     (app, doc, ids)
 }
@@ -531,13 +570,16 @@ fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
     crate::test_doc::set_library(doc, &library);
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn album_membership_edits_save_selected_ids_in_browse_order() {
     eprintln!("phase album_membership_create_saves_selected_ids_in_browse_order");
     {
         let (mut app, mut doc, ids) = album_membership_fixture();
         activate_album_control(&mut app, &mut doc, "photos:album-editor:new");
-        app.album_name_input.set_text("Selected photographs");
+        app.state()
+            .album_name_input
+            .set_text("Selected photographs");
         // Select in reverse browse order; toggle a third photograph off again.
         for i in [3, 1, 0, 1] {
             activate_album_control(
@@ -559,7 +601,7 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
             [ids[0].as_str(), ids[3].as_str()],
             "an album shows its photographs in browse order"
         );
-        assert!(!app.album_editor);
+        assert!(!app.state().album_editor);
     }
 
     eprintln!("phase album_membership_rename_preserves_selected_ids_and_order");
@@ -573,7 +615,7 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
             "photos:library-album:photos.album:membership",
         );
         activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
-        app.album_name_input.set_text("Renamed album");
+        app.state().album_name_input.set_text("Renamed album");
         activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
         let library = crate::test_doc::library(&doc);
         assert_eq!(library.albums.len(), 1);
@@ -583,7 +625,7 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
             library.album_photos(album).collect::<Vec<_>>(),
             [ids[0].as_str(), ids[3].as_str()]
         );
-        assert!(!app.album_editor);
+        assert!(!app.state().album_editor);
     }
 
     eprintln!("phase album_membership_after_restore_supports_normal_edit_and_browse_order");
@@ -603,11 +645,14 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
             "photos:library-album:photos.album:membership",
         );
         activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
-        app.album_name_input.set_text("Unsaved later draft");
+        app.state().album_name_input.set_text("Unsaved later draft");
         restore(&mut doc, &selected);
-        present(&mut app, &doc);
+        present(&app, &doc);
         sync(&mut app, &mut doc);
-        assert!(!app.album_editor, "restore must detach the obsolete draft");
+        assert!(
+            !app.state().album_editor,
+            "restore must detach the obsolete draft"
+        );
         let restored = crate::test_doc::library(&doc);
         let album = restored.album("photos.album:membership").unwrap();
         assert_eq!(album.name, "Original");
@@ -617,7 +662,9 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
         );
 
         activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
-        app.album_name_input.set_text("Edited after restore");
+        app.state()
+            .album_name_input
+            .set_text("Edited after restore");
         activate_album_control(&mut app, &mut doc, "photos:library-album:all");
         for i in [3, 2] {
             activate_album_control(
@@ -635,7 +682,7 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
             [ids[0].as_str(), ids[2].as_str()]
         );
         assert_eq!(library.photos.len(), 4);
-        assert!(!app.album_editor);
+        assert!(!app.state().album_editor);
     }
 }
 
@@ -644,27 +691,30 @@ fn album_membership_edits_save_selected_ids_in_browse_order() {
 #[test]
 fn details_save_waits_for_a_change() {
     let (mut app, mut doc, id) = setup();
-    app.begin_metadata_editor(&id);
+    app.state().begin_metadata_editor(&id);
     assert!(
-        !app.metadata_draft_changed(),
+        !app.state().metadata_draft_changed(),
         "an untouched draft has nothing to save"
     );
-    app.save_metadata_editor();
+    app.state().save_metadata_editor();
     settle(&mut app, &mut doc);
     assert!(
-        app.metadata_editor,
+        app.state().metadata_editor,
         "Save does nothing while nothing changed"
     );
-    app.metadata_tags_input.set_text("trip");
-    assert!(app.metadata_draft_changed(), "an edited field is a change");
-    app.metadata_tags_input.set_text("");
+    app.state().metadata_tags_input.set_text("trip");
     assert!(
-        !app.metadata_draft_changed(),
+        app.state().metadata_draft_changed(),
+        "an edited field is a change"
+    );
+    app.state().metadata_tags_input.set_text("");
+    assert!(
+        !app.state().metadata_draft_changed(),
         "a field typed back to how it opened is not"
     );
-    app.clear_metadata_dimension(2);
+    app.state().clear_metadata_dimension(2);
     assert!(
-        app.metadata_draft_changed(),
+        app.state().metadata_draft_changed(),
         "a field marked to clear for every photo is"
     );
 }

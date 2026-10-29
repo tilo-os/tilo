@@ -44,7 +44,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::ActionOutput;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{AbsolutePath, Invoke};
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::{
@@ -1067,9 +1067,16 @@ impl GitClientApp {
             Field::Branch => self.create_new_branch(),
             Field::Open => self.open_repo_from_input(),
             Field::WorktreeBranch | Field::WorktreePath | Field::WorktreeStart => {
+                let path = match AbsolutePath::new(self.worktree_path_input.value()) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        self.last_error = Some(error.into());
+                        return;
+                    }
+                };
                 if let Some(dispatcher) = &self.dispatcher {
                     dispatcher.effect(&GitClientEffect::CreateWorktree {
-                        path: self.worktree_path_input.value().to_owned(),
+                        path,
                         branch: self.worktree_branch_input.value().to_owned(),
                         start: self.worktree_start_input.value().to_owned(),
                     });
@@ -1231,7 +1238,7 @@ impl GitClientApp {
         let effect = match hit {
             Hit::ChooseRepository => GitClientEffect::ChooseRepository,
             Hit::Panel(PanelHit::CreateWorktree) => GitClientEffect::CreateWorktree {
-                path: self.worktree_path_input.value().to_owned(),
+                path: AbsolutePath::new(self.worktree_path_input.value()).ok()?,
                 branch: self.worktree_branch_input.value().to_owned(),
                 start: self.worktree_start_input.value().to_owned(),
             },
@@ -1563,9 +1570,6 @@ impl GitClientApp {
             }
             GitClientEffect::Commit { message } => self.commit_from_effect(&message)?,
             GitClientEffect::CreateBranch { name } => {
-                if name.trim().is_empty() {
-                    return Err("branch name cannot be empty".into());
-                }
                 if self.repo_path.is_none() {
                     return Err("branch creation requires a real repository".into());
                 }
@@ -1627,9 +1631,9 @@ impl GitClientApp {
                 })
             },
             |app: &mut Self, outcome, _cx| match outcome {
-                ui::portal::PortalOutcome::Opened(path) => app
-                    .open_repository_at(&path.to_string_lossy())
-                    .map(|()| Effected::done()),
+                ui::portal::PortalOutcome::Opened(path) => {
+                    app.open_repository_at(&path).map(|()| Effected::done())
+                }
                 ui::portal::PortalOutcome::Cancelled => Ok(Effected::done()),
                 ui::portal::PortalOutcome::Failed(message) => {
                     app.last_error = Some(message.clone());
@@ -1654,7 +1658,7 @@ impl GitClientApp {
     fn start_effect_worktree(
         &mut self,
         cx: &mut EffectCx<crate::resource::GitClient, Self>,
-        path: String,
+        path: AbsolutePath,
         branch: String,
         start: String,
     ) -> EffectAnswer {
@@ -1666,13 +1670,8 @@ impl GitClientApp {
         std::thread::Builder::new()
             .name("git-worktree".into())
             .spawn(move || {
-                let result = crate::repo::create_worktree(
-                    &repository,
-                    std::path::Path::new(&path),
-                    &branch,
-                    &start,
-                )
-                .map_err(|error| format!("{error:#}"));
+                let result = crate::repo::create_worktree(&repository, &path, &branch, &start)
+                    .map_err(|error| format!("{error:#}"));
                 let _ = sender.send(result);
             })
             .map_err(|error| error.to_string())?;

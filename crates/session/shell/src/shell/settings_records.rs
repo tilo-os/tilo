@@ -13,10 +13,9 @@
 //! Their accounts and contacts are held here too, in the records Settings
 //! and Contacts keep them in: the apps the session shows open them here,
 //! one copy in the process; the session's messaging changes the accounts
-//! through their actions; and they sync with the sections to the person's
-//! other devices. So are the models their provider settings offer for an
-//! agent's run, which the session keeps from those settings for every app's
-//! model picker.
+//! through their actions; and they sync to the person's other devices. So
+//! are the models their provider settings offer for an agent's run, which
+//! the session keeps from those settings for every app's model picker.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -45,9 +44,9 @@ const UNAVAILABLE: &str = "the person's records are unavailable";
 
 /// The surface Settings' package ships: the session keeps Settings'
 /// records in its own process, so it runs them with Settings' surface, as
-/// a host runs a built-in app's. Its person records (the sections, the
-/// accounts, the contacts) are what Settings' routes to the person's room
-/// may carry, read from the surface the session runs Settings with.
+/// a host runs a built-in app's. Its person records (the accounts, the
+/// contacts) are what Settings' routes to the person's room may carry, read
+/// from the surface the session runs Settings with.
 const SETTINGS_SURFACE: &[u8] = include_bytes!("../../../../../apps/settings/surface.toml");
 
 /// The person's records the session keeps — Settings' sections, their
@@ -473,9 +472,9 @@ fn take_in<P: SharedRecord>(former: &Path, dir: &Path, person: &str) -> Result<b
     Ok(true)
 }
 
-/// The person's settings sections, kept in their records in `dir` as
-/// Settings' window keeps them, so each change is a step of theirs they
-/// undo and redo, with those records.
+/// The person's settings sections as Settings' window keeps them, so each
+/// change is a step of theirs they undo and redo, with their records in
+/// `dir` beside them.
 fn open(dir: &Path, person: String) -> Result<(SettingsRecords, PersonRecords), String> {
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let mut owners =
@@ -492,21 +491,9 @@ fn open(dir: &Path, person: String) -> Result<(SettingsRecords, PersonRecords), 
             settings_sections::APP_TITLE,
             &[settings_sections::declare],
             records.clone(),
-            this_device(),
         ),
         records,
     ))
-}
-
-/// This device, as the session's apps know it: a section kept per device
-/// is kept in a record of this device's.
-fn this_device() -> Option<String> {
-    let root = session_apps();
-    std::fs::create_dir_all(&root).ok()?;
-    ui::application::NativeProfile::open(&root, None)
-        .map(|profile| profile.device_id().to_owned())
-        .map_err(|error| tracing::warn!(%error, "this device's identity is unavailable"))
-        .ok()
 }
 
 /// The action `action` of the section `kind` (`settings.power`).
@@ -812,7 +799,7 @@ mod tests {
         let _held = super::Holder::of(&crate::shell::state::local_user_id()).unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let mut workspace = Workspace::new(WorkspaceId(7), "Settings");
         workspace.set_owner("owner");
         workspace.admit_agent("scribe", KindSet::READ);
@@ -988,7 +975,6 @@ mod tests {
             settings_sections::APP_TITLE,
             &[],
             records_in(&dir, settings_sections::APP_ID),
-            None,
         );
         let accounts = records.shared::<PersonAccounts>().unwrap();
         assert!(accounts.with(|state| {
@@ -1022,7 +1008,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let palette = settings_store::InvokingAction::action("power.lock");
         let before = settings_store::power::LOCK_MINUTES.get();
         let sooner = if before == 1 { 2 } else { 1 };
@@ -1056,7 +1042,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let palette = settings_store::InvokingAction::action("shortcuts.vim");
         super::change(
             &super::address("settings.desktop-controls", "field-edit"),
@@ -1104,7 +1090,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let zoom = || MagnifierState::from_section(&settings_store::load_section(SECTION)).zoom;
         let shortcut = settings_store::InvokingAction::action("magnifier.zoom-in");
         let mut step = serde_json::Map::new();
@@ -1131,7 +1117,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         crate::shell::device_vpn::choose("desk", true).unwrap();
         crate::shell::device_vpn::set_exit(true).unwrap();
         let section = settings_store::load_section(SECTION);

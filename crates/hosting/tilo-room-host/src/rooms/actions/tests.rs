@@ -190,9 +190,6 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     // own request confirms it.
     let owners = offered(&host, workspace, &caller(&owner)).await;
     for verb in INVITE_FAMILY.iter().chain(&[
-        governance::SET_ROLE,
-        governance::RESTRICT,
-        governance::UNRESTRICT,
         governance::UNBAN,
         governance::CALL,
         governance::REMOVE_MEMBER,
@@ -212,8 +209,9 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let granted = offered(&host, workspace, &caller(&ada)).await;
     assert_eq!(granted, INVITE_FAMILY.map(str::to_owned).to_vec());
 
-    // A Moderator is offered the moderation of members below them and
-    // naming the workspace, but no roles to hand out and no invitations.
+    // A Moderator is offered unbanning members below them, but no
+    // invitations. Roles, restrictions and the room's settings are written
+    // by a member's own device, not asked of the host.
     rooms
         .set_member_role(
             &room,
@@ -227,16 +225,7 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
         .await
         .unwrap();
     let moderator = offered(&host, workspace, &caller(&bo)).await;
-    assert_eq!(
-        moderator,
-        [
-            governance::RESTRICT,
-            governance::UNRESTRICT,
-            governance::UNBAN,
-            super::owner::RENAME,
-        ]
-        .map(str::to_owned)
-    );
+    assert_eq!(moderator, [governance::UNBAN].map(str::to_owned));
 
     // An agent governs nothing, even on the relay person's own key, and a
     // workspace that carries no governed room offers nothing.
@@ -421,7 +410,7 @@ async fn invitations_run_through_the_rooms_own_methods() {
 }
 
 #[tokio::test]
-async fn roles_follow_the_room_and_destructive_governance_waits_for_the_person() {
+async fn destructive_governance_waits_for_the_person() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
@@ -431,54 +420,18 @@ async fn roles_follow_the_room_and_destructive_governance_waits_for_the_person()
     let bo = admit(rooms, &room, &owner, 2).await;
     let person = |cert: &DeviceCert| hex::encode(cert.user_public_key);
 
-    // The owner makes Bo a Moderator through the action.
-    invoke(
-        &host,
-        workspace,
-        &caller(&owner),
-        request(
+    rooms
+        .set_member_role(
             &room,
-            governance::SET_ROLE,
-            json!({ "person": person(&bo), "role": "moderator" }),
-        ),
-    )
-    .await
-    .unwrap();
-    let members = rooms.summary(&room).await.unwrap().members;
-    assert!(
-        members
-            .iter()
-            .any(|member| member.user_public_key == bo.user_public_key
-                && member.role == MemberRole::Moderator),
-        "{members:?}"
-    );
-
-    // Bo restricts Ada, an Editor, and lifts it again.
-    let restricted = invoke(
-        &host,
-        workspace,
-        &caller(&bo),
-        request(
-            &room,
-            governance::RESTRICT,
-            json!({ "person": person(&ada), "minutes": 5 }),
-        ),
-    )
-    .await
-    .unwrap();
-    assert!(restricted["generation"].as_u64().is_some(), "{restricted}");
-    invoke(
-        &host,
-        workspace,
-        &caller(&bo),
-        request(
-            &room,
-            governance::UNRESTRICT,
-            json!({ "person": person(&ada) }),
-        ),
-    )
-    .await
-    .unwrap();
+            &owner,
+            SetMemberRoleRequest {
+                request_id: [31; 32],
+                user_public_key: bo.user_public_key,
+                role: MemberRole::Moderator,
+            },
+        )
+        .await
+        .unwrap();
 
     // Banning would remove Ada: it waits for Bo's own confirmation, which
     // a caller's word is not, and nothing changes.
@@ -521,16 +474,6 @@ async fn roles_follow_the_room_and_destructive_governance_waits_for_the_person()
         Err(ActionHostError::UnknownAction)
     );
 
-    // A Moderator hands out no roles: set-role is not theirs to see.
-    let promote = request(
-        &room,
-        governance::SET_ROLE,
-        json!({ "person": person(&ada), "role": "viewer" }),
-    );
-    assert_eq!(
-        invoke(&host, workspace, &caller(&bo), promote).await,
-        Err(ActionHostError::UnknownAction)
-    );
     relay.shutdown().await;
 }
 

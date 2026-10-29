@@ -2927,19 +2927,20 @@ impl ImagerApp {
                 ssh_keys_file,
                 home_files,
             } => {
-                let mut args = vec!["imager".into(), "--customize-image".into(), image];
+                let path = |path: ui::tilo_resource::AbsolutePath| path.to_string_lossy();
+                let mut args = vec!["imager".into(), "--customize-image".into(), path(image)];
                 for (flag, value) in [
                     ("--hostname", hostname),
                     ("--wifi-ssid", wifi_ssid),
-                    ("--wifi-psk-file", wifi_psk_file),
-                    ("--ssh-keys-file", ssh_keys_file),
+                    ("--wifi-psk-file", wifi_psk_file.map(path)),
+                    ("--ssh-keys-file", ssh_keys_file.map(path)),
                 ] {
                     if let Some(value) = value {
                         args.extend([flag.into(), value]);
                     }
                 }
-                for path in home_files {
-                    args.extend(["--home-file".into(), path]);
+                for file in home_files {
+                    args.extend(["--home-file".into(), path(file)]);
                 }
                 Ok(cx.thread(
                     move |_| {
@@ -3083,15 +3084,11 @@ impl ImagerApp {
     fn target_row(&self, target: &TargetDrive) -> LiveRow {
         let identity = target.stable_id.as_deref().unwrap_or(&target.name);
         let device = target.dev_path();
-        let mut write = ImagerEffect::Write {
+        let write = ImagerEffect::Write {
             device: device.clone(),
             confirmation: target.name.clone(),
         }
         .bound();
-        write.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
-        write.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
-            phrase: target.name.clone(),
-        };
         let write = match self.writer_refusal() {
             Err((code, reason)) => write.unavailable(code, reason),
             Ok(()) => write,

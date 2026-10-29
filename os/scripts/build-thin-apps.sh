@@ -21,6 +21,12 @@ if [ "$BUILD_RUNTIME_ONLY" = 1 ] && { [ "$BUILD_PACKAGES" != "  " ] || [ "${BUIL
 fi
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
+# The thin-dev profile is a developer session's build, never published: it
+# compiles for build speed, so the app crates keep the profile's settings
+# rather than being optimised for size in one unit (here and in
+# rustc-thin-app-wrapper.sh). Every other profile builds apps as they ship.
+optimize=size
+[ "$PROFILE" = thin-dev ] && optimize=speed
 BUILD_ROLE="${BUILD_ROLE:-apps}"
 BUILD_PHASE="${BUILD_PHASE:-all}"
 case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
@@ -44,6 +50,7 @@ features=()
 binary_crates=()
 binaries=()
 build_targets=()
+engine_targets=()
 selected_crates=()
 app_profiles=()
 # A runtime bundle's binary (apps/*/tilo-runtime.toml: the tilolang runtime,
@@ -73,9 +80,11 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; d
     # Package overrides reach both the executable and app-owned libraries.
     # They are visible to Cargo and compiler caches before the wrapper runs;
     # matching only the binary crate name misses differently named libraries.
-    app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
-                   --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
-                   --config "profile.$PROFILE.package.\"$package\".strip=\"$strip\"")
+    if [ "$optimize" = size ]; then
+        app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
+                       --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
+                       --config "profile.$PROFILE.package.\"$package\".strip=\"$strip\"")
+    fi
     features+=("$package/thin")
     if [ "$BUILD_ROLE" = home-capture ] && [ "$package" = imager ]; then
         binary=tilo-home-export
@@ -109,7 +118,19 @@ for manifest in "$REPO"/crates/runtime/engines/*/Cargo.toml; do
     features+=("$engine/thin")
     binary_crates+=("${engine//-/_}_check")
     build_targets+=(--bin "$engine-check")
+    engine_targets+=(--bin "$engine-check")
 done
+# An engine no workspace crate depends on (Settings', whose app binary calls
+# it by an unmangled name; the ad-block compiler, which the toolkit opens with
+# dlopen) is reached only through its unmangled entry points: the wrapper
+# links it exporting only those, so the code they do not reach goes too.
+entry_engines=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-version 1 --offline --locked \
+    | python3 -c '
+import json, sys
+packages = json.load(sys.stdin)["packages"]
+engines = {p["name"] for p in packages if "/crates/runtime/engines/" in p["manifest_path"].replace("\\", "/")}
+named = {d["name"] for p in packages for d in p["dependencies"] if p["name"] != d["name"]}
+print(":".join(sorted(e.replace("-", "_") for e in engines - named)))')
 [ "${#binaries[@]}" -gt 0 ] || [ "$BUILD_RUNTIME_ONLY" = 1 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
@@ -189,8 +210,9 @@ elif [[ ${RUSTC_WRAPPER-unset} != "$REPO"/tools/ci/thin-app/* ]]; then
     fi
     extra_cargo_args+=(--config 'build.rustc-wrapper="tools/ci/thin-app/sccache"')
 fi
+message_format=()
 if [ "$BUILD_PHASE" != verify ] && [ -n "${SDK_COMPILER_UNITS:-}" ]; then
-    extra_cargo_args+=(--message-format=json-render-diagnostics)
+    message_format=(--message-format=json-render-diagnostics)
     # Keep the actual unit identities on the producing machine; no runtime bytes change.
     exec 3>&1
     exec > >(tee "$SDK_COMPILER_UNITS" >&3)
@@ -211,11 +233,23 @@ if [ "$BUILD_PHASE" != verify ]; then
 # workspace crate's compiler in the workspace root, so the wrapper is named
 # through the compiler process's own working directory: one path for every
 # checkout (THIN_APP_WRAPPER, which tools/ci/thin-app/* compare against).
-"${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
-    --config "build.rustc-workspace-wrapper=\"$THIN_APP_WRAPPER\"" \
-    --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
-    "${app_profiles[@]}" ${keep_symbols[@]+"${keep_symbols[@]}"} \
-    -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
+thin_build() {
+    "${CARGO:-cargo}" build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
+        --config "build.rustc-workspace-wrapper=\"$THIN_APP_WRAPPER\"" \
+        --config "env.TILO_THIN_BIN_CRATES=\"$thin_crates\"" \
+        --config "env.TILO_THIN_OPTIMIZE=\"$optimize\"" \
+        --config "env.TILO_THIN_ENTRY_ENGINES=\"$entry_engines\"" \
+        ${app_profiles[@]+"${app_profiles[@]}"} ${keep_symbols[@]+"${keep_symbols[@]}"} \
+        -p runtime-dylib "${packages[@]}" "$@"
+}
+# The engines first, in the same graph (the same packages and features, so the
+# same units): an app whose code is its engine library (Settings) links that
+# library by name, which Cargo cannot order, since the engine depends on the
+# app's package. The second build finds them fresh and reports every unit.
+if [ "${#engine_targets[@]}" -gt 0 ]; then
+    thin_build "${engine_targets[@]}" >&2
+fi
+thin_build ${message_format[@]+"${message_format[@]}"} "${build_targets[@]}"
 fi
 if [ "$BUILD_PHASE" = build ]; then
     if [ -n "${SDK_COMPILER_UNITS:-}" ]; then
@@ -264,8 +298,22 @@ for index in "${!binaries[@]}"; do
     # carries its own static copy of the runtime (tens of MiB). Cargo silently
     # routes `<package>/thin` to a dependency when the package has one keyed by
     # its own name, so name the cause here rather than at the tapp size limit.
+    # An app run from its engine library (Settings) links the runtime through
+    # that library: its binary uses nothing of the runtime itself, so the
+    # linker keeps only the engine.
     binary_dynamic=$(dynamic_section "$TARGET_DIR/$PROFILE/$binary")
-    grep -Fq '[libruntime_dylib.so]' <<<"$binary_dynamic" || {
+    links_runtime=0
+    if grep -Fq '[libruntime_dylib.so]' <<<"$binary_dynamic"; then
+        links_runtime=1
+    else
+        while read -r engine; do
+            [ -f "$TARGET_DIR/$PROFILE/$engine" ] || continue
+            if grep -Fq '[libruntime_dylib.so]' <<<"$(dynamic_section "$TARGET_DIR/$PROFILE/$engine")"; then
+                links_runtime=1
+            fi
+        done < <(grep -Eo '\[libtilo_[a-z0-9_]+_engine\.so\]' <<<"$binary_dynamic" | tr -d '[]')
+    fi
+    (( links_runtime )) || {
         echo "thin app does not link libruntime_dylib.so: $binary" >&2
         echo "its <package>/thin feature was not applied; a dependency keyed by the package's own name claims it" >&2
         exit 1

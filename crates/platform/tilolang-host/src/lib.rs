@@ -21,6 +21,7 @@
 
 pub mod hosted;
 pub mod phrases;
+pub mod task;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
@@ -42,7 +43,35 @@ use phrases::Phrases;
 use tilolang_tilo::instance::room::RoomRecord;
 
 /// The record kind of an app's room record: every tilolang package keeps its resources in it.
-pub const RECORD_KIND: &str = "tilolang.room";
+pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
+
+/// The route an instance of `meta`'s package for `person` in `room` joins: the person's own
+/// record of the workspace for an app whose records are each member's own (`records: .own`),
+/// which only their devices are admitted to, else the workspace's record of the app.
+#[must_use]
+pub fn route_of(
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+    room: uuid::Uuid,
+    person: &str,
+) -> collaboration::RouteSpec {
+    route_under(meta, &meta.app, room, person)
+}
+
+/// [`route_of`], for the records the app keeps under `records`: its own id, or for an app
+/// renamed the earliest id it had (`InstanceRequest::records_under`), whose record it keeps using
+/// where it is.
+#[must_use]
+pub fn route_under(
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+    records: &str,
+    room: uuid::Uuid,
+    person: &str,
+) -> collaboration::RouteSpec {
+    match tilolang_tilo::own_record(meta, person) {
+        Some(record) => collaboration::RouteSpec::record(records.to_owned(), room, record),
+        None => collaboration::RouteSpec::app(records.to_owned(), room),
+    }
+}
 
 /// Why an instance the session handed over does not run.
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +83,11 @@ pub enum AdmitError {
          instance runs a module only under the id it was launched as"
     )]
     IdMismatch { launched: String, declared: String },
+    #[error(
+        "the session opened the records of `{records}` for `{app}`, an id the module does not \
+         say it had before"
+    )]
+    Records { app: String, records: String },
     #[error("the room `{0}` is no room id")]
     Room(String),
     #[error("the instance's connection could not join its room: {0}")]
@@ -75,10 +109,23 @@ struct Running {
 /// instances running meanwhile keep producing frames.
 struct Opening {
     app: String,
+    /// The window's instance.
+    instance: u64,
     stage: Stage,
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
     identity: Option<OwnedFd>,
+    /// When the host was handed the instance, and the stages it reached since, with how long
+    /// after: what an instance's launch spends in the host.
+    received: std::time::Instant,
+    reached: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Opening {
+    /// The instance reached the stage `stage` now.
+    fn reached(&mut self, stage: &'static str) {
+        self.reached.push((stage, self.received.elapsed()));
+    }
 }
 
 enum Stage {
@@ -120,6 +167,10 @@ pub struct TilolangHost {
     scope: tilo_wake::WakeScope,
     running: Vec<Running>,
     opening: Vec<Opening>,
+    /// The windows whose instances ended since the session was last told.
+    ended: Vec<u64>,
+    /// The agent task whose programs this host runs, when its author is a task.
+    task: Option<task::Task>,
 }
 
 impl TilolangHost {
@@ -139,6 +190,34 @@ impl TilolangHost {
             scope,
             running: Vec::new(),
             opening: Vec::new(),
+            ended: Vec::new(),
+            task: None,
+        }
+    }
+
+    /// Run the programs of the task the session handed over, until the door closes it.
+    ///
+    /// # Errors
+    /// The task's modules cannot be read or loaded.
+    pub fn begin_task(
+        &mut self,
+        request: &runtime_portal::tilolang_host::TaskRequest,
+        fds: runtime_portal::tilolang_host::TaskFds,
+    ) -> Result<(), String> {
+        self.task = Some(task::Task::open(request, fds)?);
+        Ok(())
+    }
+
+    /// The task's program connection, to wait on.
+    pub fn task_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.task.as_ref().map(task::Task::fd)
+    }
+
+    /// Answer what the task's door sent; the task ends when the door closed it.
+    pub fn serve_task(&mut self) {
+        if self.task.as_ref().is_some_and(|task| !task.serve()) {
+            tracing::info!("task ended: the door closed it");
+            self.task = None;
         }
     }
 
@@ -159,8 +238,13 @@ impl TilolangHost {
         let package = storage.join(app);
         let documents = package.join("documents");
         std::fs::create_dir_all(&documents)?;
+        // What was made is durable up to the storage the session granted; nothing above it is
+        // the host's, and its sandbox opens nothing there.
+        for made in [&package, storage] {
+            std::fs::File::open(made)?.sync_all()?;
+        }
         Ok(Kept {
-            documents: Rc::new(app_state::FsStore::new(&documents)),
+            documents: Rc::new(app_state::FsStore::provisioned(&documents)),
             indexes: Some(package.join("indexes")),
         })
     }
@@ -168,6 +252,11 @@ impl TilolangHost {
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
+    }
+
+    /// The instances running, to drive one.
+    pub fn instances_mut(&mut self) -> impl Iterator<Item = &mut Hosted> {
+        self.running.iter_mut().map(|running| &mut running.hosted)
     }
 
     /// How many instances are being opened.
@@ -196,7 +285,7 @@ impl TilolangHost {
         let window = Channel::from_socket(fds.window).map_err(AdmitError::Window)?;
         let (sender, decoded) = std::sync::mpsc::channel();
         let (module, len, wake) = (fds.module, request.module_len, Arc::clone(&self.wake));
-        let app = request.app.clone();
+        let (app, instance) = (request.app.clone(), request.instance);
         std::thread::Builder::new()
             .name("tilolang-module".into())
             .spawn(move || {
@@ -206,6 +295,7 @@ impl TilolangHost {
             .map_err(AdmitError::Window)?;
         self.opening.push(Opening {
             app,
+            instance,
             stage: Stage::Module {
                 request,
                 broker: fds.broker,
@@ -213,6 +303,8 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: Some(fds.identity),
+            received: std::time::Instant::now(),
+            reached: Vec::new(),
         });
         Ok(())
     }
@@ -229,6 +321,7 @@ impl TilolangHost {
     ) {
         self.opening.push(Opening {
             app: spec.app.clone(),
+            instance: spec.instance,
             stage: Stage::Joining {
                 spec,
                 bundle,
@@ -236,6 +329,8 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: None,
+            received: std::time::Instant::now(),
+            reached: Vec::new(),
         });
     }
 
@@ -262,6 +357,7 @@ impl TilolangHost {
                             return Err(AdmitError::Module("its reader ended".to_owned()));
                         }
                     };
+                    opening.reached("module");
                     opening.stage =
                         self.join(request, broker, opening.identity.as_ref(), bundle)?;
                 }
@@ -287,6 +383,7 @@ impl TilolangHost {
                         };
                         return Ok(Step::Waiting);
                     }
+                    opening.reached("joined");
                     let Some(reader) = PrimaryRead::of(&manager).map_err(AdmitError::Join)? else {
                         return self.run(opening, spec, bundle, manager, None);
                     };
@@ -315,6 +412,7 @@ impl TilolangHost {
                     return match read.try_recv() {
                         Ok(read) => {
                             let read = read.map_err(AdmitError::Join)?;
+                            opening.reached("read");
                             self.run(opening, spec, bundle, manager, Some(read))
                         }
                         Err(TryRecvError::Empty) => {
@@ -351,6 +449,18 @@ impl TilolangHost {
                 declared: bundle.meta.app,
             });
         }
+        // The record of an id the app had before, as the session names it: one the module says
+        // it had. Whether the same publisher signed both the broker checks as it admits the join.
+        let records = match &request.records_under {
+            Some(records) if !bundle.meta.previously.contains(records) => {
+                return Err(AdmitError::Records {
+                    app: request.app,
+                    records: records.clone(),
+                });
+            }
+            Some(records) => records.clone(),
+            None => request.app.clone(),
+        };
         let room = uuid::Uuid::parse_str(&request.room)
             .map_err(|_| AdmitError::Room(request.room.clone()))?;
         let identity =
@@ -360,7 +470,7 @@ impl TilolangHost {
             &collaboration::record::RecordKind::new(RECORD_KIND),
             broker,
             identity.as_fd(),
-            collaboration::RouteSpec::app(request.app.clone(), room),
+            route_under(&bundle.meta, &records, room, &request.person),
             Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
@@ -388,8 +498,16 @@ impl TilolangHost {
         // Receivers decide each change against the app's surface: its package's own, as the
         // launcher names it for a launched app.
         collaboration::app_surface::register_package(&bundle.meta.app, &bundle.surface());
+        // The records the route names: the app's own, or those of the id it had before, kept
+        // where that app kept them. The changes made there name the app's surface too.
+        let records = manager
+            .primary_route()
+            .map_or_else(|| spec.app.clone(), |joined| joined.route().app_id.clone());
+        if records != bundle.meta.app {
+            collaboration::app_surface::register_package(&records, &bundle.surface());
+        }
         let kept = self
-            .kept(&spec.app)
+            .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
         let record = RoomRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
@@ -415,6 +533,19 @@ impl TilolangHost {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
+        opening.reached("opened");
+        let stages: Vec<String> = opening
+            .reached
+            .iter()
+            .map(|(stage, after)| format!("{stage}={}", after.as_micros()))
+            .collect();
+        tracing::info!(
+            target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
+            app = opening.app,
+            instance = opening.instance,
+            stages_us = stages.join(","),
+            "tilolang instance opened"
+        );
         Ok(Step::Open(Box::new(hosted), watched))
     }
 
@@ -427,6 +558,7 @@ impl TilolangHost {
         let mut changed = false;
         let mut opening = std::mem::take(&mut self.opening);
         let mut started = Vec::new();
+        let mut ended = Vec::new();
         opening.retain_mut(|open| {
             if open
                 .window
@@ -437,6 +569,7 @@ impl TilolangHost {
                     app = open.app,
                     "an instance's window closed before it opened"
                 );
+                ended.push(open.instance);
                 changed = true;
                 return false;
             }
@@ -448,12 +581,14 @@ impl TilolangHost {
                 }
                 Err(error) => {
                     tracing::error!(app = open.app, %error, "an instance did not start");
+                    ended.push(open.instance);
                     changed = true;
                     false
                 }
             }
         });
         self.opening = opening;
+        self.ended.extend(ended);
         for (hosted, watched) in started {
             changed = true;
             self.add(hosted, Some(watched));
@@ -483,6 +618,7 @@ impl TilolangHost {
             changed |= running.hosted.turn();
         }
         let before = self.running.len();
+        let ended = &mut self.ended;
         self.running.retain_mut(|running| {
             let open = running
                 .window
@@ -495,16 +631,22 @@ impl TilolangHost {
                     instance = running.hosted.spec().instance,
                     "instance ended: its window closed"
                 );
+                ended.push(running.hosted.spec().instance);
             }
             open
         });
         changed || self.running.len() != before
     }
 
+    /// The windows whose instances ended since this was last asked: closed, or never opened.
+    pub fn take_ended(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.ended)
+    }
+
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.running.is_empty() && self.opening.is_empty()
+        self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
     }
 }
 

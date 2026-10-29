@@ -166,7 +166,7 @@ impl Sessions {
         Self::with(
             Source::Standalone,
             OpenState::Unopened,
-            RecentTarget::discover(),
+            RecentTarget::none(),
         )
     }
 
@@ -175,7 +175,7 @@ impl Sessions {
         Self::with(
             Source::Hosted { first: Some(first) },
             OpenState::Unopened,
-            RecentTarget::discover(),
+            RecentTarget::none(),
         )
     }
 
@@ -184,7 +184,7 @@ impl Sessions {
         Self::with(
             Source::Hosted { first: None },
             OpenState::Unopened,
-            RecentTarget::discover(),
+            RecentTarget::none(),
         )
     }
 
@@ -221,6 +221,11 @@ impl Sessions {
     /// The target a new tab opens on.
     pub fn default_target(&self) -> SessionTarget {
         crate::target::default_target(self.recent.load().as_ref(), self.environments_available())
+    }
+
+    /// Remember the environment opened last in `recent` from now on.
+    pub(crate) fn recent_in(&mut self, recent: RecentTarget) {
+        self.recent = recent;
     }
 
     /// Remember an environment the person opened, for the next new tab.
@@ -486,7 +491,12 @@ impl Sessions {
     }
 
     /// Grant the environment `record` a folder, read-write or read-only.
-    pub fn grant_folder(&mut self, record: &str, path: &str, writable: bool) -> Result<(), String> {
+    pub fn grant_folder(
+        &mut self,
+        record: &str,
+        path: &ui::tilo_resource::AbsolutePath,
+        writable: bool,
+    ) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
         }

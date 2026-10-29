@@ -92,6 +92,18 @@ impl CapnpBrokerState {
                 let (action, argument) = bot_invocation(command)?;
                 (WORKSPACE.into(), action, Some(argument))
             }
+            WorkspaceMembershipCommand::Member { .. } => {
+                return Err(
+                    "a change to the room's people is its person's own, made at their device"
+                        .into(),
+                );
+            }
+            WorkspaceMembershipCommand::Settings(_) => {
+                return Err(
+                    "a change to the room's settings is its person's own, made at their device"
+                        .into(),
+                );
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(
@@ -269,11 +281,14 @@ impl CapnpBrokerState {
     }
 
     /// Told whether `room`'s membership actions are published: at once when
-    /// they are, else once the broker's loop has refreshed its membership
-    /// surfaces, which this asks for. A room this device just made or joined
-    /// is published by that refresh; an app opening there right away asks
-    /// its membership of the room only then. The receiver's sender drops
-    /// with the broker, which also answers that they are not.
+    /// they are, else after the first refresh of the broker's membership
+    /// surfaces that publishes them, which this asks for. A room this device
+    /// just made or joined is published once its replica is projected here,
+    /// which may come refreshes later; an app opening there right away asks
+    /// its membership of the room only then. Told that they are not once a
+    /// refresh finds the room unpublished and not on its way
+    /// ([`crate::services::WorkspaceMemberships::membership_pending`]). The
+    /// receiver's sender drops with the broker.
     pub(crate) fn await_membership_surface(&self, room: &str) -> std::sync::mpsc::Receiver<bool> {
         let (told, published) = std::sync::mpsc::channel();
         if self.membership_published(room) {
@@ -298,14 +313,30 @@ impl CapnpBrokerState {
             .unwrap_or_default()
     }
 
-    /// Tell `waiting` whether their rooms' membership actions are published
-    /// now that the refresh they waited for ran.
+    /// Now that the refresh `waiting` waited for ran, tell those whose
+    /// rooms' membership actions it published that they are, and those
+    /// whose rooms are not on their way that they will not be; the rest
+    /// wait for the refresh that follows the room's projection.
     pub(super) fn answer_membership_surface_waiters(
         &self,
         waiting: Vec<(String, std::sync::mpsc::Sender<bool>)>,
     ) {
+        let service = self.services.workspace_memberships.as_ref();
+        let mut still = Vec::new();
         for (room, told) in waiting {
-            let _ = told.send(self.membership_published(&room));
+            if self.membership_published(&room) {
+                let _ = told.send(true);
+            } else if service.is_some_and(|service| service.membership_pending(&room)) {
+                still.push((room, told));
+            } else {
+                let _ = told.send(false);
+            }
+        }
+        if still.is_empty() {
+            return;
+        }
+        if let Ok(mut waiting) = self.membership_surface_waiters.lock() {
+            waiting.extend(still);
         }
     }
 
@@ -331,8 +362,8 @@ impl CapnpBrokerState {
                 .collect::<Vec<_>>()
         })?;
         for (room, mut actions) in rooms {
-            // A room its host stewards keeps its own membership changes
-            // here too: this device asks that host to commit them.
+            // A room its host stewards offers its membership changes here
+            // too: this device writes them itself, as in any room it holds.
             if !(service.requires_room(&room) || service.grants_authorship_at_host(&room)) {
                 continue;
             }
@@ -964,8 +995,7 @@ mod tests {
     struct DiscoveryMemberships;
 
     /// A service standing in for a room this device holds but a host
-    /// stewards: it commits nothing here and asks the host, so the room's
-    /// own membership changes are what it publishes.
+    /// stewards: the room's own membership changes are what it publishes.
     struct HostedElsewhereMemberships;
 
     impl WorkspaceMemberships for HostedElsewhereMemberships {
@@ -989,6 +1019,31 @@ mod tests {
     impl WorkspaceMemberships for DiscoveryMemberships {
         fn requires_room(&self, _: &str) -> bool {
             true
+        }
+
+        fn health(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
+            Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
+        }
+    }
+
+    /// A service standing in for a room this device has just made: held,
+    /// and published once its replica is projected, which `projected` says.
+    struct ProjectedLaterMemberships {
+        room: String,
+        projected: std::sync::atomic::AtomicBool,
+    }
+
+    impl WorkspaceMemberships for ProjectedLaterMemberships {
+        fn requires_room(&self, room: &str) -> bool {
+            room == self.room && self.projected.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn membership_pending(&self, room: &str) -> bool {
+            room == self.room
         }
 
         fn health(&self) -> Result<(), String> {
@@ -1075,7 +1130,7 @@ mod tests {
                 state.refresh_workspace_membership_services().unwrap();
                 // The room's own governance is offered, so adding and
                 // removing an agent and giving and taking back a grant are
-                // actions here, and the host is asked to commit them.
+                // actions here.
                 let mut expected = vec![
                     (WORKSPACE, "add-agent"),
                     (WORKSPACE, "grant-app-authorship"),
@@ -1168,6 +1223,61 @@ mod tests {
                     Ok(false),
                     "a room the broker publishes nothing for is told so, not left waiting"
                 );
+                drop(state);
+            })
+            .await;
+    }
+
+    /// An app opened in a room this device holds before its replica is
+    /// projected waits through the refreshes that find the room still
+    /// unpublished, and is told once the refresh after the projection
+    /// publishes it.
+    #[tokio::test]
+    async fn an_open_before_its_room_is_projected_is_told_once_the_room_is_published() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Made just now",
+                    ));
+                let room = tree.desktop.workspaces.first().unwrap().room().to_string();
+                let tree = tree.shared();
+                let service = Arc::new(ProjectedLaterMemberships {
+                    room: room.clone(),
+                    projected: std::sync::atomic::AtomicBool::new(false),
+                });
+                let state = CapnpBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(service.clone()),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                let published = state.await_membership_surface(&room);
+                state.refresh_policy_surfaces();
+                state.refresh_policy_surfaces();
+                assert!(!state.membership_published(&room));
+                assert_eq!(
+                    published.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty),
+                    "a room on its way is waited for, not refused for coming first"
+                );
+                service
+                    .projected
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                state.refresh_policy_surfaces();
+                assert_eq!(published.try_recv(), Ok(true));
                 drop(state);
             })
             .await;

@@ -64,11 +64,11 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         }
         // The fixture's governor may own workspaces, so opening projected
         // the room sealed. The barrier under test guards the one room kind
-        // whose records the owner commits: a held room whose host stewards
+        // whose records the owner commits: a held room whose host takes part in
         // no channels.
         {
             let mut tree = tree.write();
-            tree.stewarded_rooms.remove(&room);
+            tree.sealed_rooms.remove(&room);
             tree.committed_record_rooms.insert(room);
         }
         assert!(OwnerCommitService::requires_room(

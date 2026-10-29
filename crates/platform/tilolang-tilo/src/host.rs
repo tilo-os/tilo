@@ -79,6 +79,9 @@ pub(crate) struct HostInner {
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
+    /// The resource the last action planned returned, whoever invoked it, with the action:
+    /// what its invocation answers.
+    returned: RefCell<Option<(String, ResourceRef)>>,
 }
 
 thread_local! {
@@ -317,6 +320,16 @@ impl HostInner {
         planned
     }
 
+    /// What `action` returned, for its invocation's answer.
+    fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
+        *self.returned.borrow_mut() = match outcome {
+            InvokeOutcome::Done(Value::Ref(made)) => {
+                Some((action.to_owned(), ResourceRef::clone(&made.target)))
+            }
+            _ => None,
+        };
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
@@ -378,6 +391,7 @@ impl HostInner {
             .runtime
             .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
+        self.returned_by(request.action_id, &outcome);
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
                 if request.caller.is_none_or(|caller| !caller.agent) =>
@@ -507,6 +521,7 @@ impl Host {
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
             produced: RefCell::default(),
+            returned: RefCell::default(),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -549,6 +564,15 @@ impl Host {
     /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
         self.inner.runtime.set_clock(clock);
+    }
+
+    /// What the platform's phrases say in the person's language (`phrase(...)`, and what a
+    /// reference to a resource they do not hold says wherever rich text is read for them).
+    pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
+        self.inner.runtime.set_phrases(phrases);
+        self.inner
+            .store
+            .set_unshared(&self.inner.runtime.unshared());
     }
 
     /// The handle the door's closures hold.
@@ -613,6 +637,17 @@ impl Host {
         let mut produced = self.inner.produced.borrow_mut();
         match produced.as_ref() {
             Some((made_by, _)) if made_by == action => produced.take().map(|(_, made)| made),
+            _ => None,
+        }
+    }
+
+    /// The resource `action` returned when it was last planned here, for whoever invoked it,
+    /// once: what its invocation answers.
+    #[must_use]
+    pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
+        let mut returned = self.inner.returned.borrow_mut();
+        match returned.as_ref() {
+            Some((made_by, _)) if made_by == action => returned.take().map(|(_, made)| made),
             _ => None,
         }
     }
@@ -774,6 +809,88 @@ impl Host {
             fields: Vec::new(),
         };
         Ok(self.inner.store.create_with_id(&record, &id)?)
+    }
+
+    /// Run each loaded package's migrations (`migration action`) on the resources an earlier
+    /// version of it wrote: once on each resource of the migration's subject type that holds
+    /// something in a field the type now keeps `(previously)` (or, for a type without such a
+    /// field, that the migration has not run on), as an action of the package version
+    /// ([`crate::authority::migration_principal`]), which records in the same change that it
+    /// ran. Only the room's origin calls it (`Instance::set_origin`). Returns how many ran. A migration that is
+    /// refused or fails leaves its resource as it was, to be tried again the next time.
+    pub fn migrate(&self) -> usize {
+        let mut ran: usize = 0;
+        for package in self.packages() {
+            for migration in package.meta.migrations() {
+                let Some(ty) = migration
+                    .params
+                    .first()
+                    .and_then(|subject| package.meta.type_named(&subject.ty))
+                else {
+                    continue;
+                };
+                let previously: Vec<&str> = ty
+                    .fields
+                    .iter()
+                    .filter(|f| f.role.as_deref() == Some("previously"))
+                    .map(|f| f.id.as_str())
+                    .collect();
+                for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {
+                    if self
+                        .inner
+                        .store
+                        .migrated(&doc, &migration.id)
+                        .unwrap_or(true)
+                        || !self.holds_previously(&doc, &previously)
+                    {
+                        continue;
+                    }
+                    let subject = Value::resource(&ResourceRef::root(&doc, ty.id.clone()));
+                    self.inner
+                        .store
+                        .set_migrating(Some((migration.id.clone(), doc.clone())));
+                    // The package updating its own records, not the person at the window: the
+                    // change is the package version's, under the platform's migration principal.
+                    let by = crate::authority::migration_principal(
+                        &package.meta.app,
+                        &package.meta.module_hash,
+                    );
+                    let outcome = self
+                        .inner
+                        .runtime
+                        .invoke_action(&by, (migration.id.as_str(), vec![subject]));
+                    self.inner.store.set_migrating(None);
+                    match outcome {
+                        Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
+                        other => tracing::warn!(
+                            app = package.meta.app,
+                            migration = migration.name,
+                            doc,
+                            ?other,
+                            "a migration did not run"
+                        ),
+                    }
+                }
+            }
+        }
+        ran
+    }
+
+    /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
+    /// may hold what an earlier version wrote, which only the migration can tell).
+    fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
+        if previously.is_empty() {
+            return true;
+        }
+        let Ok(record) = self.inner.store.record(doc) else {
+            return false;
+        };
+        let Ok(empty) = crate::record::DynRecord::empty(record.schema()) else {
+            return false;
+        };
+        previously
+            .iter()
+            .any(|field| record.get(field) != empty.get(field))
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type.

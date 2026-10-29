@@ -209,7 +209,12 @@ impl Host for DeviceHost {
         Ok(Box::new(File(std::fs::File::open(path)?)))
     }
 
-    fn open_write(&self, path: &Path, mode: WriteMode) -> io::Result<Box<dyn Write + Send>> {
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        _run: Option<&ush_shell::Run>,
+    ) -> io::Result<Box<dyn Write + Send>> {
         let mut options = std::fs::OpenOptions::new();
         match mode {
             WriteMode::Truncate => options.write(true).create(true).truncate(true),

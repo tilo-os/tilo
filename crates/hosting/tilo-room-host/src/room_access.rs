@@ -33,21 +33,21 @@
 //! never writes: no change, commit, presence, record content, compaction,
 //! live or voice frame and no action ([`RoomOperation::Publish`] and every
 //! plane that is no read). Its devices are on no channel's roster, and
-//! without a write it cannot ask a channel's steward for access either. What
+//! without a write it cannot ask a channel's participants for access either. What
 //! members seal into a channel it opens only in a public room
 //! ([`Spectators::public`]): anyone may join that room as a guest and be
 //! admitted to its channels, so showing a visitor who only watches what a
 //! guest would read keeps nothing secret that was secret before. There the
-//! steward hands the spectator person, not each of its devices, the
+//! node hands the spectator person, not each of its devices, the
 //! channels' content keys ([`RoomOperation::ChannelReadKeys`]): enough to
 //! open, and of no use to write, since the relay takes nothing from it. A
 //! record a Read Deny withholds from anyone is never opened to spectators.
 //! A room that is not public keeps everything its members sealed from them.
 //!
 //! One plane is not a room membership at all:
-//! [`RoomOperation::StewardedChannelKeys`], the relay's own application
+//! [`RoomOperation::OwnChannelKeys`], the relay's own application
 //! endpoint (its room actions) taking the content keys of the channels the
-//! relay stewards. The relay's device is the steward of every channel of a
+//! relay takes part in. The relay's device takes part in every channel of a
 //! room it governs: it is already a member of each channel's group and holds
 //! its keys. Its room actions are an application endpoint of that same device
 //! and key, so they cannot be admitted as a second member of the group; the
@@ -55,8 +55,8 @@
 //! hands its apps their keys ([`channel_crypto::ChannelContentKeys`]). The
 //! rule, after steps 1 and 3: the keys go to the device that governs this
 //! room on this relay, in a room whose admission governance owns, and to no
-//! other device, ever. Every other device is admitted to a channel by its
-//! steward over the channel itself.
+//! other device, ever. Every other device is admitted to a channel by a
+//! participant over the channel itself.
 //!
 //! And one plane admits a device to a room's governance itself:
 //! [`RoomOperation::DelegateMembership`], a delegated agent of this relay's own
@@ -72,8 +72,8 @@
 //! device that is no agent, an agent of another user, and any room this
 //! relay does not govern are refused; nothing is admitted by membership,
 //! enrolment or federation. Being a governed member is what admits the agent
-//! to the room on the other planes and lets the room's steward admit it to
-//! the channels of its records.
+//! to the room on the other planes and lets the room's participants admit it
+//! to the channels of its records.
 //!
 //! The room's admission mode is one value, so a governed room can never be
 //! left auto-enrolling by a writer that updated one flag and not the other.
@@ -145,10 +145,10 @@ pub enum RoomOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// The device that governs and stewards the room here (the host's own
+    /// The device that governs and takes part in the room here (the host's own
     /// session or the relay's own room actions) taking the content keys of
-    /// a channel it stewards (see the module documentation).
-    StewardedChannelKeys,
+    /// a channel it takes part in (see the module documentation).
+    OwnChannelKeys,
     /// A delegated agent of this relay's user becoming a governed member of
     /// a room this relay governs (see the module documentation).
     #[cfg(any(test, feature = "agents"))]
@@ -195,7 +195,7 @@ impl RoomOperation {
             Self::ChannelReadKeys => OwnerDevice::Refuse,
             Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
             Self::State | Self::Publish | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
-            Self::StewardedChannelKeys => OwnerDevice::Refuse,
+            Self::OwnChannelKeys => OwnerDevice::Refuse,
             #[cfg(any(test, feature = "agents"))]
             Self::DelegateMembership => OwnerDevice::Refuse,
         }
@@ -249,12 +249,12 @@ pub enum DenyReason {
     #[cfg(any(test, feature = "web"))]
     SealedFromSpectators,
     /// Channel keys asked for outside the channel by a device that is no
-    /// spectator: a member is admitted to the channel by its steward.
+    /// spectator: a member is admitted to the channel by the node.
     #[cfg(any(test, feature = "web"))]
     OverTheChannel,
-    /// Channel keys asked for by a device other than the one governing and
-    /// stewarding the room on this relay.
-    NotTheSteward,
+    /// Channel keys asked for by a device other than the one governing the
+    /// room on this relay.
+    NotTheGovernor,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a room this relay does
     /// not govern.
@@ -282,10 +282,10 @@ impl DenyReason {
             }
             #[cfg(any(test, feature = "web"))]
             Self::OverTheChannel => {
-                "a member takes a channel's keys from its steward over the channel"
+                "a member takes a channel's keys from the node over the channel"
             }
-            Self::NotTheSteward => {
-                "only the device that stewards this room's channels holds their keys"
+            Self::NotTheGovernor => {
+                "only the device that governs this room here holds its channels' keys"
             }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
@@ -493,8 +493,8 @@ impl<'a> Room<'a> {
             .is_none_or(|ceiling| ceiling.contains(device))
     }
 
-    /// Whether `device` governs this room on this relay, and so stewards its
-    /// channels: governance owns the room's admission and the relay's room
+    /// Whether `device` governs this room on this relay, and so takes part in
+    /// its channels: governance owns the room's admission and the relay's room
     /// authority, bound to this room, names `device` as its governor.
     fn governed_by(&self, device: &[u8; 32]) -> bool {
         self.runtime.admission == AdmissionMode::Governed
@@ -569,12 +569,12 @@ pub(crate) fn decide_in(
     if peer.role == PeerRole::PeerRelay && !own_user {
         return Decision::Deny(DenyReason::CrossUserFederation);
     }
-    if op == RoomOperation::StewardedChannelKeys {
-        // Never by membership, enrolment or federation: only the steward.
+    if op == RoomOperation::OwnChannelKeys {
+        // Never by membership, enrolment or federation: only the governor.
         return if room.governed_by(&peer.device_public_key) {
             Decision::Admit
         } else {
-            Decision::Deny(DenyReason::NotTheSteward)
+            Decision::Deny(DenyReason::NotTheGovernor)
         };
     }
     #[cfg(any(test, feature = "agents"))]
@@ -598,7 +598,7 @@ pub(crate) fn decide_in(
     #[cfg(any(test, feature = "web"))]
     if op == RoomOperation::ChannelReadKeys {
         // Never by membership: members are admitted to a channel by its
-        // steward. A spectator, in a public room, while it holds a seat.
+        // participants. A spectator, in a public room, while it holds a seat.
         return match room
             .runtime
             .spectators
@@ -631,15 +631,8 @@ pub(crate) fn decide_in(
     if listed(room, peer, op) {
         return Decision::Admit;
     }
-    // A person's own room ([`tilo_relay_protocol::own_room`]) is theirs by
-    // its id, which their root alone derives: any device of theirs is
-    // admitted to it as an owner's device is to the relay owner's rooms, and
-    // nobody else's.
-    let own_room = tilo_relay_protocol::own_room_workspace_id_matches(
-        &peer.user_public_key,
-        room.runtime.store.workspace_id(),
-    );
-    if ((room.runtime.admission == AdmissionMode::SameOwner && own_user) || own_room)
+    if room.runtime.admission == AdmissionMode::SameOwner
+        && own_user
         && room.within_ceiling(&peer.device_public_key)
     {
         match op.owner_device() {

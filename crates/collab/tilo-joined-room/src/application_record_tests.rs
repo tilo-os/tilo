@@ -16,13 +16,25 @@ pub(crate) struct Fixture {
 }
 
 pub(crate) fn fixture() -> Fixture {
+    let key = SigningKey::from_bytes(&[92; 32]);
+    fixture_governed_by(key)
+}
+
+/// A device of the owner's that does not govern the room: another device of
+/// the same person does.
+pub(crate) fn owner_device_fixture() -> Fixture {
+    fixture_governed_by(SigningKey::from_bytes(&[94; 32]))
+}
+
+fn fixture_governed_by(governor_key: SigningKey) -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let owner = open_file(&directory.path().join("owner.json")).unwrap();
+    let root = SigningKey::from_bytes(&[91; 32]);
     let key = SigningKey::from_bytes(&[92; 32]);
-    let certificate = testing::certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Governor");
+    let certificate = testing::certificate(&root, &key, "Governor");
     let mut governor = testing::governor::TestGovernor::empty_interactive(
-        certificate.clone(),
-        key.clone(),
+        testing::certificate(&root, &governor_key, "Governor"),
+        governor_key,
         testing::ROOM,
     )
     .unwrap();

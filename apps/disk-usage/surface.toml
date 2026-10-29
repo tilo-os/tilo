@@ -5,3 +5,19 @@ kind = "disk-usage"
 label = "Disk Usage Analyzer"
 version = 1
 
+[[resources]]
+kind = "disk-usage.recent-folders"
+label = "Recent folders"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, Folders>" },
+]
+
+[[resources.verbs]]
+id = "remember"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "folder", required = true, schema = { type = "string" } },
+]
+

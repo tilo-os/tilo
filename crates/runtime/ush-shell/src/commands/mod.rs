@@ -221,6 +221,9 @@ impl Ctx<'_> {
 pub fn describe(error: &io::Error) -> String {
     match error.kind() {
         io::ErrorKind::NotFound => "No such file or directory".into(),
+        // A host's own refusal says why (a path no grant covers); the
+        // system's says only that.
+        io::ErrorKind::PermissionDenied if error.get_ref().is_some() => error.to_string(),
         io::ErrorKind::PermissionDenied => "Permission denied".into(),
         io::ErrorKind::IsADirectory => "Is a directory".into(),
         io::ErrorKind::NotADirectory => "Not a directory".into(),

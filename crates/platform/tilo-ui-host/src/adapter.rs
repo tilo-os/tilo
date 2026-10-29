@@ -100,6 +100,7 @@ impl Adapter {
                     return match fired.value {
                         Some(Prop::Text(text)) => Some(UiEvent::Edit(fired.key, text)),
                         Some(Prop::Bool(checked)) => Some(UiEvent::Toggle(fired.key, checked)),
+                        Some(Prop::Rich(rich)) => Some(UiEvent::EditRich(fired.key, rich)),
                         _ => None,
                     };
                 }
@@ -131,7 +132,9 @@ impl Adapter {
                 id: identity.clone(),
                 name: name.clone(),
             }),
-            Prop::None | Prop::List(_) | Prop::Rich(_) => return None,
+            Prop::None | Prop::List(_) | Prop::Rich(_) | Prop::Map(_) | Prop::Action(_) => {
+                return None;
+            }
         })
     }
 
@@ -284,12 +287,19 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         // person's way: the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
         (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
-        (Type::List(inner), Value::List(items)) => Prop::List(
+        (Type::List(inner) | Type::Set(inner), Value::List(items)) => Prop::List(
             items
                 .iter()
                 .map(|item| convert(item, inner, reconciler))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        (Type::Map { key, value }, Value::Map(entries)) => Prop::Map(
+            entries
+                .iter()
+                .map(|(k, v)| Some((convert(k, key, reconciler)?, convert(v, value, reconciler)?)))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        (Type::Action, Value::Action(offered)) => Prop::Action(offered.clone()),
         (Type::RichText, Value::Rich(rich)) => Prop::Rich(rich.clone()),
         _ => return None,
     })
@@ -356,6 +366,12 @@ impl Source for NodeSource<'_> {
             }),
             Type::Bool => BoundValue::Bool(Bound {
                 state: self.reconciler.flag_state(&self.node.key),
+                edits,
+                name: called,
+                path,
+            }),
+            Type::RichText => BoundValue::Rich(Bound {
+                state: self.reconciler.rich_state(&self.node.key),
                 edits,
                 name: called,
                 path,

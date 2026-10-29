@@ -1127,3 +1127,14 @@ proposal-diff-more =
 proposal-accept = Apply
 proposal-reject = Discard
 proposal-decisions = Apply this change, or discard it
+
+## Completion drawers
+completion-in-conversation = In this conversation
+completion-members = Members
+completion-no-match = No matches for “{ $query }”
+completion-results = { $count ->
+    [one] 1 result
+   *[other] { $count } results
+}
+emoji-picker-add-reaction = Add reaction
+quote-dismiss = Stop replying

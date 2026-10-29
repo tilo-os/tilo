@@ -145,6 +145,11 @@ impl Runtime {
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
             .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
+            .chain(
+                meta.at_event
+                    .iter()
+                    .map(|f| tilolang::ir::at_event_export(&f.id)),
+            )
             .chain(meta.actions.iter().flat_map(|a| {
                 a.params
                     .iter()
@@ -522,10 +527,23 @@ impl Runtime {
         *self.core.clock.borrow_mut() = Some(Box::new(clock));
     }
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. Until it is set, UTC.
+    pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
+        *self.core.zone.borrow_mut() = Some(Box::new(zone));
+    }
+
     /// What `phrase(id, ...)` reads: the platform's phrases in the person's language. Until
     /// it is set, a phrase is its id.
     pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
         *self.core.phrases.borrow_mut() = Some(Box::new(phrases));
+    }
+
+    /// What a reference to a resource the person cannot read says, in their language: the
+    /// chip's wording (`tilo_reference::embed::UNSHARED`).
+    #[must_use]
+    pub fn unshared(&self) -> String {
+        self.core.unshared()
     }
 
     /// The lenses on the resource `resource` (its id) now, as presence reports them: who, and
@@ -545,6 +563,18 @@ impl Runtime {
         if states.get(&key) != Some(&value) {
             states.set(key, value);
         }
+    }
+
+    /// The workspace's members now, from its membership, and how its grants decide who of
+    /// them reads a resource (`None`: everyone reads everything the workspace holds). What
+    /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
+    /// again whenever membership or grants change, and every view that read them runs again.
+    pub fn set_members(
+        &self,
+        members: Vec<crate::members::Member>,
+        reads: Option<Rc<crate::members::Reads>>,
+    ) {
+        self.core.set_members(members, reads);
     }
 
     /// Where settled outside effects go.

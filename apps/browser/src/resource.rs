@@ -3,17 +3,14 @@
 //! for. Bookmarking a page and turning protection off for a site are
 //! verbs; a bookmark's title and every preference are field edits at their
 //! paths. What only this window knows (the page, navigation, downloads,
-//! extensions) is published from the surface's live rows and effects; the
+//! extensions) is published from the view's live rows and effects; the
 //! visit log and address book are the person's own records
 //! ([`BrowsingHistory`](crate::history::BrowsingHistory),
 //! [`AddressBook`](crate::autofill::AddressBook)).
 
 use std::rc::Rc;
 
-use ui::framework::{
-    Command, EffectAnswer, EffectCx, Effected, LiveRow, ResourceApp, ResourceSurface, SurfaceCx,
-    ViewCx,
-};
+use ui::framework::{Command, Publishes, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{
     self, ActionCx, ActionDecl, Collection, Derived, Id, Invoke, Model, Refusal, ScopeDecl, Set,
@@ -23,7 +20,7 @@ use ui::widget::Element;
 
 use crate::BrowserWindow;
 use crate::actions::{MAX_SITE_EXCEPTIONS, normalized_bookmark_url};
-use crate::browser_widget::BrowserWidget;
+use crate::browser_widget::{BrowserWidget, PagePublication};
 use crate::browsing_mode::BrowsingMode;
 use crate::effects::BrowserEffect;
 use crate::library::{Bookmark, MAX_BOOKMARKS};
@@ -240,7 +237,7 @@ fn launch_search(arguments: &[String]) -> Option<String> {
     })
 }
 
-/// Framework app: the browser chrome is the surface over [`Browser`].
+/// Framework app: the browser window is a view of [`Browser`].
 pub struct BrowserShell;
 
 impl ResourceApp for BrowserShell {
@@ -374,170 +371,136 @@ impl ResourceApp for BrowserShell {
             dispatch.effect(&effect);
             Ok(())
         });
-        cx.surface(BrowserWindow::new(widget, focus_address))
+        browser_view(cx, BrowserWindow::new(widget, focus_address))
     }
 }
 
-impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
-    fn present(&mut self, state: &Rc<Browser>) {
-        self.present_state(state);
+/// The browser `window` as a view of the document: it follows the document,
+/// answers the browser's effects on its page, and its page's rows, bound
+/// edits and search entries are published beside the resource.
+pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> Element {
+    attach(cx, &mut window);
+    window.follow(cx.live().clone());
+    window.publish();
+    let store = window.shared();
+    cx.window_effects(BrowserWindow::effect);
+    {
+        let store = Rc::clone(&store);
+        cx.on_stage(move |scenario| store.borrow_mut().stage(scenario));
     }
-
-    fn attach(&mut self, cx: SurfaceCx<Browser>) {
-        self.attach_dispatcher(cx.dispatcher());
-        self.service_cx = Some(cx.clone());
-        // A picture of the page is content: the store keeps its bytes, and the
-        // answer names them, so the reader who can see it does. It is the
-        // store the host lent this window (`SurfaceCx::content`), not the one
-        // `tilo_resource::content::current()` answers: that answers for the
-        // wake scope entered now, and an action applying outside the window's
-        // own scope found none — so a capture was kept by a store the
-        // runtime's content service never held, and the answer's picture was
-        // an address that read back empty.
-        if let Some(content) = cx.content() {
-            self.page_mut().attach_content(content);
-        }
-        if cx.mode().is_live() {
-            if !cx.is_private()
-                && cx
-                    .me()
-                    .and_then(crate::service_sessions::identity)
-                    .is_some()
-            {
-                self.page_mut().attach_service_catalog(cx.waker());
-            }
-            // Visits and addresses are the person's own: they follow them to
-            // their other devices and never reach a collaborator. A private
-            // window keeps none.
-            // Downloads stay on this device, in its settings, as do the
-            // widths side panels are dragged to.
-            if !cx.is_private() {
-                self.attach_downloads(cx.storage().settings());
-                self.attach_side_panel_widths(cx.storage().settings());
-            }
-            if !cx.is_private()
-                && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()
-            {
-                self.attach_personal_bookmarks(bookmarks);
-            }
-            if !cx.is_private()
-                && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
-            {
-                self.attach_history(history);
-            }
-            if !cx.is_private()
-                && let Some(person) = cx.me()
-            {
-                self.page_mut()
-                    .attach_continuity(person, cx.files(), cx.waker());
-            }
-            if !cx.is_private()
-                && let Some(book) = cx.person::<crate::autofill::AddressBook>()
-            {
-                self.attach_address_book(book);
-            }
-            // The engine publishes frames and navigation from its own
-            // threads; each wakes the window so pages paint and finish
-            // loading without waiting for input.
-            let waker = cx.waker();
-            self.page_mut().attach_service_waker(waker.clone());
-            self.engine_handle()
-                .set_waker(Box::new(move || waker.wake()));
-        }
+    {
+        let store = Rc::clone(&store);
+        cx.bind_declarations(move |_| {
+            store
+                .borrow()
+                .published()
+                .map_or_else(Vec::new, |page| page.bound.clone())
+        });
     }
+    let (rows, row, edits, entries) = (
+        Rc::clone(&store),
+        Rc::clone(&store),
+        Rc::clone(&store),
+        store,
+    );
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || {
+                rows.borrow()
+                    .published()
+                    .map_or_else(Vec::new, |page| page.rows.clone())
+            })
+            // A history page or download a search hit names, past the
+            // published page of rows.
+            .live_row(move |id| row.borrow().published().and_then(|page| page.row(id)))
+            // The page row turns tracker protection on or off for its site.
+            .row_edits(move |row| {
+                edits
+                    .borrow()
+                    .published()
+                    .map_or_else(Vec::new, |page| page.row_edits(row))
+            })
+            // The person's browsing history and this device's downloads.
+            .search_entries(move || {
+                entries
+                    .borrow()
+                    .published()
+                    .map_or_else(Vec::new, PagePublication::search_entries)
+            }),
+        Box::new(window),
+    )
+}
 
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
+/// Lend `window` what it keeps from the host: the door for its edits, the
+/// content store, and in a live window the person's records, this device's
+/// settings and the engine's wakes.
+fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
+    window.attach_dispatcher(cx.dispatcher());
+    window.attach_services(
+        cx.me().and_then(crate::service_sessions::identity),
+        cx.waker(),
+    );
+    // A picture of the page is content: the store keeps its bytes, and the
+    // answer names them, so the reader who can see it does. It is the
+    // store the host lent this window (`RecordEnv::content`), not the one
+    // `tilo_resource::content::current()` answers: that answers for the
+    // wake scope entered now, and an action applying outside the window's
+    // own scope found none — so a capture was kept by a store the
+    // runtime's content service never held, and the answer's picture was
+    // an address that read back empty.
+    if let Some(content) = cx.content() {
+        window.page_mut().attach_content(content);
     }
-
-    /// Every effect acts on the window's page; one that waits (a page
-    /// loading, the engine answering) is answered once it settles.
-    fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
-        if matches!(&effect, BrowserEffect::ListServiceSessions) {
-            let waker = self
-                .service_cx
-                .as_ref()
-                .ok_or("Account custody is unavailable")?
-                .waker();
-            self.page_mut().begin_service_list(cx.reply(), waker)?;
-            return Ok(Effected::Pending);
-        }
-        if let BrowserEffect::OpenServiceSession { session_id } = &effect {
-            let source = self
-                .service_cx
-                .as_ref()
-                .ok_or("This account could not be opened")?;
-            let person = source
-                .me()
-                .and_then(crate::service_sessions::identity)
-                .ok_or("This account needs to be connected again")?;
-            let waker = source.waker();
-            self.page_mut()
-                .begin_service_session(session_id, person, waker)?;
-            return Ok(Effected::value(
-                serde_json::json!({"status":"opening", "authenticated":false}),
-            ));
-        }
-        if let BrowserEffect::RetryForgetServiceSession { session_id }
-        | BrowserEffect::ForgetServiceSession { session_id } = &effect
-        {
-            {
-                let source = self
-                    .service_cx
-                    .as_ref()
-                    .ok_or("This account could not be forgotten")?;
-                let person = source
-                    .me()
-                    .and_then(crate::service_sessions::identity)
-                    .ok_or("This account needs to be connected again")?;
-                let waker = source.waker();
-                let reply = cx.reply();
-                self.page_mut()
-                    .begin_forget_service_session(session_id, person, reply, waker)?;
-                return Ok(Effected::Pending);
-            }
-        }
-        let invocation = cx.invocation().unwrap_or_default();
-        match self.page_mut().admit(invocation, effect.operation())? {
-            Effected::Pending => {
-                let reply = cx.reply();
-                // The window keeps the answer, not a job of this effect, so
-                // the reply's own job is what hears the caller give up: a
-                // page action nobody waits for any more is stopped rather
-                // than left holding its tab.
-                cx.cancel_by(reply.progress().cancellation_signal());
-                self.page_mut().answer_later(invocation, reply);
-                Ok(Effected::Pending)
-            }
-            Effected::Done(output) => Ok(Effected::Done(output)),
-        }
+    if !cx.mode().is_live() {
+        return;
     }
-
-    fn bound_declarations(&self) -> Vec<ActionDecl<Browser>> {
-        self.page().page_declarations()
+    if !cx.is_private()
+        && cx
+            .me()
+            .and_then(crate::service_sessions::identity)
+            .is_some()
+    {
+        window.page_mut().attach_service_catalog(cx.waker());
     }
-
-    const ROW_DECLARATIONS: bool = true;
-
-    /// The page row turns tracker protection on or off for its site.
-    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Browser>> {
-        self.page().row_declarations(row)
+    // Visits and addresses are the person's own: they follow them to
+    // their other devices and never reach a collaborator. A private
+    // window keeps none.
+    // Downloads stay on this device, in its settings, as do the
+    // widths side panels are dragged to.
+    if !cx.is_private() {
+        window.attach_downloads(cx.storage().settings());
+        window.attach_side_panel_widths(cx.storage().settings());
     }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.page().live_rows()
+    if !cx.is_private()
+        && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()
+    {
+        window.attach_personal_bookmarks(bookmarks);
     }
-
-    /// A history page or download a search hit names, past the published
-    /// page of rows.
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.page().search_row(id)
+    if !cx.is_private()
+        && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
+    {
+        window.attach_history(history);
     }
-
-    /// The person's browsing history and this device's downloads.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.page().search_entries()
+    if !cx.is_private()
+        && let Some(person) = cx.me()
+    {
+        window
+            .page_mut()
+            .attach_continuity(person, cx.storage().files(), cx.waker());
     }
+    if !cx.is_private()
+        && let Some(book) = cx.person::<crate::autofill::AddressBook>()
+    {
+        window.attach_address_book(book);
+    }
+    // The engine publishes frames and navigation from its own
+    // threads; each wakes the window so pages paint and finish
+    // loading without waiting for input.
+    let waker = cx.waker();
+    window.page_mut().attach_service_waker(waker.clone());
+    window
+        .engine_handle()
+        .set_waker(Box::new(move || waker.wake()));
 }
 
 #[cfg(test)]

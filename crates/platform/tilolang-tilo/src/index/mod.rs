@@ -3,10 +3,10 @@
 //!
 //! The store reads lists, filters and the fields rows show from the index, not from the
 //! record, so opening a window costs what it shows; search and publication read the same
-//! index. It holds, per resource (a package's record, or an item in a collection of one):
+//! index. It holds, per resource (a package's record, or an item of one, by its id `doc/item`):
 //!
 //! * every field a view reads but a collection's: registers, counters, texts, sets and maps,
-//!   with the resource's type and, for an item, its order key;
+//!   with the resource's type and, for an item, the collection it is in and its order key;
 //! * each collection's items in order ([`lists`]);
 //! * per item field a filter compares (a register of a flag, a number or a text, or a
 //!   counter), a list per value of the items holding it, in the collection's order: a filter
@@ -60,7 +60,7 @@ use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 4;
+pub const FORMAT: u32 = 5;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -85,6 +85,13 @@ const COUNTS: TableDefinition<(&str, &str), u64> = TableDefinition::new("counts"
 pub const TYPE: &str = "$type";
 /// The pseudo-field holding an item's order key.
 pub const KEY: &str = "$key";
+/// The pseudo-field holding the collection an item is in: its holder and field
+/// ([`derive::in_of`]).
+pub const IN: &str = "$in";
+/// The pseudo-field of a record holding that some move of an item of it did not take effect,
+/// as it closed a cycle ([`tilolang_runtime::place`]): a move in it is derived with the whole
+/// record.
+pub const CYCLES: &str = "$cycles";
 
 const META_FORMAT: &str = "format";
 const META_SCHEMA: &str = "schema";
@@ -281,6 +288,17 @@ pub fn room_dir(base: &Path, room: &str) -> PathBuf {
         })
         .collect();
     base.join("rooms").join(name)
+}
+
+/// The directory of the indexes of the record `record` of the room `room` under `base`: the
+/// room's ([`room_dir`]) for the workspace's record of an app, and one of its own for another
+/// record (a member's own), so what one record holds is never shown as another's.
+#[must_use]
+pub fn record_dir(base: &Path, room: &str, record: Option<&str>) -> PathBuf {
+    match record {
+        None => room_dir(base, room),
+        Some(record) => room_dir(base, &format!("{room}~{record}")),
+    }
 }
 
 fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
@@ -523,13 +541,14 @@ impl std::fmt::Debug for Snapshot {
 }
 
 /// One resource as [`Snapshot::texted`] reads it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Texted {
     pub path: String,
     /// Its type, if the index holds one.
     pub ty: Option<String>,
-    /// The text values of its fields, by field id.
-    pub texts: std::collections::BTreeMap<String, String>,
+    /// The text values of its fields, by field id: texts and rich texts as stored
+    /// ([`crate::reads::text_value`]), read for a reader by whoever shows them.
+    pub texts: std::collections::BTreeMap<String, FieldValue>,
 }
 
 /// The last resource path that starts with `path/`: what a range over the resources inside
@@ -605,7 +624,7 @@ impl Snapshot {
                 if field == TYPE {
                     last.ty = Some(codec::get_text(value.value())?);
                 } else if !field.starts_with('$')
-                    && let Some(text) = crate::reads::text_of(codec::get_value(value.value())?)
+                    && let Some(text) = crate::reads::text_value(codec::get_value(value.value())?)
                 {
                     last.texts.insert(field.to_owned(), text);
                 }

@@ -117,7 +117,7 @@ def runtime_version(root=ROOT):
     require(reference.group(1) == 'tilo-runtime/' + version, 'engine runtime reference differs')
     manifest = tomllib.loads((root / 'apps/browser/tilo-app.toml').read_text())
     require(manifest['package']['optional-runtimes'] == ['tilo-runtime/' + version],
-            'Browser optional runtime differs')
+            'Browser engine runtime differs')
     recipe = (root / 'os/Containerfile').read_text()
     require(re.findall(r'^ARG CHROMIUM_RUNTIME_VERSION=(\S+)$', recipe, re.MULTILINE) == [version],
             'OS engine runtime differs')

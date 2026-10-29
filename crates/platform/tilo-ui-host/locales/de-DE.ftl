@@ -25,10 +25,17 @@ tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
 tilolang-empty = Noch nichts hier
-tilolang-edited = Zuletzt bearbeitet
-tilolang-edited-by = Bearbeitet von
+rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren
 tilolang-more = Weitere Aktionen
 tilolang-undo = Rückgängig
 tilolang-did = { $action }: { $title }
+tilolang-replying-to = Antwort an
+tilolang-thread-replies = { $count ->
+    [one] 1 Antwort
+   *[other] { $count } Antworten
+}
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

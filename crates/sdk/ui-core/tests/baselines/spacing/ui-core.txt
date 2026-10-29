@@ -23,6 +23,7 @@ crates/sdk/ui-core/src/widget/filter_menu.rs pixel_const 4
 crates/sdk/ui-core/src/widget/floating_window.rs pixel_const 3
 crates/sdk/ui-core/src/widget/gauge.rs pixel_const 1
 crates/sdk/ui-core/src/widget/group_row.rs pixel_const 1
+crates/sdk/ui-core/src/widget/group_row_canvas.rs pixel_const 1
 crates/sdk/ui-core/src/widget/group_row_hint_places.rs pixel_const 3
 crates/sdk/ui-core/src/widget/image_viewer.rs pixel_const 1
 crates/sdk/ui-core/src/widget/input_hint.rs pixel_const 4

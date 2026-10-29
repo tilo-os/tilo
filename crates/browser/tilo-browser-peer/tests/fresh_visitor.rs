@@ -1,10 +1,10 @@
 //! Visitors who arrive one after another in a Lounge whose host governs it
-//! and stewards its channels. The first visitor's page opens the room's
-//! records, so the host's steward opens their channels; a visitor who comes
+//! and takes part in its channels. The first visitor's page opens the room's
+//! records, so the host opens their channels; a visitor who comes
 //! later is handed the room's whole history under those channels and must
 //! find nothing in it written in the clear: the host writes nothing to a
 //! room whose records are sealed channels, not even the empty shared
-//! desktop a room it does not steward starts with.
+//! desktop a room whose channels it takes no part in starts with.
 
 #![allow(
     clippy::unwrap_used,
@@ -48,7 +48,7 @@ fn gather(page: &PeerHandle, notes: &mut Vec<Vec<u8>>, refused: &mut Vec<String>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_later_visitor_finds_nothing_in_the_clear_in_a_stewarded_lounge() {
+async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(
         &alice,
@@ -101,7 +101,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_stewarded_lounge() {
     let [carol, dave] = [&pages[0], &pages[1]];
 
     // Carol writes the room's welcome note; it goes out sealed once the
-    // host's steward admitted her to its channel.
+    // host admitted her to its channel.
     let note = b"welcome to the lounge".to_vec();
     carol
         .publish(welcome.clone(), &DocumentMutation::Snapshot(note.clone()))

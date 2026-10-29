@@ -440,6 +440,7 @@ fn pan_layers(size: (u32, u32), scroll_x: u32) -> crate::shell::frame::FrameCach
             dest_w: size.0,
             dest_h: size.1.saturating_mul(2).checked_div(3).unwrap_or(0),
             scroll_x,
+            scroll_y: 0,
         }],
         generation: 1,
         chrome_damage: None,
@@ -481,7 +482,7 @@ fn a_turned_calibrated_or_hdr_output_composites_a_strip_pan_from_its_layers() {
             let mut shown = Vec::new();
             for (revision, scroll_x) in [(1, 0), (2, 7)] {
                 let cache = pan_layers(size, scroll_x);
-                let scene = crate::shell::render::strip_layers::compose(&cache);
+                let scene = ui::strip_layers::compose(&cache);
                 let (texture, _) = paint_output_offscreen_with(
                     &mut layered,
                     (&scene, Some(&cache)),
@@ -496,16 +497,13 @@ fn a_turned_calibrated_or_hdr_output_composites_a_strip_pan_from_its_layers() {
                     .unwrap_or_else(|| panic!("{label}: the frame came as layers"));
                 if revision == 2 {
                     assert!(
-                        matches!(
-                            work.workspace,
-                            crate::shell::render::strip_layers::WorkspaceWork::Pan { .. }
-                        ),
+                        matches!(work.workspace, ui::strip_layers::WorkspaceWork::Pan { .. }),
                         "{label}: the pan copies the strip ({work:?})"
                     );
                 }
             }
             let cache = pan_layers(size, 7);
-            let scene = crate::shell::render::strip_layers::compose(&cache);
+            let scene = ui::strip_layers::compose(&cache);
             let (texture, _) = paint_output_offscreen_with(
                 &mut rendered,
                 (&scene, None),

@@ -97,11 +97,13 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
 }
 
 /// The collection an item resource (written as [`crate::value::ResourceRef::id_string`]) is
-/// in: its parent resource and the collection's field.
-fn item_of(resource: &str) -> Option<(&str, &str)> {
-    let (parent, step) = resource.rsplit_once('/')?;
-    let (field, _) = step.split_once(':')?;
-    Some((parent, field))
+/// in, as the store has it: its holder (written the same way) and the collection's field, and
+/// the item's id.
+fn item_in(core: &Core, resource: &str) -> Option<(String, String, String)> {
+    let at = crate::value::ResourceRef::parse_id(resource, String::new())?;
+    let item = at.item.clone()?;
+    let (holder, field) = core.store.borrow().container(&at).ok()??;
+    Some((holder.id_string(), field, item))
 }
 
 /// Which boundaries read what.
@@ -272,7 +274,39 @@ enum Read {
 struct Pending {
     holder: BoundId,
     rows: Rc<LoopRows>,
-    splices: Vec<Splice>,
+    steps: Steps,
+}
+
+/// `pending`, the items several changes moved in one query's rows taken as one step: where each
+/// was is read from the listing the rows stand for, and where it is from the listing now, so
+/// the changes between are one.
+fn coalesce_moved(pending: Vec<Pending>) -> Vec<Pending> {
+    let mut out: Vec<Pending> = Vec::with_capacity(pending.len());
+    for step in pending {
+        if let Steps::Moved(ids) = &step.steps
+            && let Some(Steps::Moved(held)) = out
+                .iter_mut()
+                .find(|held| {
+                    Rc::ptr_eq(&held.rows, &step.rows) && matches!(held.steps, Steps::Moved(_))
+                })
+                .map(|held| &mut held.steps)
+        {
+            held.extend(ids.iter().cloned());
+            continue;
+        }
+        out.push(step);
+    }
+    out
+}
+
+/// What one change did to the listing a loop's rows are made of.
+enum Steps {
+    /// The collection's steps, the rows being its items.
+    Splices(Vec<Splice>),
+    /// The items that came, went or moved in a query of the collection (filtered or sorted),
+    /// whose rows are a virtual list's: the store says where each was and where it is
+    /// ([`crate::store::moved_steps`]), and the others keep their order.
+    Moved(BTreeSet<String>),
 }
 
 /// What a change reaches: the boundaries to re-run, and the steps the rows of loops take.
@@ -434,13 +468,24 @@ impl Live {
                 for rows in held.filter(|rows| rows.coll.field == field) {
                     match change.listing(key) {
                         Some([]) => {}
-                        // The steps are the collection's; a filtered one's rows are not its
-                        // items, and are built again by their boundary.
                         Some(splices) if key.field != ANY_FIELD && !rows.coll.derived() => {
                             reach.steps.push(Pending {
                                 holder: id,
                                 rows: Rc::clone(rows),
-                                splices: splices.to_vec(),
+                                steps: Steps::Splices(splices.to_vec()),
+                            });
+                        }
+                        // The steps are the collection's; a filtered or sorted one's rows are
+                        // not its items. A virtual list's find where the items the steps name
+                        // are in the query; others are built again by their boundary.
+                        Some(splices)
+                            if key.field != ANY_FIELD && self.lists.contains_key(&rows.parent) =>
+                        {
+                            let moved = splices.iter().map(|s| s.item().to_owned()).collect();
+                            reach.steps.push(Pending {
+                                holder: id,
+                                rows: Rc::clone(rows),
+                                steps: Steps::Moved(moved),
                             });
                         }
                         _ => reach.hit.push(id),
@@ -448,16 +493,26 @@ impl Live {
                 }
             }
             // A field of an item of a collection decides whether the item is in a filtered
-            // view of it: the readers of filtered views of the item's collection look again.
-            if let Some((parent, coll)) = item_of(&key.resource) {
+            // view of it, and where in a sorted one: the readers of those views look again,
+            // and the rows of a virtual list over one find where the item is now.
+            if let Some((parent, coll, item)) = item_in(core, &key.resource) {
+                let (parent, coll) = (parent.as_str(), coll.as_str());
                 self.reach_colls(core, parent, coll, true, &mut reach);
                 for (id, field) in self.index.loop_holders(parent, coll) {
                     let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
-                    if held
+                    for rows in held
                         .filter(|rows| rows.coll.field == field)
-                        .any(|rows| rows.coll.reads_field(&key.field))
+                        .filter(|rows| rows.coll.reads_field(&key.field))
                     {
-                        reach.hit.push(id);
+                        if rows.coll.derived() && self.lists.contains_key(&rows.parent) {
+                            reach.steps.push(Pending {
+                                holder: id,
+                                rows: Rc::clone(rows),
+                                steps: Steps::Moved(BTreeSet::from([item.clone()])),
+                            });
+                        } else {
+                            reach.hit.push(id);
+                        }
                     }
                 }
             }
@@ -929,7 +984,7 @@ impl Live {
         core: &Rc<Core>,
         patches: &mut Vec<Patch>,
     ) -> Result<(), RuntimeError> {
-        let pending = std::mem::take(&mut self.pending);
+        let pending = coalesce_moved(std::mem::take(&mut self.pending));
         let mut followed: Vec<(BoundId, Rc<LoopRows>)> = Vec::new();
         for step in pending {
             let held = self
@@ -980,9 +1035,12 @@ impl Live {
         let Some(at) = self.node_path_in(step.holder, &rows.parent) else {
             return Ok(false);
         };
+        let Steps::Splices(step_splices) = &step.steps else {
+            return Ok(false);
+        };
         let parent = self.keys_at(&at);
         let mut from = usize::MAX;
-        let mut splices = step.splices.iter().peekable();
+        let mut splices = step_splices.iter().peekable();
         while let Some(splice) = splices.next() {
             let patch = match splice {
                 // A removal and an insertion of the same item: the row moves, kept as it is.
@@ -1041,7 +1099,7 @@ impl Live {
             patches.push(patch);
         }
         if from != usize::MAX {
-            self.renumber_rows(&at, rows, from, step.splices.len());
+            self.renumber_rows(&at, rows, from, step_splices.len());
         }
         Ok(true)
     }

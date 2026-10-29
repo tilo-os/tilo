@@ -313,7 +313,7 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
     });
 
     // The collaborator leaves: its session ends, and the owner takes them
-    // out of the room at its host.
+    // out of the room.
     let second_id = second.local_peer_id.to_string();
     drop(second);
     first_tree.write().request_governance(
@@ -469,13 +469,13 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
     drop(net);
 }
 
-/// A desktop governs the room it hosts through its own host's in-process
-/// caller, as an endpoint cannot dial itself: changing a collaborator's
-/// role and then removing them are the host's room governance actions, and
-/// both reach the room's admitted document here.
+/// A desktop changes the membership of the room it hosts as it changes any
+/// room's: it writes a collaborator's new role, and then their removal,
+/// into its own replica, and its host takes each in as the room's next
+/// generation, which reaches the room's admitted document here.
 #[test]
 #[serial_test::serial]
-fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
+fn a_room_hosted_here_takes_in_the_membership_its_device_writes() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[48; 32]);
@@ -547,27 +547,27 @@ fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
     });
 
     first
-        .ask_governor(
+        .write_governance(
             room,
             GovernanceRequest::Policy(tilo_action_policy::Change::SetRole {
                 person: collaborator.clone(),
                 role: tilo_action_policy::Role::Commenter,
             }),
         )
-        .expect("this device's host changes the collaborator's role");
+        .expect("this device changes the collaborator's role");
     until("the role change to reach the room's document here", || {
         first.tick();
         (role_of(&first_tree) == Some(tilo_action_policy::Role::Commenter)).then_some(())
     });
     drop(second);
     first
-        .ask_governor(
+        .write_governance(
             room,
             GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
                 person: collaborator.clone(),
             }),
         )
-        .expect("this device's host removes the collaborator");
+        .expect("this device removes the collaborator");
     until("the removal to reach the room's document here", || {
         first.tick();
         role_of(&first_tree).is_none().then_some(())
@@ -580,9 +580,9 @@ fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
 }
 
 /// A rename made on a desktop of a room its own host holds, with the relays
-/// down and nobody else to reach, is the host's room governance action,
-/// asked through its in-process caller: the room's admitted document here
-/// carries the new name, and nothing waits.
+/// down and nobody else to reach, is written by this device into its
+/// replica: the room's admitted document here carries the new name, and
+/// nothing waits.
 #[test]
 #[serial_test::serial]
 fn a_rename_of_a_room_hosted_here_applies_with_the_relays_down() {

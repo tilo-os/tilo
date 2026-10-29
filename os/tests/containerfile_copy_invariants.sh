@@ -267,6 +267,10 @@ containerfile="$repo/os/Containerfile"
 # The network-answers helper, search's one door to the network for exchange
 # rates, is installed by its net-answers component at
 # /usr/libexec/tilo-net-answers: one payload row.
+# The session audio helper the compositor starts is installed by its
+# audio-service component at /usr/libexec/tilo-audio: one payload row.
+# The messaging service the compositor starts is installed by its
+# messaging-service component at /usr/libexec/tilo-messaging: one payload row.
 # tilo-runtime-resident.service, which keeps the shared app runtime's
 # libraries in memory, is a deliberate addition, and so are its user units
 # (tilo-runtime-resident.service and .path), which keep the runtimes a person
@@ -322,9 +326,7 @@ containerfile="$repo/os/Containerfile"
 # The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
 # take their authentication from it ride the existing PAM COPY: three payload
 # rows.
-# The 93tilo-boot-face dracut module, which carries the login screen's face
-# into the initramfs for the boot screen, is one payload row with a COPY of its
-# own. The separate COPY of fex-emulator.json and fex-graphics-provider.json is
+# The separate COPY of fex-emulator.json and fex-graphics-provider.json is
 # gone: the COPY of os/usr/share/tilo/windows/ already installs both, so their
 # two file rows leave the contract while the installed files are unchanged.
 # What a build's own keys sign (the runtimes' bundle.toml and publisher keys,
@@ -335,8 +337,11 @@ containerfile="$repo/os/Containerfile"
 # The 94tilo-greeter dracut module, which carries the greeter into the
 # initramfs as the boot's sign-in screen, rides the rollback files with the
 # dracut modules beside it, and the greeter's initramfs build (the boot-greeter
-# component) with the component files.
-expected_contract=fdd552cc7966e788dc40b643dcd16adee5119e6d7f35364cfafbf2ec4e1a2b03
+# component) with the component files. With the greeter as the sign-in screen,
+# the 93tilo-boot-face module, which carried the login screen's face into the
+# initramfs for Plymouth's sign-in screen, and its row with a COPY of its own
+# are gone.
+expected_contract=755710d35f5021794189c797341d70dc8938c26f4cd03a894b43d5c5a32045c6
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

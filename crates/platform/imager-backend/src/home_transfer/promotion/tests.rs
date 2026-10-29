@@ -5,7 +5,7 @@ use crate::{
 };
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt, symlink};
 fn fixture() -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_support::qualified_tempdir();
     for path in [
         "original",
         "quarantine-parent",
@@ -250,45 +250,6 @@ fn interrupted_readonly_merge_parent_is_restored_before_receipt_replay() {
     for path in [original.join(".config"), quarantine.join(".config")] {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-}
-
-#[test]
-fn recovery_journal_cannot_bless_new_files_outside_completed_home_receipts() {
-    let root = fixture();
-    let source = root.path().join("original");
-    std::fs::write(source.join("document"), b"original document").unwrap();
-    let quarantine = copy(root.path());
-    let completed = home_transfer::HomeReview::recover(
-        &source,
-        &quarantine,
-        &root.path().join("journals/copy"),
-    )
-    .unwrap();
-    std::fs::write(quarantine.join("unreviewed"), b"added after copy").unwrap();
-    let journal = root.path().join("journals/adoption");
-    let promotion =
-        PromotionReview::review(&quarantine, &root.path().join("target"), &journal).unwrap();
-    promotion.move_one_for_test(Path::new("document")).unwrap();
-    let renewed =
-        PromotionReview::recover(&quarantine, &root.path().join("target"), &journal).unwrap();
-    assert!(
-        completed
-            .verify_adoption(&renewed.witness().unwrap())
-            .is_err()
-    );
-    assert!(
-        completed
-            .verify_adoption_after_applications(&renewed.witness().unwrap())
-            .is_err()
-    );
-    assert_eq!(
-        std::fs::read(source.join("document")).unwrap(),
-        b"original document"
-    );
-    assert_eq!(
-        std::fs::read(quarantine.join("unreviewed")).unwrap(),
-        b"added after copy"
-    );
 }
 
 #[test]

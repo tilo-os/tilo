@@ -1615,14 +1615,14 @@ impl SlidesApp {
     /// the UI thread and lands as one action, one undo step.
     fn open_presentation(
         &self,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut EffectCx<DeckRecord, Self>,
     ) -> Effected {
         match path {
             Some(path) => {
                 let content = self.content.clone();
                 cx.thread(
-                    move |_| load_presentation_from_path(std::path::Path::new(&path), &content),
+                    move |_| load_presentation_from_path(&path, &content),
                     |app: &mut Self, loaded, cx| app.finish_open(loaded, cx),
                 )
             }
@@ -1670,7 +1670,7 @@ impl SlidesApp {
     /// host's chooser. It is written off the UI thread.
     fn save_presentation(
         &mut self,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut EffectCx<DeckRecord, Self>,
     ) -> EffectAnswer {
         if !actions::deck_within_aggregate_limits(&self.deck) {
@@ -1683,9 +1683,7 @@ impl SlidesApp {
         Ok(match path {
             Some(path) => {
                 cx.thread(
-                    move |_| {
-                        save_presentation_to_path(&deck, std::path::Path::new(&path), &content)
-                    },
+                    move |_| save_presentation_to_path(&deck, &path, &content),
                     // Saving where the deck lives says nothing; only a
                     // failure is news.
                     move |app: &mut Self, saved, _| app.finish_save(saved.map(|()| true)),

@@ -17,6 +17,7 @@
 //! there are no closures at run time. Every error found is reported, not only the first
 //! ([`crate::diag`]).
 
+mod agentq;
 mod boundary;
 mod call;
 mod component;
@@ -91,6 +92,9 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
+    /// The role of the action being checked (`primary`, `destructive`, `migration`): a
+    /// migration reads `(previously)` fields.
+    role: Option<String>,
     /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
     program: bool,
     /// Where the UI being lowered stands.
@@ -114,6 +118,9 @@ struct FnState {
     prefix: String,
     /// The templates being expanded, outermost first.
     expanding: Vec<String>,
+    /// The resource the view being lowered shows: its first parameter, when that is one. What
+    /// the system's parts of its controls are about (a rich input's `@` drawer).
+    subject: Option<(LocalId, Ty)>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -158,6 +165,9 @@ pub(crate) struct Checker<'a> {
     synth_base: usize,
     /// The view state templates declared where they expanded, by the view's id.
     states: Vec<(String, crate::resolve::StateInfo)>,
+    /// The arguments computed from view state made so far ([`ir::AtEventFn`]); their
+    /// functions follow the row views'.
+    at_event: Vec<(ir::Func, ir::AtEventFn)>,
 }
 
 /// What a checked agent block evaluates to.
@@ -184,6 +194,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         synth: Vec::new(),
         synth_base: declared,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -241,10 +252,16 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
     }
     c.check_proposals(module);
     let mut views = Vec::new();
+    let mut at_event = Vec::new();
     if funcs.len() == c.synth_base {
         for (f, v) in std::mem::take(&mut c.synth) {
             funcs.push(f);
             views.push(v);
+        }
+        for (f, mut a) in std::mem::take(&mut c.at_event) {
+            a.func = funcs.len();
+            funcs.push(f);
+            at_event.push(a);
         }
     } else if c.diags.is_empty() {
         c.err(
@@ -257,6 +274,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         funcs,
         views,
         states: c.states,
+        at_event,
     }
 }
 
@@ -269,6 +287,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     let ex = c.expr(e, None);
@@ -284,6 +303,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             funcs: vec![f],
             views: Vec::new(),
             states: Vec::new(),
+            at_event: Vec::new(),
         },
         ty,
     }
@@ -298,6 +318,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -307,6 +328,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             funcs: vec![f],
             views: Vec::new(),
             states: Vec::new(),
+            at_event: Vec::new(),
         },
         ty: Ty::View,
     }
@@ -419,6 +441,7 @@ impl Checker<'_> {
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
         }
         self.st.scenario = c.scenario;
+        self.st.role.clone_from(&c.present.role);
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {
             // A body that ends in an expression returns its value.
@@ -464,6 +487,11 @@ impl Checker<'_> {
 
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
+        self.st.subject = c
+            .params
+            .first()
+            .and_then(|p| self.lookup(&p.name))
+            .filter(|(_, ty)| matches!(ty, Ty::Record(_)));
         let rest = self.view_state(&c.name, &v.body);
         let env = self.env;
         let row_of = env
@@ -921,6 +949,35 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        if f.role.as_deref() == Some("previously") && self.st.role.as_deref() != Some("migration") {
+            self.err("E115", field.span, format!("`{}` is what `{}` held previously: nothing writes it any more, and only a `migration action` reads it; write where the type keeps it now", f.name, key.name));
+            let _ = self.expr(value, None);
+            return;
+        }
+        if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
+            && let Some(of) = kind.field(&field.name)
+            && !of.people
+            && !self.st.scenario
+        {
+            self.err(
+                "E113",
+                field.span,
+                format!(
+                    "`{}` comes from the service (`{}`): only it writes it, so a refresh never undoes what someone did; people change {}",
+                    field.name,
+                    kind.name,
+                    {
+                        let theirs: Vec<&str> =
+                            kind.fields.iter().filter(|f| f.people).map(|f| f.name).collect();
+                        if theirs.is_empty() { "none of its fields".to_owned() } else { theirs.join(", ") }
+                    }
+                ),
+            );
+        }
+        if self.st.program {
+            self.program_edit(base, &key, &f, op, value, span);
+            return;
+        }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
             self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it", key.name, f.name));

@@ -310,6 +310,19 @@ impl<R: Resource> Live<R> {
         self.inner.borrow().loads()
     }
 
+    /// The state, when it changed or read more since `seen` (a window's
+    /// record of what it last showed, `None` before the first time), which
+    /// it updates: what a window built over a view shows of the document it
+    /// follows.
+    pub fn changed_since(&self, seen: &mut Option<(u64, u64)>) -> Option<Rc<R::State>> {
+        let held = (self.revision(), self.loads());
+        if *seen == Some(held) {
+            return None;
+        }
+        *seen = Some(held);
+        Some(self.get())
+    }
+
     /// Whether the state is `doc` as it stands: no change arrived since the
     /// framework last synced it.
     pub fn follows(&self, doc: &Doc) -> bool {
@@ -327,6 +340,14 @@ impl<R: Resource> Live<R> {
         R::State: Clone,
     {
         self.inner.borrow_mut().demand(doc, demand)
+    }
+
+    /// Take `state` as the state now, read elsewhere than from a document
+    /// the framework syncs (a settings section, as the settings document
+    /// holds it): everything bound to it takes it again.
+    pub(crate) fn replace(&self, state: R::State) {
+        self.inner.borrow_mut().replace(state);
+        self.changes.borrow_mut().note(Delta::everything());
     }
 
     /// Ask everything bound to the state to take it again, unchanged. After

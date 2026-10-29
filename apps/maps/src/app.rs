@@ -71,7 +71,6 @@ mod nav_surface;
 mod offline;
 mod places;
 mod places_panel;
-mod resource_surface;
 mod results;
 mod route;
 mod sheets;
@@ -79,6 +78,11 @@ mod sheets;
 mod stage;
 
 mod state;
+mod window;
+
+#[cfg(test)]
+use window::MapWindow;
+pub(crate) use window::window;
 
 // Geometry comes from the theme: the window margin is `s4`, the gap between
 // floating elements `s3`, the panel the list-panel width, the controls the
@@ -223,12 +227,15 @@ pub struct MapsApp {
 
     /// The framework's door for the map's edits (save a place, clear the
     /// route): one undo step each, replayed byte-identically on peers — the
-    /// same path a Ctrl+K palette dispatch takes. `None` until the surface is
-    /// attached; an unattached map only shows its edits.
+    /// same path a Ctrl+K palette dispatch takes. `None` until the view
+    /// attaches it; an unattached map only shows its edits.
     dispatch: Option<ui::framework::Dispatcher<Workspace>>,
-    /// This device's offline areas, as stored; `None` when the map has no
-    /// host to keep them.
-    offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
+    /// The offline areas record and this device's id; `None` when the map
+    /// has no host to keep them.
+    offline_areas: Option<(
+        ui::framework::PersonRecord<crate::offline_areas::OfflineAreas>,
+        String,
+    )>,
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
@@ -572,7 +579,6 @@ impl FloatingSurfaceProvider for MapsApp {
 impl Widget for MapsApp {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
@@ -1195,15 +1201,6 @@ impl ui::widget::controls::ActionControls for MapsApp {
     }
 }
 
-/// The map is the window's header row: the History control the host offers
-/// heads the map control column, so the window draws no History bar above
-/// the map.
-impl ui::widget::WindowHeader for MapsApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        self.history.set_control(control);
-        self.map_controls.set_history(control);
-    }
-}
 /// A location request answered by a recording host with `outcome` — the
 /// production request path, without the device's location service.
 #[cfg(test)]

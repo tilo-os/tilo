@@ -13,10 +13,10 @@
 
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, WindowToolbar};
 
-use super::PlayerApp;
+use super::PlayerState;
 use crate::actions::VideoEffect;
 
-impl PlayerApp {
+impl PlayerState {
     /// The window bar's slots for what the player shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         WindowToolbar {

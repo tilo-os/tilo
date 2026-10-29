@@ -1,10 +1,10 @@
-//! Canonical governor-signed agent admission, never a desktop-cache grant.
+//! Membership changes this device writes itself: its people, their roles,
+//! the room's grants and its agents.
 use crate::{NativeWorkspaceOwner, RoomId};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_user_identity::DeviceCert;
 
 const MAX_COMMANDS: usize = 4096;
 
@@ -14,20 +14,25 @@ pub(crate) struct StoredMembershipReceipt {
 }
 
 impl NativeWorkspaceOwner {
-    /// Commit a typed membership command with retained original person
-    /// evidence and the owning host's out-of-band governor signing custody.
-    /// Exact retries converge; changed invocation reuse never changes policy.
+    /// Commit a typed membership command as this device, signed with its
+    /// own `key`: the room's admission decides it against the caller's
+    /// grants, here and on every device that receives it. A device that
+    /// governs the room publishes its governance as a checkpoint; any
+    /// other member publishes the changes it made, which the room's host
+    /// admits as it admits every member's. Exact retries converge; changed
+    /// invocation reuse never changes policy.
     ///
     /// # Errors
-    /// Refuses changed authority, non-admin callers, unsupported commands,
-    /// exhausted custody, invalid signatures or failed durable publication.
+    /// Refuses a key that is not this device's, a change the caller's
+    /// grants do not allow, a change only the room's governor commits,
+    /// exhausted custody or failed durable publication.
     pub fn commit_workspace_membership_command(
         &self,
         request: OwnerCommitRequest,
-        governor: &DeviceCert,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<OwnerCommitReceipt, String> {
+        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
         let binding = request.binding()?;
         let room = RoomId::parse(&request.room).ok_or("invalid native membership room")?;
         let CommitOperation::WorkspaceMembershipCommand {
@@ -40,16 +45,28 @@ impl NativeWorkspaceOwner {
         };
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        if candidate.governor() != governor
-            || candidate.device() != governor
-            || key.verifying_key().to_bytes() != governor.device_public_key
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("membership mutation is not signed by this device".into());
+        }
+        let governs = candidate.device() == candidate.governor();
+        if !governs
+            && !matches!(
+                command,
+                Command::Member { .. }
+                    | Command::Settings(_)
+                    | Command::Grant { .. }
+                    | Command::Revoke { .. }
+                    | Command::AddAgent { .. }
+                    | Command::RemoveAgent { .. }
+            )
         {
-            return Err("membership mutation lacks exact current governor signing custody".into());
+            return Err("only the room's governor commits this change".into());
         }
         let id = serde_json::to_string(&(caller.device_public_key, invocation))
             .map_err(|error| error.to_string())?;
-        // Always revalidate current person administration, including retries.
-        // Apply to a clone so retry validation cannot publish another mutation.
+        let before = candidate.peer.room_heads().unwrap_or_default();
+        // Always revalidate current authority, including retries. Apply to a
+        // clone so retry validation cannot publish another mutation.
         let mut peer = candidate.peer.clone();
         peer.workspace_mut()
             .apply_workspace_membership_command(&caller, &command, key, now)?;
@@ -66,22 +83,27 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("native membership generation exhausted")?;
-        // This is the existing signed governance writer/publication sequence.
-        // Its durable state includes the signed room policy and admitted graph;
-        // no legacy cache or relay acceptance stands in for the owner barrier.
-        let messages = peer.publication_mut().durable_mutation_messages(
-            &candidate.peer,
-            key,
-            now,
-            next_generation,
-        )?;
-        for message in &messages {
-            if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
-                let outgoing = crate::publication::prepare(&crate::publication::request(message)?)?;
-                crate::publication::reserve(&candidate, &outgoing)?;
-                crate::publication::append_local(&mut candidate, outgoing)?;
+        let written = if governs {
+            // Its durable state includes the signed room policy and admitted
+            // graph; no legacy cache or relay acceptance stands in for it.
+            let messages = peer.publication_mut().durable_mutation_messages(
+                &candidate.peer,
+                key,
+                now,
+                next_generation,
+            )?;
+            for message in &messages {
+                if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+                    let outgoing =
+                        crate::publication::prepare(&crate::publication::request(message)?)?;
+                    crate::publication::reserve(&candidate, &outgoing)?;
+                    crate::publication::append_local(&mut candidate, outgoing)?;
+                }
             }
-        }
+            Vec::new()
+        } else {
+            peer.room_changes_since(&before)
+        };
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = next_generation;
@@ -96,11 +118,20 @@ impl NativeWorkspaceOwner {
                 receipt: receipt.clone(),
             },
         );
-        crate::publication::replace_governance_checkpoint(
-            &mut candidate,
-            receipt.binding.clone(),
-            now,
-        )?;
+        if governs {
+            crate::publication::replace_governance_checkpoint(
+                &mut candidate,
+                receipt.binding.clone(),
+                now,
+            )?;
+        } else if !written.is_empty() {
+            crate::publication::add_member_changes(
+                &mut candidate,
+                written,
+                receipt.binding.clone(),
+                now,
+            )?;
+        }
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
     }
@@ -162,12 +193,7 @@ mod tests {
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
         let receipt = fixture
             .owner
-            .commit_workspace_membership_command(
-                request.clone(),
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
             .unwrap();
         receipt.validate_for(&request).unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
@@ -181,12 +207,7 @@ mod tests {
         let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
         assert_eq!(agent_caps(&reopened, &fixture), caps);
         let retry = reopened
-            .commit_workspace_membership_command(
-                request.clone(),
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(request.clone(), &fixture.key, fixture.now)
             .unwrap();
         assert_eq!(retry.generation, receipt.generation);
         assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
@@ -199,12 +220,7 @@ mod tests {
         }
         assert!(
             reopened
-                .commit_workspace_membership_command(
-                    changed,
-                    &fixture.certificate,
-                    &fixture.key,
-                    fixture.now,
-                )
+                .commit_workspace_membership_command(changed, &fixture.key, fixture.now,)
                 .is_err()
         );
         assert_eq!(agent_caps(&reopened, &fixture), caps);
@@ -223,7 +239,6 @@ mod tests {
                         preset: AgentPreset::Operator,
                     },
                 ),
-                &fixture.certificate,
                 &fixture.key,
                 fixture.now,
             )
@@ -241,7 +256,6 @@ mod tests {
                 .owner
                 .commit_workspace_membership_command(
                     removal.clone(),
-                    &fixture.certificate,
                     &SigningKey::from_bytes(&[240; 32]),
                     fixture.now,
                 )
@@ -250,12 +264,7 @@ mod tests {
         assert_eq!(agent_caps(&fixture.owner, &fixture), before);
         fixture
             .owner
-            .commit_workspace_membership_command(
-                removal,
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(removal, &fixture.key, fixture.now)
             .unwrap();
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
         let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
@@ -278,12 +287,7 @@ mod tests {
         assert!(
             fixture
                 .owner
-                .commit_workspace_membership_command(
-                    add,
-                    &fixture.certificate,
-                    &fixture.key,
-                    fixture.now,
-                )
+                .commit_workspace_membership_command(add, &fixture.key, fixture.now,)
                 .is_err()
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
@@ -302,12 +306,7 @@ mod tests {
         );
         fixture
             .owner
-            .commit_workspace_membership_command(
-                add,
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(add, &fixture.key, fixture.now)
             .unwrap();
         fixture
             .owner
@@ -349,6 +348,77 @@ mod tests {
     }
 
     #[test]
+    fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them() {
+        let mut fixture = crate::application_record::tests::owner_device_fixture();
+        let room = RoomId::parse(crate::testing::ROOM).unwrap();
+        let outgoing = |owner: &NativeWorkspaceOwner| {
+            owner
+                .with_outgoing(room, fixture.now, |_, outgoing| {
+                    Ok(outgoing
+                        .entries()
+                        .map(|entry| entry.bytes().to_vec())
+                        .collect::<Vec<_>>())
+                })
+                .unwrap()
+        };
+        let add = request(
+            &fixture,
+            WorkspaceMembershipCommand::AddAgent {
+                agent: "scribe".into(),
+                preset: AgentPreset::Observer,
+            },
+        );
+        fixture
+            .owner
+            .commit_workspace_membership_command(add, &fixture.key, fixture.now)
+            .unwrap();
+        let caps = agent_caps(&fixture.owner, &fixture);
+        assert_eq!(caps.len(), 2, "written here at once");
+        let frames = outgoing(&fixture.owner);
+        assert_eq!(frames.len(), 1, "one room delta to publish");
+        let message: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
+        assert!(matches!(message, NeighbourMsg::SyncResp { .. }));
+        fixture
+            .governor
+            .receive(
+                TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
+                message,
+            )
+            .unwrap();
+        let mut granted = fixture.governor.agent_grants("scribe").unwrap();
+        granted.sort();
+        let mut held: Vec<_> = caps
+            .iter()
+            .map(|grant| grant.id.as_str().to_owned())
+            .collect();
+        held.sort();
+        assert_eq!(
+            granted, held,
+            "the room's host admits what the device wrote"
+        );
+
+        let reopened = crate::open_file(&fixture.directory.path().join("owner.json")).unwrap();
+        assert_eq!(outgoing(&reopened).len(), 1, "kept until it is admitted");
+        fixture.governor.refresh_checkpoint().unwrap();
+        let governor = fixture.governor.governor().device_public_key;
+        for (bytes, _) in fixture.governor.outgoing() {
+            reopened
+                .receive(
+                    room,
+                    TransportOrigin::RetainedRelayDelta(governor),
+                    postcard::from_bytes(bytes).unwrap(),
+                    fixture.now,
+                )
+                .unwrap();
+        }
+        assert!(
+            outgoing(&reopened).is_empty(),
+            "the room's governance carries it"
+        );
+        assert_eq!(agent_caps(&reopened, &fixture), caps);
+    }
+
+    #[test]
     fn failed_membership_publication_never_changes_the_committed_policy() {
         let fixture = fixture();
         let add = request(
@@ -364,12 +434,7 @@ mod tests {
         assert!(
             fixture
                 .owner
-                .commit_workspace_membership_command(
-                    add,
-                    &fixture.certificate,
-                    &fixture.key,
-                    fixture.now,
-                )
+                .commit_workspace_membership_command(add, &fixture.key, fixture.now,)
                 .is_err()
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());

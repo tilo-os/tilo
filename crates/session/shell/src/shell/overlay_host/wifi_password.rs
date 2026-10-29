@@ -189,17 +189,17 @@ impl ShellOverlayHost {
         });
         let id = current.as_ref().map(|(id, _, _)| *id);
         if id != self.wifi_password_prompt {
-            self.wifi_prompt = Self::new_wifi_prompt();
+            *self.wifi_prompt = Self::new_wifi_prompt();
             self.wifi_password_prompt = id;
         }
         let Some((_, connecting, error)) = current else {
-            Widget::set_focus(&mut self.wifi_prompt, false);
+            Widget::set_focus(&mut *self.wifi_prompt, false);
             return false;
         };
         // Nothing else on the pane takes the keyboard while the prompt is
         // up; Tab walks its own field and buttons.
-        if !Widget::is_focused(&self.wifi_prompt) {
-            Widget::set_focus(&mut self.wifi_prompt, true);
+        if !Widget::is_focused(&*self.wifi_prompt) {
+            Widget::set_focus(&mut *self.wifi_prompt, true);
         }
         if connecting != self.wifi_prompt.busy().is_some() {
             self.wifi_prompt

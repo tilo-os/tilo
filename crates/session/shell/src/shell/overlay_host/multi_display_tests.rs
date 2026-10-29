@@ -214,8 +214,10 @@ fn hardware_key_readouts_open_on_the_focused_display() {
 fn menus_and_panels_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
     desk.on_each_display(|desk, display, name| {
+        desk.fb.host_mut().force_power_menu_for_visual_test();
+        desk.settle();
+        desk.settle();
         let host = desk.fb.host_mut();
-        host.layers.power_menu.open();
         let rows = host.power_menu_semantic_rects();
         assert!(!rows.is_empty(), "the power menu has rows");
         for (row, rect) in rows {
@@ -1319,15 +1321,18 @@ impl Desk {
     /// Three fingers swiping up on the touchpad: toward the strip below.
     fn swipe_to_strip_below(&mut self) {
         let t0 = ui::time::now();
-        let ms = |n: u64| std::time::Duration::from_millis(n);
+        let ms = |n: u64| {
+            t0.checked_add(std::time::Duration::from_millis(n))
+                .expect("a swipe a few milliseconds long stays in range")
+        };
         let host = self.fb.host_mut();
         for (step, (travel, at)) in [(200.0, 8), (400.0, 16), (600.0, 24), (800.0, 32)]
             .into_iter()
             .enumerate()
         {
-            let _ = host.update_strip_deck_drag(travel, step == 0, t0 + ms(at));
+            let _ = host.update_strip_deck_drag(travel, step == 0, ms(at));
         }
-        assert!(host.end_strip_deck_drag(t0 + ms(40), false));
+        assert!(host.end_strip_deck_drag(ms(40), false));
         self.settle();
     }
 }
@@ -1436,4 +1441,248 @@ fn the_strip_chord_moves_only_the_focused_displays_strips() {
         (0, 1),
         "the monitor is untouched"
     );
+}
+
+/// One input event as the native loop delivers it: through the
+/// compositor's router first, then (unless a window took it) to the shell.
+fn through_compositor(
+    desk: &mut Desk,
+    state: &mut crate::compositor::state::State,
+    event: &WindowEvent,
+) -> bool {
+    let to_window = crate::compositor::client_input::route_input(
+        state,
+        &mut desk.fb,
+        event,
+        &Modifiers::default(),
+    );
+    if !to_window {
+        desk.dispatch(event);
+    }
+    to_window
+}
+
+fn compositor_state(desk: &Desk) -> crate::compositor::state::State {
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display as WlDisplay;
+    let event_loop: EventLoop<'static, crate::compositor::state::State> =
+        EventLoop::try_new().expect("calloop event loop");
+    let display: WlDisplay<crate::compositor::state::State> =
+        WlDisplay::new().expect("wayland display");
+    let tree = desk.fb.chrome().tree_handle();
+    crate::compositor::state::State::new_with_workspace_tree(
+        event_loop.handle(),
+        display.handle(),
+        tree,
+    )
+}
+
+/// A press and release at `p` through the compositor, after moving there.
+fn tap_through_compositor(
+    desk: &mut Desk,
+    state: &mut crate::compositor::state::State,
+    p: Point,
+    what: &str,
+) {
+    through_compositor(desk, state, &ui::synthetic_input::cursor_moved(p.x, p.y));
+    assert!(
+        crate::shell::input_policy::chrome_captures_pointer(&desk.fb),
+        "the shell takes the pointer on {what} at {p:?}"
+    );
+    assert!(
+        !through_compositor(desk, state, &ui::synthetic_input::mouse_press()),
+        "the press on {what} is the shell's, never a window's"
+    );
+    assert!(!through_compositor(
+        desk,
+        state,
+        &ui::synthetic_input::mouse_release()
+    ));
+    desk.settle();
+}
+
+/// Presses routed by the compositor itself reach a desk widget on either
+/// display, in its glance and its open form. They used to go to the window
+/// beneath: the widgets were not among what the shell claims the pointer
+/// for.
+#[test]
+fn compositor_presses_reach_desk_widgets_on_both_displays_in_both_forms() {
+    use crate::shell::desk_widgets::{Form, ShowMode, WidgetId};
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let mut prefs = desk.fb.host().desk_widget_prefs().clone();
+    prefs.calendar.enabled = true;
+    prefs.calendar.drop_on(PANEL_KEY, 0.5, 0.6);
+    prefs.system_monitor.enabled = true;
+    prefs.system_monitor.show = ShowMode::Pause;
+    prefs.system_monitor.drop_on(MONITOR_KEY, 0.5, 0.6);
+    desk.fb.host_mut().set_desk_widget_prefs(prefs);
+    desk.settle();
+    let mut state = compositor_state(&desk);
+    for (id, index) in [(WidgetId::Calendar, 0), (WidgetId::SystemMonitor, 1)] {
+        let display = desk.display(index);
+        let name = if index == 0 {
+            "the panel"
+        } else {
+            "the monitor"
+        };
+        let slot = desk.fb.host().desk_slot(id).expect("laid out");
+        assert_on(display, slot.glance, &format!("{id:?}'s glance"), name);
+        assert_eq!(desk.fb.host().desk_form(id), Form::Glance, "{id:?}");
+        tap_through_compositor(
+            &mut desk,
+            &mut state,
+            slot.glance.center(),
+            &format!("{id:?}'s glance"),
+        );
+        assert_eq!(
+            desk.fb.host().desk_form(id),
+            Form::Open,
+            "a tap opens {id:?} on {name}"
+        );
+        let open = desk.fb.host().desk_slot(id).expect("laid out").open;
+        assert_on(display, open, &format!("{id:?}'s card"), name);
+        let collapse = Point::new(open.x0 + 10.0, open.y0 + 10.0);
+        tap_through_compositor(
+            &mut desk,
+            &mut state,
+            collapse,
+            &format!("{id:?}'s collapse control"),
+        );
+        assert_eq!(
+            desk.fb.host().desk_form(id),
+            Form::Glance,
+            "collapsed on {name}"
+        );
+    }
+}
+
+/// Dragged onto the other display, a widget lives there; with that monitor
+/// unplugged it waits on the panel in the same corner, and plugged back in
+/// it goes home to where it was dropped.
+#[test]
+fn a_widget_dragged_to_another_display_stays_there_across_unplug_and_replug() {
+    use crate::shell::desk_widgets::{Form, WidgetId};
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let mut prefs = desk.fb.host().desk_widget_prefs().clone();
+    prefs.calendar.enabled = true;
+    desk.fb.host_mut().set_desk_widget_prefs(prefs);
+    desk.settle();
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    let start = desk
+        .fb
+        .host()
+        .desk_slot(WidgetId::Calendar)
+        .expect("laid out");
+    assert_on(
+        panel,
+        start.glance,
+        "the calendar",
+        "the panel, the primary",
+    );
+    let mut state = compositor_state(&desk);
+    let from = start.glance.center();
+    through_compositor(
+        &mut desk,
+        &mut state,
+        &ui::synthetic_input::cursor_moved(from.x, from.y),
+    );
+    assert!(!through_compositor(
+        &mut desk,
+        &mut state,
+        &ui::synthetic_input::mouse_press()
+    ));
+    let target = Point::new(monitor.x0 + 700.0, monitor.y0 + 500.0);
+    for k in 1..=24u32 {
+        let p = from + (target - from) * (f64::from(k) / 24.0);
+        through_compositor(
+            &mut desk,
+            &mut state,
+            &ui::synthetic_input::cursor_moved(p.x, p.y),
+        );
+        let drawn = desk
+            .fb
+            .host()
+            .desk_test_rects()
+            .into_iter()
+            .find(|(name, _)| name == "desk.calendar")
+            .expect("drawn")
+            .1;
+        assert!(
+            (drawn.center() - p).hypot() < 1.0,
+            "it follows the hand across the seam at step {k}: {drawn:?} {p:?}"
+        );
+    }
+    // Held still a moment: set down, not thrown.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    through_compositor(
+        &mut desk,
+        &mut state,
+        &ui::synthetic_input::cursor_moved(target.x, target.y + 1.0),
+    );
+    assert!(!through_compositor(
+        &mut desk,
+        &mut state,
+        &ui::synthetic_input::mouse_release()
+    ));
+    desk.fb.host_mut().force_desk_settled(ui::time::now());
+    desk.settle();
+    let dropped = desk
+        .fb
+        .host()
+        .desk_slot(WidgetId::Calendar)
+        .expect("laid out");
+    assert_on(
+        monitor,
+        dropped.glance,
+        "the dropped calendar",
+        "the monitor",
+    );
+    assert!(
+        (dropped.glance.center() - Point::new(target.x, target.y + 1.0)).hypot() < 1.0,
+        "where it was let go: {dropped:?}"
+    );
+    let place = desk
+        .fb
+        .host()
+        .desk_widget_prefs()
+        .calendar
+        .places
+        .first()
+        .cloned()
+        .expect("kept");
+    assert_eq!(place.display, MONITOR_KEY, "kept by the monitor's identity");
+    assert_eq!(desk.fb.host().desk_form(WidgetId::Calendar), Form::Glance);
+
+    // Unplugged: it waits on the panel, at the same fractions.
+    desk.fb
+        .set_output_geometry(output_geometry(&desk.outputs[..1]));
+    desk.settle();
+    let waiting = desk
+        .fb
+        .host()
+        .desk_slot(WidgetId::Calendar)
+        .expect("laid out");
+    assert_on(
+        panel,
+        waiting.glance,
+        "the calendar of an unplugged monitor",
+        "the panel",
+    );
+    assert!(
+        desk.fb
+            .host()
+            .desk_hit_at(dropped.glance.center(), ui::time::now())
+            .is_none(),
+        "nothing left where the monitor was"
+    );
+
+    // Plugged back in: home again, where it was dropped.
+    desk.fb.set_output_geometry(output_geometry(&desk.outputs));
+    desk.settle();
+    let home = desk
+        .fb
+        .host()
+        .desk_slot(WidgetId::Calendar)
+        .expect("laid out");
+    assert_eq!(home.glance, dropped.glance, "back where it was dropped");
 }

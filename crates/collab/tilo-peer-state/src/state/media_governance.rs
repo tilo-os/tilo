@@ -102,9 +102,7 @@ impl StatePeer {
             return Err("governed issuer mismatch".into());
         }
         let id = hex::encode(cert.device_public_key);
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.room_actor_of(key));
         if let Some(bytes) = rows.get(&id) {
             let known: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
             if known.device_cert != cert {
@@ -179,13 +177,14 @@ impl PeerMediaGovernance<'_> {
         }
         Ok(())
     }
-    /// The committed call policy as the room's channel steward reads it:
+    /// The committed call policy as a governor taking part in the room's
+    /// channels reads it:
     /// [`StatePeer::validated_media_policy`], except that a call bound to a
     /// Chat its members write sealed counts as bound. This replica keeps
     /// such a Chat as ciphertext and cannot check the channel itself; the
-    /// steward resolved the binding through the channel's keys when it
+    /// governor resolved the binding through the channel's keys when it
     /// opened the call, and only a governor that holds them may vouch so.
-    pub fn stewarded_media_policy(self) -> Result<Option<RoomMediaV1>, String> {
+    pub fn keyed_media_policy(self) -> Result<Option<RoomMediaV1>, String> {
         let peer = self.peer;
         let policy = peer.validate_present_media_policy()?;
         if let Some(policy) = &policy {
@@ -308,9 +307,7 @@ impl PeerMediaGovernanceMut<'_> {
             row.revocations
                 .sort_by_key(|revocation| revocation.revoked_device_public_key);
         }
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         for (id, (old, row)) in rows {
             let bytes = serde_json::to_vec(&row).map_err(err)?;
             if bytes != old {
@@ -340,9 +337,7 @@ impl PeerMediaGovernanceMut<'_> {
             .validate_media_governance_for_publication()?;
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         doc.put(
             ROOT,
             media::FIELD,

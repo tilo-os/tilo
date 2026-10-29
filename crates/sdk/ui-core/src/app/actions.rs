@@ -12,73 +12,6 @@ pub(super) struct AwaitedResolution {
     reply: tokio::sync::oneshot::Sender<runtime_collab::ActionDirectoryResolution>,
 }
 
-#[derive(Clone, Copy)]
-struct ResourceInvocation<'a> {
-    address: &'a tilo_actions::ActionAddress,
-    actor: &'a str,
-    argument: Option<&'a str>,
-    confirmation_satisfied: bool,
-    broker_admitted: bool,
-    confirmation_evidence: Option<&'a serde_json::Value>,
-    invocation: Option<tilo_actions::InvocationId>,
-    ambient_context: Option<&'a tilo_actions::ActionContext>,
-    scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
-}
-
-impl<'a> ResourceInvocation<'a> {
-    fn new(address: &'a tilo_actions::ActionAddress, actor: &'a str) -> Self {
-        Self {
-            address,
-            actor,
-            argument: None,
-            confirmation_satisfied: false,
-            broker_admitted: false,
-            confirmation_evidence: None,
-            invocation: None,
-            ambient_context: None,
-            scope: None,
-        }
-    }
-
-    fn argument(mut self, argument: Option<&'a str>) -> Self {
-        self.argument = argument;
-        self
-    }
-
-    fn confirmed(mut self, confirmed: bool) -> Self {
-        self.confirmation_satisfied = confirmed;
-        self
-    }
-
-    fn broker_admitted(mut self, admitted: bool) -> Self {
-        self.broker_admitted = admitted;
-        self
-    }
-
-    fn evidence(mut self, evidence: Option<&'a serde_json::Value>) -> Self {
-        self.confirmation_evidence = evidence;
-        self
-    }
-
-    fn invocation(mut self, invocation: Option<tilo_actions::InvocationId>) -> Self {
-        self.invocation = invocation;
-        self
-    }
-
-    fn ambient_context(mut self, context: Option<&'a tilo_actions::ActionContext>) -> Self {
-        self.ambient_context = context;
-        self
-    }
-
-    fn scope(
-        mut self,
-        scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
-    ) -> Self {
-        self.scope = scope;
-        self
-    }
-}
-
 impl App {
     /// Lets the hosted app register its action types, e.g.
     /// `app.action_registry_mut().register::<TubeAction>("tube.action")`.
@@ -92,7 +25,6 @@ impl App {
     pub fn set_action_transport(&mut self, transport: Box<dyn tilo_actions::ActionTransport>) {
         let _entry = self.enter_wake_scope();
         self.actions.action_transport = transport;
-        self.actions.legacy_local_transport = false;
     }
 
     fn resource_cache_key(&self) -> ResourceCacheKey {
@@ -204,22 +136,12 @@ impl App {
 
     fn collect_declared_resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         let key = self.ensure_resource_cache();
-        let mut resources = self
-            .actions
+        self.actions
             .resource_cache
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(Vec::new, |cache| cache.declared.clone());
-        if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root_widget.as_ref(),
-            &self.permission_ctx,
-            &self.collaboration.local_author,
-            false,
-        ) {
-            resources.extend(legacy);
-        }
-        resources
+            .map_or_else(Vec::new, |cache| cache.declared.clone())
     }
 
     fn ensure_local_resource_cache(&self) -> (ResourceCacheKey, u64) {
@@ -295,14 +217,6 @@ impl App {
                     .flat_map(|snapshot| snapshot.into_resources()),
             );
         }
-        if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root_widget.as_ref(),
-            &self.permission_ctx,
-            &self.collaboration.local_author,
-            false,
-        ) {
-            resources.extend(legacy);
-        }
         resources
     }
 
@@ -351,14 +265,6 @@ impl App {
                     .into_iter()
                     .flat_map(|snapshot| snapshot.into_resources()),
             );
-        }
-        if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root_widget.as_ref(),
-            &self.permission_ctx,
-            &self.collaboration.local_author,
-            false,
-        ) {
-            resources.extend(legacy);
         }
         crate::history_source::sentence::learn_labels(&resources);
         resources
@@ -601,14 +507,6 @@ impl App {
                     resources.push(resource);
                 }
             }
-        }
-        if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root_widget.as_ref(),
-            &self.permission_ctx,
-            &self.collaboration.local_author,
-            true,
-        ) {
-            resources.extend(legacy);
         }
         if crate::undo::local_undo_status(self.root_widget.as_ref()).is_some() {
             let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
@@ -1586,9 +1484,7 @@ impl App {
         let local = request.actor == self.collaboration.local_author.0;
         let _ = crate::widget::take_presses();
         let started = (|| {
-            use crate::bound_dispatch::legacy_document::{
-                LocalResourceTarget, select_local_target,
-            };
+            use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
             let address = request.address;
             if let Some(target) = self
                 .actions
@@ -1603,11 +1499,8 @@ impl App {
                 Ok(LocalResourceTarget::Component(target)) => {
                     self.invoke_bound_target_with_broker(&target, &request, None)
                 }
-                Ok(LocalResourceTarget::Legacy(target)) => {
-                    self.invoke_legacy_resource_action(&target, &request)
-                }
                 Ok(LocalResourceTarget::Outer) | Err(tilo_actions::DoorError::Unknown(_)) => {
-                    self.invoke_unbound_resource_action(&request, None)
+                    self.invoke_unbound_resource_action(&request)
                 }
                 Err(error) => Err(error),
             }
@@ -1624,74 +1517,9 @@ impl App {
         Ok(started)
     }
 
-    /// The legacy `target` names the action; `request.address` is not consulted.
-    fn invoke_legacy_resource_action(
-        &mut self,
-        target: &crate::bound_dispatch::legacy_document::LegacyResourceTarget,
-        request: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let ResourceInvocation {
-            actor,
-            argument,
-            confirmation_satisfied,
-            broker_admitted,
-            invocation,
-            ambient_context: ambient,
-            scope,
-            ..
-        } = *request;
-        use crate::bound_dispatch::legacy_document::{
-            LegacyDocumentServices, LegacyInvocation, invoke_legacy_document,
-            resolve_legacy_invocation,
-        };
-        let resources = resolve_legacy_invocation(self.root_widget.as_ref(), target)?;
-        let (_, _, spec) = Self::resolve_resource_invocation(
-            &resources,
-            &target.address,
-            argument,
-            confirmation_satisfied,
-        )?;
-        if spec.kind != tilo_actions::OperationKind::Document {
-            return self.invoke_unbound_resource_action(
-                &ResourceInvocation {
-                    address: &target.address,
-                    ..*request
-                },
-                Some(target),
-            );
-        }
-        let outcome = invoke_legacy_document(
-            self.root_widget.as_mut(),
-            target,
-            LegacyDocumentServices {
-                registry: &self.actions.action_registry,
-                transport: self.actions.action_transport.as_mut(),
-                qualified_local_transport: self.actions.legacy_local_transport,
-                authority: &self.permission_ctx,
-                author: &self.collaboration.local_author,
-            },
-            LegacyInvocation {
-                argument,
-                arguments: None,
-                actor,
-                broker_admitted: broker_admitted || invocation.is_some(),
-                ambient,
-            },
-            scope,
-        )?;
-        tracing::trace!(action = %outcome.envelope.id.0, changed = outcome.changed, "legacy Document applied on captured owner");
-        self.needs_sync = true;
-        self.layout.layout_dirty = true;
-        self.invalidate_widget_resource_cache();
-        Ok(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
-    }
-
     fn invoke_unbound_resource_action(
         &mut self,
         request: &ResourceInvocation<'_>,
-        legacy: Option<&crate::bound_dispatch::legacy_document::LegacyResourceTarget>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         let ResourceInvocation {
             address,
@@ -1704,57 +1532,47 @@ impl App {
             ambient_context,
             scope,
         } = *request;
-        if scope.is_some() && legacy.is_none() {
+        if scope.is_some() {
             return Err(tilo_actions::DoorError::Failed(
                 "required invocation has no actual canonical owner".into(),
             ));
         }
-        // A legacy non-Document request carries its resolved owner from the
-        // initial door. Keep that captured target through the final resolve so
-        // a later tree change cannot redirect it to another same-address
-        // resource. Ordinary local requests use the permission-projected,
-        // cached resource surface (including retained bound and legacy rows).
-        let mut resources = if let Some(target) = legacy {
-            crate::bound_dispatch::legacy_document::resolve_legacy_invocation(
-                self.root_widget.as_ref(),
-                target,
-            )?
-        } else if let Some(participant) = crate::invocation_scope::current_participant() {
-            // A participant's tree is rebuilt for it now, never read from the
-            // cache of this window's own view.
-            let mut resources = Vec::new();
-            crate::bound_dispatch::collect_participant_resources(
-                self.root_widget.as_ref(),
-                &self.state.doc,
-                &participant,
-                &mut resources,
-            );
-            resources
-        } else if actor == self.collaboration.local_author.0 {
-            self.collect_local_resources()
-        } else {
-            let key = self.ensure_resource_cache();
-            let resources = self
-                .actions
-                .resource_cache
-                .borrow()
-                .as_ref()
-                .filter(|cache| cache.key == key)
-                .and_then(|cache| cache.complete.clone())
-                .unwrap_or_default();
-            if actor == self.collaboration.local_author.0 {
+        // Ordinary local requests use the permission-projected, cached
+        // resource surface (including retained bound rows).
+        let mut resources =
+            if let Some(participant) = crate::invocation_scope::current_participant() {
+                // A participant's tree is rebuilt for it now, never read from the
+                // cache of this window's own view.
+                let mut resources = Vec::new();
+                crate::bound_dispatch::collect_participant_resources(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                    &participant,
+                    &mut resources,
+                );
                 resources
-                    .into_iter()
-                    .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-                    .collect()
+            } else if actor == self.collaboration.local_author.0 {
+                self.collect_local_resources()
             } else {
-                resources
-            }
-        };
-        // The legacy target above is an owner witness. If that owner no
-        // longer offers the action, reject it rather than resolving a same
-        // address from another live branch.
-        if legacy.is_none() && tilo_actions::door::resolve(&resources, address).is_none() {
+                let key = self.ensure_resource_cache();
+                let resources = self
+                    .actions
+                    .resource_cache
+                    .borrow()
+                    .as_ref()
+                    .filter(|cache| cache.key == key)
+                    .and_then(|cache| cache.complete.clone())
+                    .unwrap_or_default();
+                if actor == self.collaboration.local_author.0 {
+                    resources
+                        .into_iter()
+                        .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+                        .collect()
+                } else {
+                    resources
+                }
+            };
+        if tilo_actions::door::resolve(&resources, address).is_none() {
             let fallback = crate::bound_dispatch::resolve_unbound_resource(
                 self.root_widget.as_ref(),
                 &self.state.doc,
@@ -1860,15 +1678,6 @@ impl App {
                 resource,
                 resolved,
             );
-        }
-        if resolved.deferred_invocation_type().is_some() {
-            if let Some(target) = legacy {
-                crate::bound_dispatch::legacy_document::authorize_legacy_operation(
-                    target,
-                    &self.permission_ctx,
-                    resolved,
-                )?;
-            }
         }
         let _capture = if !broker_admitted && invocation.is_none() {
             let arguments = typed_arguments
@@ -2056,41 +1865,7 @@ impl App {
                     tilo_actions::ActionOutput::default(),
                 ));
             }
-            let operation_result = if let Some(target) = legacy {
-                (|| {
-                    crate::bound_dispatch::legacy_document::authorize_legacy_operation(
-                        target,
-                        &self.permission_ctx,
-                        resolved,
-                    )?;
-                    let started = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
-                        self.root_widget.as_mut(),
-                        target,
-                        operation_invocation,
-                        kind,
-                        &encoded,
-                        &mut self.state.doc,
-                        scope,
-                    )?;
-                    match &started {
-                        crate::widget::ResourceOperationStart::Accepted
-                            if resolved.contract.execution
-                                == tilo_actions::ExecutionMode::Immediate =>
-                        {
-                            return Err(tilo_actions::DoorError::Failed(
-                                "An immediate operation cannot remain pending".into(),
-                            ));
-                        }
-                        crate::widget::ResourceOperationStart::Completed(output) => resolved
-                            .contract
-                            .result
-                            .validate(output)
-                            .map_err(tilo_actions::DoorError::Failed)?,
-                        crate::widget::ResourceOperationStart::Accepted => {}
-                    }
-                    Ok(started)
-                })()
-            } else {
+            let operation_result = {
                 let route = self.primary_document_route();
                 let mut door = BrokerDoor {
                     manager: &mut self.collaboration.manager,
@@ -2194,136 +1969,6 @@ impl App {
         result
     }
 
-    fn dispatch_bound_control_invocation(
-        &mut self,
-        target: &crate::bound_dispatch::BoundActionTarget,
-        intent: &tilo_actions::ControlInvocation,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-        origin: crate::bound_dispatch::Origin,
-    ) -> bool {
-        // A pick the app asks the person to confirm is asked before it
-        // reaches the door, through the same question the door's own
-        // confirmations get.
-        if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
-            return self.ask_person(
-                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
-                    target.clone(),
-                ),
-                intent.address.clone(),
-                crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
-                true,
-            );
-        }
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(intent.arguments.clone())
-        );
-        // An edit an effect submitted is applied for the effect's invoker,
-        // in its context, as far as the invoker was admitted.
-        let acting = on_behalf_of.and_then(|id| self.actions.acting_for.get(&id).cloned());
-        // With the workspace's broker at hand it admits the edit for the
-        // invoker, with their own grants, under the component's published
-        // address.
-        if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
-            && self.collaboration.manager.is_connected()
-        {
-            let result = self
-                .actions
-                .bound_publication
-                .alias(&target.binding, &target.address.address.resource)
-                .map_err(crate::bound_dispatch::BoundActionError::into_door)
-                .and_then(|alias| {
-                    self.send_follow_up(
-                        running,
-                        &tilo_actions::ActionAddress::new(
-                            alias,
-                            target.address.address.action.clone(),
-                        ),
-                        &intent.arguments,
-                        acting.context.clone(),
-                    )
-                });
-            self.note_continuation(on_behalf_of, &result);
-            if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
-                self.root_widget.as_mut(),
-                target,
-                &result,
-                on_behalf_of,
-            ) {
-                tracing::warn!(?error, "bound control feedback unavailable");
-            }
-            return result.is_ok();
-        }
-        let actor = acting.as_ref().map_or_else(
-            || self.collaboration.local_author.0.clone(),
-            |acting| acting.invoker.actor.clone(),
-        );
-        let scopes = acting
-            .as_ref()
-            .map(crate::invocation_scope::Continuation::enter);
-        let answering = crate::bound_dispatch::Answering::enter(on_behalf_of.is_some());
-        let result = self.invoke_bound_target(
-            target,
-            &ResourceInvocation::new(&target.address.address, &actor)
-                .argument(Some(&argument))
-                .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
-        );
-        drop(answering);
-        drop(scopes);
-        // Nobody here asked for it: the person at the device is never
-        // prompted to confirm another invoker's edit.
-        let result = match result {
-            Err(tilo_actions::DoorError::ConfirmationRequired) if acting.is_some() => {
-                self.note_continuation(on_behalf_of, &result);
-                if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
-                    self.root_widget.as_mut(),
-                    target,
-                    &result,
-                    on_behalf_of,
-                ) {
-                    tracing::warn!(?error, "bound control feedback unavailable");
-                }
-                return false;
-            }
-            result => result,
-        };
-        self.note_continuation(on_behalf_of, &result);
-        if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
-            self.root_widget.as_mut(),
-            target,
-            &result,
-            on_behalf_of,
-        ) {
-            tracing::warn!(?error, "bound control feedback unavailable");
-        }
-        match result {
-            Ok(_) => true,
-            Err(tilo_actions::DoorError::ConfirmationRequired) => {
-                self.open_ordinary_confirmation(
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
-                        target.clone(),
-                    ),
-                    intent.address.clone(),
-                    crate::bound_dispatch::ControlContinuationArguments::Json(
-                        intent.arguments.clone(),
-                    ),
-                );
-                true
-            }
-            Err(error) => {
-                tracing::warn!(%error, ?origin, "bound control invocation refused");
-                // Only what the person asked for is refused over the window;
-                // the app hears of its own invocation's refusal through the
-                // feedback above.
-                if acting.is_none() && origin.is_persons() {
-                    self.refuse_visibly(&error);
-                }
-                false
-            }
-        }
-    }
-
     fn service_local_control_history(&mut self) -> bool {
         #[cfg(test)]
         let probe = crate::profiling::frame_probe::span("idle.controls");
@@ -2354,249 +1999,11 @@ impl App {
             .map_or_else(Vec::new, |history| history.pending_control_reviews())
     }
 
-    fn service_pending_history_commands(&mut self) {
-        let commands = self
-            .history
-            .as_ref()
-            .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
-        let embedded =
-            crate::history_mode::embedded::drain_pending_commands(self.root_widget.as_mut());
-        if !commands.is_empty() || !embedded.is_empty() {
-            if self.history_focus.is_none() {
-                self.history_focus = self.capture_focus_identity();
-            }
-            self.layout.node_map.clear();
-            self.bindings.clear();
-            self.focused_node = None;
-            self.layout.request_rebuild();
-            self.layout.layout_dirty = true;
-        }
-        for command in commands {
-            let (token, confirmation) = match command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    if let Some(history) = &mut self.history {
-                        history.cancel_pending_control(&token);
-                    }
-                    continue;
-                }
-            };
-            let Some(prepared) =
-                self.history
-                    .as_mut()
-                    .and_then(|history| match confirmation.as_deref() {
-                        Some(value) => history.prepare_pending_control_typed(&token, value),
-                        None => history.prepare_pending_control(&token, false),
-                    })
-            else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let Some(history) = self.history.as_mut() else {
-                continue;
-            };
-            match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    history.pending_control_needs_confirmation(id);
-                }
-                Ok(_) => history.pending_control_consumed(id),
-                Err(error) => history.pending_control_refused(id, error.to_string()),
-            }
-        }
-        for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    crate::history_mode::embedded::cancel_pending_command(
-                        self.root_widget.as_mut(),
-                        pending.surface,
-                        &token,
-                    );
-                    continue;
-                }
-            };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => crate::history_mode::embedded::prepare_pending_command_typed(
-                    self.root_widget.as_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => crate::history_mode::embedded::prepare_pending_command(
-                    self.root_widget.as_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let outcome = match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    crate::history_mode::embedded::PendingCommandOutcome::NeedsConfirmation
-                }
-                Ok(_) => crate::history_mode::embedded::PendingCommandOutcome::Consumed,
-                Err(error) => {
-                    crate::history_mode::embedded::PendingCommandOutcome::Refused(error.to_string())
-                }
-            };
-            crate::history_mode::embedded::finish_pending_command(
-                self.root_widget.as_mut(),
-                pending.surface,
-                id,
-                &outcome,
-            );
-        }
-    }
-
-    fn dispatch_prepared_history_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        use crate::bound_dispatch::legacy_document::LocalResourceTarget;
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
-        let current = crate::bound_dispatch::control_witness(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            &prepared.target,
-            &prepared.invocation,
-        )?;
-        if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "stale_pending_control".into(),
-                reason: "The action meaning or confirmation policy changed while History was open"
-                    .into(),
-            });
-        }
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(prepared.invocation.arguments.clone())
-        );
-        let actor = self.collaboration.local_author.0.clone();
-        match prepared.target {
-            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
-                &target,
-                &ResourceInvocation::new(&target.address.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-                None,
-            ),
-            LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(
-                &target,
-                &ResourceInvocation::new(&target.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-            ),
-            LocalResourceTarget::Outer => self.invoke_unbound_resource_action(
-                &ResourceInvocation::new(&prepared.invocation.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-                None,
-            ),
-        }
-    }
-
     /// Drives the production local idle body without creating a window or input.
     #[cfg(any(test, feature = "test-support"))]
     pub fn controlled_local_idle_for_test(&mut self) -> bool {
         let _entry = self.enter_wake_scope();
         self.service_local_control_history()
-    }
-
-    fn dispatch_legacy_control_invocations(
-        &mut self,
-        registered: Vec<(
-            crate::bound_dispatch::legacy_document::LegacyResourceTarget,
-            tilo_actions::ControlInvocation,
-        )>,
-    ) -> usize {
-        let mut dispatched = 0usize;
-        let batch = crate::bound_dispatch::legacy_document::drain_legacy_controls(
-            self.root_widget.as_mut(),
-        );
-        for error in batch.failures {
-            tracing::warn!(%error, "legacy control drain refused");
-        }
-        for (target, intent) in registered.into_iter().chain(batch.controls) {
-            if self.take_history_invocation(&intent, Some(target.owner.clone())) {
-                dispatched = dispatched.saturating_add(1);
-                continue;
-            }
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(intent.arguments.clone())
-            );
-            let actor = self.collaboration.local_author.0.clone();
-            let result = self.invoke_legacy_resource_action(
-                &target,
-                &ResourceInvocation::new(&target.address, &actor).argument(Some(&argument)),
-            );
-            if let Err(error) =
-                crate::bound_dispatch::legacy_document::notify_legacy_control_invocation_result(
-                    self.root_widget.as_mut(),
-                    &target,
-                    &result,
-                )
-            {
-                tracing::warn!(%error, "legacy control feedback unavailable");
-            }
-            match result {
-                Ok(_) => dispatched = dispatched.saturating_add(1),
-                Err(tilo_actions::DoorError::ConfirmationRequired)
-                    if crate::bound_dispatch::legacy_document::resolve_legacy_invocation(
-                        self.root_widget.as_ref(),
-                        &target,
-                    )
-                    .ok()
-                    .and_then(|resources| {
-                        tilo_actions::door::resolve(&resources, &target.address)
-                            .map(|spec| spec.kind != tilo_actions::OperationKind::Document)
-                    })
-                    .unwrap_or(false) =>
-                {
-                    // Existing Effect/View confirmation remains the palette's job.
-                    // Its bare address is rechecked; ambiguity never picks an owner.
-                    self.open_ordinary_confirmation(
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Legacy(target),
-                        intent.address,
-                        crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments),
-                    );
-                    dispatched = dispatched.saturating_add(1);
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "legacy control invocation refused");
-                    self.refuse_visibly(&error);
-                }
-            }
-        }
-        dispatched
     }
 
     /// Resolve queued local control intents against the current resource tree
@@ -2630,202 +2037,9 @@ impl App {
             return 0;
         }
         crate::history_mode::embedded::discard_active_output(self.root_widget.as_mut());
-        let mut registered = self.control_domain.drain_partitioned();
-        let mut dispatched = self.dispatch_history_controls();
-        let bound = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
-        if let Some(error) = bound.error {
-            tracing::warn!(
-                ?error,
-                "control traversal incomplete; delivering already drained intents"
-            );
-        }
-        for (target, intent, on_behalf_of, origin) in registered
-            .components
-            .into_iter()
-            .map(|(target, intent)| (target, intent, None, crate::bound_dispatch::Origin::Person))
-            .chain(bound.pending)
-        {
-            if on_behalf_of.is_none()
-                && target.binding.enter().is_ok()
-                && self.take_search_invocation(&intent, Some(&target.binding))
-            {
-                dispatched = dispatched.saturating_add(1);
-                continue;
-            }
-            // The window's own component's History control (the History
-            // button in a framework app's header row) opens this window's
-            // History, as the shortcut does; it is no app action.
-            if on_behalf_of.is_none()
-                && self
-                    .root_widget
-                    .callback_binding()
-                    .is_some_and(|binding| binding.instance_id == target.binding.instance_id)
-                && self.take_history_invocation(&intent, None)
-            {
-                dispatched = dispatched.saturating_add(1);
-                continue;
-            }
-            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of, origin) {
-                dispatched = dispatched.saturating_add(1);
-            }
-        }
-        dispatched =
-            dispatched.saturating_add(self.dispatch_legacy_control_invocations(registered.legacy));
-        while let Some((intent, on_behalf_of, origin)) = registered
-            .outer
-            .pop_front()
-            .map(|intent| (intent, None, crate::bound_dispatch::Origin::Person))
-            .or_else(|| {
-                crate::bound_dispatch::take_attributed_with_origin(self.root_widget.as_mut())
-            })
-        {
-            // Only what the person asked for is refused over the window; the
-            // app hears of its own invocation's refusal through the feedback.
-            let says_refusal = on_behalf_of.is_none() && origin.is_persons();
-            if on_behalf_of.is_none() && self.take_history_invocation(&intent, None) {
-                dispatched = dispatched.saturating_add(1);
-                continue;
-            }
-            if on_behalf_of.is_none() && self.take_search_invocation(&intent, None) {
-                dispatched = dispatched.saturating_add(1);
-                continue;
-            }
-            // An edit an effect submitted is applied for the effect's
-            // invoker, in its context, as long as the effect runs.
-            let acting = on_behalf_of.and_then(|id| self.actions.acting_for.get(&id).cloned());
-            let (key, generation) = self.ensure_local_resource_cache();
-            let local_resources = self
-                .actions
-                .local_resource_cache
-                .borrow()
-                .as_ref()
-                .filter(|cache| cache.key == key && cache.permission_generation == generation)
-                .and_then(|cache| cache.resources.clone())
-                .unwrap_or_default();
-            let Some(resolved) = tilo_actions::door::resolve(&local_resources, &intent.address)
-            else {
-                tracing::warn!(
-                    resource = %intent.address.resource,
-                    action = %intent.address.action,
-                    "action-bound control is unavailable to the local actor"
-                );
-                let error = tilo_actions::DoorError::Unknown(intent.address.clone());
-                if says_refusal {
-                    self.refuse_visibly(&error);
-                }
-                let refused = Err(error);
-                self.note_continuation(on_behalf_of, &refused);
-                crate::widget::controls::on_control_invocation_result(
-                    self.root_widget.as_mut(),
-                    &intent.address,
-                    &refused,
-                );
-                continue;
-            };
-            if acting.is_some()
-                && !matches!(
-                    resolved.confirmation_for_json(&intent.arguments),
-                    tilo_actions::ConfirmationPolicy::None
-                )
-            {
-                // Nobody here asked for it: the person at the device is
-                // never prompted to confirm another invoker's edit.
-                tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, "an effect's edit that needs confirmation is refused");
-                let refused = Err(tilo_actions::DoorError::ConfirmationRequired);
-                self.note_continuation(on_behalf_of, &refused);
-                crate::widget::controls::on_control_invocation_result(
-                    self.root_widget.as_mut(),
-                    &intent.address,
-                    &refused,
-                );
-                continue;
-            }
-            let confirming =
-                acting.is_none() && origin == crate::bound_dispatch::Origin::PersonConfirming;
-            if confirming
-                || !matches!(
-                    resolved.confirmation_for_json(&intent.arguments),
-                    tilo_actions::ConfirmationPolicy::None
-                )
-            {
-                // A bound control never manufactures confirmation. Hand the
-                // exact address to the standard palette flow, which owns the
-                // explicit confirm/phrase UI and only then enters the door.
-                crate::widget::controls::on_control_invocation_result(
-                    self.root_widget.as_mut(),
-                    &intent.address,
-                    &Err(tilo_actions::DoorError::ConfirmationRequired),
-                );
-                self.ask_person(
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
-                    intent.address,
-                    crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments),
-                    confirming,
-                );
-                dispatched = dispatched.saturating_add(1);
-                continue;
-            }
-            // With the workspace's broker at hand it admits the edit for the
-            // invoker, with their own grants.
-            if let (Some(acting), Some(running)) = (&acting, on_behalf_of)
-                && self.collaboration.manager.is_connected()
-            {
-                let result = self.send_follow_up(
-                    running,
-                    &intent.address,
-                    &intent.arguments,
-                    acting.context.clone(),
-                );
-                self.note_continuation(on_behalf_of, &result);
-                crate::widget::controls::on_control_invocation_result(
-                    self.root_widget.as_mut(),
-                    &intent.address,
-                    &result,
-                );
-                if result.is_ok() {
-                    dispatched = dispatched.saturating_add(1);
-                }
-                continue;
-            }
-            let json = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(intent.arguments.clone())
-            );
-            let actor = acting.as_ref().map_or_else(
-                || self.collaboration.local_author.0.clone(),
-                |acting| acting.invoker.actor.clone(),
-            );
-            let scopes = acting
-                .as_ref()
-                .map(crate::invocation_scope::Continuation::enter);
-            // An outer control was produced outside every component and
-            // legacy owner: it acts on the outer document it was captured
-            // with, even when an owner declares the same address.
-            let result = self.invoke_unbound_resource_action(
-                &ResourceInvocation::new(&intent.address, &actor)
-                    .argument(Some(&json))
-                    .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
-                None,
-            );
-            drop(scopes);
-            self.note_continuation(on_behalf_of, &result);
-            crate::widget::controls::on_control_invocation_result(
-                self.root_widget.as_mut(),
-                &intent.address,
-                &result,
-            );
-            match result {
-                Ok(_) => dispatched = dispatched.saturating_add(1),
-                Err(error) => {
-                    tracing::warn!(resource = %intent.address.resource, action = %intent.address.action, %error, ?origin, "action-bound control invocation refused");
-                    if acting.is_none() && says_refusal {
-                        self.refuse_visibly(&error);
-                    }
-                }
-            }
-        }
-        dispatched
+        let registered = self.control_domain.drain_partitioned();
+        let dispatched = self.dispatch_history_controls();
+        dispatched.saturating_add(self.dispatch_drained_controls(registered))
     }
 
     /// Invoke, as the person here, another provider's action a control of
@@ -2892,7 +2106,7 @@ impl App {
             Ok(_) => None,
         };
         if let Some(reason) = refused {
-            self.refuse_visibly(&tilo_actions::DoorError::Failed(reason));
+            self.refuse_in_window(&tilo_actions::DoorError::Failed(reason));
         }
         true
     }
@@ -3188,16 +2402,6 @@ impl App {
             });
             provider
         });
-        let legacy_resources = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root_widget.as_ref(),
-            &self.permission_ctx,
-            &self.collaboration.local_author,
-            false,
-        )
-        .unwrap_or_default();
-        let legacy_open_resources = crate::search::OpenResourceSearch::new(&legacy_resources);
-        let mut resources = resources;
-        resources.extend(legacy_resources);
         let bound = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
@@ -3207,7 +2411,6 @@ impl App {
         .unwrap_or_default();
         let mut providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref());
         providers.push(Box::new(open_resources));
-        providers.push(Box::new(legacy_open_resources));
         let mut palette = match self.palette_source {
             PaletteSource::Owned { renderer, field } => {
                 crate::action_palette::ActionPalette::with_inputs(renderer(), field)
@@ -3220,37 +2423,23 @@ impl App {
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
         palette.open();
-        self.actions.palette_window = self.invoking_window_rect();
+        self.actions.palette_window = self.tree().invoking_window_rect();
         // Discovery reads the still-admitted current tree; clear its pointers
         // immediately before replacing the retained modal instance.
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        self.actions.action_palette = Some(palette);
+        self.actions.action_palette = Some(Box::new(palette));
         self.rebuild_action_palette_admission();
-    }
-
-    /// The window the palette was asked for from, when this app lays several
-    /// out in its tree (the desktop's strip of app tiles). `None` for a
-    /// standalone app ([`crate::action_palette::invoking_window`]).
-    fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
-        crate::action_palette::invoking_window(
-            &self.layout.taffy,
-            self.layout.root_node,
-            self.input.pressed_at,
-            self.focused_node,
-            |node| {
-                self.inspect_node(node, crate::action_palette::tile_rect)
-                    .ok()
-                    .flatten()
-            },
-        )
     }
 
     /// Open search the way `request` asks: this app, or one part of it, with
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
     pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        if self.hand_search_to_session(&request) {
+            return;
+        }
         // On one of the app's actions: the palette asks for its arguments.
         if let Some(address) = request.asked()
             && self.open_action_palette_at(&address)
@@ -3258,7 +2447,7 @@ impl App {
             return;
         }
         self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.set_scope(request.resource_scope().cloned());
             if let Some(query) = &request.query {
                 palette.set_query(query);
@@ -3269,6 +2458,36 @@ impl App {
                 palette.select_resource(&anchor.resource);
             }
         }
+    }
+
+    /// Inside a Tilo session there is one search, the shell's: hand it
+    /// `request` and open nothing here. A window the shell hosts in its own
+    /// process asks through its component's host intent; one running as a
+    /// process of its own asks over the session's surface service. Whether
+    /// the request went to the session.
+    pub(super) fn hand_search_to_session(
+        &mut self,
+        request: &crate::search::SearchRequest,
+    ) -> bool {
+        if self.floating.client.is_some() {
+            self.floating.search_requests.push(request.clone());
+            return true;
+        }
+        if !self.actions.search_in_host || self.presents_search() {
+            return false;
+        }
+        let Some(bound) = self
+            .root_widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::BoundAppWidget>())
+        else {
+            return false;
+        };
+        bound
+            .component
+            .callback_binding()
+            .request_search(request.clone());
+        true
     }
 
     /// `/` pressed with nothing focused that types it: open search of this
@@ -3354,64 +2573,6 @@ impl App {
         self.document_history.has_search()
     }
 
-    /// A control in the app's tree bound to the window's History door (the
-    /// History control in the app's header row) runs there, as the History
-    /// shortcut does, never as an app action. An app `owner` hosted in a tile
-    /// opens that tile's History. Returns whether it was one.
-    fn take_history_invocation(
-        &mut self,
-        intent: &tilo_actions::ControlInvocation,
-        owner: Option<crate::history_mode::HistoryOwner>,
-    ) -> bool {
-        // The window's Retry for unsaved changes (its header button) is the
-        // host's own action, like History.
-        let unsaved = intent.address.resource == local_input_capture::UNSAVED_RESOURCE;
-        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE && !unsaved {
-            return false;
-        }
-        let embedded = owner.filter(|_| !unsaved).and_then(|owner| {
-            crate::history_mode::embedded::invoke_door(self.root_widget.as_mut(), &owner, intent)
-        });
-        let result = if let Some(result) = embedded {
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-            result.map(|()| {
-                crate::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )
-            })
-        } else {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(intent.arguments.clone())
-            );
-            self.invoke_history_address_local(&intent.address, Some(&argument))
-                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())))
-        };
-        crate::widget::controls::on_control_invocation_result(
-            self.root_widget.as_mut(),
-            &intent.address,
-            &result,
-        );
-        true
-    }
-
-    fn take_search_invocation(
-        &mut self,
-        intent: &tilo_actions::ControlInvocation,
-        owner: Option<&crate::bound_dispatch::CallbackBinding>,
-    ) -> bool {
-        let Some(request) = crate::search::SearchRequest::from_invocation(intent) else {
-            return false;
-        };
-        match owner {
-            Some(binding) if !self.presents_search() => binding.request_search(request),
-            _ => self.open_search(request),
-        }
-        true
-    }
-
     fn rebuild_action_palette_admission(&mut self) {
         // A synchronous action may need the current canonical widget map
         // before the next redraw. Retire the old tree through the normal
@@ -3441,104 +2602,70 @@ impl App {
         self.layout.request_rebuild();
     }
 
-    fn open_ordinary_confirmation(
-        &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
-        address: tilo_actions::ActionAddress,
-        arguments: crate::bound_dispatch::ControlContinuationArguments,
-    ) -> bool {
-        self.ask_person(target, address, arguments, false)
+    /// [`Self::refuse_visibly`] for a refusal that arrives with no control
+    /// on screen (a host's or a remote's answer, later): said in the
+    /// window's bar.
+    fn refuse_in_window(&mut self, error: &tilo_actions::DoorError) {
+        self.refuse_at(error, None);
     }
 
-    /// Ask the person before `address` goes ahead: as the door asked
-    /// ([`Self::open_ordinary_confirmation`]), or, `confirming`, as the app
-    /// asked for a pick of theirs ([`crate::bound_dispatch::Origin::PersonConfirming`]).
-    fn ask_person(
-        &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
-        address: tilo_actions::ActionAddress,
-        arguments: crate::bound_dispatch::ControlContinuationArguments,
-        confirming: bool,
-    ) -> bool {
-        let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            target,
-            &self.control_domain,
-            address,
-            arguments,
-        );
-        let request = match request {
-            Ok(request) if confirming => request.confirming(),
-            Ok(request) => request.asking_first(),
-            Err(error) => {
-                self.refuse_visibly(&error);
-                return false;
-            }
-        };
-        if self.actions.action_palette.is_none() {
-            // Native semantic focus is authoritative even before the next
-            // retained render propagates the widget's focused flag.
-            self.actions.ordinary_palette_return_focus =
-                self.capture_focus_identity().or_else(|| {
-                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
-                });
-        }
-        self.open_action_palette();
-        self.bindings.clear();
-        self.layout.node_map.clear();
-        self.focused_node = None;
-        if let Some(palette) = self.actions.action_palette.as_mut() {
-            palette.activate_ordinary(request);
-        }
-        if self
-            .actions
-            .action_palette
-            .as_ref()
-            .is_some_and(crate::action_palette::ActionPalette::went_ahead)
-        {
-            return self.finish_action_palette_input(true);
-        }
-        self.rebuild_action_palette_admission();
-        true
-    }
-
-    /// Say over the window that an invocation the person made did not run,
-    /// and why, through the window's palette: a click is never dropped with
-    /// only a log line.
-    pub(super) fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+    fn refuse_at(&mut self, error: &tilo_actions::DoorError, anchor: Option<vello::kurbo::Rect>) {
         // Said once the pass ends ([`Self::say_refusals`]): the window's own
         // nodes stay mapped until then, so what the pass still records of
         // them (an edit's history) is kept.
         self.actions
             .refusals
-            .push(crate::bound_dispatch::refusal_reason(error));
+            .push((crate::bound_dispatch::refusal_reason(error), anchor));
         self.layout.layout_dirty = true;
     }
 
-    /// Say over the window why this pass's refused invocations did not run.
+    /// Say why this pass's refused invocations did not run: the last one,
+    /// at its control or in the window's bar.
     fn say_refusals(&mut self) {
-        let Some(reason) = self.actions.refusals.pop() else {
+        let Some((reason, anchor)) = self.actions.refusals.pop() else {
             return;
         };
         self.actions.refusals.clear();
-        if self.actions.action_palette.is_none() {
-            self.actions.ordinary_palette_return_focus =
-                self.capture_focus_identity().or_else(|| {
-                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+        match anchor {
+            Some(anchor) => {
+                if let Some(reader) = self.accessibility.screen_reader.as_mut() {
+                    reader.announce(reason.clone(), tts::Priority::Notification, true);
+                }
+                self.actions.control_notice = Some(crate::control_notice::ControlNotice {
+                    text: reason,
+                    anchor,
                 });
+                self.request_redraw_for_notice();
+            }
+            None => crate::control_notice::say_in_window(&reason),
         }
-        self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
-            palette.show_refusal("", &reason);
+    }
+
+    /// What stands at the control the person last used: why what they did
+    /// did not run, until their next press or key.
+    #[must_use]
+    pub fn control_notice(&self) -> Option<&crate::control_notice::ControlNotice> {
+        self.actions.control_notice.as_ref()
+    }
+
+    /// The person pressed or typed again: what stood at their last control
+    /// is done with.
+    #[cfg(feature = "native")]
+    pub(super) fn dismiss_control_notice(&mut self) {
+        if self.actions.control_notice.take().is_some() {
+            self.request_redraw_for_notice();
         }
+    }
+
+    fn request_redraw_for_notice(&mut self) {
+        self.layout.layout_dirty = true;
     }
 
     fn capture_ordinary_palette_request(&mut self) {
         let Some(pending) = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(|p| p.ordinary_capture_request())
         else {
             return;
@@ -3546,9 +2673,9 @@ impl App {
         let result = (|| {
             let target = match pending.bound.clone() {
                 Some(target) => {
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target)
+                    crate::bound_dispatch::local_target::LocalResourceTarget::Component(target)
                 }
-                None => crate::bound_dispatch::legacy_document::select_local_target(
+                None => crate::bound_dispatch::local_target::select_local_target(
                     self.root_widget.as_ref(),
                     &self.state.doc,
                     &pending.address,
@@ -3566,7 +2693,7 @@ impl App {
                 arguments,
             )
         })();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             match result {
                 Ok(request) => palette.retain_ordinary(request),
                 Err(_) => palette.close(),
@@ -3574,31 +2701,28 @@ impl App {
         }
     }
 
-    /// Open the palette an app asked for ([`crate::host_palette`]): searching
-    /// for its query, or on one of its actions. Whether one was opened.
+    /// Open search on the app's action `address`, asking for its
+    /// arguments: the session's search inside a session, the window's own
+    /// outside one. Whether it opened.
     #[cfg(feature = "native")]
-    pub(crate) fn open_requested_palette(&mut self) -> bool {
-        match crate::host_palette::take() {
-            Some(crate::host_palette::PaletteRequest::Search(query)) => {
-                self.open_action_palette();
-                if let Some(palette) = self.actions.action_palette.as_mut() {
-                    palette.set_query(&query);
-                }
-                true
-            }
-            Some(crate::host_palette::PaletteRequest::Action(address)) => {
-                self.open_action_palette_at(&address)
-            }
-            None => false,
+    pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
+        let asked = crate::search::SearchRequest::asking(
+            crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
+            address.action.clone(),
+        );
+        if self.hand_search_to_session(&asked) {
+            return true;
         }
+        self.open_action_palette_at(address)
     }
 
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
-        let activated =
-            self.actions.action_palette.as_mut().is_some_and(|palette| {
-                palette.activate_address(&address.resource, &address.action)
-            });
+        let activated = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| palette.activate_address(&address.resource, &address.action));
         if activated {
             self.capture_ordinary_palette_request();
         } else {
@@ -3667,7 +2791,7 @@ impl App {
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
-        self.actions.action_palette.as_ref()
+        self.actions.action_palette.as_deref()
     }
 
     /// The action the host's confirmation is asking about, and the
@@ -3676,7 +2800,7 @@ impl App {
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(crate::action_palette::ActionPalette::asking)
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
@@ -3690,7 +2814,7 @@ impl App {
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         let (address, _question) = self.asking()?;
         self.refresh_action_palette_resources();
-        let palette = self.actions.action_palette.as_mut()?;
+        let palette = self.actions.action_palette.as_deref_mut()?;
         let target = palette.confirming_target()?;
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3725,18 +2849,10 @@ impl App {
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
         history_actions::without_duplicate_launcher(&mut resources);
-        if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root_widget.as_ref(),
-            &self.permission_ctx,
-            &self.collaboration.local_author,
-            false,
-        ) {
-            resources.extend(legacy);
-        }
         let lazy_resource_ids = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .map(crate::action_palette::ActionPalette::referenced_action_resource_ids)
             .unwrap_or_default();
         for id in lazy_resource_ids {
@@ -3760,7 +2876,7 @@ impl App {
         let targets = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .map(crate::action_palette::ActionPalette::referenced_bound_targets)
             .unwrap_or_default();
         for target in targets {
@@ -3780,7 +2896,7 @@ impl App {
                 snapshot.extend([resource]);
             }
         }
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.refresh_open_resources(&resources);
             palette.load_bound_resources(bound);
         }
@@ -3794,7 +2910,7 @@ impl App {
         if !self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
             return false;
@@ -3803,15 +2919,19 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        let consumed = self.actions.action_palette.as_mut().is_some_and(|palette| {
-            palette.route_event(
-                event,
-                scale,
-                self.input.modifiers,
-                &mut crate::widget::Edits::lend(&mut self.state.doc),
-                &self.state.root,
-            )
-        });
+        let consumed = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| {
+                palette.route_event(
+                    event,
+                    scale,
+                    self.input.modifiers,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &self.state.root,
+                )
+            });
         self.finish_action_palette_input(consumed)
     }
 
@@ -3821,7 +2941,7 @@ impl App {
             return false;
         }
         self.refresh_action_palette_resources();
-        let Some(palette) = self.actions.action_palette.as_mut() else {
+        let Some(palette) = self.actions.action_palette.as_deref_mut() else {
             return false;
         };
         self.bindings.clear();
@@ -3847,7 +2967,7 @@ impl App {
         let exact_capture = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(crate::action_palette::ActionPalette::history_exact_capture_request);
         if let Some((target, invocation, original_arguments)) = exact_capture {
             let witness = crate::bound_dispatch::control_witness_with_arguments(
@@ -3858,7 +2978,7 @@ impl App {
                 &original_arguments,
             )
             .map_err(|error| error.to_string());
-            if let Some(palette) = self.actions.action_palette.as_mut() {
+            if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.retain_history_exact_witness(witness);
             }
         }
@@ -3867,7 +2987,7 @@ impl App {
         let pending = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             // Projected View actions resolve their retained widget through the
@@ -3999,9 +3119,8 @@ impl App {
                 };
                 match (draft, captured, current, witness) {
                     (Ok(()), Ok(captured), Ok(current), Ok(())) if captured == current => match target {
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(&target, &palette_request, None),
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(&target, &palette_request),
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer => self.invoke_unbound_resource_action(&palette_request, None),
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(&target, &palette_request, None),
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Outer => self.invoke_unbound_resource_action(&palette_request),
                     },
                     (Ok(()), Ok(_), Ok(_), Ok(())) => Err(tilo_actions::DoorError::Unavailable {
                         code: "stale_pending_palette_action".into(),
@@ -4014,14 +3133,11 @@ impl App {
                 }
             } else if let Some(request) = pending.ordinary.as_ref() {
                 match &request.target {
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
-                        target,
-                    ) => self.invoke_bound_target_with_broker(target, &palette_request, None),
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Legacy(target) => {
-                        self.invoke_legacy_resource_action(target, &palette_request)
+                    crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => {
+                        self.invoke_bound_target_with_broker(target, &palette_request, None)
                     }
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer => {
-                        self.invoke_unbound_resource_action(&palette_request, None)
+                    crate::bound_dispatch::local_target::LocalResourceTarget::Outer => {
+                        self.invoke_unbound_resource_action(&palette_request)
                     }
                 }
             } else if let Some(result) =
@@ -4036,7 +3152,7 @@ impl App {
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some() {
-                    if let Some(palette) = self.actions.action_palette.as_mut() {
+                    if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                         palette.retain_history_refusal(pending, error.to_string());
                     }
                 } else {
@@ -4051,7 +3167,7 @@ impl App {
         let navigation = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .and_then(super::action_palette::ActionPalette::take_scoped_navigation);
         if let Some((action_id, binding)) = navigation {
             if let Some(binding) = binding {
@@ -4080,7 +3196,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|p| !p.is_open())
         {
             self.close_action_palette();
@@ -4099,7 +3215,7 @@ impl App {
 
 /// Room for a directory page's own fields (revision, cursor, flags and the
 /// row list) beyond its rows, on the wire.
-const DIRECTORY_PAGE_WIRE_BYTES: usize = 512;
+const DIRECTORY_PAGE_WIRE_BYTES: usize = ::collaboration::action_directory::PAGE_WIRE_BYTES;
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
 /// below it, whose action id or label, description, parameter names and
@@ -4202,5 +3318,161 @@ impl crate::session_door::SessionDoor for BrokerDoor<'_> {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
         });
         Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+}
+
+impl crate::host_core::ControlHost for App {
+    fn local_author(&self) -> &crate::permissions::UserId {
+        &self.collaboration.local_author
+    }
+
+    fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
+        &self.actions.bound_publication
+    }
+
+    fn broker_connected(&self) -> bool {
+        self.collaboration.manager.is_connected()
+    }
+
+    fn send_follow_up(
+        &mut self,
+        running: tilo_actions::InvocationId,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        context: Option<tilo_actions::ActionContext>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        App::send_follow_up(self, running, address, arguments, context)
+    }
+
+    fn local_confirmation(
+        &self,
+        intent: &tilo_actions::ControlInvocation,
+    ) -> Option<tilo_actions::ConfirmationPolicy> {
+        let (key, generation) = self.ensure_local_resource_cache();
+        let cache = self.actions.local_resource_cache.borrow();
+        let resources = cache
+            .as_ref()
+            .filter(|cache| cache.key == key && cache.permission_generation == generation)
+            .and_then(|cache| cache.resources.as_deref())
+            .unwrap_or_default();
+        tilo_actions::door::resolve(resources, &intent.address)
+            .map(|resolved| resolved.confirmation_for_json(&intent.arguments))
+    }
+
+    fn invoke_bound_control(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        request: &ResourceInvocation<'_>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invoke_bound_target_with_broker(target, request, None)
+    }
+
+    fn invoke_outer_control(
+        &mut self,
+        request: &ResourceInvocation<'_>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invoke_unbound_resource_action(request)
+    }
+
+    /// A control in the app's tree bound to the window's History door (the
+    /// History control in the app's header row) runs there, as the History
+    /// shortcut does, never as an app action. An app `owner` hosted in a tile
+    /// opens that tile's History. Returns whether it was one.
+    fn take_history_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+        owner: Option<crate::history_mode::HistoryOwner>,
+    ) -> bool {
+        // The window's Retry for unsaved changes (its header button) is the
+        // host's own action, like History.
+        let unsaved = intent.address.resource == local_input_capture::UNSAVED_RESOURCE;
+        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE && !unsaved {
+            return false;
+        }
+        let embedded = owner.filter(|_| !unsaved).and_then(|owner| {
+            crate::history_mode::embedded::invoke_door(self.root_widget.as_mut(), &owner, intent)
+        });
+        let result = if let Some(result) = embedded {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+            result.map(|()| {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            })
+        } else {
+            let argument = format!(
+                "{}{}",
+                tilo_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(intent.arguments.clone())
+            );
+            self.invoke_history_address_local(&intent.address, Some(&argument))
+                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())))
+        };
+        crate::widget::controls::on_control_invocation_result(
+            self.root_widget.as_mut(),
+            &intent.address,
+            &result,
+        );
+        true
+    }
+
+    fn take_search_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+        owner: Option<&crate::bound_dispatch::CallbackBinding>,
+    ) -> bool {
+        let Some(request) = crate::search::SearchRequest::from_invocation(intent) else {
+            return false;
+        };
+        match owner {
+            Some(binding) if !self.presents_search() => binding.request_search(request),
+            _ => self.open_search(request),
+        }
+        true
+    }
+
+    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+        &self.control_domain
+    }
+
+    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool {
+        if self.actions.action_palette.is_none() {
+            // Native semantic focus is authoritative even before the next
+            // retained render propagates the widget's focused flag.
+            self.actions.ordinary_palette_return_focus =
+                self.capture_focus_identity().or_else(|| {
+                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+                });
+        }
+        // Read before the tree it is found in is discarded.
+        let anchor = self.tree().acting_control_rect();
+        self.open_action_palette();
+        self.bindings.clear();
+        self.layout.node_map.clear();
+        self.focused_node = None;
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
+            // The question stands at the control the person used.
+            palette.anchor_confirmation(anchor);
+            palette.activate_ordinary(request);
+        }
+        if self
+            .actions
+            .action_palette
+            .as_deref()
+            .is_some_and(crate::action_palette::ActionPalette::went_ahead)
+        {
+            return self.finish_action_palette_input(true);
+        }
+        self.rebuild_action_palette_admission();
+        true
+    }
+
+    /// Say that an invocation the person made did not run, and why, at the
+    /// control they used: a click is never dropped with only a log line, and
+    /// never opens search.
+    fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+        let anchor = self.tree().acting_control_rect();
+        self.refuse_at(error, anchor);
     }
 }

@@ -2,6 +2,7 @@
 //! page's desktop and windows among them), by the rule every host shares
 //! ([`crate::widget::cursor`]); the page shows it as the canvas's cursor.
 
+use crate::host_core::HostCore as _;
 use vello::kurbo::Point;
 
 use super::FrameHarness;
@@ -31,7 +32,8 @@ impl FrameHarness {
     /// arrow off the surface and where nothing asks for another.
     #[must_use]
     pub fn pointer_cursor(&self) -> winit::window::CursorIcon {
-        self.pointer_at
+        self.pointer
+            .at
             .and_then(|point| self.cursor_at(point))
             .unwrap_or_default()
     }

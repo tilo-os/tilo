@@ -9,7 +9,7 @@
 //! manifest declares; in dev mode, an app that is not installed is trusted
 //! with the kind its own build names.
 //!
-//! Apps seal their writes; this device stewards the room's channels, so the
+//! Apps seal their writes; this device takes part in the room's channels, so the
 //! owner opens each sealed write only after the sealed envelope passed every
 //! check, and admits the plaintext it verified.
 
@@ -63,7 +63,7 @@ pub(super) struct RoomOwner {
     governor: DeviceCert,
     creation: RecordCreation,
     workspace: Arc<ProfileWorkspace>,
-    /// The channel keys this device holds as the room's steward.
+    /// The channel keys this device holds as a member of the room's channels.
     keys: ChannelKeyProvider,
     committed: Mutex<Committed>,
 }
@@ -133,23 +133,16 @@ impl RoomOwner {
         let Ok(committed) = self.committed.lock() else {
             return false;
         };
-        let now = SystemTime::now();
-        tilo_peer_state::BoundedStatePeer::restore(
-            &committed.durable,
-            &self.room,
-            &self.governor,
-            std::slice::from_ref(&self.governor),
-            &RevocationList::new(),
-            now,
-            &tilo_peer_state::PeerLimits::default(),
+        matches!(
+            committed.peer.capture_document(
+                self.governor.device_public_key,
+                (app, record),
+                SystemTime::now(),
+                usize::MAX,
+                None,
+            ),
+            Err(tilo_peer_state::PeerDocumentReadError::Encrypted)
         )
-        .is_ok_and(|peer| {
-            matches!(
-                peer.read()
-                    .document_read(self.governor.device_public_key, app, record, now),
-                Err(tilo_peer_state::PeerDocumentReadError::Encrypted)
-            )
-        })
     }
 
     fn commit_now(

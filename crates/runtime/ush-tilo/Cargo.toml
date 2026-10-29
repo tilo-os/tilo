@@ -1,0 +1,27 @@
+[package]
+name = "ush-tilo"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "ush's shell on the Tilo side: a host that reads only what an environment grants, writes only through its actions, and hands every other program to a place that can run it."
+
+[lib]
+name = "ush_tilo"
+path = "src/lib.rs"
+
+[dependencies]
+ush-shell = { path = "../ush-shell" }
+# The record's grants and file actions: what this host reads under and writes through.
+tilo-environment = { path = "../environment" }
+collab-types = { path = "../../collab/collab-types" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+blake3.workspace = true
+
+[lints]
+workspace = true

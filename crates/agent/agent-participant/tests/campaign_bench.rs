@@ -31,8 +31,8 @@
     reason = "a benchmark harness: a broken scenario or host is the failure it reports"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
-mod steward;
+#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -1087,7 +1087,7 @@ async fn campaign_bench() {
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let hosted = start_with(&root, &host, state.path(), model).await;
-    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let confirming = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
     let _approver = approve_agents(
         &hosted.relay,

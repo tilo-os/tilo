@@ -13,7 +13,7 @@
 use ui::framework::{EffectAnswer, EffectStatus, Effected, LiveRow};
 use ui::native_media::Command;
 use ui::tilo_actions::{ResourceViewRangeSpec, ResourceViewSpec};
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 use crate::app::{ChatApp, Focus};
 use crate::model::ChannelKind;
@@ -163,9 +163,9 @@ pub enum ChatEffect {
         #[param("Id of the conversation")]
         channel: String,
         #[param(
-            "Path of the file on this device; omit to choose files with the system file chooser"
+            "Absolute path of the file on this device; omit to choose files with the system file chooser"
         )]
-        path: Option<String>,
+        path: Option<AbsolutePath>,
     },
     /// Share live Chat context
     ///
@@ -295,7 +295,7 @@ impl ChatApp {
                 return self.read_message(&message).map(Effected::value);
             }
             ChatEffect::AttachFile { channel, path } => {
-                self.attach_file_effect(&channel, path.as_deref())?;
+                self.attach_file_effect(&channel, path.as_ref())?;
             }
             ChatEffect::ShareLiveContext => self.set_live_context_sharing(true)?,
             ChatEffect::StopSharingLiveContext => self.set_live_context_sharing(false)?,
@@ -401,14 +401,14 @@ impl ChatApp {
     pub(crate) fn attach_file_effect(
         &mut self,
         channel: &str,
-        path: Option<&str>,
+        path: Option<&AbsolutePath>,
     ) -> Result<(), String> {
         if !self.channels.iter().any(|item| item.id == channel) {
             return Err("conversation no longer exists".into());
         }
         // No path: the person chooses the files, from their bytes, in the
         // conversation they go to; a browser page has no paths but this.
-        let Some(path) = path.map(str::trim) else {
+        let Some(path) = path else {
             if !self.can_participate() {
                 return Err("you can't post in this conversation".into());
             }
@@ -421,10 +421,7 @@ impl ChatApp {
                 "this device has no file paths; leave out the path to choose the files".into(),
             );
         }
-        if path.is_empty() {
-            return Err("attachment path is empty".into());
-        }
-        if !self.begin_attachment_import_into(channel, std::path::Path::new(path)) {
+        if !self.begin_attachment_import_into(channel, path) {
             return Err("attachment import was not accepted".into());
         }
         Ok(())
@@ -480,13 +477,15 @@ impl ChatApp {
             if !self.keeps_layout() {
                 return Err("The room has no voice channel; its moderators make channels".into());
             }
+            let name = ui::tilo_resource::NonBlank::parse("Voice")
+                .ok_or_else(|| "The voice channel could not be named".to_owned())?;
             let Some(doc) = doc else {
                 if self.dispatch.is_none() {
                     return Err("Chat is open to view only".into());
                 }
                 self.submit(crate::resource::Chat::CREATE_CHANNEL.with(
                     crate::record::chat::CreateChannel {
-                        name: "Voice".into(),
+                        name,
                         category: None,
                         kind: Some(ChannelKind::Voice),
                         topic: None,
@@ -497,7 +496,7 @@ impl ChatApp {
                 self.pending_call = Some(String::new());
                 return Ok(());
             };
-            let made = self.create_channel_now(doc, "", "Voice", ChannelKind::Voice);
+            let made = self.create_channel_now(doc, "", name, ChannelKind::Voice);
             if made.is_empty() {
                 return Err("The voice channel could not be made".into());
             }

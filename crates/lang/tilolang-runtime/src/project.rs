@@ -38,7 +38,8 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         }
         Value::Bool(b) => json!(b),
         Value::Text(s) => project_text(s, opts),
-        Value::Rich(r) => project_text(&r.plain_text(), opts),
+        // As the person the agent acts for reads it: never a title they cannot read.
+        Value::Rich(r) => project_text(&core.read_rich(r, false).unwrap_or_default(), opts),
         Value::List(items) => {
             let shown: Vec<Json> = items
                 .iter()
@@ -67,7 +68,24 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             Ok(items) => project(core, &Value::List(items), opts),
             Err(error) => json!({ "error": error }),
         },
-        Value::Node(_) | Value::Rec(_) | Value::Event | Value::State { .. } => {
+        Value::Map(entries) => Json::Object(
+            entries
+                .iter()
+                .take(opts.max_items)
+                .map(|(key, value)| {
+                    let key = key
+                        .as_text()
+                        .map_or_else(|| key.kind_name().to_owned(), str::to_owned);
+                    (key, project(core, value, opts))
+                })
+                .collect(),
+        ),
+        Value::Offered(offered) => json!({ "action": offered.label }),
+        Value::Node(_)
+        | Value::Rec(_)
+        | Value::Event
+        | Value::State { .. }
+        | Value::AtEvent { .. } => {
             json!({ "kind": v.kind_name() })
         }
     }

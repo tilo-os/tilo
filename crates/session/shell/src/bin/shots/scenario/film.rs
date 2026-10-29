@@ -55,6 +55,9 @@ pub struct Film {
     pub min_frames: u32,
     /// Stop here even if something still asks for frames.
     pub max_frames: u32,
+    /// Steps applied at later frames, in order: a gesture that takes time
+    /// (a drag, a throw, a resize) sampled frame by frame as a hand moves.
+    pub later: Vec<(u32, Step)>,
 }
 
 impl Film {
@@ -64,7 +67,20 @@ impl Film {
             cue,
             min_frames: DEFAULT_MIN_FRAMES,
             max_frames: DEFAULT_MAX_FRAMES,
+            later: Vec::new(),
         }
+    }
+
+    /// Apply `step` at frame `frame`, after the cue.
+    pub fn then_at(mut self, frame: u32, step: Step) -> Self {
+        self.later.push((frame, step));
+        if self.min_frames <= frame {
+            self.min_frames = frame.saturating_add(1);
+        }
+        if self.max_frames < self.min_frames {
+            self.max_frames = self.min_frames;
+        }
+        self
     }
 
     /// Record at least `frames` frames.
@@ -133,6 +149,23 @@ pub enum Step {
         app_id: &'static str,
         detail: &'static str,
     },
+    /// The person adds `widget` to their desk.
+    AddDeskWidget(shell::shell::desk_widgets::WidgetId),
+    /// The pointer onto a part of a desk widget, where it is drawn now
+    /// (`glance`, `expand`, `badge`, `card`, `grip`, `collapse`, `remove`);
+    /// later [`Step::DeskFrom`] moves are measured from here.
+    DeskSpot {
+        widget: shell::shell::desk_widgets::WidgetId,
+        spot: &'static str,
+    },
+    /// The pointer `dx`, `dy` from the last [`Step::DeskSpot`].
+    DeskFrom { dx: f64, dy: f64 },
+}
+
+std::thread_local! {
+    /// Where the last [`Step::DeskSpot`] put the pointer.
+    static DESK_ORIGIN: std::cell::Cell<Option<vello::kurbo::Point>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// One painted frame of a film.
@@ -228,6 +261,24 @@ fn apply_step(driver: &mut ShellDriver, step: &Step) {
                 st.bump();
             }
         }),
+        Step::AddDeskWidget(widget) => {
+            let mut prefs = driver.host().desk_widget_prefs().clone();
+            let chosen = prefs.get_mut(*widget);
+            chosen.enabled = true;
+            chosen.show = shell::shell::desk_widgets::ShowMode::Pause;
+            driver.host_mut().set_desk_widget_prefs(prefs);
+        }
+        Step::DeskSpot { widget, spot } => match driver.host().desk_spot_for_shots(*widget, spot) {
+            Some(p) => {
+                DESK_ORIGIN.with(|origin| origin.set(Some(p)));
+                driver.move_cursor(p);
+            }
+            None => eprintln!("scenario: {widget:?} shows no '{spot}'"),
+        },
+        Step::DeskFrom { dx, dy } => match DESK_ORIGIN.with(std::cell::Cell::get) {
+            Some(origin) => driver.move_cursor(origin + vello::kurbo::Vec2::new(*dx, *dy)),
+            None => eprintln!("scenario: a desk move with no spot to move from"),
+        },
         Step::LogTargets(label) => {
             let mut targets: Vec<_> = driver.widget_registry().into_iter().collect();
             targets.sort_by(|a, b| a.0.cmp(&b.0));
@@ -282,6 +333,9 @@ fn record<S: SnapshotSink>(driver: &mut ShellDriver, film: &Film, sink: &mut S) 
                 for step in &film.cue {
                     apply_step(driver, step);
                 }
+            }
+            for (_, step) in film.later.iter().filter(|(at, _)| *at == index) {
+                apply_step(driver, step);
             }
             driver.relayout();
             let scene = driver.paint();

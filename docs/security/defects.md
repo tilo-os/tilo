@@ -504,17 +504,17 @@ document relay is intentionally not that adapter; it must never broadcast
 Welcome bytes.
 
 **Production adapter now present.** `crates/collab/tilo-action-broker/src/channel_encryption.rs`
-runs the steward for every channel a device governs: it reconciles each MLS group with the room's
-access policy, so an invite, a removal, a role change that ends access or a revoked device becomes
-a commit (`Steward::reconcile`, which stages removals through `ChannelGroup::stage_remove`), and it
-redelivers the steward's outbox over the room transport (`NeighbourMsg::MlsGovernance`) with
-backoff until each device acknowledges. Held by that module's
-`an_announced_revocation_is_enforced_at_once_and_idle_stewards_park`,
+runs a participant (`channel_crypto::ChannelPeer`) for every channel a device takes part in: it
+reconciles each MLS group with the room's access policy, so an invite, a removal, a role change
+that ends access or a revoked device becomes a commit (`ChannelPeer::reconcile`, which stages
+removals and admissions in one commit through `ChannelGroup::stage_commit`), and it publishes the
+commit over the room transport (`NeighbourMsg::MlsGovernance`) until the transport takes it. Held by
+that module's `an_announced_revocation_is_enforced_at_once_and_idle_groups_park`,
 `a_new_channel_is_encrypted_from_creation_and_follows_the_policy`,
 `delivery_survives_a_network_outage` and
 `observing_live_keys_never_opens_a_channel_or_rejoins_after_removal`, plus
 `channel-crypto/tests/content_history.rs::removed_member_cannot_read_content_sealed_after_removal`.
-The steward admits per record, a Deny over an app or a pattern of records included; see `P1-11`.
+Participants admit per record, a Deny over an app or a pattern of records included; see `P1-11`.
 Provisioning and recovery UX were not assessed by this reconciliation.
 
 ---
@@ -950,17 +950,18 @@ AVCs on a kernel that has it.
 ## P1-11 — A Read Deny below the room does not withhold that record's channel key
 
 `docs/architecture/permissions.md` §5.3. Room grants can deny Read on one app or record, and every
-per-record read path honours it (`StatePeer::check_document_read`). Channel stewards used to admit
+per-record read path honours it (`StatePeer::check_document_read`). Channels used to admit
 devices per room: `allowed_devices` in `crates/session/shell/src/shell/channel_policy.rs` asked Read
-once, on the room node, and the steward in `crates/collab/tilo-action-broker/src/channel_encryption.rs`
+once, on the room node, and `crates/collab/tilo-action-broker/src/channel_encryption.rs`
 admitted every allowed device to every record channel of that room. A person denied one record
 therefore still received that record's MLS keys, and the room was the confidentiality boundary
 against the member's own modified client.
 
-**Resolved for records, apps and patterns of records.** Stewards admit per channel
+**Resolved for records, apps and patterns of records.** Participants admit per channel
 (`ChannelDirectory::allowed_devices(room, channel, route, now)`; the relay's
 `PeerGovernance::withheld_record_readers`), deciding Read on the channel's record with the same decision
-every door applies. A channel id is a hash of its record's route, so the steward names the record
+every door applies, and refuse a commit that admits anyone else. A channel id is a hash of its
+record's route, so a participant names the record
 from a grant naming it or from the route a device sends beside its access request
 (`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's
 id and keeps beside the channel's group across restarts. A channel whose record it cannot name is
@@ -969,7 +970,7 @@ withheld from every device a Deny over a pattern could keep out
 denied device that held a key is removed in a new epoch of that channel alone. Held by
 `channel_encryption`'s `a_read_deny_on_an_app_withholds_every_routed_channel_of_it` and
 `a_device_withheld_from_one_channel_loses_only_that_channels_key`, `channel_policy`'s
-`a_read_deny_over_an_app_withholds_every_routed_channel_of_it`, the relay stewardship's
+`a_read_deny_over_an_app_withholds_every_routed_channel_of_it`, the relay participation's
 `a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels` and
 `learned_routes_survive_a_restart_and_only_true_ones_are_kept`, and peer-state's
 `a_read_deny_on_a_record_withholds_only_that_records_channel`.
@@ -1090,6 +1091,12 @@ on-screen keyboard. The toolkit's own screen reader speaks through `tilo-tts`. A
 Super + Enter or both volume keys turn speech on. The initramfs size and the time
 to first frame are gated.
 
+**Status in source:** the Plymouth sign-in layout this describes is removed. The
+sign-in screen in the initramfs is the greeter in boot mode
+(`crates/system/boot-signin/src/greeter.rs`, `os/usr/lib/dracut/modules.d/94tilo-greeter`).
+When it can't start, `crates/system/boot-signin/src/screen.rs` ends Plymouth and
+asks through systemd's console password agent.
+
 ---
 
 ## P2-10 — Plymouth keeps every secret it relays until it quits
@@ -1105,6 +1112,11 @@ can read the secret instead of only guessing it against the TPM. No client optio
 turns the caching off. Closing it means asking the secret without Plymouth's password
 request: the greeter in the initramfs of P1-13 does, as would reading the keyboard
 in `tilo-boot-signin` while Plymouth only draws.
+
+**Status in source:** the boot sign-in secret no longer reaches Plymouth. The greeter
+takes it over its socket, and the console fallback ends Plymouth before it asks. The
+rollback PIN, the disk passphrase and the questions `tilo-boot-signin other-ways`
+carries after "Can't sign in" still go through Plymouth's password request.
 
 ---
 

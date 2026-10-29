@@ -26,6 +26,15 @@ def junit(name: str, tests: int) -> str:
             f'<testsuite name="{name}" tests="{tests}">{cases}</testsuite></testsuites>')
 
 
+def fake_cargo(root: Path, script: str) -> dict[str, str]:
+    """Stand in for cargo nextest with SCRIPT; the environment that runs it."""
+    bin_dir = root / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "cargo").write_text(script)
+    (bin_dir / "cargo").chmod(0o755)
+    return {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+
 class ScopedTestsTests(unittest.TestCase):
     def test_entries_are_validated(self):
         self.assertEqual(scoped.entries(json.dumps([ENTRY])), [ENTRY])
@@ -37,8 +46,7 @@ class ScopedTestsTests(unittest.TestCase):
 
     def test_command_runs_one_target_with_the_filter_and_without_goldens(self):
         argv = scoped.command(ENTRY, " test(golden) ")
-        self.assertEqual(argv[:8], ["bash", "tools/test-env.sh", "cargo", "nextest", "run",
-                                    "--locked", "--profile", "ci"])
+        self.assertEqual(argv[:6], ["cargo", "nextest", "run", "--locked", "--profile", "ci"])
         self.assertIn("--no-tests=fail", argv)
         self.assertEqual(argv[-6:], ["-p", "tilo-ui", "--test", "it", "-E",
                                      "(test(/^audit::/)) and not (test(golden))"])
@@ -53,9 +61,8 @@ class ScopedTestsTests(unittest.TestCase):
                     if existing:
                         report.parent.mkdir(parents=True)
                         report.write_text(junit("affected", 2))
-                    (root / "tools").mkdir()
-                    (root / "tools/test-env.sh").write_text(f"#!/bin/sh\nexit {exit_code}\n")
-                    env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY])}
+                    env = {**fake_cargo(root, f"#!/bin/sh\nexit {exit_code}\n"),
+                           "SCOPED_TESTS": json.dumps([ENTRY])}
                     result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
                                             capture_output=True, text=True)
                     self.assertEqual(result.returncode, exit_code or 1, result.stderr)
@@ -74,14 +81,13 @@ class ScopedTestsTests(unittest.TestCase):
                 report = root / scoped.JUNIT
                 report.parent.mkdir(parents=True)
                 report.write_text(junit("affected", 2))
-                (root / "tools").mkdir()
                 # The first invocation produces invalid evidence; the second
                 # still runs and must survive in the combined shard report.
-                (root / "tools/test-env.sh").write_text(
-                    "#!/bin/sh\nif [ ! -f invoked ]; then\ntouch invoked\n"
+                env = fake_cargo(
+                    root, "#!/bin/sh\nif [ ! -f invoked ]; then\ntouch invoked\n"
                     f"printf '%s' '{body}' > target/nextest/ci/junit.xml\nelse\n"
                     f"printf '%s' '{junit('later', 1)}' > target/nextest/ci/junit.xml\nfi\n")
-                env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY, ENTRY])}
+                env["SCOPED_TESTS"] = json.dumps([ENTRY, ENTRY])
                 result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, result.stderr)
@@ -94,11 +100,10 @@ class ScopedTestsTests(unittest.TestCase):
     def test_success_with_a_scoped_report_passes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "tools").mkdir()
-            (root / "tools/test-env.sh").write_text(
-                "#!/bin/sh\nmkdir -p target/nextest/ci\n"
+            env = fake_cargo(
+                root, "#!/bin/sh\nmkdir -p target/nextest/ci\n"
                 f"printf '%s' '{junit('tilo-ui::it', 1)}' > target/nextest/ci/junit.xml\n")
-            env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY])}
+            env["SCOPED_TESTS"] = json.dumps([ENTRY])
             result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -110,14 +115,11 @@ class ScopedTestsTests(unittest.TestCase):
             report = root / "target/nextest/ci/junit.xml"
             report.parent.mkdir(parents=True)
             report.write_text(junit("affected", 2))
-            fake = root / "bin"
-            fake.mkdir()
-            # Stand-in for tools/test-env.sh + nextest: write a report, then fail.
-            (root / "tools").mkdir()
-            (root / "tools/test-env.sh").write_text(
-                "#!/bin/sh\nmkdir -p target/nextest/ci\n"
+            # Stand-in for nextest: write a report, then fail.
+            env = fake_cargo(
+                root, "#!/bin/sh\nmkdir -p target/nextest/ci\n"
                 f"printf '%s' '{junit('tilo-ui::it', 1)}' > target/nextest/ci/junit.xml\nexit 3\n")
-            env = {**os.environ, "SCOPED_TESTS": json.dumps([ENTRY]), "GOLDEN_FILTER": "test(g)"}
+            env.update(SCOPED_TESTS=json.dumps([ENTRY]), GOLDEN_FILTER="test(g)")
             result = subprocess.run([sys.executable, str(MODULE_PATH)], cwd=root, env=env,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 3, result.stderr)

@@ -29,6 +29,14 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
         if let Some(category) = &app.category {
             options.push(format!("category: .{category}"));
         }
+        match app.previously.as_slice() {
+            [] => {}
+            [one] => options.push(format!("previously: {one}")),
+            many => options.push(format!("previously: [{}]", many.join(", "))),
+        }
+        if app.own_records {
+            options.push("records: .own".to_owned());
+        }
         let options = if options.is_empty() {
             String::new()
         } else {
@@ -413,7 +421,15 @@ impl Printer {
             }
             Item::Type(t) => {
                 self.docs(&t.doc);
-                self.line(&format!("type {} {{", t.name.name));
+                match &t.origin {
+                    Some(origin) => {
+                        self.line(&format!(
+                            "type {} (origin: {}) {{",
+                            t.name.name, origin.name
+                        ));
+                    }
+                    None => self.line(&format!("type {} {{", t.name.name)),
+                }
                 self.level += 1;
                 for f in &t.fields {
                     self.field(f);

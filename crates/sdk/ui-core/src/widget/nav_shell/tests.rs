@@ -2434,7 +2434,7 @@ fn a_header_action_runs_from_the_window_bar() {
         "{:?}",
         h.control_failures()
     );
-    assert_eq!(h.refusal_shown(), None);
+    assert_eq!(h.refusal_said(), None);
     assert_eq!(pressed.get(), 1, "the bar's press runs the button's action");
 }
 

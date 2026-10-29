@@ -34,37 +34,15 @@ impl From<collab_types::ContentRetention> for Retention {
 }
 
 /// The devices a host delivers `msg` to as it arrives, when only they can
-/// use it: the copy of a channel admission carrying what its devices join
-/// from (every other member gets the copy without it). `None` for a message
-/// every member of the room gets. A device catching up replays it like any
-/// retained message.
+/// use it: the copy of a channel commit carrying what the devices it adds
+/// join from (every other member gets the copy without it). `None` for a
+/// message every member of the room gets. A device catching up replays it
+/// like any retained message.
 pub fn audience(msg: &NeighbourMsg) -> Option<&[collab_types::Ed25519PublicKey]> {
     let NeighbourMsg::MlsGovernance { frame, .. } = msg else {
         return None;
     };
-    match &frame.action {
-        collab_types::MlsGovernanceAction::AddWithKeyHistory {
-            recipients,
-            joining: collab_types::Joining::Material(_),
-            ..
-        } => Some(recipients),
-        _ => None,
-    }
-}
-
-/// Whether only a channel's steward reads `msg`: a device's access request
-/// (plain or routed) and its acknowledgements of the steward's frames. The
-/// steward is the device that governs the channel's room; every other
-/// member ignores these. A host that governs the room itself, and so
-/// stewards its channels, need deliver them to no member and replay them
-/// to none.
-pub fn steward_only(msg: &NeighbourMsg) -> bool {
-    matches!(
-        msg,
-        NeighbourMsg::MlsAccessRequest { .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. }
-    )
+    frame.join_material().map(|_| frame.added())
 }
 
 /// Whether checkpoint `msg` is the whole of its route: its author's next
@@ -81,7 +59,6 @@ pub fn standalone(msg: &NeighbourMsg) -> bool {
         }
         NeighbourMsg::MlsAccessRequest { .. }
         | NeighbourMsg::MlsRoutedAccessRequest { .. }
-        | NeighbourMsg::MlsGovernanceAck { .. }
         | NeighbourMsg::IdentityHello { .. } => true,
         _ => false,
     }
@@ -123,11 +100,13 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         }
         // Channel governance is replayable state a device that was offline
         // must still receive, and none of it is content: the channel's
-        // genesis, its newest frame, and the latest access request and
-        // acknowledgement of each device. Genesis is kept for good: it names
-        // the channel's steward. Every later frame replaces the one before:
-        // a joining device needs only the admission that names it, and one
-        // that missed a commit asks again. Keeping every commit and Welcome
+        // genesis, its newest frame, and the latest access request of each
+        // device. Each genesis is kept for good: of two, every participant
+        // follows the lower. Every later frame replaces the one before: a
+        // joining device needs only the commit that adds it, and one that
+        // missed a commit asks again. The participant that wrote the winner
+        // of two commits on one epoch publishes it again, so the newest is
+        // the winner. Keeping every commit and Welcome
         // made each newcomer replay the channel's whole history, every
         // Welcome carrying the group's ratchet tree.
         NeighbourMsg::MlsGovernance { frame, .. } => {
@@ -156,12 +135,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
-        NeighbourMsg::MlsGovernanceAck { ack, .. } => {
-            let mut route = b"mls-ack\0".to_vec();
-            route.extend_from_slice(ack.channel.0.as_bytes());
-            route.extend_from_slice(ack.device.as_bytes());
-            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
-        }
         // A device's certificate, sent through a host by a member no gossip
         // neighbour can vouch for (a browser, a shell reachable only through
         // the host). Receivers bind it to the host-authenticated author, and
@@ -170,14 +143,6 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         NeighbourMsg::IdentityHello { cert, .. } => {
             let mut route = b"identity-hello\0".to_vec();
             route.extend_from_slice(&cert.device_public_key);
-            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
-        }
-        NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key, ..
-        } => {
-            let mut route = Vec::new();
-            route.extend_from_slice(b"personal-continuity\0");
-            route.extend_from_slice(user_public_key);
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
         // Each device's latest signed directory snapshot is the whole of
@@ -315,54 +280,44 @@ mod tests {
         );
     }
 
-    /// A device that was offline gets a channel's genesis and newest frame,
-    /// and the steward gets each device's latest request and
-    /// acknowledgement.
+    /// A device that was offline gets a channel's geneses and newest frame,
+    /// and every participant each device's latest request.
     fn host_retains_channel_governance_per_channel_and_device() {
         use collab_types::{
-            ChannelId, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-            MlsGovernanceFrameV1,
+            ChannelId, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
         };
-        let steward = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
         let other = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
         let channel = ChannelId::new();
-        let frame = |previous| NeighbourMsg::MlsGovernance {
+        let genesis = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsGovernance {
             room: "room".into(),
             frame: Box::new(
-                MlsGovernanceFrameV1::signed(
-                    channel,
-                    [1; 32],
-                    1,
-                    previous,
-                    0,
-                    MlsGovernanceAction::Genesis,
-                    &steward,
-                )
-                .unwrap(),
+                MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, key)
+                    .unwrap(),
             ),
             delivery: 0,
         };
-        let first = retention(&frame([0; 32]), false).unwrap();
-        assert_eq!(first, retention(&frame([0; 32]), false).unwrap());
-        assert_ne!(first.0, retention(&frame([1; 32]), false).unwrap().0);
+        let first = retention(&genesis(&signer), false).unwrap();
+        assert_eq!(first, retention(&genesis(&signer), false).unwrap());
+        assert_ne!(first.0, retention(&genesis(&other), false).unwrap().0);
         assert_eq!(first.1, Retention::Checkpoint);
-        let change = |epoch| NeighbourMsg::MlsGovernance {
+        let change = |epoch: u8| NeighbourMsg::MlsGovernance {
             room: "room".into(),
             frame: Box::new(
-                MlsGovernanceFrameV1::signed(
+                MlsGovernanceFrame::signed(
                     channel,
                     [epoch; 32],
                     u64::from(epoch),
-                    [epoch; 32],
-                    u64::from(epoch),
-                    MlsGovernanceAction::Remove {
-                        removed: collab_types::Ed25519PublicKey::from_bytes(
+                    MlsGovernanceAction::Commit {
+                        removed: vec![collab_types::Ed25519PublicKey::from_bytes(
                             device.verifying_key().to_bytes(),
-                        ),
+                        )],
+                        added: Vec::new(),
                         commit: vec![epoch],
+                        joining: None,
                     },
-                    &steward,
+                    &signer,
                 )
                 .unwrap(),
             ),
@@ -371,6 +326,7 @@ mod tests {
         let head = retention(&change(2), false).unwrap();
         assert_eq!(head, retention(&change(3), false).unwrap());
         assert_ne!(head.0, first.0);
+        assert!(audience(&change(2)).is_none());
 
         let request = |key: &ed25519_dalek::SigningKey| NeighbourMsg::MlsAccessRequest {
             room: "room".into(),
@@ -393,23 +349,6 @@ mod tests {
         assert!(standalone(&routed(&device)));
         assert_ne!(routed_mine, mine);
         assert_ne!(routed_mine, retention(&routed(&other), false).unwrap().0);
-
-        let ack = NeighbourMsg::MlsGovernanceAck {
-            room: "room".into(),
-            ack: Box::new(MlsGovernanceAckV1::signed(channel, [4; 32], &device).unwrap()),
-            delivery: 0,
-        };
-        let (acked, kind) = retention(&ack, false).unwrap();
-        assert_eq!(kind, Retention::Checkpoint);
-        assert_ne!(acked, mine);
-
-        // Requests and acknowledgements are the steward's alone; the frames
-        // it sends every member, and the genesis naming it, are not.
-        assert!(steward_only(&request(&device)));
-        assert!(steward_only(&routed(&device)));
-        assert!(steward_only(&ack));
-        assert!(!steward_only(&frame([0; 32])));
-        assert!(!steward_only(&change(2)));
     }
 
     fn host_persists_state_but_never_late_session_actions() {
@@ -447,39 +386,6 @@ mod tests {
             ),
             Some((_, Retention::Delta))
         ));
-        let root_a = [0xA1; 32];
-        let root_b = [0xB2; 32];
-        let checkpoint_a = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root_a,
-            publisher: 1,
-            snapshot: vec![7],
-        };
-        let checkpoint_b = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key: root_b,
-            publisher: 2,
-            snapshot: vec![8],
-        };
-        let Some((channel_a, Retention::Checkpoint)) = retention(&checkpoint_a, false) else {
-            panic!("personal continuity checkpoints must be retained baselines");
-        };
-        let Some((channel_b, Retention::Checkpoint)) = retention(&checkpoint_b, false) else {
-            panic!("personal continuity checkpoints must be retained baselines");
-        };
-        assert_ne!(
-            channel_a, channel_b,
-            "each user root has an isolated host channel"
-        );
-        assert!(
-            retention(
-                &NeighbourMsg::PersonalContinuityRequest {
-                    user_public_key: root_a,
-                    requester: 1,
-                },
-                false,
-            )
-            .is_none(),
-            "requests are live probes, never retained work"
-        );
         for live in [
             NeighbourMsg::RemoteInput {
                 peer: 1,

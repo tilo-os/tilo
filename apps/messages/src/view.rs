@@ -380,7 +380,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     }
     let setup = crate::setup::SetupView::new(
         sending.client(),
-        live.then(|| cx.take_lent()).flatten(),
+        live.then(|| enrollment(cx)).flatten(),
         cx.me(),
     );
     let groups = crate::groups::GroupsView::new(sending.client());
@@ -462,6 +462,21 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     Box::new(crate::window_bar::MessagesWindow { content, bar })
 }
 
+/// The person's accounts in the messaging service, when the launcher
+/// connected this app to it rather than a host lending them.
+fn inherited() -> Option<(
+    tilo_messaging::EnrollmentClient,
+    tilo_messaging::MessagingClient,
+)> {
+    tilo_messaging::service::inherited()
+}
+
+/// Account enrollment: lent by a host, else the messaging service's.
+fn enrollment(cx: &ViewCx<Messages>) -> Option<tilo_messaging::EnrollmentClient> {
+    cx.take_lent()
+        .or_else(|| inherited().map(|(enrollment, _)| enrollment))
+}
+
 /// What the content column shows: the open groups, the account setup or
 /// the conversation with the selected person.
 /// The composer's sending state and the person's own record of drafts.
@@ -474,7 +489,11 @@ fn sending_and_drafts(
 ) {
     let drafts = cx.person::<crate::drafts::MessageDrafts>();
     let sending = crate::sending::Sending::new(
-        live.then(|| cx.take_lent()).flatten(),
+        live.then(|| {
+            cx.take_lent()
+                .or_else(|| inherited().map(|(_, messaging)| messaging))
+        })
+        .flatten(),
         cx.me(),
         drafts.clone(),
     );

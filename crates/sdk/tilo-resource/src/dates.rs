@@ -8,11 +8,15 @@ use crate::model::{Doc, Model, ModelError, Slot, json_shape};
 use crate::path::Settable;
 
 macro_rules! date_model {
-    ($($ty:ty => $format:literal, $schema:literal, $what:literal;)*) => {$(
+    ($($ty:ty => $format:literal, $schema:literal, $what:literal, $field:ident;)*) => {$(
         impl Settable for $ty {}
         impl Model for $ty {
             crate::__own_table!($ty);
             crate::model::leaf_paths!();
+            fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+                let _ = types;
+                crate::FieldType::$field
+            }
             fn to_json(&self) -> serde_json::Value {
                 serde_json::Value::String(self.format($format).to_string())
             }
@@ -46,13 +50,16 @@ macro_rules! date_model {
             fn json_schema() -> serde_json::Value {
                 serde_json::json!({"type": "string", "pattern": $schema})
             }
+            fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+                crate::FieldType::$field
+            }
         }
     )*};
 }
 
 date_model! {
-    NaiveDate => "%Y-%m-%d", r"^\d{4}-\d{2}-\d{2}$", "a date";
-    NaiveTime => "%H:%M:%S%.f", r"^\d{2}:\d{2}:\d{2}(\.\d+)?$", "a time";
+    NaiveDate => "%Y-%m-%d", r"^\d{4}-\d{2}-\d{2}$", "a date", Date;
+    NaiveTime => "%H:%M:%S%.f", r"^\d{2}:\d{2}:\d{2}(\.\d+)?$", "a time", Text;
     NaiveDateTime => "%Y-%m-%dT%H:%M:%S%.f",
-        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$", "a date and time";
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$", "a date and time", Time;
 }

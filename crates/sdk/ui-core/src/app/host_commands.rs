@@ -6,6 +6,8 @@ use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 #[cfg(any(feature = "native", test))]
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
 #[cfg(any(feature = "native", test))]
+use crate::host_core::HostCore as _;
+#[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;
 #[cfg(any(feature = "native", test))]
 use crate::standalone_history::{HistoryReadContext, StandaloneHistory};
@@ -131,18 +133,6 @@ impl App {
                 .history_request(&mut self.state.doc, request)
                 .ok()
                 .flatten()
-        } else if let Some(owner) = self
-            .focused_node
-            .and_then(|node| self.bindings.legacy_for(node))
-        {
-            crate::bound_dispatch::legacy_history_request(
-                &owner,
-                request,
-                &self.permission_ctx,
-                &self.collaboration.local_author,
-            )
-            .ok()
-            .flatten()
         } else {
             let author = Some(&self.collaboration.local_author);
             match request {
@@ -181,12 +171,6 @@ impl App {
             .or_else(|| self.root_widget.callback_binding())
         {
             return binding.undo_status(&mut self.state.doc).unwrap_or_default();
-        }
-        if let Some(status) = focused.and_then(|node| {
-            self.bindings
-                .legacy_status(node, &self.collaboration.local_author)
-        }) {
-            return status;
         }
         self.state
             .undo_status_snapshot(Some(&self.collaboration.local_author))
@@ -299,16 +283,11 @@ impl App {
         let Ok(target) = self.capture_history_target() else {
             return Vec::new();
         };
-        let context = HistoryReadContext {
-            document: &self.state.doc,
-            active_record: self
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: self.state.document_identity(),
-            permissions: &self.permission_ctx,
-        };
+        let context = HistoryReadContext::of(
+            &self.state,
+            self.persistence.records.as_ref(),
+            &self.permission_ctx,
+        );
         StandaloneHistory::open(
             target,
             &context,
@@ -322,7 +301,7 @@ impl App {
     pub(super) fn palette_presented(&self) -> bool {
         self.actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
     }
 }

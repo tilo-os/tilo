@@ -20,7 +20,7 @@ ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
-rustix = { workspace = true, features = ["event", "process"] }
+rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true

@@ -5,10 +5,11 @@
 #   t-nextest.sh cargo nextest run ... -p NAME ... [-E FILTER]
 #
 # It prepares what the packages under test need beyond the builder image,
-# then runs the command under
-# tools/test-env.sh. Without an -E of its own, the run leaves out the visual
-# goldens (the `goldens` check runs them alone, on its image), as
-# .config/nextest-filters.toml says. With one (`t test
+# then runs the command: a nextest run sets up its test environment itself
+# (the ci profile's setup scripts, .config/nextest.toml), wherever cargo runs
+# it; any other command runs under tools/test-env.sh. Without an -E of its
+# own, the run leaves out the visual goldens (the `goldens` check runs them
+# alone, on its image), as .config/nextest-filters.toml says. With one (`t test
 # PKG --test NAME` asks for one test) the filter is left as given. Other cargo
 # commands (`t cargo build` runs under this wrapper too) pass through unchanged.
 #
@@ -212,8 +213,10 @@ done
 # A name filter for the test binaries selects by hand too.
 (( ${#tail[@]} > 1 )) && timed=0
 
+environment=()
+(( nextest )) || environment=(bash "$root/tools/test-env.sh")
 if (( ! timed )); then
-    exec bash "$root/tools/test-env.sh" "${arguments[@]}" "${tail[@]}"
+    exec "${environment[@]}" "${arguments[@]}" "${tail[@]}"
 fi
 # nextest's output and libtest's JSON events stay the log's own, as they were
 # written: the events pass through as t's log already carries them, and the times
@@ -225,7 +228,7 @@ fi
 format=(--message-format json-pretty)
 [[ " $* " == *" --message-format "* || " $* " == *" --message-format="* ]] && format=()
 status=0
-bash "$root/tools/test-env.sh" "${arguments[@]}" "${format[@]}" "${tail[@]}" 2>&1 \
+"${arguments[@]}" "${format[@]}" "${tail[@]}" 2>&1 \
     | python3 -u "$root/tools/ci/ci_test_timings.py" record --json "$timings" || status=$?
 # The run's own verdict, not the recording's.
 exit "$status"

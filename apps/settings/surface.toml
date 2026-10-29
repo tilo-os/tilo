@@ -8,7 +8,7 @@ version = 1
 [[resources]]
 kind = "settings.appearance"
 label = "Appearance"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "mode", type = "String" },
@@ -27,7 +27,6 @@ fields = [
   { path = "wallpaper_scope", type = "String" },
   { path = "wallpaper_target", type = "String" },
   { path = "wallpaper", type = "Option<String>" },
-  { path = "distribution_defaults", type = "Option<ui::theme::DistributionDefaults>", readonly = true },
   { path = "forced_colors", type = "bool" },
   { path = "distinct_letters", type = "Option<bool>" },
   { path = "language", type = "Option<String>" },
@@ -41,9 +40,18 @@ params = [
 ]
 
 [[resources]]
+kind = "settings.appearance-device"
+label = "Appearance on this device"
+version = 1
+person = true
+fields = [
+  { path = "distribution_defaults", type = "Option<ui::theme::DistributionDefaults>", readonly = true },
+]
+
+[[resources]]
 kind = "settings.accessibility"
 label = "Accessibility"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "large_cursor", type = "bool" },
@@ -68,7 +76,6 @@ fields = [
   { path = "switch_scan_ms", type = "u16" },
   { path = "screen_reader_rate", type = "u16", readonly = true },
   { path = "screen_reader_voice", type = "ScreenReaderVoice", readonly = true },
-  { path = "apply_to_sign_in", type = "bool" },
   { path = "dictation_language", type = "DictationLanguage" },
   { path = "dictation_literal", type = "bool" },
 ]
@@ -81,9 +88,18 @@ params = [
 ]
 
 [[resources]]
+kind = "settings.accessibility-device"
+label = "Accessibility on this device"
+version = 1
+person = true
+fields = [
+  { path = "apply_to_sign_in", type = "bool" },
+]
+
+[[resources]]
 kind = "settings.input"
 label = "Input"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "touchpad_natural_scroll", type = "bool" },
@@ -103,21 +119,12 @@ fields = [
   { path = "left_handed", type = "bool" },
   { path = "accel_profile", type = "String" },
   { path = "touchpad_gestures", type = "bool" },
-  { path = "touchpad_enabled", type = "bool" },
-  { path = "touchpad_disabled_on_external_mouse", type = "bool" },
   { path = "touchpad_click_method", type = "settings_store::hardware::TouchpadClickMethod" },
   { path = "touchpad_scroll_method", type = "settings_store::hardware::TouchpadScrollMethod" },
   { path = "scroll_speed", type = "f64" },
   { path = "compose_key", type = "Option<String>", readonly = true },
   { path = "caps_lock", type = "Option<String>", readonly = true },
   { path = "keyboard_layouts", type = "Vec<String>", readonly = true },
-  { path = "keyboard_model", type = "String", readonly = true },
-  { path = "keyboard_assignments", type = "std::collections::BTreeMap<String, settings_store::keyboard_sources ::\nKeyboardProfile>", readonly = true },
-  { path = "keyboard_preview", type = "Option<String>", readonly = true },
-  { path = "keyboard_preview_extra_levels", type = "bool", readonly = true },
-  { path = "keyboard_preview_level", type = "usize", readonly = true },
-  { path = "keyboard_inspected_key", type = "String", readonly = true },
-  { path = "tablets", type = "std::collections::BTreeMap<String, settings_store::hardware ::\nTabletConfig>", readonly = true },
   { path = "paste_shortcuts", type = "std::collections::BTreeMap<String, String>", readonly = true },
 ]
 
@@ -133,6 +140,23 @@ id = "choose-layout"
 kind = "undoable"
 params = [
   { name = "layout", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "settings.input-device"
+label = "Input on this device"
+version = 1
+person = true
+fields = [
+  { path = "touchpad_enabled", type = "bool" },
+  { path = "touchpad_disabled_on_external_mouse", type = "bool" },
+  { path = "keyboard_model", type = "String", readonly = true },
+  { path = "keyboard_assignments", type = "std::collections::BTreeMap<String, settings_store::keyboard_sources ::\nKeyboardProfile>", readonly = true },
+  { path = "keyboard_preview", type = "Option<String>", readonly = true },
+  { path = "keyboard_preview_extra_levels", type = "bool", readonly = true },
+  { path = "keyboard_preview_level", type = "usize", readonly = true },
+  { path = "keyboard_inspected_key", type = "String", readonly = true },
+  { path = "tablets", type = "std::collections::BTreeMap<String, settings_store::hardware ::\nTabletConfig>", readonly = true },
 ]
 
 [[resources]]
@@ -191,23 +215,27 @@ fields = [
   { path = "music", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
   { path = "music.enabled", type = "bool" },
   { path = "music.show", type = "ShowMode" },
-  { path = "music.edge", type = "DockEdge" },
   { path = "music.always_on_strips", type = "Vec<u64>" },
+  { path = "music.places", type = "Vec<Place>" },
+  { path = "music.width", type = "Option<f64>" },
   { path = "team", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
   { path = "team.enabled", type = "bool" },
   { path = "team.show", type = "ShowMode" },
-  { path = "team.edge", type = "DockEdge" },
   { path = "team.always_on_strips", type = "Vec<u64>" },
+  { path = "team.places", type = "Vec<Place>" },
+  { path = "team.width", type = "Option<f64>" },
   { path = "calendar", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
   { path = "calendar.enabled", type = "bool" },
   { path = "calendar.show", type = "ShowMode" },
-  { path = "calendar.edge", type = "DockEdge" },
   { path = "calendar.always_on_strips", type = "Vec<u64>" },
+  { path = "calendar.places", type = "Vec<Place>" },
+  { path = "calendar.width", type = "Option<f64>" },
   { path = "system_monitor", type = "settings_store::desk_widgets::WidgetPrefs", stored = "record" },
   { path = "system_monitor.enabled", type = "bool" },
   { path = "system_monitor.show", type = "ShowMode" },
-  { path = "system_monitor.edge", type = "DockEdge" },
   { path = "system_monitor.always_on_strips", type = "Vec<u64>" },
+  { path = "system_monitor.places", type = "Vec<Place>" },
+  { path = "system_monitor.width", type = "Option<f64>" },
 ]
 
 [[resources]]
@@ -252,7 +280,7 @@ params = [
 [[resources]]
 kind = "settings.audio"
 label = "Sound"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "system_sounds", type = "settings_store::system_sounds::SystemSoundPrefs", stored = "record" },
@@ -268,24 +296,40 @@ fields = [
   { path = "system_sounds.events.device_disconnected", type = "bool" },
   { path = "system_sounds.events.low_battery", type = "bool" },
   { path = "system_sounds.events.error", type = "bool" },
-  { path = "output_device", type = "Option<String>", readonly = true },
-  { path = "input_device", type = "Option<String>", readonly = true },
   { path = "balance", type = "f32" },
   { path = "mono_output", type = "bool", readonly = true },
   { path = "echo_cancellation", type = "bool", readonly = true },
 ]
 
 [[resources]]
-kind = "settings.display"
-label = "Displays"
+kind = "settings.audio-device"
+label = "Sound on this device"
 version = 1
 person = true
 fields = [
+  { path = "output_device", type = "Option<String>", readonly = true },
+  { path = "input_device", type = "Option<String>", readonly = true },
+]
+
+[[resources]]
+kind = "settings.display"
+label = "Displays"
+version = 2
+person = true
+fields = [
   { path = "auto_brightness", type = "bool", readonly = true },
+  { path = "scale", type = "f64" },
+]
+
+[[resources]]
+kind = "settings.night-light"
+label = "Night light"
+version = 1
+person = true
+fields = [
   { path = "night_light", type = "bool" },
   { path = "night_light_temperature", type = "u32" },
   { path = "night_light_schedule", type = "bool" },
-  { path = "scale", type = "f64" },
 ]
 
 [[resources]]
@@ -375,10 +419,18 @@ params = [
 [[resources]]
 kind = "settings.desktop-controls"
 label = "Desktop controls"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "vim_mode", type = "bool" },
+]
+
+[[resources]]
+kind = "settings.desktop-controls-device"
+label = "Desktop controls on this device"
+version = 1
+person = true
+fields = [
   { path = "hide_top_bar", type = "bool" },
 ]
 
@@ -392,6 +444,17 @@ fields = [
   { path = "config.profiles", type = "Vec<ProviderProfile>" },
   { path = "config.default_profile", type = "Option<String>" },
   { path = "config.agent_models", type = "BTreeMap<String, AgentModel>" },
+  { path = "config.interaction_models", type = "BTreeMap<String, AgentModel>" },
+]
+
+[[resources]]
+kind = "settings.hosted-agent-providers"
+label = "Hosted agent model providers"
+version = 1
+person = true
+fields = [
+  { path = "hosted", type = "HostedProfiles", readonly = true, stored = "record" },
+  { path = "hosted.profiles", type = "Vec<ProviderProfile>" },
 ]
 
 [[resources]]

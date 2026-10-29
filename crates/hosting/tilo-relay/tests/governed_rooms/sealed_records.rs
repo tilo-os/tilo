@@ -1,5 +1,5 @@
 //! A member seals a write to a record the room's governor holds, as every
-//! member of a room whose channels a node stewards does. The governor keeps
+//! member of a room whose channels a node takes part in does. The governor keeps
 //! the ciphertext as the record's history and goes on governing: the next
 //! person is still let in, and so is one after the relay restarts.
 use super::*;
@@ -99,7 +99,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let room = create_and_enter(&relay, &host, &laptop, "Lounge").await;
+    let room = create_and_enter(&relay, &laptop, "Lounge").await;
     let mut bob_peer = join(&relay, &laptop, &room.room, &bob, &phone, [7; 32])
         .await
         .unwrap();

@@ -10,13 +10,18 @@
 //! (`crate::view`); a connected session is `SessionPane`, which paints
 //! the remote terminal grid or framebuffer.
 //!
+//! The window is a bound view: [`window`] lays it out over the saved
+//! connections the document holds. What it shows lives in a [`Store`] it
+//! shares with the view's effect handler and the live rows the view
+//! publishes; the window keeps only its widgets.
+//!
 //! Controls report through one queue of `Action`s, drained after every
 //! event, so the pointer, the keyboard, assistive technology and the
 //! resource actions agents call share one path. Saved connections change
 //! only through the resource's dispatcher; a connection's password or key
 //! passphrase lives in this device's secret store.
 
-use std::cell::RefCell;
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -34,6 +39,7 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::LocalState;
+use ui::framework::{EffectStatus, Live, Publishes, ViewCx};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -627,12 +633,45 @@ enum Content {
     Missing,
 }
 
+/// The window: the rail and the current screen, or the session alone while
+/// it fills the window, and the confirmation it asks; what they show is the
+/// [`Store`]'s.
+pub struct RemoteApp {
+    store: Shared,
+    /// The open session's transport, shared with the store and its pane.
+    session: SharedSession,
+    /// The connections as the document holds them, shown as they change;
+    /// `None` for a window outside the framework.
+    live: Option<Live<Remote>>,
+    /// The `(revision, loads)` of the connections last shown.
+    presented: Option<(u64, u64)>,
+    dialog: Option<ModalDialog<Column>>,
+    /// The window: rail and current screen.
+    shell: NavShell,
+    /// The session alone, while it fills the window.
+    immersive: Option<SessionPane>,
+    /// The window bar's entries, carrying the actions they ask for.
+    bar: ui::framework::BarCommands<Action>,
+    /// The fingerprint of what the window was last built to show.
+    built: Option<u64>,
+    rect: Rect,
+    layout_dirty: bool,
+}
+
+/// A capture's scenario (`None` for a plain capture).
+pub(crate) struct Staged(Option<String>);
+
+/// The [`Store`] as the window and the view share it.
+pub(crate) type Shared = Rc<RefCell<Store>>;
+
+/// What the window, the view's effect handler and the live rows the view
+/// publishes share: the connections, the screen, the draft and the session.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent flag (fullscreen, layout and paint gates, \
-              capture); grouping them would express no invariant between them"
+    reason = "each bool is an independent flag (fullscreen, validation, paint \
+              gate, capture); grouping them would express no invariant between them"
 )]
-pub struct RemoteApp {
+pub(crate) struct Store {
     /// The saved connections as the resource last presented them, plus what
     /// this device observed of their reachability.
     workspace: Workspace,
@@ -690,22 +729,18 @@ pub struct RemoteApp {
     /// Confirmation mirroring resource-action policy. Private view state,
     /// never replicated with the connection profile.
     pending_confirmation: Option<PendingConfirmation>,
-    dialog: Option<ModalDialog<Column>>,
-
-    /// The window: rail and current screen.
-    shell: NavShell,
-    /// The session alone, while it fills the window.
-    immersive: Option<SessionPane>,
+    /// The pending confirmation is to be asked, in a dialog the window
+    /// builds when it next looks.
+    asking: bool,
     /// The queue every control reports to.
     requests: Requests,
-    /// The window bar's entries, carrying the actions they ask for.
-    bar: ui::framework::BarCommands<Action>,
     /// Search hits picked in the platform search, waiting to be shown.
     opened: Rc<RefCell<Vec<String>>>,
-    /// The fingerprint of what the window was last built to show.
-    built: Option<u64>,
-    rect: Rect,
-    layout_dirty: bool,
+    /// The scenario a capture staged, staged once the window has shown the
+    /// document.
+    staged: Option<Staged>,
+    /// An effect changed what the window shows since it last looked.
+    changed: bool,
     dirty: bool,
 }
 
@@ -717,6 +752,207 @@ impl RemoteApp {
     }
 
     fn from_parts(workspace: Workspace, tilo_devices: Vec<TiloDevice>) -> Self {
+        let store = Store::new(workspace, tilo_devices);
+        Self {
+            session: Rc::clone(&store.session),
+            store: Rc::new(RefCell::new(store)),
+            live: None,
+            presented: None,
+            dialog: None,
+            shell: NavShell::new()
+                .content_kind(ui::widget::ContentKind::Document)
+                .with_id("remote.shell")
+                .with_window_toolbar()
+                .mode(NavMode::Docked),
+            immersive: None,
+            bar: ui::framework::BarCommands::new(),
+            built: None,
+            rect: Rect::ZERO,
+            layout_dirty: true,
+        }
+    }
+
+    /// A bare widget holding the sample roster and what a capture observes
+    /// of it, for tests.
+    #[cfg(test)]
+    fn sample() -> Self {
+        let sample = Sample::new();
+        let mut workspace = Workspace::new();
+        workspace.connections = sample_connections();
+        workspace.connections.push(sample_legacy_rdp());
+        workspace.presence = sample.presence;
+        let app = Self::from_parts(workspace, sample.devices);
+        app.state().now_override = Some(sample.now_ms);
+        app
+    }
+
+    /// What the window shares with the view.
+    pub(crate) fn state(&self) -> RefMut<'_, Store> {
+        self.store.borrow_mut()
+    }
+
+    /// Apply `action`, and show what it changed.
+    fn apply(&mut self, action: Action) {
+        self.state().apply(action);
+        self.follow_store();
+    }
+
+    /// Run every queued action.
+    fn apply_requests(&mut self) {
+        let requests = Rc::clone(&self.state().requests);
+        loop {
+            let queued = std::mem::take(&mut *requests.borrow_mut());
+            if queued.is_empty() {
+                break;
+            }
+            for action in queued {
+                self.apply(action);
+            }
+        }
+    }
+
+    /// Stage a named screenshot scenario (see [`Store::stage`]).
+    #[cfg(test)]
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.state().stage(scenario);
+        self.follow_store();
+    }
+
+    /// Show the connections the document holds, when they changed since the
+    /// window last showed them.
+    fn follow_document(&mut self) {
+        let Some(shown) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return;
+        };
+        self.state().adopt_resource_state(&shown.list());
+    }
+
+    /// Bring the widgets in step with the store: stage a capture's
+    /// scenario, fill the window with the session or not, ask the pending
+    /// confirmation, and rebuild the views when what they show changed.
+    fn follow_store(&mut self) {
+        let staged = {
+            let mut store = self.state();
+            store.changed = false;
+            store.staged.take()
+        };
+        if let Some(scenario) = staged {
+            self.state().stage(scenario.0.as_deref());
+        }
+        let mut store = self.store.borrow_mut();
+        if store.fullscreen != self.immersive.is_some() {
+            self.immersive = store
+                .fullscreen
+                .then(|| SessionPane::new(Rc::clone(&self.session)));
+            self.layout_dirty = true;
+        }
+        if store.pending_confirmation.is_none() {
+            store.asking = false;
+            self.dialog = None;
+        } else if std::mem::take(&mut store.asking) {
+            self.dialog = store.confirmation_dialog();
+        }
+        drop(store);
+        self.check_views();
+    }
+
+    /// Ask for a rebuild when what the views show changed.
+    fn check_views(&mut self) {
+        let key = self.store.borrow().view_key();
+        if self.built != Some(key) {
+            self.layout_dirty = true;
+            self.state().dirty = true;
+        }
+    }
+
+    /// Put the current screen and the rail into the shell.
+    fn rebuild_views(&mut self) {
+        let store = self.store.borrow();
+        let key = store.view_key();
+        if self.built == Some(key) {
+            return;
+        }
+        self.built = Some(key);
+        let session_kind = store
+            .session_for
+            .and_then(|id| store.workspace.get(id))
+            .map(|c| c.kind);
+        let rail = view::rail(&store.requests, store.destination, session_kind);
+        let content: Element = match store.content() {
+            Content::List {
+                destination,
+                rows,
+                has_connections,
+            } => view::connection_list(&store.requests, destination, &rows, has_connections),
+            Content::Form(model) => view::connection_form(&store.requests, &store.fields, &model),
+            Content::Surface(_) => Box::new(SessionPane::new(Rc::clone(&self.session))),
+            Content::Status { id, .. } => {
+                view::session_status(&store.requests, store.status_model(id))
+            }
+            Content::Missing => Box::new(
+                ui::widget::EmptyState::new("This connection was deleted")
+                    .with_icon(Icon::Monitor)
+                    .with_message("Someone you share your connections with removed it."),
+            ),
+        };
+        drop(store);
+        self.shell.set_sidebar(Some(Box::new(rail)));
+        self.shell.set_content(content);
+    }
+
+    /// The child that fills the window: the shell, or the session alone.
+    fn body_mut(&mut self) -> &mut dyn Widget {
+        match self.immersive.as_mut() {
+            Some(pane) => pane,
+            None => &mut self.shell,
+        }
+    }
+
+    fn body(&self) -> &dyn Widget {
+        match self.immersive.as_ref() {
+            Some(pane) => pane,
+            None => &self.shell,
+        }
+    }
+}
+
+/// The window as the view lays it out: it shows the connections the
+/// document holds, answers the effects through the store it shares with
+/// them, publishes each connection and the open session as live rows, and
+/// stages a capture's scenario.
+pub(crate) fn window(cx: &ViewCx<Remote>, mut window: RemoteApp) -> Element {
+    window.live = Some(cx.live().clone());
+    window.state().attach_framework(cx);
+    let store = Rc::clone(&window.store);
+    {
+        let (answer, status) = (Rc::clone(&store), Rc::clone(&store));
+        cx.effects(move |effect: crate::actions::RemoteEffect, cx| {
+            let mut store = answer.borrow_mut();
+            store.changed = true;
+            store.answer_effect(effect, cx)
+        })
+        .status(move || status.borrow().effect_statuses());
+    }
+    {
+        let store = Rc::clone(&store);
+        cx.on_stage(move |scenario| {
+            store.borrow_mut().staged = Some(Staged(scenario.map(str::to_owned)));
+        });
+    }
+    cx.publishing(
+        // Each saved connection's settings and connect, and the open
+        // session.
+        Publishes::new().live_rows(move || store.borrow().live_connection_rows()),
+        Box::new(window),
+    )
+}
+
+impl Store {
+    fn new(workspace: Workspace, tilo_devices: Vec<TiloDevice>) -> Self {
         Self {
             workspace,
             screen: Screen::List,
@@ -743,35 +979,13 @@ impl RemoteApp {
             submitted: RefCell::default(),
             pending_resource_operation: None,
             pending_confirmation: None,
-            dialog: None,
-            shell: NavShell::new()
-                .content_kind(ui::widget::ContentKind::Document)
-                .with_id("remote.shell")
-                .with_window_toolbar()
-                .mode(NavMode::Docked),
-            immersive: None,
+            asking: false,
             requests: Requests::default(),
-            bar: ui::framework::BarCommands::new(),
             opened: Rc::default(),
-            built: None,
-            rect: Rect::ZERO,
-            layout_dirty: true,
+            staged: None,
+            changed: false,
             dirty: true,
         }
-    }
-
-    /// A bare widget holding the sample roster and what a capture observes
-    /// of it, for tests.
-    #[cfg(test)]
-    fn sample() -> Self {
-        let sample = Sample::new();
-        let mut workspace = Workspace::new();
-        workspace.connections = sample_connections();
-        workspace.connections.push(sample_legacy_rdp());
-        workspace.presence = sample.presence;
-        let mut app = Self::from_parts(workspace, sample.devices);
-        app.now_override = Some(sample.now_ms);
-        app
     }
 
     /// Where the platform search hands the hits a person picks: the view
@@ -863,7 +1077,6 @@ impl RemoteApp {
             _ => {}
         }
         self.dirty = true;
-        self.check_views();
     }
 
     /// Stage a session in a fixed status, with no transport (shots and
@@ -1004,10 +1217,6 @@ impl RemoteApp {
             Action::ToggleFullscreen => self.set_fullscreen(!self.fullscreen),
             Action::Disconnect => self.request_disconnect(),
         }
-        if self.pending_confirmation.is_none() {
-            self.dialog = None;
-        }
-        self.check_views();
     }
 
     fn set_fullscreen(&mut self, fullscreen: bool) {
@@ -1016,22 +1225,7 @@ impl RemoteApp {
             return;
         }
         self.fullscreen = fullscreen;
-        self.immersive = fullscreen.then(|| SessionPane::new(Rc::clone(&self.session)));
-        self.layout_dirty = true;
         self.dirty = true;
-    }
-
-    /// Run every queued action.
-    fn apply_requests(&mut self) {
-        loop {
-            let queued = std::mem::take(&mut *self.requests.borrow_mut());
-            if queued.is_empty() {
-                break;
-            }
-            for action in queued {
-                self.apply(action);
-            }
-        }
     }
 
     /// Show the connection a picked search hit points at.
@@ -1263,7 +1457,6 @@ impl RemoteApp {
         self.workspace.connections = state.to_vec();
         self.forget_vanished();
         self.dirty = true;
-        self.check_views();
     }
 
     /// Drop references to connections a collaborator deleted.
@@ -1287,17 +1480,11 @@ impl RemoteApp {
         }
     }
 
-    /// Take the resource's door and this device's secret store when hosted
-    /// as a [`ResourceSurface`]; a capture shows its sample's reachability
-    /// and nearby devices.
-    ///
-    /// [`ResourceSurface`]: ui::framework::ResourceSurface
-    pub(crate) fn attach_framework(
-        &mut self,
-        cx: &ui::framework::SurfaceCx<crate::resource::Remote>,
-    ) {
+    /// Take the resource's door and this device's secret store from the
+    /// view; a capture shows its sample's reachability and nearby devices.
+    fn attach_framework(&mut self, cx: &ViewCx<Remote>) {
         self.dispatch = Some(cx.dispatcher());
-        self.secrets = Some(cx.secrets());
+        self.secrets = Some(cx.storage().secrets());
         self.known_hosts = crate::ssh::KnownHostStore::in_settings(
             cx.storage().settings::<crate::ssh::KnownHostsSetting>(),
         );
@@ -1415,47 +1602,6 @@ impl RemoteApp {
         ))
     }
 
-    /// Ask for a rebuild when what the views show changed.
-    fn check_views(&mut self) {
-        if self.built != Some(self.view_key()) {
-            self.layout_dirty = true;
-            self.dirty = true;
-        }
-    }
-
-    /// Put the current screen and the rail into the shell.
-    fn rebuild_views(&mut self) {
-        let key = self.view_key();
-        if self.built == Some(key) {
-            return;
-        }
-        self.built = Some(key);
-        let session_kind = self
-            .session_for
-            .and_then(|id| self.workspace.get(id))
-            .map(|c| c.kind);
-        let rail = view::rail(&self.requests, self.destination, session_kind);
-        let content: Element = match self.content() {
-            Content::List {
-                destination,
-                rows,
-                has_connections,
-            } => view::connection_list(&self.requests, destination, &rows, has_connections),
-            Content::Form(model) => view::connection_form(&self.requests, &self.fields, &model),
-            Content::Surface(_) => Box::new(SessionPane::new(Rc::clone(&self.session))),
-            Content::Status { id, .. } => {
-                view::session_status(&self.requests, self.status_model(id))
-            }
-            Content::Missing => Box::new(
-                ui::widget::EmptyState::new("This connection was deleted")
-                    .with_icon(Icon::Monitor)
-                    .with_message("Someone you share your connections with removed it."),
-            ),
-        };
-        self.shell.set_sidebar(Some(Box::new(rail)));
-        self.shell.set_content(content);
-    }
-
     /// What a session that shows no remote surface says, and the one way
     /// forward it offers.
     fn status_model(&self, id: ConnectionId) -> StatusModel {
@@ -1535,21 +1681,6 @@ impl RemoteApp {
                 error: false,
                 action: Some(("Reconnect", Action::RequestConnect(id))),
             },
-        }
-    }
-
-    /// The child that fills the window: the shell, or the session alone.
-    fn body_mut(&mut self) -> &mut dyn Widget {
-        match self.immersive.as_mut() {
-            Some(pane) => pane,
-            None => &mut self.shell,
-        }
-    }
-
-    fn body(&self) -> &dyn Widget {
-        match self.immersive.as_ref() {
-            Some(pane) => pane,
-            None => &self.shell,
         }
     }
 
@@ -1662,15 +1793,25 @@ impl Collaborative for RemoteApp {
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        if self.state().workspace_control(event) {
+            self.check_views();
+        }
+    }
+}
+
+impl Store {
+    /// Follow what the collaboration broker says of the Tilo session's
+    /// workspace control; `true` when it was this session's.
+    fn workspace_control(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
         let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
-            return;
+            return false;
         };
         let mut core = self.session.borrow_mut();
         let Some(LiveSession::Tilo(session)) = core.live.as_mut() else {
-            return;
+            return false;
         };
         if session.id != *session_id {
-            return;
+            return false;
         }
         let mut keyframe_request = None;
         match event {
@@ -1711,7 +1852,7 @@ impl Collaborative for RemoteApp {
         core.changed = true;
         drop(core);
         self.dirty = true;
-        self.check_views();
+        true
     }
 }
 
@@ -1726,15 +1867,20 @@ impl Widget for RemoteApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // The saved connections arrive through the resource
-        // ([`Self::adopt_resource_state`]); here the window catches up on
-        // picked search hits and queued controls.
-        self.settle_pending_effect();
-        self.open_found();
+        // The saved connections follow the document; then the window
+        // catches up on what the effects did, picked search hits and queued
+        // controls.
+        self.follow_document();
+        self.follow_store();
+        {
+            let mut store = self.state();
+            store.settle_pending_effect();
+            store.open_found();
+        }
         self.take_window_toolbar_events();
         self.apply_requests();
-        self.revalidate();
-        self.check_views();
+        self.state().revalidate();
+        self.follow_store();
         self.declare_window_toolbar();
         self.body_mut().sync(state, path);
     }
@@ -1745,7 +1891,11 @@ impl Widget for RemoteApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.pending_resource_operation.is_some() || !self.opened.borrow().is_empty()
+        let store = self.store.borrow();
+        store.pending_resource_operation.is_some()
+            || !store.opened.borrow().is_empty()
+            || store.staged.is_some()
+            || store.changed
     }
 
     fn build_layout(
@@ -1778,7 +1928,7 @@ impl Widget for RemoteApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.pump_session();
+        self.state().pump_session();
         self.check_views();
         self.body_mut()
             .draw(scene, transform, text_renderer, theme, presence);
@@ -1835,10 +1985,11 @@ impl Widget for RemoteApp {
             );
             *ctx.handled = true;
             self.apply_requests();
-            self.dirty = true;
+            self.state().dirty = true;
             return;
         }
-        if let Some(action) = self.handle_shortcut(event, ctx.modifiers.state()) {
+        let shortcut = self.state().handle_shortcut(event, ctx.modifiers.state());
+        if let Some(action) = shortcut {
             self.apply(action);
             *ctx.handled = true;
             return;
@@ -1850,16 +2001,19 @@ impl Widget for RemoteApp {
             self.body_mut()
                 .handle_event(event, &mut ctx.reborrow(path, child));
         }
-        if !*ctx.handled
-            && let Some(action) = Self::handle_unclaimed(event, &self.screen)
-        {
+        let unclaimed = if *ctx.handled {
+            None
+        } else {
+            Store::handle_unclaimed(event, &self.state().screen)
+        };
+        if let Some(action) = unclaimed {
             self.apply(action);
             *ctx.handled = true;
         }
-        self.open_found();
+        self.state().open_found();
         self.apply_requests();
-        self.revalidate();
-        self.check_views();
+        self.state().revalidate();
+        self.follow_store();
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1926,11 +2080,11 @@ impl Widget for RemoteApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.body().needs_redraw()
+        self.store.borrow().dirty || self.body().needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.state().dirty = false;
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1966,11 +2120,20 @@ use secrets::{KEY_PASSPHRASE, SSH_PASSWORD, VNC_PASSWORD, secret_purpose};
 #[cfg(test)]
 mod tests;
 
-impl RemoteApp {
-    pub(crate) fn can_send_text(&self) -> bool {
-        matches!(
+impl Store {
+    /// Text reaches only a connected SSH terminal.
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
+        let connected_ssh = matches!(
             &self.session.borrow().live,
             Some(LiveSession::Ssh(session)) if session.status() == SessionStatus::Connected
-        )
+        );
+        if connected_ssh {
+            return Vec::new();
+        }
+        vec![EffectStatus::unavailable(
+            crate::actions::RemoteEffect::SEND_TEXT,
+            "terminal_not_connected",
+            "Text input requires a connected SSH terminal",
+        )]
     }
 }

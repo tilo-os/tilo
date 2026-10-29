@@ -2,17 +2,12 @@
 //! the effects a window answers look things up, find the device and manage
 //! this device's offline tiles.
 
-use std::rc::Rc;
-
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{ResourceApp, RunMode, ViewCx};
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
-use ui::tilo_resource::{self, Effect, SearchEntry};
+use ui::tilo_resource::{self, Effect};
 use ui::widget::Element;
 
 use crate::app::MapsApp;
@@ -73,7 +68,7 @@ pub enum MapsEffect {
     ClearOfflineAreas,
 }
 
-/// Framework app: the maps widget is the surface over the shared [`Workspace`].
+/// Framework app: the maps window is the view of the shared [`Workspace`].
 pub struct MapsShell;
 
 impl ResourceApp for MapsShell {
@@ -147,57 +142,7 @@ impl ResourceApp for MapsShell {
                 Ok(())
             },
         );
-        cx.surface(app)
-    }
-}
-
-impl ResourceSurface<Workspace, MapsEffect> for MapsApp {
-    fn present(&mut self, state: &Rc<Workspace>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
-        // A live window keeps this device's offline areas; a capture and a
-        // past version show what they were staged with.
-        let offline_areas = cx.mode().is_live().then(|| cx.settings());
-        self.attach_framework(cx.dispatcher(), offline_areas);
-    }
-
-    #[cfg(feature = "samples")]
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: MapsEffect, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    /// Ranked search hits, nearby points of interest, the saved places and
-    /// recent searches to open again, and this device's offline areas: what
-    /// the window shows, with what it can do there. Not document state.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.published_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.published_row(id)
-    }
-
-    /// The geocoder looks up what the platform search asks for, in the
-    /// background.
-    fn search_query(&mut self, query: &ui::search::SearchQuery) {
-        self.queue_place_search(query);
-    }
-
-    /// The places, saved first, the points of interest around the view, the
-    /// recent searches and the geocoder's places for the latest query, each
-    /// opening its row.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.place_search_entries()
+        crate::app::window(cx, app)
     }
 }
 
@@ -349,10 +294,9 @@ mod tests {
     fn offline_areas_stay_on_this_device() {
         let mut app = TestApp::<MapsShell>::new().unwrap();
         let area = crate::sample::regions().remove(0);
-        app.settings::<OfflineAreas>()
-            .set(&OfflineAreas {
-                offline_areas: vec![area.clone()],
-            })
+        app.person::<OfflineAreas>()
+            .unwrap()
+            .invoke(&OfflineAreas::RECORD.with(("test-device".to_owned(), area.clone())))
             .unwrap();
         app.harness().relayout();
         let row = format!("maps.region:{}", area.id);
@@ -360,9 +304,9 @@ mod tests {
         app.effect_confirmed(&MapsEffect::DeleteOfflineArea { area: area.id })
             .unwrap();
         assert!(
-            app.settings::<OfflineAreas>()
-                .get()
-                .offline_areas
+            app.person::<OfflineAreas>()
+                .unwrap()
+                .with(|areas| areas.on("test-device"))
                 .is_empty(),
             "deleting an area forgets it on this device"
         );

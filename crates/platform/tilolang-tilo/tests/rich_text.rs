@@ -166,7 +166,8 @@ fn two_writers_edits_with_references_merge_in_a_room() {
             tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
         })
         .collect();
-    assert_eq!(referred, [Some(task.clone())]);
+    // The task was named by its older path; it is referred to by its id.
+    assert_eq!(referred, [Some(tilolang_runtime::value::flat_id(&task))]);
 }
 
 #[test]
@@ -233,6 +234,7 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
         doc,
         tree: None,
         quiet: false,
+        read: &ui::mentions::reading_nothing,
     };
     let name = |id: &str| id.to_owned();
     let mut grace_inbox = ui::mentions::MentionInbox::new(["grace".to_owned()]);
@@ -337,5 +339,249 @@ fn a_reference_reads_as_the_readers_inline_view_under_what_they_hold() {
     assert_eq!(
         inline_view(&ada.host, &Names, &channel),
         InlineView::Elsewhere
+    );
+}
+
+/// Every text `node` and the nodes inside it show.
+fn texts_of(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+    out.extend(node.props.values().filter_map(|value| match value {
+        tilolang_runtime::Value::Text(text) => Some(text.clone()),
+        _ => None,
+    }));
+    for child in &node.children {
+        texts_of(child, out);
+    }
+}
+
+/// What `replica` reads of `post` as a line: the post's `excerpt`, run as its person.
+fn excerpt(replica: &Replica, meta: &tilolang_runtime::Meta, post: &str) -> String {
+    let action = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "excerpt_of")
+        .unwrap();
+    let ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
+    let at = tilolang_runtime::ResourceRef::parse_id(post, ty.id.clone()).unwrap();
+    match replica
+        .host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new(replica.name.clone()),
+            (
+                action.id.as_str(),
+                vec![tilolang_runtime::Value::resource(&at)],
+            ),
+        )
+        .unwrap()
+    {
+        tilolang_runtime::InvokeOutcome::Done(tilolang_runtime::Value::Text(text)) => text,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Everything `replica`'s person is shown or told of `post` as plain text: its excerpt (an
+/// action's answer), the board's list row, what search finds and shows, the label the post is
+/// published under, what an agent reads of it, and the excerpt of the notice of the mention in
+/// it. Each is a line, named by its path.
+fn plain_paths(
+    replica: &Replica,
+    meta: &tilolang_runtime::Meta,
+    post: &str,
+    view: &mut tilolang_runtime::ViewInstance,
+) -> Vec<(&'static str, String)> {
+    use tilolang_runtime::store::Store as _;
+    view.poll_patches().unwrap();
+    let mut row = Vec::new();
+    texts_of(view.tree(), &mut row);
+    let hits = tilolang_tilo::search::every_hit(&replica.host);
+    let found = hits
+        .iter()
+        .filter(|hit| hit.resource == format!("tl:{APP}:{post}"))
+        .flat_map(|hit| std::iter::once(hit.title.clone()).chain(hit.texts.clone()))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    let ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
+    let at = tilolang_runtime::ResourceRef::parse_id(post, ty.id.clone()).unwrap();
+    let read =
+        |reference: &tilolang_runtime::rich::Reference| replica.host.store().reading(reference);
+    let notices = ui::mentions::in_record_for(&replica.doc, &read)
+        .into_iter()
+        .map(|mention| mention.excerpt)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    vec![
+        ("excerpt", excerpt(replica, meta, post)),
+        ("list row", row.join(" | ")),
+        ("search", found),
+        ("label", replica.host.label_at(&at)),
+        (
+            "agent read",
+            replica
+                .host
+                .read_content(Some(&format!("tl:{APP}:{post}")))
+                .unwrap()
+                .to_string(),
+        ),
+        ("notice", notices),
+    ]
+}
+
+/// A room where Ada posts to Grace about a task, "Acquisition plan", that only Ada holds:
+/// Grace's store holds the post, never the task. The room, the task's path and the post's.
+fn a_post_about_a_task_only_ada_holds() -> (Room, String, String) {
+    let Room {
+        mut ada,
+        mut grace,
+        meta,
+        root,
+    } = room();
+    plan(
+        &mut ada,
+        &meta,
+        "Board",
+        &root,
+        "add_task",
+        json!({"title": "Acquisition plan"}),
+    );
+    let tasks = items(&ada, &meta, &root, "tasks");
+    let task_id = tasks[0].clone();
+    let task = format!("{root}/{}:{task_id}", field_id(&meta, "Board", "tasks"));
+    // Ada tells Grace where the notes are, referring to the task by the title it has now.
+    let mut said = tilolang_runtime::rich::RichValue::default();
+    said.push_reference(
+        "@Grace",
+        &tilolang_runtime::rich::Reference::Person("grace".into()),
+    );
+    said.push_text(" the notes are in ");
+    said.push_reference(
+        "Acquisition plan",
+        &tilolang_runtime::rich::Reference::resource(
+            APP,
+            format!("tl.{APP}.Task"),
+            format!("tl:{APP}:{task}"),
+        ),
+    );
+    let encoded = tilolang_runtime::value::to_json(&tilolang_runtime::Value::Rich(said)).unwrap();
+    plan(
+        &mut ada,
+        &meta,
+        "Board",
+        &root,
+        "post",
+        json!({"body": encoded}),
+    );
+    ada.sync_with(&mut grace);
+    // Grace does not hold the task: her store holds the post, never the task it refers to.
+    plan(
+        &mut grace,
+        &meta,
+        "Board",
+        &root,
+        "drop_task",
+        json!({"t": task}),
+    );
+    let posts = items(&ada, &meta, &root, "posts");
+    let post = format!("{root}/{}", posts[0]);
+    // What was written still says the title: nothing rewrites the stored text.
+    assert_eq!(
+        body(&grace, &meta, &root, &posts[0]),
+        "@Grace the notes are in Acquisition plan"
+    );
+    (
+        Room {
+            ada,
+            grace,
+            meta,
+            root,
+        },
+        task,
+        post,
+    )
+}
+
+#[test]
+fn a_referenced_title_reaches_only_the_readers_who_hold_it_on_every_plain_text_path() {
+    let (
+        Room {
+            mut ada,
+            grace,
+            meta,
+            ..
+        },
+        task,
+        post,
+    ) = a_post_about_a_task_only_ada_holds();
+    // The post as a list shows it: its row view, open on each person's machine.
+    let post_ty = meta.types.iter().find(|t| t.name == "Post").unwrap();
+    let post_at = tilolang_runtime::ResourceRef::parse_id(&post, post_ty.id.clone()).unwrap();
+    let row = meta.row_view(&post_ty.id).unwrap().to_owned();
+    let mut ada_view = ada.host.open_resource(&post_at, Some(&row)).unwrap();
+    let mut grace_view = grace.host.open_resource(&post_at, Some(&row)).unwrap();
+    for (path, text) in plain_paths(&ada, &meta, &post, &mut ada_view) {
+        assert!(text.contains("Acquisition plan"), "Ada's {path}: {text}");
+    }
+    for (path, text) in plain_paths(&grace, &meta, &post, &mut grace_view) {
+        assert!(!text.contains("Acquisition"), "Grace's {path}: {text}");
+        assert!(
+            text.contains("Not shared with you"),
+            "Grace's {path}: {text}"
+        );
+    }
+    assert_eq!(
+        excerpt(&grace, &meta, &post),
+        "@Grace the notes are in Not shared with you"
+    );
+    // Search never matches her query against the title she cannot read.
+    assert!(
+        tilolang_tilo::search::every_hit(&grace.host)
+            .iter()
+            .all(|hit| hit.texts.iter().all(|text| !text.contains("Acquisition"))),
+    );
+
+    // Ada renames the task: every path reads its title now for her, and still nothing of it for
+    // Grace, who is not sent the rename.
+    plan(
+        &mut ada,
+        &meta,
+        "Task",
+        &task,
+        "rename",
+        json!({"title": "Merger timeline"}),
+    );
+    for (path, text) in plain_paths(&ada, &meta, &post, &mut ada_view) {
+        assert!(text.contains("Merger timeline"), "Ada's {path}: {text}");
+        assert!(!text.contains("Acquisition"), "Ada's {path}: {text}");
+    }
+    for (path, text) in plain_paths(&grace, &meta, &post, &mut grace_view) {
+        assert!(
+            !text.contains("Acquisition") && !text.contains("Merger"),
+            "Grace's {path}: {text}"
+        );
+        assert!(
+            text.contains("Not shared with you"),
+            "Grace's {path}: {text}"
+        );
+    }
+    // The notice Grace is told says no title either.
+    let read = |reference: &tilolang_runtime::rich::Reference| {
+        tilolang_runtime::store::Store::reading(grace.host.store(), reference)
+    };
+    let mut inbox = ui::mentions::MentionInbox::new(["grace".to_owned()]);
+    let told = inbox.look(
+        &ui::mentions::Look {
+            app: APP,
+            record: "",
+            kind: "tilolang",
+            doc: &grace.doc,
+            tree: None,
+            quiet: false,
+            read: &read,
+        },
+        &|id: &str| id.to_owned(),
+    );
+    assert_eq!(told.show.len(), 1, "{:#?}", told.show);
+    assert_eq!(
+        told.show[0].body,
+        "@Grace the notes are in Not shared with you"
     );
 }

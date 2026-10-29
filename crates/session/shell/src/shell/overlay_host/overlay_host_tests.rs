@@ -677,7 +677,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         assert!(host.onboarding_active());
         assert!(
             host.onboarding
-                .as_ref()
+                .as_deref()
                 .is_some_and(|view| !view.flow().is_done() && view.presents_desktop_context())
         );
         let mut taffy = TaffyTree::new();
@@ -713,7 +713,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
 
         assert!(
             host.onboarding
-                .as_ref()
+                .as_deref()
                 .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context),
             "starting the first-login tour must release the opaque setup backdrop"
         );
@@ -729,7 +729,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let tour_rect = harness
             .host
             .onboarding
-            .as_ref()
+            .as_deref()
             .expect("first-login tour")
             .get_rect();
         assert_eq!(
@@ -792,7 +792,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         assert_eq!(
             h.host
                 .onboarding
-                .as_ref()
+                .as_deref()
                 .expect("the tour stays open")
                 .tour_step(),
             Some(2),
@@ -833,8 +833,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
     fn active_window_controls_report_the_live_painted_geometry() {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree.clone());
-        let records = chrome.borrow().records().clone();
-        let (content, ptrs) = crate::shell::build_workspace_root(&tree, &records, &chrome);
+        let (content, ptrs) = crate::shell::build_workspace_root(&tree, &chrome);
         let host = ShellOverlayHost::new(content)
             .with_chrome(chrome)
             .with_group_row_ptrs(ptrs);
@@ -879,45 +878,55 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
         );
     }
 
-    fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
+    fn the_power_menu_is_an_app_the_shell_hosts_and_acts_on() {
         let mut h = build_harness();
-        h.host.layers.power_menu.open();
-        h.host.layers.power_menu.force_settled_for_visual_test();
+        h.host.force_power_menu_for_visual_test();
+        assert!(h.host.power_menu_open());
+        // Laid out once it is up, then drawn by its app.
+        paint(&mut h);
+        let crate::shell::test_support::LaidOut { taffy, node, nodes } =
+            crate::shell::test_support::lay_out_in_viewport(
+                &mut h.host,
+                1600.0,
+                900.0,
+                &Theme::dark(),
+            );
+        (h.taffy, h.root_node, h.node_map) = (taffy, node, nodes);
+        paint(&mut h);
+        let rows = h.host.power_menu_semantic_rects();
+        let names: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names.first(),
+            Some(&"power_lock"),
+            "{names:?} mounted {} drawn {} laid out {} area {:?} phase {:?}",
+            h.host.layers.power_menu.is_mounted(),
+            h.host.layers.power_menu.is_drawn(),
+            h.host.layers.power_menu.widget().is_some(),
+            h.host.layers.power_menu.area(),
+            tilo_sheets::Seat::presentation(h.host.layers.power_menu.seat()).phase(),
+        );
+        assert!(names.contains(&"power_shut_down"), "{names:?}");
+        for (name, rect) in &rows {
+            assert!(
+                rect.x1 <= 1600.0 && rect.x0 > 800.0 && rect.y0 > 0.0,
+                "{name} hangs from the top bar's trailing end: {rect:?}"
+            );
+        }
 
-        let semantics = h.host.accessibility().expect("shell semantics");
-        assert_eq!(
-            semantics
-                .children
-                .first()
-                .and_then(|node| node.name.as_deref()),
-            Some(crate::shell::i18n::t("power-menu-title").as_str())
+        // A press on Lock asks the shell, which locks through the one
+        // session executor the typed actions reach.
+        let lock = rows[0].1.center();
+        let none = Modifiers::default();
+        let _ = pump(
+            &mut h,
+            &ui::synthetic_input::cursor_moved(lock.x, lock.y),
+            none,
         );
-        assert_eq!(
-            h.host.synthetic_accessibility_rect(&[0, 0]),
-            h.host
-                .power_menu_semantic_rects()
-                .into_iter()
-                .find(|(name, _)| *name == "power_lock")
-                .map(|(_, rect)| rect)
-        );
-        assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
-        assert_eq!(
-            h.host.layers.power_menu.key(
-                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-                false
-            ),
-            PowerMenuClick::Lock
-        );
-
-        h.host.layers.power_menu.open();
-        assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
-        assert_eq!(
-            h.host.layers.power_menu.key(
-                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-                false
-            ),
-            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
-        );
+        assert!(pump(&mut h, &mouse_press(), none));
+        let _ = pump(&mut h, &mouse_release(), none);
+        h.host.update(&AutoCommit::new(), &automerge::ROOT);
+        assert!(h.chrome.borrow_mut().take_session_lock_request());
+        assert!(!h.host.power_menu_open(), "the menu took itself down");
     }
 
     fn accessibility_focus_routes_through_shifted_overlay_indices() {
@@ -967,7 +976,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 
     active_window_controls_report_the_live_painted_geometry();
     accessibility_overlay_paths_share_the_published_coexistence_order();
-    power_menu_accessibility_paths_focus_and_activate_exact_rows();
+    the_power_menu_is_an_app_the_shell_hosts_and_acts_on();
     accessibility_focus_routes_through_shifted_overlay_indices();
 }
 
@@ -1287,7 +1296,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     fn print_screen_replaces_every_transient_desktop_surface_atomically() {
         let mut h = build_harness();
         h.host.palette_visible = true;
-        h.host.shortcut_guide_focus = Some(ShortcutGuideFocus::Done);
         {
             let mut state = h.chrome.borrow_mut();
             state.overlays.shortcut_help = true;
@@ -1311,7 +1319,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             ui::widget::CaptureMode::Screenshot
         );
         assert!(!h.host.palette_visible);
-        assert!(h.host.shortcut_guide_focus.is_none());
         let state = h.chrome.borrow();
         assert!(!state.overlays.shortcut_help);
         assert!(!state.overlays.overview);
@@ -1514,7 +1521,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         let before = h
             .host
             .onboarding
-            .as_ref()
+            .as_deref()
             .expect("desktop tour activates onboarding")
             .flow()
             .screen();
@@ -1540,7 +1547,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert_eq!(
             h.host
                 .onboarding
-                .as_ref()
+                .as_deref()
                 .expect("Capture Studio must not tear down OOBE")
                 .flow()
                 .screen(),
@@ -3344,7 +3351,7 @@ fn queue_setup(
             "current typed setup action {} (owner={}, screen={:?})",
             invocation.0,
             is_active_workspace_owner(&chrome.borrow()),
-            host.onboarding.as_ref().map(|view| view.flow().screen())
+            host.onboarding.as_deref().map(|view| view.flow().screen())
         )
     });
     let disposition = selected
@@ -3481,7 +3488,7 @@ fn onboarding_semantic_failed_mint_remains_protected_and_lock_hides_actions() {
         "a failed identity write is not a successful semantic action"
     );
     assert!(h.host.onboarding_active());
-    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(!h.host.onboarding.as_deref().unwrap().flow().is_done());
     h.chrome.borrow_mut().set_session_locked(true);
     assert!(
         !h.host
@@ -3527,7 +3534,7 @@ fn onboarding_semantic_create_refuses_a_gate_closed_before_reduction() {
         create().is_err(),
         "a sync that consumed a now-invalid creation is not success"
     );
-    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(!h.host.onboarding.as_deref().unwrap().flow().is_done());
     h.host.sync(&doc, &automerge::ROOT);
     assert!(
         create().is_err(),
@@ -3699,7 +3706,7 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
         returned.load(Ordering::Acquire),
         "the actual synchronous minter must return first"
     );
-    assert!(h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(h.host.onboarding.as_deref().unwrap().flow().is_done());
     assert!(ticket().unwrap().is_some());
 }
 

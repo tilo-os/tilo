@@ -1,7 +1,5 @@
 use super::*;
-use crate::PeerLimits;
 use crate::StatePeer;
-use crate::state::backend::restore::tests::restore_bounded;
 use crate::state::err;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
@@ -49,26 +47,16 @@ fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     (peer, cert.device_public_key, now)
 }
 #[test]
-fn bounded_current_member_matches_actual_legacy_membership_and_rechecks_removal() {
+fn current_member_rechecks_removal() {
     let (mut peer, source, now) = fixture();
-    let bytes = peer.durable().unwrap();
     let expected = peer.permissions(source, now).unwrap();
     assert_eq!(expected.role, Role::Editor);
-    let restored = restore_bounded(&peer, now, &PeerLimits::default());
-    let read = restored.read();
-    let member = read.member(source, now).unwrap();
-    assert_eq!(member.role(), expected.role);
-    assert_eq!(member.room_policy().grants, expected.policy.grants);
-    assert_eq!(member.person(), expected.person);
-    assert_eq!(peer.durable().unwrap(), bytes);
-    // A blocked member is no longer current on either path.
+    // A blocked member is no longer current.
     let block = expected
         .policy
         .block(&expected.person, Subject::person("a different person"));
     put_grant(&mut peer, &block);
     assert!(peer.permissions(source, now).is_err());
-    let restored = restore_bounded(&peer, now, &PeerLimits::default());
-    assert!(restored.read().member(source, now).is_err());
 }
 // Literal pre-extraction role body, with the historical projection oracle.
 fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
@@ -116,26 +104,9 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
 
 fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
     assert_eq!(peer.role(&source, now), original_role(peer, &source, now));
-    let expected = peer.permissions(source, now);
-    let restored = restore_bounded(peer, now, &PeerLimits::default());
-    let view = restored.read();
-    let actual = view.member(source, now);
-    match (expected, actual) {
-        (Ok(expected), Ok(member)) => {
-            assert_eq!(member.role(), expected.role);
-            assert_eq!(member.room_policy().grants, expected.policy.grants);
-            assert_eq!(member.person(), expected.person);
-            assert_eq!(member.foreign(), expected.foreign);
-        }
-        (Err(_), Err(_)) => {}
-        (expected, actual) => panic!(
-            "membership differs: legacy={expected:?} native={:?}",
-            actual.as_ref().err()
-        ),
-    }
 }
 #[test]
-fn bounded_current_member_preserves_malformed_container_and_conflict_winner_semantics() {
+fn current_member_preserves_malformed_container_and_conflict_winner_semantics() {
     for kind in [ObjType::List, ObjType::Text, ObjType::Map] {
         let (mut peer, source, now) = fixture();
         let owner = hex::encode(peer.core.authority.user_public_key);
@@ -195,7 +166,7 @@ fn bounded_current_member_preserves_malformed_container_and_conflict_winner_sema
     }
 }
 #[test]
-fn bounded_current_member_copies_all_grant_fields() {
+fn current_member_copies_all_grant_fields() {
     let (mut peer, source, now) = fixture();
     let room = peer.room().to_owned();
     let long = "owned grant string ".repeat(32);
@@ -329,7 +300,7 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
 }
 
 #[test]
-fn bounded_current_member_preserves_restriction_role_semantics_and_current_certificate_expiry() {
+fn current_member_preserves_restriction_role_semantics_and_current_certificate_expiry() {
     let (mut restricted, source, now) = fixture();
     let person = hex::encode(row(&restricted, &source).device_cert.user_public_key);
     // A deny on one app narrows what the member may do there; it is no block.
@@ -364,26 +335,6 @@ fn bounded_current_member_preserves_restriction_role_semantics_and_current_certi
     compare_native(&expiring, source, now);
     compare_native(&expiring, source, now + Duration::from_nanos(1));
 }
-#[test]
-fn bounded_current_member_refuses_a_small_governance_limit_without_changing_peer() {
-    let (peer, source, now) = fixture();
-    let bytes = peer.durable().unwrap();
-    let limits = PeerLimits {
-        governance_collection_bytes: 1,
-        ..PeerLimits::default()
-    };
-    let restored = restore_bounded(&peer, now, &limits);
-    assert!(matches!(
-        restored.read().member(source, now),
-        Err(BoundedPeerError::Capacity)
-    ));
-    let restored = restore_bounded(&peer, now, &PeerLimits::default());
-    assert_eq!(
-        restored.read().member(source, now).unwrap().role(),
-        Role::Editor
-    );
-    assert_eq!(peer.durable().unwrap(), bytes);
-}
 fn make_foreign(peer: &mut StatePeer, source: &[u8; 32]) {
     let mut identity = row(peer, source);
     identity.device_cert.capabilities.foreign = true;
@@ -404,11 +355,6 @@ fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Rol
     assert!(legacy.foreign);
     let invite = roles::governance_action(peer.room(), roles::governance::INVITE);
     assert!(!legacy.allows(&invite, ActionKind::Undoable, now));
-    let restored = restore_bounded(peer, now, &PeerLimits::default());
-    let read = restored.read();
-    let member = read.member(source, now).unwrap();
-    assert_eq!(member.role(), role);
-    assert!(member.foreign());
 }
 #[test]
 fn a_foreign_device_acts_with_at_most_the_workspace_bound() {
@@ -467,15 +413,10 @@ fn a_foreign_device_is_not_bounded_in_the_room_it_governs() {
     let member = peer.permissions(source, now).unwrap();
     assert_eq!(member.role, Role::Owner);
     assert!(!member.foreign);
-    let restored = restore_bounded(&peer, now, &PeerLimits::default());
-    assert_eq!(
-        restored.read().member(source, now).unwrap().role(),
-        Role::Owner
-    );
 }
 /// Read is a kind like any other: a Deny on Read below the room answers Deny
 /// for exactly the nodes under it, the most specific grant winning, while the
-/// room and every other record stay readable. Both read paths agree.
+/// room and every other record stay readable.
 #[test]
 fn a_read_deny_below_the_room_refuses_only_what_it_names() {
     let (mut peer, source, now) = fixture();
@@ -511,8 +452,6 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
     ] {
         put_grant(&mut peer, &grant);
     }
-    let restored = restore_bounded(&peer, now, &PeerLimits::default());
-    let read = restored.read();
     for (app, record, readable) in [
         ("app", "payroll", false),
         ("app", "notes", true),
@@ -525,18 +464,9 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
             readable,
             "{app}/{record}"
         );
-        assert_eq!(
-            read.document_read_allowed(source, app, record, now)
-                .unwrap(),
-            readable,
-            "{app}/{record}"
-        );
     }
-    let access = read.room_access(source, now).unwrap();
-    assert!(access.read(), "the room itself stays readable");
-    assert!(!access.write());
 }
-/// A steward withholds a record's channel from exactly the member devices
+/// A participant withholds a record's channel from exactly the member devices
 /// that may not read the record, by the same decision as
 /// [`StatePeer::check_document_read`]: a Read Deny naming one record
 /// withholds that record's channel alone, a Deny over an app withholds every
@@ -633,4 +563,88 @@ fn a_read_deny_on_a_record_withholds_only_that_records_channel() {
             assert!(*channel == payroll || *channel == q3 || withheld.is_empty());
         }
     }
+}
+
+/// A member's own record in the workspace is theirs alone: another member,
+/// even the room's owner, neither reads nor changes it, and a steward
+/// withholds its channel from every device but that person's, while the
+/// person reads and changes their own whatever their role.
+#[test]
+fn another_member_neither_reads_nor_writes_a_members_own_record() {
+    let (mut peer, source, now) = fixture();
+    let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+    let room = peer.core.room_doc.as_mut().unwrap();
+    room.put(ROOT, "owner", person.as_str()).unwrap();
+    room.commit();
+    let room_id = peer.room().to_owned();
+    let theirs = collab_types::member_record_id(&"ad".repeat(32), "chat.drafts");
+    let own = collab_types::member_record_id(&person, "chat.drafts");
+    let member = peer.permissions(source, now).unwrap();
+    assert_eq!(
+        member.role,
+        Role::Owner,
+        "the owner, who reads everything else"
+    );
+    for (record, theirs_alone) in [(&theirs, false), (&own, true)] {
+        let node = collab_types::document_node(&room_id, "so.tilo.chat", record);
+        assert_eq!(
+            peer.check_document_read(source, "so.tilo.chat", record, now)
+                .is_ok(),
+            theirs_alone,
+            "{record}"
+        );
+        assert_eq!(
+            member.allows(&node, ActionKind::Undoable, now),
+            theirs_alone,
+            "{record}"
+        );
+    }
+    assert!(
+        peer.check_document_read(source, "so.tilo.chat", "tab:0000000000000001", now)
+            .is_ok()
+    );
+
+    let devices: std::collections::BTreeSet<[u8; 32]> = peer
+        .governance()
+        .governed_access(now)
+        .unwrap()
+        .member_devices
+        .into_iter()
+        .collect();
+    let routes = [
+        collab_types::ChannelRoute::new("so.tilo.chat", theirs.as_str()),
+        collab_types::ChannelRoute::new("so.tilo.chat", own.as_str()),
+    ];
+    let readers = peer
+        .governance()
+        .withheld_record_readers(now, &routes)
+        .unwrap();
+    assert_eq!(
+        readers.withheld.get(&collab_types::document_channel_id(
+            "so.tilo.chat",
+            &room_id,
+            &theirs
+        )),
+        Some(&devices)
+    );
+    assert!(
+        readers
+            .withheld
+            .get(&collab_types::document_channel_id(
+                "so.tilo.chat",
+                &room_id,
+                &own
+            ))
+            .is_some_and(std::collections::BTreeSet::is_empty)
+    );
+
+    // Their role does not decide their own record: a viewer still writes it.
+    let room = peer.core.room_doc.as_mut().unwrap();
+    room.put(ROOT, "owner", "b0".repeat(32).as_str()).unwrap();
+    room.commit();
+    put_member(&mut peer, &person, Role::Viewer);
+    let viewer = peer.permissions(source, now).unwrap();
+    assert_eq!(viewer.role, Role::Viewer);
+    let own_node = collab_types::document_node(&room_id, "so.tilo.chat", &own);
+    assert!(viewer.allows(&own_node, ActionKind::Undoable, now));
 }

@@ -232,7 +232,7 @@ pub(crate) struct OwnerRoute {
 struct TreeRecord {
     store: crate::record::RecordStore,
     checkout: crate::record::RecordCheckout,
-    lifetime: std::rc::Rc<super::owner::LegacyHistoryLifetime>,
+    lifetime: std::rc::Rc<super::owner::RecordOwnerLifetime>,
 }
 
 #[derive(Default)]
@@ -289,7 +289,7 @@ impl OwnerDocumentRoutes {
                     None => TreeRecord {
                         store: store.clone(),
                         checkout,
-                        lifetime: super::owner::LegacyHistoryLifetime::new(),
+                        lifetime: super::owner::RecordOwnerLifetime::new(),
                     },
                 };
                 held.push(entry);
@@ -301,7 +301,7 @@ impl OwnerDocumentRoutes {
         }
         for entry in &held {
             current.push((
-                HistoryOwner::legacy(entry.store.clone(), entry.checkout.clone(), &entry.lifetime),
+                HistoryOwner::record(entry.store.clone(), entry.checkout.clone(), &entry.lifetime),
                 true,
             ));
         }

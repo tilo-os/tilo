@@ -1396,11 +1396,6 @@ pub trait Widget {
     fn resets_callback_binding(&self) -> bool {
         false
     }
-    /// A legacy owner's actual live layout boundary, never framework chrome.
-    #[doc(hidden)]
-    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> {
-        None
-    }
     /// Drawn live content whose input is suspended by a framework surface.
     #[doc(hidden)]
     fn inactive_callback_boundary(&self) -> Option<NodeId> {
@@ -1498,20 +1493,9 @@ pub trait Widget {
     )]
     fn visit_resource_owners(
         &self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
         request.visit(self)
-    }
-    #[doc(hidden)]
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners_mut(
-        &mut self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
-        defaults::visit_resource_owners_mut(self.children_mut(), request)
     }
 
     /// Answer a request for a capability this widget takes part in (see
@@ -1938,6 +1922,17 @@ pub trait Widget {
     /// found among the children.
     fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {
         defaults::take_app_activation(self.children_mut())
+    }
+
+    /// One-shot (reading MUST clear it): the test id of the control this
+    /// subtree asks to take the keyboard once the runner laid it out, such as
+    /// the first field of a view a person's press just opened, so what they
+    /// type next lands there. The runner focuses it as a press focuses a
+    /// control, blurring any other; a control it does not find (or that takes
+    /// no focus) leaves focus where it is. Default forwards the first request
+    /// found among the children.
+    fn take_focus_request(&mut self) -> Option<String> {
+        defaults::take_focus_request(self.children_mut())
     }
 
     /// Role, name/description/value, and
@@ -3187,8 +3182,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
-    NavListProps, NavPerson, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavEntry, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
+    NavListProps, NavPerson, NavSearchTerm, NavSection, NavSectionProps,
 };
 mod document_viewport;
 pub use document_viewport::{
@@ -3231,6 +3226,8 @@ pub use autocomplete::{
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
+pub mod completion;
+pub(crate) mod completion_card;
 pub mod text_completion;
 pub use text_completion::{EmojiQuery, TextCompletion};
 mod number_input;
@@ -3333,6 +3330,10 @@ pub use attached::{
     Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,
     SwipeProps,
 };
+mod rich_input;
+pub use rich_input::{RichInput, RichInputProps};
+mod chat_parts;
+pub use chat_parts::{EmojiPickerButton, EmojiPickerProps, Quote, QuoteProps, ReactionsProps};
 pub use swipe_row::SwipeRow;
 mod pacer;
 pub use pacer::Pacer;
@@ -3358,9 +3359,9 @@ mod overflow_door;
 pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
-    STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, StripLane, TabDropTarget, WheelJumpAccum,
-    pan_within_canvas, wheel_jump_detents,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, GroupRow, GroupTopology,
+    HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX,
+    StripLane, TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
 mod strip_deck;

@@ -32,8 +32,8 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
-mod steward;
+#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -362,7 +362,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     let host = start_host(&root, &host_device, state.path(), &supervisor).await;
     let host_cert: DeviceCert = host_device.cert.clone();
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
 
     // 1. The agent's identity: its own key, certified under the root by the
     // laptop (consent), and a root-signed delegation the host registers.

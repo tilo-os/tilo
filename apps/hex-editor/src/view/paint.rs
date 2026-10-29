@@ -17,7 +17,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 
-use super::HexView;
+use super::Editor;
 use super::layout::Geo;
 use crate::inspector::{self, Interpretation};
 use crate::model::Column;
@@ -81,7 +81,7 @@ struct RowCtx<'a> {
     bytes_per_row: usize,
 }
 
-impl HexView {
+impl Editor {
     /// The whole frame.
     pub(super) fn paint(
         &mut self,

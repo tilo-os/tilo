@@ -12,7 +12,7 @@ use serde_json::json;
 use ui::framework::{Call, EffectAnswer, EffectCx, Effected};
 use ui::prelude::*;
 use ui::tilo_reference::ResourceRef;
-use ui::tilo_resource;
+use ui::tilo_resource::{self, NonBlank};
 
 use crate::model::Tracker;
 
@@ -90,14 +90,9 @@ fn write_note(cx: &mut EffectCx<Tracker>, issue: Id) -> EffectAnswer {
             .ok_or_else(|| "Notes made no note".to_owned())?;
         let kind = tilo_resource::items::item_kind(&note)
             .ok_or_else(|| format!("`{note}` names no note"))?;
-        cx.submit(Tracker::LINK.with((
-            issue,
-            NOTES.to_owned(),
-            kind,
-            note.clone(),
-            title,
-            None::<String>,
-        )));
+        let app = NonBlank::parse(NOTES).ok_or_else(|| "Notes has no app id".to_owned())?;
+        let resource = NonBlank::parse(&note).ok_or_else(|| format!("`{note}` names no note"))?;
+        cx.submit(Tracker::LINK.with((issue, app, kind, resource, title, None::<String>)));
         cx.when_landed(move |(), _, _| Ok(Effected::value(json!({ "resource": note }))))
     }))
 }
