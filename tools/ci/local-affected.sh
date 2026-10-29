@@ -3,8 +3,10 @@
 # same package selection, shards, features, filters and environment, so a
 # push does not find a failure CI would have.
 #
-#   tdev bash tools/ci/local-affected.sh [--base REF] [--stage STAGES]
-#                                        [--shard N] [--tapps] [--keep-going]
+#   bash tools/ci/local-affected.sh [--base REF] [--stage STAGES]
+#                                   [--shard N] [--tapps] [--keep-going]
+#
+# Run it directly, not through tdev (which bypasses the local memory cap).
 #
 #   --base REF     comparison base (default: merge-base with origin/main; run
 #                  `git fetch origin` first, and rebase when main moved)
@@ -23,6 +25,17 @@
 # so this runs the same wherever cargo runs nextest. Steps CI runs only on a
 # runner (legacy app E2E, the OS image, Android, wasm) are not here:
 # tools/ci/check-wasm.sh covers wasm.
+#
+# Any cargo works, including one that forwards compiling subcommands to a
+# remote builder. The workspace metadata comes from `cargo metadata` (which
+# compiles nothing, so a forwarding cargo wrapper runs it locally) and is
+# handed to the selector with --metadata; nothing here asks a builder for it.
+# When `cargo nextest` is unavailable through the cargo in use, the test step
+# falls back to plain `cargo test` over the same packages. That runs the
+# libtest harness without nextest's ci profile, its filtersets or the
+# environment the profile sets up, so it also runs the visual goldens and
+# push-only tests, and the separate goldens stage is skipped. Force the
+# fallback with LOCAL_AFFECTED_NO_NEXTEST=1.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -38,7 +51,7 @@ while [ $# -gt 0 ]; do
     --shard) only_shard=$2; shift 2 ;;
     --tapps) want_tapps=1; shift ;;
     --keep-going) keep_going=1; shift ;;
-    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -142,6 +155,13 @@ if want clippy; then
   done < <(rows clippy_matrix)
 fi
 
+# nextest through the cargo in use? Otherwise fall back to cargo test.
+use_nextest=1
+if [ "${LOCAL_AFFECTED_NO_NEXTEST:-0}" = 1 ] || ! cargo nextest --version >/dev/null 2>&1; then
+  use_nextest=0
+  echo "note: cargo nextest is unavailable; testing with plain cargo test (no ci profile or filters)" >&2
+fi
+
 pull_filter="not ($GOLDEN_FILTER) and not ($PUSH_ONLY_FILTER)"
 while IFS= read -r row; do
   [ -n "$row" ] || continue
@@ -156,10 +176,14 @@ while IFS= read -r row; do
   esac
   if want test; then
     # shellcheck disable=SC2086
-    step "nextest shard $shard ($tests)" \
-      bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+    if [ "$use_nextest" = 1 ]; then
+      step "nextest shard $shard ($tests)" \
+        bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+    else
+      step "cargo test shard $shard ($tests)" cargo test --locked $tests
+    fi
   fi
-  if want goldens; then
+  if want goldens && [ "$use_nextest" = 1 ]; then
     case " $tests " in
       *" -p shell "* | *" -p tilo-ui "* | *" -p ebook "*)
         # shellcheck disable=SC2086
