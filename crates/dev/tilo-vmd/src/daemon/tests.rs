@@ -1559,3 +1559,14 @@ fn a_vm_holding_an_identity_gets_no_person() {
     );
     assert!(error.to_string().contains("never replaces"), "{error}");
 }
+
+#[test]
+fn the_state_dump_says_whether_the_desktop_moves() {
+    assert!(super::desktop_in_transition(
+        r#"{"state":{"chrome":{"in_transition":true},"workspace_tree":null}}"#
+    ));
+    assert!(!super::desktop_in_transition(
+        r#"{"answer":{"state":{"chrome":{"in_transition":false}}}}"#
+    ));
+    assert!(!super::desktop_in_transition(r#"{"state":{"chrome":{}}}"#));
+}

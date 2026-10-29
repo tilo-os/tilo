@@ -77,6 +77,14 @@ pub trait Screen {
     fn finished(&mut self, controls: &[String]) -> bool {
         !controls.is_empty() && !controls.iter().any(|name| name.starts_with(PREFIX))
     }
+
+    /// Whether the desktop has settled, so a press reaches its control: the
+    /// shell refuses one while the desktop moves between two arrangements
+    /// (`desktop_in_transition`), as onboarding's pages do when they change.
+    /// By default: always.
+    fn settled(&mut self) -> Result<bool, Self::Error> {
+        Ok(true)
+    }
 }
 
 /// How the walk paces itself.
@@ -160,7 +168,9 @@ pub fn walk<S: Screen>(
                 pressed,
             });
         }
-        if let Some(next) = next_press(&shown, &pressed) {
+        if let Some(next) = next_press(&shown, &pressed)
+            && screen.settled().map_err(WalkError::Screen)?
+        {
             let waiting =
                 last.is_some_and(|(name, at)| name == next && at.elapsed() < pace.repress);
             if !waiting {
@@ -314,5 +324,47 @@ mod tests {
         assert!(!screen.finished(&[]));
         assert!(screen.finished(&["shell.search".to_owned()]));
         assert!(!screen.finished(&["onboarding.begin.card".to_owned()]));
+    }
+
+    /// One page whose control is refused while the desktop moves.
+    struct Moving {
+        moving_for: usize,
+        presses: Vec<&'static str>,
+    }
+
+    impl Screen for Moving {
+        type Error = String;
+
+        fn controls(&mut self) -> Result<Vec<String>, String> {
+            Ok(if self.presses.is_empty() {
+                vec!["onboarding.begin.card".to_owned()]
+            } else {
+                vec!["shell.search".to_owned()]
+            })
+        }
+
+        fn press(&mut self, name: &'static str) -> Result<(), String> {
+            if self.moving_for > 0 {
+                return Err(format!("{name}: desktop_in_transition"));
+            }
+            self.presses.push(name);
+            Ok(())
+        }
+
+        fn settled(&mut self) -> Result<bool, String> {
+            let settled = self.moving_for == 0;
+            self.moving_for = self.moving_for.saturating_sub(1);
+            Ok(settled)
+        }
+    }
+
+    #[test]
+    fn a_control_is_pressed_once_the_desktop_settles() {
+        let mut screen = Moving {
+            moving_for: 3,
+            presses: Vec::new(),
+        };
+        assert_eq!(walk(&mut screen, quick()), Ok(vec!["onboarding.begin.card"]));
+        assert_eq!(screen.presses, ["onboarding.begin.card"]);
     }
 }
