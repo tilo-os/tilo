@@ -34,9 +34,24 @@ fn fixture_with(
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
+    fixture_granting(tags, params, |_| Vec::new())
+}
+
+/// [`fixture_tagged`], the action taking `params`, the room holding the
+/// grants `grants` gives for its room.
+fn fixture_granting(
+    tags: Vec<String>,
+    params: Vec<tilo_actions::ActionParam>,
+    grants: impl FnOnce(&str) -> Vec<tilo_action_policy::Grant>,
+) -> (
+    Arc<CapnpBrokerState>,
+    Caller,
+    mpsc::UnboundedReceiver<InvocationEnvelope>,
+) {
     let mut workspace = Workspace::new(WorkspaceId(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
     let room = workspace.room().to_string();
+    workspace.policy.grants.extend(grants(&room));
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -1411,4 +1426,103 @@ async fn retiring_a_run_clears_only_its_presence_without_cancelling_work() {
         events.try_recv().is_err(),
         "a retained caller cannot revive presence"
     );
+}
+
+/// What the broker answers agent `scribe`'s change through `door` (the
+/// caller it is in the room) when its person's answer for the app's changes
+/// is `answer`, and whether the app heard of it.
+fn agent_answered(
+    answer: tilo_action_policy::Answer,
+    door: impl FnOnce(&str) -> Caller,
+) -> (
+    PendingPoll<Result<InvocationReceipt, ActionHostError>>,
+    bool,
+) {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let person = tilo_action_policy::Subject::person("a1".repeat(32));
+    let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |room| {
+        let mut grants =
+            tilo_action_policy::roles::AgentPreset::Operator.grants(room, "scribe", &person);
+        grants.push(agent_answers::grant(
+            room,
+            "scribe",
+            (
+                &AnswerScope::app("so.tilo.test"),
+                tilo_action_policy::ActionKind::Undoable,
+            ),
+            answer,
+            person.clone(),
+        ));
+        grants
+    });
+    let room = person_caller.room().expect("the fixture's room").to_owned();
+    let answered = state
+        .action_invoke(&door(&room), None, None, &request())
+        .poll_ready();
+    (answered, app.try_recv().is_ok())
+}
+
+/// The agents a person's answers bind: one the desktop's agent door admitted
+/// into the room, and one the person's own device handed its session.
+fn agent_doors() -> [fn(&str) -> Caller; 2] {
+    [
+        |room| {
+            Caller::local_agent("scribe")
+                .in_room(room.to_owned())
+                .in_new_execution()
+        },
+        |room| {
+            Caller::local_agent("scribe")
+                .acting_for("a1".repeat(32))
+                .in_room(room.to_owned())
+                .in_new_execution()
+        },
+    ]
+}
+
+/// The person told the agent not to change the app: its change is refused
+/// before the app hears of it, the action not offered to the agent at all.
+#[test]
+fn an_agents_change_the_person_denied_is_refused() {
+    for door in agent_doors() {
+        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Deny, door);
+        assert!(
+            matches!(
+                answered,
+                PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+            ),
+            "{answered:?}"
+        );
+        assert!(!heard, "the app never hears of it");
+    }
+}
+
+/// The person told the agent to ask first: its change waits for the
+/// person's confirmation.
+#[test]
+fn an_agents_change_the_person_asks_about_waits_for_them() {
+    for door in agent_doors() {
+        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Ask, door);
+        assert!(
+            matches!(
+                answered,
+                PendingPoll::Ready(Err(ActionHostError::ConfirmationRequired))
+            ),
+            "{answered:?}"
+        );
+        assert!(!heard, "the app never hears of it");
+    }
+}
+
+/// The person allowed the agent the app's changes: its change runs.
+#[test]
+fn an_agents_change_the_person_allowed_runs() {
+    for door in agent_doors() {
+        let (answered, heard) = agent_answered(tilo_action_policy::Answer::Allow, door);
+        assert!(
+            matches!(answered, PendingPoll::Ready(Ok(_))),
+            "{answered:?}"
+        );
+        assert!(heard, "the app runs it");
+    }
 }
