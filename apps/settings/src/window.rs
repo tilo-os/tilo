@@ -1179,6 +1179,17 @@ impl Widget for SettingsWindow {
                 .is_some_and(ui::Widget::needs_animation_frame)
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        self.app
+            .areas()
+            .iter()
+            .any(crate::area::PaneArea::first_read)
+            || self
+                .shell
+                .as_ref()
+                .is_some_and(Widget::has_pending_visual_work)
+    }
+
     fn needs_idle_sync(&self) -> bool {
         self.shell.as_ref().is_some_and(ui::Widget::needs_idle_sync)
     }

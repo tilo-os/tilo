@@ -66,6 +66,7 @@ pub(crate) fn view(
         crate::categories::Category::Appearance => appearance::view(cx, app),
         crate::categories::Category::Accessibility => accessibility::view(cx, app),
         crate::categories::Category::Notifications => notifications::view(cx, app),
+        crate::categories::Category::Power => power::view(cx, app),
         _ => None,
     }
 }

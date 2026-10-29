@@ -31,6 +31,12 @@ pub trait PaneArea: Any {
         false
     }
 
+    /// Whether a pane shows the area's first reading of the device as on
+    /// its way: a capture waits for it.
+    fn first_read(&self) -> bool {
+        false
+    }
+
     /// Whether an action of the area is running that the window must keep
     /// drawing for.
     fn busy(&self) -> bool {

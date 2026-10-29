@@ -462,18 +462,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         build: |app, _| Box::new(keyboard_shortcuts::ShortcutPane::new(app.host().clone())),
     },
     crate::area::PaneEntry {
-        categories: &[Category::Power],
-        build: |app, _| {
-            power::area(app).map_or_else(
-                || crate::widgets::page(Vec::new()),
-                |area| {
-                    Box::new(power::PowerPane::new(app.host().clone(), area))
-                        as Box<dyn ui::widget::Widget>
-                },
-            )
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::DefaultApps],
         build: |app, _| {
             personal_apps::area(app).map_or_else(
@@ -595,8 +583,8 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("notifications.quiet_hours", crate::prefs::NotificationPrefs => notifications::quiet_hours),
     crate::setting::setting_entry!("spelling.check", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::check_spelling),
     crate::setting::setting_entry!("spelling.autocorrect", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::auto_correct),
-    crate::setting::setting_entry!("power.auto_suspend", crate::prefs::PowerPrefs => power::auto_suspend),
-    crate::setting::setting_entry!("power.lock_on_sleep", crate::prefs::PowerPrefs => power::lock_on_sleep),
+    crate::setting::setting_row!("power.auto_suspend", crate::prefs::PowerPrefs => power::auto_suspend),
+    crate::setting::setting_row!("power.lock_on_sleep", crate::prefs::PowerPrefs => power::lock_on_sleep),
     crate::setting::setting_entry!("display.night_light", crate::prefs::NightLightPrefs => display::night_light),
     crate::setting::setting_entry!("shortcuts.vim", keyboard_shortcuts::DesktopControls => keyboard_shortcuts::vim_mode),
     crate::setting::setting_switch!("network.wifi" => network::values::wifi, network::values::wifi_switch),

@@ -14,8 +14,8 @@
 //! here sits in a group beside any other.
 
 use ui::LocalState;
-use ui::framework::{ActionControl, OtherRecord, ViewCx};
-use ui::tilo_resource::{Binds, Model, Path, Resource, Settable};
+use ui::framework::{ActionControl, Actions, OtherRecord, ViewCx};
+use ui::tilo_resource::{Binds, Effect, Model, Path, Resource, Settable};
 use ui::widget::{
     Button, Dropdown, Picture, PictureChoice, PictureOption, Segment, Slider, Toggle, ToggleGroup,
 };
@@ -273,6 +273,55 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
             .actions()
             .bind(self.chooser(options, &current), verb);
         self.control(Box::new(chooser))
+    }
+
+    /// A chooser of `options` showing `current`, invoking the effect
+    /// `effect` of the app `actions` publishes with the chosen option: a
+    /// choice of the device's (a power profile) rather than of the record.
+    pub fn choice_effect<A: Resource, E: Effect>(
+        self,
+        options: impl IntoIterator<Item = impl Into<String>>,
+        current: &LocalState<String>,
+        actions: &Actions<A>,
+        effect: impl Binds<E, String>,
+    ) -> Item {
+        let options: Vec<String> = options.into_iter().map(Into::into).collect();
+        if let Some(segments) = self.segments(&options, current) {
+            let segments = actions.bind_effect(
+                segments,
+                Indexed {
+                    inner: effect,
+                    options,
+                },
+            );
+            return self.control(Box::new(segments));
+        }
+        let chooser = actions.bind_effect(self.chooser(options, current), effect);
+        self.control(Box::new(chooser))
+    }
+
+    /// A toggle showing `on`, invoking the effect `effect` of the app
+    /// `actions` publishes with each flip.
+    pub fn toggle_effect<A: Resource, E: Effect>(
+        self,
+        on: &LocalState<bool>,
+        actions: &Actions<A>,
+        effect: impl Binds<E, bool>,
+    ) -> Item {
+        let toggle = actions.bind_effect(self.toggle_widget(on), effect);
+        self.control(Box::new(toggle))
+    }
+
+    /// A slider showing `value`, invoking the effect `effect` of the app
+    /// `actions` publishes with each committed position.
+    pub fn slider_effect<A: Resource, E: Effect>(
+        self,
+        value: &LocalState<f64>,
+        actions: &Actions<A>,
+        effect: impl Binds<E, f64>,
+    ) -> Item {
+        let slider = actions.bind_effect(self.slider_widget(value), effect);
+        self.slider_row(slider)
     }
 
     /// A choice of `values` for the field at `field`, each a tile showing
