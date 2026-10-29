@@ -452,3 +452,30 @@ fn the_revoke_question_renders_for_captures() {
     let mut app = staged("permissions-revoking");
     assert!(says(&mut app, "Keep permission"));
 }
+
+#[test]
+fn the_apps_tab_shows_both_choices_for_each_kind() {
+    let mut app = staged("apps");
+    for text in [".md files", "Notes", "mailto: links", "Mail"] {
+        assert!(says(&mut app, text), "{text:?} is shown");
+    }
+    assert!(says(&mut staged("apps-empty"), "No apps open files yet"));
+}
+
+#[test]
+fn each_choice_moves_on_by_the_kind_it_is_for() {
+    let (mut app, seat) = seated("apps");
+    press(&mut app, "ws-apps-workspace-ext:md");
+    press(&mut app, "ws-apps-yours-scheme:mailto");
+    assert_eq!(
+        seat.take_asked(),
+        [
+            WorkspaceSettingsEffect::NextWorkspaceDefault {
+                resource: "ext:md".to_owned()
+            },
+            WorkspaceSettingsEffect::NextPersonalDefault {
+                resource: "scheme:mailto".to_owned()
+            },
+        ]
+    );
+}

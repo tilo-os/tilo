@@ -19,6 +19,7 @@ use ui::widget::{Column, Element, ModalDialog, Segment, ViewTabs, Widget};
 use crate::presentation::Presentation;
 
 mod agents;
+mod apps;
 mod general;
 mod people;
 mod permissions;
@@ -26,6 +27,7 @@ mod permissions;
 pub use agents::{
     AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, ModelChoice, Models,
 };
+pub use apps::{AppRow, Apps};
 pub use general::{Archived, Device, General, Group, Public, PublicControls};
 pub use people::{Decision, Offers, People, Person, RoleChoice};
 pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
@@ -200,6 +202,18 @@ pub enum WorkspaceSettingsEffect {
     /// Open the workspace's saved roles
     #[effect(own_device, kind = "read")]
     SavedRoles,
+    /// Have the next app open a kind of file or link for everyone here
+    #[effect(attended)]
+    NextWorkspaceDefault {
+        #[param("The kind of file or link, by its key in the list")]
+        resource: String,
+    },
+    /// Have the next app open a kind of file or link for you here
+    #[effect(own_device)]
+    NextPersonalDefault {
+        #[param("The kind of file or link, by its key in the list")]
+        resource: String,
+    },
 }
 
 /// A tab of the sheet.
@@ -210,11 +224,18 @@ pub enum Tab {
     People,
     Agents,
     Permissions,
+    Apps,
 }
 
 impl Tab {
     /// Every tab, in the order the strip shows them.
-    pub const ALL: [Self; 4] = [Self::General, Self::People, Self::Agents, Self::Permissions];
+    pub const ALL: [Self; 5] = [
+        Self::General,
+        Self::People,
+        Self::Agents,
+        Self::Permissions,
+        Self::Apps,
+    ];
 
     /// What the tab is asked for by.
     pub fn key(self) -> &'static str {
@@ -223,6 +244,7 @@ impl Tab {
             Self::People => "people",
             Self::Agents => "agents",
             Self::Permissions => "permissions",
+            Self::Apps => "apps",
         }
     }
 
@@ -258,6 +280,7 @@ pub struct Settings {
     pub people: People,
     pub agents: Agents,
     pub permissions: Permissions,
+    pub apps: Apps,
 }
 
 /// A change the sheet asks about before asking the shell for it.
@@ -438,6 +461,8 @@ impl ResourceApp for WorkspaceSettingsApp {
             "agent-review",
             "permissions",
             "permissions-revoking",
+            "apps",
+            "apps-empty",
         ]
     }
 
@@ -513,6 +538,18 @@ pub fn scenario(name: Option<&str>) -> Settings {
             tab: Tab::Permissions,
             ..sample()
         },
+        Some("apps") => Settings {
+            tab: Tab::Apps,
+            ..sample()
+        },
+        Some("apps-empty") => Settings {
+            tab: Tab::Apps,
+            apps: Apps {
+                rows: Vec::new(),
+                ..apps::sample()
+            },
+            ..sample()
+        },
         Some("people-member") => Settings {
             tab: Tab::People,
             role: "Editor".to_owned(),
@@ -540,12 +577,14 @@ fn sample() -> Settings {
             tab(Tab::People, "People"),
             tab(Tab::Agents, "Agents"),
             tab(Tab::Permissions, "Privacy & Security"),
+            tab(Tab::Apps, "Apps & Files"),
         ],
         tab: Tab::General,
         general: general::sample(),
         people: people::sample(),
         agents: agents::sample(),
         permissions: permissions::sample(),
+        apps: apps::sample(),
     }
 }
 
@@ -684,6 +723,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
         Tab::People => people::pane(settings, parts),
         Tab::Agents => agents::pane(settings, parts),
         Tab::Permissions => permissions::pane(settings, parts),
+        Tab::Apps => apps::pane(settings, parts),
     };
     let body = Column::new()
         .with_no_padding()
