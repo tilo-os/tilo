@@ -38,6 +38,8 @@ const CHANGES: &[&str] = &[
     "scroll",
     "thread_keystroke",
     "thread_post",
+    "thread_send",
+    "thread_scroll",
 ];
 
 fn apps() -> PathBuf {
@@ -190,7 +192,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
         // The first change, which brings a writer new to the record: the same on screen and in
         // what the runtime reads. What Automerge does to take a new actor in grows with the
         // record (its allocations are not held here).
-        if *scenario == "scroll" {
+        if matches!(*scenario, "scroll" | "thread_scroll") {
             // Scrolling writes nothing: it has no first change.
             continue;
         }
@@ -208,10 +210,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
 #[test]
 fn the_runtime_does_the_work_of_what_it_shows() {
     let mut misses = Vec::new();
-    // TODO(bench): Chat's large list is a channel's messages, not its root's sidebar of
-    // channels; the seeder seeds a root's list of one record type, so Chat is measured once it
-    // seeds a channel's messages.
-    for app in ["notes", "todo", "today"] {
+    for app in ["notes", "todo", "today", "chat"] {
         gate(app, &bench(app), &mut misses);
     }
     assert!(
