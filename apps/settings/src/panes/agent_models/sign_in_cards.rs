@@ -201,9 +201,7 @@ impl AgentModelsModel {
                 let profile = agent_sign_in::new_profile(setup.service, &id);
                 let mut config = self.providers.config();
                 config.upsert(profile);
-                self.providers
-                    .store(config)
-                    .map_err(|error| error.to_string())?;
+                self.providers.store(&self.cx, config)?;
                 self.panel.offline_config = self.providers.config();
                 self.read_vertex_keys();
                 self.notice = Some(t_args("agent-sign-in-done", &[("service", label.into())]));
@@ -441,7 +439,7 @@ impl AgentModelsModel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{announced, mock, model_over, snapshot};
+    use super::super::tests::{announced, hosted_model, mock, model_over, snapshot};
     use super::*;
     use crate::panes::agent_vertex;
     use account_custody::{Capability, Custodian, GrantState, OAuthIssuer, OAuthUse};
@@ -466,7 +464,7 @@ mod tests {
     fn a_chatgpt_sign_in_adds_a_provider_with_its_own_grant() {
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
         let vault = tempfile::tempdir().unwrap();
-        let mut pane = model_over(mock(snapshot(None)));
+        let (_app, mut pane) = hosted_model(mock(snapshot(None)));
         pane.custodian = Custodian::for_root(Some(vault.path().to_path_buf())).with_use(
             OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models),
             server.provider(),

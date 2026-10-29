@@ -157,10 +157,13 @@ impl provider_settings_ui::PanelBindings for PanelActions {
 pub use crate::prefs::{AgentProviders, HostedAgentProviders};
 
 /// The agent providers as Settings follows them: this device's and the
-/// person's hosted ones, read and stored as one configuration.
+/// person's hosted ones, read as one configuration and changed through the
+/// sections' verbs.
 pub(crate) struct Providers {
     device: Followed<AgentProviders>,
     hosted: Followed<HostedAgentProviders>,
+    /// What was last stored here, shown until the sections show a change.
+    stored: Option<ProviderConfig>,
 }
 
 impl Providers {
@@ -168,34 +171,64 @@ impl Providers {
         Self {
             device: cx.follow::<AgentProviders>(),
             hosted: cx.follow::<HostedAgentProviders>(),
+            stored: None,
         }
     }
 
     /// The whole configuration.
     pub(crate) fn config(&self) -> ProviderConfig {
-        settings_sections::providers::merged(self.device.get(), self.hosted.get())
+        self.stored.clone().unwrap_or_else(|| {
+            settings_sections::providers::merged(self.device.get(), self.hosted.get())
+        })
     }
 
-    /// Follow a change made elsewhere; whether there was one.
+    /// Follow a change made elsewhere, or a store landing; whether there
+    /// was one.
     fn refresh(&mut self) -> bool {
         let device = self.device.refresh();
         let hosted = self.hosted.refresh();
+        if device || hosted {
+            self.stored = None;
+        }
         device || hosted
     }
 
-    /// Store `config`: this device's providers in its section, the hosted
-    /// ones in the person's.
-    fn store(&mut self, config: ProviderConfig) -> std::io::Result<()> {
+    /// Store `config` through `host`: this device's providers by its
+    /// section's verb, the hosted ones by the person's; each only where it
+    /// changed.
+    fn store(&mut self, host: &PaneCx, config: ProviderConfig) -> Result<(), String> {
+        let (was_local, was_hosted) = self.config().stored();
         let (local, hosted) = config.stored();
-        self.device
-            .settings()
-            .update(|providers| providers.config = local)?;
-        self.hosted
-            .settings()
-            .update(|providers| providers.hosted = hosted)?;
-        self.refresh();
+        if local != was_local {
+            host.invoke_section::<AgentProviders>(
+                AgentProviders::SET_PROVIDERS.with(as_json(&local)?),
+            )?;
+        }
+        if hosted != was_hosted {
+            host.invoke_section::<HostedAgentProviders>(
+                HostedAgentProviders::SET_PROVIDERS.with(as_json(&hosted)?),
+            )?;
+        }
+        self.stored = Some(ProviderConfig::from_stored(local, hosted));
         Ok(())
     }
+
+    /// Keep the provider of the models this device runs as `profile`, as
+    /// its model manager serves them, through `host`.
+    fn follow_local(&mut self, host: &PaneCx, profile: ProviderProfile) -> Result<(), String> {
+        host.invoke_section::<AgentProviders>(
+            AgentProviders::FOLLOW_LOCAL_MODELS.with(as_json(&profile)?),
+        )?;
+        let mut config = self.config();
+        config.upsert(profile);
+        self.stored = Some(config);
+        Ok(())
+    }
+}
+
+/// `value` as the JSON a verb takes.
+fn as_json(value: &impl serde::Serialize) -> Result<serde_json::Value, String> {
+    serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
 /// Local models on this device and the person's model providers.
@@ -1398,11 +1431,14 @@ impl AgentModelsModel {
         let Some(profile) = synced_local_profile(existing.clone(), &self.snapshot.models) else {
             return;
         };
-        if existing.as_ref() != Some(&profile) {
-            let mut config = config;
-            config.upsert(profile);
-            let _ = self.providers.store(config);
-            self.panel.offline_config = self.providers.config();
+        if existing.as_ref() == Some(&profile) {
+            return;
+        }
+        match self.providers.follow_local(&self.cx, profile) {
+            Ok(()) => self.panel.offline_config = self.providers.config(),
+            Err(error) => {
+                tracing::warn!(target: "tilo::settings", %error, "the local provider does not follow the model manager");
+            }
         }
     }
 
@@ -1733,9 +1769,7 @@ impl AgentModelsModel {
                 self.proposed_config(effect)?
             }
         };
-        self.providers
-            .store(config)
-            .map_err(|error| error.to_string())?;
+        self.providers.store(&self.cx, config)?;
         self.panel.offline_config = self.providers.config();
         if let Some(id) = vertex_saved {
             self.vertex_saved(&id);

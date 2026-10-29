@@ -318,7 +318,7 @@ fn collect_accessibility(widget: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNo
 /// offers to take one; once the vault holds it, it says it is stored.
 #[test]
 fn a_hosted_provider_without_a_key_here_asks_for_one() {
-    let mut pane = model_over(mock(snapshot(None)));
+    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.change_providers(AgentModelsEffect::AddProvider {
         preset: "anthropic".into(),
     })
@@ -346,7 +346,7 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
 
 #[test]
 fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
-    let mut pane = model_over(mock(snapshot(None)));
+    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.change_providers(AgentModelsEffect::AddProvider {
         preset: "anthropic".into(),
     })
@@ -386,7 +386,7 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
     use account_custody::TokenSet;
     use account_custody::cloud_projects::CloudProject;
     let vault = tempfile::tempdir().unwrap();
-    let mut pane = model_over(mock(snapshot(None)));
+    let (_app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.custodian = account_custody::Custodian::for_root(Some(vault.path().to_path_buf()));
     let grant = |refresh: &str| TokenSet {
         access_token: "access".into(),
@@ -566,6 +566,24 @@ pub(super) fn forgotten(pane: &mut AgentModelsModel) {
     });
 }
 
+/// A model over `control` storing the providers through the sections a
+/// Settings window keeps: what it stores lands in them once the window
+/// settles.
+pub(super) fn hosted_model(
+    control: Arc<MockControl>,
+) -> (
+    ui::framework::testing::TestApp<crate::resource::SettingsShell>,
+    AgentModelsModel,
+) {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let cx = app
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.host().clone())
+        .unwrap();
+    let mut model = AgentModelsModel::new(cx, control);
+    model.follow_local_profile = false;
+    (app, model)
+}
+
 pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
     let profile = tempfile::tempdir().unwrap();
     let cx = PaneCx::in_profile(profile.path().to_path_buf());
@@ -739,9 +757,6 @@ fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
 #[test]
 fn model_request_limits_use_the_published_settings_effects() {
     use ui::framework::testing::TestApp;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().to_path_buf();
-    let settings = settings_store::profile(&path);
     let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
     profile.models = vec![
         ModelDescriptor::new("test-model"),
@@ -749,19 +764,28 @@ fn model_request_limits_use_the_published_settings_effects() {
     ];
     profile.models[0].context_window = Some(262_144);
     let profile_id = profile.id.clone();
-    ProviderConfig {
-        profiles: vec![profile],
-        default_profile: None,
-        ..Default::default()
-    }
-    .save_in(&settings)
-    .unwrap();
-    crate::area::replace_in_next_window(move |_| {
-        let area = crate::panes::agent_models::AgentModelsArea::new(&PaneCx::in_profile(path));
+    crate::area::replace_in_next_window(move |context| {
+        let area = crate::panes::agent_models::AgentModelsArea::new(context.cx);
         area.model().borrow_mut().follow_local_profile = false;
         area
     });
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    crate::host::testing::invoke_section(
+        &mut app,
+        "settings.hosted-agent-providers",
+        "set-providers",
+        serde_json::to_value(agent_provider_config::HostedProfiles {
+            profiles: vec![profile],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let stored = |app: &TestApp<crate::resource::SettingsShell>| {
+        settings_sections::providers::merged(
+            &app.settings::<AgentProviders>().get(),
+            &app.settings::<HostedAgentProviders>().get(),
+        )
+    };
     let open = crate::categories::Category::AgentModels;
     app.effect_on(
         &crate::effects::pane_row_id(open),
@@ -811,7 +835,7 @@ fn model_request_limits_use_the_published_settings_effects() {
         .unwrap();
     assert!(other_value["request_limits"].is_null());
     assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
-    let saved = settings_store::SettingsSource::load(&settings);
+    let saved = stored(&app);
     for invalid in [
         serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
         serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
@@ -823,15 +847,13 @@ fn model_request_limits_use_the_published_settings_effects() {
             app.call_on(&resource, "set-model-request-limits", invalid)
                 .is_err()
         );
-        assert_eq!(settings_store::SettingsSource::load(&settings), saved);
+        app.settle();
+        assert_eq!(stored(&app), saved);
     }
     app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
         .unwrap();
-    assert!(
-        ProviderConfig::load_in(&settings).profiles[0].models[0]
-            .request_limits
-            .is_none()
-    );
+    app.settle();
+    assert!(stored(&app).profiles[0].models[0].request_limits.is_none());
     assert!(app.harness().component_contract_violations().is_empty());
 }
 
@@ -839,7 +861,7 @@ fn model_request_limits_use_the_published_settings_effects() {
 /// and removed through effects, which refuse a provider that is gone.
 #[test]
 fn providers_are_the_persons_settings() {
-    let mut pane = model_over(mock(snapshot(None)));
+    let (mut app, mut pane) = hosted_model(mock(snapshot(None)));
     pane.change_providers(AgentModelsEffect::AddProvider {
         preset: "anthropic".into(),
     })
@@ -859,6 +881,25 @@ fn providers_are_the_persons_settings() {
     let stored = pane.providers.config();
     assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
     assert_eq!(stored.profiles[0].label, "Work");
+    // What the page stored is the sections': the default this device's,
+    // the hosted provider the person's.
+    app.settle();
+    assert_eq!(
+        app.settings::<AgentProviders>()
+            .get()
+            .config
+            .default_profile,
+        Some(id.clone())
+    );
+    assert_eq!(
+        app.settings::<HostedAgentProviders>().get().hosted.profiles,
+        stored.profiles
+    );
+    assert!(
+        pane.providers.refresh(),
+        "the sections show what was stored"
+    );
+    assert_eq!(pane.providers.config(), stored);
     assert!(
         pane.change_providers(AgentModelsEffect::SetProviderEnabled {
             provider: "gone".into(),
