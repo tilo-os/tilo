@@ -176,16 +176,11 @@ fn draw_frame_content_with(
         crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.layers", ()));
     }
     if app.history_chrome_enabled {
-        let context = crate::standalone_history::HistoryReadContext {
-            document: &app.state.doc,
-            active_record: app
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: app.state.document_identity(),
-            permissions: &app.permission_ctx,
-        };
+        let context = crate::standalone_history::HistoryReadContext::of(
+            &app.state,
+            app.persistence.records.as_ref(),
+            &app.permission_ctx,
+        );
         if let Err(error) = app.document_history.draw(
             &context,
             scene,

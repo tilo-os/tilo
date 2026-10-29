@@ -2411,115 +2411,7 @@ impl App {
                 Err(error) => history.pending_control_refused(id, error.to_string()),
             }
         }
-        for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    crate::history_mode::embedded::cancel_pending_command(
-                        self.root_widget.as_mut(),
-                        pending.surface,
-                        &token,
-                    );
-                    continue;
-                }
-            };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => crate::history_mode::embedded::prepare_pending_command_typed(
-                    self.root_widget.as_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => crate::history_mode::embedded::prepare_pending_command(
-                    self.root_widget.as_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let outcome = match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    crate::history_mode::embedded::PendingCommandOutcome::NeedsConfirmation
-                }
-                Ok(_) => crate::history_mode::embedded::PendingCommandOutcome::Consumed,
-                Err(error) => {
-                    crate::history_mode::embedded::PendingCommandOutcome::Refused(error.to_string())
-                }
-            };
-            crate::history_mode::embedded::finish_pending_command(
-                self.root_widget.as_mut(),
-                pending.surface,
-                id,
-                &outcome,
-            );
-        }
-    }
-
-    fn dispatch_prepared_history_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        use crate::bound_dispatch::legacy_document::LocalResourceTarget;
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
-        let current = crate::bound_dispatch::control_witness(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            &prepared.target,
-            &prepared.invocation,
-        )?;
-        if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "stale_pending_control".into(),
-                reason: "The action meaning or confirmation policy changed while History was open"
-                    .into(),
-            });
-        }
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(prepared.invocation.arguments.clone())
-        );
-        let actor = self.collaboration.local_author.0.clone();
-        match prepared.target {
-            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
-                &target,
-                &ResourceInvocation::new(&target.address.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-                None,
-            ),
-            LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(
-                &target,
-                &ResourceInvocation::new(&target.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-            ),
-            LocalResourceTarget::Outer => self.invoke_unbound_resource_action(
-                &ResourceInvocation::new(&prepared.invocation.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-                None,
-            ),
-        }
+        self.service_embedded_history_commands(embedded);
     }
 
     /// Drives the production local idle body without creating a window or input.
@@ -4207,5 +4099,81 @@ impl crate::session_door::SessionDoor for BrokerDoor<'_> {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
         });
         Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+}
+
+impl crate::host_core::HostCore for App {
+    fn tree(&self) -> crate::host_core::HostTree<'_> {
+        crate::host_core::HostTree {
+            state: &self.state,
+            root: self.root_widget.as_ref(),
+            bindings: &self.bindings,
+            node_map: &self.layout.node_map,
+            taffy: &self.layout.taffy,
+            records: self.persistence.records.as_ref(),
+            permissions: &self.permission_ctx,
+            focused: self.focused_node,
+            history_layout: self.history_layout,
+        }
+    }
+
+    fn document_history_with_tree(
+        &mut self,
+    ) -> (
+        &mut crate::standalone_history_host::StandaloneHistoryHost,
+        crate::host_core::HostTree<'_>,
+    ) {
+        (
+            &mut self.document_history,
+            crate::host_core::HostTree {
+                state: &self.state,
+                root: self.root_widget.as_ref(),
+                bindings: &self.bindings,
+                node_map: &self.layout.node_map,
+                taffy: &self.layout.taffy,
+                records: self.persistence.records.as_ref(),
+                permissions: &self.permission_ctx,
+                focused: self.focused_node,
+                history_layout: self.history_layout,
+            },
+        )
+    }
+
+    fn host_root_mut(&mut self) -> &mut dyn Widget {
+        self.root_widget.as_mut()
+    }
+
+    fn dispatch_current_history_control(
+        &mut self,
+        prepared: crate::history_mode::pending_controls::PreparedContinuation,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        use crate::bound_dispatch::legacy_document::LocalResourceTarget;
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(prepared.invocation.arguments.clone())
+        );
+        let actor = self.collaboration.local_author.0.clone();
+        match prepared.target {
+            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
+                &target,
+                &ResourceInvocation::new(&target.address.address, &actor)
+                    .argument(Some(&argument))
+                    .confirmed(prepared.confirmed),
+                None,
+            ),
+            LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(
+                &target,
+                &ResourceInvocation::new(&target.address, &actor)
+                    .argument(Some(&argument))
+                    .confirmed(prepared.confirmed),
+            ),
+            LocalResourceTarget::Outer => self.invoke_unbound_resource_action(
+                &ResourceInvocation::new(&prepared.invocation.address, &actor)
+                    .argument(Some(&argument))
+                    .confirmed(prepared.confirmed),
+                None,
+            ),
+        }
     }
 }

@@ -40,6 +40,7 @@ use crate::accesskit_bridge::{
     build_presentation_tree_bound, build_presentation_with_resources_bound,
     build_tree_update_bound, resolve_node_id_bound,
 };
+use crate::host_core::HostCore as _;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -4210,12 +4211,11 @@ impl FrameHarness {
                 });
         }
         if self.history_chrome_enabled {
-            let context = crate::standalone_history::HistoryReadContext {
-                document: &self.state.doc,
-                active_record: self.records.as_ref().and_then(|records| records.active()),
-                document_identity: self.state.document_identity(),
-                permissions: &self.permissions,
-            };
+            let context = crate::standalone_history::HistoryReadContext::of(
+                &self.state,
+                self.records.as_ref(),
+                &self.permissions,
+            );
             let drawn = self
                 .document_history
                 .draw(
@@ -8423,100 +8423,8 @@ impl FrameHarness {
         }
         let embedded = crate::history_mode::embedded::drain_pending_commands(self.root.as_mut());
         serviced |= !embedded.is_empty();
-        for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    crate::history_mode::embedded::cancel_pending_command(
-                        self.root.as_mut(),
-                        pending.surface,
-                        &token,
-                    );
-                    continue;
-                }
-            };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => crate::history_mode::embedded::prepare_pending_command_typed(
-                    self.root.as_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => crate::history_mode::embedded::prepare_pending_command(
-                    self.root.as_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let outcome = match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    crate::history_mode::embedded::PendingCommandOutcome::NeedsConfirmation
-                }
-                Ok(_) => crate::history_mode::embedded::PendingCommandOutcome::Consumed,
-                Err(error) => {
-                    crate::history_mode::embedded::PendingCommandOutcome::Refused(error.to_string())
-                }
-            };
-            crate::history_mode::embedded::finish_pending_command(
-                self.root.as_mut(),
-                pending.surface,
-                id,
-                &outcome,
-            );
-        }
+        self.service_embedded_history_commands(embedded);
         serviced
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exact continuation door keeps component, legacy and outer lifecycle bookkeeping together"
-    )]
-    fn dispatch_prepared_history_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
-        let current = crate::bound_dispatch::control_witness(
-            self.root.as_ref(),
-            &self.state.doc,
-            &prepared.target,
-            &prepared.invocation,
-        )?;
-        if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "stale_pending_control".into(),
-                reason: "The action meaning or confirmation policy changed while History was open"
-                    .into(),
-            });
-        }
-        self.dispatch_local_control(
-            prepared.target,
-            &prepared.invocation.address,
-            &crate::bound_dispatch::ControlContinuationArguments::Json(
-                prepared.invocation.arguments,
-            ),
-            prepared.confirmed,
-        )
     }
 
     fn dispatch_local_control(
@@ -10182,6 +10090,62 @@ fn session_door(
 ) -> Option<&mut dyn crate::session_door::SessionDoor> {
     door.as_mut()
         .map(|door| door as &mut dyn crate::session_door::SessionDoor)
+}
+
+impl crate::host_core::HostCore for FrameHarness {
+    fn tree(&self) -> crate::host_core::HostTree<'_> {
+        crate::host_core::HostTree {
+            state: &self.state,
+            root: self.root.as_ref(),
+            bindings: &self.bindings,
+            node_map: &self.node_map,
+            taffy: &self.taffy,
+            records: self.records.as_ref(),
+            permissions: &self.permissions,
+            focused: self.focused,
+            history_layout: self.history_layout,
+        }
+    }
+
+    fn document_history_with_tree(
+        &mut self,
+    ) -> (
+        &mut crate::standalone_history_host::StandaloneHistoryHost,
+        crate::host_core::HostTree<'_>,
+    ) {
+        (
+            &mut self.document_history,
+            crate::host_core::HostTree {
+                state: &self.state,
+                root: self.root.as_ref(),
+                bindings: &self.bindings,
+                node_map: &self.node_map,
+                taffy: &self.taffy,
+                records: self.records.as_ref(),
+                permissions: &self.permissions,
+                focused: self.focused,
+                history_layout: self.history_layout,
+            },
+        )
+    }
+
+    fn host_root_mut(&mut self) -> &mut dyn Widget {
+        self.root.as_mut()
+    }
+
+    fn dispatch_current_history_control(
+        &mut self,
+        prepared: crate::history_mode::pending_controls::PreparedContinuation,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.dispatch_local_control(
+            prepared.target,
+            &prepared.invocation.address,
+            &crate::bound_dispatch::ControlContinuationArguments::Json(
+                prepared.invocation.arguments,
+            ),
+            prepared.confirmed,
+        )
+    }
 }
 
 #[cfg(test)]

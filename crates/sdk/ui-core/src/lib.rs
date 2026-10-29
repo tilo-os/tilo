@@ -298,6 +298,7 @@ pub mod host_operation {
     expect(dead_code, reason = "only a native host's frame culls its draw")
 )]
 pub(crate) mod draw_cull;
+mod host_core;
 pub mod host_palette;
 pub mod mentions;
 pub mod own_paint;
