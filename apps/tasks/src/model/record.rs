@@ -534,6 +534,9 @@ impl Tracker {
             quick: ask.quick,
             author: starter.clone(),
             created_ms: now,
+            // A chat is a conversation the person comes back to, with
+            // tasks of many items in it: its runs get the chat's budget.
+            budget: ask.chat.then(Budget::chat),
             run: Some(Run {
                 epoch: 1,
                 agent,
@@ -930,11 +933,17 @@ impl Tracker {
         #[param("The most its runs may spend: tokens, priced calls and money")] limits: Option<
             SpendLimits,
         >,
+        #[param("The most model turns one run may take (up to 10000)")] max_turns: Option<u64>,
     ) -> Result<(), Refusal> {
         person(cx)?;
         let target = self.issue_mut(issue)?;
         if target.active_run().is_some() {
             return Err(Refusal::new("Change the budget when no run is going"));
+        }
+        if !Budget::admits_turns(max_turns) {
+            return Err(Refusal::new(
+                "A run's turns are at least one and at most 10000",
+            ));
         }
         let ceilings = match (turn_ms, total_ms) {
             (None, None) => None,
@@ -948,21 +957,24 @@ impl Tracker {
             }
         };
         let limits = limits.map(SpendLimits::checked).transpose()?;
-        target.budget =
-            if ceilings.is_none() && limits.as_ref().is_none_or(SpendLimits::is_unlimited) {
-                None
-            } else {
-                let (turn_ms, total_ms) = ceilings.unwrap_or((MAX_TURN_MS, MAX_TOTAL_MS));
-                let limits = limits.unwrap_or_default();
-                Some(Budget {
-                    turn_ms,
-                    total_ms,
-                    max_tokens: limits.max_tokens,
-                    max_priced_calls: limits.max_priced_calls,
-                    max_cost_micros: limits.max_cost_micros,
-                    currency: limits.currency,
-                })
-            };
+        target.budget = if ceilings.is_none()
+            && max_turns.is_none()
+            && limits.as_ref().is_none_or(SpendLimits::is_unlimited)
+        {
+            None
+        } else {
+            let (turn_ms, total_ms) = ceilings.unwrap_or((MAX_TURN_MS, MAX_TOTAL_MS));
+            let limits = limits.unwrap_or_default();
+            Some(Budget {
+                turn_ms,
+                total_ms,
+                max_turns,
+                max_tokens: limits.max_tokens,
+                max_priced_calls: limits.max_priced_calls,
+                max_cost_micros: limits.max_cost_micros,
+                currency: limits.currency,
+            })
+        };
         Ok(())
     }
 

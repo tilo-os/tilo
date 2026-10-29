@@ -27,7 +27,7 @@ kind `tasks.tracker`), written the one way every app is
 | `priority` | `Option<u8>`, 1 (most urgent) to 4 | `plan` |
 | `cost_budget` | `Option<u64>`, read-only: the most its work may cost | `plan` |
 | `spend` | `Option<u64>`, read-only: what its runs settled, its sub-issues' work included, in millionths of the budget's currency | the tracker, from its ledger |
-| `budget` | turn and total time ceilings, and the spend limits | `set-execution-budget` |
+| `budget` | the run's model turns, its turn and total time ceilings, and the spend limits | `set-execution-budget`; `ask-agent` from a chat sets the chat's |
 | `comments` | `Collection<Message>`, the thread | `comment`, `send-message`, the run's reports |
 | `run` | `Option<Run>`, read-only | the run verbs below |
 
@@ -125,7 +125,7 @@ system and an entry in its history:
 | `choose-model` | anyone who may edit | the model the issue's runs plan with, while no run is going |
 | `approve-run` | people | starts run *n*+1 for the assigned agent, acting for the approver |
 | `stop-run` | people | stops the run; what it already changed stays |
-| `set-execution-budget` | people | turn and total time ceilings, and the spend limits, while no run is active |
+| `set-execution-budget` | people | model turns, turn and total time ceilings, and the spend limits, while no run is active |
 | `send-message` | anyone who may comment | a message in the thread to the run going on |
 | `report-run` | the run's agent | its phase, and progress posted in the thread |
 | `incorporate` | the run's agent | the first *n* messages to the run, taken in |
@@ -174,8 +174,21 @@ A run may act in an application nobody has open: the broker launches it
 through the workspace launcher under the run's own durable custody, bound to
 the run, its approver and the messages it took in, and admits the action
 against the freshly published contract only. Stop and a revoked grant fence
-both the launch and the action after it. A run's turn and total
-time ceilings are the issue's `set-execution-budget`.
+both the launch and the action after it.
+
+A run's limit is its issue's budget: the model turns it may take, the
+longest turn and the longest run (`set-execution-budget`). The agent has no
+turn cap of its own; a run whose issue sets no budget takes the runner's
+default (30 turns in 5 minutes), and an issue asked in an agent chat
+(`ask-agent` with `chat`) starts with the chat's budget, sized for a task
+of many items: 300 turns in up to two hours, three minutes a turn. A long
+run stays within its model's context by compacting what it sends: results
+read long ago are put aside as their `read_result` handles with a short
+summary, and past that its oldest turns fold into one note listing each
+step's handle; the model reads any of them again whole. A run of several
+items posts one progress line per item in the thread ("3 of 8: reviewed
+Jane Doe"). A model whose descriptor declares no tool calling is refused
+before its first turn, by name.
 
 ## Budgets and spend
 

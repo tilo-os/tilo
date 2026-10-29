@@ -280,6 +280,9 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
             collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
+                max_turns: budget
+                    .max_turns
+                    .map(|turns| u32::try_from(turns).unwrap_or(u32::MAX)),
             }
         }),
         subject: issue
@@ -431,6 +434,43 @@ mod tests {
         assert!(run.instruction.contains("Keep the headings"));
         assert_eq!(run.directions.len(), 1);
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
+    }
+
+    /// A chat's run reaches its agent with the chat's whole budget: its turn
+    /// ceiling as well as its time, and the tracker admits no more turns
+    /// than the run's envelope does.
+    #[test]
+    fn a_chats_run_carries_its_turn_ceiling_to_the_agent() {
+        assert_eq!(
+            tasks::model::MAX_TURNS,
+            u64::from(collab_types::task_budget::MAX_RUN_TURNS)
+        );
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+                ask: tasks::model::AgentRequest {
+                    id: tilo_resource::Id::from_raw("chat"),
+                    title: "Review today's applications".into(),
+                    body: None,
+                    agent: "claude".into(),
+                    model: None,
+                    subject: None,
+                    quick: false,
+                    chat: true,
+                },
+            }))
+            .unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        let budget = run.budget.expect("a chat has a budget");
+        budget.validate().unwrap();
+        assert_eq!(
+            budget.max_turns.map(u64::from),
+            Some(tasks::model::CHAT_TURNS)
+        );
+        assert_eq!(u64::from(budget.total_ms), tasks::model::MAX_TOTAL_MS);
     }
 
     /// A part of a task works on the model the task was set to, so every step

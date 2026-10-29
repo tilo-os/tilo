@@ -28,8 +28,11 @@
 //!   until a step moves on ([`Session::follow_native`]), not on a timer;
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
-//! Every bound is enforced here, not asked for: model turns, wall-clock time
-//! and the task's step budget.
+//! Every bound is enforced here, not asked for: the run's budget (model
+//! turns, wall-clock time, one turn's time) as its issue sets it
+//! (`execution_budget`), the runner's default budget without one, and the
+//! spend limits the issue holds each turn against. A long run keeps within
+//! its model's context by compacting what it read long ago ([`compaction`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -40,8 +43,8 @@ use serde_json::Value;
 use ui::collaboration::CollabEvent;
 
 use super::{
-    Following, MAX_TASK_STEPS, Session, StepOutcome, TaskAction, TaskActionStop,
-    arguments_for_step, task_action_from_offer,
+    Following, Session, StepOutcome, TaskAction, TaskActionStop, arguments_for_step,
+    task_action_from_offer,
 };
 use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
@@ -50,18 +53,24 @@ use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
 use tilo_actions::task_step::TaskStep;
 
-/// Most steps a run tells the person about. The task keeps a bounded number
-/// of public notes per run; the rest are for its outcome and its questions.
+/// Most steps a run tells the person about, per item of a request of several
+/// items (and per run otherwise): the task keeps a bounded number of public
+/// step notes; its per-item progress lines, its outcome and its questions are
+/// told apart from them.
 const MOST_STEPS_TOLD: usize = 64;
 
 mod pictures;
 use pictures::MOST_PICTURES;
 mod resume;
 
-/// Most model turns one task may take. Turns are cheap (well under two
-/// seconds each); what they must not do is wander, which the discovery
-/// nudge below and the wall-clock budget bound.
-pub(super) const MAX_LOOP_TURNS: usize = 30;
+mod compaction;
+mod progress;
+
+/// The model turns of a run whose issue sets no budget: a request asked in
+/// passing. Turns are cheap (well under two seconds each); what they must
+/// not do is wander, which the discovery nudge below and the wall-clock
+/// budget bound. A run whose issue sets a budget takes the turns it says.
+pub(super) const DEFAULT_LOOP_TURNS: usize = 30;
 /// After this many turns that only looked things up, every discovery answer
 /// also says how many turns are left and asks the model to act.
 const DISCOVERY_NUDGE: usize = 3;
@@ -71,8 +80,9 @@ const DISCOVERY_NUDGE: usize = 3;
 const OPEN_SETTLE: Duration = Duration::from_secs(8);
 /// Most newly available operations an open lists.
 const MOST_NEWLY_OPENED: usize = 40;
-/// Wall-clock budget of one task's loop: model turns and steps together.
-const MAX_LOOP_TIME: Duration = Duration::from_secs(300);
+/// Wall-clock budget of a run whose issue sets none: model turns and steps
+/// together.
+const DEFAULT_LOOP_TIME: Duration = Duration::from_secs(300);
 /// The most one model turn may take: the model gateway's own ceiling for a
 /// provider call, and a managed agent's model budget. Hosted reasoning
 /// models answer most turns in seconds but take up to a minute on some
@@ -135,7 +145,10 @@ does it say) is answered in your reply: read what you need with read operations,
 `plan` alone with the whole answer in `reply`. List no parts for a question, and write nothing \
 into an application unless the request asks for that too. A remark is answered the same way.
 - A result too long for one observation shows its first page and a `continues`; read on with \
-`read_result`, only as far as the request needs.
+`read_result`, only as far as the request needs. A result read long ago may come back put \
+aside, as its `result` handle and a summary; `read_result` reads it again from `from` 0.
+- When the request is the same work for several items (each mail, each file), do one item at \
+a time and say where you are with `progress` on the invoke that finishes each item.
 - To attach, post or place a file, first invoke the operation that hands it over (its result \
 names `tilo.content:` content), then right after it the operation that takes content; that \
 parameter is filled in from the step before, so give only the others. One file per pair.
@@ -338,7 +351,7 @@ fn streamed_call(output: &str, index: usize) -> Option<StreamedCall> {
 /// Durable state of one task's loop.
 pub(super) struct LoopState {
     pub(super) revealed: Revealed,
-    /// Invokes started so far, bounded by [`MAX_TASK_STEPS`].
+    /// Invokes started so far.
     pub(super) step_index: usize,
     /// What the next content-consuming step is built from.
     pub(super) previous: Option<StepOutcome>,
@@ -356,6 +369,12 @@ pub(super) struct LoopState {
     discovery_turns: usize,
     /// The turn being run.
     turn: usize,
+    /// The most turns the run's budget gives it; `None` when its time alone
+    /// bounds it.
+    turns: Option<usize>,
+    /// The item of a many-item request the person was last told the run is
+    /// at ([`progress`]).
+    progress: Option<progress::Progress>,
     /// `operation error` of every failed invoke so far, to tell the model
     /// when it repeats one unchanged.
     failures: HashSet<String>,
@@ -557,6 +576,8 @@ impl LoopState {
             refusals: 0,
             discovery_turns: 0,
             turn: 0,
+            turns: Some(DEFAULT_LOOP_TURNS),
+            progress: None,
             failures: HashSet::new(),
             in_flight: Vec::new(),
             settled: Vec::new(),
@@ -955,20 +976,32 @@ impl Session {
                 return Ok(LoopEnd::Failed(super::planning::no_model(&route)));
             }
         };
+        // A model that cannot call tools cannot carry out a task: the run
+        // says which model it is rather than failing on its first answer.
+        if let Some(refusal) = self.chooser.refuses_tasks() {
+            return Ok(LoopEnd::Failed(refusal));
+        }
         let (total_budget, turn_budget) = if let Some(budget) = run.execution_budget {
             if let Err(error) = budget.validate() {
                 return Ok(LoopEnd::Failed(error.into()));
             }
+            // The issue's budget is the run's limit: its turns (none, and
+            // its time alone bounds it) and its time.
+            state.turns = budget
+                .max_turns
+                .map(|turns| usize::try_from(turns).unwrap_or(usize::MAX));
             (
                 Duration::from_millis(u64::from(budget.total_ms)),
                 Duration::from_millis(u64::from(budget.turn_ms)),
             )
         } else {
+            state.turns = Some(DEFAULT_LOOP_TURNS);
             (
-                MAX_LOOP_TIME,
+                DEFAULT_LOOP_TIME,
                 MAX_LOOP_TURN_TIME.min(self.chooser.timeout().max(Duration::from_secs(1))),
             )
         };
+        let mut context = compaction::Context::of(self.chooser.context_tokens());
         self.await_companions();
         let began = ui::time::now();
         self.chooser.begin_trace();
@@ -1037,7 +1070,15 @@ impl Session {
         } else {
             Conversation::new(protocol, &model, LOOP_SYSTEM, &first)
         };
-        for turn in 0..MAX_LOOP_TURNS {
+        let mut turn = 0;
+        loop {
+            if state.turns.is_some_and(|turns| turn >= turns) {
+                return Ok(LoopEnd::Failed(format!(
+                    "The task used all {turn} model turns of its budget before it finished \
+                     ({} action(s) completed). Raise its turns and run it again.",
+                    state.completed
+                )));
+            }
             let left = total_budget.saturating_sub(began.elapsed());
             if left.is_zero() {
                 return Ok(LoopEnd::Failed(
@@ -1051,11 +1092,11 @@ impl Session {
             if let Some(end) = self.run_turn(run, &mut conversation, state, turn, timeout)? {
                 return Ok(end);
             }
+            // What the next turn is sent stays within the model's context:
+            // results read long ago give way to their handles.
+            context.compact(&mut conversation, &mut state.pages);
+            turn += 1;
         }
-        Ok(LoopEnd::Failed(format!(
-            "The task did not finish within {MAX_LOOP_TURNS} model turns ({} action(s) completed)",
-            state.completed
-        )))
     }
 
     /// Publish only provider-exposed presentation, never argument previews or
@@ -1669,6 +1710,34 @@ impl Session {
         )
     }
 
+    /// Tell the person where a request of several items is, once per item:
+    /// "3 of 8: reviewed Jane Doe", in the issue's thread. Each item gets
+    /// its own bounded number of step notes.
+    fn tell_progress(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        state: &mut LoopState,
+        input: &Value,
+    ) -> Result<()> {
+        let Some(progress) = progress::Progress::of_input(input) else {
+            return Ok(());
+        };
+        if state.progress.as_ref() == Some(&progress) {
+            return Ok(());
+        }
+        let line = progress.line();
+        state.progress = Some(progress);
+        state.steps_told = 0;
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Progress {
+                message: line,
+                // Progress is a public note, appended to the task's history.
+                presentation: None,
+            },
+        )
+    }
+
     /// List on the run's issue the resource this step reads, when the step
     /// reads a resource other than the one the request is about.
     ///
@@ -1756,6 +1825,7 @@ impl Session {
                     input,
                 };
                 state.absorb_parts(&call.input);
+                self.tell_progress(run, state, &call.input)?;
                 let independent = tools::invoke_independent(&call.input);
                 if independent {
                     match self.start_independent(run, state, call)? {
@@ -1792,14 +1862,18 @@ impl Session {
                 let catalogue = self.task_catalogue();
                 let mut answer = tools::answer(name, &call.input, &catalogue, &mut state.revealed);
                 if state.discovery_turns >= DISCOVERY_NUDGE {
-                    let left = MAX_LOOP_TURNS.saturating_sub(state.turn + 1);
+                    let left = state.turns.map_or_else(String::new, |turns| {
+                        format!(
+                            " and have {} turn(s) left",
+                            turns.saturating_sub(state.turn + 1)
+                        )
+                    });
                     let _ = std::fmt::Write::write_fmt(
                         &mut answer,
                         format_args!(
-                            "\n(You have spent {} turns only looking things up and have {left} \
-                             turn(s) left. Act now: invoke the operations you need with ids \
-                             already shown, or finish with plan listing what you cannot do \
-                             under `unable`.)",
+                            "\n(You have spent {} turns only looking things up{left}. Act now: \
+                             invoke the operations you need with ids already shown, or finish \
+                             with plan listing what you cannot do under `unable`.)",
                             state.discovery_turns
                         ),
                     );
@@ -1917,11 +1991,6 @@ impl Session {
     ) -> Result<Prepared, Box<InvokeReport>> {
         let refused = |error: String| Box::new(refused_report(error));
         let mut invocation = tools::read_invoke(input, &state.revealed).map_err(refused)?;
-        if state.step_index >= MAX_TASK_STEPS {
-            return Err(refused(format!(
-                "this task has used all {MAX_TASK_STEPS} of its steps"
-            )));
-        }
         let catalogue = self.task_catalogue();
         if let Some(offer) = surface::find(&catalogue.offers, &invocation.operation) {
             tools::decode_structured_arguments(offer, &mut invocation.arguments);

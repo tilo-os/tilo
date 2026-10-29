@@ -507,6 +507,10 @@ struct World {
     /// An action that asks its person first, and how many more asks the
     /// host answers with its draft waiting before the person confirms.
     awaiting: Option<(String, usize)>,
+    /// A mailbox of this many letters published beside the document, each
+    /// read whole by `read-letter` (a host-owned read, which no view
+    /// settles after); zero publishes none.
+    letters: usize,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -640,6 +644,20 @@ impl World {
                 }],
             },
         ];
+        if self.letters > 0 {
+            surfaces[0].actions.push(descriptor(
+                "read-letter",
+                "Read a letter",
+                tilo_actions::OperationKind::Effect,
+                vec![ActionParam::required(
+                    "letter",
+                    ParamType::Integer,
+                    "Which letter",
+                )],
+                Availability::Available,
+                vec![],
+            ));
+        }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
                 peer_id: SECOND_PEER,
@@ -780,6 +798,21 @@ impl World {
                     left -= 1;
                 }
                 (serde_json::json!({"succeeded": {}}), false)
+            }
+            "read-letter" => {
+                let letter = arguments.get("letter").and_then(Value::as_u64).unwrap_or(0);
+                (
+                    serde_json::json!({"succeeded": {"value": {
+                        "letter": letter,
+                        "text": format!(
+                            "Candidate letter {letter}: {}",
+                            "I am applying for the role and attach my CV and a link to my \
+                             work. "
+                                .repeat(40)
+                        )
+                    }}}),
+                    false,
+                )
             }
             "post" => {
                 self.posts.push(text("message"));
@@ -1398,6 +1431,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
     )
 }
 
+#[path = "agent_loop/tests/long_run.rs"]
+mod long_run;
 #[path = "agent_loop/tests/native_pipeline.rs"]
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
@@ -2234,6 +2269,7 @@ fn explicit_owner_task_budget_reaches_transport_and_keeps_the_default() {
         Some(collab_types::task_budget::TaskExecutionBudget {
             turn_ms: 20_000,
             total_ms: 60_000,
+            max_turns: None,
         }),
     );
     bounded.session.run_task(&bounded.run).unwrap();
@@ -2262,6 +2298,7 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
         Some(collab_types::task_budget::TaskExecutionBudget {
             turn_ms: 100,
             total_ms: 100,
+            max_turns: None,
         }),
     );
     f.session.run_task(&f.run).unwrap();
@@ -2278,18 +2315,40 @@ fn explicit_total_task_deadline_stops_silent_transport_before_any_step() {
     );
 }
 
-/// A model that never finishes is stopped at the turn bound.
+/// A model that never finishes is stopped at its budget's turns: the
+/// runner's default for an issue that sets none, and the issue's own turns
+/// when it sets them, past the old fixed bound.
 #[test]
-fn a_loop_that_never_finishes_stops_at_its_turn_bound() {
-    let turns = (0..MAX_LOOP_TURNS + 2)
-        .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
-        .collect();
-    let mut f = fixture("wander", World::default(), turns);
+fn a_loop_that_never_finishes_stops_at_its_budgets_turns() {
+    let wander = |count: usize| -> Vec<Vec<TurnEvent>> {
+        (0..count)
+            .map(|_| turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64))
+            .collect()
+    };
+    let mut f = fixture("wander", World::default(), wander(DEFAULT_LOOP_TURNS + 2));
     f.session.run_task(&f.run).unwrap();
-    assert_eq!(f.script.bodies.lock().unwrap().len(), MAX_LOOP_TURNS);
+    assert_eq!(f.script.bodies.lock().unwrap().len(), DEFAULT_LOOP_TURNS);
     assert!(matches!(
         terminal(&f.sent.borrow()),
-        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("did not finish")
+        runtime_collab::TaskRunUpdate::Failed { message } if message.contains("model turns of its budget")
+    ));
+    let turns = DEFAULT_LOOP_TURNS * 2 + 5;
+    let mut f = execution_fixture(
+        "wander",
+        World::default(),
+        wander(turns + 2),
+        None,
+        Some(collab_types::task_budget::TaskExecutionBudget {
+            turn_ms: 20_000,
+            total_ms: 600_000,
+            max_turns: Some(u32::try_from(turns).unwrap()),
+        }),
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), turns);
+    assert!(matches!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Failed { message } if message.contains(&format!("all {turns} model turns"))
     ));
 }
 

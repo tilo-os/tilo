@@ -306,6 +306,7 @@ fn a_budget_is_set_only_between_runs_and_within_its_ceilings() {
             turn_ms,
             total_ms,
             limits: None,
+            max_turns: None,
         })
     };
     assert!(replica.apply(budget(Some(10), Some(5))).is_err());
@@ -436,6 +437,7 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                 }),
                 subject: None,
                 quick: false,
+                chat: false,
             },
         })
     };
@@ -460,6 +462,91 @@ fn asking_an_agent_makes_an_issue_whose_run_the_asking_approved() {
                 model: None
             }))
             .is_err()
+    );
+}
+
+#[test]
+fn a_chat_ask_gets_the_chat_budget_and_a_plain_ask_the_runners_default() {
+    let mut person = ada();
+    let ask = |id: &str, chat: bool| {
+        Tracker::ASK_AGENT.with(tracker::AskAgent {
+            ask: crate::model::AgentRequest {
+                id: Id::from_raw(id),
+                title: "Review today's applications".into(),
+                body: None,
+                agent: "claude".into(),
+                model: None,
+                subject: None,
+                quick: false,
+                chat,
+            },
+        })
+    };
+    person.apply(ask("chat", true)).unwrap();
+    person.apply(ask("plain", false)).unwrap();
+    let state = person.state().unwrap();
+    let chat = state.issues.get(&Id::from_raw("chat")).unwrap();
+    assert_eq!(chat.budget, Some(crate::model::Budget::chat()));
+    let budget = chat.budget.clone().unwrap();
+    // Eight items of about fifteen steps each fit, with room to read on.
+    assert!(budget.max_turns.unwrap() >= 8 * 15 * 2);
+    assert!(crate::model::Budget::admits(
+        budget.turn_ms,
+        budget.total_ms
+    ));
+    assert!(crate::model::Budget::admits_turns(budget.max_turns));
+    assert!(
+        budget.spends_freely(),
+        "a chat limits no spending by itself"
+    );
+    assert_eq!(
+        state.issues.get(&Id::from_raw("plain")).unwrap().budget,
+        None
+    );
+}
+
+#[test]
+fn a_runs_turn_ceiling_is_set_with_its_budget_and_within_range() {
+    let mut replica = ada();
+    replica
+        .apply(Tracker::CREATE.with(create("Long", None, Some(AGENT))))
+        .unwrap();
+    let issue = id_of(&replica, "Long");
+    let budget = |max_turns| {
+        Tracker::SET_EXECUTION_BUDGET.with(tracker::SetExecutionBudget {
+            issue: issue.clone(),
+            turn_ms: None,
+            total_ms: None,
+            limits: None,
+            max_turns,
+        })
+    };
+    assert!(replica.apply(budget(Some(0))).is_err());
+    assert!(
+        replica
+            .apply(budget(Some(crate::model::MAX_TURNS + 1)))
+            .is_err()
+    );
+    replica.apply(budget(Some(240))).unwrap();
+    let set = replica
+        .state()
+        .unwrap()
+        .issues
+        .get(&issue)
+        .unwrap()
+        .budget
+        .clone()
+        .unwrap();
+    assert_eq!(set.max_turns, Some(240));
+    // Turns alone keep the widest time ceilings.
+    assert_eq!(
+        (set.turn_ms, set.total_ms),
+        (crate::model::MAX_TURN_MS, crate::model::MAX_TOTAL_MS)
+    );
+    replica.apply(budget(None)).unwrap();
+    assert_eq!(
+        replica.state().unwrap().issues.get(&issue).unwrap().budget,
+        None
     );
 }
 
@@ -1016,6 +1103,7 @@ fn a_quick_question_is_a_task_that_ends_when_its_agent_answers_it() {
                 model: None,
                 subject: None,
                 quick: true,
+                chat: false,
             },
         }))
         .unwrap();
@@ -1057,6 +1145,7 @@ fn work_asked_of_an_agent_waits_for_a_person_to_review_what_came_back() {
                 model: None,
                 subject: None,
                 quick: false,
+                chat: false,
             },
         }))
         .unwrap();
@@ -1436,6 +1525,7 @@ fn a_step_that_would_cross_a_budget_is_refused_naming_the_limit() {
                 turn_ms: Some(1_000),
                 total_ms: Some(60_000),
                 limits: Some(limits(Some(1_000), Some(2_000_000), "EUR")),
+                max_turns: None,
             }),
         )
         .unwrap();

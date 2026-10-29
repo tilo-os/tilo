@@ -1033,6 +1033,7 @@ async fn native_stream_replacement_keeps_run_identity_and_cancel_fences_new_effe
             let budget = collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: 5000,
                 total_ms: 20000,
+                max_turns: None,
             };
             f.approve();
             f.on_run(|run| run.budget = Some(budget));

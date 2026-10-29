@@ -88,9 +88,6 @@ enum TaskActionStop {
     Failed(String),
 }
 
-/// Most actions one task may invoke.
-const MAX_TASK_STEPS: usize = 64;
-
 /// A child of the run the host accepted, followed to its outcome alone
 /// ([`Session::invoke_task_action`]) or beside others started in the same
 /// turn. Each keeps its own invocation id and broker job: following several

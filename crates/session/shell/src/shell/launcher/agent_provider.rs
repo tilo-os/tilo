@@ -1,7 +1,8 @@
 //! The model a workspace agent is started with.
 
 /// The model a workspace agent plans with, as the nonsecret selection the
-/// agent accepts: profile, model and protocol only. The model chosen for
+/// agent accepts: profile, model and protocol, and what the model's
+/// descriptor declares of it (vision, no tool calling, its context). The model chosen for
 /// this agent, else the desktop's default. The agent cannot read Settings
 /// from its sandbox, so without this it has no model and plans by keyword
 /// alone; the model gateway keeps the endpoint and the credential.
@@ -22,11 +23,25 @@ fn provider_selection(
         "model_id": model.id,
         "protocol": profile.protocol,
     });
-    // Said only of a model that sees, so an agent shows it pictures.
-    if model.vision
-        && let Some(fields) = selection.as_object_mut()
-    {
-        fields.insert("vision".into(), true.into());
+    if let Some(fields) = selection.as_object_mut() {
+        // Said only of a model that sees, so an agent shows it pictures.
+        if model.vision {
+            fields.insert("vision".into(), true.into());
+        }
+        // Said only of a model that calls no tools, so the agent's runs
+        // refuse it by name instead of failing on its first answer.
+        if !model.tool_calling {
+            fields.insert("tool_calling".into(), false.into());
+        }
+        // How much it reads at once, so a long run compacts within it.
+        if let Some(tokens) = model
+            .request_limits
+            .as_ref()
+            .and_then(|limits| limits.runtime_context_tokens)
+            .or(model.context_window)
+        {
+            fields.insert("context_window".into(), tokens.into());
+        }
     }
     serde_json::to_string(&selection).ok()
 }
@@ -86,6 +101,11 @@ mod tests {
         config.profiles[0].models[1].vision = true;
         let mut seeing = expected("small");
         seeing["vision"] = true.into();
+        assert_eq!(selection(&config, "writer"), seeing);
+        config.profiles[0].models[1].tool_calling = false;
+        config.profiles[0].models[1].context_window = Some(32_768);
+        seeing["tool_calling"] = false.into();
+        seeing["context_window"] = 32_768.into();
         assert_eq!(selection(&config, "writer"), seeing);
     }
 }
