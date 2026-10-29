@@ -148,6 +148,16 @@ fi
 # and the runtime library they link; its output lands in target/nested-session.
 build_out=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}
 bin=$build_out/bin
+# A build shared read-only between sessions (TILO_NESTED_SESSION_BUILD) runs from this
+# session's own copy of its programs: hard links, so nothing is duplicated, with room for the
+# session's fonts beside them.
+if [[ ! -w $bin ]]; then
+    rm -rf "$state/bin"
+    mkdir -p "$state"
+    cp -al "$bin" "$state/bin" 2>/dev/null || { chmod -R u+w "$state/bin" 2>/dev/null; rm -rf "$state/bin"; cp -a "$bin" "$state/bin"; }
+    find "$state/bin" -type d -exec chmod u+w {} +
+    bin=$state/bin
+fi
 thin=$build_out/thin-app
 if ((build)); then
     say "building the nested session (dist/dev/nested-session-build.sh)"
@@ -406,6 +416,9 @@ done
 rm -rf "$runtime"
 mkdir -m 700 "$runtime"
 export XDG_RUNTIME_DIR=$runtime
+# The session's agent door, where an agent in a terminal of this login (and `tilolang repl`)
+# reaches it as an admitted agent, at the path a real session's has.
+export TILO_AGENT_DOOR=${TILO_AGENT_DOOR:-$runtime/tilo-session/agent.sock}
 control=$runtime/control.sock
 children=()
 # Stop the process groups the given children lead: each child leads its own

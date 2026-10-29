@@ -6,6 +6,7 @@
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
 //! the resulting [`DynAction`].
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::Value as Json;
@@ -314,8 +315,8 @@ fn open_spec(anchor: &str) -> ActionSpec {
 /// The resource of a root record with the items of its collections as child resources, each
 /// carrying the actions whose subject is its type (a draft's `send`, a note's `pin`).
 ///
-/// An item's resource id is the root's with the path to the item (`doc/field:item`), the same
-/// form an action takes an item as an argument in, so an agent that surveys the tree calls an
+/// An item's resource id is the root's with the item's id (`doc/item`), the same form an
+/// action takes an item as an argument in, so an agent that surveys the tree calls an
 /// item's verbs directly.
 #[must_use]
 pub fn publish_tree(
@@ -344,7 +345,7 @@ fn item_resources(
             continue;
         };
         for (item_id, item) in items.iter() {
-            let path = format!("{parent}/{}:{}", field.id, item_id.as_str());
+            let path = crate::index::derive::item_path(parent, item_id.as_str());
             out.push(item_resource(types, item, &path));
         }
     }
@@ -373,7 +374,11 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
 pub struct Publications {
     watch: crate::store::Watch,
-    trees: std::collections::BTreeMap<String, ResourceSpec>,
+    /// Each the very tree it was while the record publishes the same: a reader holding it
+    /// knows by its pointer that nothing in it changed.
+    trees: std::collections::BTreeMap<String, Rc<ResourceSpec>>,
+    /// Moves whenever a tree is added, replaced or removed.
+    revision: u64,
     /// Per record, the resource whose text names it now.
     named_by: std::collections::BTreeMap<String, Option<String>>,
     /// Records being built whole off the frame.
@@ -451,7 +456,7 @@ fn indexed_items(
             let Some(id) = items.get(index) else {
                 break;
             };
-            let path = crate::index::view::child(parent, &field.id, &id);
+            let path = crate::index::view::child(parent, &id);
             if let Some(item) = indexed_item(types, view, reader, &path, field.record.as_deref()) {
                 out.push(item);
             }
@@ -495,6 +500,7 @@ impl Publications {
         Self {
             watch: host.store().watch(),
             trees: std::collections::BTreeMap::new(),
+            revision: 0,
             named_by: std::collections::BTreeMap::new(),
             building: None,
             wake: None,
@@ -593,21 +599,41 @@ impl Publications {
             named_by,
         } in built
         {
-            self.trees.insert(doc.clone(), tree);
+            self.trees.insert(doc.clone(), Rc::new(tree));
             self.named_by.insert(doc.clone(), named_by);
             touched.push(doc);
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
-    /// The published records, by document id.
+    /// The published records, by document id. A record whose tree did not change since an
+    /// earlier call is the very same tree.
     #[must_use]
-    pub fn trees(&self) -> &std::collections::BTreeMap<String, ResourceSpec> {
+    pub fn trees(&self) -> &std::collections::BTreeMap<String, Rc<ResourceSpec>> {
         &self.trees
+    }
+
+    /// A number that moves whenever [`Self::trees`] changes, and only then.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Republish what changed since the last update. Returns the documents whose published tree
     /// changed (or went away).
     pub fn update(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
+        let touched = self.update_trees(host, planner);
+        if !touched.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        touched
+    }
+
+    fn update_trees(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+    ) -> Vec<String> {
         use std::collections::BTreeSet;
 
         use tilolang_runtime::store::ANY_FIELD;
@@ -675,12 +701,13 @@ impl Publications {
             else {
                 continue;
             };
-            at.republish(
+            if at.republish(
                 tree,
                 (fields, &changes),
                 self.named_by.entry(doc.clone()).or_default(),
-            );
-            touched.push(doc.clone());
+            ) {
+                touched.push(doc.clone());
+            }
         }
         if !whole_docs.is_empty() {
             // Built off the frame; changes from now on stay in the watch until it is taken in.
@@ -757,9 +784,35 @@ impl Published<'_> {
 
     /// The first text of the top-level item `top`, which named the record, and where it is.
     fn label_within(&self, top: &str) -> Option<(String, Option<String>)> {
-        let at = tilolang_runtime::value::ResourceRef::parse_id(top, self.schema.id.clone())?;
+        let at = self.at(top)?;
         let (text, held) = self.store.first_text(&at)?;
         Some((text, Some(held)))
+    }
+
+    /// The resource holding the collection the item at `path` is in now, and the field.
+    fn holder(&self, path: &str) -> Option<(String, String)> {
+        use tilolang_runtime::store::Store as _;
+        let at = tilolang_runtime::value::ResourceRef::parse_id(path, String::new())?;
+        at.item.as_ref()?;
+        let (holder, field) = self.store.container(&at).ok()??;
+        Some((holder.id_string(), field))
+    }
+
+    /// The resources from the record down to the resource at `path`, the record first and
+    /// `path` last, as the store has them now; `None` for one in no collection.
+    fn chain(&self, path: &str) -> Option<Vec<String>> {
+        let mut out = vec![path.to_owned()];
+        let mut at = path.to_owned();
+        while at != self.doc {
+            let (holder, _) = self.holder(&at)?;
+            if out.contains(&holder) {
+                return None;
+            }
+            out.push(holder.clone());
+            at = holder;
+        }
+        out.reverse();
+        Some(out)
     }
 
     fn rework(
@@ -777,10 +830,20 @@ impl Published<'_> {
         };
         // The field of the record the name is read through, when an item holds it: fields after
         // it in id order cannot name the record while it does.
-        let naming_field = named_by
-            .and_then(|at| at.strip_prefix(self.doc)?.strip_prefix('/'))
-            .and_then(|rest| rest.split(':').next());
+        let named_chain = named_by
+            .filter(|at| *at != self.doc)
+            .and_then(|at| self.chain(at));
+        let naming_field = named_chain
+            .as_ref()
+            .and_then(|chain| chain.get(1))
+            .and_then(|top| self.holder(top))
+            .map(|(_, field)| field);
         for key in fields {
+            // A resource's first and last versions (`created(r)`, `updated(r)`), which every
+            // change moves: nothing published reads them.
+            if tilolang_runtime::store::Reflected::of(&key.field).is_some() {
+                continue;
+            }
             if key.resource == self.doc {
                 let kind = self.schema.field(&key.field).map(|f| f.kind);
                 if kind == Some(crate::schema::MergeKind::Collection) {
@@ -788,24 +851,32 @@ impl Published<'_> {
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
                 }
-                if naming_field.is_none_or(|f| key.field.as_str() <= f) {
+                if naming_field
+                    .as_deref()
+                    .is_none_or(|f| key.field.as_str() <= f)
+                {
                     rework.relabel = Relabel::Whole;
                 }
                 continue;
             }
-            let Some(top) = top_item(self.doc, &key.resource) else {
+            let Some(chain) = self.chain(&key.resource) else {
+                // An item in no collection now: what held it lists it no more.
+                rework.nodes.insert(key.resource.clone());
+                continue;
+            };
+            let Some(top) = chain.get(1).cloned() else {
                 continue;
             };
             if rework.relabel == Relabel::Kept
-                && named_by.is_some_and(|at| at == top || at.starts_with(&format!("{top}/")))
+                && named_chain
+                    .as_ref()
+                    .is_some_and(|named| named.contains(&top))
             {
                 rework.relabel = Relabel::Within(top);
             }
             // The item and every item holding it, up to the record.
-            let mut at = key.resource.as_str();
-            while at != self.doc {
-                rework.relabels.insert(at.to_owned());
-                at = at.rsplit_once('/').map_or(self.doc, |(parent, _)| parent);
+            for at in chain.iter().skip(1) {
+                rework.relabels.insert(at.clone());
             }
             let kind = self
                 .schema_at(&key.resource)
@@ -816,6 +887,11 @@ impl Published<'_> {
                     rework
                         .collections
                         .insert((key.resource.clone(), key.field.clone()));
+                    // An item in it may have moved: the one whose text names the record among
+                    // them, or one now before it.
+                    if named_chain.is_some() && rework.relabel != Relabel::Whole {
+                        rework.relabel = Relabel::Whole;
+                    }
                 }
                 // A field of the item's own: its label, read again.
                 Some(_) if key.field != ANY_FIELD => {}
@@ -829,18 +905,24 @@ impl Published<'_> {
 
     /// Republish in `tree` what the changes to `fields` reached; `named_by` is the resource
     /// whose text names the record, kept up to date.
+    /// Whether the tree changed. A change that reached nothing the tree shows (a note's body
+    /// typed into, which no label reads) leaves it the very tree it was.
     fn republish(
         &self,
-        tree: &mut ResourceSpec,
+        tree: &mut Rc<ResourceSpec>,
         (fields, changes): (
             &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
             &crate::store::Changes,
         ),
         named_by: &mut Option<String>,
-    ) {
+    ) -> bool {
         let mut rework = self.rework(fields, named_by.as_deref());
+        if self.shows_the_same(tree, &rework, named_by.as_deref()) {
+            return false;
+        }
+        let tree = Rc::make_mut(tree);
         for (path, field) in &rework.collections {
-            if within(path, &rework.nodes) {
+            if self.within(path, &rework.nodes) {
                 continue;
             }
             let key = tilolang_runtime::store::FieldKey {
@@ -851,30 +933,68 @@ impl Published<'_> {
                 self.splice_members(tree, (path, field), &mut rework.nodes, splices)
             });
             if !spliced {
-                self.membership(tree, path, field, &mut rework.nodes);
+                self.membership(tree, path, &mut rework.nodes);
             }
         }
         self.rebuild(tree, &rework.nodes);
         self.relabel(tree, &rework.relabels);
         let (label, named) = match &rework.relabel {
-            Relabel::Kept => return,
+            Relabel::Kept => return true,
             Relabel::Within(top) => self.label_within(top).unwrap_or_else(|| self.label()),
             Relabel::Whole => self.label(),
         };
         tree.label = label;
         *named_by = named;
+        true
     }
 
-    /// The type of the resource at `path`: the record's, or an item's, through the collections
-    /// its path goes down.
-    fn schema_at(&self, path: &str) -> Option<&'static crate::schema::TypeSchema> {
-        let rest = path.strip_prefix(self.doc)?;
-        let mut schema = self.schema;
-        for part in rest.split('/').skip(1) {
-            let (field, _) = part.split_once(':')?;
-            schema = crate::schema::lookup(schema.field(field)?.record.as_deref()?)?;
+    /// Whether `rework` would leave `tree` as it is: it builds and moves no item, and every
+    /// label it reads again reads as the tree has it.
+    fn shows_the_same(&self, tree: &ResourceSpec, rework: &Rework, named_by: Option<&str>) -> bool {
+        if !rework.nodes.is_empty() || !rework.collections.is_empty() {
+            return false;
         }
-        Some(schema)
+        let relabeled = rework.relabels.iter().all(|path| {
+            let (Some(at), Some(schema), Some(node)) =
+                (self.at(path), self.schema_at(path), self.node(tree, path))
+            else {
+                return false;
+            };
+            let label = self
+                .store
+                .first_text(&at)
+                .map_or_else(|| schema.name.clone(), |(text, _)| text);
+            node.label == label
+        });
+        if !relabeled {
+            return false;
+        }
+        let (label, named) = match &rework.relabel {
+            Relabel::Kept => return true,
+            Relabel::Within(top) => self.label_within(top).unwrap_or_else(|| self.label()),
+            Relabel::Whole => self.label(),
+        };
+        tree.label == label && named.as_deref() == named_by
+    }
+
+    /// Whether the resource at `path` is one of `paths` or within one of them, as the store has
+    /// it now.
+    fn within(&self, path: &str, paths: &std::collections::BTreeSet<String>) -> bool {
+        if paths.contains(path) {
+            return true;
+        }
+        self.chain(path)
+            .is_some_and(|chain| chain.iter().any(|at| paths.contains(at)))
+    }
+
+    /// The type of the resource at `path`: the record's, or an item's as the store holds it.
+    fn schema_at(&self, path: &str) -> Option<&'static crate::schema::TypeSchema> {
+        use tilolang_runtime::store::Store as _;
+        if path == self.doc {
+            return Some(self.schema);
+        }
+        let at = tilolang_runtime::value::ResourceRef::parse_id(path, String::new())?;
+        crate::schema::lookup(&self.store.type_of(&at).ok()?)
     }
 
     /// The resource at `path`, as the store reads it.
@@ -883,14 +1003,13 @@ impl Published<'_> {
         tilolang_runtime::value::ResourceRef::parse_id(path, schema.id.clone())
     }
 
-    /// Bring the children of the resource at `path` from its collection `field` in line with
-    /// its items: keep the unchanged ones, build the new and the changed ones (taking them out
+    /// Bring the children of the resource at `path` in line with the items of its
+    /// collections: keep the unchanged ones, build the new and the changed ones (taking them out
     /// of `nodes`).
     fn membership(
         &self,
         tree: &mut ResourceSpec,
         path: &str,
-        field: &str,
         nodes: &mut std::collections::BTreeSet<String>,
     ) {
         use tilolang_runtime::store::Store as _;
@@ -903,52 +1022,34 @@ impl Published<'_> {
         ) else {
             return;
         };
-        let spec = tilolang_runtime::store::FieldSpec {
-            id: field.to_owned(),
-            kind: tilolang_runtime::meta::FieldKind::Collection,
-        };
-        let ids = match self.store.read(&at, &spec) {
-            Ok(tilolang_runtime::store::FieldValue::Items(ids)) => ids,
-            _ => Vec::new(),
-        };
-        let prefix = resource_id(app, &format!("{path}/{field}:"));
-        let mut held = std::collections::BTreeMap::new();
-        let mut others = Vec::new();
-        for child in std::mem::take(&mut node.children) {
-            if child.id.as_str().starts_with(&prefix) {
-                held.insert(child.id.as_str().to_owned(), child);
-            } else {
-                others.push(child);
-            }
-        }
-        let mut members = Vec::with_capacity(ids.len());
-        for id in ids {
-            let item = format!("{path}/{field}:{id}");
-            match held.remove(&resource_id(app, &item)) {
-                Some(child) if !nodes.contains(&item) => members.push(child),
-                _ => {
-                    nodes.remove(&item);
-                    members.extend(self.item(&item));
-                }
-            }
-        }
+        let mut held: std::collections::BTreeMap<String, ResourceSpec> =
+            std::mem::take(&mut node.children)
+                .into_iter()
+                .map(|child| (child.id.as_str().to_owned(), child))
+                .collect();
         // The resource's collections in its fields' order, as `publish_tree` has them.
-        let mut ordered = Vec::with_capacity(others.len().saturating_add(members.len()));
-        let mut members = Some(members);
+        let mut ordered = Vec::new();
         for f in &schema.fields {
             if f.kind != crate::schema::MergeKind::Collection {
                 continue;
             }
-            if f.id == field {
-                ordered.extend(members.take().unwrap_or_default());
-            } else {
-                let p = resource_id(app, &format!("{path}/{}:", f.id));
-                ordered.extend(
-                    others
-                        .iter()
-                        .filter(|c| c.id.as_str().starts_with(&p))
-                        .cloned(),
-                );
+            let spec = tilolang_runtime::store::FieldSpec {
+                id: f.id.clone(),
+                kind: tilolang_runtime::meta::FieldKind::Collection,
+            };
+            let ids = match self.store.read(&at, &spec) {
+                Ok(tilolang_runtime::store::FieldValue::Items(ids)) => ids,
+                _ => Vec::new(),
+            };
+            for id in ids {
+                let item = crate::index::derive::item_path(path, &id);
+                match held.remove(&resource_id(app, &item)) {
+                    Some(child) if !nodes.contains(&item) => ordered.push(child),
+                    _ => {
+                        nodes.remove(&item);
+                        ordered.extend(self.item(&item));
+                    }
+                }
             }
         }
         node.children = ordered;
@@ -959,25 +1060,45 @@ impl Published<'_> {
     fn rebuild(&self, tree: &mut ResourceSpec, paths: &std::collections::BTreeSet<String>) {
         let app = &self.types.meta().app;
         for path in paths {
-            let Some((parent, _)) = path.rsplit_once('/') else {
-                continue;
-            };
-            if within(parent, paths) {
-                continue;
-            }
-            let Some(holder) = self.node_mut(tree, parent) else {
-                continue;
-            };
             let published = resource_id(app, path);
-            let at = self.child_index(holder, path, &published);
+            // Where it is published now: an item gone from the store is found in the tree.
+            let holder = match self.chain(path) {
+                Some(chain) => {
+                    if chain
+                        .iter()
+                        .take(chain.len().saturating_sub(1))
+                        .any(|at| paths.contains(at))
+                    {
+                        continue;
+                    }
+                    chain
+                        .len()
+                        .checked_sub(2)
+                        .and_then(|at| chain.get(at))
+                        .cloned()
+                }
+                None => published_holder(tree, &published).map(|holder| {
+                    holder
+                        .strip_prefix(&format!("tl:{app}:"))
+                        .unwrap_or(holder.as_str())
+                        .to_owned()
+                }),
+            };
+            let Some(holder) = holder else {
+                continue;
+            };
+            let Some(node) = self.node_mut(tree, &holder) else {
+                continue;
+            };
+            let at = self.child_index(node, path, &published);
             match (at, self.item(path)) {
                 (Some(i), Some(child)) => {
-                    if let Some(slot) = holder.children.get_mut(i) {
+                    if let Some(slot) = node.children.get_mut(i) {
                         *slot = child;
                     }
                 }
                 (Some(i), None) => {
-                    holder.children.remove(i);
+                    node.children.remove(i);
                 }
                 // A new item arrives with its collection's membership.
                 (None, _) => {}
@@ -1029,7 +1150,7 @@ impl Published<'_> {
         for splice in splices {
             match splice {
                 Splice::Remove { at: index, item } => {
-                    let id = resource_id(app, &format!("{path}/{field}:{item}"));
+                    let id = resource_id(app, &crate::index::derive::item_path(path, item));
                     let index = before.saturating_add(*index);
                     if node.children.get(index).is_none_or(|c| c.id.as_str() != id) {
                         return false;
@@ -1037,7 +1158,7 @@ impl Published<'_> {
                     moving = Some(node.children.remove(index));
                 }
                 Splice::Insert { at: index, item } => {
-                    let item = format!("{path}/{field}:{item}");
+                    let item = crate::index::derive::item_path(path, item);
                     let index = before.saturating_add(*index);
                     if index > node.children.len() {
                         return false;
@@ -1089,11 +1210,11 @@ impl Published<'_> {
     /// The index among `holder`'s children of the item at `path`, published as `id`: where
     /// its listing puts it, checked, else looked for.
     fn child_index(&self, holder: &ResourceSpec, path: &str, id: &str) -> Option<usize> {
-        let placed = path.rsplit_once('/').and_then(|(parent, part)| {
-            let (field, item) = part.split_once(':')?;
-            let at = self.at(parent)?;
-            let (before, _, _) = self.members(&at, self.schema_at(parent)?, field)?;
-            before.checked_add(self.store.position(&at, field, item)?)
+        let placed = self.holder(path).and_then(|(parent, field)| {
+            let item = crate::index::derive::id_of(path)?;
+            let at = self.at(&parent)?;
+            let (before, _, _) = self.members(&at, self.schema_at(&parent)?, &field)?;
+            before.checked_add(self.store.position(&at, &field, item)?)
         });
         placed
             .filter(|i| holder.children.get(*i).is_some_and(|c| c.id.as_str() == id))
@@ -1102,16 +1223,25 @@ impl Published<'_> {
 
     /// The published resource at `path` in `tree`, the record's: each item found where its
     /// listing puts it.
+    fn node<'t>(&self, tree: &'t ResourceSpec, path: &str) -> Option<&'t ResourceSpec> {
+        let app = &self.types.meta().app;
+        let chain = self.chain(path)?;
+        let mut node = tree;
+        for at in chain.iter().skip(1) {
+            let id = resource_id(app, at);
+            let index = self.child_index(node, at, &id)?;
+            node = node.children.get(index)?;
+        }
+        Some(node)
+    }
+
     fn node_mut<'t>(&self, tree: &'t mut ResourceSpec, path: &str) -> Option<&'t mut ResourceSpec> {
         let app = &self.types.meta().app;
-        let rest = path.strip_prefix(self.doc)?;
+        let chain = self.chain(path)?;
         let mut node = tree;
-        let mut at = self.doc.to_owned();
-        for part in rest.split('/').skip(1) {
-            at.push('/');
-            at.push_str(part);
-            let id = resource_id(app, &at);
-            let index = self.child_index(node, &at, &id)?;
+        for at in chain.iter().skip(1) {
+            let id = resource_id(app, at);
+            let index = self.child_index(node, at, &id)?;
             node = node.children.get_mut(index)?;
         }
         Some(node)
@@ -1126,25 +1256,17 @@ impl Published<'_> {
     }
 }
 
-/// Whether `path` is one of `paths` or within one of them.
-fn within(path: &str, paths: &std::collections::BTreeSet<String>) -> bool {
-    let mut at = path;
-    loop {
-        if paths.contains(at) {
-            return true;
+/// The id of the published resource holding the one published as `id` in `tree`.
+fn published_holder(tree: &ResourceSpec, id: &str) -> Option<String> {
+    for child in &tree.children {
+        if child.id.as_str() == id {
+            return Some(tree.id.as_str().to_owned());
         }
-        match at.rsplit_once('/') {
-            Some((parent, _)) => at = parent,
-            None => return false,
+        if let Some(found) = published_holder(child, id) {
+            return Some(found);
         }
     }
-}
-
-/// The top-level item an item path is in: `doc/field:item`.
-fn top_item(doc: &str, path: &str) -> Option<String> {
-    let rest = path.strip_prefix(doc)?.strip_prefix('/')?;
-    let first = rest.split('/').next()?;
-    Some(format!("{doc}/{first}"))
+    None
 }
 
 /// What names an item: the first of its texts.
@@ -1261,9 +1383,22 @@ pub fn edit_action(
             module: meta.module_hash.clone(),
             ..crate::action::Authorship::default()
         },
-        edits: vec![crate::action::DynEdit::Edit {
-            id: id.to_owned(),
-            edit: Edit::new(vec![Segment::Field(field.to_owned())], op),
+        // An item (`<record>/<item>`) is edited in its record, by its id there.
+        edits: vec![match id.split_once('/') {
+            Some((record, item)) => crate::action::DynEdit::Edit {
+                id: record.to_owned(),
+                edit: Edit::new(
+                    vec![
+                        Segment::Item(tilo_resource::Id::from_raw(item)),
+                        Segment::Field(field.to_owned()),
+                    ],
+                    op,
+                ),
+            },
+            None => crate::action::DynEdit::Edit {
+                id: id.to_owned(),
+                edit: Edit::new(vec![Segment::Field(field.to_owned())], op),
+            },
         }],
     })
 }

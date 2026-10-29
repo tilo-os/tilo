@@ -100,6 +100,12 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return;
         }
+        // Empty canvas is the canvas's: the caret, a band, panning and
+        // zooming, and what is typed at the caret.
+        if self.route_canvas_event(event, *ctx.modifiers, ctx.scale_factor) {
+            *ctx.handled = true;
+            return;
+        }
         // Click-anywhere-in-a-group focuses that group: hit-test before
         // forwarding and stamp `tree.active_strip`/`active_group`, or
         // clicking the window body (not a tab pill) never updates them.
@@ -115,7 +121,9 @@ impl ShellOverlayHost {
         // Horizontal strip navigation is shell chrome, so it must run before
         // the active app can consume a generic wheel event. Vertical and
         // diagonally vertical gestures still belong to app content.
-        if let WindowEvent::MouseWheel { delta, .. } = event {
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && !self.canvas_shown()
+        {
             let (dx, dy) = match *delta {
                 winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
                 winit::event::MouseScrollDelta::PixelDelta(p) => {
@@ -145,6 +153,9 @@ impl ShellOverlayHost {
             // the widget above. Commit that exact tab before this input
             // dispatch returns so no revision or crash can restore it.
             let _ = self.harvest_pending_tab_closes();
+            // A window carried on the canvas is kept where it was let go,
+            // before the next sync could put it back.
+            self.harvest_pending_canvas_moves();
             // A right-click on a tab pill has just been recorded by its bar;
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.

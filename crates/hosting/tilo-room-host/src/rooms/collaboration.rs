@@ -660,7 +660,8 @@ impl Rooms {
     /// decides any member's.
     ///
     /// Answers the room's generation that carries the change, and the
-    /// heads of the room's document once it does.
+    /// changes it added to the room's document, for the device's replica
+    /// to take in at once (none when the room carried it already).
     ///
     /// # Errors
     /// Refuses a device other than this host's own, a change the room's
@@ -674,7 +675,7 @@ impl Rooms {
         room: &str,
         device: &DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<(GovernanceCompletion, Vec<automerge::ChangeHash>), CollaborationError> {
+    ) -> Result<(GovernanceCompletion, Vec<Vec<u8>>), CollaborationError> {
         if device.device_public_key != self.inner.host.cert.device_public_key {
             return Err(CollaborationError::new(
                 "a membership change is committed here only for this host's own device",
@@ -692,14 +693,14 @@ impl Rooms {
             &key,
             system_time(now),
         )? {
-            let heads = room.peer().room_heads().unwrap_or_default();
             return Ok((
                 GovernanceCompletion {
                     generation: room.record.generation,
                 },
-                heads,
+                Vec::new(),
             ));
         }
+        let before = room.peer().room_heads().unwrap_or_default();
         // A member removed takes every way in the room handed them with
         // them, as when a member's own device sends the removal.
         let removed: std::collections::BTreeSet<_> =
@@ -713,8 +714,8 @@ impl Rooms {
             Ok(state)
         })?;
         self.settle(&mut room).await?;
-        let heads = room.peer().room_heads().unwrap_or_default();
-        Ok((GovernanceCompletion { generation }, heads))
+        let added = room.peer().room_changes_since(&before);
+        Ok((GovernanceCompletion { generation }, added))
     }
 
     /// `room`'s whole history as its governor here holds it: what the

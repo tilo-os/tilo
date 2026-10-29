@@ -76,6 +76,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         optional: vec![],
         opens: &[],
         room_record: false,
+        member_record: false,
         opens_before_record: false,
         create: |context, target, _restore: RestoreInput| create(context, &target),
     });

@@ -191,17 +191,33 @@ pub fn store_pred(pred: &Pred<String>, ty: &TypeMeta, app: &str) -> Option<crate
 pub struct Clock {
     /// Seconds since 1970-01-01T00:00:00Z.
     now: i64,
+    /// How many seconds the person's clock is ahead of UTC: the zone `today` and a day such as
+    /// `2026-10-24` are days in.
+    zone: i64,
 }
 
 impl Clock {
-    /// The clock at the ISO-8601 UTC instant `now`.
+    /// The clock at the ISO-8601 UTC instant `now`, read in UTC.
     ///
     /// # Errors
     /// `now` is not such an instant.
     pub fn at(now: &str) -> Result<Self, String> {
         Ok(Self {
             now: instant(now).ok_or_else(|| format!("`{now}` is not a time"))?,
+            zone: 0,
         })
+    }
+
+    /// The same clock read by someone whose clock is `zone` seconds ahead of UTC: where their
+    /// `today` starts and ends.
+    #[must_use]
+    pub fn in_zone(self, zone: i64) -> Self {
+        Self { zone, ..self }
+    }
+
+    /// The person's day of the instant `at`, in days since 1970-01-01.
+    fn day_of(&self, at: i64) -> i64 {
+        at.saturating_add(self.zone).div_euclid(DAY)
     }
 }
 
@@ -343,7 +359,12 @@ fn filter_pred(
     clock: &Clock,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
-        let pred = f.pred.clone().ok_or("the filter has no predicate")?;
+        // A filter on the time it is asked at ("Today": `due <= today`) reads it now.
+        let pred = f
+            .pred
+            .as_ref()
+            .ok_or("the filter has no predicate")?
+            .at(clock.now, clock.zone);
         return match value {
             "true" => Ok(pred),
             "false" => Ok(Pred::Not(Box::new(pred))),
@@ -482,13 +503,24 @@ fn compare(
     ]))
 }
 
+/// Whether the instant `at` (ISO-8601 UTC) is in the time `value` as a Time filter reads it at
+/// `clock` (`-14d`, `today`, `2026-10-01..`, `>2026-10-01`): what `grep(changed: -14d)` asks
+/// of a resource's last change.
+///
+/// # Errors
+/// `value` is no time a filter takes.
+pub fn time_holds(value: &str, at: &str, clock: &Clock) -> Result<bool, String> {
+    let pred = compare("at", value, &|text| span_of(text, false, clock))?;
+    pred.eval(&mut |_: &String| Ok::<Lit, String>(Lit::Time(at.to_owned())))
+}
+
 /// What a point of a filter's value stands for: its first value, its last, and whether the
 /// last is in it (a day of a Time filter ends before the next day starts).
 type Span = (Lit, Lit, bool);
 
 /// The span of days (`day`) or of instants a point of a Date or Time filter stands for.
 fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
-    let today = clock.now.div_euclid(DAY);
+    let today = clock.day_of(clock.now);
     // A duration alone, from now: `-7d` back to now, `+7d` on from now.
     if let Some((n, unit)) = tilolang::duration::parse(text)
         && (text.starts_with('-') || text.starts_with('+'))
@@ -498,8 +530,8 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         let (a, b) = (then.min(clock.now), then.max(clock.now));
         return Ok(if day {
             (
-                Lit::Date(day_text(a.div_euclid(DAY))),
-                Lit::Date(day_text(b.div_euclid(DAY))),
+                Lit::Date(day_text(clock.day_of(a))),
+                Lit::Date(day_text(clock.day_of(b))),
                 true,
             )
         } else {
@@ -507,7 +539,9 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         });
     }
     // `today`, `now`, either plus or minus a duration.
-    for (word, base) in [("today", today.saturating_mul(DAY)), ("now", clock.now)] {
+    // The person's today starts at their midnight.
+    let midnight = today.saturating_mul(DAY).saturating_sub(clock.zone);
+    for (word, base) in [("today", midnight), ("now", clock.now)] {
         let Some(rest) = text.strip_prefix(word) else {
             continue;
         };
@@ -522,7 +556,7 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         let whole_day = word == "today" && offset.rem_euclid(DAY) == 0;
         return Ok(match (day, whole_day) {
             (true, _) => {
-                let d = Lit::Date(day_text(at.div_euclid(DAY)));
+                let d = Lit::Date(day_text(clock.day_of(at)));
                 (d.clone(), d, true)
             }
             (false, true) => (
@@ -539,7 +573,7 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
     // `2026-10-24T09:30:00Z`, `2026-10-24`, `2026-10`, `2026`.
     if let Some(at) = instant(text) {
         return Ok(if day {
-            let d = Lit::Date(day_text(at.div_euclid(DAY)));
+            let d = Lit::Date(day_text(clock.day_of(at)));
             (d.clone(), d, true)
         } else {
             let t = Lit::Time(time_text(at));
@@ -557,8 +591,12 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         )
     } else {
         (
-            Lit::Time(time_text(start.saturating_mul(DAY))),
-            Lit::Time(time_text(end.saturating_mul(DAY))),
+            Lit::Time(time_text(
+                start.saturating_mul(DAY).saturating_sub(clock.zone),
+            )),
+            Lit::Time(time_text(
+                end.saturating_mul(DAY).saturating_sub(clock.zone),
+            )),
             false,
         )
     })

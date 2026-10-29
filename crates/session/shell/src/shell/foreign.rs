@@ -794,6 +794,11 @@ struct ForeignEntry {
     /// publishing into `placement`, so clearing this falls straight back to
     /// the tab size.
     pinned: Option<Rect>,
+    /// Screen pixels per window pixel while the window stands on a zoomed
+    /// canvas: the client is configured to its canvas size and its frames
+    /// are drawn scaled into the tab, so zooming never resizes it. `1.0`
+    /// everywhere else.
+    canvas_zoom: f64,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
     /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
@@ -952,6 +957,7 @@ impl ForeignEntry {
             last_error: None,
             placement: None,
             pinned: None,
+            canvas_zoom: 1.0,
             configured: None,
             configured_extent: None,
             min_size: (0, 0),
@@ -4237,6 +4243,20 @@ impl ForeignFrameStore {
         });
     }
 
+    /// Show the window at `zoom` screen pixels per window pixel: it stands on
+    /// a canvas zoomed that far, keeps its canvas size and is drawn scaled
+    /// into its tab ([`Self::take_pending_configure`]).
+    pub fn set_canvas_zoom(&self, id: SurfaceId, zoom: f64) {
+        let zoom = if zoom.is_finite() && zoom > 0.0 {
+            zoom
+        } else {
+            1.0
+        };
+        self.with_entry(id, |e| {
+            e.canvas_zoom = zoom;
+        });
+    }
+
     /// Whether [`Self::pin_placement`] currently holds this surface.
     pub fn is_pinned(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock_recover();
@@ -4301,9 +4321,16 @@ impl ForeignFrameStore {
     pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
             let rect = e.pinned.or(e.placement)?;
+            // On a zoomed canvas the tab is the window drawn scaled: the
+            // window itself keeps the size it has on the canvas.
+            let zoom = e.canvas_zoom;
             let logical = (
-                rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
-                rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
+                (rect.width() / zoom)
+                    .round()
+                    .clamp(0.0, f64::from(i32::MAX)) as i32,
+                (rect.height() / zoom)
+                    .round()
+                    .clamp(0.0, f64::from(i32::MAX)) as i32,
             );
             if logical.0 == 0 || logical.1 == 0 {
                 return None;
@@ -4312,7 +4339,7 @@ impl ForeignFrameStore {
                 honour_size_limits(logical.0, e.min_size.0, e.max_size.0),
                 honour_size_limits(logical.1, e.min_size.1, e.max_size.1),
             );
-            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
+            e.configured_extent = Some((f64::from(logical.0) * zoom, f64::from(logical.1) * zoom));
             if e.configured == Some(logical) {
                 return None;
             }

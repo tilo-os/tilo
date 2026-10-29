@@ -1309,7 +1309,7 @@ fn launcher_resolution_and_developer_overrides_follow_the_build_kind() {
 
 /// Write a registry + manifest pair into `dir` and point the
 /// launcher's registry reader at it. Returns the app's payload root.
-fn install_fixture(dir: &Path, package_id: &str, entrypoint_type: &str) -> PathBuf {
+pub(super) fn install_fixture(dir: &Path, package_id: &str, entrypoint_type: &str) -> PathBuf {
     use std::fmt::Write as _;
     let payload = dir.join("payloads").join(package_id);
     std::fs::create_dir_all(payload.join("bin")).unwrap();

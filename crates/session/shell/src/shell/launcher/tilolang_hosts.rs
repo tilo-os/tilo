@@ -42,10 +42,6 @@ pub(super) enum Author {
     /// A person, for their own builds.
     Person(String),
     /// An agent task, for the programs it runs.
-    #[allow(
-        dead_code,
-        reason = "agent programs run under their task; none is built yet"
-    )]
     Task(String),
 }
 
@@ -65,10 +61,13 @@ impl Author {
         match self {
             Self::Publisher(key) => format!("publisher-{}", hex::encode(key)),
             Self::Person(person) => format!("person-{}", hex::encode(person)),
-            Self::Task(task) => format!("task-{}", hex::encode(task)),
+            Self::Task(task) => format!("{TASK_KEY}{}", hex::encode(task)),
         }
     }
 }
+
+/// How a task's key starts.
+const TASK_KEY: &str = "task-";
 
 /// What identifies one host.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -239,6 +238,78 @@ fn hand_over_now(
     Ok(())
 }
 
+/// Start the host of the agent task `task` in `room` (`docs/designs/app-language/agents.md`,
+/// "How a program runs"): a tilolang host whose author is the task, through the same launch kind
+/// and sandbox as every other, handed the task's program connection and the module of every
+/// installed tilolang app, each verified as a launch verifies it. Answers the agent door's end of
+/// the program connection; the host ends once the door closes it.
+///
+/// # Errors
+/// No tilolang app is installed, or the host could not be started.
+pub(super) fn start_task(room: RoomId, task: &str) -> std::io::Result<OwnedFd> {
+    let refused = |what: String| std::io::Error::new(std::io::ErrorKind::NotFound, what);
+    let apps = super::installed_apps().map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut modules = Vec::new();
+    let mut runtimes: Option<(String, String)> = None;
+    for app in apps.iter().filter(|app| runs_in_host(app)) {
+        let verified = super::installed_copy(app).and_then(|installed| {
+            let evidence = super::original_application_creation(app, &installed)?;
+            ::launcher::run::tilolang_host::verified_instance(
+                &installed,
+                &app.manifest_path,
+                &app.payload_root,
+                &evidence.package_hash,
+            )
+            .ok()
+        });
+        let Some(verified) = verified else {
+            tracing::warn!(package_id = %app.package_id, "a task's host leaves out an app it could not verify");
+            continue;
+        };
+        let pair = (verified.runtime.clone(), verified.app_runtime.clone());
+        match &runtimes {
+            Some(known) if *known != pair => {
+                tracing::warn!(package_id = %app.package_id, "a task's host leaves out an app on other runtimes");
+                continue;
+            }
+            Some(_) => {}
+            None => runtimes = Some(pair),
+        }
+        modules.push(verified.module);
+    }
+    let (runtime, app_runtime) =
+        runtimes.ok_or_else(|| refused("no tilolang app is installed".to_owned()))?;
+    let key = HostKey {
+        workspace: room.to_string(),
+        author: Author::Task(task.to_owned()).key(),
+        runtime,
+        app_runtime,
+    };
+    let encoded = runtime_portal::tilolang_host::encode_modules(&modules);
+    let request = runtime_portal::tilolang_host::TaskRequest {
+        task: task.to_owned(),
+        room: room.to_string(),
+        person: Some(crate::shell::state::local_user_id_for_room(&room)),
+        modules_len: encoded.len() as u64,
+    };
+    let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;
+    let (door_end, host_end) = std::os::unix::net::UnixStream::pair()?;
+    let host = start(&key)?;
+    runtime_portal::tilolang_host::send_task(
+        &host.door,
+        &request,
+        &runtime_portal::tilolang_host::TaskFds {
+            program: host_end.into(),
+            modules,
+        },
+    )?;
+    // The host runs nothing else: it ends once the task does.
+    // SAFETY: shutting down the writing half of a socket the session owns.
+    let _ = unsafe { libc::shutdown(host.door.as_raw_fd(), libc::SHUT_WR) };
+    tracing::info!(workspace = %room, task, apps = request.modules_len, "task host handed its task");
+    Ok(door_end.into())
+}
+
 /// The instance's collaboration connection, attested as the launch of the window `instance` of
 /// `app_id` in `workspace`, whose process is `launched`.
 fn instance_collaboration(
@@ -356,7 +427,7 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
         pid = child.id(),
         "tilolang host started"
     );
-    let (followed, key) = (Arc::clone(&door), key.clone());
+    let (followed, key, kept) = (Arc::clone(&door), key.clone(), storage.clone());
     std::thread::Builder::new()
         .name("tilolang-host".into())
         .spawn(move || {
@@ -369,6 +440,10 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
             }
             let status = child.wait();
             tracing::info!(workspace = %key.workspace, author = %key.author, ?status, "tilolang host ended");
+            // A task keeps nothing: its storage goes with it.
+            if key.author.starts_with(TASK_KEY) {
+                let _ = std::fs::remove_dir_all(&kept);
+            }
             let mut hosts = lock(&HOSTS);
             if let Some(hosts) = hosts.as_mut()
                 && hosts.get(&key).is_some_and(|host| host.generation == generation)

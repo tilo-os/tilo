@@ -1145,6 +1145,9 @@ fn validate_string_schema(
             .ok_or_else(|| "has a non-string schema format".to_string())?;
         let valid = match format {
             "date-time" => looks_like_rfc3339(text),
+            "date" => {
+                text.len() == 10 && chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok()
+            }
             "uuid" => uuid::Uuid::parse_str(text).is_ok(),
             "uri" => text.split_once(':').is_some_and(|(scheme, rest)| {
                 !scheme.is_empty()
@@ -1671,7 +1674,7 @@ fn validate_schema_definition_strings(
         let format = format
             .as_str()
             .ok_or_else(|| "schema `format` must be a string".to_string())?;
-        if !matches!(format, "date-time" | "uuid" | "uri") {
+        if !matches!(format, "date" | "date-time" | "uuid" | "uri") {
             return Err(format!("schema uses unsupported format `{format}`"));
         }
     }
@@ -2187,6 +2190,16 @@ mod rich_schema_tests {
     fn malformed_schema_is_rejected_before_it_describes_values() {
         assert!(validate_schema_definition(&json!({"pattern":"["})).is_err());
         assert!(validate_schema_definition(&json!({"format":"tilo-maybe"})).is_err());
+        // A day without a time, as a date field publishes it.
+        let day = json!({"type": "string", "format": "date"});
+        assert!(validate_schema_definition(&day).is_ok());
+        assert!(validate_schema(&json!("2026-10-29"), &day).is_ok());
+        for not_a_day in ["2026-02-30", "2026-1-5", "2026-10-29T10:00:00Z", "tomorrow"] {
+            assert!(
+                validate_schema(&json!(not_a_day), &day).is_err(),
+                "{not_a_day}"
+            );
+        }
         assert!(validate_schema_definition(&json!({"oneOf": []})).is_err());
         let one_of = json!({
             "oneOf": [

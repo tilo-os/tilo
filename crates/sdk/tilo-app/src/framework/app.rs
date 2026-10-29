@@ -140,6 +140,15 @@ pub trait ResourceApp: 'static {
         None
     }
 
+    /// Whether each member of a workspace keeps the app's record as their own: a window that
+    /// names no record opens the person's own record of the workspace, which only their devices
+    /// read, instead of the workspace's record of the app
+    /// ([`ApplicationDefinition::member_record`]). Asked once per process, before the definition
+    /// is first made.
+    fn member_record() -> bool {
+        false
+    }
+
     /// Import a former document format using host-local custody, before typed
     /// projection or resource publication. Unlike schema evolution this may
     /// depend on device services. A pending or failed import must leave the
@@ -538,6 +547,7 @@ fn application_definition(
         optional: vec![],
         opens,
         room_record,
+        member_record: (app.member_record)(),
         opens_before_record: room_record && app.opens_before_record,
         create,
     }
@@ -560,6 +570,8 @@ pub(crate) struct AppHooks {
     icon: Option<&'static str>,
     /// [`ResourceApp::named`]: the app's name when the launch gives it.
     named: fn() -> Option<AppName>,
+    /// [`ResourceApp::member_record`].
+    member_record: fn() -> bool,
     /// [`Resource::KIND`] of the app's resource.
     pub(crate) kind: &'static str,
     /// [`Resource::LABEL`] of the app's resource.
@@ -619,6 +631,7 @@ impl<A: ResourceApp> Hooks<A> {
         title: A::TITLE,
         icon: A::ICON,
         named: A::named,
+        member_record: A::member_record,
         kind: <A::Resource as Resource>::KIND,
         label: <A::Resource as Resource>::LABEL,
         behaviour: A::BEHAVIOUR,

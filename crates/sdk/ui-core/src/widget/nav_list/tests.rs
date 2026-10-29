@@ -2049,3 +2049,51 @@ fn an_agent_chooses_a_destination_through_the_published_view_action() {
     );
     assert_eq!(chosen.borrow().as_slice(), ["travel"]);
 }
+
+#[test]
+fn a_described_list_holds_places_and_sections_under_their_headings_in_order() {
+    use crate::component::Described as _;
+    let place = |key: &str, label: &str| NavItemProps {
+        key: key.into(),
+        label: label.into(),
+        icon: Some(Icon::Hash),
+        ..NavItemProps::default()
+    };
+    let list = NavList::from_props(
+        "channels",
+        NavListProps {
+            items: vec![
+                NavEntry::Item(place("/general", "general")),
+                NavEntry::Section(NavSectionProps {
+                    title: "Team".into(),
+                    collapsible: true,
+                    items: vec![
+                        place("Team/design", "design"),
+                        place("Team/release", "release"),
+                    ],
+                }),
+                NavEntry::Item(place("/random", "random")),
+            ],
+            ..NavListProps::default()
+        },
+    );
+    let shown: Vec<(&str, bool, Vec<&str>)> = list
+        .sections
+        .iter()
+        .map(|s| {
+            (
+                s.title.as_str(),
+                s.collapsible,
+                s.items.iter().map(|i| i.label.as_str()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("", false, vec!["general"]),
+            ("Team", true, vec!["design", "release"]),
+            ("", false, vec!["random"]),
+        ]
+    );
+}

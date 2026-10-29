@@ -79,12 +79,23 @@ impl PackageSource {
     /// files that do not parse contribute what they could.
     #[must_use]
     pub fn header(&self) -> (Option<String>, Vec<String>) {
+        let (app, _, uses) = self.header_with_previously();
+        (app, uses)
+    }
+
+    /// [`Self::header`], with the ids the app was published under before (`previously:`).
+    #[must_use]
+    pub fn header_with_previously(&self) -> (Option<String>, Vec<String>, Vec<String>) {
         let mut app = None;
+        let mut previously = Vec::new();
         let mut uses = Vec::new();
         for f in &self.files {
             let (parsed, _) = parse_file_at(&f.text, 0, 0);
-            if app.is_none() {
-                app = parsed.header.map(|h| h.id);
+            if app.is_none()
+                && let Some(header) = parsed.header
+            {
+                app = Some(header.id);
+                previously = header.previously;
             }
             for item in parsed.items {
                 if let Item::Use(u) = item
@@ -94,7 +105,7 @@ impl PackageSource {
                 }
             }
         }
-        (app, uses)
+        (app, previously, uses)
     }
 }
 
@@ -157,27 +168,50 @@ impl Stamp {
 /// # Errors
 /// A package cannot be read, an import names no package found, or imports form a cycle.
 pub fn dependency_order(root: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
-    let default_search;
-    let search = if search.is_empty() {
-        default_search = vec![
+    dependency_order_with(root, search, &[])
+}
+
+/// Where `root`'s imports are looked for: `search`, or `root`'s siblings when it is empty.
+#[must_use]
+pub fn search_of(root: &Path, search: &[PathBuf]) -> Vec<PathBuf> {
+    if search.is_empty() {
+        vec![
             root.parent()
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf(),
-        ];
-        &default_search
+        ]
     } else {
-        search
-    };
+        search.to_vec()
+    }
+}
+
+/// [`dependency_order`], where an import of one of the apps `provided` is no package directory
+/// but metadata given otherwise: a native app's published types, an already built module.
+///
+/// # Errors
+/// As [`dependency_order`].
+pub fn dependency_order_with(
+    root: &Path,
+    search: &[PathBuf],
+    provided: &[String],
+) -> Result<Vec<PathBuf>, String> {
+    let search = &search_of(root, search);
     let mut index: HashMap<String, PathBuf> = HashMap::new();
+    // The ids packages were published under before: `use` of one finds the package, unless a
+    // package still has it as its own id.
+    let mut earlier: HashMap<String, PathBuf> = HashMap::new();
     let mut headers: HashMap<PathBuf, Vec<String>> = HashMap::new();
-    let known = |dir: &Path,
-                 index: &mut HashMap<String, PathBuf>,
-                 headers: &mut HashMap<PathBuf, Vec<String>>|
+    let mut known = |dir: &Path,
+                     index: &mut HashMap<String, PathBuf>,
+                     headers: &mut HashMap<PathBuf, Vec<String>>|
      -> Result<(), String> {
         let source = PackageSource::read_dir(dir)?;
-        let (app, uses) = source.header();
+        let (app, previously, uses) = source.header_with_previously();
         if let Some(app) = app {
             index.entry(app).or_insert_with(|| dir.to_path_buf());
+            for old in previously {
+                earlier.entry(old).or_insert_with(|| dir.to_path_buf());
+            }
         }
         headers.insert(dir.to_path_buf(), uses);
         Ok(())
@@ -202,9 +236,18 @@ pub fn dependency_order(root: &Path, search: &[PathBuf]) -> Result<Vec<PathBuf>,
             }
         }
     }
+    for (old, dir) in earlier {
+        index.entry(old).or_insert(dir);
+    }
     let mut order = Vec::new();
     let mut state: BTreeMap<PathBuf, bool> = BTreeMap::new();
-    visit(root, &index, &headers, &mut state, &mut order, search)?;
+    let visiting = Visit {
+        index: &index,
+        headers: &headers,
+        search,
+        provided,
+    };
+    visiting.visit(root, &mut state, &mut order)?;
     Ok(order)
 }
 
@@ -215,42 +258,51 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-fn visit(
-    dir: &Path,
-    index: &HashMap<String, PathBuf>,
-    headers: &HashMap<PathBuf, Vec<String>>,
-    state: &mut BTreeMap<PathBuf, bool>,
-    order: &mut Vec<PathBuf>,
-    search: &[PathBuf],
-) -> Result<(), String> {
-    match state.get(dir) {
-        Some(true) => return Ok(()),
-        Some(false) => {
-            return Err(format!(
-                "{}: the packages import each other in a cycle",
-                dir.display()
-            ));
+struct Visit<'a> {
+    index: &'a HashMap<String, PathBuf>,
+    headers: &'a HashMap<PathBuf, Vec<String>>,
+    search: &'a [PathBuf],
+    provided: &'a [String],
+}
+
+impl Visit<'_> {
+    fn visit(
+        &self,
+        dir: &Path,
+        state: &mut BTreeMap<PathBuf, bool>,
+        order: &mut Vec<PathBuf>,
+    ) -> Result<(), String> {
+        let (index, headers, search) = (self.index, self.headers, self.search);
+        match state.get(dir) {
+            Some(true) => return Ok(()),
+            Some(false) => {
+                return Err(format!(
+                    "{}: the packages import each other in a cycle",
+                    dir.display()
+                ));
+            }
+            None => {}
         }
-        None => {}
-    }
-    state.insert(dir.to_path_buf(), false);
-    for app in headers.get(dir).cloned().unwrap_or_default() {
-        if app == crate::host::HOST_APP {
-            continue;
+        state.insert(dir.to_path_buf(), false);
+        for app in headers.get(dir).cloned().unwrap_or_default() {
+            if app == crate::host::HOST_APP || self.provided.contains(&app) {
+                continue;
+            }
+            let Some(dep) = index.get(&app) else {
+                let searched: Vec<String> =
+                    search.iter().map(|p| p.display().to_string()).collect();
+                return Err(format!(
+                    "{}: `use {app}`: no package with that app id in {}; name its directory with --path",
+                    dir.display(),
+                    searched.join(", ")
+                ));
+            };
+            self.visit(dep, state, order)?;
         }
-        let Some(dep) = index.get(&app) else {
-            let searched: Vec<String> = search.iter().map(|p| p.display().to_string()).collect();
-            return Err(format!(
-                "{}: `use {app}`: no package with that app id in {}; name its directory with --path",
-                dir.display(),
-                searched.join(", ")
-            ));
-        };
-        visit(dep, index, headers, state, order, search)?;
+        state.insert(dir.to_path_buf(), true);
+        order.push(dir.to_path_buf());
+        Ok(())
     }
-    state.insert(dir.to_path_buf(), true);
-    order.push(dir.to_path_buf());
-    Ok(())
 }
 
 /// A package compiled from its directory.
