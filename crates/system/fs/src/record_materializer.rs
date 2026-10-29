@@ -314,7 +314,7 @@ impl RecordMaterializer {
             && let Ok(sync) = self.sync.read()
             && let Some(sync) = sync.as_ref()
         {
-            sync.broadcast_delta(delta);
+            sync.announce_delta(&delta);
         }
         if live {
             Ok(BindingPlacement::Live)
@@ -546,7 +546,7 @@ impl RecordMaterializer {
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.broadcast_delta(delta);
+                    sync.announce_delta(&delta);
                 }
                 Ok(())
             }
@@ -649,7 +649,7 @@ impl RecordMaterializer {
                     && let Ok(sync) = self.sync.read()
                     && let Some(sync) = sync.as_ref()
                 {
-                    sync.broadcast_delta(delta);
+                    sync.announce_delta(&delta);
                 }
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
                 continue;
@@ -994,7 +994,7 @@ impl RecordMaterializer {
             && let Ok(sync) = self.sync.read()
             && let Some(sync) = sync.as_ref()
         {
-            sync.broadcast_delta(delta);
+            sync.announce_delta(&delta);
         }
         report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
         Ok(())
