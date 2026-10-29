@@ -63,6 +63,8 @@ pub struct Core {
     pub models: RefCell<Option<Box<dyn ModelHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
+    /// The workspace's members, as the host last gave them (`workspace.members`).
+    pub members: RefCell<crate::members::Members>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
     /// The platform's phrases in the person's language (`phrase(...)`); the id itself until
     /// the host says.
@@ -171,6 +173,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             names: RefCell::new(None),
+            members: RefCell::new(crate::members::Members::default()),
             sink: RefCell::new(None),
             phrases: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
@@ -256,15 +259,16 @@ impl Core {
             EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters, FloatToStr,
             IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
             ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
-            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MetaOf,
-            ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName, PrincipalNamed,
-            Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit,
-            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            RichEmpty, RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF,
-            SpaceI, StateAt, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor,
-            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF,
-            UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, Members,
+            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
+            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
+            StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild,
+            UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -315,6 +319,9 @@ impl Core {
             }
             EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {
                 self.platform_import(imp, a)
+            }
+            WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
+                self.members_import(imp, a)
             }
             Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {
                 self.program_import(imp, a)

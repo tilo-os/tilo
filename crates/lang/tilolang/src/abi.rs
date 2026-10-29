@@ -111,6 +111,8 @@ imports! {
     PrincipalNamed = "principal_named" ([H] -> [H]);
     InvokerPush = "invoker_push" ([H, H] -> []);
     InvokerPop = "invoker_pop" ([] -> []);
+    PrincipalKind = "principal_kind" ([H] -> [I64]);
+    PrincipalRole = "principal_role" ([H] -> [H]);
 
     EnumNew = "enum_new" ([H, H] -> [H]);
     EnumSetI = "enum_set_i" ([H, H, I64] -> []);
@@ -151,6 +153,9 @@ imports! {
     StateAt = "state_at" ([I32, H, I32] -> [H]);
     Actions = "actions" ([H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
+    WorkspaceMembers = "workspace_members" ([] -> [H]);
+    Members = "members" ([H] -> [H]);
+    Speakers = "speakers" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);

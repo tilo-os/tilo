@@ -148,6 +148,11 @@ impl Checker<'_> {
                 {
                     return self.space_field(name);
                 }
+                if matches!(&base.kind, ExprKind::Ident(n) if n == "workspace")
+                    && self.lookup("workspace").is_none()
+                {
+                    return self.workspace_field(name);
+                }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
                     return match super::enums::Shape::of(self, &ty) {
@@ -268,6 +273,17 @@ impl Checker<'_> {
             && let Some(info) = self.env.type_info(&key)
         {
             return Self::root_ref(&info.key.app, &info.id, &key);
+        }
+        if name == "workspace" {
+            self.err(
+                "E064",
+                span,
+                format!(
+                    "`workspace` is read through its fields: {}",
+                    crate::prims::WORKSPACE_FIELDS
+                ),
+            );
+            return Ex::error();
         }
         if name == "space" {
             self.err(

@@ -554,6 +554,18 @@ impl Runtime {
         }
     }
 
+    /// The workspace's members now, from its membership, and how its grants decide who of
+    /// them reads a resource (`None`: everyone reads everything the workspace holds). What
+    /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
+    /// again whenever membership or grants change, and every view that read them runs again.
+    pub fn set_members(
+        &self,
+        members: Vec<crate::members::Member>,
+        reads: Option<Rc<crate::members::Reads>>,
+    ) {
+        self.core.set_members(members, reads);
+    }
+
     /// Where settled outside effects go.
     pub fn set_sink(&self, sink: impl OutsideSink + 'static) {
         *self.core.sink.borrow_mut() = Some(Box::new(sink));

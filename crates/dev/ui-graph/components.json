@@ -293,6 +293,20 @@
           "name": "enabled",
           "doc": "Whether it can be typed into now.",
           "type": "bool"
+        },
+        {
+          "name": "speakers",
+          "doc": "Who spoke last in what it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The system gives it to every rich input.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "people",
+          "doc": "Who can read what it writes into: whom its `@` drawer offers, under \"Members\". The system gives it to every rich input; given no one, the drawer offers the room's roster.",
+          "type": {
+            "list": "principal"
+          }
         }
       ],
       "bindings": [

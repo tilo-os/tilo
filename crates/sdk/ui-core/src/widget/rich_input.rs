@@ -20,11 +20,15 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
-use crate::component::{Bound, Component, Described, Value};
-use crate::presence::PresenceCtx;
+use crate::component::{Bound, Component, Described, Person, Value};
+use crate::i18n::I18nManager;
+use crate::permissions::UserId;
+use crate::presence::{ParticipantKind, PresenceCtx};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::completion::{CompletionSource, Tier};
 use crate::widget::marks::{Mark, MarkSpan};
+use crate::widget::mention_picker::{self, MentionCandidate};
 use crate::widget::rich_text_line::RichTextLine;
 use crate::widget::{Decorator, EventCtx, Widget};
 
@@ -41,6 +45,12 @@ pub struct RichInputProps {
     pub placeholder: Option<String>,
     /// Whether it can be typed into now.
     pub enabled: bool,
+    /// Who spoke last in what it writes into, newest first: whom its `@` drawer offers first,
+    /// under "In this conversation". The system gives it to every rich input.
+    pub speakers: Vec<Person>,
+    /// Who can read what it writes into: whom its `@` drawer offers, under "Members". The
+    /// system gives it to every rich input; given no one, the drawer offers the room's roster.
+    pub people: Vec<Person>,
 }
 
 impl Default for RichInputProps {
@@ -49,6 +59,8 @@ impl Default for RichInputProps {
             value: Bound::default(),
             placeholder: None,
             enabled: true,
+            speakers: Vec::new(),
+            people: Vec::new(),
         }
     }
 }
@@ -70,7 +82,81 @@ pub struct RichInput {
     name: String,
     /// The revision of the bound value last looked at.
     seen: u64,
+    /// Whom its `@` drawer offers, as the system gave them.
+    people: DrawerPeople,
 }
+
+/// The people of a rich input's `@` drawer: who spoke last, then who can read it, and what the
+/// room said each of them is when the drawer was last given them.
+#[derive(Default)]
+struct DrawerPeople {
+    speakers: Vec<Person>,
+    members: Vec<Person>,
+    /// The kind and colour of each, in order, as the source was built with; `None` until built.
+    built: Option<Vec<(ParticipantKind, (u8, u8, u8))>>,
+}
+
+impl DrawerPeople {
+    fn given(&mut self, speakers: Vec<Person>, members: Vec<Person>) {
+        if speakers != self.speakers || members != self.members {
+            self.speakers = speakers;
+            self.members = members;
+            self.built = None;
+        }
+    }
+
+    /// The `@` source, when it changed since it was last built: those who spoke last (up to
+    /// five), then the members who did not, each as the room says they are.
+    fn source(&mut self, presence: &PresenceCtx) -> Option<CompletionSource> {
+        if self.speakers.is_empty() && self.members.is_empty() {
+            return None;
+        }
+        let said = |person: &Person| {
+            let user = UserId(person.identity.clone());
+            (presence.participant_kind(&user), presence.color_for(&user))
+        };
+        let now: Vec<_> = self
+            .speakers
+            .iter()
+            .chain(&self.members)
+            .map(said)
+            .collect();
+        if self.built.as_ref() == Some(&now) {
+            return None;
+        }
+        let candidate = |person: &Person| {
+            let (kind, color) = said(person);
+            mention_picker::candidate(&MentionCandidate {
+                id: person.identity.clone(),
+                name: person.name.clone(),
+                kind,
+                color,
+                is_self: presence.is_own_identity(&person.identity),
+            })
+        };
+        let first: Vec<&Person> = self.speakers.iter().take(SPEAKERS).collect();
+        let speakers = first.iter().map(|person| candidate(person)).collect();
+        let members = self
+            .members
+            .iter()
+            .filter(|person| !first.iter().any(|said| said.identity == person.identity))
+            .map(candidate)
+            .collect();
+        self.built = Some(now);
+        Some(CompletionSource::new(
+            '@',
+            vec![
+                Tier::new(speakers)
+                    .with_header(I18nManager::lookup_plain("completion-in-conversation"))
+                    .with_limit(SPEAKERS),
+                Tier::new(members).with_header(I18nManager::lookup_plain("completion-members")),
+            ],
+        ))
+    }
+}
+
+/// How many of those who spoke last the drawer offers first (chat.md, "Completion drawers").
+const SPEAKERS: usize = 5;
 
 impl RichInput {
     /// The field over `value`.
@@ -91,6 +177,7 @@ impl RichInput {
             picked: Rc::new(RefCell::new(Vec::new())),
             name: name.to_owned(),
             seen: 0,
+            people: DrawerPeople::default(),
         };
         let _ = key;
         let picked = Rc::clone(&input.picked);
@@ -281,6 +368,8 @@ impl Described for RichInput {
             value,
             placeholder,
             enabled,
+            speakers,
+            people,
         } = props;
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
@@ -289,6 +378,7 @@ impl Described for RichInput {
             value.name.clone()
         };
         let mut input = Self::new(key, value, &placeholder, &name);
+        input.people.given(speakers, people);
         input.seen = input.value.state.revision();
         input.line.inner_mut().set_disabled(!enabled);
         input.line.inner_mut().set_accessible_name(&name);
@@ -302,6 +392,8 @@ impl Described for RichInput {
             value,
             placeholder,
             enabled,
+            speakers,
+            people,
         } = props;
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
@@ -312,6 +404,7 @@ impl Described for RichInput {
         if name != self.name {
             return false;
         }
+        self.people.given(speakers, people);
         self.value = value;
         self.seen = u64::MAX;
         self.follow();
@@ -363,6 +456,11 @@ impl Decorator for RichInput {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The room says what each of the drawer's people is (an agent is marked as one) with
+        // the frame.
+        if let Some(source) = self.people.source(presence) {
+            self.set_sources(vec![source]);
+        }
         self.line.draw(scene, transform, text, theme, presence);
     }
 

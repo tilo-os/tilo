@@ -934,7 +934,7 @@ impl Core {
         }))
     }
 
-    fn principal_arg(&self, h: i32) -> HResult<Principal> {
+    pub(crate) fn principal_arg(&self, h: i32) -> HResult<Principal> {
         self.with_val(h, |v| match v {
             Value::Principal(p) => Ok(p.clone()),
             other => trap(format!("expected a principal, got {}", other.kind_name())),

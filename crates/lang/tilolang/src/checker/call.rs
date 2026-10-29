@@ -105,6 +105,7 @@ impl Checker<'_> {
             "person" => return self.builtin_person(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "members" => return self.builtin_members(args, span),
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
@@ -881,6 +882,7 @@ impl Checker<'_> {
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
+            && !self.names_platform(base)
         {
             let b = self.expr(base, None);
             if let Some((key, f)) = self.container_field(&b, fname) {
@@ -895,6 +897,12 @@ impl Checker<'_> {
             return self.container_method(r, &key, &f, name, args, span);
         }
         self.value_method(r, name, args, span)
+    }
+
+    /// Whether `e` is `space` or `workspace`, read only through their fields (`space.width`,
+    /// `workspace.members`), and not a variable of that name.
+    fn names_platform(&self, e: &ast::Expr) -> bool {
+        matches!(&e.kind, ExprKind::Ident(n) if (n == "space" || n == "workspace") && self.lookup(n).is_none())
     }
 
     fn container_field(&self, b: &Ex, fname: &ast::Ident) -> Option<(TypeKey, FieldInfo)> {
@@ -1196,6 +1204,12 @@ impl Checker<'_> {
             }
             (Ty::Principal, "name") if args.is_empty() => {
                 Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
+            }
+            (Ty::Principal, "kind") if args.is_empty() => {
+                Ex::host(Imp::PrincipalKind, vec![r], Ty::Choice("principal_kind"))
+            }
+            (Ty::Principal, "role") if args.is_empty() => {
+                Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Int, "to_float") if args.is_empty() => {
                 Ex::new(Ek::Conv(Conv::IntToFloat, Box::new(r)), Ty::Float)
