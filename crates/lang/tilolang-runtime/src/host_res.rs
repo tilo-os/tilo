@@ -894,7 +894,7 @@ impl Core {
                 None => return trap("a run holds items of this collection"),
             }
         }
-        let (neighbour, after) = match lane.get(at).or(lane.last()) {
+        let (neighbour, after) = match lane.get(at).or_else(|| lane.last()) {
             Some(next) => (next, at >= lane.len()),
             None => return ret_void(),
         };

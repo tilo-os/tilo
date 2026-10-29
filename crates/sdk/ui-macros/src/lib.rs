@@ -134,6 +134,26 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
     Ok(head)
 }
 
+/// `event`, `event(value = T)` or `event(value = T, at = U)`: an event, what it carries and
+/// where that lands.
+fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
+    let (mut value, mut at) = (None, None);
+    if meta.input.peek(syn::token::Paren) {
+        meta.parse_nested_meta(|inner| {
+            if inner.path.is_ident("value") {
+                value = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
+                Ok(())
+            } else if inner.path.is_ident("at") {
+                at = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
+                Ok(())
+            } else {
+                Err(inner.error("an event takes `value = Type` and `at = Type`"))
+            }
+        })?;
+    }
+    Ok(Part::Event { value, at })
+}
+
 fn part_of(field: &syn::Field) -> syn::Result<Part> {
     let mut part = None;
     let mut required = false;
@@ -170,21 +190,7 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 }
                 set(&mut part, Part::Slot { default }, span)?;
             } else if meta.path.is_ident("event") {
-                let (mut value, mut at) = (None, None);
-                if meta.input.peek(syn::token::Paren) {
-                    meta.parse_nested_meta(|inner| {
-                        if inner.path.is_ident("value") {
-                            value = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
-                            Ok(())
-                        } else if inner.path.is_ident("at") {
-                            at = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
-                            Ok(())
-                        } else {
-                            Err(inner.error("an event takes `value = Type` and `at = Type`"))
-                        }
-                    })?;
-                }
-                set(&mut part, Part::Event { value, at }, span)?;
+                set(&mut part, event_part(&meta)?, span)?;
             } else if meta.path.is_ident("bind") {
                 let mut merge = quote!(Register);
                 if meta.input.peek(syn::token::Paren) {
