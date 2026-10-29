@@ -380,6 +380,15 @@ pub struct ActionMeta {
     pub toggles: Option<String>,
 }
 
+impl ActionMeta {
+    /// Whether it is a `migration action`: never offered, run by the platform once on each
+    /// resource of its subject's type that an earlier version wrote.
+    #[must_use]
+    pub fn is_migration(&self) -> bool {
+        self.role.as_deref() == Some("migration")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorMeta {
     pub id: String,
@@ -443,9 +452,17 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: every action but the hidden ones of scenarios.
+    /// The actions the platform offers: every action but the hidden ones of scenarios and the
+    /// migrations, which the platform runs itself.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
-        self.actions.iter().filter(|a| !a.scenario)
+        self.actions
+            .iter()
+            .filter(|a| !a.scenario && !a.is_migration())
+    }
+
+    /// The package's migrations (`migration action`), in declaration order.
+    pub fn migrations(&self) -> impl Iterator<Item = &ActionMeta> {
+        self.actions.iter().filter(|a| a.is_migration())
     }
 
     /// The views a person or an agent can open or apply: every view but the hidden ones that

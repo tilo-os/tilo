@@ -505,10 +505,10 @@ impl<'a> Parser<'a> {
         let role = match self.peek() {
             Tok::Ident(n) if n == "primary" => ActionRole::Primary,
             Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
+            Tok::Ident(n) if n == "migration" => ActionRole::Migration,
             _ => return None,
         };
-        let next_is_role =
-            matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive");
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration");
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
                 self.diags.push(Diagnostic::new(
                     "E090",
                     span,
-                    "an action is `primary` or `destructive`, not both: the primary action is the one main thing to do, and a destructive one never is. Keep one of the words",
+                    "an action is `primary`, `destructive` or a `migration`, one of them: the primary action is the one main thing to do, a destructive one never is, and a migration is never offered. Keep one of the words",
                 ));
                 continue;
             }

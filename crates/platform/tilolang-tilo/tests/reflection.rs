@@ -401,14 +401,14 @@ fn a_document_says_when_it_was_last_edited_and_by_whom_on_every_replica() {
     ada.commit();
     let done = call_in(&ada, BOARD_APP, "new_column", vec![board.clone()]);
     ada.commit();
-    let card = call_in(&ada, BOARD_APP, "new_card", vec![board.clone(), todo]);
+    let card = call_in(&ada, BOARD_APP, "new_card", vec![todo]);
     ada.commit();
     let mut ben = ada.fork("ben", &[(BOARD, &loaded[0].ids)]);
     ben.host.sync_from(&ben.doc);
     ben.host
         .runtime()
         .set_clock(|| "2026-10-28T09:30:00Z".to_owned());
-    call_in(&ben, BOARD_APP, "move_to", vec![board, card.clone(), done]);
+    call_in(&ben, BOARD_APP, "move_to", vec![card.clone(), done]);
     ben.commit();
     ada.sync_with(&mut ben);
     let Value::Ref(target) = &card else {

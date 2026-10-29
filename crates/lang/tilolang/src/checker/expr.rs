@@ -791,6 +791,10 @@ impl Checker<'_> {
                     );
                     return Ex::error();
                 };
+                if f.role.as_deref() == Some("previously") && !self.st.migration {
+                    self.err("E114", name.span, format!("`{}` is what `{}` held previously: only a `migration action` reads it, to bring it to where the type keeps it now", f.name, key.name));
+                    return Ex::error();
+                }
                 if matches!(f.ty, Ty::Map(_)) && self.st.ctx != Ctx::View {
                     self.err("E080", name.span, format!("the Map field `{}` is read as a whole only in a view, to hand it to a component or another view; read it with `.get(key)` or `.keys()`, change it with `.put` and `.remove`", f.name));
                     return Ex::error();

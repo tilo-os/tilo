@@ -92,6 +92,8 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
+    /// Set while checking a `migration action`, which reads `(previously)` fields.
+    migration: bool,
     /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
     program: bool,
     /// Where the UI being lowered stands.
@@ -438,6 +440,7 @@ impl Checker<'_> {
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
         }
         self.st.scenario = c.scenario;
+        self.st.migration = c.present.role.as_deref() == Some("migration");
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {
             // A body that ends in an expression returns its value.
