@@ -17858,6 +17858,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-bluetooth-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tilo-bluez",
+ "tilo-copy-lint",
+ "tilo-service",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [

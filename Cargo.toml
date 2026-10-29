@@ -429,6 +429,7 @@ members = [
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
+    "crates/session/bluetooth-agent",
     "crates/session/service",
     "crates/session/connectivity-service",
     "crates/session/messaging-service",
