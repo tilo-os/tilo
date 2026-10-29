@@ -32,7 +32,7 @@ impl<S: Seat> Sheet<S> {
         let lent = seat.clone();
         let component =
             prepare_private_surface(definition, device, person, "desktop", 0, |context| {
-                context.lend(lent)
+                context.lend(lent);
             })?;
         let app = ui::App::from_component(component, presentation)?;
         let placement = Placement {

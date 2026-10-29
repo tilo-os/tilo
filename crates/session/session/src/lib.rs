@@ -92,6 +92,10 @@ pub struct Options {
 
 /// The default for [`Options::session_actions`]: a session that owns no
 /// machine (a test, a screenshot) carries out nothing.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the shape every session action runner has"
+)]
 fn no_session_actions(action: SessionAction) -> Result<(), String> {
     tracing::info!(?action, "this session carries out no session actions");
     Ok(())
@@ -237,28 +241,85 @@ impl Shared {
     }
 }
 
-/// Mount a sheet lent `seat` on a layer of its own, its actions among the
-/// session's; the seat, when it mounted.
-fn mount_sheet<S: tilo_sheets::Seat>(
-    compositor: &mut Compositor,
-    surfaces: &mut Vec<Rc<RefCell<dyn Served>>>,
-    definition: &'static ui::application::ApplicationDefinition,
-    seat: S,
-    who: (&str, &str),
-    presentation: ComponentRunnerInputs,
+/// What mounts the session's surface apps, each on a layer of its own
+/// with its actions among the session's.
+struct Mount<'a> {
+    compositor: &'a mut Compositor,
+    surfaces: Vec<Rc<RefCell<dyn Served>>>,
+    /// This device and the person at it.
+    who: (String, String),
+    presentation: fn() -> ComponentRunnerInputs,
     scale: f64,
-) -> Option<S> {
-    match Sheet::mount(definition, seat, who, presentation, scale) {
-        Ok(sheet) => {
-            let seat = sheet.seat().clone();
-            let held = Rc::new(RefCell::new(sheet));
-            compositor.add_host(Box::new(Held(Rc::clone(&held))));
-            surfaces.push(held);
-            Some(seat)
+}
+
+impl Mount<'_> {
+    /// Host `surface` above what was mounted before, and publish its
+    /// actions.
+    fn add<T: tilo_compositor::SurfaceHost + Served + 'static>(
+        &mut self,
+        surface: T,
+    ) -> Rc<RefCell<T>> {
+        let held = Rc::new(RefCell::new(surface));
+        self.compositor.add_host(Box::new(Held(Rc::clone(&held))));
+        self.surfaces
+            .push(Rc::clone(&held) as Rc<RefCell<dyn Served>>);
+        held
+    }
+
+    /// The notification banners; their link, mounted or not.
+    fn banners(&mut self) -> tilo_notification_banners::Link {
+        let link = tilo_notification_banners::Link::new();
+        match tilo_notification_banners::prepare(link.clone(), &self.who.0, &self.who.1)
+            .and_then(|component| ui::App::from_component(component, (self.presentation)()))
+        {
+            Ok(app) => {
+                self.add(Banners::new(app, link.clone(), self.scale));
+            }
+            Err(error) => tracing::warn!(%error, "notification banners not mounted"),
         }
-        Err(error) => {
-            tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
-            None
+        link
+    }
+
+    /// Quick settings, reading the device through `panel`; whether it is
+    /// open, when it mounted.
+    fn quick_settings(&mut self, panel: Rc<dyn PanelHost>) -> Option<Rc<Cell<bool>>> {
+        let open = Rc::new(Cell::new(false));
+        match tilo_quick_settings::prepare(panel, &self.who.0, &self.who.1, 1)
+            .and_then(|component| ui::App::from_component(component, (self.presentation)()))
+        {
+            Ok(app) => {
+                self.add(Popover::new(app, Rc::clone(&open), self.scale));
+                Some(open)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "quick settings not mounted");
+                None
+            }
+        }
+    }
+
+    /// A sheet lent `seat`; the seat, when it mounted.
+    fn sheet<S: tilo_sheets::Seat>(
+        &mut self,
+        definition: &'static ui::application::ApplicationDefinition,
+        seat: S,
+    ) -> Option<S> {
+        match Sheet::mount(
+            definition,
+            seat,
+            (&self.who.0, &self.who.1),
+            (self.presentation)(),
+            self.scale,
+        ) {
+            Ok(sheet) => {
+                let seat = sheet.seat().clone();
+                self.add(sheet);
+                Some(seat)
+            }
+            Err(error) => {
+                tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
+                None
+            }
         }
     }
 }
@@ -345,84 +406,32 @@ impl Session {
         ));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
 
-        let presentation = options.presentation;
-        let mut surfaces: Vec<Rc<RefCell<dyn Served>>> = Vec::new();
-        let banners = tilo_notification_banners::Link::new();
-        match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-            .and_then(|component| ui::App::from_component(component, presentation()))
-        {
-            Ok(app) => {
-                let held = Rc::new(RefCell::new(Banners::new(
-                    app,
-                    banners.clone(),
-                    options.scale,
-                )));
-                compositor.add_host(Box::new(Held(Rc::clone(&held))));
-                surfaces.push(held);
-            }
-            Err(error) => tracing::warn!(%error, "notification banners not mounted"),
-        }
-
-        let quick_settings = options.quick_settings.and_then(|panel| {
-            let open = Rc::new(Cell::new(false));
-            match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
-                .and_then(|component| ui::App::from_component(component, presentation()))
-            {
-                Ok(app) => {
-                    let held = Rc::new(RefCell::new(Popover::new(
-                        app,
-                        Rc::clone(&open),
-                        options.scale,
-                    )));
-                    compositor.add_host(Box::new(Held(Rc::clone(&held))));
-                    surfaces.push(held);
-                    Some(open)
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "quick settings not mounted");
-                    None
-                }
-            }
-        });
+        let mut mount = Mount {
+            compositor: &mut compositor,
+            surfaces: Vec::new(),
+            who: (options.device.clone(), options.person.clone()),
+            presentation: options.presentation,
+            scale: options.scale,
+        };
+        let banners = mount.banners();
+        let quick_settings = options
+            .quick_settings
+            .and_then(|panel| mount.quick_settings(panel));
 
         // The sheets, over the desktop and its panels.
-        let seats = (options.device.as_str(), options.person.as_str());
-        let power = mount_sheet(
-            &mut compositor,
-            &mut surfaces,
-            tilo_sheets::power::definition(),
-            PowerSeat::default(),
-            seats,
-            presentation(),
-            options.scale,
-        );
-        let workspace_settings = mount_sheet(
-            &mut compositor,
-            &mut surfaces,
+        let power = mount.sheet(tilo_sheets::power::definition(), PowerSeat::default());
+        let workspace_settings = mount.sheet(
             tilo_sheets::workspace_settings::definition(),
             WorkspaceSettingsSeat::default(),
-            seats,
-            presentation(),
-            options.scale,
         );
-        let portal = mount_sheet(
-            &mut compositor,
-            &mut surfaces,
-            tilo_sheets::portal::definition(),
-            PortalSeat::default(),
-            seats,
-            presentation(),
-            options.scale,
-        );
+        let portal = mount.sheet(tilo_sheets::portal::definition(), PortalSeat::default());
 
         // Setup last: above everything, and first to the keyboard.
-        setup::lend(compositor.waker(), &options.person);
-        let setup = options.setup.map(|view| {
-            let held = Rc::new(RefCell::new(Setup::new(view, options.scale)));
-            compositor.add_host(Box::new(Held(Rc::clone(&held))));
-            surfaces.push(Rc::clone(&held) as Rc<RefCell<dyn Served>>);
-            held
-        });
+        setup::lend(mount.compositor.waker(), &options.person);
+        let setup = options
+            .setup
+            .map(|view| mount.add(Setup::new(view, options.scale)));
+        let surfaces = mount.surfaces;
 
         let shared = Rc::new(Shared {
             handle,
