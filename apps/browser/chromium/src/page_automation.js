@@ -517,19 +517,36 @@ globalThis.__tiloPage ||= (() => {
   // world writes each frame element's ref with the number, and the frame's own
   // world indents the frame's lines below it. Nothing here reads into a frame:
   // the browser hands each frame its own world.
-  function frameElements() {
-    const found = [...document.querySelectorAll('iframe, frame')];
-    return found.slice(0, MAX_FRAMES);
-  }
+
   // The frame a frame element shows, as its ref names it: the element's place
   // in this document, in the page's order.
+  // The place the page's own world numbers this frame in: an element is only
+  // found among the frames when its own document is the page's.
+  // The frames a document shows, in the order it shows them: queried from the
+  // document itself, so a node read through the page is still its own.
+  function frameElements(doc) {
+    const found = [...(doc || document).querySelectorAll('iframe, frame')];
+    return found.slice(0, MAX_FRAMES);
+  }
   function frameName(element) {
-    const place = frameElements().indexOf(element) + 1;
-    return place > 0 ? `f${place}` : '';
+    const frames = frameElements(element.ownerDocument);
+    const place = frames.indexOf(element);
+    return place >= 0 ? `f${place + 1}` : '';
   }
   // Where a frame's element sits in this document, borders and padding
   // included, so a point inside the frame's own view becomes a point of this
   // one. A frame with no area shown has no point at all.
+  // The frame element this world is shown in, when it is a frame's own world.
+  // The frame a read of this document gives a world names itself, so its own
+  // lines carry refs the page's own world never resolves.
+  function ownFrameKey() {
+    try {
+      const frame = globalThis.frameElement;
+      return frame ? `f${frameElements(frame.ownerDocument).indexOf(frame) + 1}` : '';
+    } catch {
+      return '';
+    }
+  }
   function framePlace(key, x, y) {
     const number = /^f(\d{1,6})$/.exec(key || '');
     const element = number ? frameElements()[Number(number[1]) - 1] : null;
@@ -550,7 +567,7 @@ globalThis.__tiloPage ||= (() => {
     const hit = topmost(point.x, point.y);
     if (!within(hit, element))
       throw failure('obscured', `The frame ${quote(key)} is covered by ${describe(hit)}; close or scroll past it first`);
-    return point;
+    return {ok: true, x: point.x, y: point.y};
   }
   // Whether this world is a child frame's own, so a point it names is inside
   // that frame rather than on the page.
@@ -598,10 +615,24 @@ globalThis.__tiloPage ||= (() => {
     const hit = topmost(center.x, center.y);
     if (!within(hit, target))
       throw failure('obscured', `${ref} is covered by ${describe(hit)}; close or scroll past it first`);
-    // A frame's own view is placed on the page by the document showing it; the
-    // browser says whether this world is a frame's, and which frame.
+    // A point of this world's own document is the page's own point when this
+    // world is the page's. A frame's own world names the frame showing it, and
+    // the page's own world turns that into a point of itself.
+    const key = ownFrameKey();
     return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`,
-      ...(isFrameWorld() ? {frame: 'frame'} : {})};
+      ...(key ? {data: {frame: key}} : {})};
+  }
+  // The element's point in this world's own view, named with the frame showing
+  // that view. The page's own world places the point on itself, in that frame.
+  function framePoint(ref) {
+    const element = resolve(ref);
+    enabled(element, ref);
+    const center = point(element);
+    if (!center) throw failure('not_visible', `${ref} has no visible area to click; scroll or open its container first`);
+    const key = ownFrameKey();
+    if (!key) throw failure('not_visible', `${ref} is in a frame this page no longer shows; read the page again`);
+    return {ok: true, x: center.x, y: center.y, data: {frame: key},
+      message: `Clicked ${summary(element)}`};
   }
   function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
@@ -1106,6 +1137,9 @@ globalThis.__tiloPage ||= (() => {
           case 'frame_outline': return frameOutline(command.max_lines);
           // Where a point of a frame's own view is on the page.
           case 'frame_place': return framePlace(command.key, command.x, command.y);
+          // Where one element of this world sits in its own view, and which
+          // frame's view it is, so the page can place the point on itself.
+          case 'frame_point': return framePoint(command.element);
           case 'at': return at(command.x, command.y);
           case 'settle': return settle(command.quiet_ms, command.timeout_ms);
           case 'locate': arm('pointer'); return locate(command.element, command.cross_origin);
