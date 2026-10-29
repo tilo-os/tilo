@@ -121,12 +121,23 @@ pub enum DynEdit {
         payload: Json,
         owner: String,
     },
-    /// Record how the owning device settled the entry `entry` of the resource `id`: `done`, or why
-    /// it failed.
+    /// Record how the owning device settled the entry `entry` of the resource `id`: `done`,
+    /// `rejected` (with the service's `reason`) or `unknown`.
     OutboxSettle {
         id: String,
         entry: String,
         outcome: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        reason: String,
+    },
+    /// Record where the owning device is with the entry `entry` of the resource `id` before it
+    /// settles: `sending` (handed over by the process whose token `detail` is) or `waiting` (to
+    /// go online, `detail` saying why).
+    OutboxMark {
+        id: String,
+        entry: String,
+        state: String,
+        detail: String,
     },
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
     /// records, which an action's follow-up changes write beside the package's resources.
@@ -158,6 +169,7 @@ impl DynEdit {
             | Self::Place { .. }
             | Self::Remove { .. }
             | Self::OutboxSettle { .. }
+            | Self::OutboxMark { .. }
             | Self::Migrated { .. } => false,
         }
     }
@@ -263,6 +275,7 @@ impl DynAction {
                 DynEdit::Remove { .. }
                 | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
+                | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
                 | DynEdit::In { .. } => {}
             }
@@ -286,6 +299,7 @@ impl DynAction {
             | DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. }) = edit
             else {
                 continue;
@@ -338,6 +352,7 @@ fn target_map(
         | DynEdit::Remove { id }
         | DynEdit::OutboxPush { id, .. }
         | DynEdit::OutboxSettle { id, .. }
+        | DynEdit::OutboxMark { id, .. }
         | DynEdit::Migrated { id, .. } => stored_map(doc, records, app, id),
     };
     match held {
@@ -436,16 +451,8 @@ fn apply_one(
                 doc.put(&held, "owner", owner.as_str())?;
             }
         }
-        DynEdit::OutboxSettle { id, entry, outcome } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                return Ok(());
-            };
-            let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
-                return Ok(());
-            };
-            if let Some((AmValue::Object(ObjType::Map), held)) = doc.get(&outbox, entry.as_str())? {
-                doc.put(&held, "settled", outcome.as_str())?;
-            }
+        DynEdit::OutboxSettle { .. } | DynEdit::OutboxMark { .. } => {
+            write_outbox_entry(doc, &app, edit)?;
         }
         DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::In { .. } => {}
@@ -645,8 +652,97 @@ pub struct StoredEntry {
     pub payload: Json,
     /// The device that carries it out.
     pub owner: String,
-    /// `None` while it waits; `done`, or why it failed, once settled.
+    /// `None` while it waits; `done`, `rejected` or `unknown` once settled.
     pub settled: Option<String>,
+    /// Why it was rejected, as the service said.
+    pub reason: String,
+    /// Before it settles: empty (queued), `sending` or `waiting`.
+    pub state: String,
+    /// The token of the process handing it over, or why it waits.
+    pub detail: String,
+}
+
+impl StoredEntry {
+    /// Where it is on its way out, before it settles.
+    #[must_use]
+    pub fn outbox_state(&self) -> tilolang_runtime::store::OutboxState {
+        use tilolang_runtime::store::OutboxState;
+        match self.state.as_str() {
+            "sending" => OutboxState::Sending {
+                by: self.detail.clone(),
+            },
+            "waiting" => OutboxState::Waiting {
+                reason: self.detail.clone(),
+            },
+            _ => OutboxState::Queued,
+        }
+    }
+
+    /// How it stands, as `delivery(r)` reads it.
+    #[must_use]
+    pub fn delivery(&self) -> tilolang_runtime::store::DeliveryState {
+        tilolang_runtime::store::DeliveryState::of(
+            &self.outbox_state(),
+            self.settled
+                .as_deref()
+                .map(|outcome| (outcome, self.reason.as_str())),
+        )
+    }
+}
+
+/// Record how an outbox entry was settled, or where it is before it settles.
+fn write_outbox_entry(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    edit: &DynEdit,
+) -> Result<(), automerge::AutomergeError> {
+    match edit {
+        DynEdit::OutboxSettle {
+            id,
+            entry,
+            outcome,
+            reason,
+        } => {
+            if let Some(held) = outbox_entry(doc, app, id, entry)? {
+                doc.put(&held, "settled", outcome.as_str())?;
+                if !reason.is_empty() {
+                    doc.put(&held, "reason", reason.as_str())?;
+                }
+            }
+        }
+        DynEdit::OutboxMark {
+            id,
+            entry,
+            state,
+            detail,
+        } => {
+            if let Some(held) = outbox_entry(doc, app, id, entry)? {
+                doc.put(&held, "state", state.as_str())?;
+                doc.put(&held, "detail", detail.as_str())?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The map of the entry `entry` queued on the resource `id` under the app's map `app`.
+fn outbox_entry(
+    doc: &Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    entry: &str,
+) -> Result<Option<automerge::ObjId>, automerge::AutomergeError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Ok(None);
+    };
+    let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
+        return Ok(None);
+    };
+    Ok(match doc.get(&outbox, entry)? {
+        Some((AmValue::Object(ObjType::Map), held)) => Some(held),
+        _ => None,
+    })
 }
 
 /// The outside effects queued on the resource `id` of `app`, oldest key first.
@@ -673,15 +769,58 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
         .filter_map(|entry| {
             let Ok(Some((AmValue::Object(ObjType::Map), held))) = doc.get(&outbox, entry.as_str())
             else {
+                tracing::warn!(
+                    app,
+                    id,
+                    entry,
+                    "an outbox entry is not a map: it is not read"
+                );
                 return None;
             };
-            Some(StoredEntry {
-                capability: text(&held, "capability")?,
-                payload: serde_json::from_str(&text(&held, "payload")?).ok()?,
-                owner: text(&held, "owner")?,
-                settled: text(&held, "settled"),
+            let read = || -> Result<(String, Json, String), String> {
+                let capability = text(&held, "capability").ok_or("it names no capability")?;
+                let payload = text(&held, "payload").ok_or("it holds no payload")?;
+                let payload = serde_json::from_str(&payload)
+                    .map_err(|error| format!("its payload does not decode: {error}"))?;
+                let owner = text(&held, "owner").ok_or("it names no device to carry it out")?;
+                Ok((capability, payload, owner))
+            };
+            let settled = text(&held, "settled");
+            let mut stored = StoredEntry {
+                capability: String::new(),
+                payload: Json::Null,
+                owner: String::new(),
+                settled,
+                // Absent until it is settled, and when settled with no reason.
+                reason: text(&held, "reason").unwrap_or_default(),
+                // Absent while it is queued (`outbox_state`).
+                state: text(&held, "state").unwrap_or_default(),
+                detail: text(&held, "detail").unwrap_or_default(),
                 entry,
-            })
+            };
+            match read() {
+                Ok((capability, payload, owner)) => {
+                    stored.capability = capability;
+                    stored.payload = payload;
+                    stored.owner = owner;
+                }
+                // Nothing can carry out an effect that does not read, so it never would
+                // settle: it stands rejected, with why, where `delivery(r)` reads it, and no
+                // device takes it up.
+                Err(why) if stored.settled.is_none() => {
+                    tracing::warn!(
+                        app,
+                        id,
+                        entry = stored.entry,
+                        why,
+                        "an outbox entry is unreadable"
+                    );
+                    stored.settled = Some("rejected".to_owned());
+                    stored.reason = format!("the queued effect is unreadable: {why}");
+                }
+                Err(_) => {}
+            }
+            Some(stored)
         })
         .collect()
 }
@@ -765,6 +904,7 @@ impl DynAction {
             DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. } => (id, None),
             DynEdit::In { .. } => return None,
         };
@@ -907,4 +1047,49 @@ pub fn resource_ids(doc: &Doc, app: &str) -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+
+    /// A record of `app` holding the resource `id` with an outbox of `entries` (key, payload).
+    fn holding(app: &str, id: &str, entries: &[(&str, &str)]) -> Doc {
+        let mut doc = Doc::new();
+        let records = doc
+            .put_object(&ROOT, RECORDS_KEY, ObjType::Map)
+            .expect("records");
+        let held = doc.put_object(&records, app, ObjType::Map).expect("app");
+        let resource = doc.put_object(&held, id, ObjType::Map).expect("resource");
+        let outbox = doc
+            .put_object(&resource, OUTBOX_KEY, ObjType::Map)
+            .expect("outbox");
+        for (key, payload) in entries {
+            let entry = doc.put_object(&outbox, *key, ObjType::Map).expect("entry");
+            doc.put(&entry, "capability", "smtp.send")
+                .expect("capability");
+            doc.put(&entry, "payload", *payload).expect("payload");
+            doc.put(&entry, "owner", "device").expect("owner");
+        }
+        doc
+    }
+
+    #[test]
+    fn an_outbox_entry_that_does_not_read_stands_rejected_with_why() {
+        let doc = holding("app", "r", &[("1", "[\"to\"]"), ("2", "{not json")]);
+        let entries = outbox_entries(&doc, "app", "r");
+        assert_eq!(entries.len(), 2, "no entry is left out");
+        assert_eq!(entries[0].settled, None, "the readable one waits");
+        assert_eq!(entries[0].payload, serde_json::json!(["to"]));
+        let unreadable = &entries[1];
+        assert_eq!(unreadable.settled.as_deref(), Some("rejected"));
+        assert!(
+            unreadable.reason.contains("payload"),
+            "{}",
+            unreadable.reason
+        );
+        let delivery = unreadable.delivery();
+        assert_eq!(delivery.state, "rejected");
+        assert!(!delivery.reason.is_empty());
+    }
 }

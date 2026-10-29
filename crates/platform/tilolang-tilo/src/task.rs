@@ -314,7 +314,12 @@ impl Invoker for DoorInvoker {
                     steps.apps.push(app.to_owned());
                 }
                 drop(steps);
-                Invoked::Done(result_of(meta, invocation, &output))
+                match result_of(meta, invocation, &output) {
+                    Ok(result) => Invoked::Done(result),
+                    // It ran, and the program cannot go on with what it answered: said so,
+                    // rather than going on with nothing in its place.
+                    Err(why) => Invoked::Failed(why),
+                }
             }
             Answered::Failed(why) => Invoked::Failed(why),
             Answered::Refused(why) => Invoked::Refused(why),
@@ -406,9 +411,9 @@ fn argument_json(value: &Value) -> Result<Json, String> {
 
 /// What an invocation of `meta`'s action answered (`{value, resources}`), as the program gets
 /// it: a record result as the resource the app says it returned, any other as its value.
-fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Value {
+fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Value, String> {
     let Invocation::Action { action, .. } = invocation else {
-        return Value::Unit;
+        return Ok(Value::Unit);
     };
     let Some(result) = meta
         .actions
@@ -416,7 +421,7 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Value {
         .find(|declared| declared.id == *action)
         .and_then(|declared| declared.result.clone())
     else {
-        return Value::Unit;
+        return Ok(Value::Unit);
     };
     if let Some(declared) = meta.type_named(&result) {
         let prefix = resource_id(&meta.app, "");
@@ -426,12 +431,19 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Value {
             .flatten()
             .filter_map(Json::as_str)
             .find_map(|id| ResourceRef::parse_id(id.strip_prefix(&prefix)?, declared.id.clone()))
-            .map_or(Value::Unit, |at| Value::resource(&at));
+            .map(|at| Value::resource(&at))
+            .ok_or_else(|| {
+                format!(
+                    "the action ran but did not answer the {} it returns: {output}",
+                    declared.name
+                )
+            });
     }
-    output
-        .get("value")
-        .and_then(|value| from_json(value).ok())
-        .unwrap_or(Value::Unit)
+    match output.get("value") {
+        None | Some(Json::Null) => Ok(Value::Unit),
+        Some(value) => from_json(value)
+            .map_err(|error| format!("the action ran but its answer does not decode: {error}")),
+    }
 }
 
 /// What the door read of resources, per program.
@@ -593,8 +605,26 @@ impl Store for TaskStore {
         Vec::new()
     }
 
-    fn outbox_settle(&mut self, _: &OutboxEntry, _: &ChangeNote) -> Result<(), StoreError> {
+    fn outbox_mark(
+        &mut self,
+        _: &OutboxEntry,
+        _: &tilolang_runtime::store::OutboxState,
+        _: &ChangeNote,
+    ) -> Result<(), StoreError> {
         Err(StoreError::Invalid(WRITES_NOTHING.into()))
+    }
+
+    fn outbox_settle(
+        &mut self,
+        _: &OutboxEntry,
+        _: &tilolang_runtime::store::Settled,
+        _: &ChangeNote,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(WRITES_NOTHING.into()))
+    }
+
+    fn outbox_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {
+        Vec::new()
     }
 
     fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {

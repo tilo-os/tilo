@@ -665,6 +665,83 @@ pub struct OutboxEntry {
     pub id: String,
     pub capability: String,
     pub payload: Json,
+    pub state: OutboxState,
+}
+
+/// Where an outside effect that is not settled yet is on its way out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum OutboxState {
+    /// Queued: nothing was tried yet.
+    #[default]
+    Queued,
+    /// Being handed to the service by the process whose token `by` is. It is marked so before
+    /// it is handed over, so one whose process stopped meanwhile reads as outcome unknown and
+    /// is never handed over twice.
+    Sending { by: String },
+    /// The service could not be reached, for `reason`: it waits to go online.
+    Waiting { reason: String },
+}
+
+/// How an outside effect ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// The service took it.
+    Done,
+    /// The service refused it, for this reason.
+    Rejected(String),
+    /// The process handing it over stopped before the service answered: whether it went is
+    /// not known, and it is not tried again.
+    Unknown,
+}
+
+impl Settled {
+    /// The outcome as the record keeps it: `done`, `rejected` or `unknown`.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Rejected(_) => "rejected",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Why, when the service said.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Rejected(reason) => reason,
+            Self::Done | Self::Unknown => "",
+        }
+    }
+}
+
+/// How the outside effect a resource's actions queued last stands, as `delivery(r)` reads it:
+/// `waiting`, `sending`, `sent`, `rejected` or `unknown`, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryState {
+    pub state: String,
+    pub reason: String,
+}
+
+impl DeliveryState {
+    /// How an entry stands: settled with `settled`'s outcome word and reason, else by `state`.
+    #[must_use]
+    pub fn of(state: &OutboxState, settled: Option<(&str, &str)>) -> Self {
+        let (state, reason) = match settled {
+            Some(("done", _)) => ("sent", ""),
+            Some(("unknown", _)) => ("unknown", ""),
+            Some((_, reason)) => ("rejected", reason),
+            None => match state {
+                OutboxState::Queued => ("waiting", ""),
+                OutboxState::Sending { .. } => ("sending", ""),
+                OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+            },
+        };
+        Self {
+            state: state.to_owned(),
+            reason: reason.to_owned(),
+        }
+    }
 }
 
 pub trait Store {
@@ -916,12 +993,34 @@ pub trait Store {
     /// Outside effects queued and not yet settled.
     fn outbox_pending(&self) -> Vec<OutboxEntry>;
 
-    /// Mark an entry settled, as one change.
+    /// Record where an entry that is not settled is now (handed over, or waiting to go
+    /// online), as one change.
     ///
     /// # Errors
     ///
     /// `NotFound` when the entry is gone.
-    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError>;
+    fn outbox_mark(
+        &mut self,
+        entry: &OutboxEntry,
+        state: &OutboxState,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError>;
+
+    /// Mark an entry settled with `outcome`, as one change.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the entry is gone.
+    fn outbox_settle(
+        &mut self,
+        entry: &OutboxEntry,
+        outcome: &Settled,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError>;
+
+    /// How the outside effect each resource's actions queued last stands, by document: what
+    /// `delivery(r)` reads.
+    fn outbox_states(&self) -> Vec<(DocId, DeliveryState)>;
 
     /// # Errors
     ///

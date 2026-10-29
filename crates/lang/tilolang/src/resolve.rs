@@ -1449,9 +1449,16 @@ impl Resolver<'_> {
                     );
                     return Ty::Error;
                 }
+                // A field's map may hold a set per key (`Map<Set<Principal>>`, who reacted with
+                // each emoji): stored element by element, so it is a field's container too.
+                let set_per_key = field_position
+                    && name.name == "Map"
+                    && args.first().is_some_and(|a| {
+                        matches!(&a.kind, TypeExprKind::Generic(inner, _) if inner.name == "Set")
+                    });
                 let inner = args
                     .first()
-                    .map_or(Ty::Error, |a| self.resolve_type(a, false));
+                    .map_or(Ty::Error, |a| self.resolve_type(a, set_per_key));
                 let boxed = Box::new(inner);
                 let ty = match name.name.as_str() {
                     "List" => Ty::List(boxed),

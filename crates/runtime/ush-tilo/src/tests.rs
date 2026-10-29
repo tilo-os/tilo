@@ -333,3 +333,80 @@ fn a_program_without_a_place_to_run_says_which_tier_it_needs() {
     assert_eq!(ran.status, 127);
     assert!(ran.err.contains("tier 3"), "{}", ran.err);
 }
+
+/// A place that holds the person's history and has a terminal, with one
+/// program to run.
+struct Holding;
+
+impl Place for Holding {
+    fn edit_mode(&self, _: bool) -> bool {
+        true
+    }
+
+    fn history(&self, query: &HistoryQuery) -> Option<Vec<String>> {
+        let lines = ["echo from the record", "echo older"];
+        Some(
+            lines
+                .iter()
+                .filter(|line| line.contains(&query.matching))
+                .skip(query.skip)
+                .take(query.limit)
+                .map(|line| (*line).to_owned())
+                .collect(),
+        )
+    }
+}
+
+struct Frobnicate;
+
+impl Programs for Frobnicate {
+    fn run(
+        &self,
+        argv: &[String],
+        _: &[(String, String)],
+        _: &Path,
+        io: &Stdio,
+        _: Option<&dyn Fn() -> bool>,
+    ) -> Program {
+        let _ = io.stdout.write_str(&format!("ran {}\n", argv.join(" ")));
+        Program::Exited(0)
+    }
+
+    fn names(&self, _: &str) -> Vec<String> {
+        vec!["frobnicate".into()]
+    }
+}
+
+/// At the prompt the host is the place's: Up recalls the history the place
+/// holds, with no question to Terminal, and Tab completes the names of the
+/// programs the place runs, which run as the line's job.
+#[test]
+fn the_prompt_recalls_the_places_history_and_completes_its_programs() {
+    let (_tmp, granted, _) = fixture();
+    let (stdout, out) = Output::buffer();
+    let (stderr, _err) = Output::buffer();
+    let host = TiloHost::new(
+        Granting::new(&granted),
+        Arc::new(NativeFiles),
+        Arc::new(Frobnicate),
+        Arc::new(Holding),
+        stderr.clone(),
+    );
+    let io = Stdio {
+        stdin: Input::bytes(b"\x1b[A\rfrob\t--now\r".to_vec()),
+        stdout,
+        stderr,
+    };
+    let mut shell = Shell::new(Arc::new(host), [], granted, io);
+    shell.interactive(&ush_shell::Session {
+        runs_key: Some("0123456789abcdef0123456789abcdef".into()),
+    });
+    drop(shell);
+    let out = String::from_utf8_lossy(&out.take()).into_owned();
+    assert!(
+        !out.contains("\x1b]133;H;"),
+        "Terminal is not asked: {out:?}"
+    );
+    assert!(out.contains("from the record\n"), "{out:?}");
+    assert!(out.contains("ran frobnicate --now\n"), "{out:?}");
+}
