@@ -523,7 +523,7 @@ impl Draft {
 }
 
 /// Exact sending account reviewed when preparing a Contacts draft.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DraftSender {
     pub account: String,
     pub email: String,
@@ -531,7 +531,7 @@ pub struct DraftSender {
 
 /// Metadata for one staged draft attachment. The content is addressed by a
 /// verified content-store identity and materialized only at the send boundary.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DraftAttachment {
     pub content_id: String,
     pub filename: String,

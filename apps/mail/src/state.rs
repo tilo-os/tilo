@@ -587,10 +587,22 @@ impl MailState {
     /// Save the draft being written, as one step. The visible Drafts
     /// message is materialised separately by the app.
     pub fn save_draft(&mut self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) {
+        self.save_draft_as(doc, None, draft);
+    }
+
+    /// Save `draft` as the draft `id` (the composer's own when `None`), as
+    /// one step.
+    pub fn save_draft_as(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        id: Option<&str>,
+        draft: &Draft,
+    ) {
         self.submit(
             doc,
             Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
                 message: crate::actions::DraftData::from_draft(draft),
+                draft: id.map(str::to_owned),
             }),
         );
     }

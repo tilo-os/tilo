@@ -779,6 +779,15 @@ impl OverlayStack {
             .any(ShellLayer::dismiss)
     }
 
+    /// Close every open menu and flyout ([`Band::Popover`]); `true` when one
+    /// was open.
+    pub(crate) fn dismiss_popovers(&mut self) -> bool {
+        self.layers_mut()
+            .into_iter()
+            .filter(|layer| layer.id().band() == Some(Band::Popover) && layer.is_open())
+            .fold(false, |closed, layer| layer.dismiss() | closed)
+    }
+
     /// Advance every layer's clock; `true` when any of them changed.
     pub(crate) fn tick(&mut self, now: Instant) -> bool {
         self.layers_mut()

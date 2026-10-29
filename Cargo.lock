@@ -9605,6 +9605,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "markup5ever_rcdom",
+ "pdf-viewer",
  "pim-lines",
  "rcgen",
  "runtime-dylib",
