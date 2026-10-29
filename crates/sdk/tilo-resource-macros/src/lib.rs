@@ -35,7 +35,7 @@ fn krate() -> Tokens {
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
-/// `String`, an `Option<String>` or a `Vec` (written whole, last writer
+/// `String`, an `Id`, a `Vec` or an `Option` of one (written whole, last writer
 /// wins, as `Atom` is: a colour or a list of points two people set at once
 /// is one of theirs, never a mix),
 /// `#[model(whole)]` (read every part of a value that loads on demand,

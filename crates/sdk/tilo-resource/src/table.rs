@@ -783,25 +783,6 @@ pub static ATOM_STRING: ModelTable = ModelTable {
     scalar: true,
 };
 
-/// The table of an `Option<String>` stored whole when present
-/// (`#[model(atom)]`): `None` is an absent key, as for any `Option`.
-pub static ATOM_OPTION_STRING: ModelTable = ModelTable {
-    ops: &OPTION_OPS,
-    desc: Desc::Option(&ATOM_OPTION_STRING_DESC),
-    checks: false,
-    has_ops: false,
-    scalar: true,
-};
-
-static ATOM_OPTION_STRING_DESC: OptionDesc = OptionDesc {
-    inner: &ATOM_STRING,
-    get: option_get::<String>,
-    get_mut: option_get_mut::<String>,
-    slot: option_slot::<String>,
-    clear: option_clear::<String>,
-    staged: (empty_of::<Option<String>>, unwrap_of::<Option<String>>),
-};
-
 /// A type `#[model(atom)]` stores whole: one value, last writer wins, never
 /// merged part by part. A colour, a name from a list or an encoded path
 /// merged by character or element reads as no value at all.
@@ -814,8 +795,32 @@ impl Atomic for String {
     const ATOM: &'static ModelTable = &ATOM_STRING;
 }
 
-impl Atomic for Option<String> {
-    const ATOM: &'static ModelTable = &ATOM_OPTION_STRING;
+/// `None` is an absent key, as for any `Option`; a present value is stored
+/// whole.
+impl<T: Atomic> Atomic for Option<T> {
+    const ATOM: &'static ModelTable = &AtomOptionOf::<T>::TABLE;
+}
+
+/// The table of an optional atom.
+struct AtomOptionOf<T>(PhantomData<T>);
+
+impl<T: Atomic> AtomOptionOf<T> {
+    const DESC: OptionDesc = OptionDesc {
+        inner: T::ATOM,
+        get: option_get::<T>,
+        get_mut: option_get_mut::<T>,
+        slot: option_slot::<T>,
+        clear: option_clear::<T>,
+        staged: (empty_of::<Option<T>>, unwrap_of::<Option<T>>),
+    };
+
+    const TABLE: ModelTable = ModelTable {
+        ops: &OPTION_OPS,
+        desc: Desc::Option(&Self::DESC),
+        checks: false,
+        has_ops: false,
+        scalar: true,
+    };
 }
 
 /// An id is one scalar already.
