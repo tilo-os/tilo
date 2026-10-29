@@ -1,7 +1,10 @@
 //! Host-owned tmpfs working image. No plaintext profile is staged on disk.
 //! This retains the encrypted owner's outstanding lease; it cannot checkpoint
 //! a running provider or mistake a child exit for writer quiescence.
-use super::{Arc, GrantedSignalAuthority, NativeSignalAccount, SendError};
+use super::{Account as NativeSignalAccount, SendError};
+use crate::service::consent::Consent;
+use crate::service::gate::Gate;
+use std::sync::Arc;
 use std::{
     ffi::{CString, OsStr},
     fs::{File, OpenOptions},
@@ -21,14 +24,14 @@ use tilo_messaging_protocol::signal_profile::{EncryptedSignalProfile, ProfileErr
 pub(super) const SERVICE_PACKAGE: &str = "so.tilo.signal-provider";
 const MAX_DEPTH: usize = 36;
 mod collection;
-pub(super) mod provision;
+pub(crate) mod provision;
 
 /// One exact original account's private working lease. Keep this owner alive
 /// until the service has stopped. Dropping it clears its RAM tree and leaves
 /// the durable active marker: no previous crypto state can silently resume.
-pub struct NativeSignalWorkingProfile {
+pub(crate) struct NativeSignalWorkingProfile {
     ram: RamDirectory,
-    gate: Arc<GrantedSignalAuthority>,
+    gate: Arc<Gate>,
     sealed: EncryptedSignalProfile,
     image: Option<ProfileImage>,
     lent: AtomicBool,
@@ -40,7 +43,7 @@ impl NativeSignalWorkingProfile {
     /// This neither starts a process nor changes account readiness.
     /// # Errors
     /// Refuses retired authority or a different service package/workspace.
-    pub fn configure_launch(
+    pub(crate) fn configure_launch(
         &self,
         options: &mut launcher::run::RunOptions,
     ) -> Result<(), SendError> {
@@ -68,27 +71,11 @@ impl NativeSignalWorkingProfile {
         options.no_services = true;
         Ok(())
     }
-    /// Seal a lease whose mount source was never handed to a launcher. There
-    /// cannot be a provider writer through this owner, so its unchanged image
-    /// can be sealed even after original authority retirement. A refused
-    /// cancellation retains this owner and its RAM tree; it cannot drop a
-    /// potentially running provider's profile as a side effect of the error.
-    /// # Errors
-    /// Refuses any previously lent working source or failed durable checkpoint.
-    pub fn cancel_before_launch(&mut self) -> Result<(), SendError> {
-        if self.lent.load(Ordering::Acquire) {
-            return Err(SendError::AlreadyReserved);
-        }
-        let image = self.image.take().ok_or(SendError::Unavailable)?;
-        self.sealed
-            .checkpoint(image)
-            .map_err(|_| SendError::Unavailable)
-    }
     pub(super) fn run_connected_and_checkpoint(
         mut self,
         mut launch: launcher::owned_service::ServiceLaunch,
         cancellation: launcher::owned_service::ServiceCancellation,
-        network: Option<Arc<super::network::Consent>>,
+        network: Option<Arc<Consent>>,
         connected: Option<launcher::owned_service::ConnectedService>,
     ) -> Result<(), SendError> {
         self.configure_launch(&mut launch.options)?;
@@ -121,10 +108,7 @@ impl NativeSignalWorkingProfile {
             .map_err(|_| SendError::Unavailable)
     }
 }
-struct ProfileServiceAuthority(
-    Arc<GrantedSignalAuthority>,
-    Option<Arc<super::network::Consent>>,
-);
+struct ProfileServiceAuthority(Arc<Gate>, Option<Arc<Consent>>);
 impl launcher::owned_service::ServiceAuthority for ProfileServiceAuthority {
     fn network_hosts(&self) -> io::Result<Vec<String>> {
         self.1
@@ -149,7 +133,7 @@ impl NativeSignalAccount {
     /// # Errors
     /// Refuses invalid RAM custody, original admission/grant, interrupted image
     /// or file creation failure. Failed materialization leaves use interrupted.
-    pub fn materialize_profile(
+    pub(crate) fn materialize_profile(
         &self,
         encrypted_root: &Path,
         runtime_root: &Path,

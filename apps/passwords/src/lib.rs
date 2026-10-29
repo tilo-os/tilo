@@ -185,7 +185,9 @@ impl PasswordsModel {
         }
         match &self.store {
             Some(Vault::Shared(owner)) => owner.proposals().unwrap_or_default(),
-            _ => Vec::new(),
+            // Messages' accounts ask through the messaging service.
+            Some(Vault::Local(_)) => tilo_messaging::service::proposals(),
+            None => Vec::new(),
         }
     }
     pub fn proposal_wake_after(&self) -> Option<std::time::Duration> {
@@ -201,19 +203,22 @@ impl PasswordsModel {
         id: &str,
         decision: accounts::AccessDecision,
     ) -> Result<(), String> {
-        let Some(Vault::Shared(owner)) = &self.store else {
-            return Err(CATALOG.t("passwords-request-expired"));
-        };
-        owner
-            .decide_proposal(id, decision)
-            .map(drop)
-            .map_err(|_| CATALOG.t("passwords-request-expired"))
+        match &self.store {
+            Some(Vault::Shared(owner)) => owner
+                .decide_proposal(id, decision)
+                .map(drop)
+                .map_err(|_| CATALOG.t("passwords-request-expired")),
+            Some(Vault::Local(_)) => tilo_messaging::service::decide(id, decision)
+                .map_err(|_| CATALOG.t("passwords-request-expired")),
+            None => Err(CATALOG.t("passwords-request-expired")),
+        }
     }
     /// The host's data-free invalidation counter, without blocking native I/O.
     pub fn revision(&self) -> Option<u64> {
         match &self.store {
             Some(Vault::Shared(owner)) => owner.revision(),
-            _ => None,
+            Some(Vault::Local(_)) => tilo_messaging::service::proposals_revision(),
+            None => None,
         }
     }
     /// Where the encryption key for this vault is currently held. A

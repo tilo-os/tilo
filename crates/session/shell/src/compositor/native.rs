@@ -10100,7 +10100,7 @@ pub fn run() {
         chrome.open_records_without_waiting(Arc::clone(&session_wake));
         if let Some(apps) = chrome.hosted_inputs.in_process() {
             apps.borrow_mut()
-                .bind_messaging_record_wake(Arc::clone(&session_wake));
+                .bind_session_wake(Arc::clone(&session_wake));
         }
     });
     let chooser_attended = Arc::new(AtomicBool::new(false));

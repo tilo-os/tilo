@@ -44,6 +44,8 @@ secrets = "via-host"
 tilo-fs = "optional@11"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
 shell-ui = "optional@18"
+# The permission requests the messaging service makes for Messages.
+messaging = "optional@1"
 
 [entrypoint]
 bin = "bin/passwords"
