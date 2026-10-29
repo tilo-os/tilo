@@ -55,9 +55,7 @@ impl PeerGovernanceMut<'_> {
         }
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         doc.put(ROOT, ROOM_LAYOUT_KEY, layout.id()).map_err(err)?;
         doc.commit();
         self.peer.apply_governance_doc(doc, &before, key, now)
@@ -76,9 +74,7 @@ impl PeerGovernanceMut<'_> {
         let authors = shared_record::read(&*doc, None)
             .map(|desktop| desktop.authors)
             .unwrap_or_default();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         let dropped = shared_record::device::withdraw(&mut doc, &|id| authors.contains_key(&id))
             .map_err(err)?;
         if !dropped {

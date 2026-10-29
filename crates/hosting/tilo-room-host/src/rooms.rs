@@ -797,7 +797,12 @@ fn valid_name(name: &str) -> Result<&str, String> {
 /// the record encrypted, and every later change of the room (letting the
 /// next person in among them) is refused as incomplete encryption state.
 /// A room committed before this selection takes it on its next commit.
+///
+/// The copy also writes under the host's own actor
+/// ([`tilo_peer_state::room_host_actor`]): a device hosting its own rooms
+/// never writes one room from two documents under one actor.
 fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
+    peer.write_as_room_host();
     peer.select_admission_v5()
         .map_err(|error| format!("room exceeds exact admission bounds: {error}"))
 }
