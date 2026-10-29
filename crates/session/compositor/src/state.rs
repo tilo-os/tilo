@@ -236,11 +236,22 @@ impl State {
         Some((window.clone(), surface, (origin + offset).to_f64()))
     }
 
+    /// The hosted surface the pointer at `point` belongs to: one above the
+    /// windows where it drew, else, where no window is, one beneath them.
     pub(crate) fn host_under(&self, point: Point<f64, Logical>) -> Option<usize> {
         // The last host draws on top, so it is asked first.
-        self.hosts
-            .iter()
-            .rposition(|host| host.accepts_pointer(point.x, point.y))
+        let under = |below: bool| {
+            self.hosts.iter().rposition(|host| {
+                host.below_windows() == below && host.accepts_pointer(point.x, point.y)
+            })
+        };
+        under(false).or_else(|| {
+            self.space
+                .element_under(point)
+                .is_none()
+                .then(|| under(true))
+                .flatten()
+        })
     }
 
     /// Route one input event to the hosted surface or client it belongs to.
@@ -541,6 +552,33 @@ impl State {
             // Re-mapping in stacking order keeps the order.
             self.space
                 .map_element(window.clone(), arrangement.location, activated);
+        }
+        self.apply_policy_focus_and_closes();
+    }
+
+    /// Give the keyboard to the window the policy brought forward, and ask
+    /// the clients of the windows it closed to close.
+    fn apply_policy_focus_and_closes(&mut self) {
+        let window_of = |state: &Self, id: u64| {
+            state
+                .space
+                .elements()
+                .find(|window| window.toplevel().is_some_and(|t| window_info(t).id == id))
+                .cloned()
+        };
+        for id in self.policy.take_close_requests() {
+            if let Some(toplevel) = window_of(self, id).as_ref().and_then(Window::toplevel) {
+                toplevel.send_close();
+            }
+        }
+        let Some(id) = self.policy.focused() else {
+            return;
+        };
+        if self.locked() || self.focused_window().is_some_and(|info| info.id == id) {
+            return;
+        }
+        if let Some(window) = window_of(self, id) {
+            self.focus_window(&window, SERIAL_COUNTER.next_serial());
         }
     }
 

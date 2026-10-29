@@ -199,7 +199,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// Host a surface app above the windows (and above earlier hosts).
+    /// Host a surface app above the windows (and above earlier hosts), or
+    /// under them when it says so ([`SurfaceHost::below_windows`]).
     pub fn add_host(&mut self, host: Box<dyn SurfaceHost>) {
         self.data.state.hosts.push(host);
     }
@@ -484,6 +485,9 @@ impl Compositor {
         for host in &mut self.data.state.hosts {
             host.prepare_frame();
         }
+        // A frame can move windows (a strip panning, a group resizing): the
+        // policy places them where the surfaces just laid them out.
+        self.data.state.rearrange();
         self.data.backend.render(&mut self.data.state)?;
         self.data.state.confirm_lock();
         self.display.flush_clients()?;

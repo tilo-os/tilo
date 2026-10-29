@@ -90,24 +90,32 @@ where
     let scale = Scale::from(output.current_scale().fractional_scale());
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
     elements.extend(state.input_popup_elements(renderer, output));
-    for host in state.hosts.iter().rev() {
-        for layer in host.layers().into_iter().rev() {
-            let location: Point<i32, Physical> =
-                (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
-            match MemoryRenderBufferRenderElement::from_buffer(
-                renderer,
-                location.to_f64(),
-                &layer.buffer,
-                None,
-                None,
-                Some(Size::from(layer.size)),
-                Kind::Unspecified,
-            ) {
-                Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
-                Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
+    let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
+        for host in state
+            .hosts
+            .iter()
+            .rev()
+            .filter(|host| host.below_windows() == below)
+        {
+            for layer in host.layers().into_iter().rev() {
+                let location: Point<i32, Physical> =
+                    (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
+                match MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    location.to_f64(),
+                    &layer.buffer,
+                    None,
+                    None,
+                    Some(Size::from(layer.size)),
+                    Kind::Unspecified,
+                ) {
+                    Ok(element) => elements.push(OutputRenderElement::Hosted(element)),
+                    Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
+                }
             }
         }
-    }
+    };
+    hosted(renderer, &mut elements, false);
     for window in state.space.elements_for_output(output).rev() {
         let Some(location) = state.space.element_location(window) else {
             continue;
@@ -120,5 +128,6 @@ where
             1.0,
         ));
     }
+    hosted(renderer, &mut elements, true);
     elements
 }

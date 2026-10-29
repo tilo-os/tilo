@@ -37,7 +37,7 @@ use wayland_protocols::ext::session_lock::v1::client::{
     ext_session_lock_v1::ExtSessionLockV1,
 };
 use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base,
+    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
 };
 
@@ -69,6 +69,7 @@ struct Seen {
     keyboard_focused: bool,
     keys: Vec<(u32, bool)>,
     frames_done: u32,
+    closed: bool,
 }
 
 /// One client with one toplevel of a solid colour.
@@ -577,6 +578,7 @@ struct Square {
     rect: (i32, i32, i32, i32),
     buffer: MemoryRenderBuffer,
     log: Rc<RefCell<HostLog>>,
+    below: bool,
 }
 
 impl Square {
@@ -591,7 +593,18 @@ impl Square {
             Transform::Normal,
             None,
         );
-        Self { rect, buffer, log }
+        Self {
+            rect,
+            buffer,
+            log,
+            below: false,
+        }
+    }
+
+    /// The same square, under every window.
+    fn below(mut self) -> Self {
+        self.below = true;
+        self
     }
 }
 
@@ -602,6 +615,10 @@ impl SurfaceHost for Square {
             size: (self.rect.2, self.rect.3),
             buffer: self.buffer.clone(),
         }]
+    }
+
+    fn below_windows(&self) -> bool {
+        self.below
     }
 
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
@@ -996,6 +1013,21 @@ impl Dispatch<XdgSurface, ()> for Seen {
     }
 }
 
+impl Dispatch<XdgToplevel, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &XdgToplevel,
+        event: xdg_toplevel::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, xdg_toplevel::Event::Close) {
+            seen.closed = true;
+        }
+    }
+}
+
 impl Dispatch<WlSeat, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -1124,6 +1156,130 @@ delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
+
+#[test]
+fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(
+        Square::new((0, 0, 640, 480), [0, 0, 255, 255], Rc::clone(&log)).below(),
+    ));
+    let mut client = mapped_client(&mut compositor, "over", (200, 100), [255, 0, 0, 255]);
+
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some([255, 0, 0, 255]),
+        "the window on top"
+    );
+    assert_eq!(
+        frame.pixel(10, 10),
+        Some([0, 0, 255, 255]),
+        "the desktop around it"
+    );
+
+    compositor
+        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.pointer_inside
+    });
+    assert!(
+        log.borrow().motions.is_empty(),
+        "over a window the window has it"
+    );
+
+    compositor
+        .input(InputEvent::PointerMotion { x: 10.0, y: 10.0 })
+        .unwrap();
+    compositor
+        .input(InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        !clients[0].seen.pointer_inside
+    });
+    assert_eq!(log.borrow().motions, vec![(10.0, 10.0)]);
+    assert_eq!(log.borrow().buttons, vec![(BTN_LEFT, true)]);
+    assert!(client.seen.buttons.is_empty());
+}
+
+/// A floating stack whose focus and closes a test sets, as a desktop's own
+/// controls would.
+#[derive(Default)]
+struct Steered {
+    focus: Rc<RefCell<Option<u64>>>,
+    closes: Rc<RefCell<Vec<u64>>>,
+}
+
+impl WindowPolicy for Steered {
+    fn initial_size(
+        &mut self,
+        window: &WindowInfo,
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        StackPolicy.initial_size(window, outputs)
+    }
+
+    fn place(
+        &mut self,
+        window: &WindowInfo,
+        size: (i32, i32),
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        StackPolicy.place(window, size, outputs)
+    }
+
+    fn focused(&mut self) -> Option<u64> {
+        *self.focus.borrow()
+    }
+
+    fn take_close_requests(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.closes.borrow_mut())
+    }
+}
+
+#[test]
+fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
+    let policy = Steered::default();
+    let (focus, closes) = (Rc::clone(&policy.focus), Rc::clone(&policy.closes));
+    let mut compositor = headless(Box::new(policy));
+    let mut first = mapped_client(&mut compositor, "first", (100, 100), [255, 0, 0, 255]);
+    let mut second = mapped_client(&mut compositor, "second", (100, 100), [0, 255, 0, 255]);
+    let id = |compositor: &Compositor, app: &str| {
+        compositor
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.app_id.as_deref() == Some(app))
+            .unwrap()
+            .0
+            .id
+    };
+    assert_eq!(
+        compositor.focused_window().and_then(|info| info.app_id),
+        Some("second".into())
+    );
+
+    *focus.borrow_mut() = Some(id(&compositor, "first"));
+    compositor.render().unwrap();
+    assert_eq!(
+        compositor.focused_window().and_then(|info| info.app_id),
+        Some("first".into())
+    );
+
+    closes.borrow_mut().push(id(&compositor, "second"));
+    compositor.render().unwrap();
+    pump(
+        &mut compositor,
+        &mut [&mut first, &mut second],
+        |_, clients| clients[1].seen.closed,
+    );
+    assert!(!first.seen.closed);
+}
+
 delegate_noop!(Seen: ignore XdgToplevel);
 
 #[test]
