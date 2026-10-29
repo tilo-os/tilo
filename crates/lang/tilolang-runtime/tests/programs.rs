@@ -256,7 +256,10 @@ mod cases {
 
         let w = world();
         let note = &w.notes[0];
-        let assign = format!("let n = @notes.Note:{}\nn.title = \"Mine\"", note.id_string());
+        let assign = format!(
+            "let n = @notes.Note:{}\nn.title = \"Mine\"",
+            note.id_string()
+        );
         // A runtime that runs its apps' code itself has nowhere to send it: the program never
         // writes the record.
         let reply = Session::new().run(&w.rt, &agent(), &assign);
