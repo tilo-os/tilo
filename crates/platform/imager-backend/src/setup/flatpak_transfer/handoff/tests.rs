@@ -343,37 +343,6 @@ fn source_scoped_adapter_routes_source_queries_and_target_execution_separately()
     );
 }
 
-#[test]
-fn applications_copy_consent_is_narrow_and_preserves_original_retained_plan() {
-    use crate::setup::migration_handoff::{HomePolicy, Plan};
-    let (_temp, cli, selected) = fixture();
-    let inventory =
-        HandoffInventory::capture(&cli, Path::new("/source-home"), vec![selected], |_| {
-            Ok(metadata_plan())
-        })
-        .unwrap();
-    let mut original = Plan::parse(&metadata_plan()).unwrap();
-    original.categories.home = true;
-    original.categories.accounts = true;
-    original.home_policy = HomePolicy::AccessReadWrite;
-    original.flatpak_inventory = Some(serde_json::from_slice(&inventory.bytes().unwrap()).unwrap());
-    let retained = original.clone();
-    let apps = original.applications_copy_plan().unwrap();
-    assert_eq!(original, retained);
-    assert_eq!(apps.home, original.home);
-    assert_eq!(apps.operation_id, original.operation_id);
-    assert_eq!(apps.flatpak_inventory, original.flatpak_inventory);
-    assert!(!apps.categories.home);
-    assert!(!apps.categories.accounts);
-    assert!(apps.categories.flatpak);
-    assert_eq!(apps.home_policy, HomePolicy::Copy);
-    original.categories.flatpak = false;
-    assert!(original.applications_copy_plan().is_err());
-    original.categories.flatpak = true;
-    original.flatpak_inventory = None;
-    assert!(original.applications_copy_plan().is_err());
-}
-
 struct SelectedUserCli(InventoryCli);
 impl Runner for SelectedUserCli {
     fn run(&self, home: &Path, args: &[String]) -> Result<String, String> {

@@ -1,6 +1,5 @@
 use super::super::{CallPhaseV1, CallV1, ChatCallBindingV1, DirectionsV1, FIELD};
 use super::*;
-use crate::resources::native::{NativeBatch, NativeDocument};
 use crate::room::read::LegacyRead;
 use automerge::{ActorId, AutoCommit, ROOT, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
@@ -49,38 +48,8 @@ fn room(bytes: Option<Vec<u8>>) -> AutoCommit {
     room.commit();
     room
 }
-fn limits() -> OuterLimits {
-    OuterLimits {
-        allocation_bytes: 2 * 1024 * 1024,
-        collection_entries: 4096,
-    }
-}
-fn admitted(room: &mut AutoCommit) -> NativeDocument {
-    NativeBatch::new(8 * 1024 * 1024)
-        .load(&room.save())
-        .unwrap()
-}
-fn parse_within(
-    native: &NativeDocument,
-    limits: OuterLimits,
-) -> Result<Option<BoundedPolicy>, Error> {
-    parse(&native.read(), &BoundedDecode { limits })
-}
-fn bounded(room: &mut AutoCommit) -> Result<Option<RoomMediaV1>, Error> {
-    let held = parse_within(&admitted(room), limits())?;
-    Ok(held.map(|held| held.policy().clone()))
-}
-
-#[test]
-fn media_reader_retains_decoded_policy_after_source_drop() {
-    let expected = policy();
-    let mut room = room(Some(super::super::encode(&expected).unwrap()));
-    let native = admitted(&mut room);
-    let held = parse_within(&native, limits()).unwrap().unwrap();
-    assert_eq!(held.policy(), &expected);
-    drop(native);
-    drop(room);
-    assert_eq!(held.policy(), &expected);
+fn parsed(room: &AutoCommit) -> Result<Option<RoomMediaV1>, Error> {
+    parse(&LegacyRead(room), &LegacyPolicy)
 }
 
 #[test]
@@ -111,7 +80,7 @@ fn media_reader_matches_legacy_absence_malformed_binding_and_canonical_rejection
         }
         doc.commit();
         let legacy = historical_parse(&doc);
-        let native = bounded(&mut doc);
+        let native = parsed(&doc);
         match legacy {
             Ok(value) => assert_eq!(native.unwrap(), value),
             Err(error) => assert_eq!(native.err(), Some(Error::Policy(error))),
@@ -147,7 +116,7 @@ fn media_reader_conflict_precedes_decoding_and_equal_conflicts_remain_valid() {
                 Some(&MediaPolicyError::Conflict)
             }
         );
-        let native = bounded(&mut base);
+        let native = parsed(&base);
         if equal {
             assert_eq!(native.unwrap(), legacy.unwrap());
         } else {
@@ -191,19 +160,7 @@ fn media_reader_validation_refuses_noncanonical_counters_and_duplicate_objects()
 }
 
 #[test]
-fn media_reader_limit_refusal_does_not_replace_disabled_rooms_with_invalid_policy() {
-    let mut doc = room(Some(super::super::encode(&policy()).unwrap()));
-    let result = parse_within(
-        &admitted(&mut doc),
-        OuterLimits {
-            allocation_bytes: 16,
-            ..limits()
-        },
-    );
-    assert!(matches!(
-        result,
-        Err(Error::Decode(PeerResourceError::Capacity))
-    ));
+fn media_reader_reads_a_room_without_policy_as_disabled() {
     let absent = room(None);
     assert!(
         parse(&LegacyRead(&absent), &LegacyPolicy)
@@ -233,32 +190,21 @@ fn media_reader_checks_maximum_maps_and_noncanonical_varints_against_original_pa
         value.calls.insert([id; 32], call);
     }
     let bytes = historical_encode(&value).unwrap();
-    let mut doc = room(Some(bytes));
-    let parsed = parse_within(
-        &admitted(&mut doc),
-        OuterLimits {
-            allocation_bytes: 8 * 1024 * 1024,
-            ..limits()
-        },
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(parsed.policy(), &value);
-    assert_eq!(
-        historical_parse(&doc).unwrap().as_ref(),
-        Some(parsed.policy())
-    );
+    let doc = room(Some(bytes));
+    let read = parsed(&doc).unwrap().unwrap();
+    assert_eq!(read, value);
+    assert_eq!(historical_parse(&doc).unwrap(), Some(read));
     let mut single = historical_encode(&policy()).unwrap();
     // Revision1 at offset17: valid Postcard non-minimal varint, invalid canonical bytes.
     assert_eq!(single[17], 1);
     single.splice(17..18, [0x81, 0]);
-    let mut noncanonical = room(Some(single));
+    let noncanonical = room(Some(single));
     assert_eq!(
         historical_parse(&noncanonical),
         Err(MediaPolicyError::Malformed)
     );
     assert_eq!(
-        bounded(&mut noncanonical).err(),
+        parsed(&noncanonical).err(),
         Some(Error::Policy(MediaPolicyError::Malformed))
     );
 }
@@ -306,9 +252,9 @@ fn media_reader_preserves_validation_error_order_for_binding_counter_and_capacit
                 );
             }
         }
-        let mut doc = room(Some(postcard::to_allocvec(&value).unwrap()));
+        let doc = room(Some(postcard::to_allocvec(&value).unwrap()));
         let original = historical_parse(&doc).unwrap_err();
-        assert_eq!(bounded(&mut doc).err(), Some(Error::Policy(original)));
+        assert_eq!(parsed(&doc).err(), Some(Error::Policy(original)));
         assert_eq!(super::super::validate(&value), historical_validate(&value));
     }
 }

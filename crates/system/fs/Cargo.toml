@@ -204,7 +204,7 @@ tilo-nm = { version = "0.1.0", path = "../tilo-nm", optional = true }
 runtime-fs = { version = "0.1.0", path = "../../runtime/runtime-fs", optional = true }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", optional = true }
 libc = { workspace = true, optional = true }
-rustix = { workspace = true, features = ["fs", "process"], optional = true }
+rustix = { workspace = true, features = ["fs", "mount", "process"], optional = true }
 moka.workspace = true
 serde.workspace = true
 serde_bytes = { workspace = true, optional = true }

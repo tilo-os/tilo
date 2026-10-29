@@ -17,7 +17,6 @@ aarch64 = 65536
 aarch64 = 65536
 
 [apps."so.tilo.settings"]
-x86_64 = 204800
 aarch64 = 90112
 
 [apps."so.tilo.sheets"]

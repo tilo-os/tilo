@@ -2,13 +2,9 @@
 //! log is published, retries revalidate this manifest rather than its private
 //! file assumptions. Every path is relative and opened one no-follow edge at a
 //! time. Literal links are never traversed, including during recovery.
-mod adoption;
 use super::super::super::migration_store::NativePath;
 use super::*;
 use crate::migration_journal_log;
-pub(super) use adoption::{
-    verify as verify_adoption, verify_applications as verify_adoption_applications,
-};
 use cap_primitives::fs::MetadataExt as UnixMetadataExt;
 use std::{
     collections::BTreeMap,
@@ -146,31 +142,8 @@ pub(super) fn resume(
     finalize(review, source, &destination, &mut log, cancel)
 }
 
-/// Revalidate the original completed home after authorized Flatpak additions.
-/// Only Flatpak's repository configuration and runtime change marker may differ;
-/// existing app deployments, objects and every other user file remain verified.
-pub(super) fn verify_applications(review: &HomeReview) -> io::Result<CopyReport> {
-    verify_application_tree(review, Some(Path::new(".local/share/flatpak")))
-}
-
-pub(super) fn verify_flatpak_installation(review: &HomeReview) -> io::Result<CopyReport> {
-    verify_application_tree(review, Some(Path::new("")))
-}
-
-pub(super) fn verify_flatpak_adoption(
-    review: &HomeReview,
-    witness: &super::super::promotion::AdoptionWitness,
-) -> io::Result<CopyReport> {
-    adoption::verify_flatpak(review, witness)
-}
+/// Revalidate a completed copy against its original and its fidelity receipts.
 pub(super) fn verify_completed_tree(review: &HomeReview) -> io::Result<CopyReport> {
-    verify_application_tree(review, None)
-}
-
-fn verify_application_tree(
-    review: &HomeReview,
-    installation: Option<&Path>,
-) -> io::Result<CopyReport> {
     let source = review.validate()?;
     let destination = PinnedDirectory::open_absolute(&review.destination)?;
     destination.validate_destination()?;
@@ -199,139 +172,44 @@ fn verify_application_tree(
             ));
         }
         if !matches!(entry.kind, Kind::RuntimeSocket) {
-            expected.insert(path.clone());
+            expected.insert(path);
         }
-        if matches!(entry.kind, Kind::Directory { .. })
-            && installation.is_some_and(|root| application_directory(&path, root))
-        {
-            verify_application_directory(entry, &source, &destination, &mut report)?;
-        } else if installation
-            .is_some_and(|root| path == root.join("repo/config") || path == root.join(".changed"))
-        {
-            // Configuration is independently compared against original remote
-            // trust by the application controller, never accepted by this hook.
-            let source_parent = parent(
-                &source,
-                path.parent()
-                    .ok_or_else(|| changed("Missing application parent"))?,
-            )?;
-            validate_source(
-                entry,
-                &metadata_nofollow(
-                    &source_parent.file,
-                    Path::new(
-                        path.file_name()
-                            .ok_or_else(|| changed("Missing application name"))?,
-                    ),
-                )?,
-            )?;
-            if installation.is_some_and(|root| path == root.join(".changed")) {
-                if !matches!(entry.kind, Kind::File { .. }) || entry.source.size() != 0 {
-                    return Err(changed(
-                        "A nonempty original change marker is user data, not mutable runtime state",
-                    ));
-                }
-                let target_parent = parent(
-                    &destination,
-                    path.parent()
-                        .ok_or_else(|| changed("Missing change marker parent"))?,
-                )?;
-                let marker = regular(
-                    &target_parent,
-                    path.file_name()
-                        .ok_or_else(|| changed("Missing change marker name"))?,
-                )?;
-                if marker.metadata()?.len() != 0 {
-                    return Err(changed("Application change marker has unexpected data"));
-                }
-            }
-        } else {
-            finish_entry(
-                index,
-                &source,
-                &destination,
-                &log,
-                &cancel,
-                &mut report,
-                true,
-            )?;
-        }
+        finish_entry(
+            index,
+            &source,
+            &destination,
+            &log,
+            &cancel,
+            &mut report,
+            true,
+        )?;
     }
-    verify_no_unreviewed_additions(&destination, Path::new(""), &expected, installation, 0)?;
+    verify_no_unreviewed_additions(&destination, Path::new(""), &expected, 0)?;
     review.validate()?;
     Ok(report)
-}
-fn application_directory(path: &Path, installation: &Path) -> bool {
-    path.starts_with(installation) || installation.starts_with(path)
-}
-fn verify_application_directory(
-    entry: &Entry,
-    source: &Arc<PinnedDirectory>,
-    destination: &Arc<PinnedDirectory>,
-    report: &mut CopyReport,
-) -> io::Result<()> {
-    let path = decode(&entry.path)?;
-    let original = parent(source, &path)?;
-    let target = parent(destination, &path)?;
-    validate_source(entry, &Metadata::from_file(&original.file)?)?;
-    let Kind::Directory {
-        destination: expected,
-    } = &entry.kind
-    else {
-        return Err(changed("Invalid application directory receipt"));
-    };
-    let actual = Metadata::from_file(&target.file)?;
-    let mode = if path.as_os_str().is_empty() {
-        0o700
-    } else {
-        entry.mode & 0o777
-    };
-    if directory_identity(&target)? != *expected || actual.mode() & 0o777 != mode {
-        return Err(changed(
-            "An original application directory was replaced or its permissions changed",
-        ));
-    }
-    copy_xattrs(
-        &durability::readable_directory(&original.file)?,
-        &durability::readable_directory(&target.file)?,
-        &path,
-        report,
-        true,
-    )
 }
 fn verify_no_unreviewed_additions(
     root: &Arc<PinnedDirectory>,
     relative: &Path,
     expected: &std::collections::BTreeSet<PathBuf>,
-    installation: Option<&Path>,
     depth: usize,
 ) -> io::Result<()> {
     if depth > 128 {
-        return Err(changed("Application recovery exceeds depth bound"));
+        return Err(changed("Completed copy verification exceeds depth bound"));
     }
     let directory = cap_std::fs::Dir::from_std_file(durability::readable_directory(&root.file)?);
     for child in directory.entries()? {
         let name = child?.file_name();
         let path = relative.join(&name);
-        if installation.is_some_and(|root| path.starts_with(root)) {
-            continue;
-        }
         let metadata = metadata_nofollow(&root.file, Path::new(&name))?;
-        if !expected.contains(&path)
-            && !(metadata.is_dir()
-                && !metadata.is_symlink()
-                && installation.is_some_and(|root| application_directory(&path, root)))
-        {
-            return Err(changed(
-                "Unreviewed files were added outside the Flatpak installation",
-            ));
+        if !expected.contains(&path) {
+            return Err(changed("Unreviewed files were added to the completed copy"));
         }
         if metadata.is_dir() && !metadata.is_symlink() {
             verify_no_unreviewed_additions(
                 &root.open_child(&name, &metadata)?,
                 &path,
                 expected,
-                installation,
                 depth + 1,
             )?;
         }

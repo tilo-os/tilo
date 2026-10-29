@@ -16,8 +16,26 @@ const MAX_PROVIDER_MERGE_RESULTS: usize = 256;
 /// overlay renders one section per group, headed by `kind`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchGroup {
+    /// The group's header; empty for rows that run on under no header.
     pub kind: String,
     pub results: Vec<SearchResult>,
+    /// The section the group is in: a header of its own above the group
+    /// where it begins, the group's own header then a caption under it.
+    pub section: Option<String>,
+    /// How many results the group holds before any cap, the count its
+    /// header shows. `None`: the results listed.
+    pub total: Option<usize>,
+}
+
+impl SearchGroup {
+    pub fn new(kind: impl Into<String>, results: Vec<SearchResult>) -> Self {
+        Self {
+            kind: kind.into(),
+            results,
+            section: None,
+            total: None,
+        }
+    }
 }
 
 /// A [`SearchProvider`] built from a closure plus its kind label — the
@@ -149,10 +167,7 @@ impl SearchRegistry {
             if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
                 g.results.push(r);
             } else {
-                groups.push(SearchGroup {
-                    kind: r.kind.clone(),
-                    results: vec![r],
-                });
+                groups.push(SearchGroup::new(r.kind.clone(), vec![r]));
             }
         }
         groups
@@ -178,10 +193,7 @@ impl SearchRegistry {
             if let Some(group) = groups.iter_mut().find(|group| group.kind == result.kind) {
                 group.results.push(result);
             } else {
-                groups.push(SearchGroup {
-                    kind: result.kind.clone(),
-                    results: vec![result],
-                });
+                groups.push(SearchGroup::new(result.kind.clone(), vec![result]));
             }
         }
         if per_group_cap > 0 {

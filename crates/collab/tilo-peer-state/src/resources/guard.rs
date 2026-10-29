@@ -13,7 +13,7 @@ pub(crate) fn postcard<'de, T: de::Deserialize<'de>>(
     bytes: &'de [u8],
     limits: OuterLimits,
 ) -> Result<T, PeerResourceError> {
-    let mut budget = Budget::new(limits, Format::Postcard);
+    let mut budget = Budget::new(limits);
     let mut decoder = postcard::Deserializer::from_bytes(bytes);
     let value = T::deserialize(Guard {
         inner: &mut decoder,
@@ -24,26 +24,6 @@ pub(crate) fn postcard<'de, T: de::Deserialize<'de>>(
             Ok([]) => Ok(value),
             _ => Err(PeerResourceError::Malformed),
         },
-        Err(_) => Err(budget.refused()),
-    }
-}
-
-/// Decode one JSON document as `T`, refusing trailing input.
-pub(crate) fn json<T: de::DeserializeOwned>(
-    bytes: &[u8],
-    limits: OuterLimits,
-) -> Result<T, PeerResourceError> {
-    let mut budget = Budget::new(limits, Format::Json);
-    let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = T::deserialize(Guard {
-        inner: &mut decoder,
-        budget: &mut budget,
-    });
-    match value {
-        Ok(value) => decoder
-            .end()
-            .map(|()| value)
-            .map_err(|_| PeerResourceError::Malformed),
         Err(_) => Err(budget.refused()),
     }
 }
@@ -67,32 +47,20 @@ fn boundary<E: de::Error>(_: Refused) -> E {
     E::custom("guarded decode")
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Format {
-    /// Collections announce their length up front and may hold owned
-    /// `BTreeMap`s.
-    Postcard,
-    /// Collections end at a delimiter; closed schemas hold only structs and
-    /// externally tagged enums, never owned maps.
-    Json,
-}
-
 const MAX_DEPTH: usize = 64;
 
 struct Budget {
     remaining: usize,
     entries: usize,
     depth: usize,
-    format: Format,
     capacity: bool,
 }
 impl Budget {
-    fn new(limits: OuterLimits, format: Format) -> Self {
+    fn new(limits: OuterLimits) -> Self {
         Self {
             remaining: limits.allocation_bytes,
             entries: limits.collection_entries,
             depth: 0,
-            format,
             capacity: false,
         }
     }
@@ -133,15 +101,12 @@ impl Budget {
         // bytes remain than announced elements. Known peer schema collections
         // have nonzero wire elements; an unavailable count is never admitted
         // as permission to begin allocation.
-        if self.format == Format::Postcard && hint.is_none_or(|n| n > self.entries) {
+        if hint.is_none_or(|n| n > self.entries) {
             return Err(self.refuse());
         }
         Ok(())
     }
     fn map_slot<T>(&mut self) -> Result<(), Refused> {
-        if self.format == Format::Json {
-            return Ok(());
-        }
         // The admitted schemas use fresh BTreeMaps. Rust 1.97.1 alloc btree
         // node.rs has 11 K/V slots, 12 child pointers and a small fixed header.
         // At alignment <=16, 11*(K+V)+256 bounds an internal node. Fewer than

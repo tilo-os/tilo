@@ -70,9 +70,6 @@ impl Widget for Draft {
 }
 
 impl crate::widget::app_widget::AppWidget for Draft {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> crate::widget::AppKind {
         crate::widget::AppKind::Files
     }

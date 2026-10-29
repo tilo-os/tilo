@@ -302,3 +302,27 @@ params = [
   { name = "op", required = true, schema = { type = "string" } },
 ]
 
+[[resources]]
+kind = "canvas.recent-artworks"
+label = "Recent artworks"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, RecentArtworks>" },
+]
+
+[[resources.verbs]]
+id = "remember"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "recent", required = true, schema = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, at_ms = { type = "integer", minimum = 0 }, height = { type = "number" }, thumbnail = { type = ["string", "null"] }, title = { type = "string" }, width = { type = "number" } }, required = ["path", "title", "width", "height", "at_ms"] } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "path", required = true, schema = { type = "string" } },
+]
+

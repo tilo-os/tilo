@@ -33,15 +33,21 @@ pub trait SupervisedSession {
     fn unmount(self) -> io::Result<()>;
 }
 
-impl SupervisedSession for fuser::BackgroundSession {
+/// A FUSE session and where it is mounted, which its unmount needs.
+pub struct MountedSession {
+    pub session: fuser::BackgroundSession,
+    pub mount_point: std::path::PathBuf,
+}
+
+impl SupervisedSession for MountedSession {
     fn take_thread(&mut self) -> JoinHandle<io::Result<()>> {
         // `BackgroundSession` keeps its mount private and joins `guard` in
         // `umount_and_join`: a finished stand-in takes the thread's place.
-        std::mem::replace(&mut self.guard, std::thread::spawn(|| Ok(())))
+        std::mem::replace(&mut self.session.guard, std::thread::spawn(|| Ok(())))
     }
 
     fn unmount(self) -> io::Result<()> {
-        fs::fuse_session::unmount_and_join(self)
+        fs::fuse_session::unmount_and_join(self.session, &self.mount_point)
     }
 }
 

@@ -1,4 +1,4 @@
-//! Drawing + event handling for [`MusicApp`].
+//! Drawing + event handling for [`Music`].
 //!
 //! Split out of `app.rs` to keep the data/state logic separate from the
 //! (large) rendering surface. Music paints its content column itself, but
@@ -14,7 +14,7 @@ mod now_playing;
 mod query_view;
 use super::{
     Action, Affine, AlbumPage, Arc, ArtistPage, AutoCommit, CacheState, Color, Fill, HashMap,
-    HomeItem, HomeItemKind, HomeSection, Instant, MusicApp, NodeId, ObjId, PlaylistPage, Point,
+    HomeItem, HomeItemKind, HomeSection, Instant, Music, NodeId, ObjId, PlaylistPage, Point,
     PresenceCtx, Rect, Scene, Size, Style, TaffyTree, TextRenderer, TextStyle, Theme, View, Widget,
     elide, is_live_album_id, is_live_id, is_live_playlist_id, live_track_id, lyrics,
 };
@@ -434,7 +434,7 @@ fn card_kind(action: &Action) -> Option<ui::icons::Icon> {
     }
 }
 
-impl Continuable for MusicApp {
+impl Continuable for Music {
     fn continuation_metadata(
         &self,
         _doc: &AutoCommit,
@@ -506,7 +506,119 @@ impl Continuable for MusicApp {
     }
 }
 
-impl Widget for MusicApp {
+impl super::Page {
+    /// The embedded widgets the page shows, with the source buttons
+    /// `mode` ([`Music::source_widget_mode`]) puts on it.
+    pub(super) fn children(&self, mode: u8) -> Vec<&dyn Widget> {
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        children.extend(
+            self.track_tables
+                .iter()
+                .filter_map(|slot| slot.table.host.visible().map(|table| table as &dyn Widget)),
+        );
+        children.extend(
+            self.media_grids
+                .iter()
+                .filter_map(|grid| grid.host.visible().map(|grid| grid as &dyn Widget)),
+        );
+        children.extend(self.parts.iter().filter_map(PagePart::child));
+        children.extend(
+            self.source_buttons
+                .iter()
+                .filter(|button| shows_source_button(button, mode))
+                .map(|button| button as &dyn Widget),
+        );
+        children
+    }
+
+    pub(super) fn children_mut(&mut self, mode: u8) -> Vec<&mut (dyn Widget + '_)> {
+        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        children.extend(self.track_tables.iter_mut().filter_map(|slot| {
+            slot.table
+                .host
+                .visible_mut()
+                .map(|table| table as &mut (dyn Widget + '_))
+        }));
+        children.extend(self.media_grids.iter_mut().filter_map(|grid| {
+            grid.host
+                .visible_mut()
+                .map(|grid| grid as &mut (dyn Widget + '_))
+        }));
+        children.extend(self.parts.iter_mut().filter_map(PagePart::child_mut));
+        children.extend(
+            self.source_buttons
+                .iter_mut()
+                .filter(|button| shows_source_button(button, mode))
+                .map(|button| button as &mut (dyn Widget + '_)),
+        );
+        children
+    }
+
+    /// How many of [`Self::children`] the page lays out where it paints
+    /// them: the track lists, card grids and page parts, which come first.
+    pub(super) fn painted(&self) -> usize {
+        self.track_tables
+            .iter()
+            .filter(|slot| slot.table.host.visible().is_some())
+            .count()
+            + self
+                .media_grids
+                .iter()
+                .filter(|grid| grid.host.visible().is_some())
+                .count()
+            + self
+                .parts
+                .iter()
+                .filter(|part| part.child().is_some())
+                .count()
+    }
+
+    /// Whether a track table's rows are still moving into place.
+    pub(super) fn rows_moving(&self) -> bool {
+        self.track_tables
+            .iter()
+            .any(|slot| slot.table.rows_moving())
+    }
+}
+
+/// Whether the source button `button` stands on the page in `mode`
+/// ([`Music::source_widget_mode`]).
+fn shows_source_button(button: &ui::widget::Button, mode: u8) -> bool {
+    match mode {
+        2 | 3 => {
+            button.test_id()
+                == Some(if mode == 3 {
+                    "music-spotify-create-playlist"
+                } else {
+                    "music-sources"
+                })
+        }
+        1 => button.test_id() == Some("music-spotify-queue-refresh"),
+        _ => false,
+    }
+}
+
+impl Music {
+    /// Lay out the source buttons the page shows, as the window's
+    /// children; the rest the page lays out where it paints them.
+    pub(super) fn layout_page(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> Vec<NodeId> {
+        self.refresh_spotify_control_flags();
+        let mode = self.source_widget_mode();
+        self.page
+            .source_buttons
+            .iter_mut()
+            .filter(|button| shows_source_button(button, mode))
+            .map(|button| button.build_layout(taffy, theme, node_map))
+            .collect()
+    }
+}
+
+impl Widget for Music {
     ui::provides!(
         dyn ui::widget::Continuable,
         dyn ui::widget::controls::ActionControls,
@@ -533,103 +645,18 @@ impl Widget for MusicApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::new();
-        children.extend(
-            self.track_tables
-                .iter()
-                .filter_map(|slot| slot.table.host.visible().map(|table| table as &dyn Widget)),
-        );
-        children.extend(
-            self.media_grids
-                .iter()
-                .filter_map(|grid| grid.host.visible().map(|grid| grid as &dyn Widget)),
-        );
-        children.extend(self.page_parts.iter().filter_map(PagePart::child));
-        let mode = self.source_widget_mode();
-        match mode {
-            2 | 3 => children.extend(
-                self.source_buttons
-                    .iter()
-                    .filter(|button| {
-                        button.test_id()
-                            == Some(if mode == 3 {
-                                "music-spotify-create-playlist"
-                            } else {
-                                "music-sources"
-                            })
-                    })
-                    .map(|button| button as &dyn Widget),
-            ),
-            1 => children.extend(
-                self.source_buttons
-                    .iter()
-                    .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
-                    .map(|button| button as &dyn Widget),
-            ),
-            _ => {}
-        }
-        children
+        self.page.children(self.source_widget_mode())
     }
 
     /// The track lists, card grids and page parts are laid out by the page
     /// where it paints them; the source buttons by the window.
     fn lays_out_child(&self, child_index: usize) -> bool {
-        let painted = self
-            .track_tables
-            .iter()
-            .filter(|slot| slot.table.host.visible().is_some())
-            .count()
-            + self
-                .media_grids
-                .iter()
-                .filter(|grid| grid.host.visible().is_some())
-                .count()
-            + self
-                .page_parts
-                .iter()
-                .filter(|part| part.child().is_some())
-                .count();
-        child_index < painted
+        child_index < self.page.painted()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mode = self.source_widget_mode();
-        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        children.extend(self.track_tables.iter_mut().filter_map(|slot| {
-            slot.table
-                .host
-                .visible_mut()
-                .map(|table| table as &mut (dyn Widget + '_))
-        }));
-        children.extend(self.media_grids.iter_mut().filter_map(|grid| {
-            grid.host
-                .visible_mut()
-                .map(|grid| grid as &mut (dyn Widget + '_))
-        }));
-        children.extend(self.page_parts.iter_mut().filter_map(PagePart::child_mut));
-        match mode {
-            2 | 3 => children.extend(
-                self.source_buttons
-                    .iter_mut()
-                    .filter(|button| {
-                        button.test_id()
-                            == Some(if mode == 3 {
-                                "music-spotify-create-playlist"
-                            } else {
-                                "music-sources"
-                            })
-                    })
-                    .map(|button| button as &mut (dyn Widget + '_)),
-            ),
-            1 => children.extend(
-                self.source_buttons
-                    .iter_mut()
-                    .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
-                    .map(|button| button as &mut (dyn Widget + '_)),
-            ),
-            _ => {}
-        }
-        children
+        self.page.children_mut(mode)
     }
 
     /// The context menu and the name prompt paint in the window's top
@@ -697,11 +724,13 @@ impl Widget for MusicApp {
         // What the page's own controls asked for through the host (an
         // agent's press, a control's published effect) is carried out here.
         let asked = self
-            .page_parts
+            .page
+            .parts
             .iter()
             .flat_map(PagePart::take_asked)
             .chain(
-                self.media_grids
+                self.page
+                    .media_grids
                     .iter()
                     .flat_map(super::media_grid::MediaGridHost::take_asked),
             )
@@ -733,31 +762,7 @@ impl Widget for MusicApp {
         // framework-wide contract this one widget can't change — so a
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
-        self.refresh_spotify_control_flags();
-        let mut children = Vec::new();
-        let mode = self.source_widget_mode();
-        match mode {
-            2 | 3 => children.extend(
-                self.source_buttons
-                    .iter_mut()
-                    .filter(|button| {
-                        button.test_id()
-                            == Some(if mode == 3 {
-                                "music-spotify-create-playlist"
-                            } else {
-                                "music-sources"
-                            })
-                    })
-                    .map(|button| button.build_layout(taffy, theme, node_map)),
-            ),
-            1 => children.extend(
-                self.source_buttons
-                    .iter_mut()
-                    .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
-                    .map(|button| button.build_layout(taffy, theme, node_map)),
-            ),
-            _ => {}
-        }
+        let children = self.layout_page(taffy, theme, node_map);
         let style = Style {
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
@@ -776,6 +781,12 @@ impl Widget for MusicApp {
         _presence: &PresenceCtx,
     ) {
         self.render_frame(scene, transform, text_renderer, theme);
+        self.sources_anchor = self
+            .page
+            .source_buttons
+            .iter()
+            .find(|button| button.test_id() == Some("music-sources"))
+            .map(Widget::get_rect);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1368,7 +1379,7 @@ impl Widget for MusicApp {
             || self.search.needs_frame()
             || self.search.highlight.is_some()
             || self.now_playing.in_flight(ui::time::now())
-            || self.track_tables.iter().any(|slot| slot.table.rows_moving())
+            || self.page.rows_moving()
             || self.source_invocation.is_some()
             || !self.spotify_jobs.is_empty()
             || self.pending_catalogue_query.is_some()
@@ -1448,7 +1459,7 @@ impl Widget for MusicApp {
     }
 }
 
-impl MusicApp {
+impl Music {
     fn route_source_widgets(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let Ok(nodes) = ctx.taffy.children(ctx.node_id) else {
             return;
@@ -1461,6 +1472,7 @@ impl MusicApp {
         let nodes = nodes.iter().skip(nodes.len().saturating_sub(count));
         if matches!(mode, 2 | 3) {
             for (button, node) in self
+                .page
                 .source_buttons
                 .iter_mut()
                 .filter(|button| {
@@ -1479,6 +1491,7 @@ impl MusicApp {
             }
         } else if let Some(node) = nodes.last()
             && let Some(button) = self
+                .page
                 .source_buttons
                 .iter_mut()
                 .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
@@ -1883,7 +1896,7 @@ impl MusicApp {
     }
 }
 
-impl MusicApp {
+impl Music {
     /// Pointer and key input the header, the sidebar and the scroll region
     /// left for the page.
     fn on_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2322,9 +2335,9 @@ impl MusicApp {
         let end_y = self.draw_body(ctx, &look, body, start_y);
         ctx.scene.pop_layer();
         self.body_hits = self.hits.len();
-        self.track_tables.truncate(self.track_tables_drawn);
-        self.media_grids.truncate(self.media_grids_drawn);
-        self.page_parts.truncate(self.page_parts_drawn);
+        self.page.track_tables.truncate(self.track_tables_drawn);
+        self.page.media_grids.truncate(self.media_grids_drawn);
+        self.page.parts.truncate(self.page_parts_drawn);
         self.content_height = (end_y + scrolled) - body.y0 + look.gutter;
         self.body_scroll
             .set_content_size(body.width(), self.content_height);
@@ -2361,7 +2374,7 @@ impl MusicApp {
         let Some(track) = self.staged_menu_track.take() else {
             return;
         };
-        let row = self.track_tables.iter().find_map(|slot| {
+        let row = self.page.track_tables.iter().find_map(|slot| {
             let index = slot.table.rows().iter().position(|row| row.id == track)?;
             slot.table.row_rect(index)
         });
@@ -2568,12 +2581,12 @@ impl MusicApp {
         let mode = self.source_widget_mode();
         if !super::ONLINE_CATALOGUE {
             // No online catalogue: there is no source to choose or connect.
-            for button in &mut self.source_buttons {
+            for button in &mut self.page.source_buttons {
                 button.apply_layout_external(Rect::ZERO);
             }
             return y;
         }
-        for button in self.source_buttons.iter_mut().filter(|button| {
+        for button in self.page.source_buttons.iter_mut().filter(|button| {
             button.test_id()
                 == Some(if mode == 3 {
                     "music-spotify-create-playlist"
@@ -2629,6 +2642,7 @@ impl MusicApp {
             return y;
         }
         if let Some(button) = self
+            .page
             .source_buttons
             .iter_mut()
             .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
@@ -2900,11 +2914,12 @@ impl MusicApp {
             y += h + look.sibling;
             let index = self.media_grids_drawn;
             self.media_grids_drawn += 1;
-            if self.media_grids.len() <= index {
-                self.media_grids
+            if self.page.media_grids.len() <= index {
+                self.page
+                    .media_grids
                     .push(super::media_grid::MediaGridHost::new());
             }
-            if let Some(grid) = self.media_grids.get_mut(index) {
+            if let Some(grid) = self.page.media_grids.get_mut(index) {
                 grid.update_arriving(columns, quiet.source(), since);
                 y = grid.place(ctx, (left, right), y, clip);
             }
@@ -2974,13 +2989,14 @@ impl MusicApp {
             .collect();
         let index = self.media_grids_drawn;
         self.media_grids_drawn += 1;
-        if self.media_grids.len() <= index {
-            self.media_grids
+        if self.page.media_grids.len() <= index {
+            self.page
+                .media_grids
                 .push(super::media_grid::MediaGridHost::new());
         }
         let clip = self.body_rect;
         let actions = self.actions.clone();
-        let Some(grid) = self.media_grids.get_mut(index) else {
+        let Some(grid) = self.page.media_grids.get_mut(index) else {
             return y;
         };
         grid.update(specs, actions.as_ref());
@@ -3142,8 +3158,8 @@ impl MusicApp {
 
         let slot_index = self.track_tables_drawn;
         self.track_tables_drawn += 1;
-        if self.track_tables.len() <= slot_index {
-            self.track_tables.push(super::TrackTableSlot {
+        if self.page.track_tables.len() <= slot_index {
+            self.page.track_tables.push(super::TrackTableSlot {
                 table: TrackTableHost::new(shape, theme),
                 queue: Arc::default(),
                 playlist: None,
@@ -3151,7 +3167,7 @@ impl MusicApp {
             });
         }
         let clip = self.body_rect;
-        let Some(slot) = self.track_tables.get_mut(slot_index) else {
+        let Some(slot) = self.page.track_tables.get_mut(slot_index) else {
             return y;
         };
         if slot.queue.as_slice() != table.queue {
@@ -3334,7 +3350,7 @@ impl MusicApp {
                 .is_some_and(|chrome| chrome.iter().any(|hit| hit.rect.contains(mouse)));
         let mut asked = Vec::new();
         let mut tooltip = None;
-        for (index, slot) in self.track_tables.iter_mut().enumerate() {
+        for (index, slot) in self.page.track_tables.iter_mut().enumerate() {
             if covered {
                 // The pointer is not over the page: no row stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
@@ -3356,7 +3372,7 @@ impl MusicApp {
             self.dirty = true;
         }
         let mut cards = Vec::new();
-        for grid in &mut self.media_grids {
+        for grid in &mut self.page.media_grids {
             if covered {
                 // The pointer is not over the page: no card stays lifted.
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
@@ -3375,7 +3391,7 @@ impl MusicApp {
             }
             cards.extend(grid.take_asked());
         }
-        for part in &mut self.page_parts {
+        for part in &mut self.page.parts {
             if covered {
                 if let WindowEvent::CursorMoved { device_id, .. } = event {
                     part.host.handle_event(
@@ -3415,6 +3431,7 @@ impl MusicApp {
 
     fn drain_table_requests(&mut self, state: &mut ui::widget::Edits<'_>) {
         let requests: Vec<_> = self
+            .page
             .track_tables
             .iter()
             .enumerate()
@@ -3445,7 +3462,7 @@ impl MusicApp {
             }
             _ => {}
         }
-        let slot = self.track_tables.get(index)?;
+        let slot = self.page.track_tables.get(index)?;
         let offset = slot.queue_offset.unwrap_or(0);
         let row = |i: usize| slot.table.rows().get(i);
         match ask {
@@ -3492,11 +3509,11 @@ impl MusicApp {
     ) -> f64 {
         let index = self.page_parts_drawn;
         self.page_parts_drawn += 1;
-        if self.page_parts.len() <= index {
-            self.page_parts.push(super::page_part::PagePart::new());
+        if self.page.parts.len() <= index {
+            self.page.parts.push(super::page_part::PagePart::new());
         }
         let clip = self.body_rect;
-        let Some(part) = self.page_parts.get_mut(index) else {
+        let Some(part) = self.page.parts.get_mut(index) else {
             return top;
         };
         part.update(key, build);

@@ -93,7 +93,6 @@ struct DomainState {
 pub(crate) enum ControlOwner {
     Outer(uuid::Uuid),
     Component(crate::bound_dispatch::CallbackBinding),
-    Legacy(crate::history_mode::HistoryOwner),
 }
 impl ControlOwner {
     fn origin(&self, invocation: &ControlInvocation) -> PendingControlOrigin {
@@ -111,12 +110,6 @@ impl ControlOwner {
                     },
                 })
             }
-            Self::Legacy(owner) => PendingControlOrigin::Legacy(
-                crate::bound_dispatch::legacy_document::LegacyResourceTarget {
-                    owner: owner.clone(),
-                    address: invocation.address.clone(),
-                },
-            ),
         }
     }
 }
@@ -672,10 +665,6 @@ impl RawControlSlot {
 pub(crate) struct RegisteredControls {
     pub(crate) outer: VecDeque<ControlInvocation>,
     pub(crate) components: Vec<(crate::bound_dispatch::BoundActionTarget, ControlInvocation)>,
-    pub(crate) legacy: Vec<(
-        crate::bound_dispatch::legacy_document::LegacyResourceTarget,
-        ControlInvocation,
-    )>,
 }
 impl ControlDomain {
     pub(crate) fn drain_partitioned(&self) -> RegisteredControls {
@@ -685,9 +674,6 @@ impl ControlDomain {
                 PendingControlOrigin::Outer { .. } => result.outer.push_back(control.invocation),
                 PendingControlOrigin::Component(target) => {
                     result.components.push((target, control.invocation))
-                }
-                PendingControlOrigin::Legacy(target) => {
-                    result.legacy.push((target, control.invocation))
                 }
             }
         }

@@ -306,6 +306,12 @@ impl Desktop {
         }
     }
 
+    /// The settings profile the compositor holds. A [`settings_store::Store`]
+    /// following it writes through the compositor, as Settings does.
+    pub fn settings_root(&self) -> PathBuf {
+        self.runtime_dir.join("config/tilo")
+    }
+
     /// The compositor's `XDG_CACHE_HOME`, where its crash records go.
     pub fn cache_home(&self) -> PathBuf {
         self.runtime_dir.join("cache")

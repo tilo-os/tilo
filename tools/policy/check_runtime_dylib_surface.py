@@ -148,6 +148,7 @@ ENGINES = {
     "mail-builder": "Mail's message writer, which Mail loads from libtilo_mail_engine.so",
     "lettre": "Mail's SMTP client, which Mail loads from libtilo_mail_engine.so",
     "tilo-settings-engine": "Settings' engine library (libtilo_settings_engine.so)",
+    "settings": "Settings' own library, which the app runs from libtilo_settings_engine.so",
     "tilo-ntfs-mount": "the NTFS mount protocol, which Settings loads from libtilo_settings_engine.so",
     "tilo-wallpapers": "the wallpaper catalogue, which Settings loads from libtilo_settings_engine.so",
     "tilo-accessibility-settings": "the accessibility settings, which Settings loads from "

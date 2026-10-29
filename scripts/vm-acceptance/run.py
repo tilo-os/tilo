@@ -55,9 +55,9 @@ BUDGETS = {
     # on their sockets; before, its 200 ms stop-flag polls were all
     # 10.7/s (run 91741). 1/s is 30 wakeups in the 30 s window.
     "idle_apps_ush_cpu_pct": 1.0, "idle_apps_ush_wakeups_per_s": 1.0,
-    # A natively committed workspace with Notes and Files open and nothing edited (R09): the
+    # A workspace on this device's own host, with Notes and Files open and nothing edited (R09): the
     # compositor's collaboration broker threads summed, and every app's collaboration shovel.
-    # The broker holds each committed read's wait and re-checks it when an identity or
+    # The broker holds each read's wait and re-checks it when an identity or
     # membership input announces a change: 0.2/s measured headless with watched identity
     # files, 21-24/s on the 200 ms re-check that runs when they cannot be watched. The
     # shovels carry nothing while nobody edits.
@@ -103,7 +103,7 @@ DE_PASS = ("U03", "U04", "S03")
 # runs last but P03, so the adapter lines of every app the run opened are in the log; R07
 # and A16 judge everything the run rendered and launched. R06 reads this boot's
 # timestamps, so it may run anywhere. A15 times apps R02 has already opened once. R09
-# shares a workspace on a relay it starts for the run, so it comes late, but before R07, A16
+# opens apps in a workspace of its own, so it comes late, but before R07, A16
 # and R05, which judge the apps it opens too. R08 signs the dev account in at seat0's
 # greeter, which starts a second compositor: it runs after every check that measures or
 # renders the slot's session. K01 sets the VM's clock back and restarts the session, so it
@@ -227,12 +227,13 @@ def renderer(vm: TiloVm, without_3d: bool = False) -> tuple[str, dict]:
 def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
     helptext = vm.run("slot", "create", "--help", slot=False)
     args = ["slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
-    # A throwaway test identity in a private root (`--identity`), where fs never runs. Making
-    # the slot the VM's person through its own onboarding (`--identity device`) is what fs
-    # needs, but on a real VM that session never shows onboarding yet and tilo-vmd waits out
-    # its 180 s, so every run would stop before its first check; it comes back here once
-    # `tilo-vm slot create --identity device` passes on a fresh VM.
-    if "--identity" in helptext:
+    # The run's VM is fresh and disposable: its slot is the VM's person, made through the
+    # session's own onboarding as a device's first login does, so the machine's device key is
+    # certified and fs runs (`slot create --identity device`). A tilo-vm without it mints a
+    # throwaway test identity in a private root instead (`--identity`), where fs never runs.
+    if "--identity device" in helptext:
+        args += ["--identity", "device"]
+    elif "--identity" in helptext:
         args.append("--identity")
     if locale:
         args += ["--locale", locale]

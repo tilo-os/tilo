@@ -1,136 +1,9 @@
 use super::*;
 use crate::StatePeer;
-use crate::resources::native::NativeBatch;
 use crate::room;
 use crate::state::err;
 use automerge::{ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-
-fn limits() -> ImportLimits {
-    ImportLimits {
-        collection_bytes: 1024 * 1024,
-        certificate_bytes: 1024 * 1024,
-        json: JsonLimits {
-            allocation_bytes: 128 * 1024,
-            collection_entries: 4096,
-        },
-    }
-}
-
-#[test]
-fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certificates() {
-    let (mut peer, _, _, member, now) = crate::admission_tests::seeded();
-    let mut room = peer.admitted_room().unwrap().clone();
-    let (_, identities) = room
-        .get(automerge::ROOT, "peer_identities_v1")
-        .unwrap()
-        .unwrap();
-    let mut added = member.clone();
-    added.device_public_key = SigningKey::from_bytes(&[69; 32]).verifying_key().to_bytes();
-    added.device_label = "governed long label 🦀".repeat(512);
-    tilo_user_identity::sign_device_cert(&mut added, &SigningKey::from_bytes(&[1; 32])).unwrap();
-    let row = GovernedIdentity {
-        device_cert: added.clone(),
-        revocations: vec![],
-        admission: None,
-        admissions: vec![],
-        workspace_delegations: vec![],
-        delegate: None,
-    };
-    room.put(
-        &identities,
-        hex::encode(added.device_public_key),
-        serde_json::to_vec(&row).unwrap(),
-    )
-    .unwrap();
-    room.commit();
-    let certificates =
-        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
-            .unwrap();
-    let revocations = revocations::BoundedRevocations::restore(
-        &[],
-        &RevocationList::new(),
-        &certificates,
-        peer.authority().device_public_key,
-    )
-    .unwrap();
-    let native = NativeBatch::new(8 * 1024 * 1024)
-        .load(&room.save())
-        .unwrap();
-    let read = native.read();
-    let imported = bounded(
-        &read,
-        &certificates,
-        &revocations,
-        peer.authority(),
-        now,
-        limits(),
-    )
-    .unwrap();
-    let changed = original_import(&mut peer, &room, now).unwrap();
-    assert_eq!(imported.changed, changed);
-    for cert in peer.certificates() {
-        assert_eq!(
-            imported.certificates.certificate(&cert.device_public_key),
-            Some(&cert)
-        );
-    }
-    assert_ne!(
-        imported
-            .certificates
-            .certificate(&member.device_public_key)
-            .unwrap()
-            .device_label
-            .as_ptr(),
-        certificates
-            .certificate(&member.device_public_key)
-            .unwrap()
-            .device_label
-            .as_ptr()
-    );
-    drop(native);
-    drop(certificates);
-    drop(revocations);
-    drop(peer);
-    drop(room);
-    assert_eq!(
-        imported.certificates.certificate(&added.device_public_key),
-        Some(&added)
-    );
-}
-
-#[test]
-fn bounded_governed_import_ignores_legacy_malformed_identity_container() {
-    let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let mut room = peer.admitted_room().unwrap().clone();
-    room.put(automerge::ROOT, "peer_identities_v1", "not a map")
-        .unwrap();
-    room.commit();
-    let certificates =
-        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
-            .unwrap();
-    let revocations = revocations::BoundedRevocations::restore(
-        &[],
-        &RevocationList::new(),
-        &certificates,
-        peer.authority().device_public_key,
-    )
-    .unwrap();
-    let native = NativeBatch::new(8 * 1024 * 1024)
-        .load(&room.save())
-        .unwrap();
-    let read = native.read();
-    let imported = bounded(
-        &read,
-        &certificates,
-        &revocations,
-        peer.authority(),
-        now,
-        limits(),
-    )
-    .unwrap();
-    assert!(!imported.changed);
-}
 
 // Literal pre-extraction production algorithm; intentionally unqualified test oracle.
 fn original_import(
@@ -210,7 +83,7 @@ fn compare_case(
     peer: &StatePeer,
     room: &AutoCommit,
     now: SystemTime,
-) -> Result<Imported, ImportError> {
+) -> Result<LegacyImport, ImportError> {
     let mut oracle = peer.clone();
     let mut actual = peer.clone();
     let expected = original_import(&mut oracle, room, now);
@@ -218,48 +91,15 @@ fn compare_case(
     assert_eq!(got, expected);
     assert_eq!(actual.certificates(), oracle.certificates());
     assert_eq!(actual.revocations(), oracle.revocations());
-    let certificates =
-        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
-            .unwrap();
-    let revocations = revocations::BoundedRevocations::restore(
-        &peer.revocations(),
-        &RevocationList::new(),
-        &certificates,
-        peer.authority().device_public_key,
-    )
-    .unwrap();
-    let mut saved = room.clone();
-    let native = NativeBatch::new(8 * 1024 * 1024)
-        .load(&saved.save())
-        .unwrap();
-    let read = native.read();
-    let result = bounded(
-        &read,
-        &certificates,
-        &revocations,
+    legacy(
+        room,
+        &peer.core.certificates,
+        &peer.core.revocations,
         peer.authority(),
         now,
-        limits(),
-    );
-    match (&result, &expected) {
-        (Ok(imported), Ok(changed)) => {
-            assert_eq!(imported.changed, *changed);
-            for cert in oracle.certificates() {
-                assert_eq!(
-                    imported.certificates.certificate(&cert.device_public_key),
-                    Some(&cert)
-                );
-            }
-            let mut revocations = imported.revocations.iter().cloned().collect::<Vec<_>>();
-            revocations.sort_by_key(|entry| entry.revoked_device_public_key);
-            assert_eq!(revocations, oracle.revocations());
-        }
-        (Err(ImportError::Decode(PeerResourceError::Malformed)), Err(_)) => {}
-        (Err(error), Err(expected)) => assert_eq!(&error.to_string(), expected),
-        _ => panic!("native/legacy import outcome mismatch"),
-    }
-    result
+    )
 }
+
 fn set_identity(room: &mut AutoCommit, id: &str, row: &GovernedIdentity) {
     let (_, object) = room
         .get(automerge::ROOT, "peer_identities_v1")
@@ -377,7 +217,7 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
     room.commit();
     assert!(matches!(
         compare_case(&peer, &room, now),
-        Err(ImportError::Decode(PeerResourceError::Malformed))
+        Err(ImportError::LegacyJson(_))
     ));
     for kind in [automerge::ObjType::List, automerge::ObjType::Text] {
         let mut room = peer.admitted_room().unwrap().clone();
@@ -422,7 +262,7 @@ fn governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_s
     let imported = compare_case(&peer, &room, now).unwrap();
     assert_eq!(
         imported
-            .revocations
+            .1
             .iter()
             .find(|entry| entry.revoked_device_public_key == member.device_public_key)
             .unwrap()
@@ -441,57 +281,4 @@ fn governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_s
         compare_case(&peer, &room, now),
         Err(ImportError::RevocationRoot)
     ));
-}
-
-#[test]
-fn governed_import_refuses_collection_and_certificate_limits() {
-    let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let certificates =
-        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
-            .unwrap();
-    let revocations = revocations::BoundedRevocations::restore(
-        &[],
-        &RevocationList::new(),
-        &certificates,
-        peer.authority().device_public_key,
-    )
-    .unwrap();
-    let mut room = peer.admitted_room().unwrap().clone();
-    let native = NativeBatch::new(8 * 1024 * 1024)
-        .load(&room.save())
-        .unwrap();
-    let read = native.read();
-    for limits in [
-        ImportLimits {
-            collection_bytes: 64,
-            ..limits()
-        },
-        ImportLimits {
-            certificate_bytes: 64,
-            ..limits()
-        },
-    ] {
-        assert!(matches!(
-            bounded(
-                &read,
-                &certificates,
-                &revocations,
-                peer.authority(),
-                now,
-                limits,
-            ),
-            Err(ImportError::Capacity)
-        ));
-    }
-    assert!(
-        bounded(
-            &read,
-            &certificates,
-            &revocations,
-            peer.authority(),
-            now,
-            limits(),
-        )
-        .is_ok()
-    );
 }

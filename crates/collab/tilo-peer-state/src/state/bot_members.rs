@@ -356,9 +356,7 @@ impl StatePeer {
         let identities = governed_map(&doc, "peer_identities_v1")?;
         let names = governed_map(&doc, "peers")?;
         let grants = governed_map(&doc, "grants")?;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.room_actor_of(key));
         for identity in &write.identities {
             let id = hex::encode(identity.device_cert.device_public_key);
             doc.put(
@@ -488,9 +486,7 @@ impl StatePeer {
             .clone()
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.room_actor_of(key));
         let requests = match doc.get(ROOT, REQUESTS).map_err(err)? {
             Some((_, map)) => map,
             None => doc.put_object(ROOT, REQUESTS, ObjType::Map).map_err(err)?,

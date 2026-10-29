@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::MountedChat;
 use crate::testing::item;
 use ui::framework::testing::TestApp;
 use ui::search::SearchProvider as _;
@@ -79,15 +80,11 @@ fn the_rooms_channels_are_the_shells_sidebar() {
     app.harness()
         .click_at(frontend.center().x, frontend.center().y);
     app.settle();
-    assert_eq!(app.surface_mut::<ChatApp>().active_channel, "c_frontend");
+    assert_eq!(app.chat().active_channel, "c_frontend");
 
     let random = sidebar_row(&mut app, "channel:c_random");
     right_click(&mut app, random);
-    let target = app
-        .surface_mut::<ChatApp>()
-        .menu
-        .as_ref()
-        .map(|menu| menu.target.clone());
+    let target = app.chat().menu.as_ref().map(|menu| menu.target.clone());
     assert_eq!(
         target,
         Some(crate::app::MenuTarget::Channel("c_random".into())),
@@ -100,7 +97,7 @@ fn the_rooms_channels_are_the_shells_sidebar() {
     }
     app.settle();
     let old = app
-        .surface_mut::<ChatApp>()
+        .chat()
         .channel("c_random")
         .map(|channel| channel.name.clone())
         .expect("the channel");
@@ -112,32 +109,28 @@ fn the_rooms_channels_are_the_shells_sidebar() {
     app.harness().key("Enter");
     app.settle();
     assert_eq!(
-        app.surface_mut::<ChatApp>()
+        app.chat()
             .channel("c_random")
             .map(|channel| channel.name.as_str()),
         Some("watercooler")
     );
 
     let category = app
-        .surface_mut::<ChatApp>()
+        .chat()
         .sidebar_categories()
         .first()
         .map(|category| category.id.clone())
         .expect("the fixture has a category");
     let header = sidebar_row(&mut app, &crate::sidebar::category_place(&category));
     right_click(&mut app, header);
-    let target = app
-        .surface_mut::<ChatApp>()
-        .menu
-        .as_ref()
-        .map(|menu| menu.target.clone());
+    let target = app.chat().menu.as_ref().map(|menu| menu.target.clone());
     assert_eq!(target, Some(crate::app::MenuTarget::Category(category)));
 }
 
 #[test]
 fn shared_space_visible_stop_button_uses_the_same_consent_handler() {
     let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
-    assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
+    assert!(app.chat().sharing_context);
     app.settle();
     // The visible Stop sharing control is the window bar's slot; the desktop
     // hands its press to the app, which answers the same consent effect.
@@ -152,7 +145,7 @@ fn shared_space_visible_stop_button_uses_the_same_consent_handler() {
     assert!(offers_stop(), "the window's bar shows Stop sharing");
     app.harness().press_window_action("Stop sharing").unwrap();
     app.settle();
-    assert!(!app.surface_mut::<crate::ChatApp>().sharing_context);
+    assert!(!app.chat().sharing_context);
     assert!(!offers_stop(), "Stop sharing leaves the bar once stopped");
     assert!(ui::view::capability::view_state(app.harness().root_widget()).is_none());
 }
@@ -259,7 +252,7 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
         .unwrap();
     app.settle();
     assert_eq!(
-        app.surface_mut::<ChatApp>().revealed_message.as_deref(),
+        app.chat().revealed_message.as_deref(),
         Some(crate::feedback::message_id(&submission.id).as_str())
     );
     app.call_on(
@@ -288,14 +281,7 @@ fn search_hits_open_the_channel_message_and_person_they_name() {
     let mut app = TestApp::<ChatShell>::capture(None).unwrap();
     // The record's entries, and the messages the window holds.
     let mut entries = Chat::search(&app.state());
-    entries.extend(
-        app.with_surface::<ChatApp, _>(|surface| {
-            ui::framework::ResourceSurface::<Chat, crate::effects::ChatEffect>::search_entries(
-                surface,
-            )
-        })
-        .unwrap(),
-    );
+    entries.extend(app.with_chat(|surface| surface.search_entries()).unwrap());
     let anchor = |query: &str, field: &str| {
         entries
             .iter()
@@ -308,28 +294,22 @@ fn search_hits_open_the_channel_message_and_person_they_name() {
     app.call("open", serde_json::json!({ "anchor": frontend }))
         .unwrap();
     app.settle();
-    assert_eq!(app.surface_mut::<ChatApp>().active_channel, "c_frontend");
+    assert_eq!(app.chat().active_channel, "c_frontend");
     let concept = anchor("host tile keeps the live camera", "messages");
     app.call("open", serde_json::json!({ "anchor": concept }))
         .unwrap();
     app.settle();
-    assert_eq!(
-        app.surface_mut::<ChatApp>().revealed_message.as_deref(),
-        Some("m_concept")
-    );
+    assert_eq!(app.chat().revealed_message.as_deref(), Some("m_concept"));
     let hangout = anchor("Hangout", "categories");
     app.call("open", serde_json::json!({ "anchor": hangout }))
         .unwrap();
     app.settle();
-    assert_eq!(app.surface_mut::<ChatApp>().active_channel, "c_ideas");
+    assert_eq!(app.chat().active_channel, "c_ideas");
     let milo = anchor("Milo Park", "people");
     app.call("open", serde_json::json!({ "anchor": milo }))
         .unwrap();
     app.settle();
-    assert_eq!(
-        app.surface_mut::<ChatApp>().revealed_person.as_deref(),
-        Some("u_milo")
-    );
+    assert_eq!(app.chat().revealed_person.as_deref(), Some("u_milo"));
 }
 
 #[test]
@@ -356,13 +336,14 @@ fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
     )
     .unwrap();
     app.settle();
-    let surface = app.surface_mut::<crate::ChatApp>();
+    let surface = app.chat();
     let mut bodies = surface.body_views.borrow_mut();
     let (_, view) = bodies
         .get_mut(&(0, id.clone()))
         .expect("real layout produced the message body");
     assert_eq!(view.editor_mut().selected_text().as_deref(), Some("é"));
     drop(bodies);
+    drop(surface);
     app.call_on(
         &crate::testing::message_item(&id),
         "edit-message",
@@ -370,7 +351,7 @@ fn resource_range_opens_and_highlights_current_text_through_the_public_view() {
     )
     .unwrap();
     app.settle();
-    let surface = app.surface_mut::<crate::ChatApp>();
+    let surface = app.chat();
     let mut bodies = surface.body_views.borrow_mut();
     let (_, view) = bodies.get_mut(&(0, id)).unwrap();
     assert!(
@@ -860,7 +841,7 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
         "a draft is never the room's"
     );
     let draft = composer
-        .with_surface::<ChatApp, _>(|chat| chat.composer_main.value())
+        .with_chat(|chat| chat.composer_main.value())
         .unwrap();
     assert!(draft.contains("Enter sends"), "{draft:?}");
 }
@@ -878,10 +859,10 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
     bobs.merge_peer(&mut room).unwrap();
     phone.merge_peer(&mut room).unwrap();
     let channel = laptop
-        .with_surface::<ChatApp, _>(|chat| chat.active_channel.clone())
+        .with_chat(|chat| chat.active_channel.clone())
         .unwrap();
 
-    laptop.with_surface::<ChatApp, _>(|chat| {
+    laptop.with_chat(|chat| {
         let mut doc = ui::automerge::AutoCommit::new();
         chat.composer_main.set_key(&channel);
         chat.composer_main.ensure_draft(&doc);
@@ -895,7 +876,7 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
     bobs.merge_peer(&mut room).unwrap();
     bobs.harness().relayout();
     let bobs_composer = bobs
-        .with_surface::<ChatApp, _>(|chat| {
+        .with_chat(|chat| {
             chat.composer_main.set_key(&channel);
             chat.composer_main.value()
         })
@@ -921,7 +902,7 @@ fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
         .unwrap();
     phone.harness().relayout();
     let phones_composer = phone
-        .with_surface::<ChatApp, _>(|chat| {
+        .with_chat(|chat| {
             chat.composer_main.set_key(&channel);
             chat.composer_main.sync(&ui::automerge::AutoCommit::new());
             chat.composer_main.value()
@@ -985,7 +966,7 @@ fn a_drawn_frame_hands_chat_the_hosts_permissions() {
     let mut viewer = TestApp::<ChatShell>::with_role(ui::permissions::Role::Viewer).unwrap();
     viewer.harness().resize((960, 720)).unwrap();
     assert_eq!(
-        viewer.with_surface::<ChatApp, _>(|surface| surface.perms.can_participate()),
+        viewer.with_chat(|surface| surface.perms.can_participate()),
         Some(false)
     );
 }
@@ -993,9 +974,9 @@ fn a_drawn_frame_hands_chat_the_hosts_permissions() {
 #[test]
 fn stopping_shared_context_wakes_the_native_presentation() {
     let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
-    assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
+    assert!(app.chat().sharing_context);
     assert!(!app.harness().root_widget().needs_redraw());
-    app.surface_mut::<crate::ChatApp>()
+    app.chat()
         .answer_effect(crate::effects::ChatEffect::StopSharingLiveContext)
         .unwrap();
     assert!(

@@ -66,7 +66,7 @@ impl Limits {
         )
     }
 }
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExportSummary {
     pub files: u64,
     pub bytes: u64,
@@ -672,21 +672,55 @@ impl ImportReview {
         quarantine: &Path,
         cancel: &AtomicBool,
     ) -> io::Result<VerifiedTree> {
+        let attempt = self.extract_attempt(password, quarantine, cancel)?;
+        publish_import(
+            &attempt.parent,
+            &attempt.container,
+            &attempt.name,
+            &attempt.target,
+            cancel,
+        )?;
+        Ok(VerifiedTree {
+            purpose: self.info.purpose,
+            root: quarantine.join("home"),
+            info: self.info.clone(),
+        })
+    }
+    /// Extract into `root`, a new private directory. Only the authenticated and
+    /// verified tree itself is published under that name; no container wraps it.
+    ///
+    /// # Errors
+    /// Refuses an existing `root`, authentication or fidelity failures.
+    pub fn extract_root(
+        &mut self,
+        password: Zeroizing<Vec<u8>>,
+        root: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<()> {
+        let attempt = self.extract_attempt(password, root, cancel)?;
+        publish_root(&attempt, cancel)
+    }
+    fn extract_attempt(
+        &mut self,
+        password: Zeroizing<Vec<u8>>,
+        destination: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<Attempt> {
         check_cancel(cancel)?;
         self.entries.require_restoration()?;
         if hash_file(&mut self.file, cancel)? != self.ciphertext {
             return Err(changed("Reviewed migration package changed"));
         }
         let parent = PinnedDirectory::open_absolute(
-            quarantine
+            destination
                 .parent()
                 .ok_or_else(|| changed("Quarantine parent missing"))?,
         )?;
         parent.validate_destination()?;
-        let name = quarantine
+        let name = destination
             .file_name()
             .ok_or_else(|| changed("Quarantine name missing"))?;
-        // Only a fully authenticated and verified container gets the requested
+        // Only a fully authenticated and verified tree gets the requested
         // name. An interrupted attempt cannot masquerade as completed custody
         // or prevent a later attempt from using the same quarantine path.
         match super::nofollow::metadata_nofollow(&parent.file, Path::new(name)) {
@@ -721,13 +755,92 @@ impl ImportReview {
         container.validate()?;
         durability::sync_directory(&home.file)?;
         durability::sync_directory(&container.file)?;
-        publish_import(&parent, &container, &attempt_name, name, cancel)?;
-        Ok(VerifiedTree {
-            purpose: self.info.purpose,
-            root: quarantine.join("home"),
-            info: self.info.clone(),
+        Ok(Attempt {
+            parent,
+            container,
+            home,
+            name: attempt_name,
+            target: name.to_owned(),
         })
     }
+    /// Verify `root` after the applications phase deployed into its user
+    /// installation: every archived entry is unchanged, except the repository
+    /// metadata the deployment rewrites, and new entries appear only inside
+    /// `.local/share/flatpak`.
+    ///
+    /// # Errors
+    /// Refuses changed ciphertext, changed or missing entries and unreviewed
+    /// additions outside the user installation.
+    pub fn verify_existing_tree_after_applications(
+        &mut self,
+        root: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<()> {
+        self.verify_held_ciphertext(cancel)?;
+        let pin = PinnedDirectory::open_absolute(root)?;
+        super::destination_security::check_private_file(&pin.file)?;
+        self.entries.check_existing_root(&pin)?;
+        archive::verify_tree_after_applications(&pin, &self.entries, cancel)?;
+        self.entries.check_existing_root(&pin)?;
+        self.verify_held_ciphertext(cancel)
+    }
+}
+/// An extracted, verified attempt that is not yet published under its name.
+struct Attempt {
+    parent: Arc<PinnedDirectory>,
+    container: Arc<PinnedDirectory>,
+    home: Arc<PinnedDirectory>,
+    name: String,
+    target: std::ffi::OsString,
+}
+/// Publish the attempt's tree itself under the requested name, then remove
+/// its now empty container. Existing names are never overwritten.
+fn publish_root(attempt: &Attempt, cancel: &AtomicBool) -> io::Result<()> {
+    use std::os::{fd::AsRawFd, unix::ffi::OsStrExt};
+    check_cancel(cancel)?;
+    attempt.home.validate_destination()?;
+    attempt.container.validate_destination()?;
+    attempt.parent.validate_destination()?;
+    let target = std::ffi::CString::new(attempt.target.as_bytes()).map_err(io::Error::other)?;
+    // SAFETY: both names are single components and terminated; the held
+    // container and parent remain live. NOREPLACE refuses a concurrently
+    // appearing destination.
+    let result = unsafe {
+        libc::renameat2(
+            attempt.container.file.as_raw_fd(),
+            c"home".as_ptr(),
+            attempt.parent.file.as_raw_fd(),
+            target.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    durability::sync_directory(&attempt.container.file)?;
+    durability::sync_directory(&attempt.parent.file)?;
+    let published =
+        super::nofollow::metadata_nofollow(&attempt.parent.file, Path::new(&attempt.target))?;
+    if !published.is_dir()
+        || !super::nofollow::same_directory_identity(&published, &attempt.home.identity)
+    {
+        return Err(changed("Published tree identity changed"));
+    }
+    let container = std::ffi::CString::new(attempt.name.as_bytes()).map_err(io::Error::other)?;
+    // SAFETY: a terminated single component under the held parent; removing
+    // an empty directory cannot touch the published tree.
+    if unsafe {
+        libc::unlinkat(
+            attempt.parent.file.as_raw_fd(),
+            container.as_ptr(),
+            libc::AT_REMOVEDIR,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    durability::sync_directory(&attempt.parent.file)?;
+    attempt.parent.validate_destination()
 }
 /// Publish only this held, verified private attempt. Existing names are never
 /// overwritten. Failed attempts remain private siblings for explicit cleanup.

@@ -1,5 +1,4 @@
 use crate::presence::PresenceCtx;
-use crate::record::{RecordCheckout, RecordId, RecordStore};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
@@ -77,33 +76,6 @@ fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
         Rect::new(outer.x0, top, rect.x0 + outside, bottom),
         Rect::new(rect.x1 - outside, top, outer.x1, bottom),
     ]
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum UndoStep {
-    Undo,
-    Redo,
-}
-
-fn undo_step(event: &WindowEvent, m: winit::event::Modifiers) -> Option<UndoStep> {
-    if !(m.state().control_key() || m.state().super_key()) {
-        return None;
-    }
-    let WindowEvent::KeyboardInput { event: key, .. } = event else {
-        return None;
-    };
-    if key.state != winit::event::ElementState::Pressed {
-        return None;
-    }
-    let winit::keyboard::Key::Character(c) = &key.logical_key else {
-        return None;
-    };
-    match c.as_str() {
-        "z" | "Z" if m.state().shift_key() => Some(UndoStep::Redo),
-        "z" | "Z" => Some(UndoStep::Undo),
-        "y" | "Y" => Some(UndoStep::Redo),
-        _ => None,
-    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -264,111 +236,6 @@ impl ContentDamage {
     }
 }
 
-/// A tab is an open thing, not a view onto one shared thing: the document
-/// behind it is the tab's own, otherwise two tabs of the same app would
-/// share one document, and undo/presence/search with it.
-struct Binding {
-    store: RecordStore,
-    /// Where the tab's content lives while no file names it. Never
-    /// changes for the life of the tab.
-    tab: RecordCheckout,
-    /// `tab.id` until the hosted app declares a file through
-    /// [`Widget::record_intent`](crate::record::capability::record_intent) —
-    /// opening a document *is* moving the tab onto that document's record;
-    /// the scratch record it leaves behind is still its own document.
-    live: RecordId,
-    /// Whether the app has taken this record's document through a first
-    /// `sync` yet. What that pass writes (the object a body lives in, the
-    /// seed a fresh note carries) is the document's *shape*, not something
-    /// the user did, so the history's baseline is taken after it —
-    /// otherwise the first Ctrl+Z deletes the body wholesale instead of
-    /// reverting what was typed into it.
-    established: bool,
-    /// A close/replacement may keep this binding alive. Suppress another
-    /// settlement only while its exact committed frontier remains unchanged.
-    settled_frontier: Option<Vec<automerge::ChangeHash>>,
-}
-
-struct PendingBinding {
-    store: RecordStore,
-    tab: RecordCheckout,
-    create: bool,
-}
-
-struct OwnerTransitionError {
-    message: String,
-    retry_pending: bool,
-}
-
-impl Binding {
-    fn settle_outgoing(&mut self) -> Option<crate::application::ComponentCloseReport> {
-        // This comparison must not commit a local draft or advance any sibling.
-        if let Some((heads, 0)) = self.store.read(&self.live, crate::doc::settle_mark)
-            && self.settled_frontier.as_ref() == Some(&heads)
-        {
-            return None;
-        }
-        let error = self.store.try_flush_record(&self.live).err();
-        // Capture only this owner's post-settlement committed frontier. Pending
-        // edits or an unavailable document cannot establish a reusable marker.
-        self.settled_frontier = self
-            .store
-            .read(&self.live, |doc| {
-                let (heads, pending) = crate::doc::settle_mark(doc);
-                (pending == 0).then_some(heads)
-            })
-            .flatten();
-        Some(crate::application::ComponentCloseReport {
-            recovery: None,
-            view_error: None,
-            view_retry: None,
-            record_retry: error.as_ref().map(|_| self.store.clone()),
-            record_retry_target: error.as_ref().map(|_| self.live.clone()),
-            record_error: error,
-            teardown_error: None,
-        })
-    }
-
-    fn follow_checked(
-        &mut self,
-        want: Option<RecordCheckout>,
-        reports: &mut Vec<crate::application::ComponentCloseReport>,
-    ) -> Result<RecordId, crate::record::RecordOpenError> {
-        if want.as_ref().is_some_and(|want| want.id != self.live)
-            && let Some(report) = self.settle_outgoing()
-        {
-            reports.push(report);
-        }
-        let requested = want
-            .as_ref()
-            .or_else(|| (self.live == self.tab.id).then_some(&self.tab));
-        if let Some(requested) = requested {
-            self.store.open_existing_record_checked(requested)?;
-        }
-        if let Some(want) = want
-            && want.id != self.live
-        {
-            self.live = want.id;
-            self.established = false;
-            self.settled_frontier = None;
-        }
-        Ok(self.live.clone())
-    }
-}
-
-/// Why the tile's record cannot be opened, as the store said it: the
-/// technical detail behind the card's "Details". A document the store is
-/// still opening on its own thread is not a failure ([`OPENING`]).
-fn record_unavailable(error: &crate::record::RecordOpenError) -> String {
-    match error {
-        crate::record::RecordOpenError::Opening => OPENING.to_owned(),
-        other => other.to_string(),
-    }
-}
-
-/// What the tile says while the store opens its record.
-const OPENING: &str = "Opening the document";
-
 /// The name of the card a tile shows while its record cannot be opened.
 #[must_use]
 pub fn record_unavailable_title() -> String {
@@ -377,35 +244,14 @@ pub fn record_unavailable_title() -> String {
 
 /// The card a tile shows while its record cannot be opened: what happened
 /// and what to do, in the person's words, with the store's reason (`detail`)
-/// behind "Details". While the store is still opening it, the tile says so.
+/// behind "Details".
 fn record_unavailable_card(detail: &str) -> super::EmptyState {
-    if detail == OPENING {
-        return super::EmptyState::new(OPENING).busy();
-    }
     super::EmptyState::new(record_unavailable_title())
         .with_icon(crate::icons::Icon::File)
         .with_message(crate::i18n::I18nManager::lookup_plain(
             "record-unavailable-hint",
         ))
         .with_details(detail)
-}
-
-fn admit_record(
-    store: &RecordStore,
-    checkout: &RecordCheckout,
-    create: bool,
-) -> Result<(), crate::record::RecordOpenError> {
-    if create && store.canonical_namespace().is_none() {
-        return store.open_record_checked(checkout);
-    }
-    match store.open_existing_record_checked(checkout) {
-        Ok(()) => Ok(()),
-        Err(crate::record::RecordOpenError::MissingRecord) if create => {
-            let mut reservation = store.reserve_record(checkout)?;
-            reservation.initialize(|_| Ok(()))
-        }
-        Err(error) => Err(error),
-    }
 }
 
 #[path = "tile_host/window_search.rs"]
@@ -430,7 +276,6 @@ pub struct TileHost {
     /// `Some(false)`: the tab row is hidden (a maximized window), so the
     /// app's header row may hold it, but never a band of its own.
     window_history: Option<bool>,
-    automatic_history: bool,
     live_callback_node: Option<NodeId>,
     retained_invocations: HashMap<tilo_actions::InvocationId, crate::history_mode::HistoryOwner>,
     retained_updates: HashMap<tilo_actions::InvocationId, VecDeque<tilo_actions::InvocationUpdate>>,
@@ -440,22 +285,14 @@ pub struct TileHost {
     owner_bound_work: bool,
     owner_bound_custody: Option<crate::history_mode::HistoryOwner>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
-    /// `None` when nothing is bound — a bare `ui` host, a stub card, a
-    /// test exercising only paint. Unbound tiles edit whatever document
-    /// the parent pass carries.
-    binding: Option<Binding>,
-    history_lifetime: std::rc::Rc<crate::history_mode::owner::LegacyHistoryLifetime>,
+    history_lifetime: std::rc::Rc<crate::history_mode::owner::RecordOwnerLifetime>,
     custody_parent: Option<crate::ControlDomain>,
     custody_scope: Option<crate::ControlDomain>,
     custody_renewal: Option<crate::control_custody::CustodyAttachment>,
-    pending_binding: Option<PendingBinding>,
     record_error: Option<String>,
     /// The card shown for `record_error`, with the detail it was made for.
     error_card: Option<(String, super::EmptyState)>,
     record_transition_error: Option<String>,
-    record_intent_transition_blocked: bool,
-    record_creation_refused: bool,
-    announced: Option<RecordId>,
     /// Set by [`TileHost::replace_content`]; drained by
     /// [`Widget::take_structure_dirty`]. Tells the layout pass this
     /// tile's node shape changed even though no hosted widget reported
@@ -564,17 +401,11 @@ impl TileHost {
             return;
         };
         let owner = self.history_owner();
-        let domain = match &owner {
-            Some(owner) => match &owner.0 {
-                crate::history_mode::owner::OwnerKind::Component(binding) => {
-                    binding.control_domain.upgrade()
-                }
-                crate::history_mode::owner::OwnerKind::Legacy { .. } => {
-                    let domain = self.history_lifetime.control_domain.clone();
-                    domain.set_owner(crate::control_custody::ControlOwner::Legacy(owner.clone()));
-                    Some(domain)
-                }
-            },
+        let domain = match owner
+            .as_ref()
+            .and_then(crate::history_mode::HistoryOwner::component_binding)
+        {
+            Some(binding) => binding.control_domain.upgrade(),
             None if self.has_separate_document_owner() => None,
             None => Some(self.history_lifetime.control_domain.clone()),
         };
@@ -803,7 +634,7 @@ impl TileHost {
             HistoryPresentation, HistoryRegistration, HistoryRegistrationError,
             HistorySourceRegistration,
         };
-        self.resolve_record()
+        self.prepare_record_resolution()
             .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
         let owner = self
             .history_owner()
@@ -847,7 +678,6 @@ impl TileHost {
             pending_history: None,
             history_opening: false,
             window_history: None,
-            automatic_history: false,
             live_callback_node: None,
             retained_invocations: HashMap::new(),
             retained_updates: HashMap::new(),
@@ -855,18 +685,13 @@ impl TileHost {
             owner_bound_work: false,
             owner_bound_custody: None,
             close_reports: vec![],
-            binding: None,
-            history_lifetime: crate::history_mode::owner::LegacyHistoryLifetime::new(),
+            history_lifetime: crate::history_mode::owner::RecordOwnerLifetime::new(),
             custody_parent: None,
             custody_scope: None,
             custody_renewal: None,
-            pending_binding: None,
             record_error: None,
             error_card: None,
             record_transition_error: None,
-            record_intent_transition_blocked: false,
-            record_creation_refused: false,
-            announced: None,
             structure_dirty: false,
             node: None,
             remount: false,
@@ -996,54 +821,22 @@ impl TileHost {
     /// The content's own update ([`Widget::update`]).
     fn update_content(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let _running = self.running();
-        // This custody is independent of the outer App State and remains
-        // durable while History hides the live widget.
-        if let Some(binding) = &self.binding {
-            binding.store.schedule_committed_history(&binding.live);
-            if let TileContent::App(app) = &mut self.content
-                && app.take_save_retry()
-                && let Err(error) = binding.store.try_flush_record(&binding.live)
-            {
-                tracing::warn!(%error, "retrying a failed record save");
-            }
-            if self.history_lifetime.active.get()
-                && let (Ok(status), TileContent::App(app)) =
-                    (binding.store.save_status(&binding.live), &mut self.content)
-            {
-                app.record_save_status(status);
-            }
-        }
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
         {
             return false;
         }
-        let Ok(live) = self.resolve_record() else {
+        if self.prepare_record_resolution().is_err() {
             return false;
-        };
-        self.install_declared_history();
+        }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() {
             return false;
         }
-        let (store, id) = if let (Some(id), Some(binding)) = (live, self.binding.as_ref()) {
-            (binding.store.clone(), id)
-        } else {
-            let TileContent::App(w) = &mut self.content else {
-                return false;
-            };
-            return w.update(s, p);
+        let TileContent::App(w) = &mut self.content else {
+            return false;
         };
-        let changed = store
-            .with(&id, |doc| {
-                let TileContent::App(w) = &mut self.content else {
-                    return false;
-                };
-                w.update(doc, &ROOT)
-            })
-            .unwrap_or(false);
-        let _ = self.record_owner_step_to_current_record();
-        changed
+        w.update(s, p)
     }
 
     /// The placeholder step standing in the tile at `now`, while one does:
@@ -1136,10 +929,9 @@ impl TileHost {
 
     /// Whether the app's widgets may be laid out again in place under the
     /// tile's node: not while a framework History composes around the app,
-    /// whose owners, custody and nodes are its own and are rebuilt with it,
-    /// nor under a bound component, whose callbacks name the tile's nodes.
+    /// whose owners, custody and nodes are its own and are rebuilt with it.
     fn lays_out_in_place(&self) -> bool {
-        self.history.is_none() && self.binding.is_none()
+        self.history.is_none()
     }
 
     /// Stand where this tile stands from now on: `next`, built for the same
@@ -1186,163 +978,9 @@ impl TileHost {
         self.arrival = Some(arrival);
     }
 
-    /// Idempotent on the same record — rebinding would hand the tab a
-    /// fresh empty document, and the tree re-binds every tile on rebuild.
-    pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        // A refused creation remains a document error until explicit replacement.
-        if self.record_creation_refused {
-            return;
-        }
-        if !self.uses_host_record() {
-            self.clear_record_binding();
-            return;
-        }
-        self.bind_record_intent(store, tab, false);
-        self.install_declared_history();
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-    }
-
-    /// Admit a newly created scratch resource owned by this caller. Creation
-    /// applies only to this exact checkout, never to later record intents.
-    pub fn bind_or_create_record(&mut self, store: RecordStore, tab: RecordCheckout) {
-        // A refused creation remains a document error until explicit replacement.
-        if self.record_creation_refused {
-            return;
-        }
-        if !self.uses_host_record() {
-            self.clear_record_binding();
-            return;
-        }
-        self.bind_record_intent(store, tab, true);
-        self.install_declared_history();
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-    }
-
-    fn uses_host_record(&self) -> bool {
-        match &self.content {
-            TileContent::App(app) => app.uses_host_record(),
-            TileContent::Stub { .. } => true,
-            TileContent::Notice { .. } | TileContent::Arriving => false,
-        }
-    }
-
-    /// External surfaces and symbolic notices own no host record: detach any earlier record
-    /// custody so the outer document is never lent to them.
-    fn clear_record_binding(&mut self) {
-        if self.binding.is_none() && self.pending_binding.is_none() && self.record_error.is_none() {
-            return;
-        }
-        self.settle_outgoing_record();
-        self.binding = None;
-        self.pending_binding = None;
-        self.record_error = None;
-        self.record_transition_error = None;
-        self.record_intent_transition_blocked = false;
-        self.record_creation_refused = false;
-        self.announced = None;
-        self.renew_history_lifetime();
-    }
-
-    /// Keep a failed fresh creation unavailable without attaching an existing
-    /// record with the same spelling. Ordinary binding refresh cannot clear it;
-    /// the owner must explicitly replace the resource/content first.
-    pub fn refuse_record_binding(&mut self, reason: String) {
-        if self.record_creation_refused && self.record_error.as_ref() == Some(&reason) {
-            return;
-        }
-        self.replace_content(TileContent::Notice {
-            title: record_unavailable_title(),
-            detail: reason.clone(),
-        });
-        self.binding = None;
-        self.pending_binding = None;
-        self.history = None;
-        self.pending_history = None;
-        self.retained_invocations.clear();
-        self.record_error = Some(reason);
-        self.record_creation_refused = true;
-    }
-
-    #[must_use]
-    pub fn record_creation_refused(&self) -> bool {
-        self.record_creation_refused
-    }
-
     #[must_use]
     pub fn record_transition_error(&self) -> Option<&str> {
         self.record_transition_error.as_deref()
-    }
-
-    fn install_declared_history(&mut self) {
-        if self.automatic_history || self.record_error.is_some() || self.binding.is_none() {
-            return;
-        }
-        let definition = match &self.content {
-            TileContent::App(root) => {
-                crate::history_mode::capability::document_history_definition(root.as_ref())
-            }
-            _ => None,
-        };
-        let Some(definition) = definition else {
-            return;
-        };
-        if self.history.is_some() {
-            self.record_error = Some("Conflicting History declarations for this tile".into());
-            return;
-        }
-        match self.register_document_history(definition) {
-            Ok(()) => self.automatic_history = true,
-            Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
-        }
-    }
-
-    fn settle_outgoing_record(&mut self) {
-        if let Some(binding) = &mut self.binding
-            && let Some(report) = binding.settle_outgoing()
-        {
-            self.close_reports.push(report);
-        }
-    }
-
-    /// Record the step the app's owner reported against the record it wrote.
-    /// The host's node sweep cannot reach a live root History hides, and a
-    /// transition must not carry the bracket over to the next record. The
-    /// bracket is taken only under the record's loan, so a busy record leaves
-    /// it with the owner.
-    fn record_owner_step_to_current_record(&mut self) -> Result<(), String> {
-        fn take(widget: &mut dyn Widget, out: &mut Vec<Vec<automerge::ChangeHash>>) {
-            if let Some(before) = crate::undo::take_committed_action(widget) {
-                out.push(before);
-            }
-            for child in widget.children_mut() {
-                if child.legacy_callback_boundary().is_none() {
-                    take(child, out);
-                }
-            }
-        }
-        let (Some(binding), TileContent::App(root)) = (&self.binding, &mut self.content) else {
-            return Ok(());
-        };
-        binding
-            .store
-            .with_action_state(&binding.live, |doc, history, _| {
-                let mut brackets = Vec::new();
-                take(root.as_mut(), &mut brackets);
-                let Some(before) = brackets
-                    .into_iter()
-                    .max_by_key(|before| doc.get_changes(before).len())
-                else {
-                    return;
-                };
-                history.record_committed_action_authored(
-                    doc,
-                    before,
-                    None,
-                    crate::undo::get_state(root.as_ref()),
-                    Some(crate::collaboration::local_user_id()),
-                );
-            })
-            .map_err(|error| error.to_string())
     }
 
     fn collect_retained_updates_before_release(&mut self) -> Result<(), String> {
@@ -1431,7 +1069,7 @@ impl TileHost {
         }
     }
 
-    fn prepare_owner_transition(&mut self) -> Result<(), OwnerTransitionError> {
+    fn prepare_owner_transition(&mut self) -> Result<(), String> {
         if !self.owner_bound_work {
             self.record_transition_error = None;
             return Ok(());
@@ -1439,24 +1077,11 @@ impl TileHost {
         if !self.history_lifetime.active.get() {
             let error = "The current document owner is closed".to_string();
             self.record_transition_error = Some(error.clone());
-            return Err(OwnerTransitionError {
-                message: error,
-                retry_pending: false,
-            });
+            return Err(error);
         }
         if let Err(error) = self.collect_retained_updates_before_release() {
             self.record_transition_error = Some(error.clone());
-            return Err(OwnerTransitionError {
-                message: error,
-                retry_pending: true,
-            });
-        }
-        if let Err(error) = self.record_owner_step_to_current_record() {
-            self.record_transition_error = Some(error.clone());
-            return Err(OwnerTransitionError {
-                message: error,
-                retry_pending: false,
-            });
+            return Err(error);
         }
         let release = match &mut self.content {
             TileContent::App(root) => {
@@ -1466,12 +1091,8 @@ impl TileHost {
         };
         if let Err(error) = release {
             self.record_transition_error = Some(error.clone());
-            return Err(OwnerTransitionError {
-                message: error,
-                retry_pending: false,
-            });
+            return Err(error);
         }
-        self.settle_outgoing_record();
         for invocation in self
             .retained_invocations
             .drain()
@@ -1492,16 +1113,8 @@ impl TileHost {
     }
 
     fn current_binding_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
-        if let Some(binding) = self.callback_binding() {
-            return Some(crate::history_mode::HistoryOwner::component(binding));
-        }
-        let binding = self.binding.as_ref()?;
-        let checkout = binding.store.verified_checkout(&binding.live).ok()?;
-        Some(crate::history_mode::HistoryOwner::legacy(
-            binding.store.clone(),
-            checkout,
-            &self.history_lifetime,
-        ))
+        self.callback_binding()
+            .map(crate::history_mode::HistoryOwner::component)
     }
 
     fn owner_bound_custody_changed(&self) -> bool {
@@ -1512,35 +1125,11 @@ impl TileHost {
             })
     }
 
-    fn checked_old_owner_for_recovery(&self) -> Option<RecordId> {
-        if self.record_transition_error.is_none()
-            || self.record_error.is_some()
-            || !self.history_lifetime.active.get()
-        {
-            return None;
-        }
-        let admitted = self.owner_bound_custody.as_ref()?;
-        admitted.validate().ok()?;
-        let current = self.current_binding_owner()?;
-        current.validate().ok()?;
-        if !current.same_owner(admitted) {
-            return None;
-        }
-        let binding = self.binding.as_ref()?;
-        binding.store.verified_checkout(&binding.live).ok()?;
-        Some(binding.live.clone())
-    }
-
     fn renew_history_lifetime(&mut self) {
-        if self.automatic_history {
-            self.history = None;
-            self.pending_history = None;
-            self.automatic_history = false;
-        }
         self.history_lifetime.control_domain.close();
         self.history_lifetime.active.set(false);
         let previous = self.history_lifetime.control_domain.clone();
-        self.history_lifetime = crate::history_mode::owner::LegacyHistoryLifetime::new();
+        self.history_lifetime = crate::history_mode::owner::RecordOwnerLifetime::new();
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
@@ -1560,12 +1149,6 @@ impl TileHost {
         }
     }
 
-    /// Typing may reach a live app that has no tab record yet. It must not
-    /// bypass a renewed lifetime or admitted owner-bound custody.
-    fn typing_may_bypass_missing_record(&self) -> bool {
-        !self.owner_bound_work && self.record_transition_error.is_none()
-    }
-
     fn prepare_record_resolution(&mut self) -> Result<(), String> {
         if !self.history_lifetime.active.get() {
             let error = "The current document owner is closed".to_string();
@@ -1573,208 +1156,11 @@ impl TileHost {
             return Err(error);
         }
         if self.owner_bound_custody_changed() {
-            self.prepare_owner_transition()
-                .map_err(|error| error.message)?;
+            self.prepare_owner_transition()?;
         }
         Ok(())
     }
 
-    fn bind_record_intent(&mut self, store: RecordStore, tab: RecordCheckout, create: bool) {
-        // Every explicit request supersedes the older queued intent, even if
-        // this attempt refuses. Observation backpressure may queue it anew.
-        self.pending_binding = None;
-        if self.record_creation_refused {
-            return;
-        }
-        if !self.history_lifetime.active.get() {
-            self.record_transition_error = Some("The current document owner is closed".into());
-            self.record_intent_transition_blocked = false;
-            return;
-        }
-        if let Some(b) = &self.binding
-            && b.store.same_owner(&store)
-            && b.tab == tab
-            && store.open_existing_record_checked(&tab).is_ok()
-        {
-            self.pending_binding = None;
-            self.record_transition_error = None;
-            self.record_intent_transition_blocked = false;
-            return;
-        }
-        if let Err(error) = admit_record(&store, &tab, create) {
-            if self.binding.is_some() && self.owner_bound_work {
-                self.pending_binding = Some(PendingBinding { store, tab, create });
-                self.record_transition_error = Some(record_unavailable(&error));
-                self.record_intent_transition_blocked = false;
-                return;
-            }
-            // Preserve the existing unavailable-binding behavior, but never
-            // expose the outer document while the requested owner is absent.
-            self.settle_outgoing_record();
-            self.announced = None;
-            self.renew_history_lifetime();
-            self.binding = None;
-            self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(record_unavailable(&error));
-            return;
-        }
-        if self.binding.is_some()
-            && let Err(error) = self.prepare_owner_transition()
-        {
-            if error.retry_pending {
-                self.pending_binding = Some(PendingBinding { store, tab, create });
-            }
-            self.record_intent_transition_blocked = false;
-            return;
-        }
-        // A spelling is not custody: a replaced store or checkout must be
-        // admitted afresh, including failed same-ID kind changes.
-        self.settle_outgoing_record();
-        self.announced = None;
-        self.renew_history_lifetime();
-        // A new lifetime is a new admission: the retained bindings still
-        // describe the old one, so the host must recompose before it can
-        // route anything to this content again (as `content_mut` does).
-        self.structure_dirty = true;
-        if let Err(error) = admit_record(&store, &tab, create) {
-            self.binding = None;
-            self.pending_binding = Some(PendingBinding { store, tab, create });
-            self.record_error = Some(record_unavailable(&error));
-            return;
-        }
-        self.pending_binding = None;
-        self.record_error = None;
-        self.record_transition_error = None;
-        self.record_intent_transition_blocked = false;
-        let live = tab.id.clone();
-        self.binding = Some(Binding {
-            store,
-            tab,
-            live,
-            established: false,
-            settled_frontier: None,
-        });
-        self.announce_scope();
-    }
-
-    fn resolve_record(&mut self) -> Result<Option<RecordId>, String> {
-        self.prepare_record_resolution()?;
-        let previous_live = self.binding.as_ref().map(|binding| binding.live.clone());
-        let was_unavailable = self.record_error.is_some();
-        if let Some(pending) = self.pending_binding.take() {
-            if let Err(error) = admit_record(&pending.store, &pending.tab, pending.create) {
-                self.pending_binding = Some(pending);
-                // The tile shows the storage context; the caller gets the
-                // exact admission refusal.
-                let shown = record_unavailable(&error);
-                if self.binding.is_some() {
-                    self.record_transition_error = Some(shown);
-                } else {
-                    self.record_error = Some(shown);
-                }
-                return Err(error.to_string());
-            }
-            if self.binding.is_some() {
-                if let Err(error) = self.prepare_owner_transition() {
-                    if error.retry_pending {
-                        self.pending_binding = Some(pending);
-                    }
-                    self.record_intent_transition_blocked = false;
-                    return Err(error.message);
-                }
-                self.announced = None;
-                self.renew_history_lifetime();
-                self.binding = Some(Binding {
-                    store: pending.store,
-                    live: pending.tab.id.clone(),
-                    tab: pending.tab,
-                    established: false,
-                    settled_frontier: None,
-                });
-                self.record_error = None;
-                self.record_transition_error = None;
-                self.record_intent_transition_blocked = false;
-            } else {
-                self.binding = Some(Binding {
-                    store: pending.store,
-                    live: pending.tab.id.clone(),
-                    tab: pending.tab,
-                    established: false,
-                    settled_frontier: None,
-                });
-            }
-        }
-        let want = match &self.content {
-            TileContent::App(w) => crate::record::capability::record_intent(w.as_ref()),
-            TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
-        };
-        let changing_owner = match (&self.binding, &want) {
-            (Some(binding), Some(want)) if want.id != binding.live => {
-                if let Err(error) = binding.store.open_existing_record_checked(want) {
-                    let shown = record_unavailable(&error);
-                    if self.owner_bound_work {
-                        self.record_transition_error = Some(shown);
-                        self.record_intent_transition_blocked = true;
-                    } else {
-                        // The outgoing owner's lifetime ends here even though
-                        // the new intent is refused: settle its record first so
-                        // a failed flush is reported and retried, not dropped.
-                        self.settle_outgoing_record();
-                        if !was_unavailable {
-                            self.renew_history_lifetime();
-                        }
-                        self.record_error = Some(shown);
-                    }
-                    return Err(error.to_string());
-                }
-                true
-            }
-            _ => false,
-        };
-        if changing_owner {
-            if let Err(error) = self.prepare_owner_transition() {
-                self.record_intent_transition_blocked = true;
-                return Err(error.message);
-            }
-            self.record_intent_transition_blocked = false;
-        } else if self.record_intent_transition_blocked {
-            self.record_transition_error = None;
-            self.record_intent_transition_blocked = false;
-        }
-        let Some(binding) = self.binding.as_mut() else {
-            return Ok(None);
-        };
-        let live = match binding.follow_checked(want, &mut self.close_reports) {
-            Ok(live) => live,
-            Err(error) => {
-                if !was_unavailable {
-                    self.renew_history_lifetime();
-                }
-                self.record_error = Some(record_unavailable(&error));
-                return Err(error.to_string());
-            }
-        };
-        if was_unavailable || previous_live.as_ref() != Some(&live) {
-            self.renew_history_lifetime();
-        }
-        self.record_error = None;
-        self.announce_scope();
-        Ok(Some(live))
-    }
-
-    fn announce_scope(&mut self) {
-        self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        let Some(live) = self.binding.as_ref().map(|b| b.live.clone()) else {
-            return;
-        };
-        if self.announced.as_ref() == Some(&live) {
-            return;
-        }
-        if let TileContent::App(w) = &mut self.content {
-            crate::record::capability::set_record_scope(w.as_mut(), &live);
-        }
-        self.announced = Some(live);
-    }
     pub fn kind_string(&self) -> String {
         match &self.content {
             TileContent::App(_) => "App".into(),
@@ -1807,7 +1193,6 @@ impl TileHost {
             self.callback_binding().is_none(),
             "canonical content requires checked replacement"
         );
-        self.settle_outgoing_record();
         self.renew_history_lifetime();
         self.structure_dirty = true;
         &mut self.content
@@ -1830,11 +1215,9 @@ impl TileHost {
     }
     /// Used when a window announced before it existed (a place reserved for it)
     /// becomes the app; replacing the tab instead would hand focus
-    /// elsewhere. Keeps the record binding but resets `announced` so the
-    /// new occupant is told its scope, and flags a structural rebuild
-    /// since `App` and the card variants have different taffy shapes.
+    /// elsewhere. Flags a structural rebuild since `App` and the card
+    /// variants have different taffy shapes.
     pub fn replace_content(&mut self, content: TileContent) {
-        self.record_creation_refused = false;
         if let TileContent::App(root) = &mut self.content {
             self.close_reports
                 .extend(crate::component_lifecycle::close_components(root.as_mut()));
@@ -1843,7 +1226,6 @@ impl TileHost {
                     root.as_mut(),
                 ));
         }
-        self.settle_outgoing_record();
         self.renew_history_lifetime();
         // The slots were the outgoing app's; the new one declares its own.
         if let Some(window) = &self.hosted_window {
@@ -1855,11 +1237,7 @@ impl TileHost {
         self.owner_bound_work = false;
         self.owner_bound_custody = None;
         self.record_transition_error = None;
-        self.record_intent_transition_blocked = false;
         self.content = content;
-        if !self.uses_host_record() {
-            self.clear_record_binding();
-        }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         let registration = match &self.content {
             TileContent::App(root) => {
@@ -1874,7 +1252,6 @@ impl TileHost {
             Err(error) => self.record_error = Some(format!("History unavailable: {error}")),
             Ok(None) => {}
         }
-        self.install_declared_history();
         // An app with a History of its own learns where the window presents
         // its controls, as the content it replaces did: an app that replaced
         // the content it replaced drew its own History and search beside the bar's.
@@ -1895,7 +1272,6 @@ impl TileHost {
         self.content_presented_at.set(None);
         self.arrival = self.begin_arrival(standing);
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        self.announced = None;
         self.structure_dirty = true;
     }
     pub fn content(&self) -> &TileContent {
@@ -2279,7 +1655,6 @@ impl Widget for TileHost {
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
         dyn crate::search::capability::SearchSource,
-        dyn crate::presence::capability::PublishesPresence,
         dyn crate::view::capability::ViewState,
         dyn crate::component_lifecycle::ComponentLifecycle,
         dyn crate::widget::ResourceOperations
@@ -2332,10 +1707,6 @@ impl Widget for TileHost {
             .filter(|history| !history.live_interactive())
             .and_then(|history| history.live_layout_node())
     }
-    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> {
-        self.binding.as_ref()?;
-        Some((self.live_callback_node?, self.history_owner()?))
-    }
     #[allow(
         private_interfaces,
         reason = "toolkit-only component request preserves hidden live lifecycle without exposing root/registry loans"
@@ -2359,12 +1730,10 @@ impl Widget for TileHost {
     )]
     fn visit_resource_owners(
         &self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
         if let TileContent::App(live) = &self.content {
             request.tile(
-                self.history_owner(),
-                self.has_separate_document_owner(),
                 self.history.as_ref().is_none_or(|h| h.live_interactive()),
                 live.as_ref(),
             )
@@ -2372,40 +1741,6 @@ impl Widget for TileHost {
             Ok(())
         }
     }
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners_mut(
-        &mut self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
-        let _running = self.running();
-        let owner = self.history_owner();
-        let separate = self.has_separate_document_owner();
-        let interactive = self.history.as_ref().is_none_or(|h| h.live_interactive());
-        if request.effect_target(owner.as_ref()) {
-            request.deliver_effect(self, interactive);
-            return Ok(());
-        }
-        let history_doors = self
-            .history
-            .as_ref()
-            .map(|history| history.door_addresses())
-            .unwrap_or_default();
-        if let TileContent::App(live) = &mut self.content {
-            request.tile(
-                owner.as_ref(),
-                separate,
-                interactive,
-                &history_doors,
-                live.as_mut(),
-            )
-        } else {
-            Ok(())
-        }
-    }
-
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
         let _running = self.running();
         if let TileContent::App(live) = &mut self.content {
@@ -2474,22 +1809,12 @@ impl Widget for TileHost {
         if self.record_error.is_some() || !self.history_lifetime.active.get() {
             return None;
         }
-        if let Some(binding) = self.callback_binding() {
-            return Some(crate::history_mode::HistoryOwner::component(binding));
-        }
-        let binding = self.binding.as_ref()?;
-        let checkout = binding.store.verified_checkout(&binding.live).ok()?;
-        Some(crate::history_mode::HistoryOwner::legacy(
-            binding.store.clone(),
-            checkout,
-            &self.history_lifetime,
-        ))
+        self.callback_binding()
+            .map(crate::history_mode::HistoryOwner::component)
     }
 
     fn has_separate_document_owner(&self) -> bool {
-        self.binding.is_some()
-            || self.pending_binding.is_some()
-            || self.callback_binding().is_some()
+        self.callback_binding().is_some()
     }
 
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -2622,27 +1947,15 @@ impl Widget for TileHost {
             self.close_reports.extend(reports);
             self.retained_updates = answers;
         }
-        let Ok(live) = self.resolve_record() else {
+        if self.prepare_record_resolution().is_err() {
             return;
-        };
-        self.install_declared_history();
+        }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         if self.record_error.is_some() {
             return;
         }
-        let TileContent::App(w) = &mut self.content else {
-            return;
-        };
-        match (live, &mut self.binding) {
-            (Some(id), Some(b)) => {
-                b.store.with(&id, |doc| w.sync(doc, &ROOT));
-                if !b.established {
-                    b.store
-                        .with_history(&id, |doc, history| history.rebase(doc));
-                    b.established = true;
-                }
-            }
-            _ => w.sync(s, p),
+        if let TileContent::App(w) = &mut self.content {
+            w.sync(s, p);
         }
     }
 
@@ -2654,30 +1967,8 @@ impl Widget for TileHost {
         {
             return;
         }
-        let live = self.binding.as_ref().map(|binding| binding.live.clone());
-        match (
-            live,
-            self.binding.as_ref().map(|binding| binding.store.clone()),
-        ) {
-            (Some(id), Some(store)) => {
-                let _ = store.with(&id, |doc| {
-                    if let TileContent::App(app) = &mut self.content {
-                        let before = crate::doc::settle_mark(doc);
-                        app.settle(&mut crate::widget::Edits::lend(doc), &ROOT);
-                        // What it wrote shows in this same frame.
-                        if crate::doc::settle_mark(doc) != before {
-                            app.update(doc, &ROOT);
-                            app.sync(doc, &ROOT);
-                        }
-                    }
-                });
-                let _ = self.record_owner_step_to_current_record();
-            }
-            _ => {
-                if let TileContent::App(app) = &mut self.content {
-                    app.settle(edits, path);
-                }
-            }
+        if let TileContent::App(app) = &mut self.content {
+            app.settle(edits, path);
         }
     }
 
@@ -2878,27 +2169,15 @@ impl Widget for TileHost {
                 return;
             }
         }
-        let typing = matches!(
-            event,
-            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-        );
-        let live = if let Ok(live) = self.resolve_record() {
-            live
-        } else if let Some(live) = self.checked_old_owner_for_recovery() {
-            Some(live)
-        } else if typing && self.typing_may_bypass_missing_record() {
-            // A running Terminal still receives keystrokes when the tab
-            // record was never bound. A renewed or closed owner must not.
-            None
-        } else {
-            // Refuse what is meant for this tile; leave the rest for its
-            // neighbours (a loading window must not freeze the ones beside it).
+        // Refuse what is meant for this tile while its owner is closed or
+        // switching, or its content cannot be shown; leave the rest for its
+        // neighbours (a loading window must not freeze the ones beside it).
+        if self.prepare_record_resolution().is_err() {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
-        };
-        self.install_declared_history();
+        }
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() && !(typing && self.typing_may_bypass_missing_record()) {
+        if self.record_error.is_some() {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
@@ -2929,69 +2208,7 @@ impl Widget for TileHost {
         else {
             return;
         };
-        let (Some(id), Some(bind)) = (live, &self.binding) else {
-            app.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            return;
-        };
-        // An `UndoEntry` is a pair of change hashes inside *this* record's
-        // change graph, so running it against another tab's document
-        // either does nothing or reverts the wrong thing.
-        if app.is_focused()
-            && let Some(step) = undo_step(event, *ctx.modifiers)
-        {
-            bind.store.with_history(&id, |doc, history| {
-                let author = crate::collaboration::local_user_id();
-                // Close any open burst first, so Ctrl+Z right after typing
-                // reverts what was just typed, not the action before it —
-                // free when the burst is already closed.
-                if matches!(step, UndoStep::Undo) {
-                    history.commit_action_authored(
-                        doc,
-                        None,
-                        crate::undo::get_state(app.as_ref()),
-                        Some(author.clone()),
-                    );
-                }
-                match step {
-                    UndoStep::Undo => history.undo_as(
-                        doc,
-                        Some(&author),
-                        None,
-                        crate::undo::get_state(app.as_ref()),
-                        None,
-                    ),
-                    UndoStep::Redo => history.redo_as(
-                        doc,
-                        Some(&author),
-                        None,
-                        crate::undo::get_state(app.as_ref()),
-                        None,
-                    ),
-                }
-                .map(|entry| {
-                    if let Some(meta) = entry.widget_metadata.as_deref() {
-                        crate::undo::set_state(app.as_mut(), meta);
-                    }
-                })
-            });
-            *ctx.handled = true;
-            return;
-        }
-        bind.store.with(&id, |doc| {
-            app.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: ctx.scale_factor,
-                    modifiers: ctx.modifiers,
-                    state: crate::widget::Edits::lend(doc),
-                    path: &ROOT,
-                    handled: ctx.handled,
-                    focus_target: ctx.focus_target,
-                    node_id: child_node,
-                    taffy: ctx.taffy,
-                },
-            );
-        });
+        app.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
     }
     fn name(&self) -> &'static str {
         "TileHost"
@@ -3214,11 +2431,10 @@ impl crate::widget::ResourceOperations for TileHost {
         if !self.history_lifetime.active.get() {
             return Err("The current document owner is closed".into());
         }
-        // Resolve a requested legacy binding before exposing any document.
-        // Failure must not advance/announce its scope or fall back to the host.
-        let live = self.resolve_record()?;
+        // A closed or switching owner exposes no document.
+        self.prepare_record_resolution()?;
         if scope.is_none() {
-            self.announce_scope();
+            self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
         }
         let owner = self.history_owner();
         let TileContent::App(app) = &mut self.content else {
@@ -3240,26 +2456,20 @@ impl crate::widget::ResourceOperations for TileHost {
                 root,
             ),
         };
-        let started = match live.zip(self.binding.as_ref()) {
-            Some((live, binding)) => binding
-                .store
-                .with_checked(&live, |document| start(document, &ROOT))
-                .map_err(|error| error.to_string())??,
-            // Unbound local work is polled straight from the app rather than
-            // through retained owner custody.
-            None if scope.is_none() => {
-                let started = start(doc.document_mut(), path)?;
-                if matches!(
-                    started,
-                    Some(crate::widget::ResourceOperationStart::Accepted)
-                ) && self.callback_binding().is_some()
-                {
-                    self.component_invocations.insert(op.invocation());
-                }
-                return Ok(started);
+        // Unscoped local work is polled straight from the app rather than
+        // through retained owner custody.
+        if scope.is_none() {
+            let started = start(doc.document_mut(), path)?;
+            if matches!(
+                started,
+                Some(crate::widget::ResourceOperationStart::Accepted)
+            ) && self.callback_binding().is_some()
+            {
+                self.component_invocations.insert(op.invocation());
             }
-            None => start(doc.document_mut(), path)?,
-        };
+            return Ok(started);
+        }
+        let started = start(doc.document_mut(), path)?;
         if matches!(
             started,
             Some(crate::widget::ResourceOperationStart::Accepted)
@@ -3338,9 +2548,6 @@ impl crate::widget::ResourceOperations for TileHost {
             }
             return update;
         }
-        if self.binding.is_some() || self.pending_binding.is_some() {
-            return None;
-        }
         match &mut self.content {
             TileContent::App(app) => crate::widget::poll_resource_operation(
                 app.as_mut(),
@@ -3358,16 +2565,7 @@ impl crate::component_lifecycle::ComponentLifecycle for TileHost {
     fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
         match &self.content {
             TileContent::App(root) => {
-                if let Some(binding) = &self.binding {
-                    binding
-                        .store
-                        .read(&binding.live, |document| {
-                            crate::component_lifecycle::unsaved_documents(root.as_ref(), document)
-                        })
-                        .unwrap_or_default()
-                } else {
-                    crate::component_lifecycle::unsaved_documents(root.as_ref(), doc)
-                }
+                crate::component_lifecycle::unsaved_documents(root.as_ref(), doc)
             }
             _ => Vec::new(),
         }
@@ -3375,11 +2573,6 @@ impl crate::component_lifecycle::ComponentLifecycle for TileHost {
     fn checkpoint_components(&mut self) -> Vec<String> {
         let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
         errors.extend(self.record_error.iter().cloned());
-        if let Some(binding) = &self.binding {
-            if let Err(error) = binding.store.try_flush() {
-                errors.push(error);
-            }
-        }
         if let TileContent::App(root) = &mut self.content {
             errors.extend(crate::component_lifecycle::checkpoint_components(
                 root.as_mut(),
@@ -3398,9 +2591,7 @@ impl crate::component_lifecycle::ComponentLifecycle for TileHost {
     }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
         self.history_lifetime.control_domain.close();
-        if self.history_lifetime.active.replace(false) {
-            self.settle_outgoing_record();
-        }
+        self.history_lifetime.active.set(false);
         if let TileContent::App(root) = &mut self.content {
             self.close_reports
                 .extend(crate::component_lifecycle::close_components(root.as_mut()));
@@ -3432,19 +2623,6 @@ impl crate::view::capability::ViewState for TileHost {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for TileHost {
-    /// Presence identity is the record shown, not the tile — the only
-    /// thing that tells two tabs of one app apart, since a peer's caret is
-    /// a position in *a document*. Unbound tiles report nothing.
-    fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
-        self.binding
-            .as_ref()
-            .map(|b| crate::presence::PresenceKey::Tab {
-                id: b.live.as_str().to_string(),
-            })
-    }
-}
-
 impl crate::widget::controls::ActionControls for TileHost {
     fn install_control_custody(
         &mut self,
@@ -3463,8 +2641,7 @@ impl crate::widget::controls::ActionControls for TileHost {
                 if domain.permits_renewal(previous, attachment) {
                     self.history_lifetime.control_domain.close();
                     self.history_lifetime.active.set(false);
-                    self.history_lifetime =
-                        crate::history_mode::owner::LegacyHistoryLifetime::new();
+                    self.history_lifetime = crate::history_mode::owner::RecordOwnerLifetime::new();
                     self.custody_scope = None;
                     self.custody_renewal = None;
                 } else if previous.closed() || !previous.same_owner_incarnation(domain) {

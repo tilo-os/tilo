@@ -32,7 +32,7 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let room = create_and_enter(&relay, &host, &laptop, "Lounge").await;
+    let room = create_and_enter(&relay, &laptop, "Lounge").await;
     let mut bob_peer =
         super::sealed_records::join(&relay, &laptop, &room.room, &bob, &phone, [7; 32])
             .await

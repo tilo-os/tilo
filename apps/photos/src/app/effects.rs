@@ -5,11 +5,11 @@
 use crate::actions::PhotosEffect;
 use crate::model::{PhotoLibrary, Rect01};
 use crate::strings::tr;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
-use ui::tilo_resource::Id;
-use ui::widget::Widget;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource::effect::Answers;
+use ui::tilo_resource::{Effect as _, Id};
 
 use super::directory_import::build_directory_import_buttons;
 use super::editors::build_metadata_editor_buttons;
@@ -17,10 +17,10 @@ use super::navigation::build_collection_page_buttons;
 use super::{
     AlbumEditorHit, AnalysisJob, AnalysisJobKind, CollectionPageHit, DirectoryImportMode,
     DirectoryStatusHit, Hit, LibraryAnalysisHit, LibraryDestination, LiveContent,
-    MetadataEditorHit, PeopleIntent, PhotosApp, build_library_analysis_buttons,
+    MetadataEditorHit, PeopleIntent, Photos, build_library_analysis_buttons,
 };
 
-impl PhotosApp {
+impl Photos {
     /// Build the retained controls again, bound to their effects.
     pub(super) fn bind_controls(&mut self) {
         let actions = self.actions.as_ref();
@@ -440,7 +440,7 @@ impl Control {
     }
 }
 
-impl PhotosApp {
+impl Photos {
     /// Apply callbacks after the host has admitted and dispatched an emitted
     /// control action. Pointer handling only queues the action; the callback
     /// runs after that event has returned, so `sync` is the common completion
@@ -484,58 +484,40 @@ impl PhotosApp {
     }
 }
 
-impl ui::widget::controls::ActionControls for PhotosApp {
-    fn install_control_custody(
+impl Photos {
+    /// Answer `effect` for the view's effect handler: a job's answer is kept
+    /// under its invocation, and settles as its work reports.
+    pub(crate) fn effect(
         &mut self,
-        domain: &ui::ControlDomain,
-        attachment: ui::control_custody::CustodyAttachment,
-    ) {
-        for button in self.retained_buttons_mut() {
-            ui::widget::controls::install_control_custody(button, domain, attachment);
+        effect: PhotosEffect,
+        cx: &mut EffectCx<PhotoLibrary>,
+    ) -> EffectAnswer {
+        let job = PhotosEffect::declarations()
+            .iter()
+            .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
+        let invocation = cx.invocation().unwrap_or_default();
+        // A job's work reports under its invocation from the moment it
+        // starts, so its answer is kept before the work begins.
+        if job {
+            let reply = cx.reply();
+            self.register_reply(invocation, reply);
         }
-        if let Some(empty) = &mut self.empty_state {
-            ui::widget::controls::install_control_custody(empty, domain, attachment);
+        let state = cx.live().get();
+        match self.answer_effect(effect, invocation, &state) {
+            Ok(Some(output)) if job => {
+                self.settle_now(invocation, Ok(output));
+                Ok(Effected::Pending)
+            }
+            Ok(Some(output)) => Ok(Effected::Done(output)),
+            Ok(None) if job => Ok(Effected::Pending),
+            Ok(None) => Ok(Effected::done()),
+            Err(error) => {
+                self.forget_reply(invocation);
+                Err(error)
+            }
         }
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.empty_state
-            .as_mut()
-            .and_then(|empty| ui::widget::controls::take_control_invocation(empty))
-            .or_else(|| {
-                self.retained_buttons_mut()
-                    .into_iter()
-                    .find_map(|button| ui::widget::controls::take_control_invocation(button))
-            })
-    }
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        // Photos projects its custom media surfaces and retained buttons into
-        // one complete semantic tree above. Inventory that visible tree once:
-        // appending every retained widget here also advertises controls that
-        // are currently hidden (other routes, closed sheets, disabled jobs),
-        // producing orphan automation bindings with no matching UI target.
-        // The buttons' canonical resources remain published by `resources`
-        // and are dispatched through the same retained widgets.
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        if let Some(empty) = &self.empty_state {
-            bindings.extend(ui::widget::controls::control_action_bindings(empty));
-        }
-        bindings
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for button in self.retained_buttons_mut() {
-            button.refresh_control_action_availability(allowed);
-        }
-        if let Some(empty) = &mut self.empty_state {
-            ui::widget::controls::refresh_control_action_availability(empty, allowed);
-        }
-    }
-}
-
-impl PhotosApp {
     /// Answer `effect` — invoked by a control, the palette, an agent or a
     /// script — against `library` as it is now. `Ok(None)` when its work
     /// continues: it reports through [`Self::settle`] under `invocation`

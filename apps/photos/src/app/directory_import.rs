@@ -19,11 +19,11 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::{
     DIRECTORY_FAILURE_DETAIL_LIMIT, DIRECTORY_IMPORT_PER_FRAME, DirectoryImport,
-    DirectoryImportEvent, DirectoryImportMode, DirectoryImportReceipt, DirectoryStatusHit,
-    PhotosApp, bound,
+    DirectoryImportEvent, DirectoryImportMode, DirectoryImportReceipt, DirectoryStatusHit, Photos,
+    bound,
 };
 
-impl PhotosApp {
+impl Photos {
     /// Pose a running folder import for hermetic offscreen visual coverage.
     /// The held sender prevents the ordinary sync loop from treating this
     /// deterministic fixture as a crashed worker.
@@ -971,7 +971,7 @@ impl DirectoryStatusHit {
     }
 }
 
-impl PhotosApp {
+impl Photos {
     /// Import the photographs a contents chooser delivered.
     fn drain_contents_picker(&mut self) {
         let Some(rx) = self.contents_picker.as_ref() else {

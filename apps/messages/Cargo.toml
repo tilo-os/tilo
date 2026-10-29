@@ -19,7 +19,9 @@ runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 [dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
-tilo-messaging = { path = "../../crates/platform/tilo-messaging" }
+# The person's accounts, in the messaging service the launcher connects
+# this app to.
+tilo-messaging = { path = "../../crates/platform/tilo-messaging", features = ["service-client"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

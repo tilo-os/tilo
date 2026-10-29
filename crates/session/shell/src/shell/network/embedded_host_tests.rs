@@ -172,11 +172,10 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     // followed on this thread, which holds the environment it reads.
     let host = std::thread::spawn(move || {
         while let Some(command) = commands.blocking_recv() {
-            if let NetCmd::OwnDeviceHost(asked) = command {
-                let request = &asked.governance;
+            if let NetCmd::AskHost(request) = command {
                 let answer = (
-                    asked.device,
-                    *asked.addr.id.as_bytes(),
+                    request.device,
+                    *request.addr.id.as_bytes(),
                     request.invoke.target.address.action.clone(),
                     match &request.invoke.argument {
                         tilo_actions::remote::InvokeArgument::Json(arguments) => {
@@ -207,7 +206,7 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
         .join()
         .expect("the host answers")
         .expect("the device the list names is asked");
-    assert_eq!(device, other, "the device the list names is asked");
+    assert_eq!(device, Some(other), "the device the list names is asked");
     assert_eq!(endpoint, other);
     assert_eq!(action, ENTER_ROOM);
     assert_eq!(room, Some(serde_json::Value::from(plans.to_string())));

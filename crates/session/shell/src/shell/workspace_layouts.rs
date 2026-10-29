@@ -146,7 +146,10 @@ fn pump_room(handle: &WorkspaceTreeHandle, room: RoomId, route: &mut RouteDocume
     // Read while this write holds the tree: its release is the next one.
     let after = handle.generation().wrapping_add(1);
     let captured = tree.capture_workspace_layout(room);
-    let captured = tree.capture_continuations(room) || captured;
+    let captured = tree.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface,
+    ) || captured;
     let judge = tree.layout_judge(room);
     let mut doc = tree.layout_docs.remove(&room).unwrap_or_default();
     let pumped = route.pump(&mut doc, &mut |doc, arrival| {

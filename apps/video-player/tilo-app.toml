@@ -26,7 +26,7 @@ aarch64 = "aarch64"
 optional = ["files.open", "app-files", "settings", "media.decode", "media.session", "open-uri", "gpu"]
 
 [resources]
-kinds = ["video-player.library"]
+kinds = ["video-player.library", "video-player.recent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

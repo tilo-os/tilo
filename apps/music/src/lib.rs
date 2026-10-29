@@ -20,7 +20,7 @@
 //!   transport/cache stay device-local.
 //! - [`storage`] — device-local playback profile and content-addressed cache.
 //! - `art` / `icon` — procedural cover art + vector chrome glyphs.
-//! - [`app`] — the [`MusicApp`] surface that draws the whole UI.
+//! - [`app`] — the [`MusicApp`] window that draws the whole UI.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set

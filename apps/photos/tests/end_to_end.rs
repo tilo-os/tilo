@@ -90,10 +90,7 @@ impl Harness {
         ui::framework::testing::resolve(&self.dispatch, &mut state.doc)
             .expect("submitted edits apply");
         let library = library(&state.doc);
-        ui::framework::ResourceSurface::<PhotoLibrary, photos::actions::PhotosEffect>::present(
-            app,
-            &std::rc::Rc::new(library),
-        );
+        app.state().adopt_resource_state(&std::rc::Rc::new(library));
         (app, state)
     }
 
@@ -126,6 +123,7 @@ impl Harness {
     fn edits(&mut self) -> Edits {
         let id = self
             .app()
+            .state()
             .open_photo_id()
             .expect("a photograph is open")
             .to_owned();
@@ -139,6 +137,7 @@ impl Harness {
     fn set_edits(&mut self, edits: Edits) {
         let id = self
             .app()
+            .state()
             .open_photo_id()
             .expect("a photograph is open")
             .to_owned();
@@ -173,10 +172,10 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         let (path, _) = staged(dir.path(), 1200, 800);
         let mut state = new_state();
         let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
-        let mut app = PhotosApp::new().with_dispatcher(dispatch.clone());
-        app.open_path(&path);
+        let app = PhotosApp::new().with_dispatcher(dispatch.clone());
+        app.state().open_path(&path);
         ui::framework::testing::resolve(&dispatch, &mut state.doc).expect("the photograph imports");
-        app.show_library();
+        app.state().show_library();
         let theme = Theme::high_contrast()
             .with_text_scale(2.0)
             .with_reduce_motion(true);
@@ -211,7 +210,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 320, 240);
         let mut hz = Harness::new(960.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         let photo_id = library(&hz.state().doc)
             .photos
             .values()
@@ -232,8 +231,8 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         });
         set_library(&mut hz.state().doc, &library);
         let (app, _) = hz.parts();
-        app.show_selection_for_shot();
-        app.show_selection_destination_chooser_for_shot();
+        app.state().show_selection_for_shot();
+        app.state().show_selection_destination_chooser_for_shot();
         hz.frame();
 
         let tree = hz
@@ -295,14 +294,17 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
             (320.0, 240.0),  // small enough that chrome dominates
         ] {
             let mut hz = Harness::new(w, h);
-            hz.app().open_path(&path);
+            hz.app().state().open_path(&path);
             hz.frame();
 
-            assert!(hz.app().has_image(), "{w}x{h}: the photograph did not load");
+            assert!(
+                hz.app().state().has_image(),
+                "{w}x{h}: the photograph did not load"
+            );
 
             let window = hz.window_rect();
-            let canvas = hz.app().canvas_rect();
-            let status = hz.app().status_rect();
+            let canvas = hz.app().state().canvas_rect();
+            let status = hz.app().state().status_rect();
 
             for (name, r) in [("canvas", canvas), ("status", status)] {
                 assert!(
@@ -318,7 +320,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
                 "{w}x{h}: the canvas was squeezed to nothing: {canvas:?}"
             );
 
-            let visible = hz.app().visible_rect();
+            let visible = hz.app().state().visible_rect();
             let (x, y, vw, vh) = (visible.x, visible.y, visible.w, visible.h);
             assert!(
                 x.abs() < 1e-6 && y.abs() < 1e-6,
@@ -341,10 +343,10 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 800, 1200);
         let mut hz = Harness::new(390.0, 844.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
-        let visible = hz.app().visible_rect();
+        let visible = hz.app().state().visible_rect();
         assert!(
             visible.is_full(),
             "a newly opened portrait photograph was clipped instead of fitted: {visible:?}"
@@ -380,7 +382,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         // Path count is deliberately not the metric: the empty state is an icon
         // plus two runs of text, so opening a photograph *reduces* the path count
         // while adding the one draw that matters.
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         let loaded = hz.frame();
         assert_eq!(
             images(&loaded),
@@ -408,7 +410,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
             scene.encoding().n_paths > 0,
             "the empty state drew nothing at all"
         );
-        assert!(!hz.app().has_image());
+        assert!(!hz.app().state().has_image());
     }
 
     // Opening something that is not an image must fail honestly rather than
@@ -420,11 +422,11 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         std::fs::write(&path, b"not a picture").unwrap();
 
         let mut hz = Harness::new(900.0, 600.0);
-        hz.app().open_path(&path.to_string_lossy());
+        hz.app().state().open_path(&path.to_string_lossy());
         hz.frame();
 
-        assert!(!hz.app().has_image());
-        assert!(hz.app().open_photo_id().is_none());
+        assert!(!hz.app().state().has_image());
+        assert!(hz.app().state().open_photo_id().is_none());
         assert!(library(&hz.state().doc).photos.is_empty());
     }
 }
@@ -448,17 +450,22 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 300, 200);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
-        let before = hz.app().edited_pixels().expect("rendered").clone();
+        let before = hz.app().state().edited_pixels().expect("rendered").clone();
         assert_eq!((before.w, before.h), (300, 200));
 
         let turned = hz.edits().rotated_right();
         hz.set_edits(turned);
         hz.frame();
 
-        let after = hz.app().edited_pixels().expect("re-rendered").clone();
+        let after = hz
+            .app()
+            .state()
+            .edited_pixels()
+            .expect("re-rendered")
+            .clone();
         assert_eq!((after.w, after.h), (200, 300), "the axes did not swap");
         assert_ne!(after.bytes, before.bytes, "the buffer is unchanged");
 
@@ -509,10 +516,10 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 400, 400);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
-        let before = hz.app().edited_pixels().expect("rendered").clone();
+        let before = hz.app().state().edited_pixels().expect("rendered").clone();
         assert_eq!((before.w, before.h), (400, 400));
 
         let e = Edits::default().cropped_from_view(Rect01 {
@@ -524,7 +531,12 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         hz.set_edits(e);
         hz.frame();
 
-        let after = hz.app().edited_pixels().expect("re-rendered").clone();
+        let after = hz
+            .app()
+            .state()
+            .edited_pixels()
+            .expect("re-rendered")
+            .clone();
         assert_eq!((after.w, after.h), (200, 200), "the crop did not resize");
         assert!(
             after.bytes.len() < before.bytes.len(),
@@ -548,7 +560,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 240, 160);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
         let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
@@ -559,12 +571,15 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         });
         hz.set_edits(e);
         hz.frame();
-        assert_ne!(hz.app().edited_pixels().unwrap().bytes, original.bytes);
+        assert_ne!(
+            hz.app().state().edited_pixels().unwrap().bytes,
+            original.bytes
+        );
 
         hz.set_edits(Edits::default());
         hz.frame();
         assert_eq!(
-            hz.app().edited_pixels().unwrap().bytes,
+            hz.app().state().edited_pixels().unwrap().bytes,
             original.bytes,
             "reset did not restore the original"
         );
@@ -579,13 +594,13 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         // A square window over a square photograph, so the fit is exact and the
         // arithmetic below is not fighting a letterbox.
         let mut hz = Harness::new(600.0, 600.0 + 48.0 + 28.8);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
-        hz.app().set_zoom(2.0);
+        hz.app().state().set_zoom(2.0);
         hz.frame();
 
-        let view = hz.app().visible_rect();
+        let view = hz.app().state().visible_rect();
         assert!(
             (view.w - 0.5).abs() < 0.05,
             "a 2x zoom should frame about half the width, got {view:?}"
@@ -595,7 +610,12 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         hz.set_edits(e);
         hz.frame();
 
-        let after = hz.app().edited_pixels().expect("re-rendered");
+        let after = hz
+            .app()
+            .state()
+            .edited_pixels()
+            .expect("re-rendered")
+            .clone();
         assert!(
             after.w < 400 && after.h < 400,
             "cropping to a 2x view did not shrink the image: {}x{}",
@@ -653,7 +673,10 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         {
             let mut empty = Harness::new(900.0, 600.0);
             empty.frame();
-            assert!(!empty.app().copy_to_clipboard(), "copied with nothing open");
+            assert!(
+                !empty.app().state().copy_to_clipboard(),
+                "copied with nothing open"
+            );
             assert!(
                 recorder.image.lock().unwrap().is_none(),
                 "a refused copy still offered something"
@@ -663,7 +686,7 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 400, 300);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
         let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
@@ -675,8 +698,8 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         hz.set_edits(e);
         hz.frame();
 
-        let shown = hz.app().edited_pixels().expect("rendered").clone();
-        assert!(hz.app().copy_to_clipboard(), "the copy was refused");
+        let shown = hz.app().state().edited_pixels().expect("rendered").clone();
+        assert!(hz.app().state().copy_to_clipboard(), "the copy was refused");
 
         let got = recorder
             .image
@@ -707,17 +730,18 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 320, 240);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
         let turned = hz.edits().rotated_left();
         hz.set_edits(turned);
         hz.frame();
-        let shown = hz.app().edited_pixels().expect("rendered").clone();
+        let shown = hz.app().state().edited_pixels().expect("rendered").clone();
 
         let out = dir.path().join("out.png");
         assert!(
             hz.app()
+                .state()
                 .save_to(&ui::tilo_resource::AbsolutePath::new(out.clone()).unwrap()),
             "save failed"
         );
@@ -748,7 +772,7 @@ fn save_asks_the_chooser_with_a_bare_name() {
         "",
     ] {
         let open = photos::OpenImage::new(name, 10, 10, "a".repeat(64));
-        let suggested = PhotosApp::suggested_save_name(&open);
+        let suggested = photos::app::Photos::suggested_save_name(&open);
         assert_ne!(suggested, open.name);
         let path = std::path::Path::new(&suggested);
         assert_eq!(
@@ -766,21 +790,24 @@ fn save_asks_the_chooser_with_a_bare_name() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 320, 240);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
-        let shown = hz.app().edited_pixels().expect("rendered").clone();
+        let shown = hz.app().state().edited_pixels().expect("rendered").clone();
 
         let chosen = dir.path().join("chosen.png");
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
         let _host = ui::host::enter(&services);
-        assert!(hz.app().save_with_chooser(), "nothing was offered to save");
+        assert!(
+            hz.app().state().save_with_chooser(),
+            "nothing was offered to save"
+        );
         let requests = recorder.pick_requests();
         assert_eq!(requests.len(), 1, "Save asks the chooser once");
         assert_eq!(requests[0].suggested_name(), Some("harbour-edited.png"));
         tilo_test_env::wait_until("the chooser's save to finish", || {
             hz.frame();
-            !hz.app().is_saving()
+            !hz.app().state().is_saving()
         });
         let back = pixels::decode(&std::fs::read(&chosen).unwrap()).expect("a PNG");
         assert_eq!(
@@ -810,7 +837,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 400, 200);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
         let before = hz.state().doc.save();
@@ -824,6 +851,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
 
         let shown = hz
             .app()
+            .state()
             .open_photo_id()
             .expect("the photograph is open")
             .to_owned();
@@ -874,7 +902,12 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             .unwrap();
         hz.frame();
 
-        let after = hz.app().edited_pixels().expect("re-rendered");
+        let after = hz
+            .app()
+            .state()
+            .edited_pixels()
+            .expect("re-rendered")
+            .clone();
         assert_eq!(
             (after.w, after.h),
             (200, 400),
@@ -898,7 +931,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let dir = tempfile::tempdir().unwrap();
         let (path, original) = staged(dir.path(), 400, 400);
         let mut hz = Harness::new(1000.0, 700.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
 
         // Address the photograph by the id derived from its content — no
@@ -906,6 +939,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let resources = [published(&hz.state().doc)];
         let id = hz
             .app()
+            .state()
             .open_photo_id()
             .expect("the harness opened one")
             .to_owned();
@@ -946,7 +980,12 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
             .expect("the crop applies");
         hz.frame();
 
-        let after = hz.app().edited_pixels().expect("re-rendered").clone();
+        let after = hz
+            .app()
+            .state()
+            .edited_pixels()
+            .expect("re-rendered")
+            .clone();
         assert_eq!(
             (after.w, after.h),
             (200, 200),
@@ -1011,13 +1050,13 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
             (360.0, 520.0),
         ] {
             let mut hz = Harness::new(w, h);
-            hz.app().open_path(&path);
+            hz.app().state().open_path(&path);
             hz.frame();
             hz.frame();
 
             // Every command stays reachable in the window's bar: those its
             // row has no room for are in its menu.
-            let names = hz.app().window_bar_names();
+            let names = hz.app().state().window_bar_names();
             for wanted in ["Library", "Open", "Save"] {
                 assert!(
                     names.iter().any(|name| name == wanted),
@@ -1037,31 +1076,31 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
         let mut hz = Harness::new(1000.0, 700.0);
         hz.frame();
 
-        assert!(!hz.app().has_image(), "nothing should be open");
+        assert!(!hz.app().state().has_image(), "nothing should be open");
         assert_eq!(
-            hz.app().status(),
+            hz.app().state().status(),
             "",
             "an app with no photograph open has nothing to report"
         );
+        let status = hz.app().state().status_rect();
         assert_eq!(
-            hz.app().status_rect().height(),
+            status.height(),
             0.0,
-            "an empty status line still reserved a band: {:?}",
-            hz.app().status_rect()
+            "an empty status line still reserved a band: {status:?}"
         );
 
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 200, 150);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         hz.frame();
         assert!(
-            hz.app().status_rect().height() > 0.0,
+            hz.app().state().status_rect().height() > 0.0,
             "an open photograph must get a status line"
         );
         assert!(
-            hz.app().status().contains("200"),
+            hz.app().state().status().contains("200"),
             "got `{}`",
-            hz.app().status()
+            hz.app().state().status()
         );
     }
 }
@@ -1075,7 +1114,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         let (path, _) = staged(dir.path(), 1200, 800);
         for (w, h) in [(1280.0, 800.0), (390.0, 844.0)] {
             let mut hz = Harness::new(w, h);
-            hz.app().open_path(&path);
+            hz.app().state().open_path(&path);
             let mut library = library(&hz.state().doc);
             let seed = library.photos.values().next().unwrap().clone();
             for suffix in ["dusk", "trail", "museum", "market"] {
@@ -1088,11 +1127,11 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
                 library.add_photo(extra);
             }
             set_library(&mut hz.state().doc, &library);
-            hz.app().show_library();
+            hz.app().state().show_library();
             hz.frame();
             hz.frame();
 
-            let layouts = hz.app().library_card_action_rects();
+            let layouts = hz.app().state().library_card_action_rects();
             assert!(
                 !layouts.is_empty(),
                 "{w}x{h}: no library cards were measured"
@@ -1135,7 +1174,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 1200, 800);
         let mut hz = Harness::new(1440.0, 900.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         let mut library = library(&hz.state().doc);
         let seed = library.photos.values().next().unwrap().clone();
         for suffix in ["dusk", "trail", "museum", "market"] {
@@ -1150,11 +1189,11 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
             photo_ids: library.all_photos().map(|photo| photo.id.clone()).collect(),
         });
         set_library(&mut hz.state().doc, &library);
-        hz.app().show_library();
+        hz.app().state().show_library();
         hz.frame();
         hz.frame();
 
-        let cards = hz.app().library_card_action_rects();
+        let cards = hz.app().state().library_card_action_rects();
         assert_eq!(
             cards.len(),
             5,
@@ -1180,7 +1219,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         let (path, _) = staged(dir.path(), 1200, 800);
         let mut hz = Harness::new(1440.0, 900.0);
         hz.theme = Theme::high_contrast().with_text_scale(2.0);
-        hz.app().open_path(&path);
+        hz.app().state().open_path(&path);
         let mut library = library(&hz.state().doc);
         let seed = library.photos.values().next().unwrap().clone();
         for suffix in ["dusk", "trail", "museum", "market"] {
@@ -1194,16 +1233,16 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
             library.add_photo(extra);
         }
         set_library(&mut hz.state().doc, &library);
-        hz.app().show_library();
+        hz.app().state().show_library();
         hz.frame();
         hz.frame();
 
-        let names = hz.app().window_bar_names();
+        let names = hz.app().state().window_bar_names();
         assert!(
             names.len() >= 3,
             "large text keeps the window bar's commands: {names:?}"
         );
-        let cards = hz.app().library_card_action_rects();
+        let cards = hz.app().state().library_card_action_rects();
         assert!(!cards.is_empty(), "large text keeps photos on screen");
         for (card, details, remove, favorite) in &cards {
             for control in [details, remove, favorite] {

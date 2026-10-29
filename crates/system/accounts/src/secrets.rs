@@ -285,6 +285,12 @@ impl SecretStore {
         grants
     }
 
+    /// See what other processes saved since this store read the vault
+    /// ([`SecretVault::refresh`]).
+    pub fn refresh(&mut self) {
+        self.vault.refresh();
+    }
+
     fn has_persistent_grant(&self, key: &GrantKey) -> bool {
         self.grants().iter().any(|grant| grant.key() == *key)
     }
@@ -535,6 +541,7 @@ impl CredentialBroker {
         request: &AccessRequest,
         scope: &CredentialScope,
     ) -> Result<Zeroizing<String>, BrokerError> {
+        self.store.refresh();
         if self.store.custody() != SecretCustody::System
             || self.store.recovery_error().is_some()
             || request.app_id != "so.tilo.messages"
@@ -595,6 +602,8 @@ impl CredentialBroker {
     {
         validate_app_id(&request.app_id)?;
         validate_purpose(&request.purpose)?;
+        // A grant another process revoked or made counts from now on.
+        self.store.refresh();
         if let Some(error) = self.store.recovery_error() {
             return Err(BrokerError::Storage(error.to_owned()));
         }
@@ -634,6 +643,11 @@ impl CredentialBroker {
             self.revision = self.revision.saturating_add(1);
         }
         Ok(Zeroizing::new(item.password))
+    }
+
+    /// See what other processes saved to the vault since it was read.
+    pub fn refresh(&mut self) {
+        self.store.refresh();
     }
 
     /// List durable permissions for the Passwords app's access-management UI.

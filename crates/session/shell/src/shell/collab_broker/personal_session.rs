@@ -74,7 +74,6 @@ impl NativePersonalSource {
             &source.lifecycle,
             source.host.clone(),
             principal,
-            socket,
         )
     }
 }
@@ -87,7 +86,6 @@ pub(crate) struct NativePersonalSession {
     // The lifecycle keeps a weak listener. This execution alone owns its watch.
     _watch: Arc<dyn Fn() + Send + Sync>,
     workspace: u64,
-    socket: std::path::PathBuf,
 }
 impl NativePersonalSession {
     pub(super) fn admit(
@@ -95,7 +93,6 @@ impl NativePersonalSession {
         lifecycle: &LocalSessionLifecycle,
         host: HostIdentity,
         principal: &str,
-        socket: &std::path::Path,
     ) -> Result<Arc<Self>, String> {
         let permit = lifecycle
             .acquire()
@@ -149,7 +146,6 @@ impl NativePersonalSession {
             permit,
             _watch: watch,
             workspace,
-            socket: socket.to_path_buf(),
         });
         session.check()?;
         Ok(session)
@@ -188,12 +184,6 @@ impl NativePersonalSession {
     }
     pub(crate) fn person(&self) -> CertifiedPersonContext {
         self.person.clone()
-    }
-    pub(crate) fn matches_socket(&self, socket: &std::path::Path) -> bool {
-        self.socket == socket
-    }
-    pub(crate) fn host(&self) -> HostIdentity {
-        self.host.clone()
     }
 }
 impl Drop for NativePersonalSession {

@@ -202,6 +202,8 @@ cat "$recovery_file" >>"$TILO_SESSION_TEST_LOG.recovery"
 [ "$runs" != 1 ] || printf 'locked\n' >"$recovery_file"
 printf 'control=%s\nfirst-use=%s\n' "${TILO_TEST_CONTROL:-}" "${TILO_TEST_CONTROL_FIRST_USE:-}" \
   >"$TILO_SESSION_TEST_LOG.control"
+printf 'state=%s\ndata=%s\nconfig=%s\n' "${XDG_STATE_HOME:-}" "${XDG_DATA_HOME:-}" "${XDG_CONFIG_HOME:-}" \
+  >"$TILO_SESSION_TEST_LOG.xdg"
 printf 'desktop-output %s trace=%s\n' "$*" "${TILO_FRAME_TRACE:-}"
 if [ "${TILO_SESSION_WRITE_LOGOUT:-0}" = 1 ]; then
   case "${TILO_SESSION_LOGOUT_REQUEST:-}" in
@@ -301,6 +303,25 @@ head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A login names no XDG base directories (neither PAM nor the user manager
+# does); the compositor gets them under HOME, with the state directory its
+# sealed collaboration state needs, owner-only.
+bare_home="$tmp/bare-home"
+install -d -m 700 "$bare_home"
+set +e
+env -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_CONFIG_HOME HOME="$bare_home" \
+  XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$tmp/bare-log" TILO_SESSION_DESKTOP_STATUS=5 \
+  timeout 20 "$slow_wrapper" --backend drm >"$tmp/bare-stdout"
+status=$?
+set -e
+[ "$status" = 5 ]
+grep -Fqx "state=$bare_home/.local/state" "$tmp/bare-log.xdg"
+grep -Fqx "data=$bare_home/.local/share" "$tmp/bare-log.xdg"
+grep -Fqx "config=$bare_home/.config" "$tmp/bare-log.xdg"
+[ "$(stat -c %a "$bare_home/.local/state")" = 700 ]
+[ -s "$bare_home/.local/state/tilo/session-logs/latest.log" ]
+# Directories the login already names are kept.
+grep -Fqx "state=$tmp/slow-state" "$tmp/slow-log.xdg"
 # The recorder persists its start record before it marks itself ready, so the
 # wrapper may stop waiting on the record alone. A ready mark that comes after
 # that must still be gone with the session, not left in the runtime directory.

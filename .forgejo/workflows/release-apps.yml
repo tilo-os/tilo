@@ -876,8 +876,9 @@ jobs:
       # Contacts, Mail, Messages) live in engine libraries beside the runtime. Each app's
       # probe runs its engine's code without a document, display or network;
       # the loader's trace says that the app, not the runtime, brought the
-      # engine in. Settings has no probe, to keep its tapp as it is: for it
-      # only the trace of its start counts (it need not accept --help).
+      # engine in. Settings runs from its engine library, which brings the
+      # accounts engine with it: for Settings only the trace of its start
+      # counts (it need not accept --help).
       - name: Apps run their engine libraries
         # Each measurement below gates on its own subject: a tapp over its
         # budget must not hide the runtime's numbers, or the reverse.
@@ -891,7 +892,7 @@ jobs:
                        "music libtilo_youtube_engine.so --probe-youtube-engine" \
                        "tube libtilo_youtube_engine.so --probe-youtube-engine" \
                        "mail libtilo_accounts_engine.so --probe-accounts-engine" \
-                       "settings libtilo_accounts_engine.so" \
+                       "settings libtilo_settings_engine.so" \
                        "calendar libtilo_timezone_engine.so --probe-timezone-engine" \
                        "clocks libtilo_timezone_engine.so --probe-timezone-engine" \
                        "calendar libtilo_contact_directory_engine.so --probe-contact-directory-engine" \

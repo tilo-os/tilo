@@ -69,12 +69,12 @@ fn share_copies_the_open_photographs_link() {
         .unwrap();
     app.settle();
 
-    app.surface_mut::<PhotosApp>().share_open_photo();
+    app.surface_mut::<PhotosApp>().state().share_open_photo();
     app.settle();
     let copied = ui::clipboard_paste().expect("the link is copied");
     assert!(copied.starts_with("https://tilo.so/app/#/"), "{copied}");
     assert_eq!(
-        app.surface_mut::<PhotosApp>().notice.as_deref(),
+        app.surface_mut::<PhotosApp>().state().notice.as_deref(),
         Some(tr("photos-share-copied").as_str())
     );
 }
@@ -118,10 +118,11 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         .iter()
         .map(|bytes| store.put(bytes).expect("stage a photograph"))
         .collect();
-    let mut app = PhotosApp::with_content(store.clone());
+    let app = PhotosApp::with_content(store.clone());
     let doc = crate::test_doc::new_doc();
     let library = crate::test_doc::library(&doc);
     let output = app
+        .state()
         .answer_effect(
             PhotosEffect::MakeThumbnails {
                 photos: vec![
@@ -152,6 +153,7 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
 
     let broken = store.put(b"not a photograph").expect("stage bytes");
     let partial = app
+        .state()
         .answer_effect(
             PhotosEffect::MakeThumbnails {
                 photos: vec![hashes[0].clone(), broken.clone()],
@@ -174,14 +176,15 @@ fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint
         "the failure names the picture the caller named, not an index"
     );
     assert!(
-        app.answer_effect(
-            PhotosEffect::MakeThumbnails {
-                photos: vec!["/home/someone/photo.png".into()],
-            },
-            tilo_actions::InvocationId::new(),
-            &library,
-        )
-        .is_err(),
+        app.state()
+            .answer_effect(
+                PhotosEffect::MakeThumbnails {
+                    photos: vec!["/home/someone/photo.png".into()],
+                },
+                tilo_actions::InvocationId::new(),
+                &library,
+            )
+            .is_err(),
         "a path is never content"
     );
 }
@@ -228,10 +231,15 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
     });
     crate::test_doc::set_library(&mut doc, &library);
     sync(&mut app, &mut doc);
-    app.show_library();
+    app.state().show_library();
     sync(&mut app, &mut doc);
-    app.place_chrome();
-    let (sections, selected) = app.chrome.places.shown().expect("the places are shown");
+    app.state().place_chrome();
+    let (sections, selected) = app
+        .state()
+        .chrome
+        .places
+        .shown()
+        .expect("the places are shown");
     let row = |id: &str| {
         sections
             .iter()
@@ -264,7 +272,7 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
     // The person chooses the album in the shell's list.
     let shell = ui::widget::NavShell::new()
         .sidebar(Box::new(
-            ui::widget::NavList::new(Vec::new()).fed_by(&app.chrome.places),
+            ui::widget::NavList::new(Vec::new()).fed_by(&app.state().chrome.places),
         ))
         .content(Box::new(ui::widget::Spacer::new()));
     let size = (1280, 800);
@@ -278,9 +286,17 @@ fn the_sidebar_declares_the_librarys_places_and_opens_the_chosen_one() {
         .expect("the album is a row");
     harness.click_at(trip.center().x, trip.center().y);
     sync(&mut app, &mut doc);
-    assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
-    app.place_chrome();
-    let (_, selected) = app.chrome.places.shown().expect("the places are shown");
+    assert_eq!(
+        app.state().active_album.as_deref(),
+        Some("photos.album:trip")
+    );
+    app.state().place_chrome();
+    let (_, selected) = app
+        .state()
+        .chrome
+        .places
+        .shown()
+        .expect("the places are shown");
     assert_eq!(
         selected.as_deref(),
         Some("photos:library-album:photos.album:trip")
@@ -299,15 +315,16 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
         let mut harness =
             ui::headless::FrameHarness::for_root(ui::State::new(), test_app(), size, Theme::dark());
         harness.relayout_at(size).expect("Photos lays out");
-        harness.root_mut::<PhotosApp>().begin_new_album();
+        harness.root_mut::<PhotosApp>().state().begin_new_album();
         harness.relayout_at(size).expect("Photos lays out");
         let app = harness.root::<PhotosApp>();
+        let photos = app.state();
         assert!(
-            app.chrome.inspector.is_open(),
+            photos.chrome.inspector.is_open(),
             "{width}px: the album panel is open"
         );
         assert_eq!(
-            app.chrome.inspector.is_docked(),
+            photos.chrome.inspector.is_docked(),
             docks,
             "{width}px: the panel docks only beside a readable timeline"
         );
@@ -318,13 +335,13 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
             .action_rect();
         assert!(open.width() > 0.0, "{width}px: the empty state offers Open");
         if docks {
-            let panel_left = app.chrome.inspector.sidebar_rect().x0;
+            let panel_left = photos.chrome.inspector.sidebar_rect().x0;
             assert!(
                 open.x1 <= panel_left,
                 "{width}px: Open ({open:?}) stands clear of the panel from x {panel_left}"
             );
         } else {
-            let sheet = app
+            let sheet = photos
                 .chrome
                 .inspector
                 .sheet()
@@ -355,10 +372,11 @@ fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
             viewport,
         )
         .expect("the library captures");
-        let photos = app
+        let window = app
             .harness()
             .widget_mut::<PhotosApp>()
             .unwrap_or_else(|| panic!("{viewport:?}: the window shows the library"));
+        let photos = window.state();
         assert!(
             !photos.library_cards.is_empty(),
             "{viewport:?}: the timeline shows photographs on the first frame"
@@ -392,7 +410,7 @@ fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
     })
     .expect("Photos stands in a NavShell");
     app.harness().relayout();
-    let photos = app.surface_mut::<PhotosApp>();
+    let photos = app.surface_mut::<PhotosApp>().state();
     assert_eq!(
         photos.chrome.inspector.sheet_detent(),
         Some(ui::widget::SheetDetent::Half),
@@ -413,9 +431,10 @@ fn a_narrow_album_editor_leaves_the_timeline_above_it_live() {
         .map(|(id, rect, _)| (id.clone(), *rect))
         .expect("a photograph shows above the sheet");
     let was_member = photos.album_editor_members.contains(&id);
+    drop(photos);
     let at = card.center();
     app.harness().click_at(at.x, at.y);
-    let photos = app.surface_mut::<PhotosApp>();
+    let photos = app.surface_mut::<PhotosApp>().state();
     assert!(photos.album_editor, "the editor stays open");
     assert_ne!(
         photos.album_editor_members.contains(&id),
@@ -457,11 +476,12 @@ fn back_lowers_or_puts_away_the_narrow_album_editor_before_it_goes_anywhere() {
             })
             .expect("Photos stands in a NavShell");
             app.surface_mut::<PhotosApp>()
+                .state()
                 .chrome
                 .inspector
                 .snap_sheet(from);
             app.harness().relayout();
-            let photos = app.surface_mut::<PhotosApp>();
+            let mut photos = app.surface_mut::<PhotosApp>().state();
             assert_eq!(photos.chrome.inspector.sheet_detent(), Some(from));
             assert!(
                 photos
@@ -477,19 +497,27 @@ fn back_lowers_or_puts_away_the_narrow_album_editor_before_it_goes_anywhere() {
                         id: ui::widget::WINDOW_BACK.into(),
                     });
                     photos.apply_window_toolbar();
+                    drop(photos);
                 }
-                BackInput::Escape => app.harness().key("Escape"),
-                BackInput::Gesture => assert!(
-                    app.harness().nav_gesture(ui::gesture::NavDirection::Back),
-                    "the sheet takes the back gesture"
-                ),
+                BackInput::Escape => {
+                    drop(photos);
+                    app.harness().key("Escape");
+                }
+                BackInput::Gesture => {
+                    drop(photos);
+                    assert!(
+                        app.harness().nav_gesture(ui::gesture::NavDirection::Back),
+                        "the sheet takes the back gesture"
+                    );
+                }
             }
             app.harness().relayout();
-            let photos = app.surface_mut::<PhotosApp>();
+            let photos = app.surface_mut::<PhotosApp>().state();
             let shown = photos
                 .album_editor
                 .then(|| photos.chrome.inspector.sheet_detent())
                 .flatten();
+            drop(photos);
             assert_eq!(shown, after, "{input:?} from {from:?}");
             let front = app
                 .with_widget(|shell: &mut ui::widget::NavShell| shell.front_pane())
