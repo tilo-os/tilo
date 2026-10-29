@@ -28,12 +28,10 @@ use os_actions::{
     ModemState, NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic,
     UnlockRetries,
 };
-use provider_settings_ui::bound::SettingRows as _;
-use serde::{Deserialize, Serialize};
+use provider_settings_ui::bound::{SettingRows as _, record_item};
 use tracing::warn;
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ViewCx};
-use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind};
 use zeroize::Zeroizing;
@@ -41,7 +39,7 @@ use zeroize::Zeroizing;
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::prefs::DeviceVpnPrefs;
+use crate::prefs::{DeviceVpnPrefs, MobileDataUsage, ResetDay};
 use crate::resource::Settings;
 use crate::scenarios::MobileSample;
 use crate::setting::{Follows, Read};
@@ -75,9 +73,6 @@ const METERED: &[(&str, &str)] = &[
     ("metered", "net-mobile-metered-yes"),
     ("unmetered", "net-mobile-metered-no"),
 ];
-
-/// The days of the month a data period can start on: every month has them.
-const RESET_DAYS: std::ops::RangeInclusive<u32> = 1..=28;
 
 /// Mobile data and the SIMs of this device's modems.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -117,15 +112,6 @@ pub enum MobileEffect {
         #[param("The network types, as listed: 4g-3g-2g, 5g-4g-prefer-5g, 4g …")]
         network: String,
     },
-    /// Choose the day of the month the data used starts counting again.
-    #[effect(idempotent, label = "Data period starts on")]
-    SetDataResetDay {
-        #[param("The day of the month, 1 to 28")]
-        day: u32,
-    },
-    /// Start counting the data used again from now.
-    #[effect(label = "Reset data used")]
-    ResetDataUsage,
     /// Unlock a SIM with its PIN; without it, the PIN is asked for.
     #[effect(job, label = "Unlock SIM")]
     UnlockSim {
@@ -323,8 +309,6 @@ impl MobileArea {
                     MobileEffect::SET_MOBILE_APN.id,
                     MobileEffect::SET_MOBILE_METERED.id,
                     MobileEffect::SET_PREFERRED_NETWORK.id,
-                    MobileEffect::SET_DATA_RESET_DAY.id,
-                    MobileEffect::RESET_DATA_USAGE.id,
                     MobileEffect::UNLOCK_SIM.id,
                     MobileEffect::UNBLOCK_SIM.id,
                     MobileEffect::SET_SIM_PIN_LOCK.id,
@@ -362,98 +346,6 @@ impl MobileArea {
             None => {}
         }
         statuses
-    }
-}
-
-/// The data used on this device, counted from `ModemManager`'s traffic
-/// totals. Kept on this device only: another device's modem counts its own.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "the app's device-local settings share one namespace, so each field names its area"
-)]
-pub struct MobileDataUsage {
-    /// The day of the month the count starts again; 0 for the 1st.
-    pub mobile_reset_day: u32,
-    /// The month the period being counted started in, as `year * 12 +
-    /// month - 1`; 0 before the first count.
-    pub mobile_period: u32,
-    /// Bytes used in the period.
-    pub mobile_used: u64,
-    /// The traffic total last read, to count what came after it.
-    pub mobile_counter: Option<u64>,
-    /// The boot the total was read in: totals start again at boot.
-    pub mobile_boot: Option<String>,
-}
-
-impl SettingsSchema for MobileDataUsage {
-    const SCOPE: Scope = Scope::DeviceLocal;
-}
-
-/// The civil date (year, month, day) of `days` since 1970-01-01.
-fn civil(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
-    let month = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
-
-impl MobileDataUsage {
-    /// The day of the month the period starts on.
-    fn reset_day(&self) -> u32 {
-        self.mobile_reset_day
-            .clamp(*RESET_DAYS.start(), *RESET_DAYS.end())
-    }
-
-    /// The period `now` (seconds since the epoch, UTC) falls in, as
-    /// `year * 12 + month - 1` of its first day.
-    fn period_at(&self, now: i64) -> u32 {
-        let (year, month, day) = civil(now.div_euclid(86_400));
-        let mut index = year * 12 + i64::from(month) - 1;
-        if day < self.reset_day() {
-            index -= 1;
-        }
-        u32::try_from(index).unwrap_or(0)
-    }
-
-    /// The first day of the current period, as (month, day).
-    fn period_start(&self) -> (u32, u32) {
-        (self.mobile_period % 12 + 1, self.reset_day())
-    }
-
-    /// Take in a traffic total read at `now`: what was used since the last
-    /// total counts toward the period, which starts again on its day. A
-    /// total lower than the last, or from another boot, started again from
-    /// zero. The first total ever read only starts the count. Whether
-    /// anything changed.
-    fn account(&mut self, total: Option<u64>, boot: Option<&str>, now: i64) -> bool {
-        let before = self.clone();
-        let period = self.period_at(now);
-        if self.mobile_period != period {
-            self.mobile_period = period;
-            self.mobile_used = 0;
-        }
-        if let Some(total) = total {
-            let rebooted = matches!((boot, self.mobile_boot.as_deref()), (Some(now), Some(then)) if now != then);
-            let used = match self.mobile_counter {
-                Some(seen) if !rebooted && total >= seen => total - seen,
-                Some(_) => total,
-                None => 0,
-            };
-            self.mobile_used = self.mobile_used.saturating_add(used);
-            self.mobile_counter = Some(total);
-            if boot.is_some() {
-                self.mobile_boot = boot.map(str::to_owned);
-            }
-        }
-        *self != before
     }
 }
 
@@ -919,7 +811,6 @@ pub struct MobileModel {
     /// `NetworkManager`'s WWAN switch: whether mobile data may be used.
     wwan_enabled: bool,
     boot: Option<String>,
-    usage: MobileDataUsage,
     in_flight: usize,
     notice: Option<String>,
     /// The SIM code the password prompt asks for.
@@ -952,7 +843,13 @@ impl MobileModel {
     }
 
     fn with_service(cx: PaneCx, service: Arc<dyn MobileService>) -> Self {
-        let usage = cx.settings::<MobileDataUsage>().get();
+        // The count Settings kept before it was a section is taken in
+        // before anything counts on it.
+        if let Err(error) =
+            settings_sections::mobile_data::take_in_former(&cx.settings::<MobileDataUsage>())
+        {
+            warn!(target: "tilo::settings", %error, "the mobile data count kept before could not be taken in");
+        }
         Self {
             cx,
             service,
@@ -965,7 +862,6 @@ impl MobileModel {
             wwan_listed: false,
             wwan_enabled: false,
             boot: None,
-            usage,
             in_flight: 0,
             notice: None,
             asking: None,
@@ -1084,8 +980,13 @@ impl MobileModel {
         self.follow_lock();
     }
 
-    /// Count the traffic just read toward the period, and keep the count.
-    fn count_usage(&mut self) {
+    /// Count the traffic just read toward the period through the section's
+    /// verb, where it changes the count: the modem's reading, nobody's undo
+    /// step. A device without a modem has nothing to count.
+    fn count_usage(&self) {
+        if self.modems.is_empty() {
+            return;
+        }
         let total = self
             .modems
             .iter()
@@ -1093,12 +994,13 @@ impl MobileModel {
             .map(Traffic::total)
             .reduce(u64::saturating_add);
         let now = tilo_clock::unix_now_i64();
-        let mut usage = self.usage.clone();
-        if usage.account(total, self.boot.as_deref(), now) {
-            self.usage = usage.clone();
-            if let Err(error) = self.cx.update::<MobileDataUsage>(|stored| *stored = usage) {
-                warn!(target: "tilo::settings", %error, "the mobile data count could not be kept");
-            }
+        let mut counted = self.cx.settings::<MobileDataUsage>().get();
+        if !counted.account(total, self.boot.as_deref(), now) {
+            return;
+        }
+        let count = MobileDataUsage::COUNT_DATA_USED.with((total, self.boot.clone(), now));
+        if let Err(error) = self.cx.invoke_section::<MobileDataUsage>(count) {
+            warn!(target: "tilo::settings", %error, "the mobile data count could not be kept");
         }
     }
 
@@ -1226,25 +1128,6 @@ impl MobileModel {
                     modes: chosen,
                 }))
             }
-            MobileEffect::SetDataResetDay { day } => {
-                if !RESET_DAYS.contains(&day) {
-                    return Err(t("net-mobile-reset-day-range"));
-                }
-                let now = tilo_clock::unix_now_i64();
-                let mut usage = self.usage.clone();
-                usage.mobile_reset_day = day;
-                // The count so far stays; the period it belongs to follows
-                // the new day.
-                usage.mobile_period = usage.period_at(now);
-                self.store_usage(usage)?;
-                Begun::Done
-            }
-            MobileEffect::ResetDataUsage => {
-                let mut usage = self.usage.clone();
-                usage.mobile_used = 0;
-                self.store_usage(usage)?;
-                Begun::Done
-            }
             MobileEffect::UnlockSim { sim, pin } => {
                 let Some(pin) = pin.map(Zeroizing::new) else {
                     self.require_modem()?;
@@ -1330,13 +1213,6 @@ impl MobileModel {
                 Begun::Done
             }
         })
-    }
-
-    fn store_usage(&mut self, usage: MobileDataUsage) -> Result<(), String> {
-        self.cx
-            .update::<MobileDataUsage>(|stored| *stored = usage.clone())?;
-        self.usage = usage;
-        Ok(())
     }
 
     /// Take in work that landed; what the effect answers.
@@ -1503,6 +1379,7 @@ impl MobileModel {
                 })
             })
             .collect();
+        let usage = self.cx.settings::<MobileDataUsage>().get();
         serde_json::json!({
             "source": if self.cx.reaches_devices() { "device" } else { "preview" },
             "loaded": self.loaded, "present": self.loaded.then(|| self.present()),
@@ -1510,8 +1387,8 @@ impl MobileModel {
             "roaming": self.profile.as_ref().map(|profile| profile.roaming),
             "apn": self.profile.as_ref().map(|profile| profile.apn.clone().unwrap_or_else(|| "automatic".into())),
             "metered": self.profile.as_ref().map(|profile| metered_key(profile.metered)),
-            "data_used_bytes": self.usage.mobile_used,
-            "data_period_starts_on_day": self.usage.reset_day(),
+            "data_used_bytes": usage.used,
+            "data_period_starts_on_day": usage.reset_day.get(),
             "modems": modems,
             "errors": { "modems": self.modems_error.as_ref().map(ToString::to_string), "profile": self.profile_error },
             "changes_pending": self.in_flight,
@@ -1846,37 +1723,17 @@ impl<'a> Page<'a> {
         items
     }
 
+    /// The data used this period and the day the period starts on: this
+    /// device's count, each row a part of the view over it.
     fn usage_rows(&self) -> Vec<Item> {
-        let (month, day) = self.usage.period_start();
-        let used = t_args(
-            "net-mobile-used",
-            &[
-                ("used", ui::format::size(self.usage.mobile_used).into()),
-                ("month", ui::format::month_short(month).into()),
-                ("day", day.into()),
-            ],
-        );
-        vec![
-            row(Box::new(
-                ListRow::new("settings.network.mobile.used", t("net-mobile-data-used"))
-                    .secondary(used)
-                    .trailing(Box::new(self.button(
-                        "settings.network.mobile.used.reset",
-                        &t("net-mobile-used-reset"),
-                        MobileEffect::ResetDataUsage,
-                    ))),
-            )),
-            self.cx
-                .setting(t("net-mobile-reset-day"))
-                .id("network.mobile.reset-day")
-                .choice_effect(
-                    RESET_DAYS.map(|day| day.to_string()),
-                    &LocalState::new(self.usage.reset_day().to_string()),
-                    self.actions,
-                    effect(MobileEffect::SET_DATA_RESET_DAY)
-                        .map(|day: String| day.parse::<u32>().unwrap_or(1)),
-                ),
+        let usage = self.cx.settings::<MobileDataUsage>();
+        [
+            record_item(self.cx, &usage, used_row),
+            record_item(self.cx, &usage, reset_day_row),
         ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// The SIMs, the number, the PIN lock and changing the PIN.
@@ -2057,6 +1914,47 @@ impl<'a> Page<'a> {
         }
         sections
     }
+}
+
+/// The data used this period, since the day it started on, and the way to
+/// start counting again (the section's `reset-data-used`).
+fn used_row(cx: &ViewCx<MobileDataUsage>) -> Item {
+    let said = cx.value(|usage: &MobileDataUsage| {
+        let (month, day) = usage.period_start(tilo_clock::unix_now_i64());
+        t_args(
+            "net-mobile-used",
+            &[
+                ("used", ui::format::size(usage.used).into()),
+                ("month", ui::format::month_short(month).into()),
+                ("day", day.into()),
+            ],
+        )
+    });
+    provider_settings_ui::widgets::row(cx.switch(&said, |cx, said| {
+        let reset = cx.actions().bind_invocation(
+            Button::new(
+                "settings.network.mobile.used.reset",
+                &t("net-mobile-used-reset"),
+            ),
+            MobileDataUsage::RESET_DATA_USED.with(()),
+        );
+        Box::new(
+            ListRow::new("settings.network.mobile.used", t("net-mobile-data-used"))
+                .secondary(said.clone())
+                .trailing(Box::new(reset)),
+        )
+    }))
+}
+
+/// The day of the month the data used starts counting again.
+fn reset_day_row(cx: &ViewCx<MobileDataUsage>) -> Item {
+    cx.setting(t("net-mobile-reset-day"))
+        .id("network.mobile.reset-day")
+        .among(
+            MobileDataUsage::paths().reset_day,
+            ResetDay::all(),
+            |day: &ResetDay| day.get().to_string(),
+        )
 }
 
 impl MobileModel {

@@ -13,6 +13,8 @@ path = "src/lib.rs"
 [dependencies]
 agent-provider-config = { path = "../../agent/provider-config", features = ["model"] }
 automerge.workspace = true
+# The calendar a data period is counted by.
+chrono.workspace = true
 desktop-policy = { path = "../desktop-policy" }
 serde.workspace = true
 serde_json.workspace = true

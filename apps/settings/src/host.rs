@@ -96,6 +96,7 @@ fn sections(cx: &ui::framework::ViewCx<Settings>) -> HashMap<TypeId, Box<dyn Any
     held::<crate::prefs::HostedAgentProviders>(cx, &mut sections);
     held::<crate::prefs::OskSourceSettings>(cx, &mut sections);
     held::<crate::prefs::DeviceVpnPrefs>(cx, &mut sections);
+    held::<crate::prefs::MobileDataUsage>(cx, &mut sections);
     sections
 }
 

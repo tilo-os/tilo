@@ -1285,7 +1285,6 @@ net-mobile-data-used = Data used
 net-mobile-used = { $used } since { $month } { $day }
 net-mobile-used-reset = Reset
 net-mobile-reset-day = Count starts again on day
-net-mobile-reset-day-range = The day is between 1 and 28.
 net-mobile-sim-title = SIM
 net-mobile-sim-card = SIM card
 net-mobile-esim = eSIM

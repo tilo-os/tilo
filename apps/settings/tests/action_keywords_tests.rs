@@ -63,6 +63,13 @@ fn people_find_settings_actions_by_the_words_they_use() {
             .iter()
             .map(|effect| effect.spec(<settings::panes::mouse_keyboard::InputEffect>::OPERATION)),
     );
+    // The data used is started again by the `mobile_data_usage` section's
+    // verb.
+    actions.extend(
+        <settings::prefs::MobileDataUsage>::declarations()
+            .iter()
+            .map(declaration_spec),
+    );
     let mut missed = Vec::new();
     for (query, id) in [
         ("loudness", "set-output-volume"),
@@ -75,6 +82,7 @@ fn people_find_settings_actions_by_the_words_they_use() {
         ("tethering", "set-hotspot"),
         ("microphone", "select-input"),
         ("compose", "set-compose-key"),
+        ("data usage", "reset-data-used"),
     ] {
         let found: Vec<&str> = ui::search::system::actions_found_by(query, &actions)
             .into_iter()

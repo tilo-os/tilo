@@ -705,77 +705,104 @@ fn the_other_sim_is_used_by_its_slot() {
     );
 }
 
-/// 2026-03-14 12:00 UTC, in seconds since the epoch.
-const MARCH_14: i64 = 1_773_489_600;
-const DAY: i64 = 86_400;
-
+/// The modem's count is kept in this device's section through its verb;
+/// the reset day is the section's field, bound on the modem's page and
+/// refused unless every month has it; resetting is the section's verb.
 #[test]
-fn data_used_counts_traffic_deltas_through_restarts_and_starts_again_on_its_day() {
-    let mut usage = MobileDataUsage {
-        mobile_reset_day: 15,
-        ..MobileDataUsage::default()
-    };
-    assert!(usage.account(Some(1_000), Some("a"), MARCH_14));
+fn the_count_the_reset_day_and_reset_are_the_sections() {
+    use crate::host::testing::{edit_field, invoke_section};
+    let kind = <MobileDataUsage as ui::tilo_resource::Resource>::KIND;
+    let (_, mut app) = hosted(MobileSample::Registered);
+    app.call("refresh-mobile", serde_json::json!({})).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while app.settings::<MobileDataUsage>().get().counter.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the modem's total was never counted"
+        );
+        app.settle();
+        std::thread::yield_now();
+    }
+    let counted = app.settings::<MobileDataUsage>().get();
+    invoke_section(
+        &mut app,
+        kind,
+        "count-data-used",
+        serde_json::json!({
+            "total": counted.counter.unwrap() + 500,
+            "boot": counted.boot,
+            "at": tilo_clock::unix_now_i64(),
+        }),
+    )
+    .unwrap();
     assert_eq!(
-        usage.mobile_used, 0,
-        "the first total only starts the count"
-    );
-    assert_eq!(
-        usage.period_start(),
-        (2, 15),
-        "March 14 is in the period from February 15"
+        app.settings::<MobileDataUsage>().get().used,
+        counted.used + 500
     );
 
-    usage.account(Some(1_500), Some("a"), MARCH_14 + 60);
-    assert_eq!(usage.mobile_used, 500);
+    app.call("show-mobile", serde_json::json!({})).unwrap();
+    app.settle();
+    for id in [
+        "network.mobile.reset-day",
+        "settings.network.mobile.used.reset",
+    ] {
+        assert!(
+            ui::widget::find_test_id(app.harness().root_widget(), id).is_some(),
+            "{id} on the modem's page"
+        );
+    }
     assert!(
-        !usage.account(Some(1_500), Some("a"), MARCH_14 + 120),
-        "nothing new"
+        edit_field(&mut app, kind, "reset_day", 29).is_err(),
+        "only a day every month has"
     );
-
-    usage.account(Some(200), Some("a"), MARCH_14 + 180);
-    assert_eq!(
-        usage.mobile_used, 700,
-        "a counter that started again counts from zero"
-    );
-
-    usage.account(Some(300), Some("b"), MARCH_14 + 240);
-    assert_eq!(usage.mobile_used, 1_000, "another boot counts from zero");
-
-    usage.account(Some(350), Some("b"), MARCH_14 + DAY);
-    assert_eq!(
-        usage.mobile_used, 50,
-        "the period started again on the 15th"
-    );
-    assert_eq!(usage.period_start(), (3, 15));
-
-    usage.account(None, None, MARCH_14 + 2 * DAY);
-    assert_eq!(usage.mobile_used, 50, "no traffic read changes nothing");
+    edit_field(&mut app, kind, "reset_day", 3).unwrap();
+    assert_eq!(app.settings::<MobileDataUsage>().get().reset_day.get(), 3);
+    let reported = app
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            area(settings).unwrap().model().borrow().inspection()
+        })
+        .unwrap();
+    assert_eq!(reported["data_period_starts_on_day"], 3);
+    invoke_section(&mut app, kind, "reset-data-used", serde_json::json!({})).unwrap();
+    assert_eq!(app.settings::<MobileDataUsage>().get().used, 0);
 }
 
+/// The count Settings kept among its own device-local settings before it
+/// was a section is taken in when the modem is first read: its period,
+/// count and reset day survive, and the keys it was kept under go.
 #[test]
-fn the_reset_day_and_reset_keep_the_count_on_this_device() {
-    let (_, mut model) = scripted(Some(MobileSample::Registered));
-    run(&mut model, MobileEffect::SetDataResetDay { day: 29 }).unwrap_err();
-    run(&mut model, MobileEffect::SetDataResetDay { day: 3 }).unwrap();
-    assert_eq!(
-        model
-            .cx
-            .settings::<MobileDataUsage>()
-            .get()
-            .mobile_reset_day,
-        3
+fn the_count_kept_before_it_was_a_section_survives() {
+    let cx = cx();
+    let document = cx.settings::<MobileDataUsage>().document().clone();
+    let app_local = ui::storage::Scope::DeviceLocal.section();
+    let mut former = serde_json::Map::new();
+    former.insert(
+        settings_sections::APP_ID.to_owned(),
+        serde_json::json!({
+            "mobile_reset_day": 15,
+            "mobile_period": 24_314,
+            "mobile_used": 123_456,
+            "mobile_counter": 9_000,
+            "mobile_boot": "b",
+        }),
     );
-    model.usage.mobile_used = 42;
-    run(&mut model, MobileEffect::ResetDataUsage).unwrap();
-    assert_eq!(model.cx.settings::<MobileDataUsage>().get().mobile_used, 0);
-}
-
-#[test]
-fn civil_dates_match_the_calendar() {
-    assert_eq!(civil(0), (1970, 1, 1));
-    assert_eq!(civil(MARCH_14.div_euclid(DAY)), (2026, 3, 14));
-    assert_eq!(civil(11_016), (2000, 2, 29));
+    document.update_section(app_local, former).unwrap();
+    let _model = MobileModel::loaded_from(cx.clone(), Arc::new(ScriptedModem::new(None)));
+    let usage = cx.settings::<MobileDataUsage>().get();
+    assert_eq!(usage.reset_day.get(), 15);
+    assert_eq!(
+        (usage.period, usage.used, usage.counter),
+        (24_314, 123_456, Some(9_000))
+    );
+    assert_eq!(usage.boot.as_deref(), Some("b"));
+    assert!(
+        document
+            .section(app_local)
+            .get(settings_sections::APP_ID)
+            .and_then(|kept| kept.get("mobile_used"))
+            .is_none(),
+        "the former keys are gone"
+    );
 }
 
 /// A modem service whose changes are followed by hand.
