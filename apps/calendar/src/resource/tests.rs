@@ -495,7 +495,9 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
     };
     for name in ["Work", "Personal", "Health"] {
         calendar
-            .apply(Calendar::NEW_PROJECT.with(calendar::NewProject { name: name.into() }))
+            .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
+                name: name.parse().unwrap(),
+            }))
             .unwrap();
     }
     assert_eq!(
@@ -511,7 +513,7 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
         .unwrap();
     calendar
         .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
-            name: "Garden".into(),
+            name: "Garden".parse().unwrap(),
         }))
         .unwrap();
     assert!(colours(&calendar).contains(&Palette::Emerald));
@@ -520,7 +522,7 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
     for index in 0..Palette::ALL.len() - 3 {
         calendar
             .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
-                name: format!("Project {index}"),
+                name: format!("Project {index}").parse().unwrap(),
             }))
             .unwrap();
     }
@@ -529,7 +531,7 @@ fn a_new_project_takes_the_next_colour_no_project_has() {
     assert_eq!(taken, Palette::ALL, "every colour once before any twice");
     calendar
         .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
-            name: "One more".into(),
+            name: "One more".parse().unwrap(),
         }))
         .unwrap();
     assert_eq!(colours(&calendar).last(), Some(&Palette::Indigo));
@@ -542,7 +544,7 @@ fn verbs_take_along_what_hangs_off_an_item() {
     let mut calendar = Replica::<Calendar>::new();
     calendar
         .apply(Calendar::NEW_PROJECT.with(calendar::NewProject {
-            name: "Work".into(),
+            name: "Work".parse().unwrap(),
         }))
         .unwrap();
     let project = calendar.state().unwrap().projects[0].id;

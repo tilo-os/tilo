@@ -125,7 +125,7 @@ fn authenticated_subset_commits_actual_personal_bookmarks_and_full_history_and_r
         )))?;
         history.invoke(
             &BrowsingHistory::VISIT.with(crate::history::browsing_history::Visit {
-                url: "https://existing.test/".into(),
+                url: "https://existing.test/".parse().unwrap(),
                 title: "Existing visit".into(),
                 at: 1,
             }),

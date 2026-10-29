@@ -23,7 +23,8 @@ use tilo_document::ClipBlock;
 use ui::automerge::ObjId;
 use ui::tilo_resource::evolution::{collection_items, map_at, map_values, retype_json};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Collection, Id, Identified, JsonSchema, Keyed, Model, ModelError, Refusal,
+    self, ActionCx, Atom, Collection, Id, Identified, JsonSchema, Keyed, Model, ModelError,
+    NonBlank, Refusal,
 };
 
 use crate::model::{ChannelKind, Presence};
@@ -56,6 +57,16 @@ fn given_channel_id(given: &str) -> Result<Id, Refusal> {
         )));
     }
     Ok(Id::from_raw(given))
+}
+
+/// A channel's name as it is shown, without the `#` a person may type
+/// before it: refused when that is all there is.
+fn channel_name(name: &NonBlank) -> Result<&str, Refusal> {
+    let name = name.trim_start_matches('#').trim_start();
+    if name.is_empty() {
+        return Err(Refusal::new("a channel needs a name"));
+    }
+    Ok(name)
 }
 
 /// One channel's place in [`Chat::arrange_channels`]: listed under
@@ -1161,11 +1172,11 @@ impl Chat {
     }
 
     /// Make channel `id` named `name`, refusing a category that is not
-    /// here and a name with nothing in it.
+    /// here and a name that is only `#`.
     fn make_channel(
         &mut self,
         id: Id,
-        name: &str,
+        name: &NonBlank,
         category: Option<Id>,
         kind: Option<ChannelKind>,
         topic: Option<String>,
@@ -1175,10 +1186,7 @@ impl Chat {
         {
             return Err(Refusal::new("there is no such category"));
         }
-        let name = name.trim().trim_start_matches('#');
-        if name.is_empty() {
-            return Err(Refusal::new("a channel needs a name"));
-        }
+        let name = channel_name(name)?;
         self.open_channel(
             id,
             Channel {
@@ -1284,16 +1292,15 @@ impl Chat {
     ///
     /// The name every member shows for an agent task.
     #[action(audience = "agents")]
-    pub fn name_agent(&mut self, participant: String, name: String) -> Result<(), Refusal> {
+    pub fn name_agent(&mut self, participant: String, name: NonBlank) -> Result<(), Refusal> {
         if !participant.starts_with(tilo_actions::AGENT_TASK_PARTICIPANT_PREFIX)
-            || name.trim().is_empty()
             || name.len() > MAX_AGENT_NAME_BYTES
         {
             return Err(Refusal::new(
                 "only an agent task is named, with a short name",
             ));
         }
-        self.agent_names.insert(participant, name);
+        self.agent_names.insert(participant, name.into_string());
         Ok(())
     }
 
@@ -1307,16 +1314,12 @@ impl Chat {
     pub fn create_category(
         &mut self,
         cx: &mut ActionCx,
-        #[param("Category name")] name: String,
+        #[param("Category name")] name: NonBlank,
     ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a category needs a name"));
-        }
         self.categories.push(
             cx.id(),
             Category {
-                name: name.to_owned(),
+                name: name.into_string(),
             },
         );
         Ok(())
@@ -1327,7 +1330,7 @@ impl Chat {
     pub fn create_channel(
         &mut self,
         cx: &mut ActionCx,
-        #[param("Channel name")] name: String,
+        #[param("Channel name")] name: NonBlank,
         #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
         #[param("text for a conversation, voice for a call; text when absent")] kind: Option<
             ChannelKind,
@@ -1347,7 +1350,7 @@ impl Chat {
     pub fn create_channel_with_id(
         &mut self,
         #[param("The channel's id: letters, digits, - and _, at most 64")] id: String,
-        #[param("Channel name")] name: String,
+        #[param("Channel name")] name: NonBlank,
         #[param("The category to list it under; none for uncategorised")] category: Option<Id>,
         #[param("text for a conversation, voice for a call; text when absent")] kind: Option<
             ChannelKind,
@@ -1514,12 +1517,9 @@ impl Chat {
     pub fn rename_channel(
         &mut self,
         channel: &Id,
-        #[param("The channel's new name")] name: String,
+        #[param("The channel's new name")] name: NonBlank,
     ) -> Result<(), Refusal> {
-        let name = name.trim().trim_start_matches('#').trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a channel needs a name"));
-        }
+        let name = channel_name(&name)?;
         let renamed = self
             .channels
             .get_mut(channel)
@@ -1568,17 +1568,13 @@ impl Chat {
     pub fn rename_category(
         &mut self,
         category: &Id,
-        #[param("The category's new name")] name: String,
+        #[param("The category's new name")] name: NonBlank,
     ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a category needs a name"));
-        }
         let renamed = self
             .categories
             .get_mut(category)
             .ok_or_else(|| Refusal::new("there is no such category"))?;
-        name.clone_into(&mut renamed.name);
+        renamed.name = name.into_string();
         Ok(())
     }
 
@@ -1609,7 +1605,7 @@ impl Chat {
         cx: &mut ActionCx,
         #[param("The message")] message: String,
         #[param("Who wrote it")] author: String,
-        #[param("What is wrong with it")] reason: String,
+        #[param("What is wrong with it")] reason: NonBlank,
     ) -> Result<(), Refusal> {
         if author.is_empty() || author.len() > 4096 {
             return Err(Refusal::new("a reported message is someone's"));
@@ -1633,7 +1629,7 @@ impl Chat {
         &mut self,
         cx: &mut ActionCx,
         person: &Id,
-        #[param("What they did")] reason: String,
+        #[param("What they did")] reason: NonBlank,
     ) -> Result<(), Refusal> {
         if self.people.find(person).is_none() {
             return Err(Refusal::new("there is no such person"));

@@ -56,7 +56,7 @@ fn create_archive(window: &mut Window) {
         .invoke(
             Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
                 id: ARCHIVE.into(),
-                name: "archive".into(),
+                name: "archive".parse().unwrap(),
                 category: None,
                 kind: None,
                 topic: None,
@@ -453,7 +453,7 @@ fn a_channel_with_nothing_earlier_reads_nothing_back() {
     bo.invoke(
         Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
             id: "c_quiet".into(),
-            name: "quiet".into(),
+            name: "quiet".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,

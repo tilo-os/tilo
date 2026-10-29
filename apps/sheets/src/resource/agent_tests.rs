@@ -352,7 +352,7 @@ fn the_workbook_title_names_it_and_the_listing_shows_names_and_title() {
     call(&mut app, "set-title", json!({"title": "  Lumo pricing  "}));
     assert_eq!(app.state().title.as_deref(), Some("Lumo pricing"));
     let refused = refusal(&mut app, "set-title", json!({"title": "   "}));
-    assert!(refused.contains("empty"), "{refused}");
+    assert!(refused.contains("title"), "{refused}");
     let listing = call(&mut app, "read", json!({}));
     assert_eq!(listing["title"], "Lumo pricing");
     assert_eq!(listing["sheets"][0]["name"], "Sheet1");

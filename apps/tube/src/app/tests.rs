@@ -240,10 +240,11 @@ fn controls_without_a_document_change_act_on_this_window() {
         let effect = crate::search_type::opened(row).expect("the row opens");
         app.tube().perform(effect).unwrap();
         assert_eq!(app.tube().model.route, Route::Search("veritasium".into()));
+        let blank = serde_json::json!({"query": " "});
         assert!(
-            app.tube()
-                .perform(TubeEffect::Search { query: " ".into() })
-                .is_err()
+            <TubeEffect as ui::tilo_resource::Effect>::decode("search", blank.as_object().unwrap())
+                .is_err(),
+            "a blank search is refused where the arguments are read"
         );
     }
     {

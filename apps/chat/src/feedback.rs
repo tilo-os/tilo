@@ -609,7 +609,7 @@ mod tests {
                 &mut shown,
                 "visitor:one",
                 Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-                    name: name.into(),
+                    name: name.parse().unwrap(),
                     category: None,
                     kind: None,
                     topic: Some(format!("Where {name} go")),
@@ -626,7 +626,7 @@ mod tests {
             "visitor:one",
             Chat::RENAME_CHANNEL.with(chat::RenameChannel {
                 channel: Id::from_raw(general.id),
-                name: "roadmap".into(),
+                name: "roadmap".parse().unwrap(),
             }),
         )
         .unwrap();

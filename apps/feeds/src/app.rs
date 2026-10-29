@@ -798,12 +798,11 @@ impl Core {
     /// Add a folder through the same verb the palette uses; it is shown
     /// once the library holds it.
     fn add_folder(&mut self, name: &str, doc: &mut ui::widget::Edits<'_>) {
-        let name = name.trim();
-        if name.is_empty() {
+        let Some(name) = ui::tilo_resource::NonBlank::parse(name) else {
             return;
-        }
+        };
         let known = self.store.folders.ids().cloned().collect();
-        self.awaited.push(Awaited::Folder(name.to_owned(), known));
+        self.awaited.push(Awaited::Folder(name.to_string(), known));
         self.perform(doc, Library::NEW_FOLDER.with(name));
     }
 
@@ -871,10 +870,10 @@ impl Core {
     /// chosen place is in. Once the library holds it, it is refreshed (an
     /// outside fetch) and shown.
     pub(crate) fn subscribe(&mut self, url: &str, doc: &mut ui::widget::Edits<'_>) {
-        let url = url.trim().to_string();
-        if url.is_empty() {
+        let Some(address) = ui::tilo_resource::NonBlank::parse(url) else {
             return;
-        }
+        };
+        let url = address.to_string();
         if let Some(existing) = self.store.feed_at(&url).map(|feed| feed.id.clone()) {
             self.set_filter(Filter::Feed(existing));
             self.set_toast(format!("Already subscribed to {url}"));
@@ -889,7 +888,7 @@ impl Core {
         self.perform(
             doc,
             Library::ADD_SUBSCRIPTION.with(library::AddSubscription {
-                url: url.clone(),
+                url: address,
                 folder,
             }),
         );

@@ -2348,9 +2348,10 @@ impl BrowserWidget {
     /// Name the visit just recorded without a title, once the page it
     /// recorded has one.
     fn name_untitled_visit(&mut self) {
-        if self.title.trim().is_empty()
-            || self.untitled_visit.as_deref() != Some(self.current_uri.as_str())
-        {
+        let Some(title) = ui::tilo_resource::NonBlank::parse(&self.title) else {
+            return;
+        };
+        if self.untitled_visit.as_deref() != Some(self.current_uri.as_str()) {
             return;
         }
         self.untitled_visit = None;
@@ -2358,7 +2359,7 @@ impl BrowserWidget {
             let name = crate::history::BrowsingHistory::NAME_VISIT.with(
                 crate::history::browsing_history::NameVisit {
                     url: self.current_uri.clone(),
-                    title: self.title.clone(),
+                    title,
                 },
             );
             if let Err(error) = record.invoke(&name) {
@@ -3270,11 +3271,12 @@ impl BrowserWidget {
                     if self.browsing_mode.persists_personal_state()
                         && !self.history_paused()
                         && self.current_uri.starts_with("http")
+                        && let Some(url) = ui::tilo_resource::NonBlank::parse(&self.current_uri)
                         && let Some(record) = &self.person_history
                     {
                         let visit = crate::history::BrowsingHistory::VISIT.with(
                             crate::history::browsing_history::Visit {
-                                url: self.current_uri.clone(),
+                                url,
                                 title: self.title.clone(),
                                 at: tilo_clock::unix_now(),
                             },

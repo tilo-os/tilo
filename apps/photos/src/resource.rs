@@ -16,7 +16,7 @@ use tilo_content::ContentStore;
 use ui::framework::Fixture;
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Derived, Id, Invoke, Refusal, resource};
+use ui::tilo_resource::{self, Derived, Id, Invoke, NonBlank, Refusal, resource};
 use ui::widget::{ContentKind, Element, NavList, NavShell};
 
 use crate::actions::PhotosEffect;
@@ -261,10 +261,10 @@ impl PhotoLibrary {
     #[action]
     pub fn set_person_membership(
         &mut self,
-        #[param("The person's name")] person: String,
+        #[param("The person's name")] person: NonBlank,
         #[param("Every photograph showing them, by id")] photos: Vec<String>,
     ) -> Result<(), Refusal> {
-        let person = person_label(&person)?;
+        let person = person_label(person)?;
         if photos.len() > MAX_BATCH_PHOTOS || !crate::model::unique_strings(&photos) {
             return Err(Refusal::new(
                 "a person's photographs are each named once, at most 256",
@@ -289,10 +289,10 @@ impl PhotoLibrary {
     #[action]
     pub fn rename_person(
         &mut self,
-        #[param("The person's name")] person: String,
-        #[param("Their new name")] to: String,
+        #[param("The person's name")] person: NonBlank,
+        #[param("Their new name")] to: NonBlank,
     ) -> Result<(), Refusal> {
-        let (from, to) = (person_label(&person)?, person_label(&to)?);
+        let (from, to) = (person_label(person)?, person_label(to)?);
         let mut found = false;
         for (_, photo) in self.photos.iter_mut() {
             if photo.people.remove(&from) {
@@ -312,9 +312,9 @@ impl PhotoLibrary {
     #[action(destructive)]
     pub fn remove_person(
         &mut self,
-        #[param("The person's name")] person: String,
+        #[param("The person's name")] person: NonBlank,
     ) -> Result<(), Refusal> {
-        let person = person_label(&person)?;
+        let person = person_label(person)?;
         let mut found = false;
         for (_, photo) in self.photos.iter_mut() {
             found |= photo.people.remove(&person);
@@ -341,13 +341,13 @@ impl PhotoLibrary {
 /// Why a verb on a photograph is refused when it is gone.
 const GONE: &str = "that photograph is no longer in the library";
 
-/// `name` as a person's label, trimmed; refused when it cannot be one.
-fn person_label(name: &str) -> Result<String, Refusal> {
-    if crate::model::valid_person_label(name) {
-        Ok(name.trim().to_owned())
+/// `name` as a person's label; refused when it cannot be one.
+fn person_label(name: NonBlank) -> Result<String, Refusal> {
+    if crate::model::valid_person_label(&name) {
+        Ok(name.into_string())
     } else {
         Err(Refusal::new(
-            "a person's name is short, not blank, and has no control characters",
+            "a person's name is short and has no control characters",
         ))
     }
 }

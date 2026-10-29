@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use ui::tilo_resource::{self, ActionCx, Collection, Id, Model, Refusal, resource};
+use ui::tilo_resource::{self, ActionCx, Collection, Id, Model, NonBlank, Refusal, resource};
 
 /// How many videos' playback the library remembers; the one left longest
 /// ago makes room.
@@ -165,22 +165,13 @@ impl Library {
     ///
     /// A playlist everyone in the room sees.
     #[action]
-    pub fn create_playlist(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("Playlist name")] name: String,
-    ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("a playlist has a name"));
-        }
+    pub fn create_playlist(&mut self, cx: &mut ActionCx, #[param("Playlist name")] name: NonBlank) {
         self.playlists.push(
             cx.id(),
             Playlist {
-                name: name.to_owned(),
+                name: name.into_string(),
             },
         );
-        Ok(())
     }
 
     /// Delete playlist.
