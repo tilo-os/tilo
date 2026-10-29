@@ -385,6 +385,19 @@ impl InputPrefs {
         self.keyboard_layout = next.keyboard_layout;
         Ok(())
     }
+
+    /// Set which shortcut pastes in one app when the shell pastes for the
+    /// person (Super+V with an image or files), or `default` to go back to
+    /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
+    #[action(id = "set-paste-shortcut")]
+    pub fn paste_with(
+        &mut self,
+        #[param("The app's id, such as `org.wezfurlong.wezterm`")] app: String,
+        #[param("The shortcut: `ctrl_v`, `ctrl_shift_v` or `default`")] shortcut: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.set_paste_shortcut(&app, &shortcut)
+            .map_err(ui::tilo_resource::Refusal::new)
+    }
 }
 
 impl InputPrefs {

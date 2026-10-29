@@ -68,6 +68,7 @@ pub(crate) fn view(
         crate::categories::Category::Notifications => notifications::view(cx, app),
         crate::categories::Category::Power => power::view(cx, app),
         crate::categories::Category::RegionFormats => region::view(cx, app),
+        crate::categories::Category::KeyboardShortcuts => keyboard_shortcuts::view(cx, app),
         _ => None,
     }
 }

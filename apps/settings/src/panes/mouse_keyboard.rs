@@ -641,16 +641,6 @@ pub enum InputEffect {
     },
     /// Reset this person's local dictionary. Other accounts are unchanged.
     ResetDictionary { revision: u64 },
-    /// Set which shortcut pastes in one app when the shell pastes for the
-    /// person (Super+V with an image or files), or `default` to go back to
-    /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
-    #[effect(idempotent)]
-    SetPasteShortcut {
-        #[param("The app's id, such as `org.wezfurlong.wezterm`")]
-        app: String,
-        #[param("The shortcut", choices = ["ctrl_v", "ctrl_shift_v", "default"])]
-        shortcut: String,
-    },
     /// Map a drawing tablet onto one display, or the whole desktop.
     #[effect(idempotent)]
     SetTabletOutput {
@@ -977,7 +967,6 @@ fn apply(input: &mut Input, effect: InputEffect, catalog: &[CatalogEntry]) -> Re
         | E::EditDictionaryWord { .. }
         | E::RemoveDictionaryWord { .. }
         | E::ResetDictionary { .. } => {}
-        E::SetPasteShortcut { app, shortcut } => input.set_paste_shortcut(&app, &shortcut)?,
     }
     Ok(())
 }
@@ -1108,16 +1097,6 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
             return ui::personal_dictionary::edit(revision, ui::personal_dictionary::Edit::Reset)
                 .map(|()| Effected::done())
                 .map_err(|error| error.to_string());
-        }
-        // Not a keyboard-source edit: no keyboard scope applies to it.
-        InputEffect::SetPasteShortcut { app, shortcut } => {
-            let settings = host.settings::<InputPrefs>();
-            let mut input = settings.get();
-            input.set_paste_shortcut(&app, &shortcut)?;
-            return settings
-                .set(&input)
-                .map(|()| Effected::done())
-                .map_err(|error| format!("the input settings could not be saved: {error}"));
         }
         _ => {}
     }
