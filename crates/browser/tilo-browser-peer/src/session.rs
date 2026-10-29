@@ -704,8 +704,10 @@ impl PeerHandle {
             .unwrap_or_default();
         channels.restore(saved.channels);
         channels.restore_requests(saved.requests);
+        #[cfg(feature = "toolkit")]
+        crate::replica::decide_with_page_surfaces();
         let task = Task {
-            replicas: crate::replica::Replicas::new(config.cert.device_public_key),
+            replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
             commands: commands.downgrade(),
             watched: crate::watching::WatchedKeys::default(),
             config,

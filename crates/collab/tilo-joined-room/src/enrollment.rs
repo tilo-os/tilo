@@ -33,9 +33,10 @@ pub(crate) fn restore(
     {
         return Err("invalid native committed room record".into());
     }
-    match &record.enrollment {
-        Some(enrollment) => validate_enrollment(room, record, enrollment)?,
-        None => return Err("a native room record holds no enrollment".into()),
+    match (&record.enrollment, &record.vouched) {
+        (Some(enrollment), None) => validate_enrollment(room, record, enrollment)?,
+        (None, Some(vouched)) => crate::vouched::validate(room, record, &vouched.bootstrap)?,
+        _ => return Err("a native room record holds no single enrollment".into()),
     }
     let peer = StatePeer::restore(
         &record.peer,
@@ -415,6 +416,7 @@ impl NativeWorkspaceOwner {
                 hint: enrollment.delivery_hint().cloned(),
                 floor: None,
             }),
+            vouched: None,
             peer: peer.durable()?,
             private_direct_conversations: crate::PrivateDirectConversationStore::default(),
             generation: 1,
