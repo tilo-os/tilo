@@ -21,6 +21,7 @@ use collaboration::{
     CollabEvent, CollabRequest, CollabTransport, CollaborationManager, DocumentMutation,
     PeerTransport, RouteSpec, TransportCommand, TransportError, TransportStatus,
 };
+use tilo_automerge::ApplyIncoming as _;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_app::hosted::HostedWindow;
@@ -625,7 +626,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     session.settle();
     let mut room = automerge::AutoCommit::new();
     for change in changes.lock().unwrap().iter() {
-        room.load_incremental(change).unwrap();
+        room.load_incoming(change).unwrap();
     }
     let mut record = session
         .host
