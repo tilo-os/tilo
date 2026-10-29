@@ -18240,6 +18240,7 @@ dependencies = [
 name = "tilo-compositor"
 version = "0.1.0"
 dependencies = [
+ "qcms",
  "rustix 1.1.4",
  "smithay",
  "tempfile",
