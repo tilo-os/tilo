@@ -19,6 +19,13 @@ pub struct WindowInfo {
     pub app_id: Option<String>,
     /// `xdg_toplevel.set_title`, when the client set one.
     pub title: Option<String>,
+    /// The window it belongs to (`xdg_toplevel.set_parent`, an X11
+    /// window's `WM_TRANSIENT_FOR`): a dialog of that window.
+    pub parent: Option<u64>,
+    /// The smallest size the client accepts, when it set one.
+    pub min_size: Option<(i32, i32)>,
+    /// The largest size the client accepts, when it set one.
+    pub max_size: Option<(i32, i32)>,
 }
 
 /// Where a window goes and the size it is asked to take.

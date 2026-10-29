@@ -1,7 +1,8 @@
 //! The native session across two displays, with real Wayland clients: each
 //! display holds its own windows, new windows open on the display with
 //! focus, focus and windows move between displays through the desk's
-//! published actions, and a mirror is one display.
+//! published actions, a mirror is one display, and dialogs float over the
+//! window they belong to instead of taking a tab.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -379,6 +380,76 @@ fn a_mirror_is_one_display() {
     tab(&mut session, &mut client, "org.example.Only");
     assert_eq!(display_of(&mut session, "org.example.Only"), Some(0));
     assert_eq!(window_tabs(&session), ["org.example.Only"]);
+}
+
+#[test]
+fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    let parent = tab(&mut session, &mut client, "org.example.Editor");
+    let parent_toplevel = client.windows[parent].1.clone();
+    map(
+        &mut session,
+        &mut client,
+        "org.example.Editor.Save",
+        (320, 180),
+        |toplevel| toplevel.set_parent(Some(&parent_toplevel)),
+    );
+
+    let (px, py, pw, ph) = rect(&mut session, "org.example.Editor");
+    let (dx, dy, dw, dh) = rect(&mut session, "org.example.Editor.Save");
+    assert_eq!((dw, dh), (320, 180), "a dialog keeps the size it chose");
+    assert!(
+        (dx - (px + (pw - dw) / 2)).abs() <= 1 && (dy - (py + (ph - dh) / 2)).abs() <= 1,
+        "centred over its parent: parent {:?}, dialog {:?}",
+        (px, py, pw, ph),
+        (dx, dy, dw, dh)
+    );
+    assert_eq!(
+        window_tabs(&session),
+        ["org.example.Editor"],
+        "a dialog takes no tab"
+    );
+    assert_eq!(
+        focused(&mut session).as_deref(),
+        Some("org.example.Editor.Save"),
+        "the dialog has the keyboard"
+    );
+    let info = session
+        .compositor()
+        .windows()
+        .into_iter()
+        .find(|(info, _)| info.app_id.as_deref() == Some("org.example.Editor.Save"))
+        .unwrap()
+        .0;
+    assert!(info.parent.is_some(), "the compositor tells its parent");
+}
+
+#[test]
+fn a_fixed_size_window_floats_on_the_display_with_focus() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    focus_display(&mut session, &mut client, 1);
+    map(
+        &mut session,
+        &mut client,
+        "org.example.Prompt",
+        (400, 240),
+        |toplevel| {
+            toplevel.set_min_size(400, 240);
+            toplevel.set_max_size(400, 240);
+        },
+    );
+    let (x, y, w, h) = rect(&mut session, "org.example.Prompt");
+    assert_eq!((w, h), (400, 240));
+    assert_eq!(
+        (x, y),
+        (WIDTH + (WIDTH - w) / 2, (HEIGHT - h) / 2),
+        "centred on the focused display"
+    );
+    assert!(window_tabs(&session).is_empty(), "no tab for a dialog");
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {

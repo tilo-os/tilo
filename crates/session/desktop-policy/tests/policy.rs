@@ -63,6 +63,7 @@ fn window(id: u64, app: &str) -> Window {
         id,
         app_id: Some(app.into()),
         title: Some(app.into()),
+        ..Window::default()
     }
 }
 
@@ -210,4 +211,36 @@ fn each_display_holds_the_windows_opened_while_it_had_focus() {
     settle(&mut driver);
     assert_eq!(policy.display_of(1), Some(order[1]));
     assert_eq!(policy.focused(), Some(1));
+}
+
+#[test]
+fn a_dialog_floats_over_its_parent_and_answers_for_it() {
+    let (mut driver, mut policy) = mount();
+    displays(&mut policy);
+    map(&mut driver, &mut policy, 1, "a");
+    policy
+        .map(Window {
+            parent: Some(1),
+            ..window(2, "a")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert!(policy.is_floating(2));
+    let layout = policy.layout();
+    assert_eq!(shown(&layout), [1], "a dialog takes no tab");
+    let parent = layout.shown[0].1;
+    assert_eq!(layout.floating, [(2, parent)], "over its parent");
+    assert_eq!(policy.focused(), Some(2), "the dialog has the keyboard");
+    assert!(policy.focus(2), "focusing it brings its parent");
+
+    policy.unmap(1);
+    settle(&mut driver);
+    let layout = policy.layout();
+    assert_eq!(
+        layout.floating,
+        [(2, Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0))],
+        "its parent gone, it floats on the display in use"
+    );
+    policy.unmap(2);
+    assert!(policy.layout().floating.is_empty());
 }

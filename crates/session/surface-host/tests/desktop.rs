@@ -23,6 +23,7 @@ fn window(id: u64, app: &str) -> WindowInfo {
         id,
         app_id: Some(app.into()),
         title: Some(app.into()),
+        ..WindowInfo::default()
     }
 }
 
