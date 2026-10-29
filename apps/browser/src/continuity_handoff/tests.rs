@@ -17,10 +17,10 @@ impl ResourceApp for TestBrowser {
         let engine = cx.take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>();
         assert!(engine.is_some(), "test browser requires its lent engine");
         let engine = engine.unwrap_or_else(ui::webview::test_engine::TestEngine::new);
-        cx.surface(crate::BrowserWindow::new(
-            crate::BrowserWidget::with_engine(engine, true),
-            false,
-        ))
+        crate::resource::browser_view(
+            cx,
+            crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
+        )
     }
 }
 struct Fixture {
@@ -571,10 +571,10 @@ impl ResourceApp for OpeningBrowser {
         let engine = cx.take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>();
         assert!(engine.is_some(), "test browser requires its lent engine");
         let engine = engine.unwrap_or_else(ui::webview::test_engine::TestEngine::new);
-        cx.surface(crate::BrowserWindow::new(
-            crate::BrowserWidget::with_engine(engine, true),
-            false,
-        ))
+        crate::resource::browser_view(
+            cx,
+            crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
+        )
     }
 }
 #[test]

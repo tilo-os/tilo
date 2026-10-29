@@ -1278,7 +1278,7 @@ impl BrowserWidget {
     /// The content store a picture of the page is kept in: opaque bytes by
     /// hash, which the agent's answer names, so what a page shows as pixels
     /// reaches the reader who can see them. The store the host lent the
-    /// window (`SurfaceCx::content`), so the bytes land where the content
+    /// window (`RecordEnv::content`), so the bytes land where the content
     /// service reads them from.
     pub(crate) fn attach_content(&mut self, content: ui::content::ContentStore) {
         self.content = Some(content);
@@ -1585,15 +1585,9 @@ impl BrowserWidget {
             .collect()
     }
 
-    /// Document edits bound to the row `row`: the page's row turns tracker
-    /// protection on or off for the site it shows.
-    pub(crate) fn row_declarations(
-        &self,
-        row: &str,
-    ) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
-        if row != "browser.page" {
-            return Vec::new();
-        }
+    /// Document edits bound to the page's row: it turns tracker protection
+    /// on or off for the site it shows.
+    fn page_row_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
         let Some(origin) = crate::site_controls::origin(&self.current_uri) else {
             return Vec::new();
         };
@@ -5117,6 +5111,55 @@ impl Widget for BrowserWidget {
     }
 }
 
+/// What a window publishes of its page: the rows it shows, the edits
+/// bound to the page and its row, the question the page waits on, and what
+/// the search finds of the history, downloads and personal bookmarks.
+pub(crate) struct PagePublication {
+    pub(crate) rows: Vec<ui::framework::LiveRow>,
+    pub(crate) bound: Vec<ui::tilo_resource::ActionDecl<Browser>>,
+    page_row: Vec<ui::tilo_resource::ActionDecl<Browser>>,
+    question: Option<ui::framework::LiveRow>,
+    search_index: crate::search_provider::BrowserSearchIndex,
+    personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
+}
+
+impl PagePublication {
+    /// The document edits bound to the row `row`.
+    pub(crate) fn row_edits(&self, row: &str) -> Vec<ui::tilo_resource::ActionDecl<Browser>> {
+        if row == "browser.page" {
+            self.page_row.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The row a history or download hit opens, beyond the published page
+    /// of rows too.
+    pub(crate) fn row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id == crate::page_dialogs::ROW {
+            return self.question.clone();
+        }
+        self.search_index
+            .resource(id)
+            .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
+            .map(ui::framework::LiveRow::from_resource)
+    }
+
+    /// Every history page, download and personal bookmark as a search entry.
+    pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        search_entries(&self.search_index, &self.personal_bookmarks)
+    }
+}
+
+fn search_entries(
+    index: &crate::search_provider::BrowserSearchIndex,
+    personal: &crate::personal_bookmarks::PersonalBookmarkState,
+) -> Vec<ui::tilo_resource::SearchEntry> {
+    let mut entries = index.entries();
+    entries.extend(crate::personal_bookmarks::search(personal));
+    entries
+}
+
 impl BrowserWidget {
     /// The index of history pages and downloads, shared with the opener of
     /// their search hits.
@@ -5125,26 +5168,24 @@ impl BrowserWidget {
     }
 
     /// Every history page and download as a search entry.
+    #[cfg(test)]
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        let mut entries = self.search_index.entries();
-        entries.extend(crate::personal_bookmarks::search(&self.personal_bookmarks));
-        entries
+        search_entries(&self.search_index, &self.personal_bookmarks)
     }
 
-    /// The row a history or download hit opens, beyond the published page
-    /// of rows too.
-    pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        // The page's question, asked since the rows were last published.
-        if id == crate::page_dialogs::ROW {
-            return self
+    /// What the window publishes of this page as it is now.
+    pub(crate) fn publication(&self) -> PagePublication {
+        PagePublication {
+            rows: self.live_rows(),
+            bound: self.page_declarations(),
+            page_row: self.page_row_declarations(),
+            question: self
                 .page_dialogs
                 .resource()
-                .map(ui::framework::LiveRow::from_resource);
+                .map(ui::framework::LiveRow::from_resource),
+            search_index: self.search_index.clone(),
+            personal_bookmarks: Rc::clone(&self.personal_bookmarks),
         }
-        self.search_index
-            .resource(id)
-            .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
-            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// What only this window knows, as rows beneath the browser resource:
