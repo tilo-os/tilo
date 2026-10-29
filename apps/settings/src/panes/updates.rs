@@ -221,7 +221,7 @@ impl UpdateStatus {
         crate::device_read::off_ui_thread();
         let current = fs::read_to_string(Path::new("/etc/os-release"))
             .ok()
-            .and_then(|s| parse_pretty_name(&s))
+            .and_then(|s| crate::panes::about::parse_os_release_pretty_name(&s))
             .unwrap_or_else(|| "Tilo (Fedora bootc)".to_string());
         let (staged_version, staged_error) = match read_bootc_staged() {
             Ok(staged) => (staged, None),
@@ -233,18 +233,6 @@ impl UpdateStatus {
             staged_error,
         }
     }
-}
-
-fn parse_pretty_name(contents: &str) -> Option<String> {
-    for line in contents.lines() {
-        if let Some(rest) = line.trim().strip_prefix("PRETTY_NAME=") {
-            let v = rest.trim_matches('"').trim_matches('\'').to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
-    }
-    None
 }
 
 /// `bootc status --format json`, or why it could not be read.
