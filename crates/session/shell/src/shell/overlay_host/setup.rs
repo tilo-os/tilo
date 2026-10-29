@@ -36,7 +36,7 @@ impl ShellOverlayHost {
         // or not the app runs, opened through the broker like a live hit.
         let app_content =
             std::rc::Rc::new(crate::shell::search::providers::AppContentProvider::new(
-                crate::shell::search::app_content_index::session(),
+                tilo_desktop_search::content_index::session(),
                 broker.clone(),
             ));
         self.search_registry
@@ -44,7 +44,7 @@ impl ShellOverlayHost {
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ContinueProvider::new(
-                crate::shell::search::app_content_index::session(),
+                tilo_desktop_search::content_index::session(),
                 broker.clone(),
             ),
         ));
@@ -177,11 +177,6 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::StoreCatalogueProvider::installed(),
         ));
-        // Applications Tilo did not package: unconfined, separate chip
-        // from the one above.
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::HostApplicationsProvider::new(),
-        ));
         // Downloaded programs running now that are not in the person's apps
         // yet, to add.
         search_registry.register(std::rc::Rc::new(
@@ -204,7 +199,7 @@ impl ShellOverlayHost {
         // anchor goes through the broker once one is attached.
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ContinueProvider::without_broker(
-                crate::shell::search::app_content_index::session(),
+                tilo_desktop_search::content_index::session(),
             ),
         ));
         search_registry.register(std::rc::Rc::new(

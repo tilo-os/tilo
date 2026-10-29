@@ -399,7 +399,7 @@ def _flatpak(control, home, description, services, deadline):
     for name in ('launch-result.json', 'launch-ack'):
         if os.path.lexists(data / name):
             raise RuntimeError('Flatpak result predates the actual normal launch')
-    launch = _row(control, lambda row: row.get('provider') == 'host-applications'
+    launch = _row(control, lambda row: row.get('provider') == 'applications'
                   and (row.get('resource') == app_id or row.get('id') == app_id), services, deadline)
     _invoke(control, launch, {}, services, deadline)
     while not (data / 'launch-result.json').exists():

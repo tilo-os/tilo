@@ -16,7 +16,6 @@ pub mod file_picker;
 pub mod files;
 pub mod focused_window;
 pub mod happening_now;
-pub mod host_applications;
 pub mod live_app_actions;
 mod live_app_jobs;
 pub mod now_playing;
@@ -44,7 +43,6 @@ pub use continuity::{
 pub use desktop_windows::DesktopWindowsProvider;
 pub use files::FilesProvider;
 pub use focused_window::FocusedWindowProvider;
-pub use host_applications::HostApplicationsProvider;
 pub use live_app_actions::LiveAppActionsProvider;
 pub use people::PeopleProvider;
 pub use quick_answers::QuickAnswersProvider;

@@ -18535,8 +18535,19 @@ name = "tilo-desktop-search"
 version = "0.1.0"
 dependencies = [
  "app-fleet",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
  "tilo-actions",
+ "tilo-lock",
+ "tilo-paths",
+ "tilo-reference",
+ "tilo-search",
+ "tilo-test-env",
  "tilo-ui",
+ "tracing",
+ "walkdir",
  "workspace-hack",
 ]
 

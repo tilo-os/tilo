@@ -5229,7 +5229,7 @@ impl App {
             &[
                 "actions".into(),
                 "invoke".into(),
-                "host-applications".into(),
+                "applications".into(),
                 desktop_id.into(),
             ],
             &mut worst_control,

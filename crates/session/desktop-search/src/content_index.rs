@@ -5,7 +5,7 @@
 //! record, keyed by the stable resource id a hit opens. This index applies
 //! each change as it arrives and keeps the entries after the app closes, so
 //! the app's content is findable whether or not it runs
-//! ([`super::providers::app_content`] answers from it).
+//! (the shell's app content provider answers from it).
 //!
 //! It is derived state: every entry is the app's own to publish again, and
 //! the files here may be deleted and rebuilt. Nothing here ever changes an
@@ -497,21 +497,6 @@ pub fn session() -> Arc<AppContentIndex> {
             AppContentIndex::persistent,
         )
     }))
-}
-
-/// The host service the broker hands publications to.
-pub struct SearchIndexService(pub Arc<AppContentIndex>);
-
-impl tilo_action_broker::services::SearchIndexServices for SearchIndexService {
-    fn publish(
-        &self,
-        room: tilo_desktop_model::RoomId,
-        app: &str,
-        record: &str,
-        delta: &[u8],
-    ) -> Result<(), String> {
-        self.0.publish(&room.to_string(), app, record, delta)
-    }
 }
 
 /// The file the apps' lock reports are kept in.

@@ -1,9 +1,12 @@
 //! Applications provider: apps you can open, launchable from the palette.
 //!
 //! Typing an installed app's name into Ctrl+K offers `Open <App>`, launched
-//! through [`crate::shell::launcher`]. Apps the device does not have yet are
-//! the catalogue's, which search shares with the App Store
-//! ([`super::store_catalogue`]).
+//! through [`crate::shell::launcher`]. Apps on the machine that Tilo did not
+//! package (Flatpaks, downloaded programs and the system's own) are apps
+//! like any other in the same list; each such row says which kind of app it
+//! is ([`HostApp::kind_label`]), the words the person's app list uses. Apps
+//! the device does not have yet are the catalogue's, which search shares
+//! with the App Store ([`super::store_catalogue`]).
 
 use crate::shell::state::WorkspaceAuthority as _;
 use std::cell::Ref;
@@ -16,6 +19,7 @@ use super::background_index::BackgroundIndex;
 use crate::portal::desktop_services::DynamicLauncherRecord;
 use crate::shell::catalogue;
 use crate::shell::chrome_state::{Chrome, OpenTarget};
+use crate::shell::host_apps::{self, HostApp};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::launcher::{self, InstalledApp};
 #[cfg(test)]
@@ -164,9 +168,10 @@ fn app_detail(package_id: &str, category: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The installed apps', the dynamic launchers' and the desktop entries'
-/// generations: the last carries the apps the person took off their apps.
-type Generation = (u64, u128, u64);
+/// The installed apps', the dynamic launchers', the desktop entries' and
+/// the host apps' generations: the desktop entries' carry the apps the
+/// person took off their apps.
+type Generation = (u64, u128, u64, u64);
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
@@ -176,7 +181,7 @@ pub struct ApplicationsProvider {
 }
 
 #[cfg(test)]
-type ApplicationsTestState = (Vec<InstalledApp>, Vec<DynamicLauncherRecord>);
+type ApplicationsTestState = (Vec<InstalledApp>, Vec<DynamicLauncherRecord>, Vec<HostApp>);
 
 #[cfg(test)]
 pub(crate) struct ApplicationsTestSource {
@@ -191,32 +196,51 @@ impl ApplicationsTestSource {
         installed: Vec<InstalledApp>,
         dynamic: Vec<DynamicLauncherRecord>,
     ) -> Arc<Self> {
+        Self::with_host_apps(installed, dynamic, Vec::new())
+    }
+
+    pub(crate) fn with_host_apps(
+        installed: Vec<InstalledApp>,
+        dynamic: Vec<DynamicLauncherRecord>,
+        host: Vec<HostApp>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             generation: std::sync::atomic::AtomicU64::new(1),
-            state: Mutex::new((installed, dynamic)),
+            state: Mutex::new((installed, dynamic, host)),
             materializations: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
     fn generation(&self) -> Generation {
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
-        (generation, u128::from(generation), 0)
+        (generation, u128::from(generation), 0, generation)
     }
 
-    fn snapshot(&self) -> (u64, Vec<InstalledApp>, Vec<DynamicLauncherRecord>) {
+    pub(crate) fn materializations(&self) -> usize {
+        self.materializations
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn snapshot(&self) -> (u64, ApplicationsTestState) {
         self.materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
-        let (installed, dynamic) = self
+        let state = self
             .state
             .lock()
             .expect("application test source lock")
             .clone();
-        (generation, installed, dynamic)
+        (generation, state)
     }
 
     fn replace_installed(&self, installed: Vec<InstalledApp>) {
         self.state.lock().expect("application test source lock").0 = installed;
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn replace_host_apps(&self, host: Vec<HostApp>) {
+        self.state.lock().expect("application test source lock").2 = host;
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
@@ -227,6 +251,8 @@ enum ApplicationEntry {
     /// keystroke does not copy the app's manifest view into each row.
     Installed(Arc<InstalledApp>),
     Dynamic(DynamicLauncherRecord),
+    /// An app no installed Tilo package answers for.
+    Host(HostApp),
 }
 
 struct ApplicationsSnapshot {
@@ -276,6 +302,7 @@ impl ApplicationsProvider {
             launcher::gui_apps_generation(),
             crate::portal::desktop_services::dynamic_launcher_generation(),
             desktop_entry::cache::cached_scan_generation(),
+            host_apps::host_apps_generation(),
         )
     }
 
@@ -288,27 +315,37 @@ impl ApplicationsProvider {
     ) -> (Generation, ApplicationsSnapshot) {
         #[cfg(test)]
         if let Some(source) = source {
-            let (generation, installed, dynamic) = source.snapshot();
+            let (generation, (installed, dynamic, host)) = source.snapshot();
             return (
-                (generation, u128::from(generation), 0),
-                Self::snapshot_from_parts(&installed, dynamic, &[]),
+                (generation, u128::from(generation), 0, generation),
+                Self::snapshot_from_parts(&installed, dynamic, host, &[]),
             );
         }
         let (installed_generation, installed) = launcher::gui_apps_snapshot();
         let (dynamic_generation, dynamic) =
             crate::portal::desktop_services::dynamic_launcher_snapshot();
         let (entries_generation, scan) = desktop_entry::cache::cached_scan_snapshot();
+        let (host_generation, host) = host_apps::host_apps_snapshot();
         (
-            (installed_generation, dynamic_generation, entries_generation),
-            Self::snapshot_from_parts(&installed, dynamic, &scan.hidden),
+            (
+                installed_generation,
+                dynamic_generation,
+                entries_generation,
+                host_generation,
+            ),
+            Self::snapshot_from_parts(&installed, dynamic, host, &scan.hidden),
         )
     }
 
-    /// The index over `installed` and `dynamic`, less the installed apps
-    /// whose ids are in `removed_from_apps`.
+    /// The index over `installed`, `dynamic` and the `host` apps no
+    /// installed package answers for, less the installed apps whose ids are
+    /// in `removed_from_apps`. Only an exact package identity hides a host
+    /// app: different desktops ship real, distinct applications called
+    /// Calendar, Notes and Terminal.
     fn snapshot_from_parts(
         installed: &[InstalledApp],
         dynamic: Vec<DynamicLauncherRecord>,
+        host: Vec<HostApp>,
         removed_from_apps: &[String],
     ) -> ApplicationsSnapshot {
         let installed_ids: HashSet<String> = installed
@@ -322,6 +359,11 @@ impl ApplicationsProvider {
             .map(|app| ApplicationEntry::Installed(Arc::new(app)))
             .collect::<Vec<_>>();
         entries.extend(dynamic.into_iter().map(ApplicationEntry::Dynamic));
+        entries.extend(
+            host.into_iter()
+                .filter(|app| !installed_ids.contains(&app.desktop_id.to_ascii_lowercase()))
+                .map(ApplicationEntry::Host),
+        );
         let index = index_entries(&entries);
         ApplicationsSnapshot {
             entries,
@@ -893,26 +935,58 @@ impl SearchProvider for ApplicationsProvider {
     fn id(&self) -> &'static str {
         PROVIDER_ID
     }
+    /// Uninstall, as everywhere; a downloaded app can also just leave the
+    /// person's apps while its file stays. A missing one is located by
+    /// choosing its row.
     fn secondary_actions(&self, result: &SearchResult) -> Vec<SearchResult> {
         if result.kind != ResourceKind::Application || result.id.contains(':') {
             return Vec::new();
         }
-        uninstall_row(PROVIDER_ID, result).into_iter().collect()
+        let mut rows: Vec<SearchResult> = uninstall_row(PROVIDER_ID, result).into_iter().collect();
+        if let Some(app) = self.downloaded_app(&result.id) {
+            rows.push(self.remove_row(&app, result.score));
+        }
+        rows
+    }
+    fn row_image(&self, result: &SearchResult) -> Option<ui::icons::AppImage> {
+        self.host_app(&result.id)?;
+        crate::app_icons::for_desktop_id(&result.id)
     }
     fn opens_app(&self, result: &SearchResult, app_id: &str) -> bool {
         package_row_opens(result, app_id)
+            || self.host_app(&result.id).is_some_and(|app| {
+                app.desktop_id.eq_ignore_ascii_case(app_id)
+                    || app
+                        .window_identities
+                        .iter()
+                        .any(|identity| identity.eq_ignore_ascii_case(app_id))
+            })
     }
     fn app_row(&self, app_id: &str) -> Option<SearchResult> {
         let snapshot = self.snapshot()?;
-        let app = snapshot.entries.iter().find_map(|entry| match entry {
+        let installed = snapshot.entries.iter().find_map(|entry| match entry {
             ApplicationEntry::Installed(app)
                 if crate::shell::launcher::app_id_matches_package(app_id, &app.package_id) =>
             {
                 Some(Arc::clone(app))
             }
             _ => None,
-        })?;
-        self.installed_rows("", vec![app], &[Some(0)]).pop()
+        });
+        if let Some(app) = installed {
+            return self.installed_rows("", vec![app], &[Some(0)]).pop();
+        }
+        snapshot.entries.iter().find_map(|entry| match entry {
+            ApplicationEntry::Host(app)
+                if app.desktop_id.eq_ignore_ascii_case(app_id)
+                    || app
+                        .window_identities
+                        .iter()
+                        .any(|identity| identity.eq_ignore_ascii_case(app_id)) =>
+            {
+                Some(self.host_row(app, 0))
+            }
+            _ => None,
+        })
     }
     fn name(&self) -> &str {
         APPLICATIONS_KIND
@@ -980,6 +1054,14 @@ impl SearchProvider for ApplicationsProvider {
                 || self.builder(),
             );
         }
+        if let Some(desktop_id) = id.strip_prefix(REMOVE_PREFIX) {
+            let app = self.downloaded_app(desktop_id)?;
+            return Some(self.remove_row(&app, host_score(ctx.needle, None)));
+        }
+        if let Some(desktop_id) = id.strip_prefix(LOCATE_PREFIX) {
+            let app = self.downloaded_app(desktop_id)?;
+            return Some(self.locate_row(&app, host_score(ctx.needle, None)));
+        }
         let snapshot = self.snapshot()?;
         if let Some(package_id) = id.strip_prefix(OPEN_WITH_PREFIX) {
             return snapshot.entries.iter().find_map(|entry| match entry {
@@ -1029,7 +1111,10 @@ impl SearchProvider for ApplicationsProvider {
                 let entry = usize::try_from(hit.key)
                     .ok()
                     .and_then(|at| snapshot.entries.get(at))?;
-                let score = provider_score(hit.rank.unwrap_or(0));
+                let score = match entry {
+                    ApplicationEntry::Host(_) => host_score(ctx.needle, hit.rank),
+                    _ => provider_score(hit.rank.unwrap_or(0)),
+                };
                 self.entry_row(&ctx, &snapshot, entry, score)
             },
         );
@@ -1050,6 +1135,7 @@ impl ApplicationEntry {
         match self {
             Self::Installed(app) => app.package_id == id,
             Self::Dynamic(record) => record.id == id,
+            Self::Host(app) => app.desktop_id == id,
         }
     }
 }
@@ -1074,17 +1160,194 @@ impl ApplicationsProvider {
                 &score,
                 &snapshot.installed_ids,
             ),
+            ApplicationEntry::Host(app) => vec![self.host_row(app, score[0].unwrap_or(0))],
         };
         rows.pop()
     }
 
     fn revision(&self) -> String {
-        let (installed, dynamic, entries) = self.source_generation();
-        let ready = self.index.is_ready(&(installed, dynamic, entries));
+        let generation = self.source_generation();
+        let ready = self.index.is_ready(&generation);
+        let (installed, dynamic, entries, host) = generation;
         format!(
-            "{}:{installed}:{dynamic}:{entries}",
+            "{}:{installed}:{dynamic}:{entries}:{host}",
             if ready { "ready" } else { "indexing" }
         )
+    }
+
+    /// The host app `desktop_id` in the current snapshot.
+    fn host_app(&self, desktop_id: &str) -> Option<HostApp> {
+        self.snapshot()?
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ApplicationEntry::Host(app) if app.desktop_id == desktop_id => Some(app.clone()),
+                _ => None,
+            })
+    }
+
+    /// The downloaded app `desktop_id` in the current snapshot.
+    fn downloaded_app(&self, desktop_id: &str) -> Option<HostApp> {
+        self.host_app(desktop_id)
+            .filter(|app| app.downloaded.is_some())
+    }
+
+    /// The open row for host app `app`, titled by its name, with the kind
+    /// of app it is as its fact. Its id is searchable but never shown.
+    fn host_row(&self, app: &HostApp, score: i32) -> SearchResult {
+        if app
+            .downloaded
+            .as_ref()
+            .is_some_and(|downloaded| !downloaded.present)
+        {
+            // Starting it would only fail: the row says the file is gone,
+            // and choosing it asks where the file is now.
+            let mut row = self.locate_row(app, score);
+            row.kind = ResourceKind::Application;
+            app.desktop_id.clone_into(&mut row.id);
+            app.name.clone_into(&mut row.title);
+            return row.with_facts([t("downloaded-app-missing")]);
+        }
+        let desktop_id = app.desktop_id.clone();
+        let notify_name = app.name.clone();
+        SearchResult::nullary(
+            ResourceKind::Application,
+            self.id(),
+            app.desktop_id.clone(),
+            app.name.clone(),
+            None,
+            score,
+            move |_doc, _root, chrome: &Chrome| launch_host_app(chrome, &desktop_id, &notify_name),
+        )
+        .with_facts([app.kind_label()])
+    }
+
+    /// "Remove from apps": the entry goes, the file stays. The same action
+    /// as `app.remove-from-apps`.
+    fn remove_row(&self, app: &HostApp, score: i32) -> SearchResult {
+        let desktop_id = app.desktop_id.clone();
+        let mut row = SearchResult::nullary_fallible(
+            ResourceKind::Action,
+            self.id(),
+            format!("{REMOVE_PREFIX}{}", app.desktop_id),
+            t("search-apps-remove-from-apps"),
+            None,
+            score,
+            move |_doc, _root, _chrome: &Chrome| {
+                let item = crate::shell::app_list::find(&desktop_id)
+                    .ok_or_else(|| ActionError::Refused(t("app-list-gone-body")))?;
+                crate::shell::app_list::remove_from_apps(item).map_err(ActionError::Refused)
+            },
+        );
+        row.operation_kind = tilo_actions::OperationKind::Effect;
+        row
+    }
+
+    /// "Locate": point the entry at the file where it is now.
+    fn locate_row(&self, app: &HostApp, score: i32) -> SearchResult {
+        let desktop_id = app.desktop_id.clone();
+        let mut row = SearchResult::nullary_fallible(
+            ResourceKind::Action,
+            self.id(),
+            format!("{LOCATE_PREFIX}{}", app.desktop_id),
+            t("downloaded-app-locate"),
+            None,
+            score,
+            |_doc, _root, _chrome: &Chrome| Ok(()),
+        );
+        row.operation_kind = tilo_actions::OperationKind::Effect;
+        row.params = vec![
+            crate::shell::search::action_api::ActionParam::required_owned(
+                "path",
+                crate::shell::search::action_api::ParamType::Text,
+                "Where the app's file is now: an absolute path.",
+            ),
+        ];
+        row.on_open = std::rc::Rc::new(move |_doc, _root, _chrome, args| {
+            let path = args
+                .text("path")
+                .map(str::trim)
+                .filter(|path| path.starts_with('/'))
+                .ok_or_else(|| ActionError::Explained(t("downloaded-app-locate-path")))?;
+            crate::shell::downloaded_apps::locate(&desktop_id, std::path::Path::new(path));
+            Ok(())
+        });
+        row
+    }
+}
+
+/// Address prefix of "Remove from apps" on a downloaded app's entry.
+const REMOVE_PREFIX: &str = "remove-from-apps:";
+/// Address prefix of "Locate" on a downloaded app whose file is gone.
+const LOCATE_PREFIX: &str = "locate:";
+
+/// Ranks lower than a Tilo app at an equal match, so a confined Tilo app
+/// sorts first.
+const HOST_APP_STEP: i32 = 5;
+
+/// A host app's score: the applications scale one step lower, so a
+/// confined Tilo app sorts first at an equal match. An empty needle lists
+/// every host app at 0.
+fn host_score(needle: &str, rank: Option<i32>) -> i32 {
+    if needle.trim().is_empty() {
+        return 0;
+    }
+    provider_score(rank.unwrap_or(0))
+        .saturating_sub(HOST_APP_STEP)
+        .max(1)
+}
+
+/// Start host app `desktop_id`, decided now, while the layout is still
+/// true; a foreign toplevel announces an app-id Tilo did not mint, so the
+/// placement note is keyed on every declared identity. A refusal before
+/// spawn is said in an error notice.
+fn launch_host_app(chrome: &Chrome, desktop_id: &str, name: &str) {
+    let result = if let Some(app) = host_apps::find(desktop_id) {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let placement = crate::shell::placement::note_placement_for_launch_identities(
+            &app.desktop_id,
+            &app.window_identities,
+            &tree,
+            st.strip_viewport(),
+            st.open_target,
+        );
+        let portal_workspace_id = tree
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room().to_string());
+        drop(tree);
+        drop(st);
+        host_apps::queue_launch(host_apps::QueuedLaunch {
+            app,
+            placement,
+            portal_workspace_id,
+            requested_at: std::time::Instant::now(),
+            reopen_from_tray: true,
+        })
+    } else {
+        host_apps::launch(desktop_id, None).map(|_| ())
+    };
+    if let Err(err) = result {
+        launcher::clear_pending_placement(desktop_id);
+        tracing::error!(
+            target: "tilo::app_launch",
+            desktop_id = %desktop_id,
+            display_name = %name,
+            detail = %err,
+            "host application launch was refused before spawn"
+        );
+        let mut st = chrome.borrow_mut();
+        st.push_notification_full(
+            Notification::new(
+                launcher::launch_failure_title(name),
+                err.notification_message(),
+            )
+            .with_severity(NotificationSeverity::Error)
+            .with_app_name(t("search-kind-applications"))
+            .with_dismiss_after(launcher::LAUNCH_FAILURE_NOTICE_LIFETIME),
+        );
+        st.bump();
     }
 }
 
@@ -1164,6 +1427,31 @@ fn installed_fields(app: &InstalledApp) -> Vec<(String, tilo_search::FieldWeight
     )
 }
 
+/// A host app's fields: its name, the last segment and the whole of its
+/// desktop id, its categories and each `Keywords=` entry (how typing
+/// "browser" finds Firefox), and the initials of its name, which find it
+/// from two letters.
+fn host_document(document: Document, app: &HostApp) -> Document {
+    let desktop_id = app.desktop_id.as_str();
+    let last_segment = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
+    let document = document
+        .field(app.name.as_str(), tilo_search::FieldWeight::TITLE)
+        .field(last_segment, tilo_search::FieldWeight::TITLE)
+        .field(desktop_id, PACKAGE_ID_WEIGHT)
+        .field(app.categories.join(" "), tilo_search::FieldWeight::METADATA);
+    let document = app
+        .keywords
+        .iter()
+        .filter(|keyword| !keyword.trim().is_empty())
+        .fold(document, |document, keyword| {
+            document.field(keyword.as_str(), tilo_search::FieldWeight::KEYWORD)
+        });
+    match tilo_search::initials(&app.name) {
+        Some(initials) => document.field(initials, tilo_search::FieldWeight::KEYWORD),
+        None => document,
+    }
+}
+
 /// Index each entry's [`searchable_fields`], keyed by position.
 fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
     fn app_fields(document: Document, name: &str, package_id: &str) -> Document {
@@ -1184,6 +1472,7 @@ fn index_entries(entries: &[ApplicationEntry]) -> SearchIndex {
                     document.field(text, weight)
                 }),
             ApplicationEntry::Dynamic(record) => app_fields(document, &record.name, &record.id),
+            ApplicationEntry::Host(app) => host_document(document, app),
         }
     }));
     if let Err(error) = index.commit() {
@@ -1529,6 +1818,7 @@ mod tests {
         let snapshot = ApplicationsProvider::snapshot_from_parts(
             &installed,
             Vec::new(),
+            Vec::new(),
             &["so.tilo.notes".to_owned()],
         );
         let listed: Vec<&str> = snapshot
@@ -1536,7 +1826,7 @@ mod tests {
             .iter()
             .map(|entry| match entry {
                 ApplicationEntry::Installed(app) => app.package_id.as_str(),
-                ApplicationEntry::Dynamic(_) => "",
+                ApplicationEntry::Dynamic(_) | ApplicationEntry::Host(_) => "",
             })
             .collect();
         assert_eq!(listed, ["so.tilo.chess"]);
@@ -2518,3 +2808,7 @@ mod native_application_tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+
+#[cfg(test)]
+#[path = "applications/host_app_tests.rs"]
+mod host_app_tests;
