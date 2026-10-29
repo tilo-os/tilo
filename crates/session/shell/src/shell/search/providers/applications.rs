@@ -179,7 +179,8 @@ pub const HOST_APPS_SOURCE: &str = "host-applications";
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
-    /// Whether the person switched host apps off, read per row.
+    /// Whether the person switched host apps off, read per row. Without
+    /// the person's switch, host apps are not listed at all.
     preferences: Option<crate::shell::search::SearchPreferencesHandle>,
     index: BackgroundIndex<Generation, ApplicationsSnapshot>,
     #[cfg(test)]
@@ -267,6 +268,9 @@ struct ApplicationsSnapshot {
 }
 
 impl ApplicationsProvider {
+    /// The provider over Tilo's apps and dynamic launchers only: the
+    /// machine's other apps come with the person's switch for them
+    /// ([`Self::with_preferences`]).
     pub fn new() -> Self {
         Self {
             kinds: vec![ResourceKind::Application],
@@ -277,8 +281,9 @@ impl ApplicationsProvider {
         }
     }
 
-    /// The provider that leaves out host apps while the person switched
-    /// their source ([`HOST_APPS_SOURCE`]) off in `preferences`.
+    /// The provider that also lists the machine's other apps, unless the
+    /// person switched their source ([`HOST_APPS_SOURCE`]) off in
+    /// `preferences`.
     pub fn with_preferences(preferences: crate::shell::search::SearchPreferencesHandle) -> Self {
         Self {
             preferences: Some(preferences),
@@ -289,7 +294,7 @@ impl ApplicationsProvider {
     fn host_apps_enabled(&self) -> bool {
         self.preferences
             .as_ref()
-            .is_none_or(|preferences| preferences.borrow().provider_enabled(HOST_APPS_SOURCE))
+            .is_some_and(|preferences| preferences.borrow().provider_enabled(HOST_APPS_SOURCE))
     }
 
     #[cfg(test)]
@@ -297,6 +302,19 @@ impl ApplicationsProvider {
         Self {
             source: Some(source),
             ..Self::new()
+        }
+    }
+
+    /// [`Self::with_test_source`] wired to the person's switches, as the
+    /// session wires it: the source's host apps are listed too.
+    #[cfg(test)]
+    pub(crate) fn with_test_source_and_preferences(
+        source: Arc<ApplicationsTestSource>,
+        preferences: crate::shell::search::SearchPreferencesHandle,
+    ) -> Self {
+        Self {
+            source: Some(source),
+            ..Self::with_preferences(preferences)
         }
     }
 

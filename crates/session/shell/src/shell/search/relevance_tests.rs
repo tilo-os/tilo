@@ -152,7 +152,10 @@ impl Palette {
     fn new() -> Self {
         let mut registry = SearchRegistry::new();
         let apps = ApplicationsTestSource::new(installed_apps(), Vec::new());
-        let applications = Rc::new(ApplicationsProvider::with_test_source(Arc::clone(&apps)));
+        let applications = Rc::new(ApplicationsProvider::with_test_source_and_preferences(
+            Arc::clone(&apps),
+            registry.preferences_handle(),
+        ));
         registry.register(applications.clone());
         registry.register(Rc::new(ActionsProvider::new()));
         // Quick Settings' actions, as this device's catalogue of private
