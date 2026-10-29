@@ -1043,7 +1043,10 @@ pub fn discover_home(home: &std::path::Path, catalog: &SteamCatalog) -> std::io:
     {
         let pin = crate::setup::migration::PinnedDirectory::open_absolute(home)?;
         pin.validate()?;
-        let inventory = crate::migration_review::SourceInventory::capture_home(&pin)?;
+        // The same producer as the export: the setup's own custody and
+        // runtime files in this Home are never offered as data.
+        let inventory =
+            crate::migration_review::SourceInventory::capture_portable_home(&pin, home)?;
         home::build(&pin, &inventory, *catalog)
     }
     #[cfg(not(target_os = "linux"))]

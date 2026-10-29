@@ -89,6 +89,7 @@ tilo-lock = { path = "../tilo-lock", optional = true }
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"], optional = true }
 workspace-hack = { version = "0.1" }
 tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-settings-records = { path = "../../platform/tilo-settings-records" }
 
 [target.'cfg(unix)'.dependencies]
 tilo-files = { path = "../../platform/tilo-files" }

@@ -19,6 +19,13 @@ pub const RECORDS_DIR: &str = "records";
 const LOCK_FILE: &str = "settings.lock";
 const DOOR_FILE: &str = "settings.sock";
 
+/// The root of this person's own settings profile: `tilo` below the XDG
+/// config home.
+#[must_use]
+pub fn profile_root() -> Option<PathBuf> {
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
+}
+
 /// One profile's documents directory.
 #[derive(Clone, Debug)]
 pub struct Records {
@@ -73,6 +80,14 @@ impl Records {
     #[must_use]
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The holder's lock and door. They belong to the process holding the
+    /// profile while it runs, never to the documents it keeps.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn runtime_files(&self) -> [PathBuf; 2] {
+        [self.dir.join(LOCK_FILE), self.dir.join(DOOR_FILE)]
     }
 
     /// Take the profile if no other process holds it.

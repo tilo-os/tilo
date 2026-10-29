@@ -73,14 +73,11 @@ fn paint(app: &mut App, scenario: &str, ids: &[&str]) {
 fn private_environment(root: &Path) -> tilo_test_env::ScopedEnv {
     use std::os::unix::fs::PermissionsExt as _;
     let home = root.join("home");
-    // The setup's own settings and runtime files live outside the Home this
-    // test reviews as its source, so they are not data to carry over.
-    let config = root.join("config");
-    std::fs::create_dir_all(home.join(".config")).unwrap();
+    // The setup keeps its own settings profile in this Home, as it does on
+    // a live medium; its runtime files must not count as data to carry over.
+    let config = home.join(".config");
     std::fs::create_dir_all(&config).unwrap();
-    for private in [&home, &config] {
-        std::fs::set_permissions(private, std::fs::Permissions::from_mode(0o700)).unwrap();
-    }
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("HOME", &home);
     environment.set("XDG_CONFIG_HOME", &config);

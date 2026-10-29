@@ -930,3 +930,28 @@ fn same_named_children_in_distinct_roots_keep_distinct_decisions() {
             .is_none()
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_running_setups_own_files_in_the_source_home_are_never_offered() {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().canonicalize().unwrap().join("home");
+    fs::create_dir(&home).unwrap();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_CONFIG_HOME", home.join(".config"));
+    // The setup's settings store holds its profile in this Home: the lock
+    // file and the door socket it keeps while it runs.
+    let records =
+        tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
+    fs::create_dir_all(records.dir()).unwrap();
+    let [lock, door] = records.runtime_files();
+    fs::write(&lock, b"").unwrap();
+    let _door = std::os::unix::net::UnixListener::bind(&door).unwrap();
+    let tree = discover_home(&home, &SteamCatalog::builtin()).unwrap();
+    assert_eq!(tree.totals.local_files, 0, "{:?}", tree.totals);
+    assert_eq!(tree.totals.unknown_size_files, 0, "{:?}", tree.totals);
+    // Data beside them is still offered.
+    fs::write(home.join("document"), b"mine").unwrap();
+    let tree = discover_home(&home, &SteamCatalog::builtin()).unwrap();
+    assert_eq!(tree.totals.local_files, 1, "{:?}", tree.totals);
+}
