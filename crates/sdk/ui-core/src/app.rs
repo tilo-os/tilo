@@ -36,7 +36,7 @@ mod native_input_isolation;
 
 #[cfg(feature = "native")]
 #[path = "animation_schedule.rs"]
-mod animation_schedule;
+pub mod animation_schedule;
 
 mod action_directory_snapshot;
 mod bound_record_sync;

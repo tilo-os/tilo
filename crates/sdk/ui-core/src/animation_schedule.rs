@@ -115,41 +115,75 @@ impl StillAnimation {
     }
 }
 
-/// The deepest widgets under `root` asking for animation frames: the ones
-/// actually holding the loop open, for [`StillAnimation`]'s report.
-pub(super) fn animating_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
-    fn walk(widget: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+/// Paths to the deepest widgets under `root` asking for animation frames:
+/// the ones actually holding the loop open, not every container above them,
+/// each with its box and [`crate::widget::Widget::animation_detail`]. `~`
+/// marks a widget that animates without asking to be redrawn: a retained
+/// parent cache then never reaches it again. Allocates, so only diagnostics
+/// call it.
+pub fn animating_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
+    fn walk(widget: &dyn crate::widget::Widget, path: &str, out: &mut Vec<String>) {
         if !widget.needs_animation_frame() {
             return;
         }
+        let clean = if widget.needs_redraw() { "" } else { "~" };
+        let here = match widget.test_id() {
+            Some(id) => format!("{path}/{}{clean}#{id}", widget.name()),
+            None => format!("{path}/{}{clean}", widget.name()),
+        };
         let before = out.len();
-        widget.for_each_child(&mut |child| walk(child, out));
+        widget.for_each_child(&mut |child| walk(child, &here, out));
         if out.len() == before {
-            out.push(widget.name().to_owned());
+            let rect = widget.get_rect();
+            let detail = widget
+                .animation_detail()
+                .map(|detail| format!(" {detail}"))
+                .unwrap_or_default();
+            out.push(format!(
+                "{here}@{:.0},{:.0} {:.0}x{:.0}{detail}",
+                rect.x0,
+                rect.y0,
+                rect.width(),
+                rect.height()
+            ));
         }
     }
     let mut out = Vec::new();
-    walk(root, &mut out);
+    walk(root, "", &mut out);
     out
 }
 
-/// The deepest widgets under `root` whose wake deadline is due: the ones a
-/// scheduled wake serves (`app::native_runner::frame_demand`).
-pub(super) fn waking_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
-    fn walk(widget: &dyn crate::widget::Widget, now: crate::time::Instant, out: &mut Vec<String>) {
-        if widget.next_wake_deadline().is_none_or(|due| due > now) {
+/// Paths to the deepest widgets under `root` whose one-shot wake deadline
+/// is `due` or earlier: who wakes an otherwise idle loop next. Allocates, so
+/// only diagnostics call it.
+pub fn waking_leaves(root: &dyn crate::widget::Widget, due: Instant) -> Vec<String> {
+    fn walk(widget: &dyn crate::widget::Widget, due: Instant, path: &str, out: &mut Vec<String>) {
+        if widget.next_wake_deadline().is_none_or(|at| at > due) {
             return;
         }
+        let here = match widget.test_id() {
+            Some(id) => format!("{path}/{}#{id}", widget.name()),
+            None => format!("{path}/{}", widget.name()),
+        };
         let before = out.len();
-        widget.for_each_child(&mut |child| walk(child, now, out));
+        widget.for_each_child(&mut |child| walk(child, due, &here, out));
         if out.len() == before {
-            out.push(widget.name().to_owned());
+            out.push(here);
         }
     }
     let mut out = Vec::new();
-    walk(root, crate::time::now(), &mut out);
+    walk(
+        root,
+        due.checked_add(WAKE_MATCH_SLACK).unwrap_or(due),
+        "",
+        &mut out,
+    );
     out
 }
+
+/// Deadlines computed against a slightly later clock than the minimum they
+/// are compared with still name the same owner.
+pub const WAKE_MATCH_SLACK: Duration = Duration::from_millis(1);
 
 #[cfg(test)]
 mod tests {

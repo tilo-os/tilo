@@ -4817,7 +4817,7 @@ impl FrameBuilder {
             return Vec::new();
         };
         let limit = due
-            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .checked_add(ui::app::animation_schedule::WAKE_MATCH_SLACK)
             .unwrap_or(due);
         let holds = |deadline: Option<Instant>| deadline.is_some_and(|at| at <= limit);
         let mut owners = self.host.wake_deadline_owners(due);

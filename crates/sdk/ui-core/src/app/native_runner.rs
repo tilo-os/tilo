@@ -4287,7 +4287,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             if scheduled_due {
                 askers.push(format!(
                     "deadline:{}",
-                    animation_schedule::waking_leaves(self.app.root_widget.as_ref()).join("+")
+                    animation_schedule::waking_leaves(
+                        self.app.root_widget.as_ref(),
+                        crate::time::now()
+                    )
+                    .join("+")
                 ));
             }
             if retry_due || auxiliary_retry_due {

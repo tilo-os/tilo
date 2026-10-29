@@ -8,7 +8,7 @@ use super::*;
 
 impl ShellOverlayHost {
     pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
-        crate::shell::animation_diagnostics::animating_leaves(self.content.as_ref())
+        ui::app::animation_schedule::animating_leaves(self.content.as_ref())
     }
 
     /// Stable, allocation-free diagnostics for animation demand. Each bit is
@@ -863,7 +863,7 @@ impl ShellOverlayHost {
     /// for the desktop's widget tree, the deepest widgets holding it.
     pub(crate) fn wake_deadline_owners(&self, due: Instant) -> Vec<String> {
         let limit = due
-            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .checked_add(ui::app::animation_schedule::WAKE_MATCH_SLACK)
             .unwrap_or(due);
         let mut owners = Vec::new();
         for (name, deadline) in self.wake_deadline_sources(Instant::now()) {
@@ -872,12 +872,9 @@ impl ShellOverlayHost {
             }
             if name == "content" {
                 owners.extend(
-                    crate::shell::animation_diagnostics::wake_deadline_leaves(
-                        self.content.as_ref(),
-                        due,
-                    )
-                    .into_iter()
-                    .map(|leaf| format!("content{leaf}")),
+                    ui::app::animation_schedule::waking_leaves(self.content.as_ref(), due)
+                        .into_iter()
+                        .map(|leaf| format!("content{leaf}")),
                 );
             } else {
                 owners.push(name.to_string());
