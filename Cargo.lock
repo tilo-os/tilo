@@ -22720,6 +22720,7 @@ dependencies = [
  "tilo-youtube-engine",
  "tracing",
  "tracing-subscriber",
+ "tube",
  "uuid",
  "wire-frame",
  "workspace-hack",

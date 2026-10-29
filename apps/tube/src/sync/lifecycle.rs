@@ -200,6 +200,7 @@ impl DeviceSync {
     /// Deterministic, secret-free lifecycle state for the offscreen visual
     /// review mode. It never starts a worker or opens a socket.
     #[doc(hidden)]
+    #[cfg(feature = "samples")]
     pub fn visual_sample() -> Self {
         Self::with_inert_view(SyncView {
             status: SyncStatus::Ready,
@@ -238,6 +239,7 @@ impl DeviceSync {
         })
     }
 
+    #[cfg(feature = "samples")]
     fn with_inert_view(view: SyncView) -> Self {
         let (_tx, events) = mpsc::channel();
         Self {

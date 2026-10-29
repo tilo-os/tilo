@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn the_window_bar_names_the_screen_and_the_page_titles_itself() {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         assert_eq!(location(&app).as_deref(), Some("Home"));
         assert!(action_names(&app).is_empty(), "{:?}", action_names(&app));
         app.apply(Action::Navigate(Route::Search("donut".into())));
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn clear_history_is_the_window_bars_on_a_history_with_videos() {
-        let mut app = TubeApp::new();
+        let mut app = TubeApp::sample();
         app.apply(Action::OpenVideo("vid_donut".into()));
         app.apply(Action::Navigate(Route::History));
         let clear = app
