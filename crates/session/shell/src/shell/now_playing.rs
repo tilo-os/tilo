@@ -1,8 +1,8 @@
 //! What is playing on this machine, and what a person may do about it.
 //!
 //! The model behind the now-playing card in Quick Settings and on the lock
-//! screen. Players are observed over MPRIS ([`crate::shell::mpris`]) off the
-//! compositor thread; this module only holds the last snapshot, decides which
+//! screen. Players are observed over MPRIS by the session audio helper
+//! ([`crate::shell::mpris`]); this module only holds the last snapshot, decides which
 //! player the card shows and which outputs it offers, and turns a button into
 //! a [`PlayerCommand`]. Everything here is pure so the card can be exercised
 //! against a fake [`NowPlayingSource`].
@@ -12,25 +12,9 @@ use std::time::{Duration, Instant};
 
 use crate::shell::overlay_host::{DeviceFabricUiAction, DeviceFabricView};
 
-/// A player's transport state as MPRIS reports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlaybackStatus {
-    Playing,
-    Paused,
-    Stopped,
-}
-
-impl PlaybackStatus {
-    #[must_use]
-    pub fn from_mpris(status: &str) -> Option<Self> {
-        match status {
-            "Playing" => Some(Self::Playing),
-            "Paused" => Some(Self::Paused),
-            "Stopped" => Some(Self::Stopped),
-            _ => None,
-        }
-    }
-}
+/// A player's transport state as MPRIS reports it, and what a button asks
+/// a player to do: the session audio helper's own terms.
+pub use tilo_audio_service::{PlayerCommand, Status as PlaybackStatus};
 
 /// Decoded cover art, already scaled down on a worker. Only artwork a player
 /// names as a local file is ever decoded: the shell never fetches a remote
@@ -172,16 +156,6 @@ impl PlayerSnapshot {
             art_name: self.identity.clone(),
         }
     }
-}
-
-/// What a button asks a player to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PlayerCommand {
-    PlayPause,
-    Pause,
-    Next,
-    Previous,
-    SetPosition { track_id: String, position_us: i64 },
 }
 
 /// Where players come from and where commands go. Production reads the

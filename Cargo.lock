@@ -17731,13 +17731,22 @@ dependencies = [
 name = "tilo-audio-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "futures-util",
+ "image",
  "libc",
+ "percent-encoding",
+ "serde",
  "serde_json",
  "settings-store",
+ "tempfile",
  "tilo-media",
  "tilo-test-env",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "workspace-hack",
  "zbus",
 ]
