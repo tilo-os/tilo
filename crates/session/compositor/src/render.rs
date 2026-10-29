@@ -89,6 +89,7 @@ where
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
+    elements.extend(state.drag_icon_elements(renderer, output));
     elements.extend(state.input_popup_elements(renderer, output));
     for host in state.hosts.iter().rev() {
         for layer in host.layers().into_iter().rev() {

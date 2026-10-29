@@ -71,7 +71,7 @@ pub use backend::{
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
-pub use host::{CursorIcon, HostLayer, SurfaceHost};
+pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
@@ -431,9 +431,32 @@ impl Compositor {
     /// app learns how it went ([`SurfaceHost::drag_ended`]). False when
     /// there is nothing to drag or no hosted surface under the pointer.
     pub fn start_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
-        let started = self.data.state.start_host_drag(offer);
+        self.start_host_drag(HostDrag { offer, icon: None })
+    }
+
+    /// [`Compositor::start_drag`] with an icon under the pointer, or a
+    /// drag that follows the finger holding the app when a touch holds it.
+    pub fn start_host_drag(&mut self, drag: HostDrag) -> Result<bool, Error> {
+        let started = self.data.state.start_host_drag(drag.offer, drag.icon);
         self.display.flush_clients()?;
         Ok(started)
+    }
+
+    /// Start the drags hosted apps asked for while handling input
+    /// ([`SurfaceHost::take_drag`]).
+    fn start_asked_drags(&mut self) {
+        let asked: Vec<HostDrag> = self
+            .data
+            .state
+            .hosts
+            .iter_mut()
+            .filter_map(|host| host.take_drag())
+            .collect();
+        for drag in asked {
+            if !self.data.state.start_host_drag(drag.offer, drag.icon) {
+                tracing::debug!("a hosted app's drag could not start");
+            }
+        }
     }
 
     /// The formats `selection` offers now, whoever owns it.
@@ -630,6 +653,7 @@ impl Compositor {
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         self.data.state.handle_input(event);
+        self.start_asked_drags();
         // Input wakes blanked panels at once.
         self.sync_power();
         self.display.flush_clients()?;

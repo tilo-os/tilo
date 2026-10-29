@@ -25,6 +25,18 @@ pub struct HostLayer {
     pub buffer: MemoryRenderBuffer,
 }
 
+/// A drag a hosted app starts: bytes per format (files as
+/// `text/uri-list`) and, optionally, an image under the pointer with its
+/// hotspot (logical pixels from its top left).
+#[derive(Debug, Clone)]
+pub struct HostDrag {
+    pub offer: Vec<(String, Vec<u8>)>,
+    pub icon: Option<(
+        MemoryRenderBuffer,
+        smithay::utils::Point<i32, smithay::utils::Logical>,
+    )>,
+}
+
 /// A hosted surface app, as the compositor sees it.
 pub trait SurfaceHost {
     /// The layers this surface shows now, bottom first. Hosts draw above
@@ -79,6 +91,13 @@ pub trait SurfaceHost {
     /// The drag was dropped on the surface: its data in the format
     /// [`SurfaceHost::drop_offered`] chose, once it has been read.
     fn drop_data(&mut self, _mime: &str, _data: Vec<u8>) {}
+
+    /// A drag the app started while handling the input just routed to it
+    /// (a press held and moved on something draggable); the compositor
+    /// carries it like [`crate::Compositor::start_host_drag`].
+    fn take_drag(&mut self) -> Option<HostDrag> {
+        None
+    }
 
     /// A drag this surface started ([`crate::Compositor::start_drag`])
     /// ended: `dropped` when a target took it.

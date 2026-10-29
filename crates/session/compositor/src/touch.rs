@@ -26,13 +26,22 @@ type Focus = Option<(WlSurface, Point<f64, Logical>)>;
 /// Where each finger on the screen went down.
 #[derive(Debug, Default)]
 pub(crate) struct Touches {
-    /// Fingers on a hosted surface, by slot: the host's index.
-    hosts: Vec<(u32, usize)>,
+    /// Fingers on a hosted surface, by slot: the host's index and where
+    /// the finger is.
+    hosts: Vec<(u32, usize, Point<f64, Logical>)>,
     /// Fingers on client surfaces, by slot: the surface and its origin in
     /// the logical layout as the finger went down.
     clients: Vec<(u32, Focus)>,
     /// The gesture in flight belongs to the desktop.
     gesture_to_desktop: bool,
+}
+
+impl Touches {
+    /// A finger holding a hosted surface, taken from it: the hosted app
+    /// starts a drag that follows it. Its slot, the host and where it is.
+    pub(crate) fn take_host_finger(&mut self) -> Option<(u32, usize, Point<f64, Logical>)> {
+        self.hosts.pop()
+    }
 }
 
 impl State {
@@ -50,7 +59,7 @@ impl State {
         {
             host.pointer_motion(at.x, at.y);
             host.pointer_button(BTN_LEFT, true);
-            self.touch.hosts.push((slot, index));
+            self.touch.hosts.push((slot, index, at));
             return;
         }
         let focus = if self.locked() {
@@ -79,8 +88,18 @@ impl State {
 
     pub(crate) fn touch_motion(&mut self, slot: u32, at: Point<f64, Logical>, time: u32) {
         let at = self.clamp_to_outputs(at);
-        if let Some(&(_, index)) = self.touch.hosts.iter().find(|(held, _)| *held == slot) {
-            if let Some(host) = self.hosts.get_mut(index) {
+        if self.drag_finger() == Some(slot) {
+            self.drag_touch_motion(slot, at, time);
+            return;
+        }
+        if let Some((_, index, last)) = self
+            .touch
+            .hosts
+            .iter_mut()
+            .find(|(held, _, _)| *held == slot)
+        {
+            *last = at;
+            if let Some(host) = self.hosts.get_mut(*index) {
                 host.pointer_motion(at.x, at.y);
             }
             return;
@@ -106,8 +125,17 @@ impl State {
     }
 
     pub(crate) fn touch_up(&mut self, slot: u32, serial: Serial, time: u32) {
-        if let Some(position) = self.touch.hosts.iter().position(|(held, _)| *held == slot) {
-            let (_, index) = self.touch.hosts.remove(position);
+        if self.drag_finger() == Some(slot) {
+            self.drag_touch_up(slot, serial, time);
+            return;
+        }
+        if let Some(position) = self
+            .touch
+            .hosts
+            .iter()
+            .position(|(held, _, _)| *held == slot)
+        {
+            let (_, index, _) = self.touch.hosts.remove(position);
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_button(BTN_LEFT, false);
                 host.pointer_leave();
@@ -135,15 +163,19 @@ impl State {
     }
 
     pub(crate) fn touch_cancel(&mut self) {
-        for (_, index) in std::mem::take(&mut self.touch.hosts) {
+        for (_, index, _) in std::mem::take(&mut self.touch.hosts) {
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_button(BTN_LEFT, false);
                 host.pointer_leave();
             }
         }
         self.touch.clients.clear();
+        let finger = self.drag_finger();
         if let Some(touch) = self.seat.get_touch() {
             touch.cancel(self);
+        }
+        if finger.is_some() {
+            self.drag_cancelled();
         }
     }
 
