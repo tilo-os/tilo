@@ -783,6 +783,55 @@ pub static ATOM_STRING: ModelTable = ModelTable {
     scalar: true,
 };
 
+/// The table of an `Option<String>` stored whole when present
+/// (`#[model(atom)]`): `None` is an absent key, as for any `Option`.
+pub static ATOM_OPTION_STRING: ModelTable = ModelTable {
+    ops: &OPTION_OPS,
+    desc: Desc::Option(&ATOM_OPTION_STRING_DESC),
+    checks: false,
+    has_ops: false,
+    scalar: true,
+};
+
+static ATOM_OPTION_STRING_DESC: OptionDesc = OptionDesc {
+    inner: &ATOM_STRING,
+    get: option_get::<String>,
+    get_mut: option_get_mut::<String>,
+    slot: option_slot::<String>,
+    clear: option_clear::<String>,
+    staged: (empty_of::<Option<String>>, unwrap_of::<Option<String>>),
+};
+
+/// A type `#[model(atom)]` stores whole: one value, last writer wins, never
+/// merged part by part. A colour, a name from a list or an encoded path
+/// merged by character or element reads as no value at all.
+pub trait Atomic: Model {
+    /// The table the field is stored by.
+    const ATOM: &'static ModelTable;
+}
+
+impl Atomic for String {
+    const ATOM: &'static ModelTable = &ATOM_STRING;
+}
+
+impl Atomic for Option<String> {
+    const ATOM: &'static ModelTable = &ATOM_OPTION_STRING;
+}
+
+/// An id is one scalar already.
+impl Atomic for crate::Id {
+    const ATOM: &'static ModelTable = <Self as Model>::TABLE;
+}
+
+/// A list stored as one JSON text: a shape's points, not a list two people
+/// edit item by item.
+impl<T> Atomic for Vec<T>
+where
+    T: Model + serde::Serialize + serde::de::DeserializeOwned + PartialEq,
+{
+    const ATOM: &'static ModelTable = &ModelTable::of_json(&JsonOf::<Self>::COMPARED);
+}
+
 static ATOM_STRING_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
     to_json: atom_to_json,

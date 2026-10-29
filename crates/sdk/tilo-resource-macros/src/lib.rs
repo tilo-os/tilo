@@ -35,7 +35,9 @@ fn krate() -> Tokens {
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
-/// `String` (written whole, last writer wins, as `Atom` is),
+/// `String`, an `Option<String>` or a `Vec` (written whole, last writer
+/// wins, as `Atom` is: a colour or a list of points two people set at once
+/// is one of theirs, never a mix),
 /// `#[model(whole)]` (read every part of a value that loads on demand,
 /// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
 /// resource with its own operations (rich text: published beneath the
@@ -886,7 +888,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label = Some(descs.len());
         }
         let field_table = if options.atom {
-            quote!(&#table::ATOM_STRING)
+            quote!(<#ty as #table::Atomic>::ATOM)
         } else {
             quote!(<#ty as #krate::Model>::TABLE)
         };

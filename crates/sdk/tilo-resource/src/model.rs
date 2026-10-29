@@ -1085,6 +1085,46 @@ pub fn write_variant_field<T: Model>(
     value.store(doc, Slot::Key(obj, storage)).located(key)
 }
 
+/// [`read_variant_field`] of a field stored whole (`#[model(atom)]`).
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn read_variant_atom<T: crate::table::Atomic>(
+    doc: &Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+) -> Result<T, ModelError> {
+    let slot = match get_slot(doc, obj, storage)? {
+        Some(slot) => Some(slot),
+        None => get_slot(doc, obj, key)?,
+    };
+    let atom = crate::table::Run(T::ATOM);
+    match slot {
+        Some((value, id)) => atom.load(doc, &value, &id),
+        None => atom.missing(),
+    }
+    .located(key)
+}
+
+/// [`write_variant_field`] of a field stored whole (`#[model(atom)]`).
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn write_variant_atom<T: crate::table::Atomic>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+    value: &T,
+) -> Result<(), ModelError> {
+    crate::table::Run(T::ATOM)
+        .store(value, doc, Slot::Key(obj, storage))
+        .located(key)
+}
+
 /// The variant a data enum stored at `value` (the object `id`) names.
 ///
 /// # Errors

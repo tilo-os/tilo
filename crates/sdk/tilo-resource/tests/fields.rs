@@ -1328,3 +1328,142 @@ fn a_field_holds_only_what_it_declares() {
         (2.0, "custom", None)
     );
 }
+
+/// A swatch: a colour, the outline it fills and the glyph it shows, each
+/// one value two people setting at once never mix.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Swatch {
+    #[model(atom)]
+    pub colour: Option<String>,
+    #[model(atom)]
+    pub outline: Vec<[f64; 2]>,
+    pub glyph: Option<Glyph>,
+}
+
+#[derive(Model, Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Glyph {
+    Path {
+        #[model(atom)]
+        d: String,
+        #[model(atom)]
+        colour: Option<String>,
+        #[model(atom)]
+        points: Vec<[f64; 2]>,
+        width: f64,
+    },
+}
+
+#[resource(kind = "test.swatch", label = "Swatch")]
+impl Swatch {
+    /// Clear the colour.
+    #[action]
+    pub fn clear(&mut self) {
+        self.colour = None;
+    }
+}
+
+fn path(d: &str, colour: &str, points: &[[f64; 2]], width: f64) -> Glyph {
+    Glyph::Path {
+        d: d.into(),
+        colour: Some(colour.into()),
+        points: points.to_vec(),
+        width,
+    }
+}
+
+/// Two replicas set `ours` and `theirs` at once from `first`; both read the
+/// merged state.
+fn merged_swatch(first: Invoke<Swatch>, ours: Invoke<Swatch>, theirs: Invoke<Swatch>) -> Swatch {
+    let mut a = Replica::<Swatch>::new();
+    a.apply(first).unwrap();
+    let mut b = a.fork();
+    a.apply(ours).unwrap();
+    b.apply(theirs).unwrap();
+    a.sync_with(&mut b).unwrap();
+    let merged = a.state().unwrap();
+    assert_eq!(merged, b.state().unwrap());
+    merged
+}
+
+#[test]
+fn an_optional_atom_and_a_list_atom_are_one_of_the_values_set() {
+    let paths = Swatch::paths();
+    let merged = merged_swatch(
+        paths.colour.set(Some("#000000".into())).into(),
+        paths.colour.set(Some("#ff0000".into())).into(),
+        paths.colour.set(Some("#00ff00".into())).into(),
+    );
+    assert!(
+        [Some("#ff0000"), Some("#00ff00")].contains(&merged.colour.as_deref()),
+        "one colour, not a mix: {:?}",
+        merged.colour
+    );
+    let merged = merged_swatch(
+        paths.outline.set(vec![[0.0, 0.0]]).into(),
+        paths.outline.set(vec![[1.0, 1.0], [2.0, 2.0]]).into(),
+        paths.outline.set(vec![[3.0, 3.0]]).into(),
+    );
+    assert!(
+        merged.outline == [[1.0, 1.0], [2.0, 2.0]] || merged.outline == [[3.0, 3.0]],
+        "one outline, not a mix: {:?}",
+        merged.outline
+    );
+    let mut replica = Replica::<Swatch>::new();
+    replica
+        .apply(paths.colour.set(Some("#123456".into())))
+        .unwrap();
+    replica.apply(Swatch::CLEAR.with(())).unwrap();
+    assert_eq!(replica.state().unwrap().colour, None, "`None` is absent");
+}
+
+#[test]
+fn a_variants_atoms_are_one_of_the_values_set_and_its_other_fields_merge() {
+    let glyph = Swatch::paths().glyph;
+    let merged = merged_swatch(
+        glyph
+            .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 1.0)))
+            .into(),
+        glyph
+            .set(Some(path("M1 1L2 2", "#ff0000", &[[1.0, 1.0]], 1.0)))
+            .into(),
+        glyph
+            .set(Some(path(
+                "M3 3",
+                "#00ff00",
+                &[[3.0, 3.0], [4.0, 4.0]],
+                1.0,
+            )))
+            .into(),
+    );
+    let Some(Glyph::Path {
+        d, colour, points, ..
+    }) = merged.glyph
+    else {
+        panic!("still a path: {:?}", merged.glyph);
+    };
+    assert!(["M1 1L2 2", "M3 3"].contains(&d.as_str()), "one path: {d}");
+    assert!(
+        [Some("#ff0000"), Some("#00ff00")].contains(&colour.as_deref()),
+        "one colour: {colour:?}"
+    );
+    assert!(
+        points == [[1.0, 1.0]] || points == [[3.0, 3.0], [4.0, 4.0]],
+        "one list of points: {points:?}"
+    );
+    let merged = merged_swatch(
+        glyph
+            .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 1.0)))
+            .into(),
+        glyph
+            .set(Some(path("M0 0", "#ff0000", &[[0.0, 0.0]], 1.0)))
+            .into(),
+        glyph
+            .set(Some(path("M0 0", "#000000", &[[0.0, 0.0]], 2.0)))
+            .into(),
+    );
+    assert_eq!(
+        merged.glyph,
+        Some(path("M0 0", "#ff0000", &[[0.0, 0.0]], 2.0)),
+        "a colour and a width changed apart both survive"
+    );
+}
