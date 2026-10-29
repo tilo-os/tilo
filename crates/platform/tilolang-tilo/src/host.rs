@@ -796,7 +796,7 @@ impl Host {
     /// records in the same change that it ran. Returns how many ran. A migration that is
     /// refused or fails leaves its resource as it was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
-        let mut ran = 0;
+        let mut ran: usize = 0;
         for package in self.packages() {
             for migration in package.meta.migrations() {
                 let Some(ty) = migration
