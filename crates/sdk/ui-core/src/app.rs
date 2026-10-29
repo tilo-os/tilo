@@ -144,10 +144,10 @@ mod room_record_launch_tests {
     }
 }
 
-const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
-const ACTION_DIRECTORY_MAX_WORK: usize = 512;
-const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
-const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
+const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
+const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
+const ACTION_DIRECTORY_MAX_BYTES: usize = ::collaboration::action_directory::MAX_BYTES;
+const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_DEPTH;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 

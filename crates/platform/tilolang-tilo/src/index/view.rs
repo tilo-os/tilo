@@ -11,11 +11,11 @@ use tilolang_runtime::store::{
     FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError,
 };
 
-use super::derive::{column_field, item_of, member_list};
+use super::derive::{column_field, in_of, item_path, member_list};
 use super::lists::Entry;
 use super::merged::{Base, Merged};
 use super::overlay::{ListState, Overlay};
-use super::{IndexError, KEY, Snapshot, TYPE};
+use super::{IN, IndexError, KEY, Snapshot, TYPE};
 use crate::reads::{default_value, may_hold_text};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
 
@@ -45,10 +45,11 @@ pub struct Texts {
     pub references: Vec<String>,
 }
 
-/// The path of the item `id` of the collection `field` of `resource`.
+/// The path of the item `id` of a collection of `resource`: its id in the record, wherever it
+/// is.
 #[must_use]
-pub fn child(resource: &str, field: &str, id: &str) -> String {
-    format!("{resource}/{field}:{id}")
+pub fn child(resource: &str, id: &str) -> String {
+    item_path(resource, id)
 }
 
 impl View<'_> {
@@ -74,6 +75,46 @@ impl View<'_> {
             return Ok(written);
         }
         self.snapshot.text(resource, key)
+    }
+
+    /// The order key of the item at `path` in the collection `field` of `resource`: `None`
+    /// when it is not in that collection.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn key_in(
+        &self,
+        path: &str,
+        (resource, field): (&str, &str),
+    ) -> Result<Option<String>, IndexError> {
+        if self.text(path, IN)?.as_deref() != Some(in_of(resource, field).as_str()) {
+            return Ok(None);
+        }
+        self.text(path, KEY)
+    }
+
+    /// [`Self::key_in`] as the index holds it, without the open writes.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn held_key_in(
+        &self,
+        path: &str,
+        (resource, field): (&str, &str),
+    ) -> Result<Option<String>, IndexError> {
+        if self.snapshot.text(path, IN)?.as_deref() != Some(in_of(resource, field).as_str()) {
+            return Ok(None);
+        }
+        self.snapshot.text(path, KEY)
+    }
+
+    /// Whether the resource at `path` is an item of the collection `field` of `resource`.
+    #[must_use]
+    pub fn is_item_of(&self, path: &str, (resource, field): (&str, &str)) -> bool {
+        self.text(path, IN)
+            .ok()
+            .flatten()
+            .is_some_and(|held| held == in_of(resource, field))
     }
 
     /// The type of `resource`, if the index holds it.
@@ -149,8 +190,8 @@ impl View<'_> {
         id: &str,
         column: Option<(&str, &str)>,
     ) -> Result<Vec<Entry>, IndexError> {
-        let path = child(resource, field, id);
-        let Some(key) = self.text(&path, KEY)? else {
+        let path = child(resource, id);
+        let Some(key) = self.key_in(&path, (resource, field))? else {
             return Ok(Vec::new());
         };
         let Some((ty, column)) = column else {
@@ -236,7 +277,7 @@ impl View<'_> {
         field: &str,
         id: &str,
     ) -> Result<Option<usize>, IndexError> {
-        let Some(key) = self.text(&child(resource, field, id), KEY)? else {
+        let Some(key) = self.key_in(&child(resource, id), (resource, field))? else {
             return Ok(None);
         };
         let (at, found) = self.list(resource, field)?.rank(&key, id);
@@ -283,7 +324,7 @@ impl View<'_> {
                         let Some(id) = items.get(index) else {
                             break;
                         };
-                        let found = self.first_text(&child(path, &field.id, &id), item_schema)?;
+                        let found = self.first_text(&child(path, &id), item_schema)?;
                         if found.is_some() {
                             return Ok(found);
                         }
@@ -441,9 +482,9 @@ pub fn splices(
     let mut arriving: Vec<Entry> = Vec::new();
     let mut old: Option<Merged> = None;
     for id in ids {
-        let path = child(resource, field, id);
-        let was = before.text(&path, KEY)?;
-        let now = after.text(&path, KEY)?;
+        let path = child(resource, id);
+        let was = before.key_in(&path, (resource, field))?;
+        let now = after.key_in(&path, (resource, field))?;
         if was == now {
             continue;
         }
@@ -489,12 +530,6 @@ pub fn splices(
         out.clear();
     }
     Ok(out)
-}
-
-/// The resource holding the item at `path`, if it is one, with the collection and id.
-#[must_use]
-pub fn parent_of(path: &str) -> Option<(&str, &str, &str)> {
-    item_of(path)
 }
 
 /// Every resource of the index (records and items) with text, by path: what search lists.

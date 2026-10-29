@@ -541,10 +541,13 @@ fn permissions_for_participation(
 
 /// The host's view of the person's authority over one app's actions, read
 /// again only when the host changes it: what deciding reads is the last
-/// read, never the file.
+/// read, never the file. Where its changes cannot be heard (the process has
+/// no watch left), it is read again at each decision instead, so a missing
+/// watch costs reads, never the person's authority.
 struct FollowedAuthority {
     state: std::sync::Arc<FollowedState>,
-    _watch: std::sync::Mutex<tilo_host::action_authority::AuthorityWatch>,
+    /// What hears the host change it; `None` when it cannot be heard.
+    watch: Option<std::sync::Mutex<tilo_host::action_authority::AuthorityWatch>>,
 }
 
 struct FollowedState {
@@ -577,7 +580,7 @@ impl FollowedAuthority {
     /// Read the host's view now and again on each change of it.
     ///
     /// # Errors
-    /// When it cannot be read now or its changes cannot be heard.
+    /// When it cannot be read now.
     fn follow(
         authority: HostAuthority,
         room: &str,
@@ -599,7 +602,11 @@ impl FollowedAuthority {
                 state.read();
                 crate::permissions::outside_changed();
             }
-        }))?;
+        }))
+        .map_err(
+            |error| tracing::warn!(%error, "the host's action authority is read at each decision"),
+        )
+        .ok();
         state.read();
         if let Err(error) = &*state
             .current
@@ -610,12 +617,16 @@ impl FollowedAuthority {
         }
         Ok(Self {
             state,
-            _watch: std::sync::Mutex::new(watch),
+            watch: watch.map(std::sync::Mutex::new),
         })
     }
 
-    /// The host's view as last read, judged now.
+    /// The host's view as last read (as it is now, when no change of it can be
+    /// heard), judged now.
     fn current(&self) -> Result<PermissionContext, String> {
+        if self.watch.is_none() {
+            self.state.read();
+        }
         let current = self
             .state
             .current
@@ -1011,6 +1022,10 @@ impl ApplicationHost {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
+        // An app that keeps each member's own opens the person's own record of the workspace.
+        if let Some(own) = definition.member_record_of(&self.author) {
+            return self.prepare_record(definition, instance_id, own, runner_inputs);
+        }
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
             let primary = RecordCheckout::package_primary(definition.record_kind.clone());
@@ -1233,6 +1248,7 @@ mod native_process_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: rejected_factory,
         }
@@ -1305,6 +1321,51 @@ mod native_process_tests {
             restored_record.target,
             LaunchTarget::Record { .. }
         ));
+    }
+
+    #[test]
+    fn a_window_of_an_app_kept_as_each_members_own_opens_the_persons_own_record() {
+        use crate::application_test_support as probe;
+        let mut definition = definition(probe::APP);
+        definition.room_record = true;
+        definition.member_record = true;
+        let room = "3f2b1c00-0000-4000-8000-00000000000c";
+        let record_of = |person: &str| {
+            let temp = tempfile::tempdir().unwrap();
+            let mut native = NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("61".into()),
+                    ..environment(temp.path())
+                },
+                UserId(person.into()),
+            )
+            .unwrap();
+            native
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap()
+                .context
+                .record()
+                .id
+                .clone()
+        };
+        let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
+        assert_eq!(
+            record_of(&ada),
+            RecordId::of_member(&ada, "host.probe").unwrap(),
+            "Ada's window opens her own record of the workspace"
+        );
+        assert_eq!(
+            record_of(&bo),
+            RecordId::of_member(&bo, "host.probe").unwrap(),
+            "Bo's opens his, never hers"
+        );
+        assert!(
+            record_of("person-a").is_package_primary(),
+            "someone without a root identity is a member of no workspace: the room's record"
+        );
     }
 
     #[test]
@@ -1457,6 +1518,93 @@ mod native_process_tests {
             .unwrap();
         assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
         assert!(prepared.context.record().id.is_package_primary());
+    }
+
+    /// A window that shows before the room's record (a tilolang app) opens
+    /// the record this device holds off the frame. Launched again while its
+    /// workspace joins (after a session restart, or closed and opened once
+    /// more), its component is admitted on the room's route while the record
+    /// is still decoding, every time, and shows the record once taken in.
+    #[test]
+    #[cfg(all(unix, feature = "broker-transport"))]
+    fn a_window_opening_its_room_record_off_the_frame_is_admitted_on_every_launch() {
+        use crate::application_test_support as probe;
+        use crate::collaboration::native_initial::NativeConstruction;
+        use automerge::{ReadDoc, transaction::Transactable};
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-00000000000d";
+        let mut definition = definition(probe::APP);
+        definition.room_record = true;
+        definition.opens_before_record = true;
+        let launch = |instance: u64| {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some(instance.to_string()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        // The first launch creates the room's record on this device.
+        let mut host = launch(61);
+        let mut created = host
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        created
+            .context
+            .initialize_new_record(|doc| {
+                doc.put(automerge::ROOT, "note", "kept")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        drop(created);
+        drop(host);
+
+        for instance in [61, 61, 62] {
+            let mut host = launch(instance);
+            let scope = crate::wake::WakeScope::new();
+            let (manager, _broker) = {
+                let _entry = scope.enter();
+                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    crate::collaboration::RouteSpec::app(probe::APP, room.parse().unwrap()),
+                    definition.record_kind.as_str(),
+                    automerge::AutoCommit::new().save(),
+                    runtime_collab::RoomStatus::Ready,
+                )
+            };
+            let construction = NativeConstruction::enter_component(manager, scope).unwrap();
+            let prepared = host
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
+            let opening = prepared
+                .context
+                .record_opening()
+                .expect("the record this device holds opens off the frame");
+            construction
+                .bind_component(&prepared.context.callback_binding())
+                .expect("the relaunched component is admitted on the room's route");
+            assert!(opening.take_in(true).unwrap());
+            prepared
+                .context
+                .read_record(|doc| {
+                    assert_eq!(
+                        doc.get(automerge::ROOT, "note")
+                            .unwrap()
+                            .and_then(|(value, _)| value.into_string().ok())
+                            .as_deref(),
+                        Some("kept")
+                    );
+                })
+                .unwrap();
+            drop(prepared);
+            drop(construction);
+            drop(host);
+        }
     }
 
     #[test]
@@ -1745,6 +1893,55 @@ mod native_process_tests {
         publish(Some(serde_json::to_vec(&original).unwrap()));
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
+    }
+
+    #[test]
+    fn a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision() {
+        use crate::permissions::{ActionKind, Answer, TreePath};
+        use collab_types::action_authority::AppActionAuthorityProjection;
+        use std::sync::{Arc, Mutex};
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let app = "so.tilo.store";
+        let author = UserId("person-a".into());
+        let original = AppActionAuthorityProjection::project(
+            &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
+            app,
+            &author.0,
+            false,
+        );
+        let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
+        let source: tilo_host::action_authority::AuthoritySource = {
+            let bytes = bytes.clone();
+            Arc::new(move || Ok(bytes.lock().unwrap().clone()))
+        };
+        // The process has no watch left (EMFILE): nothing will report a change.
+        let watch: AuthorityWatcher =
+            Arc::new(|_| Err("Too many open files (os error 24)".to_owned()));
+        let environment = NativeProcessEnvironment {
+            workspace_id: Some(room.into()),
+            participation: Some("read-only".into()),
+            action_authority: Some(HostAuthority {
+                read: source,
+                watch,
+            }),
+            ..environment(temp.path())
+        };
+        let permissions = environment.resolve(app, &author).unwrap().permissions;
+        let own = TreePath::root().app(app).action("buy");
+        assert_eq!(
+            permissions.answer(&own, ActionKind::Outside),
+            Answer::Allow,
+            "the person's authority holds without a watch"
+        );
+        let mut revoked = original.clone();
+        revoked.policy.owner = None;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
+        assert_eq!(
+            permissions.answer(&own, ActionKind::Outside),
+            Answer::Deny,
+            "and what the host holds now is what decides"
+        );
     }
 
     #[test]

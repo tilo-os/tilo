@@ -3682,6 +3682,11 @@ impl FrameBuilder {
     /// strip's pixels by whole pixels.
     fn strip_plan(&self) -> Option<StripPlan> {
         use crate::shell::state::StripId;
+        // A canvas is no strip a presenter pans: its windows stand anywhere
+        // and the camera moves them all, so it is drawn as it is on screen.
+        if self.host.canvas_shown() {
+            return None;
+        }
         let to_scene = self.lone_output_transform()?;
         let screen_w = scene_px(self.scene_size.0).max(1);
         let screen_h = scene_px(self.scene_size.1).max(1);

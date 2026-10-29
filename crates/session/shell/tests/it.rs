@@ -37,6 +37,8 @@ mod argb_opaque_region;
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]
 mod bluetooth_pairing;
+#[path = "canvas.rs"]
+mod canvas;
 #[path = "capability_enforcement.rs"]
 mod capability_enforcement;
 #[path = "capture_protection.rs"]

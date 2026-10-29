@@ -592,6 +592,7 @@ impl ShellOverlayHost {
             bar_popovers: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             test_activations: Vec::new(),
+            canvas: canvas::CanvasLayer::default(),
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
             feedback_picker: crate::shell::feedback_pick::NativePicker::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),

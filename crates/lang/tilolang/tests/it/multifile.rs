@@ -280,7 +280,7 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names.last().map(String::as_str), Some("today"));
-    for dep in ["notes", "todo", "chat"] {
+    for dep in ["notes", "tasks", "chat"] {
         assert!(names.contains(&dep.to_string()), "{names:?}");
     }
     assert_eq!(names.len(), 4, "only what today imports: {names:?}");
@@ -345,6 +345,55 @@ fn a_path_names_a_package_outside_the_siblings() {
     assert_eq!(order, vec![lib, dir]);
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(built[1].compiled.meta.views[0].name, "show");
+}
+
+#[test]
+fn a_use_of_an_earlier_id_imports_the_renamed_package() {
+    let scratch = Scratch::new("renamed");
+    let tasks = scratch.package(
+        "tasks",
+        &[(
+            "app.tl",
+            "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
+        )],
+    );
+    let source = "app t.main \"Main\"\n\nuse t.todo as todo\n\nview show(i: todo.Item) {\n    text(i.title)\n}\n";
+    let dir = scratch.package("main", &[("app.tl", source)]);
+    let order = dependency_order(&dir, &[]).unwrap();
+    assert_eq!(order, vec![tasks, dir.clone()]);
+    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+    let main = &built[1].compiled.meta;
+    assert_eq!(main.uses, ["t.tasks"], "imported under the id it has now");
+    assert_eq!(main.views[0].name, "show");
+    // The importer's source stays as written.
+    assert_eq!(std::fs::read_to_string(dir.join("app.tl")).unwrap(), source);
+}
+
+#[test]
+fn an_id_a_package_still_has_is_its_own_not_a_renamed_ones() {
+    let scratch = Scratch::new("still-there");
+    scratch.package(
+        "tasks",
+        &[(
+            "app.tl",
+            "app t.tasks \"Tasks\" (previously: t.todo)\n\ntype Item {\n    title: Text\n}\n",
+        )],
+    );
+    let todo = scratch.package(
+        "todo",
+        &[(
+            "app.tl",
+            "app t.todo \"Todo\"\n\ntype Item {\n    title: Text\n}\n",
+        )],
+    );
+    let dir = scratch.package(
+        "main",
+        &[("app.tl", "app t.main \"Main\"\n\nuse t.todo as todo\n")],
+    );
+    let order = dependency_order(&dir, &[]).unwrap();
+    assert_eq!(order, vec![todo, dir]);
+    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(built[1].compiled.meta.uses, ["t.todo"]);
 }
 
 #[test]

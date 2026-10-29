@@ -688,6 +688,7 @@ fn bound_components_keep_child_binding() {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: factory,
         };
@@ -913,6 +914,7 @@ impl ActionFixture {
                 optional: vec![],
                 opens: &[],
                 room_record: false,
+                member_record: false,
                 opens_before_record: false,
                 create,
             };
@@ -2622,6 +2624,7 @@ fn a_hosted_components_search_request_becomes_a_host_intent() {
         icon: IconDescriptor::Glyph("P"),
         record_kind: crate::record::RecordKind::new("probe"),
         room_record: true,
+        member_record: false,
         opens_before_record: false,
         required: vec![],
         optional: vec![],

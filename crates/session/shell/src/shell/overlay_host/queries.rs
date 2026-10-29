@@ -619,7 +619,10 @@ impl ShellOverlayHost {
     /// Whether the input method serves an overlay's own field — search's,
     /// or a password prompt's — rather than the focused node's.
     pub fn overlay_owns_ime(&self) -> bool {
-        self.palette_visible || self.shell_prompt_up() || self.quick_settings_field().is_some()
+        self.palette_visible
+            || self.shell_prompt_up()
+            || self.quick_settings_field().is_some()
+            || self.canvas_takes_keys()
     }
 
     /// The Quick Settings field with the keyboard (the clipboard's search,
@@ -641,8 +644,10 @@ impl ShellOverlayHost {
         if let Some(prompt) = self.shell_prompt() {
             return ui::ime::ImeWindowState::from_widget(prompt);
         }
-        self.quick_settings_field()
-            .and_then(|field| ui::ime::ImeWindowState::from_widget(field))
+        if let Some(field) = self.quick_settings_field() {
+            return ui::ime::ImeWindowState::from_widget(field);
+        }
+        self.canvas_ime_field()
     }
 
     pub(crate) fn overlay_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -652,7 +657,13 @@ impl ShellOverlayHost {
         if let Some(prompt) = self.shell_prompt() {
             return prompt.ime_edit_fingerprint(key);
         }
-        self.quick_settings_field()?.ime_edit_fingerprint(key)
+        if let Some(field) = self.quick_settings_field() {
+            return field.ime_edit_fingerprint(key);
+        }
+        if self.canvas_takes_keys() {
+            return self.canvas_ime_edit_fingerprint(key);
+        }
+        None
     }
 
     /// Where the on-screen keyboard covers the desktop, so a password

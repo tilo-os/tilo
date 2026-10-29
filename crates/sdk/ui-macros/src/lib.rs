@@ -522,7 +522,7 @@ impl Generated {
         self.reads.push(quote! {
             match source.prop(#key) {
                 Some(value) => {
-                    props.#member = <#ty as #k::PropType>::from_value(&value)
+                    props.#member = <#ty as #k::PropType>::read(&value, source)
                         .map_err(|message| #k::Error::value(#name, #key, message))?;
                 }
                 None => #missing

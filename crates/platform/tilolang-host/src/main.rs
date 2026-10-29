@@ -10,7 +10,7 @@ use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
-use runtime_portal::tilolang_host::{STORAGE_ENV, receive_instance, send_ended, take_door};
+use runtime_portal::tilolang_host::{Handed, STORAGE_ENV, receive, send_ended, take_door};
 use tilolang_host::TilolangHost;
 
 fn main() -> std::process::ExitCode {
@@ -73,15 +73,23 @@ fn main() -> std::process::ExitCode {
             let mut drained = [0_u8; 256];
             while matches!((&wake_read).read(&mut drained), Ok(n) if n > 0) {}
         }
+        if ready.task {
+            host.serve_task();
+        }
         if ready.door
             && let Some(open) = door.as_ref()
         {
-            match receive_instance(open) {
-                Ok(Some((request, fds))) => {
+            match receive(open) {
+                Ok(Some(Handed::Instance(request, fds))) => {
                     let (app, instance) = (request.app.clone(), request.instance);
                     if let Err(error) = host.admit(request, fds) {
                         tracing::error!(app, %error, "an instance did not start");
                         let _ = send_ended(open, instance);
+                    }
+                }
+                Ok(Some(Handed::Task(request, fds))) => {
+                    if let Err(error) = host.begin_task(&request, fds) {
+                        tracing::error!(task = request.task, %error, "a task did not start");
                     }
                 }
                 Ok(None) => door = None,
@@ -94,6 +102,7 @@ fn main() -> std::process::ExitCode {
 struct Ready {
     door: bool,
     wake: bool,
+    task: bool,
 }
 
 /// Wait until the door, the wake or a window has something.
@@ -106,6 +115,14 @@ fn wait(door: Option<BorrowedFd<'_>>, wake: BorrowedFd<'_>, host: &TilolangHost)
     if let Some(door) = door {
         fds.push(libc::pollfd {
             fd: door.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        });
+    }
+    let task_at = fds.len();
+    if let Some(task) = host.task_fd() {
+        fds.push(libc::pollfd {
+            fd: task.as_raw_fd(),
             events: libc::POLLIN,
             revents: 0,
         });
@@ -124,10 +141,12 @@ fn wait(door: Option<BorrowedFd<'_>>, wake: BorrowedFd<'_>, host: &TilolangHost)
         return Ready {
             door: false,
             wake: false,
+            task: false,
         };
     }
     Ready {
         wake: fds.first().is_some_and(|fd| fd.revents != 0),
         door: door.is_some() && fds.get(1).is_some_and(|fd| fd.revents != 0),
+        task: host.task_fd().is_some() && fds.get(task_at).is_some_and(|fd| fd.revents != 0),
     }
 }

@@ -89,7 +89,24 @@ impl ShellOverlayHost {
         if let Some(seed) = self.strip_thing_at(at) {
             return Some(seed);
         }
-        self.launchpad_thing_at(at)
+        if let Some(seed) = self.launchpad_thing_at(at) {
+            return Some(seed);
+        }
+        self.empty_canvas_at(at)
+    }
+
+    /// Empty canvas at `at`: its menu asks what is typed there, about the
+    /// place.
+    fn empty_canvas_at(&self, at: Point) -> Option<SelectionSeed> {
+        if !self.canvas_on_empty_space(at) {
+            return None;
+        }
+        let label = self.app_label(tilo_desktop_model::commands::APP_ID);
+        Some(SelectionSeed::new(
+            tilo_desktop_model::commands::APP_ID,
+            label,
+            None,
+        ))
     }
 
     /// The notification whose banner, or whose row in the open centre, is

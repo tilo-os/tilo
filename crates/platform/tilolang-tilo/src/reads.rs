@@ -1,9 +1,9 @@
 //! Reading one field of one resource straight from the room record, and naming the fields a
 //! set of Automerge changes wrote.
 //!
-//! A read walks from the record's root to the resource's map (`tl/<app>/<id>`), down one
-//! collection entry per step of the reference, and reads the one field: its cost does not grow
-//! with the size of the resource. Materializing the resource as a [`crate::DynRecord`] instead
+//! A read walks from the record's root to the resource's map (`tl/<app>/<id>`), to the item's
+//! map by its id ([`crate::items`]), and reads the one field: its cost does not grow with the
+//! size of the resource. Materializing the resource as a [`crate::DynRecord`] instead
 //! would read every item of every collection in it for each field a view reads.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,10 +12,11 @@ use automerge::legacy::Key as LegacyKey;
 use automerge::{Change, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value as AmValue};
 use serde_json::Value as Json;
 use tilo_resource::model::{MapSlot, load_slot};
-use tilo_resource::{Counter, Map, Set, read_key, stored_ids, stored_item};
+use tilo_resource::{Counter, Map, Set, read_key};
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::place::{AT_KEY, ITEMS_KEY};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, Scalar, StoreError};
-use tilolang_runtime::value::{ResourceRef, Step};
+use tilolang_runtime::value::ResourceRef;
 
 use crate::action::RECORDS_KEY;
 use crate::schema::{FieldSchema, MergeKind, TYPE_KEY, TypeSchema, lookup};
@@ -37,11 +38,16 @@ pub(crate) fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
     }
 }
 
-/// The map of the resource `id` of `app`.
+/// The map of the resource `id` of `app`: under the app's id, or under an id it was published as
+/// before (`previously:`), where its older records stay.
 pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
     let records = map_at(doc, &automerge::ROOT, RECORDS_KEY)?;
-    let app = map_at(doc, &records, app)?;
-    map_at(doc, &app, id)
+    if let Some(found) = map_at(doc, &records, app).and_then(|held| map_at(doc, &held, id)) {
+        return Some(found);
+    }
+    crate::schema::previously(app)
+        .iter()
+        .find_map(|old| map_at(doc, &map_at(doc, &records, old)?, id))
 }
 
 /// The type stored in `$type` of the map `obj`.
@@ -56,56 +62,47 @@ pub fn type_at(doc: &Doc, obj: &ObjId) -> Option<TypeId> {
 }
 
 /// Where a resource's fields are: its map, or `None` for an item stored as its order key alone
-/// (every field reads as its default); and its type.
+/// (every field reads as its default); and its type. For an item, where it is stored.
 pub struct Located {
     pub obj: Option<ObjId>,
     pub schema: &'static TypeSchema,
+    pub item: Option<crate::items::Found>,
 }
 
-/// Walk from the resource map `root` (of type `root_ty`) down the steps of `at`.
+/// Locate the resource `at`, given the app and type of its document: the record's map, or the
+/// map of its item `at.item` wherever that is stored ([`crate::items`]). Whether the item is
+/// in a collection now is the index's to say.
 ///
 /// # Errors
-/// `NotFound` when a step names no collection or no item.
-pub fn locate(
-    doc: &Doc,
-    root: ObjId,
-    root_ty: &str,
-    steps: &[Step],
-) -> Result<Located, StoreError> {
-    let mut schema = lookup(root_ty).ok_or_else(|| not_found(format!("type {root_ty}")))?;
-    let mut obj = Some(root);
-    for step in steps {
-        let field = schema
-            .field(&step.field)
-            .filter(|f| f.kind == MergeKind::Collection)
-            .ok_or_else(|| not_found(format!("collection `{}`", step.field)))?;
-        let item_ty = field
-            .record
-            .as_deref()
-            .ok_or_else(|| not_found(format!("item type of `{}`", step.field)))?;
-        schema = lookup(item_ty).ok_or_else(|| not_found(format!("type {item_ty}")))?;
-        let coll = obj
-            .as_ref()
-            .and_then(|o| map_at(doc, o, &step.field))
-            .ok_or_else(|| not_found(format!("item `{}`", step.item)))?;
-        obj = stored_item(doc, &coll, &step.item)
-            .ok_or_else(|| not_found(format!("item `{}`", step.item)))?;
-    }
-    Ok(Located { obj, schema })
-}
-
-/// Locate the resource `at`, given the app and type of its document.
-///
-/// # Errors
-/// As [`locate`]; `NotFound` for a document the record does not hold.
+/// `NotFound` for a document the record does not hold, or an item it holds none of.
 pub fn locate_ref(
     doc: &Doc,
     (app, ty): (&AppId, &TypeId),
     at: &ResourceRef,
+    nested: &crate::items::Nested,
 ) -> Result<Located, StoreError> {
     let root =
         resource_obj(doc, app, &at.doc).ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
-    locate(doc, root, ty, &at.path)
+    let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
+    let Some(item) = &at.item else {
+        return Ok(Located {
+            obj: Some(root),
+            schema,
+            item: None,
+        });
+    };
+    let found = crate::items::find(doc, (&at.doc, &root, schema), nested, item)
+        .ok_or_else(|| not_found(format!("item `{item}`")))?;
+    let item_schema = found
+        .ty
+        .as_deref()
+        .and_then(lookup)
+        .ok_or_else(|| not_found(format!("the type of item `{item}`")))?;
+    Ok(Located {
+        obj: found.obj.clone(),
+        schema: item_schema,
+        item: Some(found),
+    })
 }
 
 fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
@@ -198,13 +195,11 @@ pub fn field_of_slot(
                     .collect(),
             )
         }
-        MergeKind::Collection => FieldValue::Items(match slot {
-            Some((AmValue::Object(ObjType::Map), coll)) => stored_ids(doc, &coll)
-                .into_iter()
-                .map(|item| item.as_str().to_owned())
-                .collect(),
-            _ => Vec::new(),
-        }),
+        MergeKind::Collection => {
+            return Err(StoreError::Invalid(format!(
+                "collection `{id}` is read from its items' placements"
+            )));
+        }
         MergeKind::Record => {
             return Err(StoreError::Invalid(
                 "a nested record is not a field the runtime reads".into(),
@@ -274,14 +269,20 @@ pub struct Changed {
     /// Whether the record's layout above the resources changed (not just one resource):
     /// anything read of any resource may be stale.
     pub layout: bool,
-    /// Per collection, the items added, removed or moved (their entries put, deleted or given a
-    /// new order key): what a listing of the collection is brought in line by.
-    pub items: crate::store::ItemTouches,
+    /// Per document, the items whose placement was written (moved, removed, inserted), each
+    /// with whether the change made it.
+    pub placed: Placed,
+    /// The documents an entry of a nested collection (a record written before items were
+    /// flat) was put in or deleted from: where their nested items are is read again.
+    pub nested: BTreeSet<DocId>,
 }
 
-/// Name the (resource, field) pairs `changes` wrote, once `doc` holds them. `index` gives each
-/// document's app and type, so the walk knows which fields are collections whose items are
-/// resources of their own.
+/// Per document, the items whose placement changes wrote, each with whether they made it.
+pub type Placed = BTreeMap<DocId, BTreeMap<String, bool>>;
+
+/// Name the (resource, field) pairs `changes` wrote, once `doc` holds them, and the items they
+/// placed. `index` gives each document's app and type, so the walk knows which fields are
+/// collections whose items are resources of their own.
 ///
 /// Each op names its object and key; the object's place in the record is found by walking up
 /// its parents, one lookup per level. (Automerge's own patches would name the same places, but
@@ -294,14 +295,21 @@ pub fn changed_by(
     doc: &Doc,
     index: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Changed {
-    let mut writes: BTreeMap<String, BTreeSet<Option<String>>> = BTreeMap::new();
+    // Per object, the keys written and whether an object was made under each.
+    let mut writes: BTreeMap<String, BTreeMap<Option<String>, bool>> = BTreeMap::new();
     for change in changes {
         for op in change.decode().operations {
             let key = match op.key {
                 LegacyKey::Map(key) => Some(key.to_string()),
                 LegacyKey::Seq(_) => None,
             };
-            writes.entry(op.obj.to_string()).or_default().insert(key);
+            let made = matches!(op.action, automerge::legacy::OpType::Make(_));
+            let held = writes
+                .entry(op.obj.to_string())
+                .or_default()
+                .entry(key)
+                .or_default();
+            *held = *held || made;
         }
     }
     let mut out = ChangedBuilder::default();
@@ -310,13 +318,13 @@ pub fn changed_by(
             out.unplaced = true;
             continue;
         };
-        for key in keys {
+        for (key, made) in keys {
             let mut props: Vec<&Prop> = path.iter().collect();
             let own = key.map(Prop::Map);
             if let Some(own) = own.as_ref() {
                 props.push(own);
             }
-            out.patch(&props, index);
+            out.patch(&props, made, (doc, index));
         }
     }
     out.finish()
@@ -340,7 +348,8 @@ struct ChangedBuilder {
     structure: bool,
     unplaced: bool,
     layout: bool,
-    items: crate::store::ItemTouches,
+    placed: Placed,
+    nested: BTreeSet<DocId>,
 }
 
 fn key_of(prop: &Prop) -> Option<&str> {
@@ -351,7 +360,12 @@ fn key_of(prop: &Prop) -> Option<&str> {
 }
 
 impl ChangedBuilder {
-    fn patch(&mut self, props: &[&Prop], index: &BTreeMap<DocId, (AppId, TypeId)>) {
+    fn patch(
+        &mut self,
+        props: &[&Prop],
+        made: bool,
+        (record, index): (&Doc, &BTreeMap<DocId, (AppId, TypeId)>),
+    ) {
         // tl / <app> / <id> / <field> ...
         let keys: Vec<Option<&str>> = props.iter().map(|p| key_of(p)).collect();
         if keys.first().copied().flatten() != Some(RECORDS_KEY) {
@@ -367,23 +381,87 @@ impl ChangedBuilder {
             self.whole(doc);
             return;
         }
-        let Some((_, ty)) = index.get(doc) else {
+        let Some((app, ty)) = index.get(doc) else {
             // A resource the index does not know yet: it was just created.
             self.structure = true;
             self.whole(doc);
             return;
         };
-        let Some(mut schema) = lookup(ty) else {
+        let Some(schema) = lookup(ty) else {
             self.whole(doc);
             return;
         };
-        let mut resource = doc.to_owned();
-        let mut at = 3;
+        if keys.get(3).copied().flatten() == Some(ITEMS_KEY) {
+            self.flat_item(record, (app, doc), keys.get(4..).unwrap_or_default(), made);
+            return;
+        }
+        self.within(doc, doc, schema, keys.get(3..).unwrap_or_default());
+    }
+
+    /// A write below `$items` of the record `doc`: `below` are the keys from the item's id on.
+    fn flat_item(
+        &mut self,
+        record: &Doc,
+        (app, doc): (&str, &str),
+        below: &[Option<&str>],
+        made: bool,
+    ) {
+        let Some(Some(item)) = below.first().copied() else {
+            self.whole(doc);
+            return;
+        };
+        let resource = format!("{doc}/{item}");
+        match below.get(1).copied() {
+            // The item's map was put or deleted: made, or (a replica's concurrent copy) replaced.
+            None => {
+                self.place(doc, item, made);
+                self.any(doc, &resource);
+            }
+            Some(Some(AT_KEY)) => self.place(doc, item, false),
+            Some(Some(TYPE_KEY)) => self.any(doc, &resource),
+            Some(Some(key)) if key.starts_with('$') => {}
+            Some(_) => {
+                let schema = resource_obj(record, app, doc)
+                    .and_then(|root| map_at(record, &root, ITEMS_KEY))
+                    .and_then(|items| map_at(record, &items, item))
+                    .and_then(|obj| type_at(record, &obj))
+                    .and_then(|ty| lookup(&ty));
+                match schema {
+                    Some(schema) => {
+                        self.within(doc, &resource, schema, below.get(1..).unwrap_or_default());
+                    }
+                    None => self.any(doc, &resource),
+                }
+            }
+        }
+    }
+
+    /// A write below the map of `resource` (of type `schema`) of the record `doc`: `keys` are
+    /// the keys from the field on. A collection field here is one of a record written before
+    /// items were flat, holding its items nested.
+    fn within(
+        &mut self,
+        doc: &str,
+        resource: &str,
+        schema: &'static TypeSchema,
+        keys: &[Option<&str>],
+    ) {
+        let mut resource = resource.to_owned();
+        let mut schema = schema;
+        let mut at = 0usize;
         loop {
             let Some(Some(field)) = keys.get(at).copied() else {
                 self.any(doc, &resource);
                 return;
             };
+            if field == AT_KEY {
+                // A nested item's placement, written when it moved.
+                if let Some((_, item)) = resource.rsplit_once('/') {
+                    let item = item.to_owned();
+                    self.place(doc, &item, false);
+                }
+                return;
+            }
             if field == TYPE_KEY || field.starts_with('$') {
                 // `$type`, `$app` and the outbox are not fields views read.
                 if field == TYPE_KEY {
@@ -397,25 +475,32 @@ impl ChangedBuilder {
             };
             let below = keys.get(at.saturating_add(1)..).unwrap_or_default();
             let item_record = spec.record.as_deref().and_then(lookup);
-            match (spec.kind, below, item_record) {
-                // An item's value changed below its `v`: descend into the item.
-                (MergeKind::Collection, [Some(item), Some("v"), _, ..], Some(item_schema)) => {
-                    resource = format!("{resource}/{field}:{item}");
+            match (spec.kind, below) {
+                // A nested item's value changed below its `v`: descend into the item, named by
+                // its id.
+                (MergeKind::Collection, [Some(item), Some("v"), _, ..]) => {
+                    resource = format!("{doc}/{item}");
+                    // An item of a collection of several types: read again whole.
+                    let Some(item_schema) = item_record else {
+                        self.any(doc, &resource);
+                        return;
+                    };
                     schema = item_schema;
                     at = at.saturating_add(3);
                 }
-                // The item itself was put, replaced or removed: the collection and every field
-                // of the item.
-                (MergeKind::Collection, [Some(item), Some("v")] | [Some(item)], _) => {
-                    self.field(doc, &resource, field);
-                    self.item(&resource, field, item);
-                    self.any(doc, &format!("{resource}/{field}:{item}"));
+                // A nested entry or its map was put, replaced or removed: where its items are,
+                // its placement and every field.
+                (MergeKind::Collection, [Some(item), Some("v")] | [Some(item)]) => {
+                    if below.len() == 1 {
+                        self.nested.insert(doc.to_owned());
+                    }
+                    self.place(doc, item, false);
+                    self.any(doc, &format!("{doc}/{item}"));
                     return;
                 }
-                // Membership or order: an item's entry, its order key.
-                (MergeKind::Collection, [Some(item), ..], _) => {
-                    self.field(doc, &resource, field);
-                    self.item(&resource, field, item);
+                // A nested item's order key.
+                (MergeKind::Collection, [Some(item), ..]) => {
+                    self.place(doc, item, false);
                     return;
                 }
                 _ => {
@@ -445,15 +530,15 @@ impl ChangedBuilder {
         self.field(doc, resource, ANY_FIELD);
     }
 
-    /// The item `item` of the collection `field` of `resource` was added, removed or moved.
-    fn item(&mut self, resource: &str, field: &str, item: &str) {
-        self.items
-            .entry(FieldKey {
-                resource: resource.to_owned(),
-                field: field.to_owned(),
-            })
+    /// The placement of the item `item` of `doc` was written; `made` when this made the item.
+    fn place(&mut self, doc: &str, item: &str, made: bool) {
+        let held = self
+            .placed
+            .entry(doc.to_owned())
             .or_default()
-            .insert(item.to_owned());
+            .entry(item.to_owned())
+            .or_default();
+        *held = *held || made;
     }
 
     fn finish(self) -> Changed {
@@ -467,7 +552,8 @@ impl ChangedBuilder {
             structure: self.structure,
             unplaced: self.unplaced,
             layout: self.layout,
-            items: self.items,
+            placed: self.placed,
+            nested: self.nested,
         }
     }
 }
@@ -495,6 +581,14 @@ pub fn may_hold_text(schema: &TypeSchema) -> bool {
     holds(schema, &mut Vec::new())
 }
 
+/// The items of a record, found and resolved into their collections: what
+/// [`first_text`] reads a collection's items from.
+pub struct RecordItems<'a> {
+    pub doc: &'a str,
+    pub items: &'a crate::items::Items,
+    pub resolved: &'a tilolang_runtime::place::Resolved,
+}
+
 /// The first non-empty text of the resource map `obj` of type `schema` at `path`, and the path
 /// of the resource that holds it, in the order [`crate::DynRecord`]'s text collection visits:
 /// fields by id, a collection's items in order, nested records in place. It stops at the first,
@@ -504,7 +598,7 @@ pub fn first_text(
     doc: &Doc,
     obj: &ObjId,
     schema: &TypeSchema,
-    path: &str,
+    (path, items): (&str, &RecordItems<'_>),
 ) -> Option<(String, String)> {
     let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
     fields.sort_by(|a, b| a.id.cmp(&b.id));
@@ -520,31 +614,35 @@ pub fn first_text(
             MergeKind::Record => {
                 let nested = field.record.as_deref().and_then(lookup);
                 if let (Some(map), Some(nested)) = (map_at(doc, obj, id), nested)
-                    && let Some(found) = first_text(doc, &map, nested, path)
+                    && let Some(found) = first_text(doc, &map, nested, (path, items))
                 {
                     return Some(found);
                 }
             }
             MergeKind::Collection => {
-                let (Some(item_schema), Some(coll)) = (
-                    field
-                        .record
-                        .as_deref()
-                        .and_then(lookup)
-                        .filter(|item| may_hold_text(item)),
-                    map_at(doc, obj, id),
-                ) else {
+                if field
+                    .record
+                    .as_deref()
+                    .and_then(lookup)
+                    .is_some_and(|item| !may_hold_text(item))
+                {
                     continue;
-                };
-                for item in stored_ids(doc, &coll) {
-                    if let Some(Some(value)) = stored_item(doc, &coll, item.as_str())
-                        && let Some(found) = first_text(
-                            doc,
-                            &value,
-                            item_schema,
-                            &format!("{path}/{id}:{}", item.as_str()),
-                        )
-                    {
+                }
+                let holder = path
+                    .strip_prefix(items.doc)
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .map(str::to_owned);
+                for item in items.resolved.items(holder.as_deref(), id) {
+                    let Some(found) = items.items.found.get(&item) else {
+                        continue;
+                    };
+                    let (Some(value), Some(item_schema)) =
+                        (&found.obj, found.ty.as_deref().and_then(lookup))
+                    else {
+                        continue;
+                    };
+                    let at = format!("{}/{item}", items.doc);
+                    if let Some(found) = first_text(doc, value, item_schema, (&at, items)) {
                         return Some(found);
                     }
                 }

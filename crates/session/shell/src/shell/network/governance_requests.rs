@@ -274,18 +274,19 @@ impl ShellNetwork {
 
     /// Commit `command`, a membership change of `caller`, this device, at
     /// this device's own `host`, which governs `room`
-    /// ([`Self::own_host_governs`]). Answers the heads of the room's
-    /// document that carries it, for this device's replica to wait for.
-    /// Blocks on the host: for a worker, never the frame loop.
+    /// ([`Self::own_host_governs`]), and take what the host wrote into this
+    /// device's replica at once ([`Self::take_own_host_write`]). Blocks on
+    /// the host: for a worker, never the frame loop.
     pub(crate) fn commit_membership_at_own_host(
         &self,
         host: &std::sync::Arc<tilo_network_actor::local_host::room_host::RoomHost>,
         room: RoomId,
         caller: tilo_user_identity::DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<Vec<automerge::ChangeHash>, String> {
+    ) -> Result<(), String> {
         let host = std::sync::Arc::clone(host);
-        let (completion, heads) = self
+        let governor = caller.device_public_key;
+        let (completion, added) = self
             .wait_on(async move {
                 host.rooms()
                     .commit_own_membership(&room.to_string(), &caller, command)
@@ -293,10 +294,34 @@ impl ShellNetwork {
             })?
             .map_err(|error| error.to_string())?;
         tracing::debug!(%room, generation = completion.generation, "this device's host committed its membership change");
-        // The host's publication reaches this device's replica as every
-        // member's does; it is drained now rather than on the next tick.
+        self.take_own_host_write(room, governor, added)
+    }
+
+    /// Take `added`, what this device's own host just wrote to `room` as its
+    /// governor `governor`, into this device's replica, as the host's
+    /// publication would bring it: in process, so the change is in force
+    /// here when the call that made it returns.
+    pub(crate) fn take_own_host_write(
+        &self,
+        room: RoomId,
+        governor: [u8; 32],
+        added: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        if added.is_empty() {
+            return Ok(());
+        }
+        let owner = self.native_owner()?;
+        owner.receive(
+            room,
+            tilo_peer_state::TransportOrigin::RelayDelta(governor),
+            neighbour_wire::NeighbourMsg::SyncResp {
+                changes: added,
+                room: room.to_string(),
+            },
+            std::time::SystemTime::now(),
+        )?;
         self.schedule_native_owner_publication(room);
-        Ok(heads)
+        Ok(())
     }
 
     /// Commit `command` in `room` as `caller`, this device, signed with its

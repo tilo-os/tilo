@@ -660,7 +660,8 @@ impl Rooms {
     /// decides any member's.
     ///
     /// Answers the room's generation that carries the change, and the
-    /// heads of the room's document once it does.
+    /// changes it added to the room's document, for the device's replica
+    /// to take in at once (none when the room carried it already).
     ///
     /// # Errors
     /// Refuses a command that is not a member's own membership change, one
@@ -675,11 +676,12 @@ impl Rooms {
         room: &str,
         device: &DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<(GovernanceCompletion, Vec<automerge::ChangeHash>), CollaborationError> {
+    ) -> Result<(GovernanceCompletion, Vec<Vec<u8>>), CollaborationError> {
         use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
         if !matches!(
             command,
             Command::Member { .. }
+                | Command::Settings(_)
                 | Command::Grant { .. }
                 | Command::Revoke { .. }
                 | Command::AddAgent { .. }
@@ -706,14 +708,14 @@ impl Rooms {
             &key,
             system_time(now),
         )? {
-            let heads = room.peer().room_heads().unwrap_or_default();
             return Ok((
                 GovernanceCompletion {
                     generation: room.record.generation,
                 },
-                heads,
+                Vec::new(),
             ));
         }
+        let before = room.peer().room_heads().unwrap_or_default();
         // A member removed takes every way in the room handed them with
         // them, as when a member's own device sends the removal.
         let removed: std::collections::BTreeSet<_> =
@@ -727,8 +729,8 @@ impl Rooms {
             Ok(state)
         })?;
         self.settle(&mut room).await?;
-        let heads = room.peer().room_heads().unwrap_or_default();
-        Ok((GovernanceCompletion { generation }, heads))
+        let added = room.peer().room_changes_since(&before);
+        Ok((GovernanceCompletion { generation }, added))
     }
 
     /// `room`'s whole history as its governor here holds it: what the

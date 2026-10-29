@@ -164,6 +164,30 @@ fn typing_in_a_composer_is_personal() {
 }
 
 #[test]
+fn an_item_inserted_into_a_collection_of_a_union_is_of_its_own_type() {
+    let src = "app t.x \"X\"\ntype A {\n    a: Text\n}\ntype B {\n    b: Text\n}\ntype Both = Collection<A | B>\nroot both: Both\ndefault view shown for both\nview shown(all: Both) {\n    text(\"{all.len()}\")\n}\naction add_a(all: Both) -> A {\n    all.insert(A(a: \"x\"))\n}\naction named(all: Both) -> Text {\n    let b = all.insert(B(b: \"y\"))\n    b.b\n}\n";
+    let compiled = crate::common::compile_with(src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+}
+
+#[test]
+fn an_item_block_names_the_other_slots_beside_the_row() {
+    // The row sees the item and the view's state; the composer beside it sees the state only.
+    let src = format!(
+        "app t.x \"X\"\n{TALK}view said(t: Talk, l: Line, draft: State<Text>) {{\n    text(l.said)\n}}\nview talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        said(t, l, draft)\n        composer: {{\n            input(bind: draft, fill)\n        }}\n    }}\n}}\n"
+    );
+    let compiled = crate::common::compile_with(&src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    let item_in_composer = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    std.transcript(t, t.lines) {{ l ->\n        text(l.said)\n        composer: {{\n            text(l.said)\n        }}\n    }}\n}}"
+    );
+    assert!(
+        !codes(&item_in_composer).is_empty(),
+        "the composer does not see the item"
+    );
+}
+
+#[test]
 fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
     // Given as itself, view state is read when the event fires.
     let pressed = format!(
