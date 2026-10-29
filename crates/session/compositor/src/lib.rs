@@ -35,6 +35,7 @@ mod protocols;
 pub mod render;
 mod state;
 mod text_input;
+mod xwayland;
 
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
@@ -208,6 +209,12 @@ impl Compositor {
             .insert_client(ours, state::client_data(true))
             .map_err(io)?;
         Ok(theirs)
+    }
+
+    /// Start Xwayland for X11 clients and return its display number (they
+    /// connect with `DISPLAY=:N`, at once).
+    pub fn start_xwayland(&mut self) -> Result<u32, Error> {
+        xwayland::start(&self.event_loop.handle(), &self.data.state)
     }
 
     /// Whether the session is locked.
