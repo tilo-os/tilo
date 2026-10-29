@@ -4791,22 +4791,12 @@ impl FrameHarness {
         Some(target)
     }
 
-    /// Whether `node` is History's: its chrome or an embedded History
-    /// surface.
-    fn history_owns_node(&self, node: NodeId) -> bool {
-        crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy)
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.owns_node(node, &self.taffy))
-    }
-
     /// Lay out after keyboard focus moved, as framework input when History
     /// holds the focused node.
     fn relayout_after_focus_move(&mut self) {
         let framework = self
             .focused
-            .is_some_and(|node| self.history_owns_node(node));
+            .is_some_and(|node| self.tree().history_owns(node));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.relayout();
     }
@@ -4974,12 +4964,7 @@ impl FrameHarness {
         {
             return self.perform_palette_action(target, action);
         }
-        let framework =
-            crate::history_mode::embedded::owns_node(self.root.as_ref(), taffy_id, &self.taffy)
-                || self
-                    .history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(taffy_id, &self.taffy));
+        let framework = self.tree().history_owns(taffy_id);
         let _framework_frame = FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),
@@ -5251,12 +5236,7 @@ impl FrameHarness {
             .get(name)
             .copied()
             .ok_or_else(|| format!("no addressable widget named {name:?}"))?;
-        if crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy)
-            || self
-                .history
-                .as_ref()
-                .is_some_and(|history| history.owns_node(node, &self.taffy))
-        {
+        if self.tree().history_owns(node) {
             let _framework_frame = FrameworkInputFrame::new(&self.framework_input, true);
             if matches!(action, SemanticAction::Focus | SemanticAction::Activate) {
                 self.set_focused(Some(node));
@@ -6139,24 +6119,9 @@ impl FrameHarness {
         });
         // A touch lands on what was on screen when it began: the switch to
         // touch waits for its gesture to land (`Self::settle_touch_modality`).
-        let detected = if self.dispatching_touch_pointer {
-            None
-        } else {
-            match event {
-                WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => Some(self.interaction.with_pointer_modality()),
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => Some(self.interaction.with_keyboard_modality()),
-                _ => None,
-            }
-        };
+        let detected = self
+            .interaction
+            .detected_from(event, self.dispatching_touch_pointer);
         if let Some(environment) = detected {
             self.switch_interaction(environment);
         }
@@ -6284,7 +6249,7 @@ impl FrameHarness {
             self.handle_unconsumed_key(event, host_navigation_allowed, true, &mut handled);
         } else if self
             .focused
-            .is_some_and(|node| self.history_owns_node(node))
+            .is_some_and(|node| self.tree().history_owns(node))
         {
             self.handle_unconsumed_activation_key(event, &mut handled);
         }
@@ -8671,7 +8636,7 @@ impl crate::host_core::KeyHost for FrameHarness {
     }
 
     fn move_focus(&mut self, node: Option<NodeId>) {
-        let framework = node.is_some_and(|node| self.history_owns_node(node));
+        let framework = node.is_some_and(|node| self.tree().history_owns(node));
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.set_focused(node);
     }

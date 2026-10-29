@@ -83,6 +83,15 @@ impl HostTree<'_> {
         }
     }
 
+    /// Whether `node` is History's: its chrome, or an embedded History
+    /// surface's.
+    pub(crate) fn history_owns(&self, node: NodeId) -> bool {
+        crate::history_mode::embedded::owns_node(self.root, node, self.taffy)
+            || self
+                .history
+                .is_some_and(|history| history.owns_node(node, self.taffy))
+    }
+
     /// The presented action palette's laid-out node: while it is up, the
     /// whole focus order.
     pub(crate) fn action_palette_node(&self) -> Option<NodeId> {

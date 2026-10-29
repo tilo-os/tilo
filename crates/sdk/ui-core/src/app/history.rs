@@ -341,16 +341,10 @@ impl App {
                     (Some(index), false) => index.saturating_add(1).checked_rem(len).unwrap_or(0),
                     (None, _) => 0,
                 };
-                controls |= self.focusable_order.get(next).is_some_and(|node| {
-                    crate::history_mode::embedded::owns_node(
-                        self.root_widget.as_ref(),
-                        *node,
-                        &self.layout.taffy,
-                    ) || self
-                        .history
-                        .as_ref()
-                        .is_some_and(|history| history.owns_node(*node, &self.layout.taffy))
-                });
+                controls |= self
+                    .focusable_order
+                    .get(next)
+                    .is_some_and(|&node| self.tree().history_owns(node));
             }
         }
         if controls

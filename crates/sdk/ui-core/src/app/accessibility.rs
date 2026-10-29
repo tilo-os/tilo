@@ -1284,14 +1284,7 @@ impl App {
             self.finish_action_palette_input(handled);
             return None;
         }
-        let framework = crate::history_mode::embedded::owns_node(
-            self.root_widget.as_ref(),
-            taffy_id,
-            &self.layout.taffy,
-        ) || self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.owns_node(taffy_id, &self.layout.taffy));
+        let framework = self.tree().history_owns(taffy_id);
         let history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
             &self.framework_input,
             framework || self.bindings.owns_document(taffy_id),

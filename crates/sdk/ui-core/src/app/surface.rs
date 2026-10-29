@@ -218,28 +218,10 @@ impl App {
             &app.framework_input,
             history_input,
         );
-        let detected_interaction = if synthesized_touch {
-            None
-        } else {
-            match &event {
-                // The window's touch emulation switches to touch once the
-                // gesture has landed, so a touch hits what the person saw.
-                WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => {
-                    Some(app.input.interaction.with_pointer_modality())
-                }
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => Some(app.input.interaction.with_keyboard_modality()),
-                _ => None,
-            }
-        };
+        let detected_interaction = app
+            .input
+            .interaction
+            .detected_from(&event, synthesized_touch);
         if let Some(environment) = detected_interaction {
             app.set_interaction_environment(environment);
         }
