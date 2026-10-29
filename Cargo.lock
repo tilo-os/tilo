@@ -20565,6 +20565,7 @@ dependencies = [
  "tilo-audio-service",
  "tilo-media",
  "tilo-power-mgmt",
+ "tilo-quick-settings",
  "tilo-test-env",
  "tracing",
  "workspace-hack",

@@ -29,6 +29,7 @@ mod search;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, OutputConfig, WindowPolicy};
@@ -39,12 +40,14 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
+use tilo_quick_settings::QsEffect;
 use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
 
 pub use search::{AppActions, SearchOptions};
+pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
 
 use chrome::{SessionChrome, SessionRules};
@@ -83,8 +86,8 @@ pub struct Options {
     /// The theme and fonts surface apps draw with.
     pub presentation: fn() -> ComponentRunnerInputs,
     /// What quick settings reads of the device and carries out on it;
-    /// without one, the bar's status cluster opens nothing.
-    pub quick_settings: Option<Rc<dyn PanelHost>>,
+    /// without it, the bar's status cluster opens nothing.
+    pub quick_settings: Option<QuickSettings>,
     /// Setup to run over everything before the desktop is used: the first
     /// use of this device, or the recovery of its identity.
     pub setup: Option<OnboardingView>,
@@ -93,6 +96,19 @@ pub struct Options {
     /// screen itself. Without one, the choice is only logged.
     pub session_actions: fn(SessionAction) -> Result<(), String>,
 }
+
+/// Where quick settings reads the device from.
+pub enum QuickSettings {
+    /// The device host of this machine (or of a stand-in one), made with
+    /// the session loop's wake: its readings land on the loop, what the
+    /// panel asks of the desktop comes back to the session.
+    Device(Box<dyn FnOnce(Wake) -> DeviceHost>),
+    /// A host lent as it is: a screenshot's stand-in readings.
+    Lent(Rc<dyn PanelHost>),
+}
+
+/// The settings app, which quick settings opens.
+const SETTINGS_APP: &str = "so.tilo.settings";
 
 /// The default for [`Options::session_actions`]: a session that owns no
 /// machine (a test, a screenshot) carries out nothing.
@@ -178,6 +194,8 @@ struct Shared {
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether quick settings is open, when the session has it.
     quick_settings: Option<Rc<Cell<bool>>>,
+    /// The device behind quick settings, when the session reads one.
+    device: Option<DeviceHost>,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
     power: Option<PowerSeat>,
@@ -211,7 +229,51 @@ impl Shared {
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
         }
+        self.follow_device();
         self.follow_sheets();
+    }
+
+    /// Land what the device host read and carry out what the panel asked
+    /// of the desktop.
+    fn follow_device(&self) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        device.set_open(self.quick_settings.as_ref().is_some_and(|open| open.get()));
+        device.pump();
+        for request in device.take_requests() {
+            match request {
+                SessionRequest::Effect(QsEffect::PowerMenu) => {
+                    if let Some(open) = &self.quick_settings {
+                        open.set(false);
+                    }
+                    if let Some(power) = &self.power {
+                        power.presentation().open(false);
+                    }
+                }
+                SessionRequest::Effect(QsEffect::LockScreen) => {
+                    if let Some(open) = &self.quick_settings {
+                        open.set(false);
+                    }
+                    self.lock.set(true);
+                }
+                SessionRequest::Effect(QsEffect::OpenSettings { .. }) => {
+                    if let Some(open) = &self.quick_settings {
+                        open.set(false);
+                    }
+                    let launch = Command::Launch {
+                        generation: GENERATION.into(),
+                        app: SETTINGS_APP.into(),
+                    };
+                    if let Err(error) = self.handle.dispatch(&launch, GENERATION) {
+                        tracing::warn!(%error, "open settings");
+                    }
+                }
+                other => {
+                    tracing::debug!(?other, "quick settings asks what the session cannot do yet");
+                }
+            }
+        }
     }
 
     /// Show workspace settings for the workspace in front.
@@ -369,9 +431,28 @@ impl Mount<'_> {
         link
     }
 
-    /// Quick settings, reading the device through `panel`; whether it is
+    /// Quick settings, reading the device as `reads` says: the device
+    /// host it reads, when the session drives one, and whether it is
     /// open, when it mounted.
-    fn quick_settings(&mut self, panel: Rc<dyn PanelHost>) -> Option<Rc<Cell<bool>>> {
+    fn quick_settings(
+        &mut self,
+        reads: QuickSettings,
+    ) -> (Option<DeviceHost>, Option<Rc<Cell<bool>>>) {
+        let (device, panel) = match reads {
+            QuickSettings::Device(make) => {
+                let waker = self.compositor.waker();
+                let device = make(Arc::new(move || waker.wake_by_ref()));
+                let panel = device.panel();
+                (Some(device), panel)
+            }
+            QuickSettings::Lent(panel) => (None, panel),
+        };
+        (device, self.panel(panel))
+    }
+
+    /// Quick settings' panel, reading the device through `panel`; whether
+    /// it is open, when it mounted.
+    fn panel(&mut self, panel: Rc<dyn PanelHost>) -> Option<Rc<Cell<bool>>> {
         let open = Rc::new(Cell::new(false));
         match tilo_quick_settings::prepare(panel, &self.who.0, &self.who.1, 1)
             .and_then(|component| ui::App::from_component(component, (self.presentation)()))
@@ -500,9 +581,9 @@ impl Session {
             scale: options.scale,
         };
         let banners = mount.banners();
-        let quick_settings = options
+        let (device, quick_settings) = options
             .quick_settings
-            .and_then(|panel| mount.quick_settings(panel));
+            .map_or((None, None), |reads| mount.quick_settings(reads));
 
         // The sheets, over the desktop and its panels.
         let power = mount.sheet(tilo_sheets::power::definition(), PowerSeat::default());
@@ -528,6 +609,7 @@ impl Session {
             asks,
             intents,
             quick_settings,
+            device,
             power,
             workspace_settings,
             portal,

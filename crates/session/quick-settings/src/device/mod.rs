@@ -21,6 +21,8 @@ mod apply;
 mod players;
 mod reads;
 mod refresh;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

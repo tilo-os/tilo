@@ -26,6 +26,7 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-quick-settings = { path = ".", features = ["test-support"] }
 tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
