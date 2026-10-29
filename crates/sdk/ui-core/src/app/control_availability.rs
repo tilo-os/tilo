@@ -66,6 +66,7 @@ impl App {
 
     /// When a bound component's permissions next change with time alone,
     /// as the last walk of the tree found: a frame then walks it again.
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn permissions_change_at(&self) -> Option<crate::time::Instant> {
         self.layout
             .walks

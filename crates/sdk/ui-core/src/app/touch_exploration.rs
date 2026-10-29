@@ -40,6 +40,7 @@ impl App {
     /// no widget sees it. `false`, touching nothing, while the reader is
     /// off: the touch then goes to the widgets as it always does.
     /// `scale` turns the contact's physical position into logical pixels.
+    #[cfg(feature = "native")]
     pub(crate) fn explore_by_touch(&mut self, touch: &winit::event::Touch, scale: f64) -> bool {
         if self.accessibility.screen_reader.is_none() {
             return false;
