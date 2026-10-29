@@ -742,7 +742,13 @@ pub fn input_capture(fb: &FrameBuilder) -> InputCapture {
     if chrome_takes_all_input(fb) {
         InputCapture::ALL
     } else {
-        fb.host().file_picker_capture()
+        let mut capture = fb.host().file_picker_capture();
+        // A caret on the canvas has the keyboard: what is typed is an ask,
+        // not input to the window that had focus. The pointer stays free,
+        // so a click on any window still reaches it (and puts the caret
+        // away).
+        capture.keyboard |= fb.host().canvas_takes_keys();
+        capture
     }
 }
 

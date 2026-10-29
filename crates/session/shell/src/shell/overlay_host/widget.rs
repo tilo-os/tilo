@@ -283,6 +283,9 @@ impl Widget for ShellOverlayHost {
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
+        // The rows take the workspace's arrangement before they lay out:
+        // a window opened this frame stands on the canvas this frame.
+        let canvas_dirty = self.sync_canvas() | self.fire_canvas_long_press(Instant::now());
         // The top bar steps aside for a window maximized this frame (and
         // comes back with its restore) in the same pass: the bar and the
         // windows' insets are laid out and painted from it below.
@@ -333,6 +336,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_maximize_changes();
         self.harvest_pending_width_changes();
         self.harvest_pending_group_reorder();
+        self.harvest_pending_canvas_moves();
         self.harvest_pending_tab_reorder();
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
@@ -444,6 +448,7 @@ impl Widget for ShellOverlayHost {
             || launch_dirty
             || session_action_dirty
             || chrome_dirty
+            || canvas_dirty
             || portal_dirty
             || picker_dirty
             || dialog_dirty
@@ -1155,7 +1160,10 @@ impl Widget for ShellOverlayHost {
     /// A finger on a Quick Settings slider holds it, as the pointer does;
     /// it never turns into a scroll of the page.
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.qs_slider_face_at(point)
+        // A finger on empty canvas is read raw too: a drag draws a band
+        // and a still hold opens its menu, which pointer emulation cannot
+        // tell apart from a scroll.
+        self.qs_slider_face_at(point) || self.canvas_on_empty_space(point)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1236,6 +1244,7 @@ impl Widget for ShellOverlayHost {
             .chain(self.person_quick_composer.next_wake_deadline())
             .chain(self.person_quick_composer.deadline())
             .chain(self.bar_tooltip.reveal_at())
+            .chain(self.canvas_deadline())
             .min()
     }
 }
@@ -1544,7 +1553,8 @@ impl ShellOverlayHost {
                             claimed = true;
                         }
                     }
-                    _ => {}
+                    // Two fingers on a canvas pan and zoom it.
+                    other => claimed |= self.canvas_touch_gesture(&other),
                 }
             }
             // A swipe down from a display's top edge reveals what hides
