@@ -46,7 +46,7 @@ pub mod updates;
 pub mod users;
 
 pub use crate::pane_model as model;
-pub(crate) use crate::pane_model::{composed_pane, installed_programs_unreadable};
+pub(crate) use crate::pane_model::installed_programs_unreadable;
 
 mod part;
 pub use part::PART;
