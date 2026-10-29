@@ -51,6 +51,7 @@ impl ShellDriver {
         "downloaded_add_no_artwork",
         "quick-settings",
         "qs-edit",
+        "qs-edit-drag",
         "qs-hardware-wired",
         "qs-compact",
         "qs-muted",

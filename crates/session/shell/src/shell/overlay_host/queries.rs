@@ -1147,11 +1147,15 @@ impl ShellOverlayHost {
     }
 
     /// Screenshot-driver hook for the Quick Settings edit surface: the
-    /// panel arranging its controls, through its own action.
-    pub fn force_quick_settings_edit_for_visual_test(&mut self) {
+    /// panel arranging its controls, through its own action, and when
+    /// `dragging`, a control held part-way through the panel's own drag.
+    pub fn force_quick_settings_edit_for_visual_test(&mut self, dragging: bool) {
         if !self.overlay_flags().quick_settings {
             return;
         }
         self.quick_settings_edit();
+        if dragging {
+            self.drag_quick_settings_control_for_capture();
+        }
     }
 }

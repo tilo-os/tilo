@@ -1236,6 +1236,55 @@ impl ShellOverlayHost {
         self.settle_quick_settings();
     }
 
+    /// Press the pointer on the second arranged control and carry it most
+    /// of the way past the third, holding the button there: the panel's own
+    /// drag as a hand leaves it part-way, for a capture.
+    pub(super) fn drag_quick_settings_control_for_capture(&mut self) {
+        let mut rows = Vec::new();
+        if let Some(root) = self.quick_settings_accessibility() {
+            arranged_rows(&root, &mut rows);
+        }
+        let Some(row) = rows.get(1).copied() else {
+            return;
+        };
+        let from = Point::new(row.x0 + 20.0, row.center().y);
+        let travel = row.height() * 1.6;
+        let mut events = vec![
+            ui::synthetic_input::cursor_moved(from.x, from.y),
+            ui::synthetic_input::mouse_press(),
+        ];
+        events.extend((1..=4_u8).map(|step| {
+            ui::synthetic_input::cursor_moved(from.x, from.y + travel * f64::from(step) / 4.0)
+        }));
+        let Some(app) = self.quick_settings.app_mut() else {
+            return;
+        };
+        let mut taffy = taffy::TaffyTree::<()>::new();
+        let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
+            return;
+        };
+        let mut document = automerge::AutoCommit::new();
+        let modifiers = winit::event::Modifiers::default();
+        for event in &events {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: ui::widget::Edits::lend(&mut document),
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
+            );
+        }
+        self.settle_quick_settings();
+    }
+
     /// The panel's accessibility tree, in the overlay's coordinates.
     pub(super) fn quick_settings_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.quick_settings.app()?.accessibility()
@@ -1302,5 +1351,21 @@ impl ShellOverlayHost {
     pub(super) fn run_quick_settings_effect_for_test(&mut self, effect: QsEffect) {
         self.run_quick_settings_effect(effect);
         let _ = self.apply_quick_settings_readings();
+    }
+}
+
+/// Where the arranging page's rows of controls shown stand, in order.
+fn arranged_rows(node: &ui::a11y::AccessNode, rows: &mut Vec<Rect>) {
+    if node.role == ui::a11y::Role::ListItem
+        && node
+            .action_target
+            .as_deref()
+            .is_some_and(|target| target.starts_with("qs-edit-"))
+        && let Some(bounds) = node.bounds
+    {
+        rows.push(bounds.to_rect());
+    }
+    for child in &node.children {
+        arranged_rows(child, rows);
     }
 }
