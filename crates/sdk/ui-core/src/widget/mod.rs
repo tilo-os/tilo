@@ -3187,8 +3187,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
-    NavListProps, NavPerson, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavEntry, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
+    NavListProps, NavPerson, NavSearchTerm, NavSection, NavSectionProps,
 };
 mod document_viewport;
 pub use document_viewport::{
