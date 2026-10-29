@@ -692,6 +692,7 @@ impl AppWindow {
                 ToApp::Resolve { lane, key, approve }
             }
             UiEvent::Open(resource) => ToApp::Open { resource },
+            UiEvent::OpenReference(reference) => ToApp::OpenReference { reference },
         };
         self.out.push(message);
     }

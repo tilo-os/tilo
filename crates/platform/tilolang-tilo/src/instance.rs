@@ -695,6 +695,26 @@ impl Instance {
 
     /// Show `target` in the detail view: what `open(r)` asked for, or a row. With `front`, a
     /// narrow window brings it to the front.
+    /// Open what the reference `reference` (a `mention` mark's value) in rich text refers to:
+    /// a resource of a package here that the viewer holds, in the detail lane.
+    fn open_reference(&mut self, reference: &str) {
+        use crate::runtime::Store as _;
+        let Some(reference) = crate::runtime::rich::Reference::of_mark(reference) else {
+            return;
+        };
+        let Some(host) = self.host() else {
+            return;
+        };
+        let Some(mut target) = referenced_resource(&host, &reference) else {
+            return;
+        };
+        let Ok(ty) = host.store().type_of(&target) else {
+            return;
+        };
+        target.ty = ty;
+        self.open_detail(&target, None, Some(ui::Front::Input));
+    }
+
     fn open_detail(&mut self, target: &ResourceRef, with: Option<&str>, front: Option<ui::Front>) {
         let Some(host) = self.host() else {
             return;
@@ -1263,6 +1283,10 @@ impl Instance {
                 }
                 Ok(())
             }
+            ToApp::OpenReference { reference } => {
+                self.open_reference(&reference);
+                Ok(())
+            }
             ToApp::Rows {
                 lane,
                 list,
@@ -1673,12 +1697,59 @@ fn convert_with<T>(
     let field_name = |binding: &Binding| Instance::field_name(host, binding);
     let cases = |id: &str| cases(host, id);
     let toggles = |key: &str, event: &str| toggles(host, view, key, event);
+    let embeds = |reference: &crate::runtime::rich::Reference| inline_view(host, names, reference);
     run(&Convert {
         names,
         field_name: &field_name,
         cases: &cases,
         toggles: &toggles,
+        embeds: &embeds,
     })
+}
+
+/// The tilolang resource a reference in rich text names, when it names one of a package this
+/// host has loaded: by its id, of no type yet.
+fn referenced_resource(
+    host: &Host,
+    reference: &crate::runtime::rich::Reference,
+) -> Option<ResourceRef> {
+    let at = reference.as_resource()?;
+    host.package(&at.app)?;
+    let id = crate::runtime::rich::resource_id(reference)?;
+    ResourceRef::parse_id(id, String::new())
+}
+
+/// How a reference in rich text reads for the viewer: a person by what the room calls them; a
+/// resource of a package here by its title now, when the viewer holds it, and as only existing
+/// when they do not (a reference never grants a read); a resource of another app as its run.
+#[must_use]
+pub fn inline_view(
+    host: &Host,
+    names: &dyn NameHost,
+    reference: &crate::runtime::rich::Reference,
+) -> tilo_render_protocol::patch::rich::InlineView {
+    use crate::runtime::Store as _;
+    use tilo_render_protocol::patch::rich::InlineView;
+    if let Some(person) = reference.as_person() {
+        return InlineView::Person {
+            identity: person.to_owned(),
+            name: names.name(&Principal(person.to_owned())),
+        };
+    }
+    let Some(mut target) = referenced_resource(host, reference) else {
+        return InlineView::Elsewhere;
+    };
+    match host.store().type_of(&target) {
+        Ok(ty) => {
+            target.ty = ty;
+            InlineView::Resource {
+                title: host.label_at(&target),
+                icon: None,
+                detail: None,
+            }
+        }
+        Err(_) => InlineView::Unreadable,
+    }
 }
 
 /// No names: what a bound value converts with (it holds none).
@@ -1697,6 +1768,7 @@ fn plain(names: &NoNames) -> Convert<'_> {
         field_name: &|_| String::new(),
         cases: &|_| Vec::new(),
         toggles: &|_, _| None,
+        embeds: &|_| tilo_render_protocol::patch::rich::InlineView::Elsewhere,
     }
 }
 

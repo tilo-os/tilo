@@ -58,6 +58,8 @@ pub const PRIMS: &[Prim] = &[
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
     prim_of("text", &["value"], &["role"]),
+    // Rich text shown, each reference as the reader's inline view of it (`ui.RichText`).
+    prim_of("rich_text", &["value"], &[]),
     prim_of("button", &["label"], &["on", "enabled"]),
     prim_of("checkbox", &["label"], &["bind", "on_change", "enabled"]),
     prim_of(

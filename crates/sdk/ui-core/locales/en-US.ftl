@@ -690,6 +690,7 @@ mention-notice-title = { $name } mentioned you in ‘{ $place }’
 mention-notice-channel = { $name } mentioned you in { $channel }
 mention-notice = { $name } mentioned you
 mention-notice-someone = Someone
+rich-text-reference-unreadable = Not shared with you
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks

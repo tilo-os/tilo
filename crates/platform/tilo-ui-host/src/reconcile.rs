@@ -48,6 +48,9 @@ pub enum UiEvent {
     Fire(String, String, Option<Value>),
     /// A row of a resource was activated: show the resource.
     Open(crate::ResourceRef),
+    /// A reference in rich text was activated: open what it refers to (the `mention` mark's
+    /// value).
+    OpenReference(String),
 }
 
 /// Where controls report what the person did.
@@ -97,6 +100,7 @@ pub fn display(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
+        Value::Rich(rich) => rich.plain_text(),
         _ => String::new(),
     }
 }

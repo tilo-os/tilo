@@ -860,6 +860,7 @@ pub fn registry() -> &'static [Entry] {
             entry::<Avatar>(),
             entry::<crate::widget::Board>(),
             entry::<crate::widget::Chip>(),
+            entry::<crate::widget::BlockEditor>(),
         ]
     })
 }
