@@ -16011,6 +16011,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-server",
+ "x11rb",
  "xkbcommon",
 ]
 
@@ -18237,6 +18238,7 @@ version = "0.1.0"
 dependencies = [
  "rustix 1.1.4",
  "smithay",
+ "tempfile",
  "tracing",
  "wayland-client",
  "wayland-protocols",

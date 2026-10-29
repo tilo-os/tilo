@@ -15,9 +15,6 @@ use std::time::{Duration, Instant};
 use smithay::backend::input::KeyState;
 use smithay::backend::input::{Axis, ButtonState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
-use smithay::desktop::utils::OutputPresentationFeedback;
-use smithay::wayland::presentation::Refresh;
-use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind;
 use smithay::desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
@@ -485,32 +482,6 @@ impl State {
             self.space
                 .map_element(window.clone(), arrangement.location, activated);
         }
-    }
-
-    /// Tell every surface on `output` that a frame it drew was shown.
-    pub(crate) fn frame_shown(&self, output: &Output) {
-        let time = self.now();
-        let mut feedback = OutputPresentationFeedback::new(output);
-        for window in self.space.elements_for_output(output) {
-            window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
-            });
-            window.take_presentation_feedback(
-                &mut feedback,
-                |_, _| Some(output.clone()),
-                |_, _| PresentationKind::empty(),
-            );
-        }
-        let refresh = output
-            .current_mode()
-            .and_then(|mode| u64::try_from(mode.refresh).ok())
-            .filter(|mhz| *mhz > 0)
-            .map_or(Refresh::Unknown, |mhz| {
-                Refresh::Fixed(Duration::from_nanos(1_000_000_000_000 / mhz))
-            });
-        let presented: smithay::utils::Time<smithay::utils::Monotonic> =
-            smithay::utils::Clock::new().now();
-        feedback.presented(presented, refresh, 0, PresentationKind::empty());
     }
 
     /// Drop windows whose clients went away and refresh output membership.

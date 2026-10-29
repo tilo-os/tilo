@@ -9,7 +9,8 @@ license.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # The protocol server, the desktop element model and the renderers: pixman
 # composites headless outputs on the CPU, GLES real ones; the TTY backend's
-# session, udev, libinput and KMS (DrmCompositor) come from smithay too.
+# session, udev, libinput and KMS (DrmCompositor) come from smithay too, as
+# does the X11 window of the nested development backend.
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "desktop",
@@ -21,12 +22,14 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
+    "backend_x11",
 ] }
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["fs"] }
+tempfile.workspace = true
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }

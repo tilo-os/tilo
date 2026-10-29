@@ -8,12 +8,14 @@
 
 pub mod drm;
 pub mod headless;
+pub mod nested;
 
 use crate::output::OutputConfig;
 use crate::state::State;
 
 pub use drm::{DisplayConfig, DrmBackend};
 pub use headless::HeadlessBackend;
+pub use nested::{NestedBackend, NestedConfig};
 
 /// What a backend does for the compositor.
 pub trait Backend {
@@ -25,6 +27,12 @@ pub trait Backend {
     /// to bring it (an output whose frame is due).
     fn next_deadline(&self) -> Option<std::time::Instant> {
         None
+    }
+
+    /// Whether the backend is done (its window was closed): the run loop
+    /// ends.
+    fn closed(&self) -> bool {
+        false
     }
 
     /// Add an output the backend simulates. Backends with real outputs find
