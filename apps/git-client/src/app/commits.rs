@@ -23,7 +23,7 @@ use crate::i18n::{t, t_args};
 
 use crate::diffview::DiffHit;
 
-use super::{GitClientApp, Hit, ScrollRegion, Scroller, Target};
+use super::{GitClientState, Hit, ScrollRegion, Scroller, Target};
 
 /// What the band above a conflicted file says: what each choice costs, in
 /// the person's terms, or — where the sides cannot be read — the bare fact
@@ -38,7 +38,7 @@ pub(super) fn conflict_note(cost: Option<crate::repo::ConflictCost>) -> String {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     /// Show commit `index`: its own page, with its files and no file diff.
     pub(super) fn select_commit(&mut self, index: usize) {
         if self.selected_commit != index {

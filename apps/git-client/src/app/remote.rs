@@ -1,11 +1,11 @@
 //! The repository's operations as the app runs them: re-reading the model after a mutation, running an owned action, and the results of the remote jobs a start begins.
 
 use super::{
-    ActionOutput, EffectReply, GitClientApp, RemoteAction, RemoteJob, TryRecvError, first_change,
+    ActionOutput, EffectReply, GitClientState, RemoteAction, RemoteJob, TryRecvError, first_change,
     graph,
 };
 
-impl GitClientApp {
+impl GitClientState {
     /// Re-read the live repository into the model after a mutation, so the
     /// UI reflects the *actual* on-disk state (proving the op took effect).
     /// A no-op for the sample-backed app. Preserves the selected screen and

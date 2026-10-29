@@ -7,13 +7,13 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use crate::app::{GitClientApp, Screen, Scroller};
+use crate::app::{GitClientState, Screen, Scroller};
 use crate::panels::RemoteAction;
 use crate::settings::DiffLayout;
 
-fn painted(width: f64, screen: Screen) -> GitClientApp {
+fn painted(width: f64, screen: Screen) -> GitClientState {
     let (model, diffs) = crate::sample::model();
-    let mut app = GitClientApp::from_model(model, diffs);
+    let mut app = GitClientState::from_model(model, diffs);
     app.screen = screen;
     app.rect = Rect::new(0.0, 0.0, width, 800.0);
     app.drawer.resolve(app.rect);
@@ -22,11 +22,10 @@ fn painted(width: f64, screen: Screen) -> GitClientApp {
     app
 }
 
-fn paint(app: &mut GitClientApp) {
+fn paint(app: &mut GitClientState) {
     let theme = ui::theme::Theme::dark();
     let mut text = ui::text_render::TextRenderer::new();
-    ui::Widget::draw(
-        app,
+    app.draw(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut text,
@@ -87,7 +86,7 @@ fn find<'a>(toolbar: &'a WindowToolbar, name: &str) -> Option<&'a ToolbarAction>
 }
 
 /// Press the bar's entry named `name`.
-fn press(app: &mut GitClientApp, name: &str) {
+fn press(app: &mut GitClientState, name: &str) {
     let id = find(&app.window_toolbar(), name)
         .unwrap_or_else(|| panic!("the bar offers {name}"))
         .id
@@ -194,7 +193,7 @@ fn the_bar_shows_only_what_applies_to_the_screen() {
     assert!(row(&changes).1, "every screen has a menu");
 
     assert_eq!(
-        GitClientApp::open_empty().window_toolbar(),
+        GitClientState::open_empty().window_toolbar(),
         WindowToolbar::default(),
         "with no repository open the bar has nothing of the client's"
     );
@@ -231,7 +230,7 @@ fn the_bar_switches_screens_and_the_diff_preferences() {
 #[test]
 fn the_bar_pushes_the_checked_out_branch() {
     let mut app = painted(1280.0, Screen::Panels);
-    let ahead = |app: &GitClientApp| {
+    let ahead = |app: &GitClientState| {
         app.model
             .branches
             .iter()

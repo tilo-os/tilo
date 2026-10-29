@@ -1,11 +1,12 @@
-//! Root widget for the git client.
+//! The git client's window.
 //!
-//! Owns the in-memory [`RepoModel`], the diffs, the active screen and all
-//! transient selection and scroll state. Durable preferences live in the
-//! CRDT via [`Settings`]. The window's bar holds the client's controls
-//! (`window_bar`): the repository as the location, the screens as its
-//! views, the list column's toggle, Fetch, Pull and Push, the diff's layout
-//! and syntax highlighting, and History. The widget paints no header row:
+//! `GitClientState` holds the in-memory [`RepoModel`], the diffs, the
+//! active screen and all transient selection and scroll state; the view
+//! shares it with its effect handler, and [`GitClientApp`] draws it.
+//! Durable preferences live in the CRDT via [`Settings`]. The window's bar
+//! holds the client's controls (`window_bar`): the repository as the
+//! location, the screens as its views, the list column's toggle, Fetch, Pull
+//! and Push, the diff's layout and syntax highlighting, and History. The widget paints no header row:
 //! the list column of the Changes and History screens stands on the sidebar
 //! region through a [`SidebarDrawer`] (docked when the window is wide, a
 //! floating drawer when it is narrow), and the screen's content on the
@@ -23,7 +24,9 @@ mod scroll;
 mod test_support;
 mod window_bar;
 
+use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
@@ -38,7 +41,9 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::actions::GitClientEffect;
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, RunMode};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectReply, Effected, Live, LiveRow, Publishes, RunMode, ViewCx,
+};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -48,8 +53,8 @@ use ui::tilo_resource::{AbsolutePath, Invoke};
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::{
-    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalSpec,
-    SidebarDrawer, TextInput, TextInputKind, Widget,
+    Banner, ButtonFace, ControlSize, Element, EmptyState, EmptyStateContent, ModalAction,
+    ModalSpec, SidebarDrawer, TextInput, TextInputKind, Widget,
 };
 
 use crate::changes::{self, ChangesHit};
@@ -343,7 +348,11 @@ struct RemoteJob {
     label: String,
 }
 
-pub struct GitClientApp {
+/// What the window shows and the view's effect handler answers with: the
+/// repository, where the user is, the fields, the question asked and the
+/// transfer running. The window draws it, presses and keys change it, and
+/// effects reach it through the view.
+pub(crate) struct GitClientState {
     model: RepoModel,
     diffs: DiffMap,
     graph_layout: GraphLayout,
@@ -466,38 +475,8 @@ pub struct GitClientApp {
     bar_fade: BarFade,
 }
 
-impl Default for GitClientApp {
-    /// Equivalent to [`GitClientApp::new`].
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl GitClientApp {
-    /// Build the app, loading the repository discovered from the current
-    /// directory (or `GIT_CLIENT_REPO`). Opens the empty repository picker
-    /// when no repository is reachable.
-    ///
-    /// Setting `GIT_CLIENT_SAMPLE=1` forces the bundled fixture regardless
-    /// of any reachable repository.
-    pub fn new() -> Self {
-        Self::open_empty()
-    }
-
-    /// The app over the bundled sample repository: a populated, deterministic
-    /// state with no repository on disk (screenshots and demos).
-    #[cfg(feature = "samples")]
-    pub fn sample() -> Self {
-        let (model, diffs) = crate::sample::model();
-        Self::from_model(model, diffs)
-    }
-
-    /// Open a real repository discovered from `path` and build the app
-    /// bound to it, so every action drives `git2` and re-reads. Returns
-    /// `None` when no repository is reachable. Used by the live app's
-    /// `GIT_CLIENT_REPO` path and by integration tests that need to drive
-    /// the production actions against a temp repo.
-    pub fn open_at(path: &std::path::Path) -> Option<Self> {
+impl GitClientState {
+    fn open_at(path: &std::path::Path) -> Option<Self> {
         let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
         let (model, diffs) = crate::repo::load(path)?;
         let mut app = Self::from_model(model, diffs);
@@ -505,18 +484,13 @@ impl GitClientApp {
         Some(app)
     }
 
-    /// Build the honest empty "open a repository" state with no repo bound —
-    /// the same state the live app shows when no repository is reachable.
-    /// Exposed so integration tests can drive the open flow.
-    #[doc(hidden)]
-    pub fn open_empty() -> Self {
+    fn open_empty() -> Self {
         let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
         app.awaiting_repo = true;
         app
     }
 
-    /// Construct from an explicit model — used by the sample path and tests.
-    pub fn from_model(mut model: RepoModel, diffs: DiffMap) -> Self {
+    fn from_model(mut model: RepoModel, diffs: DiffMap) -> Self {
         let graph_layout = graph::layout(&mut model.commits);
         // Pre-select the first changed file so the diff pane is populated.
         let selected_change = first_change(&model);
@@ -619,6 +593,235 @@ impl GitClientApp {
     }
 }
 
+/// The window: the shared `GitClientState`, drawn as one leaf that paints
+/// itself, following the record the document holds.
+pub struct GitClientApp {
+    state: Rc<RefCell<GitClientState>>,
+    /// The record as the document holds it, shown as it changes; `None` for
+    /// a window outside the framework.
+    document: Option<Live<crate::resource::GitClient>>,
+    presented: Option<(u64, u64)>,
+}
+
+impl Default for GitClientApp {
+    /// Equivalent to [`GitClientApp::new`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GitClientApp {
+    /// The window with no repository bound: the "open a repository" state
+    /// until the record names one.
+    pub fn new() -> Self {
+        Self::open_empty()
+    }
+
+    /// The window over the bundled sample repository: a populated,
+    /// deterministic state with no repository on disk (screenshots and
+    /// demos).
+    #[cfg(feature = "samples")]
+    pub fn sample() -> Self {
+        let (model, diffs) = crate::sample::model();
+        Self::from_model(model, diffs)
+    }
+
+    /// Open a real repository discovered from `path` and build the window
+    /// bound to it, so every action drives `git2` and re-reads. Returns
+    /// `None` when no repository is reachable. Used by integration tests
+    /// that drive the production actions against a temp repo.
+    pub fn open_at(path: &std::path::Path) -> Option<Self> {
+        GitClientState::open_at(path).map(Self::showing)
+    }
+
+    /// Build the honest empty "open a repository" state with no repo bound —
+    /// the same state the live app shows when no repository is reachable.
+    /// Exposed so integration tests can drive the open flow.
+    #[doc(hidden)]
+    pub fn open_empty() -> Self {
+        Self::showing(GitClientState::open_empty())
+    }
+
+    /// Construct from an explicit model — used by the sample path and tests.
+    pub fn from_model(model: RepoModel, diffs: DiffMap) -> Self {
+        Self::showing(GitClientState::from_model(model, diffs))
+    }
+
+    fn showing(state: GitClientState) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(state)),
+            document: None,
+            presented: None,
+        }
+    }
+
+    /// What the window shows, shared with the view's effect handler.
+    pub(crate) fn state(&self) -> RefMut<'_, GitClientState> {
+        self.state.borrow_mut()
+    }
+
+    /// Show the record the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let Some(shown) = document.changed_since(&mut self.presented) else {
+            return;
+        };
+        self.state().present_state(&shown);
+    }
+}
+
+/// Mount `window` as the view of the record: the view shares its state with
+/// the effect handler, and publishes the working tree, the history the
+/// window shows and an in-flight transfer as live rows.
+pub(crate) fn window(cx: &ViewCx<crate::resource::GitClient>, mut window: GitClientApp) -> Element {
+    window.document = Some(cx.live().clone());
+    let state = Rc::clone(&window.state);
+    {
+        let mut state = state.borrow_mut();
+        state.control_actions = Some(cx.actions());
+        state.dispatcher = Some(cx.dispatcher());
+        state.mode = cx.mode();
+        #[cfg(feature = "samples")]
+        if let Some(sample) = cx.fixture::<crate::resource::SampleRepository>() {
+            state.show_model(sample.model.clone(), sample.diffs.clone());
+        }
+        state.follow_preferences(cx.settings::<Settings>());
+    }
+    {
+        let (answer, status) = (Rc::clone(&state), Rc::clone(&state));
+        cx.effects(move |effect: GitClientEffect, cx| {
+            let shared = Rc::clone(&answer);
+            answer.borrow_mut().answer_effect(effect, cx, shared)
+        })
+        .status(move || status.borrow().preference_statuses());
+    }
+    {
+        let state = Rc::clone(&state);
+        cx.on_stage(move |scenario| state.borrow_mut().stage_scenario(scenario));
+    }
+    let (rows, row) = (Rc::clone(&state), state);
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || rows.borrow().working_tree_rows())
+            .live_row(move |id| row.borrow().working_tree_row(id)),
+        Box::new(window),
+    )
+}
+
+impl Widget for GitClientApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.follow_document();
+        self.state().sync();
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        self.state().settle();
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // The list column's breakpoint and widths grow with the text scale.
+        self.state().drawer.scale_for(theme);
+        // The app draws itself; a single full-size leaf node carries it.
+        taffy.fill_leaf(node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // Real fallback rather than a panic if `node` somehow doesn't
+        // belong to this tree, matching every `ui` widget's `apply_layout`.
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.state().place(ui::widget::placed(&layout, origin));
+    }
+
+    fn set_platform_conventions(&mut self, conventions: ui::platform::PlatformConventions) {
+        self.state().set_platform_conventions(conventions);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.state().draw(scene, transform, tr, theme, presence);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.state()
+            .draw_overlay(scene, transform, text, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.state().handle_event(event, ctx);
+    }
+
+    fn name(&self) -> &'static str {
+        "GitClientApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.state.borrow().rect
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(self.state.borrow().accessibility())
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        self.state.borrow().synthetic_accessibility_rect(path)
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        self.state()
+            .perform_semantic_action(target, action, state, path)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.state.borrow().needs_animation_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.state.borrow().next_wake_deadline()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl ui::widget::controls::ActionControls for GitClientApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.state.borrow().control_action_bindings()
+    }
+}
+
 fn change_list(model: &RepoModel, area: ChangeArea) -> &[FileChange] {
     match area {
         ChangeArea::Staged => &model.staged,
@@ -639,37 +842,20 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
     }
 }
 
-impl Widget for GitClientApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+/// What the window does for the host, on the state it draws.
+impl GitClientState {
+    fn sync(&mut self) {
         self.adopt_preferences();
         self.drain_remote();
         self.publish_shared_repo_if_needed();
     }
 
-    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+    fn settle(&mut self) {
         self.run_window_toolbar();
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // The app draws itself; a single full-size leaf node carries it.
-        let node = taffy.fill_leaf(node_map, self);
-        // The list column's breakpoint and widths grow with the text scale.
-        self.drawer.scale_for(theme);
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // Real fallback rather than a panic if `node` somehow doesn't
-        // belong to this tree, matching every `ui` widget's `apply_layout`.
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = ui::widget::placed(&layout, origin);
+    fn place(&mut self, rect: Rect) {
+        self.rect = rect;
         // The drawer adopts the new width now, so the next press is tested
         // against the layout the next paint shows.
         self.drawer.resolve(self.rect);
@@ -846,15 +1032,7 @@ impl Widget for GitClientApp {
         }
     }
 
-    fn name(&self) -> &'static str {
-        "GitClientApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> ui::a11y::AccessNode {
         let children: Vec<_> = self
             .accessibility_targets()
             .into_iter()
@@ -867,18 +1045,16 @@ impl Widget for GitClientApp {
                 node.with_key(index as u64).with_action_target(target)
             })
             .collect();
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_name("Git")
-                .with_description(if let Some(job) = &self.remote_job {
-                    job.label.clone()
-                } else if self.awaiting_repo {
-                    t("git-open-title")
-                } else {
-                    t("git-app-description")
-                })
-                .with_children(children),
-        )
+        ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+            .with_name("Git")
+            .with_description(if let Some(job) = &self.remote_job {
+                job.label.clone()
+            } else if self.awaiting_repo {
+                t("git-open-title")
+            } else {
+                t("git-app-description")
+            })
+            .with_children(children)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
@@ -953,7 +1129,7 @@ impl Widget for GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     /// Forward one event to a single embedded text field, returning whether
     /// it consumed the event.
     fn fwd(
@@ -1226,14 +1402,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
-    pub(crate) fn attach_control_actions(
-        &mut self,
-        actions: ui::framework::Actions<crate::resource::GitClient>,
-    ) {
-        self.control_actions = Some(actions);
-    }
-
+impl GitClientState {
     fn effect_for_hit(&self, hit: &Hit) -> Option<(Option<String>, GitClientEffect)> {
         let effect = match hit {
             Hit::ChooseRepository => GitClientEffect::ChooseRepository,
@@ -1275,7 +1444,7 @@ impl GitClientApp {
     }
 }
 
-impl ui::widget::controls::ActionControls for GitClientApp {
+impl GitClientState {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         self.semantic_entries()
             .into_iter()
@@ -1292,7 +1461,7 @@ impl ui::widget::controls::ActionControls for GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     fn submit(&self, invoke: Result<Invoke<crate::resource::GitClient>, serde_json::Error>) {
         // A path and the repository's projection always encode.
         if let (Some(dispatcher), Ok(invoke)) = (&self.dispatcher, invoke) {
@@ -1301,14 +1470,14 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     fn switch_diff_layout(&mut self) -> Result<(), String> {
         self.diff_scroll = 0.0;
         self.change_preferences(Settings::toggle_layout)
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     fn change_preferences(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
         change(&mut self.settings);
         if let Some(preferences) = &self.preferences {
@@ -1320,14 +1489,14 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     pub(crate) fn follow_preferences(&mut self, preferences: ui::framework::Setting<Settings>) {
         self.settings = preferences.get();
         self.preferences = Some(preferences);
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     fn adopt_preferences(&mut self) {
         if let Some(preferences) = &self.preferences {
             self.settings = preferences.state().with(|stored| *stored);
@@ -1335,7 +1504,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     pub(crate) fn preference_statuses(&self) -> Vec<ui::framework::EffectStatus> {
         use ui::framework::EffectStatus;
         let s = self.settings;
@@ -1375,18 +1544,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
-    pub(crate) fn attach_dispatcher(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
-        mode: RunMode,
-    ) {
-        self.dispatcher = Some(dispatcher);
-        self.mode = mode;
-    }
-}
-
-impl GitClientApp {
+impl GitClientState {
     pub(crate) fn present_state(&mut self, state: &crate::resource::GitClient) {
         match self.mode {
             RunMode::Live => {
@@ -1409,7 +1567,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
         let mut rows = crate::actions::repository_rows(&self.model);
         if !self.awaiting_repo {
@@ -1427,7 +1585,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
         crate::actions::repository_row(&self.model, id).or_else(|| {
             (!self.awaiting_repo)
@@ -1440,7 +1598,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     /// Resolve a navigation target against the current repository projection.
     fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
         match effect {
@@ -1510,10 +1668,14 @@ impl GitClientApp {
         Ok(())
     }
 
-    pub(crate) fn answer_effect(
+    /// Do what `effect` asks, for any caller: the window's controls, the
+    /// palette, an agent. `shared` is this state as the view shares it, for
+    /// work that finishes after the answer.
+    fn answer_effect(
         &mut self,
         effect: GitClientEffect,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+        cx: &mut EffectCx<crate::resource::GitClient>,
+        shared: Rc<RefCell<Self>>,
     ) -> EffectAnswer {
         let preference = self.apply_diff_preference(&effect);
         if let Some(kept) = preference {
@@ -1532,7 +1694,7 @@ impl GitClientApp {
         }
         match effect {
             GitClientEffect::OpenRepository { path } => self.open_repository_at(&path)?,
-            GitClientEffect::ChooseRepository => return Ok(Self::choose_repository(cx)),
+            GitClientEffect::ChooseRepository => return Ok(Self::choose_repository(cx, shared)),
             GitClientEffect::RunApprovedCheck { check_id } => {
                 let checked = cx.approved_check_reported(&check_id)?;
                 return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));
@@ -1614,10 +1776,13 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     /// Ask the system's file chooser for the repository's folder, then
     /// open it; cancelling leaves the window as it was.
-    fn choose_repository(cx: &mut EffectCx<crate::resource::GitClient, Self>) -> Effected {
+    fn choose_repository(
+        cx: &mut EffectCx<crate::resource::GitClient>,
+        shared: Rc<RefCell<Self>>,
+    ) -> Effected {
         let picker =
             ui::portal::PickRequest::writable_directory(&t("git-choose-title"), &t("git-open"))
                 .thread_name("git-repository-picker")
@@ -1630,13 +1795,14 @@ impl GitClientApp {
                     )
                 })
             },
-            |app: &mut Self, outcome, _cx| match outcome {
-                ui::portal::PortalOutcome::Opened(path) => {
-                    app.open_repository_at(&path).map(|()| Effected::done())
-                }
+            move |&mut (), outcome, _cx| match outcome {
+                ui::portal::PortalOutcome::Opened(path) => shared
+                    .borrow_mut()
+                    .open_repository_at(&path)
+                    .map(|()| Effected::done()),
                 ui::portal::PortalOutcome::Cancelled => Ok(Effected::done()),
                 ui::portal::PortalOutcome::Failed(message) => {
-                    app.last_error = Some(message.clone());
+                    shared.borrow_mut().last_error = Some(message.clone());
                     Err(message)
                 }
             },
@@ -1657,7 +1823,7 @@ impl GitClientApp {
 
     fn start_effect_worktree(
         &mut self,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+        cx: &mut EffectCx<crate::resource::GitClient>,
         path: AbsolutePath,
         branch: String,
         start: String,
@@ -1688,7 +1854,7 @@ impl GitClientApp {
         &mut self,
         action: RemoteAction,
         remote: String,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+        cx: &mut EffectCx<crate::resource::GitClient>,
     ) -> EffectAnswer {
         let reply = cx.reply();
         reply
@@ -1699,7 +1865,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     fn worktree_change(&self, path: &str) -> Option<(ChangeArea, usize)> {
         self.model
             .unstaged
@@ -1716,7 +1882,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     fn bind_repository(&mut self, path: &std::path::Path) -> bool {
         let Some((model, diffs)) = crate::repo::load(path) else {
             return false;
@@ -1730,7 +1896,7 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
             // The side-by-side diff layout.
@@ -1760,7 +1926,7 @@ impl GitClientApp {
             }
             // The file a merge left conflicted, open, so the capture shows
             // the choice it waits on and what each side costs.
-            Some("conflict") => self.test_select_conflicted_file(),
+            Some("conflict") => self.select_conflicted_file(),
             // The question a dirty tree asks before it changes branch: the
             // capture of the decision itself, not of what it is about.
             Some("switch") => {
@@ -1776,7 +1942,26 @@ impl GitClientApp {
     }
 }
 
-impl GitClientApp {
+impl GitClientState {
+    /// Select the first conflicted file, as choosing its row does.
+    fn select_conflicted_file(&mut self) {
+        for area in [
+            crate::model::ChangeArea::Unstaged,
+            crate::model::ChangeArea::Staged,
+            crate::model::ChangeArea::Untracked,
+        ] {
+            let found = change_list(&self.model, area)
+                .iter()
+                .position(|file| file.kind == crate::model::ChangeKind::Conflicted);
+            if let Some(index) = found {
+                self.selected_change = Some((area, index));
+                return;
+            }
+        }
+    }
+}
+
+impl GitClientState {
     pub(crate) fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
         self.model = model;
         self.diffs = diffs;

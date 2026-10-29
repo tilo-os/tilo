@@ -1,17 +1,12 @@
 //! Git client as a resource: the record is the repository it opens and
 //! what collaborators see of its history ([`GitClient`]); working-tree
 //! status, the history the window shows and an in-flight transfer are live
-//! rows of the surface, and the diff preferences are the person's settings,
-//! switched by the surface's effects.
-
-use std::rc::Rc;
+//! rows the view publishes, and the diff preferences are the person's
+//! settings, switched by the view's effects.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    Command, EffectAnswer, EffectCx, EffectStatus, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{Command, LaunchInput, ResourceApp, ViewCx};
 use ui::headless::FrameHarness;
 use ui::i18n::EmbeddedCatalog;
 
@@ -19,7 +14,6 @@ use crate::i18n::t;
 use ui::tilo_resource::{self, Atom, Invoke, Model, resource};
 use ui::widget::Element;
 
-use crate::actions::GitClientEffect;
 use crate::app::GitClientApp;
 #[cfg(feature = "samples")]
 use crate::model::{DiffMap, RepoModel};
@@ -97,7 +91,7 @@ impl ResourceApp for GitClientShell {
     }
 
     fn view(cx: &mut ViewCx<GitClient>) -> Element {
-        cx.surface(GitClientApp::new())
+        crate::app::window(cx, GitClientApp::new())
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -184,50 +178,10 @@ fn stage_and_commit(message: &str) -> Result<(), String> {
     Ok(())
 }
 
-impl ResourceSurface<GitClient, GitClientEffect> for GitClientApp {
-    fn present(&mut self, state: &Rc<GitClient>) {
-        self.present_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<GitClient>) {
-        self.attach_control_actions(cx.actions());
-        self.attach_dispatcher(cx.dispatcher(), cx.mode());
-        #[cfg(feature = "samples")]
-        if let Some(sample) = cx.fixture::<SampleRepository>() {
-            self.show_model(sample.model.clone(), sample.diffs.clone());
-        }
-
-        self.follow_preferences(cx.settings::<crate::settings::Settings>());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: GitClientEffect,
-        cx: &mut EffectCx<GitClient, Self>,
-    ) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.preference_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.working_tree_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.working_tree_row(id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::GitClientEffect;
     use crate::settings::{DiffLayout, Settings};
     use crate::shared::{SharedRepo, shared_fingerprint};
     use ui::framework::Effect as _;
@@ -547,7 +501,7 @@ mod tests {
         app.settle();
         let before = app.peer_document().get_heads();
         let screen = |app: &mut TestApp<GitClientShell>| {
-            app.surface(|client: &mut GitClientApp| client.window_toolbar())
+            app.surface(|client: &mut GitClientApp| client.state().window_toolbar())
                 .and_then(|toolbar| toolbar.views)
                 .map(|views| views.chosen)
         };

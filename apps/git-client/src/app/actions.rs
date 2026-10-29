@@ -1,11 +1,11 @@
 //! What a press, a key or an assistive action does: the one `Hit` path they share, the confirmation and sheet answers, the screen switch and the branch switch.
 
 use super::{
-    BranchAction, ChangesHit, Confirm, ConfirmChoice, DiffHit, Field, GitClientApp, Hit,
+    BranchAction, ChangesHit, Confirm, ConfirmChoice, DiffHit, Field, GitClientState, Hit,
     HunkAction, PanelHit, Rect, Target, change_list, t, t_args,
 };
 
-impl GitClientApp {
+impl GitClientState {
     /// Apply a branch action (checkout / create / delete) or a stash apply
     /// against the live repo, then re-read. Sample-backed apps ignore these
     /// (the panels' branch buttons only appear for real repos).
