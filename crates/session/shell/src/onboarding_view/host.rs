@@ -93,6 +93,22 @@ impl Hosted {
         self.mount();
         self.node = None;
         let app = self.app.as_mut()?;
+        // Setup looks and moves as the shell around it does: the app takes
+        // the shell's palette from the theme, and here its text size, UI
+        // scale and reduced motion, which an app otherwise keeps its own.
+        if let Some(embedded) = app
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<ui::app::EmbeddedApp>())
+        {
+            let differs = |a: f32, b: f32| (a - b).abs() > f32::EPSILON;
+            if differs(embedded.app().text_scale(), theme.text_scale) {
+                embedded.app_mut().set_text_scale(theme.text_scale);
+            }
+            if differs(embedded.app().ui_scale(), theme.ui_scale) {
+                embedded.app_mut().set_ui_scale(theme.ui_scale);
+            }
+        }
+        app.set_motion_reduced(theme.reduce_motion);
         let node = app.build_layout(taffy, theme, node_map);
         if let Ok(mut style) = taffy.style(node).cloned() {
             style.size = taffy::Size::from_percent(1.0, 1.0);
