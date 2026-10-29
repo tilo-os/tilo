@@ -106,7 +106,6 @@ fn random_change(rng: &mut Rng, replica: &mut Replica, root: &str, step: usize) 
                     root,
                     Edit::new(
                         vec![
-                            Segment::Field(items_field),
                             Segment::Item(Id::from_raw(&id)),
                             Segment::Field(field_id(&meta, "Item", "text")),
                         ],
@@ -122,11 +121,8 @@ fn random_change(rng: &mut Rng, replica: &mut Replica, root: &str, step: usize) 
                 let finish = meta.actions.iter().find(|a| a.name == "finish").unwrap();
                 let list_ty = meta.types.iter().find(|t| t.name == "TodoList").unwrap();
                 let item_ty = meta.types.iter().find(|t| t.name == "Item").unwrap();
-                let item = ResourceRef::root(root, list_ty.id.clone()).item(
-                    &items_field,
-                    &id,
-                    item_ty.id.clone(),
-                );
+                let item =
+                    ResourceRef::root(root, list_ty.id.clone()).item(&id, item_ty.id.clone());
                 replica
                     .host
                     .runtime()
@@ -151,16 +147,21 @@ fn random_change(rng: &mut Rng, replica: &mut Replica, root: &str, step: usize) 
         }
         5 => {
             if let Some(id) = pick(rng) {
-                edit(
-                    replica,
-                    root,
-                    Edit::new(
-                        vec![Segment::Field(items_field)],
-                        EditOp::RemoveItem {
-                            id: Id::from_raw(&id),
-                        },
-                    ),
-                );
+                replica.apply(&DynAction {
+                    app: APP.to_owned(),
+                    kind: "tl.so.tilo.todo.TodoList".to_owned(),
+                    action_id: "$edit".to_owned(),
+                    args: Json::Null,
+                    authorship: Authorship::default(),
+                    edits: vec![DynEdit::Place {
+                        id: root.to_owned(),
+                        item: id,
+                        at: tilolang_runtime::place::Placement::Removed.encode(),
+                        nested: Vec::new(),
+                        ty: String::new(),
+                        holders: vec![root.to_owned()],
+                    }],
+                });
             }
         }
         6 => {
@@ -293,7 +294,7 @@ fn what_the_store_writes_reads_back_before_the_record_holds_it() {
                 move_first.id.as_str(),
                 vec![
                     Value::resource(&list),
-                    Value::resource(&list.item(&items_field, &moved, item_ty)),
+                    Value::resource(&list.item(&moved, item_ty)),
                 ],
             ),
         )
@@ -463,7 +464,6 @@ fn a_corrupt_index_is_built_anew_and_never_read() {
         ada.apply(&action);
     }
     let meta = ada.host.packages()[0].meta.clone();
-    let items_field = field_id(&meta, "TodoList", "items");
     let text_field = field_id(&meta, "Item", "text");
     let item_ty = meta
         .types
@@ -480,7 +480,7 @@ fn a_corrupt_index_is_built_anew_and_never_read() {
         .id
         .clone();
     let oat = items(&ada, &root)[2].clone();
-    let at = ResourceRef::root(&root, list_ty).item(&items_field, &oat, item_ty);
+    let at = ResourceRef::root(&root, list_ty).item(&oat, item_ty);
 
     // A value whose bytes changed on disk.
     let dir = TempDir::new("corrupt");

@@ -87,6 +87,9 @@ pub struct McpServer<H> {
     /// The content uploads this session has open; dropped with it, they
     /// store nothing.
     uploads: std::sync::Mutex<put::Uploads>,
+    /// The `tilo` tool's session: the references its answers showed, and the steps its
+    /// programs made, for `undo` and `history task`.
+    programs: std::sync::Mutex<agent::Programs>,
 }
 
 /// The tools a session offers.
@@ -627,6 +630,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
             surface: Surface::Classic,
             uploads: std::sync::Mutex::default(),
+            programs: std::sync::Mutex::default(),
         }
     }
     /// Offer the tools `surface` names.

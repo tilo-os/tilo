@@ -552,10 +552,13 @@ fn permissions_for_participation(
 
 /// The host's view of the person's authority over one app's actions, read
 /// again only when the host changes it: what deciding reads is the last
-/// read, never the file.
+/// read, never the file. Where its changes cannot be heard (the process has
+/// no watch left), it is read again at each decision instead, so a missing
+/// watch costs reads, never the person's authority.
 struct FollowedAuthority {
     state: std::sync::Arc<FollowedState>,
-    _watch: std::sync::Mutex<tilo_host::action_authority::AuthorityWatch>,
+    /// What hears the host change it; `None` when it cannot be heard.
+    watch: Option<std::sync::Mutex<tilo_host::action_authority::AuthorityWatch>>,
 }
 
 struct FollowedState {
@@ -588,7 +591,7 @@ impl FollowedAuthority {
     /// Read the host's view now and again on each change of it.
     ///
     /// # Errors
-    /// When it cannot be read now or its changes cannot be heard.
+    /// When it cannot be read now.
     fn follow(
         authority: HostAuthority,
         room: &str,
@@ -610,7 +613,11 @@ impl FollowedAuthority {
                 state.read();
                 crate::permissions::outside_changed();
             }
-        }))?;
+        }))
+        .map_err(
+            |error| tracing::warn!(%error, "the host's action authority is read at each decision"),
+        )
+        .ok();
         state.read();
         if let Err(error) = &*state
             .current
@@ -621,12 +628,16 @@ impl FollowedAuthority {
         }
         Ok(Self {
             state,
-            _watch: std::sync::Mutex::new(watch),
+            watch: watch.map(std::sync::Mutex::new),
         })
     }
 
-    /// The host's view as last read, judged now.
+    /// The host's view as last read (as it is now, when no change of it can be
+    /// heard), judged now.
     fn current(&self) -> Result<PermissionContext, String> {
+        if self.watch.is_none() {
+            self.state.read();
+        }
         let current = self
             .state
             .current
@@ -1843,6 +1854,55 @@ mod native_process_tests {
         publish(Some(serde_json::to_vec(&original).unwrap()));
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(permissions.directory_witness().unwrap(), allowed);
+    }
+
+    #[test]
+    fn a_host_authority_whose_changes_cannot_be_heard_is_read_at_each_decision() {
+        use crate::permissions::{ActionKind, Answer, TreePath};
+        use collab_types::action_authority::AppActionAuthorityProjection;
+        use std::sync::{Arc, Mutex};
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let app = "so.tilo.store";
+        let author = UserId("person-a".into());
+        let original = AppActionAuthorityProjection::project(
+            &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
+            app,
+            &author.0,
+            false,
+        );
+        let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
+        let source: tilo_host::action_authority::AuthoritySource = {
+            let bytes = bytes.clone();
+            Arc::new(move || Ok(bytes.lock().unwrap().clone()))
+        };
+        // The process has no watch left (EMFILE): nothing will report a change.
+        let watch: AuthorityWatcher =
+            Arc::new(|_| Err("Too many open files (os error 24)".to_owned()));
+        let environment = NativeProcessEnvironment {
+            workspace_id: Some(room.into()),
+            participation: Some("read-only".into()),
+            action_authority: Some(HostAuthority {
+                read: source,
+                watch,
+            }),
+            ..environment(temp.path())
+        };
+        let permissions = environment.resolve(app, &author).unwrap().permissions;
+        let own = TreePath::root().app(app).action("buy");
+        assert_eq!(
+            permissions.answer(&own, ActionKind::Outside),
+            Answer::Allow,
+            "the person's authority holds without a watch"
+        );
+        let mut revoked = original.clone();
+        revoked.policy.owner = None;
+        *bytes.lock().unwrap() = Some(serde_json::to_vec(&revoked).unwrap());
+        assert_eq!(
+            permissions.answer(&own, ActionKind::Outside),
+            Answer::Deny,
+            "and what the host holds now is what decides"
+        );
     }
 
     #[test]

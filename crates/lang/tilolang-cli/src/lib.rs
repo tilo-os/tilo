@@ -3,6 +3,7 @@
 
 pub mod dev;
 pub mod package;
+pub mod repl;
 pub mod run;
 mod session;
 

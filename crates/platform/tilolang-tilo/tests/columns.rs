@@ -151,7 +151,7 @@ impl Room {
     fn tasks(&self) -> Vec<ResourceRef> {
         let field = field_id(&self.meta, "Board", "tasks");
         let spec = FieldSpec {
-            id: field.clone(),
+            id: field,
             kind: FieldKind::Collection,
         };
         let task = self.ty("Task").id.clone();
@@ -162,7 +162,7 @@ impl Room {
             .unwrap()
             .ids()
             .into_iter()
-            .map(|id| self.board.item(&field, &id, task.clone()))
+            .map(|id| self.board.item(&id, task.clone()))
             .collect()
     }
 
@@ -192,7 +192,7 @@ impl Room {
         let pred = store_pred(&resolved.pred, task, APP).unwrap();
         let field = field_id(&self.meta, "Board", "tasks");
         let spec = FieldSpec {
-            id: field.clone(),
+            id: field,
             kind: FieldKind::Collection,
         };
         self.ada
@@ -208,7 +208,7 @@ impl Room {
             .unwrap()
             .ids()
             .into_iter()
-            .map(|id| self.title(&self.board.item(&field, &id, task.id.clone())))
+            .map(|id| self.title(&self.board.item(&id, task.id.clone())))
             .collect()
     }
 
