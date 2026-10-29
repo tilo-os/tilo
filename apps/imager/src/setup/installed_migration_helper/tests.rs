@@ -1,15 +1,6 @@
 use super::*;
-use imager_backend::setup::{
-    flatpak_transfer::Runner,
-    user_transfer::{self, TransferRequest},
-};
+use imager_backend::setup::user_transfer::{self, TransferRequest};
 use std::os::unix::fs::PermissionsExt;
-struct NoApps;
-impl Runner for NoApps {
-    fn run(&self, _home: &Path, _args: &[String]) -> Result<String, String> {
-        panic!("Home-only continuation must not run Flatpak")
-    }
-}
 #[test]
 fn native_session_copies_then_requires_adoption_and_preserves_selected_custody() {
     let temp = crate::setup::test_support::qualified_tempdir();
@@ -36,7 +27,6 @@ fn native_session_copies_then_requires_adoption_and_preserves_selected_custody()
     std::fs::write(home.join(".config/tilo/primary.json"), b"selected identity").unwrap();
     std::fs::write(source.join("document"), b"my document").unwrap();
     let review = user_transfer::review(
-        &NoApps,
         TransferRequest {
             source_home: source.clone(),
             target_home: workspace.join("imported-home"),
@@ -45,6 +35,7 @@ fn native_session_copies_then_requires_adoption_and_preserves_selected_custody()
             copy_flatpak: false,
             system_refs: Vec::new(),
         },
+        None,
     )
     .unwrap();
     let mut session =
@@ -130,7 +121,6 @@ fn native_applications_session_adopts_only_independent_app_data_then_acknowledge
     std::fs::write(home.join(".config/tilo/primary.json"), b"chosen identity").unwrap();
     let workspace = home.join(".local/state/tilo/migration/apps");
     let review = user_transfer::review(
-        &NoApps,
         TransferRequest {
             source_home: source.clone(),
             target_home: workspace.join("imported-applications"),
@@ -139,6 +129,7 @@ fn native_applications_session_adopts_only_independent_app_data_then_acknowledge
             copy_flatpak: true,
             system_refs: Vec::new(),
         },
+        None,
     )
     .unwrap();
     let mut session =

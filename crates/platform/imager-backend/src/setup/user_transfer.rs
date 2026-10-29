@@ -2,7 +2,10 @@
 //! enter collaborative app state. A selected home copy finishes and verifies
 //! before Flatpak mutates the new user's installation. Originals stay intact.
 use super::{
-    flatpak_transfer::{self as flatpak, ApprovedRemote, InstalledRef, Runner},
+    flatpak_transfer::{
+        self as flatpak, InstalledRef, Runner,
+        portable::{OfflineRunner, PortableFlatpakSource, SealedApplications},
+    },
     home_transfer::{self, HomeReview},
     migration::{CopyProgress, CopyReport},
     migration_worker::{WorkerEvent, WorkerOutcome},
@@ -40,12 +43,33 @@ pub struct TransferRequest {
     pub system_refs: Vec<InstalledRef>,
 }
 
+/// The selected system applications. They always arrive as one sealed
+/// applications unit; on the same computer the unit is sealed from the
+/// reviewed original deployments when the transfer runs.
+#[derive(Clone)]
+pub enum Applications {
+    /// Reviewed original deployments, sealed into the private journals.
+    Original(Arc<PortableFlatpakSource>),
+    /// A unit that is already admitted.
+    Sealed(SealedApplications),
+}
+impl Applications {
+    fn covers(&self, refs: &[InstalledRef]) -> bool {
+        refs.iter().all(|item| match self {
+            Self::Original(source) => item.app_id().is_none() || source.selected().contains(item),
+            Self::Sealed(unit) => unit
+                .deployments()
+                .iter()
+                .any(|deployment| deployment.installed == *item),
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct TransferReview {
     request: TransferRequest,
     copies: Vec<HomeReview>,
-    remotes: Vec<storage::PreparedRemote>,
-    preparation_failures: Vec<(String, String)>,
+    applications: Option<Applications>,
     recovered: bool,
     application_recovery: bool,
     verified_applications: bool,
@@ -58,6 +82,7 @@ pub struct TransferReview {
 struct Phase {
     busy: bool,
     applications_complete: bool,
+    sealed: Option<SealedApplications>,
     attempted: std::collections::BTreeSet<usize>,
     complete:
         std::collections::BTreeMap<usize, (CopyReport, super::migration_durability::Identity)>,
@@ -80,7 +105,6 @@ pub struct TransferSummary {
     /// Runtime socket endpoints are recreated by apps, rather than copied.
     pub runtime_sockets: u64,
     pub system_applications: usize,
-    pub repository_failures: usize,
 }
 
 #[derive(Debug, Default)]
@@ -107,14 +131,17 @@ pub enum TransferEvent {
 /// Review the exact home/subtrees, target and system refs. Flatpak-only review
 /// reserves a fresh private target skeleton because each subtree has its own
 /// pinned parent. No source is modified and no existing destination is adopted.
-#[cfg(target_os = "linux")]
-pub fn review(runner: &impl Runner, request: TransferRequest) -> Result<TransferReview, String> {
+pub fn review(
+    request: TransferRequest,
+    applications: Option<Applications>,
+) -> Result<TransferReview, String> {
     if !request.copy_home && !request.copy_flatpak {
         return Err("Select data to transfer".into());
     }
+    validate_applications(&request, applications.as_ref())?;
     storage::validate_grants(&request)?;
     if durable::pending(&request).map_err(|error| error.to_string())? {
-        return recover(runner, request);
+        return recover(&flatpak::NativeRunner, request, applications);
     }
     let copies = if request.copy_home {
         vec![home_transfer::review(
@@ -127,16 +154,10 @@ pub fn review(runner: &impl Runner, request: TransferRequest) -> Result<Transfer
         namespace::save(&request)?;
         copies
     };
-    let (remotes, preparation_failures) = if request.copy_flatpak {
-        storage::prepare_remotes(runner, &request)?
-    } else {
-        (Vec::new(), Vec::new())
-    };
     Ok(TransferReview {
         request,
         copies,
-        remotes,
-        preparation_failures,
+        applications,
         recovered: false,
         application_recovery: false,
         verified_applications: false,
@@ -153,8 +174,12 @@ pub fn review(runner: &impl Runner, request: TransferRequest) -> Result<Transfer
 /// changed user data, repository trust, objects, or completed application output.
 /// An interrupted signed application transaction is repaired only after the
 /// original copied user data passes independent fidelity verification.
-#[cfg(target_os = "linux")]
-pub fn recover(runner: &impl Runner, request: TransferRequest) -> Result<TransferReview, String> {
+pub fn recover(
+    runner: &impl Runner,
+    request: TransferRequest,
+    applications: Option<Applications>,
+) -> Result<TransferReview, String> {
+    validate_applications(&request, applications.as_ref())?;
     storage::validate_grants(&request)?;
     let application_recovery = durable::validate_recovery(&request)?;
     let copies = if request.copy_home {
@@ -166,18 +191,12 @@ pub fn recover(runner: &impl Runner, request: TransferRequest) -> Result<Transfe
     } else {
         namespace::recover(&request)?
     };
-    let (remotes, preparation_failures) = if request.copy_flatpak {
-        storage::prepare_remotes(runner, &request)?
-    } else {
-        (Vec::new(), Vec::new())
-    };
     let mut phase = Phase::default();
     let verified_applications = if application_recovery {
         applications::validate_recovery(&request)?;
         let reports = verify_copies_after_applications(&request, &copies)?;
         applications::verify_original_config(&request)?;
-        let approved = storage::publish_remotes(&request.private_journals, &remotes)?;
-        let verified = applications::verify_output(&request, runner, &approved)?;
+        let verified = applications::verify_output(&request, runner)?;
         for (index, (copy, report)) in copies.iter().zip(reports).enumerate() {
             phase.complete.insert(
                 index,
@@ -193,14 +212,31 @@ pub fn recover(runner: &impl Runner, request: TransferRequest) -> Result<Transfe
     Ok(TransferReview {
         request,
         copies,
-        remotes,
-        preparation_failures,
+        applications,
         recovered: true,
         application_recovery,
         verified_applications,
         phase: Arc::new(Mutex::new(phase)),
         _source_guard: None,
     })
+}
+
+/// System refs arrive only in a sealed unit that carries every selected app.
+fn validate_applications(
+    request: &TransferRequest,
+    applications: Option<&Applications>,
+) -> Result<(), String> {
+    match applications {
+        None if request.system_refs.is_empty() => Ok(()),
+        Some(applications)
+            if request.copy_flatpak
+                && !request.system_refs.is_empty()
+                && applications.covers(&request.system_refs) =>
+        {
+            Ok(())
+        }
+        _ => Err("Selected system applications must travel in their sealed unit".into()),
+    }
 }
 
 fn verify_copies_after_applications(
@@ -254,7 +290,6 @@ impl TransferReview {
             .iter()
             .filter(|item| item.app_id().is_some())
             .count();
-        result.repository_failures = self.preparation_failures.len();
         Ok(result)
     }
     pub fn recovered(&self) -> bool {
@@ -359,7 +394,7 @@ impl TransferReview {
     /// before reporting terminal state; partial verified output is retained.
     pub fn execute(
         &self,
-        runner: &impl Runner,
+        runner: &impl OfflineRunner,
         cancelled: &AtomicBool,
         retry: bool,
         mut event: impl FnMut(TransferEvent),
@@ -413,77 +448,115 @@ impl TransferReview {
             return Ok(report);
         }
         if self.request.copy_flatpak {
-            if !self.request.system_refs.is_empty() {
-                verify_copies_after_applications(&self.request, &self.copies)?;
-                applications::verify_original_config(&self.request)?;
-            }
-            if !self.request.system_refs.is_empty() {
-                if self.application_recovery {
-                    durable::applications_started(&self.request)
-                        .map_err(|error| error.to_string())?;
-                } else {
-                    applications::begin(&self.request, runner)?;
-                }
-            }
             event(TransferEvent::RestoringApplications);
-            report.flatpak.failed.clone_from(&self.preparation_failures);
-            let approved: Vec<ApprovedRemote> =
-                storage::publish_remotes(&self.request.private_journals, &self.remotes)?;
-            let selected: Vec<_> = self
-                .request
-                .system_refs
-                .iter()
-                .filter(|item| {
-                    !self
-                        .preparation_failures
-                        .iter()
-                        .any(|(reference, _)| reference == &item.reference)
-                })
-                .cloned()
-                .collect();
-            let verified_applications = self.verified_applications
-                || self
-                    .phase
-                    .lock()
-                    .map_err(|_| "Transfer phase became unavailable")?
-                    .applications_complete;
-            let result = if verified_applications {
-                if !applications::verify_output(&self.request, runner, &approved)? {
-                    return Err("Application output proof disappeared".into());
-                }
-                flatpak::RestoreReport {
-                    restored: selected.iter().map(|item| item.reference.clone()).collect(),
-                    failed: Vec::new(),
-                }
-            } else if self.application_recovery {
-                flatpak::repair_system_refs(
-                    runner,
-                    &self.request.target_home,
-                    &selected,
-                    &approved,
-                )?
-            } else {
-                flatpak::restore_system_refs(
-                    runner,
-                    &self.request.target_home,
-                    &selected,
-                    &approved,
-                    None,
-                )?
-            };
-            report.flatpak.restored.extend(result.restored);
-            report.flatpak.failed.extend(result.failed);
-            report.cancelled = cancelled.load(Ordering::Relaxed);
-            if !selected.is_empty() && report.flatpak.failed.is_empty() && !report.cancelled {
-                verify_copies_after_applications(&self.request, &self.copies)?;
-                applications::checkpoint(&self.request, runner, &approved)?;
-                self.phase
-                    .lock()
-                    .map_err(|_| "Transfer phase became unavailable")?
-                    .applications_complete = true;
-            }
+        }
+        if !self.request.system_refs.is_empty() {
+            self.restore_applications(runner, cancelled, &mut report)?;
         }
         Ok(report)
+    }
+
+    /// Deploy the sealed applications unit after the copied user data is
+    /// independently verified, then checkpoint the verified output.
+    fn restore_applications(
+        &self,
+        runner: &impl OfflineRunner,
+        cancelled: &AtomicBool,
+        report: &mut TransferReport,
+    ) -> Result<(), String> {
+        verify_copies_after_applications(&self.request, &self.copies)?;
+        applications::verify_original_config(&self.request)?;
+        if self.application_recovery {
+            durable::applications_started(&self.request).map_err(|error| error.to_string())?;
+        } else {
+            applications::begin(&self.request, runner)?;
+        }
+        let verified = self.verified_applications
+            || self
+                .phase
+                .lock()
+                .map_err(|_| "Transfer phase became unavailable")?
+                .applications_complete;
+        let selected = || {
+            self.request
+                .system_refs
+                .iter()
+                .map(|item| item.reference.clone())
+        };
+        if verified {
+            if !applications::verify_output(&self.request, runner)? {
+                return Err("Application output proof disappeared".into());
+            }
+            report.flatpak.restored.extend(selected());
+            return Ok(());
+        }
+        let unit = self.sealed(runner, cancelled)?;
+        match unit.apply(runner, &self.request.target_home, cancelled) {
+            Ok(_) => report.flatpak.restored.extend(selected()),
+            Err(_) if cancelled.load(Ordering::Relaxed) => {}
+            Err(error) => report
+                .flatpak
+                .failed
+                .push(("applications".into(), error.to_string())),
+        }
+        report.cancelled = cancelled.load(Ordering::Relaxed);
+        if report.flatpak.failed.is_empty() && !report.cancelled {
+            verify_copies_after_applications(&self.request, &self.copies)?;
+            applications::checkpoint(&self.request, runner, unit.deployments())?;
+            self.phase
+                .lock()
+                .map_err(|_| "Transfer phase became unavailable")?
+                .applications_complete = true;
+        }
+        Ok(())
+    }
+
+    /// The admitted unit; sealed from the originals on first use and reopened
+    /// from the private journals after a restart.
+    fn sealed(
+        &self,
+        runner: &impl OfflineRunner,
+        cancelled: &AtomicBool,
+    ) -> Result<SealedApplications, String> {
+        let sealed = self
+            .phase
+            .lock()
+            .map_err(|_| "Transfer phase became unavailable")?
+            .sealed
+            .clone();
+        if let Some(unit) = sealed {
+            return Ok(unit);
+        }
+        let unit = match self
+            .applications
+            .as_ref()
+            .ok_or("Selected system applications have no sealed unit")?
+        {
+            Applications::Sealed(unit) => unit.clone(),
+            Applications::Original(source) => {
+                let workspace = self.request.private_journals.join("applications");
+                match std::fs::symlink_metadata(&workspace) {
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        super::migration::PinnedDirectory::open_absolute(
+                            &self.request.private_journals,
+                        )
+                        .and_then(|journals| {
+                            journals.create_child(std::ffi::OsStr::new("applications"))
+                        })
+                        .map_err(|error| error.to_string())?;
+                    }
+                    Err(error) => return Err(error.to_string()),
+                    Ok(_) => {}
+                }
+                SealedApplications::seal(source, runner, &workspace, cancelled)
+                    .map_err(|error| error.to_string())?
+            }
+        };
+        self.phase
+            .lock()
+            .map_err(|_| "Transfer phase became unavailable")?
+            .sealed = Some(unit.clone());
+        Ok(unit)
     }
 
     fn execute_copies(
@@ -565,7 +638,7 @@ impl TransferReview {
         let thread = std::thread::Builder::new()
             .name("imager-user-transfer".into())
             .spawn(move || {
-                let runner = flatpak::CancellableNativeRunner(Arc::clone(&flag));
+                let runner = flatpak::portable::CancellableOfflineRunner(Arc::clone(&flag));
                 let result = review.execute(&runner, &flag, retry, |event| {
                     let _ = sender.send(event);
                 });
