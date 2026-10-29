@@ -1177,65 +1177,6 @@ impl FrameHarness {
         root > crate::widget::StructureChange::Children || history || seen || stale
     }
 
-    /// Carry out the change the root's widgets make in place
-    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
-    /// admitting what they mounted, and sync them. Returns `false` when it
-    /// could not be carried out in place, and the frame rebuilds the tree.
-    fn remount_in_place(&mut self) -> bool {
-        self.remount = false;
-        // History lays out its own chrome around the app; while it is live,
-        // the app's widgets change only what is theirs.
-        if !self.layout_built
-            || self.history.as_ref().is_some_and(|history| {
-                !history.live_interactive() || history.returning_live() || history.review_is_open()
-            })
-        {
-            return false;
-        }
-        // Components a widget replaced report their close here, as before a
-        // rebuild.
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
-        );
-        let mapped = self.node_map.len();
-        let mut remount =
-            crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
-        let applied = self.root.remount_children(&mut remount);
-        let (mounted, unmounted) = remount.finish();
-        let built = (self.node_map.len() + unmounted.len()).saturating_sub(mapped);
-        self.layout_nodes_built = self
-            .layout_nodes_built
-            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
-        // The rows it mounted are checked against the live tree at once, as
-        // a build's are, so the next structure check finds the maps live.
-        self.admit_layout_maps();
-        let after = self.root.take_structure_change();
-        // A change no widget carried out, or a rebuild beside it, needs the
-        // whole tree. One the remount itself set off in place (an app that
-        // arrived hears what its window presents) is carried out by the
-        // next pass, in place again.
-        if !applied || after > crate::widget::StructureChange::Children {
-            return false;
-        }
-        self.remount |= after == crate::widget::StructureChange::Children;
-        self.bindings.forget(&unmounted);
-        for (parent, child) in mounted {
-            // SAFETY: the runner exclusively owns this tree, its maps and
-            // widgets; the remount above admitted `child` into both.
-            if !unsafe {
-                self.bindings
-                    .admit_mounted(parent, child, &self.taffy, &self.node_map)
-            } {
-                return false;
-            }
-        }
-        // The mounted widgets are synced before they are measured, as a
-        // rebuild syncs its fresh ones; a sync that replaces delegates needs
-        // the whole tree after all.
-        self.root.sync(&self.state.doc, &self.state.root);
-        !self.take_composition_dirty()
-    }
-
     /// Whether a widget replaced children since the maps were admitted. The
     /// change stays pending for the next [`Self::take_composition_dirty`].
     fn composition_changed(&mut self) -> bool {
@@ -9129,6 +9070,33 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn composition_replaced(&mut self) -> bool {
         self.composition_changed()
+    }
+
+    fn remount_parts(&mut self) -> crate::host_core::HostRemount<'_> {
+        crate::host_core::HostRemount {
+            root: self.root.as_mut(),
+            state: &self.state,
+            theme: &self.theme,
+            taffy: &mut self.taffy,
+            node_map: &mut self.node_map,
+            bindings: &mut self.bindings,
+            close_reports: &mut self.component_close_reports,
+        }
+    }
+
+    fn begin_remount(&mut self) -> bool {
+        self.remount = false;
+        self.layout_built
+    }
+
+    fn remounted(&mut self, built: usize) {
+        self.layout_nodes_built = self
+            .layout_nodes_built
+            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
+    }
+
+    fn composition_dirty(&mut self) -> bool {
+        self.take_composition_dirty()
     }
 
     fn history_changed_document(&mut self) {

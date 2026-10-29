@@ -298,6 +298,17 @@ pub(crate) struct HostLayout<'a> {
     pub(crate) focused: &'a mut Option<NodeId>,
 }
 
+/// What laying a host's widgets out again in place touches.
+pub(crate) struct HostRemount<'a> {
+    pub(crate) root: &'a mut dyn Widget,
+    pub(crate) state: &'a crate::State,
+    pub(crate) theme: &'a crate::theme::Theme,
+    pub(crate) taffy: &'a mut TaffyTree<()>,
+    pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
+}
+
 pub(crate) trait HostCore {
     /// The host's document and laid-out tree.
     fn tree(&self) -> HostTree<'_>;
@@ -388,6 +399,78 @@ pub(crate) trait HostCore {
                 tree.bindings,
             )
         }
+    }
+
+    /// What laying the widgets out again in place touches.
+    fn remount_parts(&mut self) -> HostRemount<'_>;
+
+    /// A remount is about to be tried: whether the host's laid-out tree
+    /// allows one (it is built, and nothing else asked for a rebuild).
+    fn begin_remount(&mut self) -> bool;
+
+    /// The remount mounted `built` fresh nodes and admitted them.
+    fn remounted(&mut self, built: usize);
+
+    /// Whether the composition changed since the maps were admitted (and
+    /// the layout must be built again).
+    fn composition_dirty(&mut self) -> bool;
+
+    /// Carry out the change the root's widgets make in place
+    /// ([`crate::widget::StructureChange::Children`]) in the retained tree:
+    /// mount what they added, unmount what they let go of, keep the rest.
+    /// `false` when the change needs the whole tree built again instead:
+    /// History is not live, a widget did not carry it out, or it set off
+    /// another.
+    fn remount_in_place(&mut self) -> bool {
+        // History lays out its own chrome around the app; while it is live,
+        // the app's widgets change only what is theirs.
+        if !self.begin_remount()
+            || self.tree().history.is_some_and(|history| {
+                !history.live_interactive() || history.returning_live() || history.review_is_open()
+            })
+        {
+            return false;
+        }
+        let parts = self.remount_parts();
+        // Components a widget replaced report their close here, as before a
+        // rebuild.
+        parts
+            .close_reports
+            .extend(crate::component_lifecycle::take_component_close_reports(
+                parts.root,
+            ));
+        let mapped = parts.node_map.len();
+        let mut remount = crate::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
+        let applied = parts.root.remount_children(&mut remount);
+        let (mounted, unmounted) = remount.finish();
+        let built = (parts.node_map.len() + unmounted.len()).saturating_sub(mapped);
+        // The rows it mounted are checked against the live tree at once, as
+        // a build's are, so the next structure check finds the maps live.
+        self.admit_layout_maps();
+        let parts = self.remount_parts();
+        // A change no widget carried out, or any other beside it, needs the
+        // whole tree.
+        if !applied || parts.root.take_structure_change() != crate::widget::StructureChange::None {
+            return false;
+        }
+        parts.bindings.forget(&unmounted);
+        for (parent, child) in mounted {
+            // SAFETY: the host exclusively owns this tree, its maps and
+            // widgets; the remount above admitted `child` into both.
+            if !unsafe {
+                parts
+                    .bindings
+                    .admit_mounted(parent, child, parts.taffy, parts.node_map)
+            } {
+                return false;
+            }
+        }
+        // The mounted widgets are synced before they are measured, as a
+        // rebuild syncs its fresh ones; a sync that replaces delegates needs
+        // the whole tree after all.
+        parts.root.sync(&parts.state.doc, &parts.state.root);
+        self.remounted(built);
+        !self.composition_dirty()
     }
 
     /// Something is about to reach a laid-out widget, which may change what

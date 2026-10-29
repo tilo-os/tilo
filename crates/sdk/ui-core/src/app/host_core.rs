@@ -105,6 +105,38 @@ impl crate::host_core::HostCore for App {
         self.forget_replaced_widgets()
     }
 
+    fn remount_parts(&mut self) -> crate::host_core::HostRemount<'_> {
+        crate::host_core::HostRemount {
+            root: self.root_widget.as_mut(),
+            state: &self.state,
+            theme: &self.theme,
+            taffy: &mut self.layout.taffy,
+            node_map: &mut self.layout.node_map,
+            bindings: &mut self.bindings,
+            close_reports: &mut self.component_close_reports,
+        }
+    }
+
+    fn begin_remount(&mut self) -> bool {
+        self.layout.remount = false;
+        !self.layout.structure_dirty
+            && self.layout.root_node.is_some()
+            && self.close_admission.dialog.is_none()
+    }
+
+    fn remounted(&mut self, _built: usize) {
+        self.layout.remounts = self.layout.remounts.wrapping_add(1);
+        self.layout.layout_dirty = true;
+        // Fresh controls have not seen where the pointer is.
+        self.input.pointer_replay.mark_unsettled();
+        self.needs_sync = false;
+        self.invalidate_widget_resource_cache();
+    }
+
+    fn composition_dirty(&mut self) -> bool {
+        self.take_composition_dirty()
+    }
+
     fn widget_reached(&mut self) {
         self.mark_semantic_tree_stale();
     }
