@@ -74,16 +74,12 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
     let _ = layout_host(&mut host);
     host.force_quick_settings_settled();
     let (taffy, node) = layout_host(&mut host);
-    narrator.observe(&host.chrome_narration_snapshot());
-    assert!(
-        speaker.take().is_empty(),
-        "opening with nothing focused says nothing yet"
-    );
-
-    press(&mut host, &taffy, node, NamedKey::Tab);
+    // The panel takes the keyboard as it opens, on its first control.
     narrator.observe(&host.chrome_narration_snapshot());
     let spoken = speaker.take();
-    let first = spoken.first().expect("Tab speaks the control it lands on");
+    let first = spoken
+        .first()
+        .expect("opening speaks the control it lands on");
     assert!(
         first.text.starts_with("Brightness, slider, "),
         "got {:?}",
