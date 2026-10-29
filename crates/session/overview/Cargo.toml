@@ -1,0 +1,25 @@
+[package]
+name = "tilo-overview"
+description = "The workspace overview (Super+Tab) as an app the shell hosts: its resource, effects, view and the seat the shell lends it."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+# The role each person in a fixed workspace holds.
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-desktop = { path = "../desktop" }
+tilo-desktop-model = { path = "../desktop-model" }
+# The seat a sheet over the desktop shares with the shell hosting it.
+tilo-sheets = { path = "../sheets" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

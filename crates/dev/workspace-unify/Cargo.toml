@@ -1230,6 +1230,7 @@ doc = false
 "tilo-ocr" = { path = "../../../crates/media/ocr", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
 "tilo-output-passes" = { path = "../../../crates/session/output-passes", default-features = false, features = ["test-support"] }
+"tilo-overview" = { path = "../../../crates/session/overview", default-features = false, features = [] }
 "tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
@@ -3629,6 +3630,7 @@ doc = false
 "tilo-oci-images" = { path = "../../../crates/packaging/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../../crates/media/ocr", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
+"tilo-overview" = { path = "../../../crates/session/overview", default-features = false, features = [] }
 "tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }

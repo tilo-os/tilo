@@ -332,6 +332,16 @@ impl OverviewPanel {
         self.naming.is_some()
     }
 
+    /// A key pressed while the overview is up, as the person pressed it;
+    /// whether it was taken.
+    pub fn press_key(
+        &mut self,
+        key: &winit::keyboard::Key,
+        mods: winit::keyboard::ModifiersState,
+    ) -> bool {
+        self.open && self.key(key, mods)
+    }
+
     /// Choose `pick`, as the person did.
     pub fn choose(&mut self, pick: OverviewPick) {
         self.picks.push_back(pick);

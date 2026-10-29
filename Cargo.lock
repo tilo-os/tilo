@@ -20093,6 +20093,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-overview"
+version = "0.1.0"
+dependencies = [
+ "tilo-action-policy",
+ "tilo-app",
+ "tilo-desktop",
+ "tilo-desktop-model",
+ "tilo-sheets",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-owner-commit"
 version = "0.1.0"
 dependencies = [
@@ -27554,6 +27566,7 @@ dependencies = [
  "tilo-ocr",
  "tilo-os-search",
  "tilo-output-passes",
+ "tilo-overview",
  "tilo-owner-commit",
  "tilo-page-raster",
  "tilo-paint-stream",
