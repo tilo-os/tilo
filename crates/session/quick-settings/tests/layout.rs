@@ -332,6 +332,81 @@ fn arranging_hides_adds_and_moves_controls_but_never_wifi() {
     assert!(has(&mut app, "qs-tile-bluetooth") && !has(&mut app, "qs-tile-vpn"));
 }
 
+/// The control the keyboard is on, as assistive technology reads it.
+fn focused(app: &mut HeadlessApp<QuickSettingsApp>) -> Option<ui::a11y::AccessNode> {
+    app.harness().focused_access_node()
+}
+
+/// Tab until the keyboard is on the arranged row named `name`.
+fn tab_to_row(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) {
+    for _ in 0..40 {
+        app.harness().tab(false);
+        if focused(app).is_some_and(|node| {
+            node.role == ui::a11y::Role::ListItem && node.name.as_deref() == Some(name)
+        }) {
+            return;
+        }
+    }
+    panic!("Tab never reaches the {name} row");
+}
+
+/// Press `key` with Ctrl held, and let the panel answer.
+fn ctrl(app: &mut HeadlessApp<QuickSettingsApp>, key: &str) {
+    app.harness().set_modifiers(&["ctrl".to_owned()]);
+    app.harness().key(key);
+    app.harness().set_modifiers(&[]);
+    app.settle();
+}
+
+#[test]
+fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
+    let (mut app, host) = hosted("edit");
+    tab_to_row(&mut app, "Bluetooth");
+    assert!(
+        focused(&mut app)
+            .and_then(|node| node.description)
+            .is_some_and(|description| description.contains("Control plus Arrow keys")),
+        "the row says how to move it"
+    );
+    ctrl(&mut app, "ArrowUp");
+    assert_eq!(
+        host.ran(),
+        [QsEffect::MoveControl {
+            control: "bluetooth".into(),
+            to: 0,
+        }]
+    );
+    let bluetooth = target(&mut app, "qs-edit-bluetooth");
+    let wifi = target(&mut app, "qs-edit-wifi");
+    assert!(bluetooth.y1 <= wifi.y0, "moved to the top");
+    assert_eq!(
+        focused(&mut app).and_then(|node| node.name).as_deref(),
+        Some("Bluetooth"),
+        "the keyboard stays on the control it moved"
+    );
+    ctrl(&mut app, "ArrowUp");
+    assert_eq!(
+        host.ran().len(),
+        1,
+        "the first control has nowhere up to go"
+    );
+    ctrl(&mut app, "ArrowDown");
+    assert_eq!(
+        host.ran().last(),
+        Some(&QsEffect::MoveControl {
+            control: "bluetooth".into(),
+            to: 1,
+        })
+    );
+    let bluetooth = target(&mut app, "qs-edit-bluetooth");
+    let wifi = target(&mut app, "qs-edit-wifi");
+    assert!(wifi.y1 <= bluetooth.y0, "back under Wi-Fi");
+    assert_eq!(
+        focused(&mut app).and_then(|node| node.name).as_deref(),
+        Some("Bluetooth")
+    );
+}
+
 #[test]
 fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     let mut panel = QuickSettings::default();
