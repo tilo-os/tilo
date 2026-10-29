@@ -464,6 +464,13 @@ fn mark_migrated(
     let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
         return Err(ActionError::Refused(format!("there is no resource `{id}`")));
     };
+    // `require not migrated`: where actions are applied in order (the origin), a second run of
+    // the same migration on the resource is refused, not applied twice.
+    if migrated(doc, &obj, migration) {
+        return Err(ActionError::Refused(format!(
+            "the migration `{migration}` already ran on `{id}`"
+        )));
+    }
     let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
     doc.put(&done, migration, true)?;
     Ok(())

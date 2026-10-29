@@ -274,6 +274,9 @@ pub struct Instance {
     moved: bool,
     /// Whether the package's migrations ran over the room record since the window opened.
     migrated: bool,
+    /// Whether this replica is the room's origin, the one place the package's migrations run
+    /// ([`Self::set_origin`]).
+    origin: bool,
     /// The later build this instance runs, 0 for the installed one.
     generation: u64,
     follows: bool,
@@ -341,6 +344,7 @@ impl Instance {
             loading: false,
             moved: false,
             migrated: false,
+            origin: false,
             generation: 0,
             follows: false,
             taken_build: None,
@@ -546,6 +550,13 @@ impl Instance {
         self.names_changed = true;
     }
 
+    /// Say whether this replica is the room's origin (the device that governs the room). Only
+    /// the origin runs the package's migrations on what an earlier version wrote, so a migration
+    /// runs once, where every change is ordered, and never as a reader elsewhere.
+    pub fn set_origin(&mut self, origin: bool) {
+        self.origin = origin;
+    }
+
     fn lane(&self, lane: Lane) -> Option<&Shown> {
         match lane {
             Lane::Root => self.root.as_ref(),
@@ -573,7 +584,7 @@ impl Instance {
             }
             // Opened on what an earlier version wrote, the package brings it to where it keeps
             // it now, once the record is had; what they commit goes as any action does.
-            if doc.is_some() && !self.migrated && self.mode == Mode::Live {
+            if doc.is_some() && !self.migrated && self.origin && self.mode == Mode::Live {
                 self.migrated = true;
                 if host.migrate() > 0 {
                     self.moved = true;

@@ -68,7 +68,13 @@ pub fn code_party_in<'g>(
         .iter()
         .filter(|grant| match earlier {
             Some(earlier) => earlier.subject_matches(&grant.subject, author_alone),
-            None => &grant.subject == author,
+            None => {
+                &grant.subject == author
+                    || crate::earlier::with_held(|held| {
+                        held.subject_matches(&grant.subject, author_alone)
+                    })
+                    .unwrap_or(false)
+            }
         })
         .collect();
     Party::new(vec![author.clone()], own)

@@ -2042,9 +2042,12 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         user_store = ?package_store::layout::default_user_root(),
         "reading installed application registry"
     );
-    tilo_installed_apps::read_from_env().map_err(|e| LaunchError::RegistryUnreadable {
+    let apps = tilo_installed_apps::read_from_env().map_err(|e| LaunchError::RegistryUnreadable {
         detail: e.to_string(),
-    })
+    });
+    // What the catalogue says of renamed apps reaches every decision in this process.
+    let _ = installed_earlier_ids();
+    apps
 }
 
 /// Result of resolving an installed package's signed continuity contract.
@@ -2125,6 +2128,8 @@ pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
         .ok()
         .and_then(|catalog| tilo_installed_apps::earlier_ids(&catalog).ok())
         .unwrap_or_default();
+    // Every decision this process makes without a table of its own reads these too.
+    tilo_action_policy::earlier::register_all(&ids);
     *lock(&EARLIER) = Some((stamps, ids.clone()));
     ids
 }

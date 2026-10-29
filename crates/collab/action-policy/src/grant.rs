@@ -339,7 +339,8 @@ pub struct Context<'a> {
     /// is the one that refuses after it ends.
     pub session: Option<&'a str>,
     /// The ids apps were published under before: a grant written under one decides for the
-    /// renamed app (`crate::earlier`). `None` where no app was renamed.
+    /// renamed app (`crate::earlier`). `None` reads what this process registered
+    /// (`crate::earlier::register`).
     pub earlier: Option<&'a EarlierIds>,
 }
 
@@ -384,7 +385,10 @@ impl<'a> Context<'a> {
     pub fn covers(&self, pattern: &TreePath, node: &TreePath) -> bool {
         match self.earlier {
             Some(earlier) => earlier.covers(pattern, node),
-            None => pattern.covers(node),
+            None => {
+                pattern.covers(node)
+                    || crate::earlier::with_held(|held| held.covers(pattern, node)).unwrap_or(false)
+            }
         }
     }
 
@@ -394,7 +398,11 @@ impl<'a> Context<'a> {
     pub fn subject_matches(&self, granted: &Subject, subjects: &[Subject]) -> bool {
         match self.earlier {
             Some(earlier) => earlier.subject_matches(granted, subjects),
-            None => subjects.contains(granted),
+            None => {
+                subjects.contains(granted)
+                    || crate::earlier::with_held(|held| held.subject_matches(granted, subjects))
+                        .unwrap_or(false)
+            }
         }
     }
 
