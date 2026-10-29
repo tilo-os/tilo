@@ -848,6 +848,77 @@ impl RecordReplica {
         self.content_revision.map(|(_, value)| value)
     }
 
+    /// The converged signed structural binding, if the record has one.
+    /// Reading it must not clone versions or conflicts: reconciliation asks
+    /// every record for this once per dependency round.
+    pub(crate) fn converged_binding(&self) -> Option<FileBindingV1> {
+        self.binding.as_ref().map(|(_, binding)| binding.clone())
+    }
+
+    /// Whether this record's signed state carries file content anywhere:
+    /// a converged revision or metadata, or a version with a content hash.
+    /// A directory binding is malformed for such a record.
+    pub(crate) fn has_file_content(&self) -> bool {
+        self.content_revision.is_some()
+            || self.metadata.is_some()
+            || self
+                .versions
+                .values()
+                .chain(self.transaction_versions.values())
+                .any(|version| version.content_hash.is_some())
+    }
+
+    /// Whether a completed transaction's participant binding for this record
+    /// is newer than the record's ordinary binding. Such a binding is owned by
+    /// the transaction projector: replaying the older ordinary binding first
+    /// would undo the transaction's structural effect.
+    pub(crate) fn transaction_binding_is_newer(
+        &self,
+        transaction: &FileMutationTransaction,
+        commit_sequence: u64,
+    ) -> bool {
+        let Some(participant) = transaction
+            .manifest
+            .participants
+            .iter()
+            .find(|participant| participant.record_id == self.record_id)
+        else {
+            return false;
+        };
+        if participant.role == fs_protocol::FileMutationParticipantRole::RestoreContent {
+            return false;
+        }
+        let stamp = BindingStamp::for_binding(&participant.proposed_binding, commit_sequence);
+        self.binding
+            .as_ref()
+            .is_none_or(|(current, _)| stamp > *current)
+    }
+
+    /// Whether an ordinary binding accepted for this record is newer than a
+    /// completed transaction's participant binding, so the transaction must
+    /// not move the record back.
+    pub(crate) fn binding_supersedes_transaction(
+        &self,
+        transaction: &FileMutationTransaction,
+        commit_sequence: u64,
+    ) -> bool {
+        let Some(participant) = transaction
+            .manifest
+            .participants
+            .iter()
+            .find(|participant| participant.record_id == self.record_id)
+        else {
+            return false;
+        };
+        if participant.role == fs_protocol::FileMutationParticipantRole::RestoreContent {
+            return false;
+        }
+        let stamp = BindingStamp::for_binding(&participant.proposed_binding, commit_sequence);
+        self.binding
+            .as_ref()
+            .is_some_and(|(current, _)| *current > stamp)
+    }
+
     /// Materialized view of state already authenticated and durably restored
     /// by the repository. This never crosses a request boundary; it exists for
     /// crash-recovery reconciliation only.
