@@ -5,9 +5,12 @@
 //! frame at a time, the first at once and each later one once what it
 //! shows changed.
 //!
-//! Cursor sessions (the pointer as its own image) are not offered: their
-//! capture sessions stop at once, and clients draw the pointer into frames
-//! instead (`paint_cursors`).
+//! A cursor session carries the pointer as an image of its own: its
+//! capture session's frames hold the pointer's image (a new frame when the
+//! shape changes), and the cursor session says where the hotspot is over
+//! the source (enter, position, hotspot, leave) so a recorder can draw it
+//! itself. Frames of an ordinary session hold the pointer only when asked
+//! (`paint_cursors`).
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -31,7 +34,7 @@ use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource as _, WEnum,
 };
-use smithay::utils::{Buffer, Physical, Rectangle, Size, Transform};
+use smithay::utils::{Buffer, Physical, Point, Rectangle, Size, Transform};
 use smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle;
 
 use super::{
@@ -63,6 +66,24 @@ enum Source {
     Output(String),
     /// A window, by its foreign-toplevel identifier.
     Window(String),
+    /// The pointer's image over a source (a cursor session's).
+    Cursor(Box<Source>),
+}
+
+/// A cursor session's source and what its client was told.
+pub struct CursorSessionData {
+    source: Option<Source>,
+    state: Mutex<CursorState>,
+}
+
+#[derive(Default)]
+struct CursorState {
+    /// The capture session was taken.
+    taken: bool,
+    /// The hotspot's position over the source last sent; `None` while the
+    /// pointer is elsewhere.
+    at: Option<Point<i32, Physical>>,
+    hotspot: Option<Point<i32, Physical>>,
 }
 
 /// A session's source and what it last told its client.
@@ -185,6 +206,7 @@ fn frame_target(state: &State, source: &Source) -> Option<(Target, Size<i32, Phy
             }
         }
         Source::Window(identifier) => Target::Window(identifier.clone()),
+        Source::Cursor(of) => Target::Cursor(Box::new(frame_target(state, of)?.0)),
     };
     let size = state.frame_size(&target)?;
     Some((target, size))
@@ -193,6 +215,7 @@ fn frame_target(state: &State, source: &Source) -> Option<(Target, Size<i32, Phy
 /// Stop sessions whose output or window is gone and tell the others when the size of
 /// their frames changed.
 pub(super) fn refresh_sessions(state: &mut State) {
+    refresh_cursor_sessions(state);
     state.capture.sessions.retain(Session::alive);
     for session in &state.capture.sessions {
         let Some(data) = session.0.data::<SessionData>() else {
@@ -219,6 +242,53 @@ pub(super) fn refresh_sessions(state: &mut State) {
                 announce(&session.0, size, state.capture.dmabuf.as_ref());
             }
             Some(_) => {}
+        }
+    }
+}
+
+/// Tell cursor sessions where the pointer is over their sources.
+fn refresh_cursor_sessions(state: &mut State) {
+    state
+        .capture
+        .cursor_sessions
+        .retain(smithay::reexports::wayland_server::Resource::is_alive);
+    for session in &state.capture.cursor_sessions {
+        let Some(data) = session.data::<CursorSessionData>() else {
+            continue;
+        };
+        let Ok(mut shown) = data.state.lock() else {
+            continue;
+        };
+        let target = data
+            .source
+            .as_ref()
+            .and_then(|source| frame_target(state, source))
+            .map(|(target, _)| target);
+        let at = target.as_ref().and_then(|target| state.pointer_on(target));
+        let Some(at) = at else {
+            if shown.at.take().is_some() {
+                shown.hotspot = None;
+                session.leave();
+            }
+            continue;
+        };
+        if shown.at.is_none() {
+            session.enter();
+        }
+        if shown.at != Some(at) {
+            session.position(at.x, at.y);
+            shown.at = Some(at);
+        }
+        let scale = target
+            .as_ref()
+            .and_then(|target| state.view(target))
+            .map_or(1.0, |view| view.scale);
+        let hotspot = state
+            .cursor_shape(scale)
+            .map_or_else(Point::default, |(_, hotspot)| hotspot);
+        if shown.hotspot != Some(hotspot) {
+            session.hotspot(hotspot.x, hotspot.y);
+            shown.hotspot = Some(hotspot);
         }
     }
 }
@@ -373,51 +443,66 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for State {
             }
             ext_image_copy_capture_manager_v1::Request::CreatePointerCursorSession {
                 session,
+                source,
                 ..
             } => {
-                data_init.init(session, Mutex::new(false));
+                // The seat has one pointer, whichever wl_pointer names it.
+                let captured = source
+                    .data::<SourceData>()
+                    .and_then(|data| data.source.clone());
+                let session = data_init.init(
+                    session,
+                    CursorSessionData {
+                        source: captured,
+                        state: Mutex::new(CursorState::default()),
+                    },
+                );
+                state.capture.cursor_sessions.push(session);
+                refresh_sessions(state);
             }
             _ => {}
         }
     }
 }
 
-impl Dispatch<ExtImageCopyCaptureCursorSessionV1, Mutex<bool>> for State {
+impl Dispatch<ExtImageCopyCaptureCursorSessionV1, CursorSessionData> for State {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         cursor_session: &ExtImageCopyCaptureCursorSessionV1,
         request: ext_image_copy_capture_cursor_session_v1::Request,
-        taken: &Mutex<bool>,
+        data: &CursorSessionData,
         _display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
         if let ext_image_copy_capture_cursor_session_v1::Request::GetCaptureSession { session } =
             request
         {
-            let Ok(mut taken) = taken.lock() else {
+            let Ok(mut cursor) = data.state.lock() else {
                 return;
             };
-            if *taken {
+            if cursor.taken {
                 cursor_session.post_error(
                     ext_image_copy_capture_cursor_session_v1::Error::DuplicateSession,
                     "the capture session was already taken",
                 );
                 return;
             }
-            *taken = true;
+            cursor.taken = true;
+            drop(cursor);
             let session = data_init.init(
                 session,
                 SessionData {
-                    source: None,
+                    source: data
+                        .source
+                        .clone()
+                        .map(|source| Source::Cursor(Box::new(source))),
                     cursor: false,
-                    state: Mutex::new(SessionState {
-                        stopped: true,
-                        ..SessionState::default()
-                    }),
+                    state: Mutex::new(SessionState::default()),
                 },
             );
-            session.stopped();
+            state.capture.sessions.push(Session(session));
+            refresh_sessions(state);
         }
     }
 }
