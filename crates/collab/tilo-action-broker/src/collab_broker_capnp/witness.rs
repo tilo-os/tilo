@@ -8,18 +8,26 @@
 //! waiting for them. Their answer is a token naming that one invocation
 //! ([`Confirmation::Witnessed`]); the broker retries the invocation with it.
 //! Nobody present means nobody to ask: the invocation stays refused.
+//!
+//! The sheet shows the invocation as a draft, and the person may change its
+//! fields before allowing it. Their edits make new arguments
+//! ([`tilo_actions::Draft::apply_edits`]), and the token is bound to those,
+//! with the same invocation id: the caller is handed them
+//! ([`ConfirmedInvocation`]) and invokes again with exactly them. Admission
+//! never swaps arguments; arguments other than the ones allowed find no
+//! token and are refused.
 
 use std::sync::Arc;
 
 use tilo_actions::remote::{
-    ActionHostError, Caller, Confirmation, InvocationReceipt, InvokeRequest, ReceiptStatus,
-    RemoteActionMessage, serve,
+    ActionHostError, Caller, Confirmation, ConfirmedInvocation, InvocationReceipt, InvokeArgument,
+    InvokeRequest, ReceiptStatus, RemoteActionMessage, serve,
 };
 
 use super::action_host::{ConnectionActionHost, RowScope};
 use super::execution_activity::ShownActor;
 use super::{BrokerActor, CapnpBrokerState, CrdtRoute};
-use crate::app_actions::{AppActionConsent, AppActionConsentRequest};
+use crate::app_actions::{AppActionAnswer, AppActionConsentRequest};
 
 /// These Store actions disclose signed content outside the workspace.
 /// Their confirmation must come from the host, not the publishing app.
@@ -66,8 +74,10 @@ pub(super) async fn serve_answering(
             }));
         }
     };
+    // Invoked again as the person allowed it: with their confirmation, and
+    // with the arguments as they changed them, which it is bound to.
     let mut retried = request;
-    retried.confirmation = Some(witnessed);
+    witnessed.apply(&mut retried);
     serve(&host, &caller, RemoteActionMessage::Invoke(retried))?.await
 }
 
@@ -240,8 +250,12 @@ impl CapnpBrokerState {
             .ok_or("host confirmation unavailable")?
             .await
             .map_err(|_| "host confirmation ended")?;
-        if answer == AppActionConsent::Deny {
+        if !answer.allowed() {
             return Err("Store disclosure declined".into());
+        }
+        if !answer.edits.is_empty() {
+            // A disclosure is confirmed exactly as it is shown.
+            return Err("a Store disclosure cannot be changed on the sheet".into());
         }
         self.witness_confirmation(&question.binding)
             .map(Confirmation::Witnessed)
@@ -321,8 +335,12 @@ impl CapnpBrokerState {
             .ok_or("host confirmation unavailable")?
             .await
             .map_err(|_| "host confirmation ended")?;
-        if answer == AppActionConsent::Deny {
+        if !answer.allowed() {
             return Err("Store disclosure declined".into());
+        }
+        if !answer.edits.is_empty() {
+            // A disclosure is confirmed exactly as it is shown.
+            return Err("a Store disclosure cannot be changed on the sheet".into());
         }
         self.witness_confirmation(&question.binding)
             .map(Some)
@@ -338,7 +356,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         person: Option<&str>,
         request: &InvokeRequest,
-    ) -> tilo_actions::remote::Pending<Result<Confirmation, ActionHostError>> {
+    ) -> tilo_actions::remote::Pending<Result<ConfirmedInvocation, ActionHostError>> {
         use tilo_actions::remote::Pending;
         let Some(person) = (match caller.principal() {
             // A direct caller cannot nominate another person to answer.
@@ -358,7 +376,10 @@ impl CapnpBrokerState {
         // their own devices, which draws the question and answers it.
         if Self::asks_on_own_device(caller) {
             let binding = self.witness_binding(&person, caller.room().unwrap_or_default(), request);
-            return self.own_device_witness(caller, &binding, request);
+            // The other device shows no draft, so nothing on it is changed.
+            return self
+                .own_device_witness(caller, &binding, request)
+                .map(|answer| answer.map(ConfirmedInvocation::unchanged));
         }
         let Some(question) = self.witness_question(caller, &person, request) else {
             return Pending::ready(Err(if BrokerActor::for_caller(caller).direct() {
@@ -385,20 +406,15 @@ impl CapnpBrokerState {
         let spawned = std::thread::Builder::new()
             .name("confirmation".into())
             .spawn(move || {
-                let answer = answer.blocking_recv().unwrap_or(AppActionConsent::Deny);
-                if answer == AppActionConsent::Deny {
+                let answer = answer.blocking_recv().unwrap_or(AppActionAnswer::DENY);
+                if !answer.allowed() {
                     // Allowed, the invocation's own progress takes the
                     // waiting's place.
                     state.show_waiting(&question, &request, false);
                     completer.complete(Err(ActionHostError::NotPermitted));
                     return;
                 }
-                completer.complete(
-                    state
-                        .witness_confirmation(&question.binding)
-                        .map(Confirmation::Witnessed)
-                        .ok_or(ActionHostError::ConfirmationRequired),
-                );
+                completer.complete(state.witness_answer(&question, &request, &answer.edits));
             });
         if spawned.is_err() {
             return Pending::ready(Err(ActionHostError::Unavailable {
@@ -406,6 +422,49 @@ impl CapnpBrokerState {
             }));
         }
         pending
+    }
+
+    /// The person's allowing answer to `question`, about `request`, as the
+    /// confirmation its caller invokes again with: a one-use token bound to
+    /// the invocation id and to the exact arguments the person allowed.
+    /// Those are `request`'s, as their `edits` to the draft they were shown
+    /// change them ([`tilo_actions::Draft::apply_edits`]); the caller is
+    /// handed the changed arguments to invoke with, and any others are
+    /// refused at admission like a confirmation for other arguments.
+    ///
+    /// # Errors
+    /// The edits change what the draft does not offer for editing, or the
+    /// confirmation could not be kept.
+    fn witness_answer(
+        &self,
+        question: &Question,
+        request: &InvokeRequest,
+        edits: &[tilo_actions::DraftEdit],
+    ) -> Result<ConfirmedInvocation, ActionHostError> {
+        let mut binding = question.binding.clone();
+        let arguments = if edits.is_empty() {
+            None
+        } else {
+            let refused = |reason: String| ActionHostError::InvalidRequest { reason };
+            let (Some(draft), InvokeArgument::Json(asked)) =
+                (question.request.draft.as_ref(), &request.argument)
+            else {
+                return Err(refused("nothing in this request can be changed".into()));
+            };
+            let edited = draft.apply_edits(asked, edits).map_err(refused)?;
+            (edited != *asked).then_some(edited)
+        };
+        if let Some(edited) = &arguments {
+            let argument = InvokeArgument::Json(edited.clone());
+            binding.argument_digest = super::argument_digest(argument.to_slot().as_deref());
+        }
+        let token = self
+            .witness_confirmation(&binding)
+            .ok_or(ActionHostError::ConfirmationRequired)?;
+        Ok(ConfirmedInvocation {
+            confirmation: Confirmation::Witnessed(token),
+            arguments,
+        })
     }
 
     /// Resolve a directory's original identity and selected content revision.
@@ -548,7 +607,7 @@ impl CapnpBrokerState {
     fn ask_person(
         &self,
         question: &Question,
-    ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+    ) -> Option<tokio::sync::oneshot::Receiver<AppActionAnswer>> {
         let prompter = self
             .app_action_consent
             .read()

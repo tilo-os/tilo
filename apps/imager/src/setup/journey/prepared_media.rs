@@ -2086,7 +2086,7 @@ impl PreparedMedia {
         self.manifest
             .portable_flatpak
             .as_ref()
-            .and_then(|applications| (applications.consumer_protocol == 2).then_some(2))
+            .and_then(|applications| (applications.kind.consumer_protocol == 2).then_some(2))
     }
     pub(crate) fn native_home_archive_protocol(&self) -> Option<u32> {
         (self.manifest.portable_home.is_some() || self.manifest.portable_flatpak.is_some())

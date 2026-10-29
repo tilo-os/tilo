@@ -746,20 +746,20 @@ mod tests {
             Some(super::super::browser::BrowserArtifact {
                 source_path: path.to_str().unwrap().into(),
                 expectation: crate::setup::browser_transfer::Expectation {
-                    schema: 1,
                     operation,
                     filename,
-                    purpose: crate::setup::portable_transfer::Purpose::BrowserProfiles,
                     setup_binding: "staging-browser".into(),
                     sealed_bytes: bytes.len() as u64,
                     plaintext_bytes: 1024,
                     entries: 1,
                     ciphertext_sha256: sha2::Sha256::digest(&bytes).into(),
-                    plan_sha256: [1; 32],
                     limits: crate::setup::portable_transfer::Limits {
                         plaintext_bytes: 4096,
                         entries: 8,
                         metadata_bytes: 1024,
+                    },
+                    kind: imager_backend::setup::browser_transfer::Browser {
+                        plan_sha256: [1; 32],
                     },
                 },
             });

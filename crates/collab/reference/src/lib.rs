@@ -23,6 +23,9 @@
 
 mod reference;
 
+pub mod embed;
+
 pub mod link;
 
+pub use embed::Embed;
 pub use reference::{Referent, ResourceAt, ResourceRef, Span, SpanUnit};

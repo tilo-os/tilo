@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 
 use super::file_picker_spawner::FilePickerRequest;
 use crate::portal::desktop_services::{ApplicationChoice, ApplicationChoiceRequest, PortalResult};
-use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
+use crate::shell::app_action_consent::{AppActionAnswer, AppActionConsentRequest};
 use crate::shell::portal_dialog::{
     AuthenticationDecision, AuthenticationRequest, DriveConsentDecision, DriveConsentRequest,
     LauncherReviewDecision, LauncherReviewRequest, NetworkSecretsDecision, NetworkSecretsRequest,
@@ -93,7 +93,7 @@ pub enum PromptRequest {
     /// Whether one application may use another's action.
     ActionGrant {
         request: AppActionConsentRequest,
-        reply: oneshot::Sender<AppActionConsent>,
+        reply: oneshot::Sender<AppActionAnswer>,
     },
     /// Whether a drive is opened, and how.
     DriveConsent {

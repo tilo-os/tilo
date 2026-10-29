@@ -393,6 +393,8 @@ impl Editing {
 )]
 pub struct PdfApp {
     doc: Document,
+    /// The window bar's entries, each carrying the effect it runs.
+    bar: ui::framework::BarCommands<PdfEffect>,
     /// The session-scoped endpoint for production `PDFium` work.  The backend is
     /// deliberately owned by its worker; this widget receives only ordinary
     /// documents, bitmaps and text layers.
@@ -1007,6 +1009,7 @@ impl PdfApp {
             .unwrap_or_else(|| "You".to_string());
         Self {
             doc,
+            bar: ui::framework::BarCommands::new(),
             raster_handle: RasterHandle::new(content.clone()).ok(),
             raster_document: None,
             pending_open: None,
@@ -6623,10 +6626,7 @@ mod tests {
                 .is_some_and(|value| value.contains("Page"))));
             app.go_to_page(1);
             assert!(
-                app.window_toolbar()
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "pdf.next-page" && action.enabled),
+                app.bar_entry("Next page").enabled,
                 "Next page is the window bar's"
             );
 

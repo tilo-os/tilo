@@ -11,13 +11,13 @@ defaults are right for every app.
 ```
 app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
-type Channels = List<Category | Channel>
+type Channels = Collection<Category | Channel>
 root channels: Channels
 
 /// A named group of channels in the sidebar.
 type Category {
     name: Text (title)
-    channels: List<Channel>
+    channels: Collection<Channel>
 }
 
 type Channel = TextChannel | VoiceChannel
@@ -265,7 +265,7 @@ everything below is the system's drawer, the same in every input.
 | Need | Status |
 |---|---|
 | Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??`, lens parameters | language changes, in progress |
-| `RichText` with references | type, storage as tilo-doc rich text, merge, references, search and mention notices built; `rich_text`/`rich_input` rendering to build |
+| `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` to build |
 | `context_menu:`, `hover_toolbar`, `swipe`, completion, key bindings, transitions, run in the UI host | to build |
 | Others' lens state (typing, read position) and delivery facts readable by `std` | to build |
 | `uses call`, `call.participants`, `std.call` over the native call stack | to build |

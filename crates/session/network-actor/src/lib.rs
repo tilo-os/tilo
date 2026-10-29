@@ -10,6 +10,7 @@
 pub mod behaviour;
 pub mod fabric;
 pub mod governor_lane;
+pub mod held_log;
 pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
@@ -912,6 +913,10 @@ enum HostEvent {
     Kept {
         op: [u8; 16],
     },
+    /// The host did not keep sealed write `op`: it stays held.
+    Refused {
+        op: [u8; 16],
+    },
     Closed,
 }
 
@@ -1335,6 +1340,8 @@ impl Actor {
 pub struct Hosting {
     pub host: crate::local_host::LocalHost,
     pub protocols: crate::local_host::Protocols,
+    /// Where this device logs the sealed writes held for rooms' hosts.
+    pub held_writes: std::path::PathBuf,
 }
 
 /// The channel governance a device published to one room: each message's
@@ -1413,6 +1420,10 @@ struct ActorState {
     /// channels, until a host of the room keeps them (see
     /// [`sealed_outbox`]).
     sealed_outbox: HashMap<WorkspaceId, sealed_outbox::SealedOutbox>,
+    /// Keeps those writes in their rooms' logs, off this actor's turn.
+    sealed_records: sealed_outbox::RecordKeeper,
+    /// Where those logs are, read when a room's route is set up.
+    held_log: Option<held_log::HeldLog>,
     wake: Option<Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
@@ -2049,7 +2060,10 @@ impl ActorState {
                     self.publish_paced(ws, &msg, at);
                 }
             }
-            Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
+            Some(NetCmd::SetWake(LoopWake(wake))) => {
+                self.sealed_records.set_wake(wake.clone());
+                self.wake = Some(wake);
+            }
             Some(NetCmd::PublishToHosts { ws, msg }) => {
                 self.hold_for_host(ws, &msg, false);
                 publish(
@@ -4098,12 +4112,11 @@ impl ActorState {
                 msg,
             } => self.host_message(ws, peer, author, fingerprint, replayed, msg),
             HostEvent::Kept { op } => {
-                if let Some(outbox) = self.sealed_outbox.get_mut(&ws)
-                    && outbox.kept(op)
-                    && outbox.is_empty()
-                {
-                    self.sealed_outbox.remove(&ws);
-                }
+                self.sealed_kept(ws, op);
+                None
+            }
+            HostEvent::Refused { op } => {
+                self.sealed_refused(ws, op);
                 None
             }
             HostEvent::Closed => Some(self.host_session_closed(ws, peer)),
@@ -4117,6 +4130,8 @@ impl ActorState {
             runtime.pump.abort();
             if let Some(scope) = runtime.native_scope.clone() {
                 self.native_session_closed(ws, &scope);
+                // What this device holds for the room is not on its way now.
+                self.tell_unsynced(ws);
             }
         }
         NetEvent::PeerLeft {
@@ -4468,6 +4483,7 @@ impl ActorState {
             self.request_native_refresh(ws);
             self.drive_native_publication(ws);
         }
+        self.sealed_records.retry();
         if let Some(identity) = self.host_identity.as_ref() {
             let mut routes = HostRouteScheduler {
                 endpoint: &self.endpoint,
@@ -4984,9 +5000,17 @@ async fn run(
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
     // This device's room host answers here once it opens: until then its
     // handlers refuse, as a device hosting nothing does.
-    let (local_host, protocols) = match hosting {
-        Some(Hosting { host, protocols }) => (Some(host), protocols),
-        None => (None, Vec::new()),
+    let (local_host, protocols, held_log) = match hosting {
+        Some(Hosting {
+            host,
+            protocols,
+            held_writes,
+        }) => (
+            Some(host),
+            protocols,
+            Some(held_log::HeldLog::new(held_writes)),
+        ),
+        None => (None, Vec::new(), None),
     };
     #[cfg(target_os = "linux")]
     let router = router.accept(device_vpn::tunnel::ALPN, DeviceVpnProtocol);
@@ -5039,6 +5063,8 @@ async fn run(
         governance: HashMap::new(),
         host_backlog: HashMap::new(),
         sealed_outbox: HashMap::new(),
+        sealed_records: sealed_outbox::RecordKeeper::new(held_log.clone()),
+        held_log,
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
@@ -5492,6 +5518,7 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
                     "HostSealedLive"
                 }
             }
+            NeighbourMsg::SyncResp { .. } => "HostGovernance",
             _ => "HostNativeInput",
         },
         HostEvent::Ready => "HostReady",
@@ -5500,6 +5527,7 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
         HostEvent::RecordOpened { .. } => "HostRecordOpened",
         HostEvent::Voice(_) => "HostVoice",
         HostEvent::Kept { .. } => "HostKept",
+        HostEvent::Refused { .. } => "HostRefused",
         HostEvent::Closed => "HostClosed",
     }
 }
@@ -5936,9 +5964,9 @@ fn host_event(
         HostInbound::Committed { op } => HostEvent::Kept { op },
         // Not kept: the write stays held, and the room's next
         // session sends it again.
-        HostInbound::CommitRefused { reason, .. } => {
+        HostInbound::CommitRefused { op, reason } => {
             tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
-            return None;
+            HostEvent::Refused { op }
         }
         HostInbound::RemoteAction { from, frame } => {
             let Ok(author) = EndpointId::from_bytes(&from) else {

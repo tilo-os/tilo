@@ -1,151 +1,126 @@
 # Agents writing tilolang
 
-An agent in a Tilo workspace should work like a good engineer in a familiar shell: it knows where
-it is, guesses names right, finds things in one step, sees what it may do, and checks its work
-before a person sees it. Every rule below saves an agent a call, a guess or tokens.
+Agents are excellent at shell one-liners: one `rg … | xargs sed …` does what would take a person
+ten minutes. A tilolang program on the door must be at least as terse, and better: correct where
+the shell guesses, with authorship, history, permissions and undo. Today's `tilo_*` tools already
+work even with cheap models; tilolang has to beat them, measured (§9).
 
-## 1. One language, one tool
+Everything here is ordinary tilolang, not an agent dialect: `grep`, the chaining functions,
+assignments that compile to actions, and the typed decisions in §5 are available to every
+program (apps, shortcuts, flows, views). Agents just use them most. Calls that use a model
+declare it like any effect (`uses model`, like `uses web`), and their answers are recorded.
 
-- Everything an agent sends and receives is tilolang: queries, reads, actions, answers. Output
-  can be pasted back as input.
-- The door (Tilo's MCP server, `docs/runtime-mcp.md`) gets one more tool, `tilo`, which takes a
-  **program**. Every installed app's types, actions and views are available in it.
-- Programs chain: query, read, loop and act in one call, like one big `grep`. A session keeps
-  its `let` values between calls.
-- A program runs sandboxed as the agent's task, in a tilolang host whose author is that task,
-  so it can do no more than the task may. All its changes are one task step: one preview, one
-  undo, and asks still ask.
+## 1. One tool, programs, sessions
+
+- The door (Tilo's MCP server, `docs/runtime-mcp.md`) has a tool `tilo` that takes a
+  **program**. Everything sent and received is tilolang, and output pastes back as input.
+- Only what the task may use is mounted: installed apps' types, views and the actions the task
+  is allowed. Anything else is a compile error that names what is allowed, so nothing denied is
+  ever attempted.
+- A session keeps its `let` values between calls.
+- A program runs sandboxed as the task, in a tilolang host whose author is that task.
+- **A task is many programs.** Exploring, dead ends, failures, asks, intermediate results: each
+  call is one step; the task is the session of steps, with its trail and pending asks. You can
+  undo one step or the whole task.
 - The existing tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`) stay as one-call forms.
-- **A task is many programs.** Real work takes rounds: exploring, dead ends, failures, asks,
-  intermediate results ("cool beaches nearby" searches maps and the web before composing an
-  answer; "fix the video for launch day" runs for hours). Each `tilo` call is one step with its
-  own preview and undo; the task is the session of steps, with its trail, pending asks, presence
-  in the windows it touches, and an answer composed at the end or kept up to date as it goes.
-  You can undo one step or the whole task.
+
+## 2. What the agent knows from the start
+
+The session's first message says where it is: the workspace, who it acts for, the task's limits,
+and what the person was pointing at if they pointed (canvas.md). There is no `look` call. Words
+for the obvious things: `me`, `this` (what the person pointed at), `here` (what `this` is in),
+and times like `today`, `-7d`.
+
+It also lists one line per app the task can use; `describe` gives the detail on demand.
+
+## 3. Querying
+
+Three familiar shapes:
+
+- **`grep(regex, in: …)`** over the text of any resources, with match groups. It returns
+  matches with refs and anchors (`d12 ¶4: …the Tide app…`), counts first. It runs on the system
+  index and confirms each match against the real text. Its filters are facts the system knows
+  and a shell can only guess: block types (`not: .quote`), `changed: -14d` (from the log),
+  `mentions: me`, and `.written_by` on each match (who wrote that run of text).
+- **`find("…")`**: system search with the palette's query string (search.md), for broad
+  lookups (`find("lisbon justin")`), or typed (`find(Photo, people: all(me, justin))`).
+- **Chaining with key paths** for everything after: `filter`, `map`, `sort_by`, `count_by`,
+  `group`, `take`, `each`, `single` (exactly one, or an error listing the candidates).
+
+Sources are values: other apps' roots combine (`chat.messages + mail.messages + notes`), and
+relationships are system fields (`replies`, backlinks, `created.by`, `written_by`).
+
+Every result says what it couldn't cover: "38 match; 54 have no place; 12 have unnamed faces".
+An agent can see when an answer is incomplete and widen the search in the same program.
 
 ```
-let hits = find("launch video")
-for n in hits.of(Note) { print(read(n, matching: "video", around: 1)) }
-for m in find("video in:#launch received:-14d") { print(m.author, m.said) }
+grep(/\bTide\b/, in: docs + notes).count_by(.doc)
+grep(/\bTide\b/, in: docs + notes, not: .quote).replace("Tilo")
+
+grep(/^- \[ \] (.*launch.*)/i, in: docs + notes, changed: -14d)
+    .each(t -> tasks.add(launch, title: t.group(1), assignee: t.written_by, link: t))
 ```
 
-## 2. Where am I
+## 4. Changing things
 
-Context usually arrives with the message: pointing at something and typing (canvas.md) sends
-the view, resource and selection along. Otherwise:
+- Assignments and methods read like ordinary code (`n.title = …`, `t.done = true`,
+  `hits.replace("Tilo")`) and compile to the type's real actions: field edits, text splices,
+  declared actions. Permissions, attribution and undo apply; nothing bypasses them.
+- **One call is one step.** Changes to workspace resources in one call commit together, at one
+  origin, all or nothing. Calls to outside origins (a mail server, YouTube) can't be atomic with
+  the workspace; they run as flow steps in order (convergence.md, "Flows").
+- **Preview is a property of the call.** When a program would change many resources or destroy
+  something, the door answers with a preview instead of applying it; the agent sends the same
+  program again with `confirm`.
+- Drafts and other undoable changes in the workspace just run. Anything that reaches outside or
+  is ask-first parks as the person's request, with an editable draft.
 
-```
-> look
-workspace  Acme · you: bob · 3 people · synced
-focus      Mail › Inbox › t91 "Incorporation & SAFE: next steps"
-selection  m3 ¶2.2
-task       "check my mail" · may: read all, write drafts and todos · asks: send, delete
-```
+## 5. Judgment and bulk
 
-Words for the obvious things: `this` (what the person is looking at), `selection`, `here` (what
-`this` is inside), `me`, and times like `today`, `-7d`, `last week`.
-
-## 3. Refs and anchors
-
-- Every resource has a short ref, like a git short hash (`t91`, `m3`); a path also works
-  (`notes/"Board meeting"`). Refs don't change when titles do.
-- Every output line starts with the ref of what it shows.
-- Anchors point inside a resource: `m3 ¶2.2`, `f7 p.4`, `t91 m3..m5`. `quote(...)` cites them.
-
-## 4. Finding
-
-`find` is system search (search.md), with the same tokens people type:
+The agent is the model: it reads results and writes the next program itself, across rounds,
+with its own titles, summaries and replies. Model calls inside a program are only for volume the
+agent shouldn't read itself, as typed decisions on small, cheap decision models through the model
+gateway:
 
 ```
-> find Thread from:*@ycombinator.com sort:-last
-3 threads
-  t91  Incorporation & SAFE: next steps  Jane Doe  Tue 14:02  unread  Legal
-  t40  Welcome to YC: legal checklist     YC Legal  Sep 2
-  t12  Batch kickoff                      YC        Aug 28
+enum Topic { billing, bug, other }
+mail.messages.filter(.received > -30d).classify(as: Topic).count_by(.label)
+asks.score("how urgent is this for me").sort_by(.score, desc)
+asks.where("asks me to do something", above: 0.8)
 ```
 
-- Columns are the type's declared filter fields. Counts come before rows; pages are 10 rows;
-  `more` continues; `| count`, `| first`, `| group from` work on results.
+`classify` returns values of a real enum. The answers are recorded with the call, so the step
+stays reproducible and undoable.
 
-## 5. Reading
+## 6. Reading and describing
 
-```
-> read t91 new
-m3  Jane Doe  Tue 14:02  unread
-  ¶2.1 Sign the stock purchase agreement (sent via DocuSign).
-  ¶2.2 File your 83(b) election within 30 days of the purchase date (Nov 14).
-```
+- `read(r, matching:, around:)` returns text with anchors; big content is paged and states its
+  size first. Reading never marks anything read for the person.
+- `describe` works on an app, type, action, field or ref: declarations as tilolang, what this
+  task may do, and an example value from the app's scenarios.
+- `print(xs, fields: [.a, .b])` prints rows; without `fields:`, a type's declared filter fields.
+- Refs (`t91`, `m3`) and anchors (`m3 ¶2.2`) start every output line. The compiler accepts only
+  refs that appeared in the session's output, so none can be invented.
 
-- Every block has its anchor, so citing is free. Rich content is compact markdown.
-- Big content is paged and states its size first.
-- An agent reading something doesn't mark it read for the person.
+## 7. Errors that teach
 
-## 6. Learning what's possible
+Errors say what's wrong and what's valid ("Thread has no filter `sender`; did you mean
+`from`?"). Tolerance comes from these errors, not from a parser that silently accepts variants.
+Naming conventions (singular types, verb actions, adjective booleans, past-participle times)
+make first guesses mostly right.
 
-```
-> describe Thread
-/// A conversation by mail.
-type Thread { subject: Text (title)  messages: Collection<Message>  labels: Set<Label> }
-actions on Thread                          this task
-  archive(thread)                          may
-  draft_reply(thread, body: Text) -> Draft may
-  send(draft: Draft)                       asks
-  delete(thread)                           no
-```
+## 8. Answering and the trail
 
-- `describe` works on an app, type, action, field or ref, and shows what this task may do
-  before it acts. Declarations print as tilolang, with an example value from the app's
-  scenarios.
-- `types ~"ideas"` finds where something can go without knowing the apps.
-- Doc comments are the documentation; the compiler requires them on public types and actions.
+An answer composes views (agent-ux.md); the door checks it before the person sees it: quotes
+resolve, suggested actions are allowed, it fits. After a task, its result is checked against
+the request: on by default for small-model profiles, which skip or get parts of long requests
+wrong most often. `history task` lists the steps; `undo task` reverses them.
 
-## 7. Acting
+## 9. Evals
 
-```
-> do archive(find Thread label:Newsletters received:<-7d)
-preview: archives 41 threads; undoable as one
-confirm with: do!
-```
-
-- Actions take queries: one invocation, one undo, one history entry.
-- Anything larger than one resource, or destructive, previews first; `do!` runs the preview.
-- Asks park the action: the person sees it with an editable draft, the agent sees
-  `pending: asks bob (send)`.
-- The agent never handles permissions, sync, formats, waiting (no polling) or presentation:
-  the system does.
-
-## 8. Errors that teach
-
-```
-> find Thread sender:@ycombinator.com
-error: Thread has no filter `sender`; did you mean `from`?
-```
-
-Errors say what's wrong and what's valid. Naming conventions (singular types, verb actions,
-adjective booleans, past-participle times) make first guesses mostly right; the compiler warns
-on violations.
-
-## 9. Answering
-
-An answer is a tilolang block that composes views (agent-ux.md). The door compiles it on submit
-and returns diagnostics, a text rendering of what the person will see, and checks: every quote
-resolves, every suggested action is allowed, the answer fits its size.
-
-## 10. Trail
-
-`history task` lists what the task did; `undo task` undoes all of it, `undo i22` one action.
-`watch <query>` is a standing task, a saved search that notifies.
-
-## 11. The primer
-
-The agent's system message is the whole manual; everything else is found with `look` and
-`describe`. It's tested: the acceptance transcripts start from it alone. Replies are judged by
-tokens and calls: one-line rows, refs instead of repeated titles, no echo.
-
-## 12. Evals
-
-- **Fluency:** the same 30 tasks in tilolang and in TypeScript against the same API, across
-  models; compare first-try errors, tokens and calls. If tilolang loses, its syntax moves
-  toward TypeScript.
-- **Real tasks,** once Notes, Todo, Chat, Board and Mail run in tilolang: real agents in a
-  seeded workspace, from the primer only. The format changes by what these show.
+Reusing what exists (`scripts/perf/agent_task.py` with its fake model, agent-participant's
+`campaign_bench` and `campaign_replay`, `crates/dev/ai-bench`, the `instruction_mode_eval`
+scorer): a seeded simulated workspace (chat, mail, notes, files, tasks), about 30 tasks with
+checkable outcomes, cheap and strong models, and four interfaces: today's `tilo_*` tools,
+tilolang chaining, tilolang with pipe sugar (`|` as the same chain), and TypeScript against the
+same API. Measured: first-try errors, tokens, calls, correctness. The syntax follows the results.

@@ -132,14 +132,14 @@ impl ApplicationImport {
         }
         let pin = PinnedDirectory::open_absolute(&root)?;
         let bytes = read(&pin, "applications.json", 8 * 1024 * 1024)?;
-        if <[u8; 32]>::from(Sha256::digest(&bytes)) != expected.manifest_sha256 {
+        if <[u8; 32]>::from(Sha256::digest(&bytes)) != expected.kind.manifest_sha256 {
             return Err(changed(
                 "Portable application selection or signing metadata changed",
             ));
         }
         let manifest: ApplicationsManifest = serde_json::from_slice(&bytes)?;
         manifest.validate()?;
-        if manifest.schema != expected.consumer_protocol {
+        if manifest.schema != expected.kind.consumer_protocol {
             return Err(changed(
                 "Application consumer requirement differs from authenticated payload",
             ));

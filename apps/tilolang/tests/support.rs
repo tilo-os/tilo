@@ -20,7 +20,7 @@ pub fn installed(name: &str) -> &'static ApplicationDefinition {
         let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
             .expect("the packages compile");
         let (package, used) = built.split_last().expect("the package is built last");
-        let imports = used.iter().map(|used| used.compiled.meta.clone()).collect();
+        let imports = used.iter().map(|used| &used.compiled);
         let bundle = tilolang_tilo::bundle::Bundle::new(&package.compiled, imports);
         tilolang_app::install(bundle).expect("nothing else is installed");
         name.to_owned()

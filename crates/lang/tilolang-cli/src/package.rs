@@ -210,12 +210,11 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
     for (index, package) in built.iter().enumerate() {
         let meta = &package.compiled.meta;
         let used = uses(package);
-        let imports: Vec<PackageMeta> = built
+        let imports = built
             .iter()
             .take(index)
-            .map(|earlier| earlier.compiled.meta.clone())
-            .filter(|earlier| used.contains(&earlier.app))
-            .collect();
+            .map(|earlier| &earlier.compiled)
+            .filter(|earlier| used.contains(&earlier.meta.app));
         let bundle = Bundle::new(&package.compiled, imports);
         let staged = options.out.join(short_name(&meta.app));
         let payload = staged.join("payload");
@@ -263,9 +262,8 @@ fn digest(manifest: &str, bundle: &Bundle) -> String {
         hasher.update(part);
     }
     for import in &bundle.imports {
-        let bytes = import.to_json_bytes();
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+        hasher.update((import.wasm.len() as u64).to_le_bytes());
+        hasher.update(&import.wasm);
     }
     hex::encode(hasher.finalize())
 }

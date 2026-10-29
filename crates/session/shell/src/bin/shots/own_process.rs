@@ -100,6 +100,16 @@ impl OwnProcessApp {
         self.present();
     }
 
+    /// Say `message` to the app on its shell-ui connection, as the shell
+    /// does; it reads it on its next turn.
+    pub fn tell(&mut self, message: &FloatingSurfaceHostMessage) {
+        let mut wire = serde_json::to_vec(message).unwrap_or_default();
+        wire.push(b'\n');
+        if let Err(error) = self.socket.write_all(&wire) {
+            eprintln!("shots: the app's connection broke: {error}");
+        }
+    }
+
     /// The size the app lays out at, in its window's own pixels.
     pub fn window_size(&self) -> (u32, u32) {
         self.size

@@ -38,7 +38,7 @@ fn counter() -> Bundle {
         &[],
     )
     .unwrap_or_else(|_| panic!("the counter compiles"));
-    Bundle::new(&compiled, Vec::new())
+    Bundle::new(&compiled, [])
 }
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;

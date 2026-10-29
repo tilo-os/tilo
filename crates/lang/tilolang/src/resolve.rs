@@ -29,9 +29,25 @@ pub struct TypeInfo {
     pub fields: Vec<FieldInfo>,
     /// Its filters, default order and hidden fields (search.md, "What a type declares").
     pub search: crate::meta::SearchMeta,
+    /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
+    /// Code uses it as that container.
+    pub holder: bool,
 }
 
+/// The name of the one field of a type that names a container (`type Notes =
+/// Collection<Note>`): its ids lock entry is `Notes.items`.
+pub const HOLDER_FIELD: &str = "items";
+
 impl TypeInfo {
+    /// The container a holder type is.
+    pub fn held(&self) -> Option<&FieldInfo> {
+        if self.holder {
+            self.fields.first()
+        } else {
+            None
+        }
+    }
+
     pub fn field(&self, name: &str) -> Option<&FieldInfo> {
         self.fields.iter().find(|f| f.name == name)
     }
@@ -246,6 +262,8 @@ pub struct Import {
     pub app: String,
     /// The ids of the package's root types: what a scenario may reach with `root alias.T`.
     pub roots: Vec<String>,
+    /// Its named roots (`root notes: Notes`) and their type ids: `alias.notes` reaches one.
+    pub named_roots: Vec<(String, String)>,
 }
 
 /// Everything the checker knows about the module and the packages it imports.
@@ -260,6 +278,10 @@ pub struct Env {
     pub enums: Vec<EnumInfo>,
     /// The package's root types (`root T`), in declaration order.
     pub roots: Vec<TypeKey>,
+    /// The package's named roots (`root notes: Notes`): the name code reaches each by.
+    pub named_roots: Vec<(String, TypeKey)>,
+    /// `type Name = T` naming a type that is not a container, as its written form.
+    pub aliases: Vec<(TypeKey, Ty)>,
     /// `default view v for T`: the type and the view's name.
     pub default_views: Vec<(TypeKey, String)>,
     /// The view state every view declares.
@@ -329,6 +351,7 @@ impl Env {
             alias: crate::stdlib::NS.to_string(),
             app: crate::stdlib::NS.to_string(),
             roots: Vec::new(),
+            named_roots: Vec::new(),
         });
         self.templates
             .extend(crate::stdlib::views().iter().map(|decl| Template {
@@ -387,6 +410,7 @@ impl Env {
             alias: crate::toolkit::UI_ALIAS.to_string(),
             app: crate::toolkit::UI_APP.to_string(),
             roots: Vec::new(),
+            named_roots: Vec::new(),
         });
         self.toolkit = Some(crate::toolkit::catalogue());
     }
@@ -410,6 +434,11 @@ impl Env {
             alias: alias.to_string(),
             app: meta.app.clone(),
             roots: meta.roots.clone(),
+            named_roots: meta
+                .named_roots
+                .iter()
+                .map(|r| (r.name.clone(), r.ty.clone()))
+                .collect(),
         });
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
@@ -447,6 +476,15 @@ impl Env {
                     .collect(),
             });
         }
+        for a in &meta.aliases {
+            if let Some(ty) = Ty::parse_meta(&a.ty, &app) {
+                let key = TypeKey {
+                    app: app.clone(),
+                    name: a.name.clone(),
+                };
+                self.aliases.push((key, ty));
+            }
+        }
         for t in &meta.types {
             let fields = t.fields.iter().map(field_info).collect();
             self.types.push(TypeInfo {
@@ -458,6 +496,7 @@ impl Env {
                 doc: t.doc.clone(),
                 fields,
                 search: t.search.clone(),
+                holder: t.holder,
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -574,6 +613,10 @@ struct Resolver<'a> {
     diags: &'a mut Vec<Diagnostic>,
     own_types: HashSet<String>,
     own_enums: HashSet<String>,
+    /// `type Name = T` of a type that is not a container: resolved where it is named.
+    own_aliases: HashMap<String, TypeExpr>,
+    /// The aliases being resolved, to refuse one that names itself.
+    resolving: Vec<String>,
 }
 
 /// Builds the environment of a parsed module. Errors go to `diags`.
@@ -592,6 +635,8 @@ pub fn resolve(
         diags,
         own_types: HashSet::new(),
         own_enums: HashSet::new(),
+        own_aliases: HashMap::new(),
+        resolving: Vec::new(),
     };
     r.env.add_import("host", &crate::host::host_meta());
     r.env.add_toolkit();
@@ -719,8 +764,75 @@ impl Resolver<'_> {
             }
             decls.push(t);
         }
+        let mut holders: Vec<&ast::AliasDecl> = Vec::new();
+        for item in &module.items {
+            let Item::Alias(a) = item else { continue };
+            let name = &a.name.name;
+            if !name_case_ok(name, true) {
+                self.err(
+                    "E016",
+                    a.name.span,
+                    format!("type names start with an uppercase letter; rename `{name}`"),
+                );
+            }
+            if is_builtin_type(name)
+                || self.own_enums.contains(name)
+                || self.own_types.contains(name)
+                || self.own_aliases.contains_key(name)
+            {
+                self.err(
+                    "E011",
+                    a.name.span,
+                    format!("the type `{name}` is declared twice"),
+                );
+                continue;
+            }
+            let container = matches!(&a.ty.kind, TypeExprKind::Generic(g, _) if matches!(g.name.as_str(), "Collection" | "Set" | "Map"));
+            if container {
+                self.own_types.insert(name.clone());
+                holders.push(a);
+            } else {
+                self.own_aliases.insert(name.clone(), a.ty.clone());
+            }
+        }
         for e in enums {
             self.enum_decl(e, lock);
+        }
+        for a in holders {
+            let name = &a.name.name;
+            let ty = self.resolve_type(&a.ty, true);
+            self.env.types.push(TypeInfo {
+                key: TypeKey {
+                    app: self.env.app.clone(),
+                    name: name.clone(),
+                },
+                id: id_of(lock, name),
+                doc: a.doc.join("\n"),
+                fields: vec![FieldInfo {
+                    name: HOLDER_FIELD.to_owned(),
+                    id: id_of(lock, &format!("{name}.{HOLDER_FIELD}")),
+                    ty,
+                    merge: MergeKind::Structural,
+                    doc: String::new(),
+                    default: None,
+                    role: None,
+                }],
+                search: crate::meta::SearchMeta::default(),
+                holder: true,
+            });
+        }
+        let aliases: Vec<(String, TypeExpr)> = self
+            .own_aliases
+            .iter()
+            .map(|(n, t)| (n.clone(), t.clone()))
+            .collect();
+        for (name, te) in aliases {
+            let ty = self.alias_type(&name, &te);
+            let key = TypeKey {
+                app: self.env.app.clone(),
+                name,
+            };
+            self.env.aliases.push((key, ty));
         }
         for t in &decls {
             let mut fields: Vec<FieldInfo> = Vec::new();
@@ -746,6 +858,7 @@ impl Resolver<'_> {
                 doc: t.doc.join("\n"),
                 fields,
                 search: crate::meta::SearchMeta::default(),
+                holder: false,
             });
         }
         // Every type's fields are known: each one's search reads its own, and the enums.
@@ -794,6 +907,21 @@ impl Resolver<'_> {
                     format!(
                         "variant names start with a lowercase letter; rename `{}`",
                         v.name.name
+                    ),
+                );
+            }
+            if let Some(first) = v.fields.first() {
+                let case = &v.name.name;
+                let upper: String = case
+                    .chars()
+                    .next()
+                    .map(|c| c.to_uppercase().chain(case.chars().skip(1)).collect())
+                    .unwrap_or_default();
+                self.err(
+                    "E110",
+                    first.name.span,
+                    format!(
+                        "an enum's cases are plain names; a case that holds data is a type of its own, and a union of the types takes any of them: `type {upper} {{ ... }}`, then `type {name} = {upper} | ...`, matched as `match x {{ v: {upper} => ..., }}`"
                     ),
                 );
             }
@@ -1198,10 +1326,50 @@ impl Resolver<'_> {
                 ty
             }
             TypeExprKind::Named(path) => self.named_type(path, te.span),
+            TypeExprKind::Union(cases) => self.union_type(cases),
             TypeExprKind::Fn(..) => {
                 self.err("E013", te.span, "a function type `(T) -> R` is the type of a parameter of a view only: such a view is expanded where it is called");
                 Ty::Error
             }
+        }
+    }
+
+    /// What the alias `name` names, resolved once where it is used.
+    fn alias_type(&mut self, name: &str, te: &TypeExpr) -> Ty {
+        if self.resolving.iter().any(|n| n == name) {
+            self.err(
+                "E013",
+                te.span,
+                format!("`{name}` names itself; a type alias names another type"),
+            );
+            return Ty::Error;
+        }
+        self.resolving.push(name.to_owned());
+        let ty = self.resolve_type(te, false);
+        self.resolving.pop();
+        ty
+    }
+
+    /// `A | B`: a resource of any of the cases, each a resource type.
+    fn union_type(&mut self, cases: &[TypeExpr]) -> Ty {
+        let mut keys: Vec<TypeKey> = Vec::new();
+        for case in cases {
+            match self.resolve_type(case, false) {
+                Ty::Record(key) => keys.push(key),
+                Ty::Union(more) => keys.extend(more),
+                Ty::Error => return Ty::Error,
+                other => {
+                    let t = other.display(&self.env.app);
+                    self.err("E109", case.span, format!("a union's cases are resource types, and {t} is not one; for named cases without data declare an `enum`"));
+                    return Ty::Error;
+                }
+            }
+        }
+        keys.sort();
+        keys.dedup();
+        match keys.as_slice() {
+            [one] => Ty::Record(one.clone()),
+            _ => Ty::Union(keys),
         }
     }
 
@@ -1231,7 +1399,21 @@ impl Resolver<'_> {
                         name: name.to_string(),
                     });
                 }
-                _ => {}
+                name if self.own_aliases.contains_key(name) => {
+                    let te = self.own_aliases.get(name).cloned();
+                    return te.map_or(Ty::Error, |te| self.alias_type(name, &te));
+                }
+                name => {
+                    let app = &self.env.app;
+                    if let Some((_, ty)) = self
+                        .env
+                        .aliases
+                        .iter()
+                        .find(|(k, _)| k.app == *app && k.name == name)
+                    {
+                        return ty.clone();
+                    }
+                }
             }
             let mut known: Vec<String> = self
                 .own_types
@@ -1275,6 +1457,9 @@ impl Resolver<'_> {
         };
         if self.env.enum_info(&key).is_some() {
             return Ty::Enum(key);
+        }
+        if let Some((_, ty)) = self.env.aliases.iter().find(|(k, _)| *k == key) {
+            return ty.clone();
         }
         if self.env.type_info(&key).is_none() {
             let names: Vec<&str> = self
@@ -1347,6 +1532,7 @@ impl Resolver<'_> {
                 Item::Fn(f) => (CKind::Fn, &f.name, &f.params, Some(&f.result)),
                 Item::Use(_)
                 | Item::Type(_)
+                | Item::Alias(_)
                 | Item::Enum(_)
                 | Item::Root(_)
                 | Item::DefaultView(_)
@@ -1705,12 +1891,39 @@ impl Resolver<'_> {
         {
             self.err("E091", module.app.span, prims::unknown_icon(icon));
         }
-        for item in &module.items {
+        // Roots first, so a default view may name one.
+        let roots_first = module
+            .items
+            .iter()
+            .filter(|i| matches!(i, Item::Root(_)))
+            .chain(module.items.iter().filter(|i| !matches!(i, Item::Root(_))));
+        for item in roots_first {
             match item {
                 Item::Root(r) => {
                     let Some(key) = self.own_record(&r.ty, "root") else {
                         continue;
                     };
+                    if let Some(name) = &r.name {
+                        if !name_case_ok(&name.name, false) {
+                            self.err(
+                                "E016",
+                                name.span,
+                                format!(
+                                    "a root's name starts with a lowercase letter; rename `{}`",
+                                    name.name
+                                ),
+                            );
+                        }
+                        if self.env.named_roots.iter().any(|(n, _)| *n == name.name) {
+                            self.err(
+                                "E011",
+                                name.span,
+                                format!("the root `{}` is declared twice", name.name),
+                            );
+                            continue;
+                        }
+                        self.env.named_roots.push((name.name.clone(), key.clone()));
+                    }
                     if self.env.roots.contains(&key) {
                         self.err(
                             "E011",
@@ -1723,7 +1936,20 @@ impl Resolver<'_> {
                 }
                 Item::RowView(d) => self.row_view_decl(d),
                 Item::DefaultView(d) => {
-                    let Some(key) = self.own_record(&d.ty, "default view") else {
+                    // `default view talk for talks`: for the type of the root `talks`.
+                    let named = match &d.ty.kind {
+                        TypeExprKind::Named(path) => match path.as_slice() {
+                            [one] => self
+                                .env
+                                .named_roots
+                                .iter()
+                                .find(|(n, _)| *n == one.name)
+                                .map(|(_, k)| k.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let Some(key) = named.or_else(|| self.own_record(&d.ty, "default view")) else {
                         continue;
                     };
                     if self.env.default_views.iter().any(|(k, _)| *k == key) {
@@ -1863,6 +2089,8 @@ pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) 
         diags,
         own_types,
         own_enums,
+        own_aliases: HashMap::new(),
+        resolving: Vec::new(),
     };
     r.resolve_type(te, false)
 }

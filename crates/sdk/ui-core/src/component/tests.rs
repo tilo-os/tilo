@@ -116,6 +116,7 @@ fn sample(ty: &Type) -> Value {
         Type::Resource => Value::Resource("r".into()),
         Type::Time => Value::Text("2026-06-30T08:42:00Z".into()),
         Type::Icon => Value::Icon("pin".into()),
+        Type::RichText => Value::Rich(tilo_ui_graph::rich::RichText::default()),
         Type::Choice { cases, .. } => Value::Choice(cases.first().cloned().unwrap_or_default()),
         Type::Option(_) => Value::None,
         Type::List(_) => Value::List(Vec::new()),

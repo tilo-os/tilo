@@ -13,11 +13,12 @@ header     = "app" app_id string [ "(" app_opt { "," app_opt } ")" ] ;
 app_opt    = ( "icon" | "category" ) ":" "." ident ;
 app_id     = ident { "." ident } ;
 
-item       = { doc } ( use | type_decl | enum_decl | root | default_view | row_view
+item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
                      | [ role ] action | flow | view | fn | scenario ) ;
 use        = "use" app_id [ "as" ident ] ;
-root       = "root" type ;
-default_view = "default" "view" ident "for" type ;
+root       = "root" [ ident ":" ] type ;                      (* `root notes: Notes` *)
+alias      = "type" Ident "=" type ;                          (* a container named so is a resource *)
+default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
 role       = "primary" | "destructive" ;
 
@@ -31,9 +32,10 @@ search_line = "filter" ident [ string ] [ opts ]
             | "sort" ident ( "newest" | "oldest" | "a_z" | "z_a" )
             | "hide" ident ;
 
-enum_decl  = "enum" Ident "{" { { doc } ident [ params ] [ opts ] [ "," ] } "}" ;
+enum_decl  = "enum" Ident "{" { { doc } ident [ opts ] [ "," ] } "}" ;
 
-type       = ident { "." ident }                                  (* Int, Note, todo.Item, std.Identifier *)
+type       = one_type { "|" one_type } ;                         (* a union of resource types *)
+one_type   = ident { "." ident }                                  (* Int, Note, todo.Item, std.Identifier *)
            | ( "List" | "Set" | "Map" | "Collection" | "Option" | "Result" | "State" )
              "<" type { "," type } ">"
            | "(" [ type { "," type } ] ")" [ "->" type ] ;         (* tuple, (), or a function type *)
@@ -78,7 +80,8 @@ primary    = int | float | length | duration | calendar | string | "true" | "fal
 if         = "if" ( expr | let_binds ) block [ "else" ( if | block ) ] ;
 let_binds  = "let" ident "=" expr { "," [ "let" ] ident "=" expr } ;   (* each an Option *)
 match      = "match" expr "{" { pattern "=>" expr ( "," | NL ) } "}" ;
-pattern    = "." ident [ "(" ident { "," ident } ")" ] ;           (* "_" skips a payload field *)
+pattern    = "." ident [ "(" ident { "," ident } ")" ]            (* `.some(x)`; "_" skips a field *)
+           | ident ":" type ;                                     (* a union's case, by its type *)
 
 ui_block   = "{" { ui_stmt NL } "}" ;
 ui_stmt    = ( "window" | "lens" ) ident ":" type [ "=" expr ]     (* view state, at the top *)

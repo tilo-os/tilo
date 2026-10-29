@@ -892,17 +892,23 @@ fn view_and_anchor_navigation_update_shared_state() {
         h.app.show_calendar();
         h.relayout();
         assert_eq!(h.app.view, View::Month);
-        h.press_bar_action(&crate::window_bar::view_slot(View::Week));
+        h.press_bar_action(&View::Week.display_label());
         assert_eq!(
             h.app.view,
             View::Week,
             "choosing Week in the bar switched the view"
         );
+        let views = ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.views)
+            .expect("the bar's switcher");
+        let chosen = views
+            .choices
+            .iter()
+            .find(|choice| choice.id == views.chosen)
+            .map(|choice| choice.label.clone());
         assert_eq!(
-            ui::window_toolbar::declared()
-                .and_then(|toolbar| toolbar.views)
-                .map(|views| views.chosen),
-            Some(crate::window_bar::view_slot(View::Week)),
+            chosen,
+            Some(View::Week.display_label()),
             "the bar's switcher shows Week chosen"
         );
     }
@@ -984,7 +990,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         h.app.show_calendar();
         h.relayout();
         let before = h.app.model.events.len();
-        h.press_bar_action(crate::window_bar::NEW);
+        h.press_bar_action("New event");
         assert_eq!(
             h.app.model.events.len(),
             before + 1,
@@ -1002,7 +1008,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         let mut h = Harness::new(1280, 800);
         h.app.shots_show_calendar();
         h.relayout();
-        h.press_bar_action(crate::window_bar::NEW);
+        h.press_bar_action("New event");
         h.relayout();
         let id = selected_event_id(&h.app);
         assert!(
@@ -1030,7 +1036,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // otherwise sit over the New button behind its dismiss scrim.
         h.app.show_calendar();
         h.relayout();
-        h.press_bar_action(crate::window_bar::NEW);
+        h.press_bar_action("New event");
         let id = selected_event_id(&h.app);
         assert!(
             h.app.model.event(id).unwrap().title.is_empty(),
@@ -1087,7 +1093,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // demo's open modal.
         h.app.show_calendar();
         h.relayout();
-        h.press_bar_action(crate::window_bar::NEW);
+        h.press_bar_action("New event");
         let id = selected_event_id(&h.app);
         assert!(
             h.app.title_input.is_focused(),
@@ -1762,14 +1768,7 @@ fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
             (h.app.view_rect().y0 - h.app.rect.y0).abs() < 0.5,
             "the view starts at the top at {width}x{height}"
         );
-        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-        let week = toolbar
-            .views
-            .as_ref()
-            .and_then(|views| views.choices.iter().find(|v| v.label == "Week"))
-            .map(|v| v.id.clone())
-            .expect("the bar's switcher offers Week");
-        h.press_bar_action(&week);
+        h.press_bar_action("Week");
         assert_eq!(
             h.app.view,
             View::Week,
@@ -1983,7 +1982,11 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         assert_eq!(tree.role, Role::Window);
         // New event is the window bar's: the bar's press runs it.
         let before = app.model.events.len();
-        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: "new".into() });
+        app.declare_window_toolbar();
+        let new = ui::window_toolbar::declared()
+            .and_then(|toolbar| toolbar.actions.into_iter().find(|a| a.name == "New event"))
+            .expect("the bar offers New event");
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: new.id });
         ui::widget::Widget::settle(&mut app, &mut Edits::lend(&mut state), &automerge::ROOT);
         assert_eq!(app.model.events.len(), before + 1);
     }
@@ -2287,22 +2290,26 @@ impl Harness {
         self.relayout();
     }
 
-    /// Press the bar's action `id` ([`Self::press_bar`]), which the window's
-    /// bar must offer now.
-    fn press_bar_action(&mut self, id: &str) {
+    /// Press the bar's action or view named `name` ([`Self::press_bar`]),
+    /// which the window's bar must offer now.
+    fn press_bar_action(&mut self, name: &str) {
         let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
-        let offered = toolbar
+        let id = toolbar
             .leading
             .iter()
             .chain(&toolbar.actions)
-            .any(|action| action.id == id && action.enabled)
-            || toolbar
-                .views
-                .iter()
-                .flat_map(|views| &views.choices)
-                .any(|view| view.id == id);
-        assert!(offered, "the window's bar offers {id}: {toolbar:?}");
-        self.press_bar(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+            .find(|action| action.name == name && action.enabled)
+            .map(|action| action.id.clone())
+            .or_else(|| {
+                toolbar
+                    .views
+                    .iter()
+                    .flat_map(|views| &views.choices)
+                    .find(|view| view.label == name)
+                    .map(|view| view.id.clone())
+            });
+        let id = id.unwrap_or_else(|| panic!("the window's bar offers {name}: {toolbar:?}"));
+        self.press_bar(ui::window_toolbar::ToolbarEvent::Action { id });
     }
 
     /// Centre of the first hit rect carrying an action matching `pred`.

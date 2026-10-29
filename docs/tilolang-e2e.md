@@ -23,8 +23,8 @@ and its runtime directory at the end. `--keep` leaves it running.
 
 ## What it checks
 
-`tilolang build apps/tl/board --search apps/tl` builds Notes, Chat, Todo and
-Board. The session installs them (`--install-tapp`) beside native Notes
+`tilolang build apps/tl/today --search apps/tl` builds Notes, Chat, Todo and
+Today. The session installs them (`--install-tapp`) beside native Notes
 (`--apps notes`), then:
 
 - **registry**: each package is an application under its own id, name and
@@ -57,8 +57,8 @@ Board. The session installs them (`--install-tapp`) beside native Notes
   it may commit one frame per pose of its animation (30 a second) and no
   more. Its context switches per frame are recorded.
 - **routes**: a second start of the same session installs the collaboration
-  probe in place of Board and Todo. Board's surface declares that it reads
-  Notes' kinds; Todo's declares no read. The broker lets Board join Notes'
+  probe in place of Today and Todo. Today's surface declares that it reads
+  Notes' kinds; Todo's declares no read. The broker lets Today join Notes'
   route read-only and refuses its write. Todo cannot join at all.
 
 - **host-join**: a local site, as `dist/dev/nested-pair.sh` runs one (the
@@ -73,12 +73,12 @@ Board. The session installs them (`--install-tapp`) beside native Notes
   It syncs again; the time is recorded.
 - **spinner**: started a third time with the site's processes stopped (not
   gone: a dial waits for an answer until it gives up). The Lounge is
-  `connecting`, and Board, empty and in front, says so with a spinner that
+  `connecting`, and Today, empty and in front, says so with a spinner that
   commits at least one frame and no more than one per pose, until the dial
   gives up and the Lounge is `unreachable`.
 - **unsynced**: each app opens in the Lounge whose host cannot be reached.
   Native Notes says so in place of its own empty state and keeps its "New
-  note", so the person works on what this device has, and Board commits no
+  note", so the person works on what this device has, and Today commits no
   frame and wakes no thread for 5 s (`unsynced-*.png`).
 - **reconnect**: the site's processes go on, and the Lounge syncs by itself.
 - **host**: in the synced Lounge every app is told the room is synced, the
@@ -107,7 +107,7 @@ Everything goes to `target/tilolang-e2e` (`--out DIR` changes it):
 
 - `summary.json` holds every check's result and the list of failed checks. The
   exit status is non-zero when a check fails.
-- `notes.png`, `chat.png`, `todo.png` and `board.png` are the snapshots, and
+- `notes.png`, `chat.png`, `todo.png` and `today.png` are the snapshots, and
   `native-notes.png` native Notes. Look at them: each should show only native
   window chrome around the app. `first-notes.png` and the others are the apps
   as first opened in the session's own workspace, `synced-*.png` in the

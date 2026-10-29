@@ -24,8 +24,8 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ("so.tilo.lang.letters", vec![app!("letters")]),
         ("so.tilo.lang.chat", vec![app!("chat")]),
         (
-            "so.tilo.lang.board",
-            vec![app!("notes"), app!("todo"), app!("chat"), app!("board")],
+            "so.tilo.lang.today",
+            vec![app!("notes"), app!("todo"), app!("chat"), app!("today")],
         ),
     ]
 }
@@ -45,7 +45,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
         for (i, scenario) in meta.scenarios.iter().enumerate() {
             // Each scenario in a room of its own, as a shot starts from one.
             let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
-            // A scenario may attach the roots of the packages it uses (a board's apps).
+            // A scenario may attach the roots of the packages it uses (Today's apps).
             for package in &loaded {
                 if package.meta.app != app {
                     let _ = replica.host.root_of(&package.meta.app);

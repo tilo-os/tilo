@@ -34,6 +34,9 @@ pub struct AppHeader {
 pub enum Item {
     Use(UseDecl),
     Type(TypeDecl),
+    /// `type Name = T`: a name for a type. A container (`Collection<Note>`) named so is a
+    /// resource holding it; any other type is another name for it.
+    Alias(AliasDecl),
     Enum(EnumDecl),
     /// `root T`: a type with one resource per workspace, which the launcher opens.
     Root(RootDecl),
@@ -128,9 +131,21 @@ pub struct VariantDecl {
     pub span: Span,
 }
 
+/// `type Notes = Collection<Note>`, `type Channel = TextChannel | Thread`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AliasDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RootDecl {
     pub node: NodeId,
+    /// `root notes: Notes`: the name code reaches the root by (`notes`, `alias.notes`).
+    pub name: Option<Ident>,
     pub ty: TypeExpr,
     pub span: Span,
 }
@@ -193,6 +208,8 @@ pub enum TypeExprKind {
     /// `(T) -> View`: what a parameter of a view takes when it is given a lambda or a block
     /// with an item.
     Fn(Vec<TypeExpr>, Box<TypeExpr>),
+    /// `TextChannel | Thread`: a resource of any of these types.
+    Union(Vec<TypeExpr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,19 +266,37 @@ pub struct ActionDecl {
     pub proposal: Option<Proposal>,
     /// `(icon: .plus, label: "New")`, as written.
     pub opts: Vec<ActionOpt>,
+    /// The `require` lines heading the body: when the action is available on its subject.
+    pub requires: Vec<Require>,
     pub body: Block,
+    pub span: Span,
+}
+
+/// `require not d.sent "{d.subject} went already"`, heading an action's body: a condition on the
+/// action's subject (its first parameter) the action needs, and why it is unavailable when the
+/// condition does not hold. Where the action would be offered on the subject (its window's
+/// header, a menu, an agent's choices) it is not offered then; invoked anyway, it is refused
+/// with the reason before it changes anything. The condition is pure: it reads only the
+/// subject, as the action's presentation does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Require {
+    pub cond: Expr,
+    /// Text: why the action is unavailable.
+    pub reason: Expr,
     pub span: Span,
 }
 
 impl ActionDecl {
     /// Whether the action's presentation follows its subject: a `label:` or `icon:` written
-    /// as an `if`, or an `on:` state. It is then lowered to a hidden view of the subject.
+    /// as an `if`, an `on:` state, or a `require` on it. It is then lowered to a hidden view of
+    /// the subject.
     pub fn presents_state(&self) -> bool {
-        self.opts.iter().any(|o| match o.name.name.as_str() {
-            "on" => true,
-            "label" | "icon" => matches!(o.value.kind, ExprKind::If { .. }),
-            _ => false,
-        })
+        !self.requires.is_empty()
+            || self.opts.iter().any(|o| match o.name.name.as_str() {
+                "on" => true,
+                "label" | "icon" => matches!(o.value.kind, ExprKind::If { .. }),
+                _ => false,
+            })
     }
 }
 
@@ -540,8 +575,11 @@ pub struct LetBind {
 /// `.b(x, y)`: a variant and names for its payload fields, in order (`_` ignores one).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Pattern {
+    /// The variant (`.some`), or for a type pattern the name the value is bound to.
     pub variant: Ident,
     pub binds: Vec<Ident>,
+    /// `t: TextChannel`: the case of a union, by its type.
+    pub ty: Option<TypeExpr>,
     pub span: Span,
 }
 

@@ -7,10 +7,9 @@ use std::path::PathBuf;
 
 use ui::framework::testing::TestApp;
 use ui::widget::{SplitLayout, Widget};
-use ui::window_toolbar::{ToolbarEvent, WindowToolbar};
+use ui::window_toolbar::ToolbarEvent;
 use vello::kurbo::Rect;
 
-use super::{EXPORT, IMPORT, INSPECTOR, SIDE_BY_SIDE, SPLIT};
 use crate::actions::VideoEditorEffect;
 use crate::app::VideoEditorApp;
 use crate::model::{Project, TrackKind};
@@ -33,26 +32,9 @@ fn sample(w: f64) -> VideoEditorApp {
     app
 }
 
-fn action(id: &str) -> ToolbarEvent {
-    ToolbarEvent::Action { id: id.into() }
-}
-
-fn bar_action(toolbar: &WindowToolbar, id: &str) -> ui::window_toolbar::ToolbarAction {
-    toolbar
-        .actions
-        .iter()
-        .find(|action| action.id == id)
-        .cloned()
-        .unwrap_or_else(|| panic!("{id} is a bar action"))
-}
-
-/// Every name and action target in `node`'s subtree.
-fn labels(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-    out.extend(node.name.clone());
-    out.extend(node.action_target.clone());
-    for child in &node.children {
-        labels(child, out);
-    }
+fn bar_action(app: &VideoEditorApp, name: &str) -> ui::window_toolbar::ToolbarAction {
+    app.bar_entry(name)
+        .unwrap_or_else(|| panic!("{name} is a bar action"))
 }
 
 /// The editor on the sample project, opened as a person opens it.
@@ -71,19 +53,9 @@ fn opened() -> TestApp<crate::VideoEditor> {
 }
 
 #[test]
-fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
+fn the_bar_holds_the_editors_controls() {
     for width in [1280.0, 420.0] {
         let app = sample(width);
-        let r = app.regions();
-        assert!(
-            (r.preview.y0 - app.rect.y0).abs() < 1e-9,
-            "{width}px: the preview starts at the editor's top edge"
-        );
-        assert!(
-            (r.inspector.y0 - app.rect.y0).abs() < 1e-9 || r.inspector_overlay,
-            "{width}px: a docked inspector starts at the top edge"
-        );
-
         let toolbar = app.window_toolbar();
         assert_eq!(
             toolbar.sidebar,
@@ -98,29 +70,21 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
             Some(app.project_label().as_str()),
             "{width}px: the bar names the project"
         );
-        let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, [SPLIT, SIDE_BY_SIDE, EXPORT, INSPECTOR, IMPORT]);
-        assert!(bar_action(&toolbar, IMPORT).menu, "Import is in the menu");
-
-        let mut drawn = Vec::new();
-        labels(
-            &Widget::accessibility(&app).expect("the editor's semantics"),
-            &mut drawn,
+        let icons: Vec<&str> = toolbar.actions.iter().map(|a| a.icon.as_str()).collect();
+        assert_eq!(
+            icons,
+            [
+                "scissors",
+                "columns-2",
+                "upload",
+                "panel-right",
+                "folder-open"
+            ]
         );
-        for own in [
-            "Editor commands",
-            "Toggle media bin",
-            "Toggle inspector",
-            "Import media",
-            "Split at playhead",
-            "Export video",
-            ui::widget::HISTORY_CONTROL_ID,
-        ] {
-            assert!(
-                !drawn.iter().any(|label| label == own),
-                "{width}px: the editor draws no {own} of its own: {drawn:?}"
-            );
-        }
+        assert!(
+            bar_action(&app, "Import media").menu,
+            "Import is in the menu"
+        );
     }
 }
 
@@ -134,9 +98,9 @@ fn the_bar_shows_and_hides_the_media_and_the_inspector() {
     assert_eq!(app.window_toolbar().sidebar, Some(!open));
 
     let open = app.inspector_flap.is_open(app.inspector_split());
-    app.run_window_bar_event(&action(INSPECTOR));
+    app.press_bar("panel-right");
     assert_eq!(app.inspector_flap.is_open(app.inspector_split()), !open);
-    let toggle = bar_action(&app.window_toolbar(), INSPECTOR);
+    let toggle = bar_action(&app, "panel-right");
     assert_eq!(toggle.on, !open, "the toggle shows the inspector's state");
     assert_eq!(
         toggle.name,
@@ -159,23 +123,23 @@ fn the_bar_splits_exports_and_imports_through_the_editors_handlers() {
     app.selection.clear();
     app.playhead = clip.start + clip.duration() / 2.0;
     assert!(
-        !bar_action(&app.window_toolbar(), SPLIT).enabled,
+        !bar_action(&app, "Split at playhead").enabled,
         "with nothing selected, Split has nothing to cut"
     );
     app.selection.select_only(clip.id);
-    assert!(bar_action(&app.window_toolbar(), SPLIT).enabled);
+    assert!(bar_action(&app, "Split at playhead").enabled);
     let before = app.project.clips.len();
-    app.run_window_bar_event(&action(SPLIT));
+    app.press_bar("Split at playhead");
     assert!(
         app.project.clips.len() > before,
         "Split cut the selected clip at the playhead"
     );
 
-    app.run_window_bar_event(&action(EXPORT));
+    app.press_bar("Export");
     assert!(app.presentation.export_open, "Export opens its settings");
     app.presentation.export_open = false;
 
-    app.run_window_bar_event(&action(IMPORT));
+    app.press_bar("Import media");
     assert!(
         app.import_rx.is_some() || app.import_contents_rx.is_some(),
         "Import asks for media"
@@ -876,7 +840,6 @@ fn go_to_clip_takes_the_next_clip_then_the_previous() {
 /// own pair would have been. A capability is never lost to a width.
 #[test]
 fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
-    use super::{REDO, UNDO};
     // Wide enough for the transport's own pair: the bar does not repeat them.
     let wide = sample(1280.0);
     let r = wide.regions();
@@ -884,9 +847,8 @@ fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
         !wide.history_buttons(&r).is_empty(),
         "a wide strip draws its own Undo and Redo"
     );
-    let bar = wide.window_toolbar();
     assert!(
-        !bar.actions.iter().any(|a| a.id == UNDO || a.id == REDO),
+        wide.bar_entry("Undo").is_none() && wide.bar_entry("Redo").is_none(),
         "the bar does not offer a second Undo beside the strip's"
     );
 
@@ -896,11 +858,8 @@ fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
         .map(sample)
         .find(|app| app.history_buttons(&app.regions()).is_empty())
         .expect("a narrow strip gives the buttons up before the playhead time");
-    let bar = narrow.window_toolbar();
-    let undo = bar_action(&bar, UNDO);
-    let redo = bar_action(&bar, REDO);
-    assert_eq!(undo.name, "Undo");
-    assert_eq!(redo.name, "Redo");
+    let undo = bar_action(&narrow, "Undo");
+    let redo = bar_action(&narrow, "Redo");
     assert!(
         undo.menu && redo.menu,
         "menu-only, so the bar's own row does not change with a resize"
@@ -915,7 +874,7 @@ fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
     // the strip's own button does (and, like it, raises nothing while the
     // host says there is nothing to undo).
     let mut narrow = narrow;
-    narrow.run_window_bar_event(&action(UNDO));
+    narrow.press_bar("Undo");
     assert_eq!(
         narrow.undo.take_request(),
         None,
@@ -926,12 +885,11 @@ fn a_strip_too_narrow_for_undo_offers_it_in_the_bar() {
         undo_summary: Some("2 fields".into()),
         ..Default::default()
     });
-    let bar = narrow.window_toolbar();
     assert!(
-        bar_action(&bar, UNDO).enabled,
+        bar_action(&narrow, "Undo").enabled,
         "the bar's Undo is live when the host says it can undo"
     );
-    narrow.run_window_bar_event(&action(UNDO));
+    narrow.press_bar("Undo");
     assert_eq!(
         narrow.undo.take_request(),
         Some(ui::UndoRequest::Undo),

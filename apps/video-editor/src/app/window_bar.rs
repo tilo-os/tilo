@@ -22,17 +22,19 @@ use ui::window_toolbar::{
 use super::*;
 use crate::actions::VideoEditorEffect;
 
-/// The bar actions, by the published action each runs.
-pub(crate) const SPLIT: &str = "video.split";
-pub(crate) const SIDE_BY_SIDE: &str = "video.side-by-side";
-/// Undo and redo are the editor's own (the host is asked), so they have no
-/// published action to run; the bar's menu carries them while the transport
-/// strip is too narrow to.
-pub(crate) const UNDO: &str = "video.undo";
-pub(crate) const REDO: &str = "video.redo";
-pub(crate) const EXPORT: &str = "video.export";
-pub(crate) const INSPECTOR: &str = "video.inspector";
-pub(crate) const IMPORT: &str = "video.import";
+/// What an entry of the window's bar runs.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum BarCommand {
+    /// The handler of the editor's published action.
+    Run(VideoEditorEffect),
+    /// Two angles in one frame: the project's own edit, submitted the way
+    /// an agent or the palette submits it; the bar is the gesture.
+    PlaceSideBySide,
+    /// Undo and redo are the editor's own (the host is asked), so they have
+    /// no published action to run; the bar's menu carries them while the
+    /// transport strip is too narrow to.
+    History(ui::UndoRequest),
+}
 
 /// What a row of the project picker commits.
 const OPEN: &str = "project:open";
@@ -44,6 +46,7 @@ impl VideoEditorApp {
     /// The window bar's slots for what the editor shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let inspector_open = self.inspector_flap.is_open(self.inspector_split());
+        let bar = &self.bar_entries;
         WindowToolbar {
             sidebar: Some(self.bin_flap.is_open(self.bin_layout())),
             location: Some(ToolbarLocation {
@@ -58,22 +61,35 @@ impl VideoEditorApp {
                 // published actions sit in. Undo and Redo join it only while
                 // the transport strip is too narrow to draw its own pair.
                 let mut actions = vec![
-                    ToolbarAction::new(SPLIT, "scissors", "Split at playhead")
-                        .enabled(self.can_split_selection()),
-                    ToolbarAction::new(SIDE_BY_SIDE, "columns-2", "Place side by side")
-                        .enabled(self.can_place_side_by_side()),
+                    bar.entry(
+                        "scissors",
+                        "Split at playhead",
+                        BarCommand::Run(VideoEditorEffect::SplitSelection),
+                    )
+                    .enabled(self.can_split_selection()),
+                    bar.entry(
+                        "columns-2",
+                        "Place side by side",
+                        BarCommand::PlaceSideBySide,
+                    )
+                    .enabled(self.can_place_side_by_side()),
                     self.export_action(),
-                    ToolbarAction::new(
-                        INSPECTOR,
+                    bar.entry(
                         "panel-right",
                         if inspector_open {
                             "Hide inspector"
                         } else {
                             "Show inspector"
                         },
+                        BarCommand::Run(VideoEditorEffect::ToggleInspector),
                     )
                     .on(inspector_open),
-                    ToolbarAction::new(IMPORT, "folder-open", "Import media").in_menu(),
+                    bar.entry(
+                        "folder-open",
+                        "Import media",
+                        BarCommand::Run(VideoEditorEffect::Import { path: None }),
+                    )
+                    .in_menu(),
                 ];
                 actions.extend(self.history_off_the_strip());
                 actions
@@ -94,12 +110,13 @@ impl VideoEditorApp {
             return Vec::new();
         }
         [
-            (UNDO, ui::UndoRequest::Undo, "undo-2", "Undo"),
-            (REDO, ui::UndoRequest::Redo, "redo-2", "Redo"),
+            (ui::UndoRequest::Undo, "undo-2", "Undo"),
+            (ui::UndoRequest::Redo, "redo-2", "Redo"),
         ]
         .into_iter()
-        .map(|(id, which, icon, label)| {
-            ToolbarAction::new(id, icon, label)
+        .map(|(which, icon, label)| {
+            self.bar_entries
+                .entry(icon, label, BarCommand::History(which))
                 .in_menu()
                 .enabled(self.undo.can(which))
         })
@@ -110,7 +127,9 @@ impl VideoEditorApp {
     /// running render's progress and Cancel, and the whole reason a render
     /// failed are. It reads as on while a render runs.
     fn export_action(&self) -> ToolbarAction {
-        ToolbarAction::new(EXPORT, "upload", "Export")
+        let export = BarCommand::Run(VideoEditorEffect::ShowExport);
+        self.bar_entries
+            .entry("upload", "Export", export)
             .on(matches!(self.export_status, ExportStatus::Rendering { .. }))
     }
 
@@ -178,32 +197,21 @@ impl VideoEditorApp {
         if ours && self.bin_overlay_is_open() {
             self.close_bin_overlay();
         }
-        // Two angles in one frame is the project's own edit, submitted the
-        // way an agent or the palette submits it; the bar is the gesture.
-        if let ToolbarEvent::Action { id } = event
-            && id == SIDE_BY_SIDE
-        {
-            self.place_side_by_side();
-            return;
-        }
         let effect = match event {
             ToolbarEvent::ToggleSidebar => VideoEditorEffect::ToggleMedia,
-            ToolbarEvent::Action { id } => match id.as_str() {
+            ToolbarEvent::Action { .. } => match self.bar_entries.pressed(event) {
+                Some(BarCommand::Run(effect)) => effect,
+                Some(BarCommand::PlaceSideBySide) => {
+                    self.place_side_by_side();
+                    return;
+                }
                 // The strip's own pair, when the strip is too narrow to
                 // draw it: one request to the host, as a press there makes.
-                UNDO => {
-                    self.undo.request(ui::UndoRequest::Undo);
+                Some(BarCommand::History(which)) => {
+                    self.undo.request(which);
                     return;
                 }
-                REDO => {
-                    self.undo.request(ui::UndoRequest::Redo);
-                    return;
-                }
-                SPLIT => VideoEditorEffect::SplitSelection,
-                EXPORT => VideoEditorEffect::ShowExport,
-                INSPECTOR => VideoEditorEffect::ToggleInspector,
-                IMPORT => VideoEditorEffect::Import { path: None },
-                _ => return,
+                None => return,
             },
             ToolbarEvent::Commit { text } => match text.as_str() {
                 OPEN => VideoEditorEffect::OpenProject { path: None },
@@ -230,6 +238,27 @@ impl VideoEditorApp {
         if let Err(error) = self.perform_resource_operation(effect) {
             tracing::warn!(%error, "the window bar's action did not run");
         }
+    }
+}
+
+#[cfg(test)]
+impl VideoEditorApp {
+    /// The bar's action named `name`, or pictured by the icon `name` (a
+    /// toggle named for what a press does).
+    pub(crate) fn bar_entry(&self, name: &str) -> Option<ToolbarAction> {
+        self.window_toolbar()
+            .actions
+            .into_iter()
+            .find(|action| action.name == name || action.icon == name)
+    }
+
+    /// Press the bar's action [`Self::bar_entry`] finds by `name`.
+    pub(crate) fn press_bar(&mut self, name: &str) {
+        let id = self
+            .bar_entry(name)
+            .unwrap_or_else(|| panic!("the bar has {name}"))
+            .id;
+        self.run_window_bar_event(&ToolbarEvent::Action { id });
     }
 }
 

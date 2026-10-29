@@ -9,14 +9,14 @@ const RESOURCE: &str = "store:package";
 pub(super) struct Sheet(
     pub(super)  tokio::sync::mpsc::UnboundedSender<(
         AppActionConsentRequest,
-        tokio::sync::oneshot::Sender<AppActionConsent>,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
     )>,
 );
 impl AppActionConsentPrompter for Sheet {
     fn ask(
         &self,
         request: AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>> {
         let (answer, receive) = tokio::sync::oneshot::channel();
         self.0.send((request, answer)).ok()?;
         Some(receive)
@@ -224,7 +224,7 @@ async fn native_store_host_sheet_uses_final_task_edits_and_rechecks_authority() 
                     if outcome == 3 {
                         f.state.surfaces.lock().unwrap().get_mut(&200).unwrap().actions[0].contract.field = Some("changed".into());
                     }
-                    answer.send(if outcome == 2 { AppActionConsent::Deny } else { AppActionConsent::Once }).unwrap();
+                    answer.send(if outcome == 2 { AppActionConsent::Deny } else { AppActionConsent::Once }.into()).unwrap();
                     let result = call.await;
                     if outcome != 0 {
                         assert!(result.is_err(), "declined or revoked disclosure ran");
@@ -360,7 +360,7 @@ async fn cold_store_edited_task_draft_launches_then_discloses_without_a_second_d
             assert_eq!(confirmed.id, asked.id, "delivery must not create a second task draft");
             assert!(!matches!(confirmed.answer, TrackerAnswer::Waiting));
             assert!(confirmation::nothing_delivered());
-            answer.send(AppActionConsent::Once).unwrap();
+            answer.send(AppActionConsent::Once.into()).unwrap();
             tilo_test_env::within("confirmed Store invocation to be admitted", &mut call).await.unwrap();
             let delivered = tilo_test_env::within("Store stream to receive the confirmed invocation", stream.read_request().send().promise)
                 .await.unwrap();

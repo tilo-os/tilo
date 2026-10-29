@@ -69,8 +69,8 @@ pub struct InstanceRequest {
 }
 
 /// What one instance runs: the package's compiled module, its ids lock and the
-/// metadata of the packages it uses, as the package's payload holds them
-/// (`app.wasm`, `app.ids`, `imports/*.json`).
+/// compiled modules of the packages it uses, as the package's payload holds them
+/// (`app.wasm`, `app.ids`, `imports/*.wasm`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Module {
     pub wasm: Vec<u8>,
@@ -96,7 +96,7 @@ impl Module {
             Ok(entries) => entries
                 .filter_map(Result::ok)
                 .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "wasm"))
                 .collect(),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(error),
@@ -403,7 +403,7 @@ mod tests {
         let module = Module {
             wasm: vec![0, 97, 115, 109, 1],
             ids: "Note = 1\n".into(),
-            imports: vec![b"{}".to_vec(), b"{\"app\":\"x\"}".to_vec()],
+            imports: vec![vec![0, 97, 115, 109, 1], vec![0, 97, 115, 109, 2]],
         };
         assert_eq!(Module::decode(&module.encode()).unwrap(), module);
         assert!(Module::decode(b"garbage").is_err());

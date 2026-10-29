@@ -663,14 +663,15 @@ impl Host {
         )
     }
 
-    /// Load the package an installed app is: its module, and the record schemas of the packages
-    /// it uses, whose resources it reads but whose code it does not run.
+    /// Load the package an installed app is, after the packages it uses: their views draw and
+    /// their actions run on the resources of theirs it holds (a board's todo rows), each
+    /// package under its own authority, as if it ran on its own.
     ///
     /// # Errors
-    /// The module does not link.
+    /// A module does not link.
     pub fn load_bundle(&self, bundle: &crate::bundle::Bundle) -> Result<Package, HostError> {
         for import in &bundle.imports {
-            import.register_schemas();
+            self.load_module(&import.wasm, import.meta.clone(), String::new())?;
         }
         self.load_module(&bundle.wasm, bundle.meta.clone(), bundle.ids.clone())
     }

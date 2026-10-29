@@ -115,6 +115,86 @@ fn live_frames_cross_between_two_shells_through_a_device_hosted_room() {
     drop((p, q));
 }
 
+/// Whether `device` hears from any host of `room` that `other` is on its
+/// live plane.
+fn on_live_plane(device: &Device, room: RoomId, other: &Device) -> bool {
+    let other = iroh::EndpointId::from_bytes(&other.cert().device_public_key).unwrap();
+    let ws = crate::shell::network::room_topic_id(room);
+    device
+        .net()
+        .host_room_members
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(topic, _, member)| *topic == ws && *member == other)
+}
+
+/// A wave at someone no host has on its live plane reaches nobody: the
+/// waver is told it did not go, and once they are there, the wave goes and
+/// reaches them, without waiting out the minute between waves.
+#[test]
+#[serial_test::serial]
+fn a_wave_at_someone_off_the_live_plane_is_not_sent_and_waving_again_reaches_them() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = scratch();
+    let wakes = Arc::new(Wakes::default());
+    let (ada, grace) = (Person::new(94), Person::new(95));
+    let mut p = Device::start(
+        &ada,
+        "Ada's laptop",
+        &dir.path().join("ada"),
+        0x0A65,
+        DeviceCapabilities::primary(),
+        &wakes,
+    );
+    let mut q = Device::start(
+        &grace,
+        "Grace's laptop",
+        &dir.path().join("grace"),
+        0x0B65,
+        DeviceCapabilities::primary(),
+        &wakes,
+    );
+    p.hold_live_keys(keys_of);
+    q.hold_live_keys(keys_of);
+    let (local, room) = hosted_workspace(&p, &[&q], "Review");
+    q.join(&p.invite(local, "Grace", Some(grace.user())))
+        .unwrap();
+    until(&[&p, &q], "Grace on the room's live plane", || {
+        (q.holds(room) && on_live_plane(&p, room, &q)).then_some(())
+    });
+
+    // Grace's laptop goes off: once Ada's hears she left the live plane, a
+    // wave at her does not go, and says so.
+    q.go_offline();
+    until(&[&p], "Grace to leave the room's live plane", || {
+        (!on_live_plane(&p, room, &q)).then_some(())
+    });
+    let grace_id = roster_id(&q.cert().device_public_key);
+    assert!(
+        !p.net().publish_wave(&room.to_string(), &grace_id),
+        "a wave at someone off the live plane reaches nobody, and the waver is told"
+    );
+
+    // Back on the live plane, the next wave reaches her at once: the one
+    // that did not go held nothing back.
+    q.come_back();
+    q.hold_live_keys(keys_of);
+    q.reach(&p);
+    until(&[&p, &q], "Grace back on the room's live plane", || {
+        (on_live_plane(&p, room, &q) && on_live_plane(&q, room, &p)).then_some(())
+    });
+    assert!(
+        p.net().publish_wave(&room.to_string(), &grace_id),
+        "the wave goes once she is there"
+    );
+    let heard = until(&[&p, &q], "the wave to reach Grace", || {
+        q.net().take_live_waves().into_iter().next()
+    });
+    assert_eq!(heard, roster_id(&p.cert().device_public_key));
+    drop((p, q));
+}
+
 #[test]
 #[serial_test::serial]
 fn live_frames_cross_between_two_shells_through_a_room_the_home_relay_hosts() {

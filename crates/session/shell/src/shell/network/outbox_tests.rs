@@ -339,3 +339,147 @@ fn a_receipt_the_rooms_host_refuses_is_said_and_no_longer_shown() {
         .expect("the refusal is said");
     assert_eq!(said.body, "not in this room");
 }
+
+/// The grant `agent-notes`: the agent `claude-code` may read and write Notes in
+/// `workspace`, given by `by`.
+fn notes_grant(workspace: &Workspace, by: &str) -> tilo_action_policy::Grant {
+    tilo_action_policy::Grant::new(
+        "agent-notes",
+        tilo_action_policy::Subject::agent("claude-code"),
+        workspace.node().app("so.tilo.notes"),
+        tilo_action_policy::KindSet::NONE
+            .with(tilo_action_policy::ActionKind::Read)
+            .with(tilo_action_policy::ActionKind::Undoable),
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person(by.to_owned()),
+    )
+}
+
+/// What the room's policy here answers the agent for a write to Notes: what
+/// every door's admission, and every admitted job's check before its
+/// effect, decides on.
+fn agent_writes_notes(handle: &WorkspaceTreeHandle, room: RoomId) -> tilo_action_policy::Answer {
+    let workspace = workspace_of(handle, room);
+    workspace
+        .subject_authority(tilo_action_policy::Subject::agent("claude-code"))
+        .decide(
+            &workspace.node().app("so.tilo.notes"),
+            tilo_action_policy::ActionKind::Undoable,
+            &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+        )
+        .answer
+}
+
+fn revoke(handle: &WorkspaceTreeHandle, room: RoomId) {
+    handle.write().request_governance(
+        room,
+        crate::shell::state::GovernanceRequest::Policy(tilo_action_policy::Change::Revoke(
+            tilo_action_policy::GrantId::new("agent-notes"),
+        )),
+    );
+}
+
+#[test]
+fn a_revoked_grant_ends_here_at_once_and_stays_ended_until_the_room_carries_it() {
+    use tilo_action_policy::Answer;
+    let (chrome, _guard) = crate::shell::native_workspace_owner::test_chrome_governing_its_room();
+    let governor = chrome.borrow().active_local_user();
+    let handle = chrome.borrow().tree_handle();
+    let room = handle
+        .read()
+        .desktop
+        .active_workspace()
+        .expect("a workspace")
+        .room();
+    let mut granting = workspace_of(&handle, room);
+    let grant = notes_grant(&granting, &governor);
+    granting.policy.grants.push(grant.clone());
+    let granted = document_of(&granting, &[], &[]);
+    handle.write().admit_room_document_for_test(room, &granted);
+    assert_eq!(agent_writes_notes(&handle, room), Answer::Allow);
+
+    revoke(&handle, room);
+    assert_eq!(
+        agent_writes_notes(&handle, room),
+        Answer::Deny,
+        "the revocation ends the grant here before the room's governor commits it"
+    );
+    // The governor is out of reach, and the room commits on.
+    let (network, _commands) = super::shell_network_for_test(handle.clone(), 1);
+    network.send_outbox_off_loop();
+    for name in ["Plans", "Plans again"] {
+        handle
+            .write()
+            .admit_room_document_for_test(room, &after_another_commit(&granted, name));
+        assert_eq!(
+            agent_writes_notes(&handle, room),
+            Answer::Deny,
+            "a commit of the room made before the revocation reached it does not grant it again"
+        );
+    }
+
+    network.install_local_governor(Arc::new(Taking { room }));
+    network.send_outbox_off_loop();
+    assert!(
+        matches!(
+            handle.read().room_outbox.as_slice(),
+            [entry] if entry.standing == Standing::Accepted
+        ),
+        "the accepted revocation waits for the room's document"
+    );
+    handle
+        .write()
+        .admit_room_document_for_test(room, &after_another_commit(&granted, "Late"));
+    assert_eq!(agent_writes_notes(&handle, room), Answer::Deny);
+
+    // The revocation lands.
+    let revoked = document_of(&workspace_of(&handle, room), &[], &[]);
+    handle.write().admit_room_document_for_test(room, &revoked);
+    assert_eq!(agent_writes_notes(&handle, room), Answer::Deny);
+    assert!(
+        handle.read().room_outbox.is_empty(),
+        "nothing waits once the room carries the revocation"
+    );
+
+    // The same grant given again is the room's to carry.
+    let mut regranting = workspace_of(&handle, room);
+    regranting.policy.grants.push(grant);
+    handle
+        .write()
+        .admit_room_document_for_test(room, &document_of(&regranting, &[], &[]));
+    assert_eq!(agent_writes_notes(&handle, room), Answer::Allow);
+}
+
+#[test]
+fn a_grant_whose_revocation_the_governor_refuses_is_the_rooms_again() {
+    use tilo_action_policy::Answer;
+    let (chrome, _guard) = crate::shell::native_workspace_owner::test_chrome_governing_its_room();
+    let governor = chrome.borrow().active_local_user();
+    let handle = chrome.borrow().tree_handle();
+    let room = handle
+        .read()
+        .desktop
+        .active_workspace()
+        .expect("a workspace")
+        .room();
+    let mut granting = workspace_of(&handle, room);
+    granting
+        .policy
+        .grants
+        .push(notes_grant(&granting, &governor));
+    handle
+        .write()
+        .admit_room_document_for_test(room, &document_of(&granting, &[], &[]));
+
+    revoke(&handle, room);
+    assert_eq!(agent_writes_notes(&handle, room), Answer::Deny);
+    let (network, _commands) = super::shell_network_for_test(handle.clone(), 1);
+    network.install_local_governor(Arc::new(Refusing { room }));
+    network.send_outbox_off_loop();
+    assert!(handle.read().room_outbox.is_empty());
+    assert_eq!(
+        agent_writes_notes(&handle, room),
+        Answer::Allow,
+        "only the room's governor decides its grants"
+    );
+}

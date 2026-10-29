@@ -118,8 +118,8 @@ fn answer_the_notice(sheet: &mut PortalDialogController) {
 }
 
 fn answered(
-    answer: &mpsc::Receiver<Result<Confirmation, ActionHostError>>,
-) -> Result<Confirmation, ActionHostError> {
+    answer: &mpsc::Receiver<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>>,
+) -> Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError> {
     answer
         .recv_timeout(Duration::from_secs(30))
         .expect("the relay hands the agent the person's answer")
@@ -250,7 +250,13 @@ fn the_persons_device_answers_a_relay_agents_question_on_its_sheet() {
         "Allow answers"
     );
     assert!(
-        matches!(answered(&answer), Ok(Confirmation::Witnessed(_))),
+        matches!(
+            answered(&answer),
+            Ok(tilo_actions::remote::ConfirmedInvocation {
+                confirmation: Confirmation::Witnessed(_),
+                ..
+            })
+        ),
         "allowed, the agent holds the person's word for this one call"
     );
 

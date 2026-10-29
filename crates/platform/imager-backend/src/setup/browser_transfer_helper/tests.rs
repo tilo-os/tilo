@@ -63,17 +63,17 @@ fn browser_carrier(root: &Path, plan: Plan, delivered: &Path) -> (PathBuf, Brows
     .unwrap()
     .ciphertext_digest();
     let payload = Expectation {
-        schema: 1,
         operation,
-        purpose: Purpose::BrowserProfiles,
         filename: package.file_name().unwrap().to_str().unwrap().into(),
         setup_binding: plan.setup_binding.clone(),
         sealed_bytes: info.sealed_bytes,
         plaintext_bytes: info.plaintext_bytes,
         entries: info.entries,
         ciphertext_sha256: digest,
-        plan_sha256: Sha256::digest(plan_bytes).into(),
         limits,
+        kind: crate::setup::browser_transfer::Browser {
+            plan_sha256: Sha256::digest(plan_bytes).into(),
+        },
     };
     (package, BrowserHandoff { plan, payload })
 }

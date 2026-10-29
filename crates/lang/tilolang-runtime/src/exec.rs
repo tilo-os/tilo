@@ -93,6 +93,10 @@ impl Core {
                 let want = self.registry.borrow().type_for(key);
                 want.as_deref() == Some(r.target.ty.as_str())
             }
+            (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| {
+                let want = self.registry.borrow().type_for(key);
+                want.as_deref() == Some(r.target.ty.as_str())
+            }),
             // A host value (an action, a lens, a type's metadata) is held as its fields.
             (Ty::Record(key), Value::Tuple(_)) => tilolang::host::is_value(key),
             (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Value::Text(_))

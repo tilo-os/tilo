@@ -697,18 +697,19 @@ fn repackage_extra(stage: &Path, fixture: &Path, cancel: &AtomicBool) -> Applica
     .unwrap()
     .ciphertext_digest();
     let expected = Expectation {
-        schema: 1,
-        consumer_protocol: 1,
         operation,
-        purpose: Purpose::FlatpakApplications,
         filename: package.file_name().unwrap().to_str().unwrap().into(),
         setup_binding: "native-system-binding".into(),
         sealed_bytes: info.sealed_bytes,
         plaintext_bytes: info.plaintext_bytes,
         entries: info.entries,
         ciphertext_sha256: digest,
-        manifest_sha256: Sha256::digest(fs::read(stage.join("applications.json")).unwrap()).into(),
         limits,
+        kind: crate::setup::flatpak_transfer::portable::Applications {
+            consumer_protocol: 1,
+            manifest_sha256: Sha256::digest(fs::read(stage.join("applications.json")).unwrap())
+                .into(),
+        },
     };
     let setup = prepared_setup(fixture, expected, cancel);
     ApplicationImport::review(&setup, &package, PASSWORD, &fixture.join("import"), cancel).unwrap()

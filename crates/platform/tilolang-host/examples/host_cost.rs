@@ -41,7 +41,7 @@ fn notes() -> Arc<Bundle> {
     let compiled =
         tilolang::compile_package(include_str!("../../../../apps/tl/notes/app.tl"), &lock, &[])
             .unwrap_or_else(|_| panic!("Notes compiles"));
-    Arc::new(Bundle::new(&compiled, Vec::new()))
+    Arc::new(Bundle::new(&compiled, []))
 }
 
 /// The broker's end of one instance's connection: it takes everything and delivers nothing.

@@ -27,6 +27,62 @@ use collab_types::{ArtifactId, SignedOp};
 /// below it, so anything larger is corruption.
 const MAX_RECORD_BYTES: u32 = 8 * 1024 * 1024;
 
+/// History written to its files but not yet synced to disk. The broker
+/// writes history under the lock its channels share, which the compositor's
+/// main loop takes too, so the data sync, which can wait on a busy disk for
+/// a long time, is left to the caller once it has released that lock. A
+/// caller syncs before it hands what it recorded on (fans an op out to apps
+/// or peers, answers a page request), so it still delivers an op only once
+/// its history is on disk.
+#[must_use = "recorded history is durable only once synced"]
+#[derive(Debug, Default)]
+pub struct Unsynced(Vec<File>);
+
+impl Unsynced {
+    /// Leave `file`'s data sync to [`Self::sync`]. A file that cannot be
+    /// handed on (no descriptor left to duplicate it) is synced now.
+    fn defer(&mut self, file: &File) -> std::io::Result<()> {
+        match file.try_clone() {
+            Ok(handle) => {
+                self.0.push(handle);
+                Ok(())
+            }
+            Err(_) => file.sync_data(),
+        }
+    }
+
+    pub(crate) fn join(mut self, other: Self) -> Self {
+        self.0.extend(other.0);
+        self
+    }
+
+    /// Sync every file written, so what was recorded survives a crash.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first sync's I/O error; the files after it are still
+    /// synced.
+    pub fn sync(self) -> std::io::Result<()> {
+        let mut first = Ok(());
+        for file in self.0 {
+            if let Err(error) = file.sync_data()
+                && first.is_ok()
+            {
+                first = Err(error);
+            }
+        }
+        first
+    }
+
+    /// [`Self::sync`], logging a failure: the op it recorded is still
+    /// delivered live, as one whose append failed is.
+    pub fn finish(self) {
+        if let Err(error) = self.sync() {
+            tracing::warn!(%error, "collab history: sync failed");
+        }
+    }
+}
+
 struct ArtifactLog {
     file: File,
     /// `(seq, offset, len)`, sorted by `seq`.
@@ -87,13 +143,14 @@ impl ArtifactLog {
         })
     }
 
-    fn append(&mut self, op: &SignedOp) -> std::io::Result<()> {
-        self.append_all(std::slice::from_ref(&op)).map(|_| ())
+    fn append(&mut self, op: &SignedOp) -> std::io::Result<Unsynced> {
+        self.append_all(std::slice::from_ref(&op))
+            .map(|(_, unsynced)| unsynced)
     }
 
-    /// Append every op not already stored with one write and one data sync;
-    /// returns how many were new.
-    fn append_all(&mut self, ops: &[&SignedOp]) -> std::io::Result<usize> {
+    /// Append every op not already stored with one write, leaving its one
+    /// data sync to the caller; returns how many were new.
+    fn append_all(&mut self, ops: &[&SignedOp]) -> std::io::Result<(usize, Unsynced)> {
         let mut records = Vec::new();
         let mut staged: Vec<(u64, [u8; 32], u64, u32)> = Vec::new();
         let mut batch = std::collections::HashSet::new();
@@ -113,17 +170,18 @@ impl ArtifactLog {
             staged.push((op.seq, op.author.0, offset, len));
         }
         if staged.is_empty() {
-            return Ok(0);
+            return Ok((0, Unsynced::default()));
         }
         self.file.write_all(&records)?;
-        self.file.sync_data()?;
+        let mut unsynced = Unsynced::default();
+        unsynced.defer(&self.file)?;
         self.end = self.end.saturating_add(records.len() as u64);
         for (seq, author, offset, len) in &staged {
             let position = self.index.partition_point(|(stored, _, _)| stored <= seq);
             self.index.insert(position, (*seq, *offset, *len));
             self.known.insert((*author, *seq));
         }
-        Ok(staged.len())
+        Ok((staged.len(), unsynced))
     }
 
     fn read(&mut self, offset: u64, len: u32) -> std::io::Result<SignedOp> {
@@ -237,21 +295,23 @@ impl CollabHistoryStore {
             .is_some_and(|metadata| metadata.retention().is_some())
     }
 
-    /// Append a validated op, if it belongs in durable history.
+    /// Append a validated op, if it belongs in durable history, leaving its
+    /// sync to the caller.
     ///
     /// # Errors
     ///
     /// Returns the I/O error; the op is still fanned out live by the caller.
-    pub fn record(&mut self, op: &SignedOp) -> std::io::Result<()> {
+    pub fn record(&mut self, op: &SignedOp) -> std::io::Result<Unsynced> {
         if !Self::retains(op) {
-            return Ok(());
+            return Ok(Unsynced::default());
         }
         self.log(op.artifact)?.append(op)
     }
 
     /// Append the ops of `artifact` that are not already stored, with one
-    /// data sync for the whole batch; returns how many were new. Callers
-    /// have already filtered the ops to retained ciphertext of `artifact`.
+    /// data sync for the whole batch, left to the caller; returns how many
+    /// were new. Callers have already filtered the ops to retained
+    /// ciphertext of `artifact`.
     ///
     /// # Errors
     ///
@@ -260,7 +320,7 @@ impl CollabHistoryStore {
         &mut self,
         artifact: ArtifactId,
         ops: &[&SignedOp],
-    ) -> std::io::Result<usize> {
+    ) -> std::io::Result<(usize, Unsynced)> {
         if ops.iter().any(|op| op.artifact != artifact) {
             return Err(std::io::Error::other("history batch spans artifacts"));
         }
@@ -269,11 +329,19 @@ impl CollabHistoryStore {
 
     /// Remember that `artifact`'s history belongs to the room `cluster_id`,
     /// beside its log, so a later session still knows which room's members
-    /// may page through it.
-    pub fn bind_room(&mut self, artifact: ArtifactId, cluster_id: &str) -> std::io::Result<()> {
+    /// may page through it. The binding's sync is left to the caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error of writing the binding.
+    pub fn bind_room(
+        &mut self,
+        artifact: ArtifactId,
+        cluster_id: &str,
+    ) -> std::io::Result<Unsynced> {
         let path = self.room_path(artifact);
         if fs::read_to_string(&path).is_ok_and(|bound| bound == cluster_id) {
-            return Ok(());
+            return Ok(Unsynced::default());
         }
         let mut file = OpenOptions::new()
             .write(true)
@@ -286,7 +354,9 @@ impl CollabHistoryStore {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         file.write_all(cluster_id.as_bytes())?;
-        file.sync_data()
+        let mut unsynced = Unsynced::default();
+        unsynced.defer(&file)?;
+        Ok(unsynced)
     }
 
     /// The room `artifact`'s history was bound to, if any session bound it.
@@ -333,7 +403,7 @@ impl CollabHistoryStore {
     /// Remember that `artifact`'s history is the record `record_id` of the
     /// app `app_id` in the room `cluster_id` ([`Self::bind_room`] included),
     /// so a later session still knows the records it holds there
-    /// ([`Self::records_in`]).
+    /// ([`Self::records_in`]). The binding's sync is left to the caller.
     ///
     /// # Errors
     ///
@@ -344,16 +414,16 @@ impl CollabHistoryStore {
         cluster_id: &str,
         app_id: &str,
         record_id: &str,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<Unsynced> {
         let held = HeldRecord {
             room: cluster_id.to_owned(),
             app_id: app_id.to_owned(),
             record_id: record_id.to_owned(),
         };
         if self.held_records().get(&artifact) == Some(&held) {
-            return Ok(());
+            return Ok(Unsynced::default());
         }
-        self.bind_room(artifact, cluster_id)?;
+        let room = self.bind_room(artifact, cluster_id)?;
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -365,9 +435,10 @@ impl CollabHistoryStore {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         file.write_all(held.encode().as_bytes())?;
-        file.sync_data()?;
+        let mut unsynced = room;
+        unsynced.defer(&file)?;
         self.held_records().insert(artifact, held);
-        Ok(())
+        Ok(unsynced)
     }
 
     /// The records of the app `app_id` in the room `cluster_id` this store
@@ -427,17 +498,31 @@ mod tests {
             // peer's history page is: one batch, one data sync.
             let ops: Vec<SignedOp> = (1..=10_000).map(|seq| op(artifact, seq, sealed)).collect();
             let batch: Vec<&SignedOp> = ops.iter().collect();
-            assert_eq!(store.record_all_if_new(artifact, &batch).unwrap(), 10_000);
-            assert_eq!(store.record_all_if_new(artifact, &batch).unwrap(), 0);
-            store.record(&op(artifact, 10_000, sealed)).unwrap();
+            let (new, unsynced) = store.record_all_if_new(artifact, &batch).unwrap();
+            assert_eq!(new, 10_000);
+            unsynced.sync().unwrap();
+            let (new, unsynced) = store.record_all_if_new(artifact, &batch).unwrap();
+            assert_eq!(new, 0);
+            unsynced.sync().unwrap();
+            store
+                .record(&op(artifact, 10_000, sealed))
+                .unwrap()
+                .sync()
+                .unwrap();
             // Cleartext and single-use MLS messages are not retained.
-            store.record(&op(artifact, 20_000, None)).unwrap();
+            store
+                .record(&op(artifact, 20_000, None))
+                .unwrap()
+                .sync()
+                .unwrap();
             store
                 .record(&op(
                     artifact,
                     20_001,
                     Some(EncryptionMetadata::mls_application(1, ChannelId::new())),
                 ))
+                .unwrap()
+                .sync()
                 .unwrap();
         }
         let mut store = CollabHistoryStore::open(dir.path().join("history")).unwrap();
@@ -465,18 +550,36 @@ mod tests {
         let root = dir.path().join("history");
         {
             let mut store = CollabHistoryStore::open(root.clone()).unwrap();
-            store.record(&op(artifact, 1, sealed)).unwrap();
-            store.record(&op(artifact, 2, sealed)).unwrap();
+            store
+                .record(&op(artifact, 1, sealed))
+                .unwrap()
+                .sync()
+                .unwrap();
+            store
+                .record(&op(artifact, 2, sealed))
+                .unwrap()
+                .sync()
+                .unwrap();
         }
         let path = root.join(format!("{}.ops", artifact.0));
         let mut bytes = fs::read(&path).unwrap();
         bytes.truncate(bytes.len() - 3);
         fs::write(&path, bytes).unwrap();
         let mut store = CollabHistoryStore::open(root).unwrap();
-        store.record(&op(artifact, 3, sealed)).unwrap();
+        store
+            .record(&op(artifact, 3, sealed))
+            .unwrap()
+            .sync()
+            .unwrap();
         let (ops, exhausted) = store.page_before(artifact, u64::MAX, 10).unwrap();
         assert_eq!(ops.iter().map(|op| op.seq).collect::<Vec<_>>(), [1, 3]);
         assert!(exhausted);
+    }
+
+    /// How many ops a peer page added, synced as a caller syncs them.
+    fn stored((stored, unsynced): (usize, Unsynced)) -> usize {
+        unsynced.sync().unwrap();
+        stored
     }
 
     fn signed(
@@ -510,10 +613,13 @@ mod tests {
         };
         for seq in 101..=130 {
             let envelope = signed(&key, artifact, seq, sealed);
-            channels.record_history(
-                &crate::route::CrdtRoute::record("so.tilo.notes", "room-a", "page"),
-                &envelope,
-            );
+            channels
+                .record_history(
+                    &crate::route::CrdtRoute::record("so.tilo.notes", "room-a", "page"),
+                    &envelope,
+                )
+                .sync()
+                .unwrap();
             channels.state_for(artifact).record_validated_op(envelope);
         }
         let (page, exhausted) = channels.scrollback_page(artifact, 131, 10);
@@ -527,7 +633,7 @@ mod tests {
             .map(|seq| signed(&key, artifact, seq, sealed))
             .collect();
         assert_eq!(
-            channels.accept_peer_history(artifact, &answer),
+            stored(channels.accept_peer_history(artifact, &answer)),
             0,
             "unrequested pages are ignored"
         );
@@ -545,10 +651,10 @@ mod tests {
             signed(&key, ArtifactId::new(), 70, sealed),
             signed(&key, artifact, 200, sealed),
         ];
-        assert_eq!(channels.accept_peer_history(artifact, &hostile), 0);
-        assert_eq!(channels.accept_peer_history(artifact, &answer), 100);
+        assert_eq!(stored(channels.accept_peer_history(artifact, &hostile)), 0);
+        assert_eq!(stored(channels.accept_peer_history(artifact, &answer)), 100);
         assert_eq!(
-            channels.accept_peer_history(artifact, &answer),
+            stored(channels.accept_peer_history(artifact, &answer)),
             0,
             "a repeated answer adds nothing"
         );

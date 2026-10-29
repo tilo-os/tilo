@@ -131,6 +131,7 @@ impl ShellDriver {
         "window-share-menu",
         "window-shared",
         "window-shared-app",
+        "window-held-write",
         "profile-card",
         "dictation-consent",
         "dictation-listening",

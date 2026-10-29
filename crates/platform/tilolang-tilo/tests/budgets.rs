@@ -207,7 +207,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
 #[test]
 fn the_runtime_does_the_work_of_what_it_shows() {
     let mut misses = Vec::new();
-    for app in ["notes", "chat", "todo", "board"] {
+    for app in ["notes", "chat", "todo", "today"] {
         gate(app, &bench(app), &mut misses);
     }
     assert!(

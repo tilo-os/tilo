@@ -92,7 +92,11 @@ case ${1:-} in
     # then starts them over (the stores-complete marker below).
     stop_worker() {
       rm -f /work/ready
-      if on_worker 'sync; umount /var/w' >/dev/null 2>&1 \
+      # Its containers first (the registry a disk leaves running until the prune): one still
+      # running kept the work disk busy, the unmount failed, and the next worker started
+      # the work disk over. -R takes podman's own mount of its store along.
+      if on_worker 'CONTAINERS_STORAGE_CONF=/var/w/storage.conf podman rm -af -t 5 >/dev/null 2>&1
+           sync; umount -R /var/w' >/dev/null 2>&1 \
          && as_user tilo-vm vm stop worker >/dev/null 2>&1; then
         touch /work/stopped-cleanly
       fi

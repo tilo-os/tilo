@@ -62,6 +62,7 @@ destructive action remove(list: TodoList, item: Todo) (icon: .trash) {
 
 /// Removes every item that is done.
 destructive action clear_done(list: TodoList) -> Int (icon: .circle_check, label: "Clear done") {
+    require list.items.any(item -> item.done) "Nothing is done yet"
     let n = 0
     for item in list.items {
         if item.done {

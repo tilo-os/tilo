@@ -474,9 +474,9 @@ fn selected_user_apps_seal_only_selected_data_and_restore_exact_subset_without_s
             &cancel,
         )
         .unwrap();
-    assert_eq!(expected.consumer_protocol, 2);
+    assert_eq!(expected.kind.consumer_protocol, 2);
     assert!(
-        crate::setup::applications_admission::require(None, Some(expected.consumer_protocol))
+        crate::setup::applications_admission::require(None, Some(expected.kind.consumer_protocol))
             .is_err()
     );
     let setup = setup(&root, expected.clone());
@@ -571,7 +571,7 @@ fn selected_user_apps_seal_only_selected_data_and_restore_exact_subset_without_s
     );
     assert_eq!(fake.installed.borrow().len(), 2);
     let mut downgraded = expected;
-    downgraded.consumer_protocol = 1;
+    downgraded.kind.consumer_protocol = 1;
     assert!(
         ApplicationImport::review_expected(
             &downgraded,

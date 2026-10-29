@@ -33,7 +33,7 @@ pub use state_grant::ApplicationStateGrant;
 pub mod tests;
 pub use native::{CancellableOfflineRunner, NativeOfflineRunner};
 pub use restore::ApplicationImport;
-pub use stage::{Expectation, StageGrant, StagedApplications};
+pub use stage::{Applications, Expectation, StageGrant, StagedApplications};
 
 /// Reuse the export planner's installed dependency closure for capacity review.
 /// These descriptive refs grant neither export nor source access.

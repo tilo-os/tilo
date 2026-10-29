@@ -6,8 +6,11 @@
 //! session's door; the host, not the app, then puts the question to the
 //! person on its confirmation sheet: Allow once, Allow for the issue, or
 //! Deny. The invocation goes on with the person's answer in place of the
-//! app's. "Allow for the issue" is first recorded as the person, through the
-//! host's [`AppActionGrants`](crate::services::AppActionGrants), as an answer
+//! app's, carrying the person's edits to the step's draft and none the app
+//! supplied: the step then runs with exactly the arguments their edits make
+//! ([`super::tracker_runs::answered`]). "Allow for the issue" is first
+//! recorded as the person, through the host's
+//! [`AppActionGrants`](crate::services::AppActionGrants), as an answer
 //! grant naming the issue for that one action
 //! ([`tilo_action_policy::agent_answers::answer_grant`]): it shows in the
 //! workspace's history and settings and is revoked like any grant.
@@ -27,7 +30,9 @@ use tilo_actions::remote::{Caller, CallerPrincipal, InvokeArgument, InvokeReques
 
 use super::CapnpBrokerState;
 use super::action_host::ConnectionActionHost;
-use crate::app_actions::{AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest};
+use crate::app_actions::{
+    AppActionAnswer, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+};
 use crate::services::{TRACKER_APP, TRACKER_ISSUE_PREFIX, TrackerAnswer, TrackerRun};
 
 /// The tracker's verb a person answers a run's question with.
@@ -48,7 +53,7 @@ pub(crate) struct PendingAnswer {
     request: AppActionConsentRequest,
     /// What "Allow for the issue" grants, where the person may grant it.
     grant: Option<Grant>,
-    answer: tokio::sync::oneshot::Receiver<AppActionConsent>,
+    answer: tokio::sync::oneshot::Receiver<AppActionAnswer>,
 }
 
 impl CapnpBrokerState {
@@ -183,9 +188,6 @@ impl CapnpBrokerState {
             needs_confirmation: true,
             confirming: true,
             moderation: None,
-            // A question the tracker answered with `answered` settles a
-            // confirmed preview as it is: what it shows must not be
-            // editable here, or the person's edits would never reach it.
             preview,
             scope: grant.is_some().then_some(run.title),
             draft,
@@ -267,18 +269,25 @@ impl CapnpBrokerState {
         request: AppActionConsentRequest,
         grant: Option<Grant>,
         issue: &str,
-        answer: tokio::sync::oneshot::Receiver<AppActionConsent>,
+        answer: tokio::sync::oneshot::Receiver<AppActionAnswer>,
     ) {
         let Ok(runtime) = super::launchable::delivery_runtime() else {
             return;
         };
         let issue = issue.to_owned();
         runtime.spawn(async move {
-            let answer = answer.await.unwrap_or(AppActionConsent::Deny);
-            self.record_answer(&request, grant, answer).await;
-            let Some(invoke) = self.tracker_answer(&request.room, &issue, answer) else {
-                tracing::warn!("the tracker that asked is no longer published");
-                return;
+            let answer = answer.await.unwrap_or(AppActionAnswer::DENY);
+            self.record_answer(&request, grant, answer.consent).await;
+            let invoke = match self.tracker_answer(&request, &issue, &answer) {
+                Ok(Some(invoke)) => invoke,
+                Ok(None) => {
+                    tracing::warn!("the tracker that asked is no longer published");
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the person's edits do not fit the question");
+                    return;
+                }
             };
             let caller = Caller::local_person(request.person.clone()).in_room(&request.room);
             match self.action_invoke_local_person(&caller, &invoke).await {
@@ -289,17 +298,26 @@ impl CapnpBrokerState {
         });
     }
 
-    /// The tracker's `answer-confirmation` of `issue` in `room`, giving
-    /// `answer`: on its live window, else launching it.
+    /// The tracker's `answer-confirmation` of `issue`, giving the person's
+    /// `answer` to `request`: on its live window, else launching it. `None`
+    /// when no tracker publishes it.
+    ///
+    /// # Errors
+    /// The person's edits change what the question's draft does not offer.
     fn tracker_answer(
         &self,
-        room: &str,
+        request: &AppActionConsentRequest,
         issue: &str,
-        answer: AppActionConsent,
-    ) -> Option<InvokeRequest> {
+        answer: &AppActionAnswer,
+    ) -> Result<Option<InvokeRequest>, String> {
         use tilo_actions::remote::{Confirmation, RemoteActionTarget};
-        let id = issue.strip_prefix(TRACKER_ISSUE_PREFIX)?;
-        let (surface, action) = self.published_surfaces().into_iter().find_map(|surface| {
+        let room = request.room.as_str();
+        let mut arguments = serde_json::Map::new();
+        answer_arguments(request, answer, &mut arguments)?;
+        let Some(id) = issue.strip_prefix(TRACKER_ISSUE_PREFIX) else {
+            return Ok(None);
+        };
+        let found = self.published_surfaces().into_iter().find_map(|surface| {
             let action = (surface.app_id == TRACKER_APP && surface.route.cluster_id == room)
                 .then(|| {
                     surface
@@ -309,11 +327,12 @@ impl CapnpBrokerState {
                         .cloned()
                 })??;
             Some((surface, action))
-        })?;
-        let mut arguments = serde_json::Map::new();
+        });
+        let Some((surface, action)) = found else {
+            return Ok(None);
+        };
         arguments.insert("issue".into(), id.into());
-        arguments.insert("confirm".into(), (answer != AppActionConsent::Deny).into());
-        Some(InvokeRequest {
+        Ok(Some(InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: RemoteActionTarget {
@@ -334,8 +353,42 @@ impl CapnpBrokerState {
             revision: None,
             wait_ms: None,
             appearance: None,
-        })
+        }))
     }
+}
+
+/// Set the tracker's `answer-confirmation` `arguments` to the person's
+/// `answer` to `request`, and to nothing the app supplied on their behalf:
+/// whether they confirmed, and their edits to the draft the sheet showed,
+/// each checked against it ([`tilo_actions::Draft::check_edits`]). The
+/// broker applies them to the step's arguments when the step runs, and the
+/// confirmation admits exactly the arguments they make.
+///
+/// # Errors
+/// An edit to a field the draft does not offer for editing, or to a value
+/// of another type.
+fn answer_arguments(
+    request: &AppActionConsentRequest,
+    answer: &AppActionAnswer,
+    arguments: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    arguments.remove("edits");
+    arguments.remove("reason");
+    arguments.insert("confirm".into(), answer.allowed().into());
+    let edits = answer.allowed_edits();
+    if edits.is_empty() {
+        return Ok(());
+    }
+    request
+        .draft
+        .as_ref()
+        .ok_or("nothing in this question can be changed")?
+        .check_edits(edits)?;
+    arguments.insert(
+        "edits".into(),
+        serde_json::to_value(edits).map_err(|error| error.to_string())?,
+    );
+    Ok(())
 }
 
 /// The sheet's and the notice's handle of the run's question `id`.
@@ -351,27 +404,31 @@ pub(super) fn serve_answered(
     pending: Box<PendingAnswer>,
     (host, caller): (ConnectionActionHost, Caller),
     message: tilo_actions::remote::RemoteActionMessage,
-    mut results: channel_handle::RemoteActionResults,
+    results: channel_handle::RemoteActionResults,
 ) -> Promise<(), capnp::Error> {
-    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    use tilo_actions::remote::RemoteActionMessage;
     Promise::from_future(async move {
         let PendingAnswer {
             request,
             grant,
             answer,
         } = *pending;
-        let answer = answer.await.unwrap_or(AppActionConsent::Deny);
-        state.record_answer(&request, grant, answer).await;
+        let answer = answer.await.unwrap_or(AppActionAnswer::DENY);
+        state.record_answer(&request, grant, answer.consent).await;
         let message = match message {
-            RemoteActionMessage::Invoke(mut request) => {
-                if let InvokeArgument::Json(arguments) = &mut request.argument {
-                    // Only what the person chose: no edits or reason the
-                    // app supplied on their behalf.
-                    arguments.remove("edits");
-                    arguments.remove("reason");
-                    arguments.insert("confirm".into(), (answer != AppActionConsent::Deny).into());
+            RemoteActionMessage::Invoke(mut invoke) => {
+                if let InvokeArgument::Json(arguments) = &mut invoke.argument
+                    && let Err(reason) = answer_arguments(&request, &answer, arguments)
+                {
+                    // Nothing is answered for the person: the question
+                    // stays asked.
+                    let refused = tilo_actions::remote::refuse(
+                        &RemoteActionMessage::Invoke(invoke),
+                        tilo_actions::remote::ActionHostError::InvalidRequest { reason },
+                    );
+                    return send_reply(results, refused);
                 }
-                RemoteActionMessage::Invoke(request)
+                RemoteActionMessage::Invoke(invoke)
             }
             other => other,
         };
@@ -379,10 +436,20 @@ pub(super) fn serve_answered(
         let reply = super::witness::serve_answering(state, host, caller, person, message)
             .await
             .ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))?;
-        let bytes = RemoteActionFrame::new(reply)
-            .encode()
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
-        results.get().set_frame(&bytes);
-        Ok(())
+        send_reply(results, Some(reply))
     })
+}
+
+/// Answer the app's call with `reply`.
+fn send_reply(
+    mut results: channel_handle::RemoteActionResults,
+    reply: Option<tilo_actions::remote::RemoteActionMessage>,
+) -> Result<(), capnp::Error> {
+    let reply =
+        reply.ok_or_else(|| capnp::Error::failed("the action host dropped the request".into()))?;
+    let bytes = tilo_actions::remote::RemoteActionFrame::new(reply)
+        .encode()
+        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+    results.get().set_frame(&bytes);
+    Ok(())
 }

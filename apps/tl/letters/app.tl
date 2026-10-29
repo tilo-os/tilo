@@ -37,11 +37,11 @@ destructive action discard(desk: Desk, d: Draft) (icon: .trash) {
 }
 
 /// Posts the letter. This leaves the system, so it always asks first, showing the letter.
+/// A letter goes once.
 primary action send(d: Draft) proposal compose(d) (icon: .send) {
-    if not d.sent {
-        outside("post", (d.to, d.subject, d.body))
-        d.sent = true
-    }
+    require not d.sent "This letter went already"
+    outside("post", (d.to, d.subject, d.body))
+    d.sent = true
 }
 
 /// The letter as it will leave, shown when someone is asked to send it.

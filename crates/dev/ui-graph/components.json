@@ -197,6 +197,11 @@
           "name": "follow_end",
           "doc": "Open at the end of the content and stay there while it grows, unless the person scrolled away from the end: a conversation's transcript, whose newest line is last.",
           "type": "bool"
+        },
+        {
+          "name": "across",
+          "doc": "Scroll sideways instead: a row wider than its column, such as a board's lanes.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -213,7 +218,7 @@
     },
     {
       "name": "Docked",
-      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer.",
+      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column's page, a section's gap under the content and the page's gutter at its sides and below.",
       "slots": [
         {
           "name": "content",
@@ -836,6 +841,98 @@
       }
     },
     {
+      "name": "Board",
+      "doc": "Cards in lanes, side by side: a kanban board, a pipeline, tasks by status. Dragging a card to another place in its lane or into another lane is reported by the card or lane it lands at; each card also opens, and offers its commands on its context menu, so nothing needs a drag.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the board is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "lanes",
+          "doc": "The lanes, in order.",
+          "accepts": {
+            "component": "BoardLane"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
+      }
+    },
+    {
+      "name": "Chip",
+      "doc": "A compact pill for a tag, a filter or a token: what a note is tagged with, a recipient, an applied filter. Pressing it opens or applies what it names; a chip that can be taken away has a trailing remove button; a filter chip shows whether it is on.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it names, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the label, for a chip that names an action rather than a value.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether the filter it stands for is on; without it the chip is no filter.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "It was pressed: open or apply what it names."
+        },
+        {
+          "name": "remove",
+          "doc": "Its remove button was pressed: take it away. A chip with this has the button."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "RichText",
+      "doc": "Rich text, shown: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Activating a reference opens it.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "The text it shows.",
+          "type": "rich_text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "events": [
+        {
+          "name": "open_reference",
+          "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Document"
+      }
+    },
+    {
       "name": "Property",
       "doc": "One fact of a property list: what it is, and its value.",
       "props": [
@@ -1043,6 +1140,127 @@
       ],
       "semantics": {
         "role": "ListItem",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "BoardLane",
+      "doc": "One lane of a board: a heading and its cards, in order.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the lane stands for: a column, a status.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the lane is called, as its heading.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "count",
+          "doc": "How many cards the lane holds, beside its heading.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "action",
+          "doc": "The label of the one action that adds to the lane, at the end of its heading: \"New card\".",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "cards",
+          "doc": "The cards, in order.",
+          "accepts": {
+            "component": "BoardCard"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "act",
+          "doc": "The lane's action was pressed."
+        },
+        {
+          "name": "drop",
+          "doc": "A card was dropped below the lane's last card: carries the card.",
+          "value": "resource"
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "title",
+        "presents": "item"
+      }
+    },
+    {
+      "name": "BoardCard",
+      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the card stands for: what a drop carries when it is the card dropped.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What the card is called, in its head; without one the body speaks for it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "selected",
+          "doc": "Whether it is the selected one.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "menu",
+          "doc": "The commands of its context menu: a right-click, the Menu key or a long press opens it.",
+          "accepts": {
+            "component": "MenuItem"
+          },
+          "many": true
+        },
+        {
+          "name": "body",
+          "doc": "What the card shows, in order.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "The card was pressed: open what it stands for."
+        },
+        {
+          "name": "drop",
+          "doc": "Another card was dropped just before this one: carries that card.",
+          "value": "resource"
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "label": "title",
         "presents": "item"
       }
     }

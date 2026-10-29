@@ -1060,10 +1060,10 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
     assert_eq!(room.sink.delivered().len(), 1);
 }
 
-/// A board room with the todo list and the notebook it points at, each with its scenario, and
+/// A room of Today with the todo list and the notebook it points at, each with its scenario, and
 /// how many of the todos are done.
-fn board_room() -> (Room, usize) {
-    let mut room = Room::new("board");
+fn today_room() -> (Room, usize) {
+    let mut room = Room::new("today");
     room.seed("todo");
     room.seed("notes");
     let host = room.window.current_host().unwrap();
@@ -1089,14 +1089,14 @@ fn cleanup_args(room: &Room) -> Json {
     let list = host.root_of("so.tilo.lang.todo").unwrap().id_string();
     let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
     serde_json::json!({
-        "flow": "so.tilo.lang.board.morning_cleanup",
+        "flow": "so.tilo.lang.today.morning_cleanup",
         "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
     })
 }
 
 #[test]
 fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
-    let (mut room, done) = board_room();
+    let (mut room, done) = today_room();
     let args = cleanup_args(&room);
     let output = room
         .agent_invokes(HOST, "run-flow", &args)
@@ -1108,7 +1108,7 @@ fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
 
 #[test]
 fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
-    let (mut room, done) = board_room();
+    let (mut room, done) = today_room();
     // The person narrowed this agent in the room: changes to the todo app ask first.
     let mut workspace = policy::RoomPolicy::new("room", "ada");
     workspace.grants.push(agent_answers::grant(
@@ -1287,7 +1287,7 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
             walk(child, out);
         }
     }
-    let room = Room::seeded("board");
+    let room = Room::seeded("today");
     let tree = room.window.root_tree().unwrap();
     let mut cards = Vec::new();
     walk(&tree, &mut cards);
@@ -1489,7 +1489,7 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
             cards(child, out);
         }
     }
-    let mut room = Room::seeded("board");
+    let mut room = Room::seeded("today");
     let mut keys = Vec::new();
     cards(&room.composed(), &mut keys);
     let [todos, notes, chats] = &keys[..] else {
@@ -1830,14 +1830,15 @@ fn later_notes(edit: impl Fn(&str) -> String) -> tilolang_tilo::bundle::Bundle {
         .find(|package| package.dir == "notes")
         .expect("notes is built in");
     let lock = tilolang_tilo::tilolang::IdsLock::parse(package.ids).unwrap();
-    let imports: Vec<_> = crate::app::builtin::compiled()
+    let used: Vec<_> = crate::app::builtin::compiled()
         .iter()
         .take_while(|built| built.dir != "notes")
-        .map(|built| built.compiled.meta.clone())
+        .map(|built| &built.compiled)
         .collect();
+    let imports: Vec<_> = used.iter().map(|compiled| compiled.meta.clone()).collect();
     let compiled = tilolang_tilo::tilolang::compile_package(&edit(package.source), &lock, &imports)
         .unwrap_or_else(|diagnostics| panic!("the edit compiles: {diagnostics:?}"));
-    tilolang_tilo::bundle::Bundle::new(&compiled, imports)
+    tilolang_tilo::bundle::Bundle::new(&compiled, used)
 }
 
 /// Whether `text` is shown anywhere under `node`.

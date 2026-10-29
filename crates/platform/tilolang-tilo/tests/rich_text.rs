@@ -185,7 +185,11 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     asked.push_text(" look at ");
     asked.push_reference(
         "Fix the build",
-        &tilolang_runtime::rich::Reference::Resource(format!("tl:{APP}:{task}")),
+        &tilolang_runtime::rich::Reference::resource(
+            APP,
+            format!("tl.{APP}.Task"),
+            format!("tl:{APP}:{task}"),
+        ),
     );
     let encoded = tilolang_runtime::value::to_json(&tilolang_runtime::Value::Rich(asked)).unwrap();
     plan(
@@ -230,5 +234,96 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     assert!(
         ada_inbox.look(&look(&ada.doc), &name).show.is_empty(),
         "nobody else is told"
+    );
+}
+
+struct Names;
+
+impl tilolang_tilo::runtime::NameHost for Names {
+    fn name(&self, who: &tilolang_tilo::runtime::Principal) -> String {
+        match who.0.as_str() {
+            "grace" => "Grace Hopper".to_owned(),
+            other => other.to_owned(),
+        }
+    }
+}
+
+#[test]
+fn a_reference_reads_as_the_readers_inline_view_under_what_they_hold() {
+    use tilo_render_protocol::patch::rich::InlineView;
+    use tilolang_runtime::rich::Reference;
+    use tilolang_tilo::instance::inline_view;
+    let Room {
+        mut ada,
+        meta,
+        root,
+        ..
+    } = room();
+    plan(
+        &mut ada,
+        &meta,
+        "Board",
+        &root,
+        "add_task",
+        json!({"title": "Fix the build"}),
+    );
+    let tasks = items(&ada, &meta, &root, "tasks");
+    let task = format!("{root}/{}:{}", field_id(&meta, "Board", "tasks"), tasks[0]);
+    let to_task = Reference::resource(APP, format!("tl.{APP}.Task"), format!("tl:{APP}:{task}"));
+
+    assert_eq!(
+        inline_view(&ada.host, &Names, &Reference::Person("grace".into())),
+        InlineView::Person {
+            identity: "grace".into(),
+            name: "Grace Hopper".into()
+        },
+        "a person by what the room calls them"
+    );
+    assert_eq!(
+        inline_view(&ada.host, &Names, &to_task),
+        InlineView::Resource {
+            title: "Fix the build".into(),
+            icon: None,
+            detail: None
+        }
+    );
+    // Its title is the task's now, never the one the text was written with.
+    plan(
+        &mut ada,
+        &meta,
+        "Task",
+        &task,
+        "rename",
+        json!({"title": "Fix the release build"}),
+    );
+    assert_eq!(
+        inline_view(&ada.host, &Names, &to_task),
+        InlineView::Resource {
+            title: "Fix the release build".into(),
+            icon: None,
+            detail: None
+        }
+    );
+    // A record this reader does not hold (it is sent only to its readers) is only there.
+    let elsewhere = Reference::resource(
+        APP,
+        format!("tl.{APP}.Task"),
+        format!("tl:{APP}:not-shared/f1:t9"),
+    );
+    assert_eq!(
+        inline_view(&ada.host, &Names, &elsewhere),
+        InlineView::Unreadable
+    );
+    // An older form reads the same.
+    let old = Reference::of_mark(&format!("tl:{APP}:{task}")).unwrap();
+    assert!(matches!(
+        inline_view(&ada.host, &Names, &old),
+        InlineView::Resource { .. }
+    ));
+    // Another app's resource reads as its run, where only that app can say how it reads.
+    let channel = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
+    assert_eq!(
+        inline_view(&ada.host, &Names, &channel),
+        InlineView::Elsewhere
     );
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tilolang apps end to end, as real and independent Tilo apps.
 
-Builds the notes, chat, todo and board packages with `tilolang build`, installs
+Builds the notes, chat, todo and today packages with `tilolang build`, installs
 them into a headless nested Tilo session (dist/dev/nested-session.sh) that
 renders on lavapipe and never opens this machine's GPU (`--software`), and
 checks through the semantic control surface (tilo-control) what an installed
@@ -34,10 +34,10 @@ app gets on a real system:
   host-again the same session started again, holding the Lounge already: it syncs
              again, and the time it takes is recorded
   spinner    started a third time with the site's processes stopped: the Lounge is
-             connecting, Board (empty) says so with a spinner that turns one
+             connecting, Today (empty) says so with a spinner that turns one
              committed frame per pose, until the dial gives up
   unsynced   then the Lounge's host cannot be reached: native Notes says so, keeps
-             its own action, and Board draws nothing more (unsynced-*.png)
+             its own action, and Today draws nothing more (unsynced-*.png)
   reconnect  the site's processes go on: the Lounge syncs again by itself
   host       in the synced Lounge every app is told so and shows the room
              (synced-*.png), native Notes' "New note" lands, and each launch's time
@@ -50,11 +50,11 @@ app gets on a real system:
              undone
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
-             Board, whose surface declares that it reads Notes' kinds, and as
-             Todo, which declares no read. Board joins Notes' route read-only
+             Today, whose surface declares that it reads Notes' kinds, and as
+             Todo, which declares no read. Today joins Notes' route read-only
              and every write there is refused; Todo cannot join it at all.
              This runs in a second start of the same throwaway session, with
-             the probe packages installed in place of Board and Todo.
+             the probe packages installed in place of Today and Todo.
 
 Usage:
   scripts/headless-examples/tilolang-e2e.py [--no-build] [--out DIR] [--keep] [--host-only]
@@ -83,16 +83,16 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
-APPS = ["notes", "chat", "todo", "board"]
+APPS = ["notes", "chat", "todo", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
 # Opened last in the local site's Lounge, to time a first launch in a synced room.
 NATIVE_CHAT = "so.tilo.chat"
 PROBE_RUNTIME = "0.1.0+probe"
-# The routes the probe tries as each app: Board declares that it reads Notes'
+# The routes the probe tries as each app: Today declares that it reads Notes'
 # kinds; Todo declares no read.
 PROBE_ROUTES = {
-    "board": ["so.tilo.lang.notes", "so.tilo.lang.board"],
+    "today": ["so.tilo.lang.notes", "so.tilo.lang.today"],
     "todo": ["so.tilo.lang.notes"],
 }
 
@@ -472,7 +472,7 @@ def check_idle(session: Session, processes: dict, session_pid: int, seconds: flo
     """Every app, native Notes among them, left untouched for 10 s. An app that commits no frame
     is settled, and every thread of it sleeps: zero context switches. An app that commits frames
     is animating, which in this session is only the connecting spinner of an app whose room never
-    syncs and that holds nothing to show (Board; native Notes): one frame per pose of the spinner
+    syncs and that holds nothing to show (Today; native Notes): one frame per pose of the spinner
     and no more, with its context switches per frame recorded."""
     time.sleep(3)
     pids = {app: info["pid"] for app, info in processes["apps"].items()}
@@ -746,25 +746,25 @@ def check_host_undo(session: Session) -> dict:
 
 
 def check_spinner(session: Session, room: str, pid_of) -> dict:
-    """The Lounge's host is stopped: its room is connecting, and Board, empty and in front,
+    """The Lounge's host is stopped: its room is connecting, and Today, empty and in front,
     says so with a spinner that turns one committed frame per pose, none between, until the
     dial gives up and the room says its host cannot be reached."""
-    board = app_id("board")
+    today = app_id("today")
     until("the Lounge restored", lambda: session.holds(room), 60, 0.1)
-    check_registry(session, ["board"])
+    check_registry(session, ["today"])
     # The room is dialled once this device's native owner has opened, which an app in
     # the room needs to open too.
     until("the Lounge dialled", lambda: session.room_sync(room)["state"] is not None, 60, 0.1)
-    windows = open_in_workspace(session, [board], "Lounge")
-    w = windows[board]
+    windows = open_in_workspace(session, [today], "Lounge")
+    w = windows[today]
     session.invoke("desktop-windows", f"tab.focus:{w['group']}:{w['tab']}")
     state = session.room_sync(room)["state"]
     if state != "connecting":
         raise Failed(f"with its host stopped, the Lounge is {state!r}, not connecting")
-    pid = pid_of(board)
-    before, seq, start = switches(pid), frame_seq(session, board), time.monotonic()
+    pid = pid_of(today)
+    before, seq, start = switches(pid), frame_seq(session, today), time.monotonic()
     until("the dial to give up", lambda: session.room_sync(room)["state"] != "connecting", 60, 0.1)
-    frames = frame_seq(session, board) - seq
+    frames = frame_seq(session, today) - seq
     elapsed = time.monotonic() - start
     after = switches(pid)
     woke = sum(after[t] - before.get(t, 0) for t in after)
@@ -792,14 +792,14 @@ def check_unsynced(session: Session, room: str, out: Path, pid_of) -> dict:
         raise Failed(f"the Lounge should say its host cannot be reached: {told}")
     shots = shots_of(session, windows, out, "unsynced-")
     time.sleep(1)
-    board = app_id("board")
-    pid = pid_of(board)
-    before, seq = switches(pid), frame_seq(session, board)
+    today = app_id("today")
+    pid = pid_of(today)
+    before, seq = switches(pid), frame_seq(session, today)
     time.sleep(5)
-    frames = frame_seq(session, board) - seq
+    frames = frame_seq(session, today) - seq
     woke = {t: c - before.get(t, 0) for t, c in switches(pid).items() if c != before.get(t, 0)}
     if frames or woke:
-        raise Failed(f"Board, with nothing on its way, drew {frames} frames and woke {woke}")
+        raise Failed(f"Today, with nothing on its way, drew {frames} frames and woke {woke}")
     return {"state": told["state"], "snapshots": shots}
 
 
@@ -811,7 +811,7 @@ def check_reconnect(session: Session, room: str) -> dict:
 
 
 def probe_packages(state: Path, out: Path) -> list[Path]:
-    """The probe as Board (whose surface declares that it reads Notes' kinds)
+    """The probe as Today (whose surface declares that it reads Notes' kinds)
     and as Todo (which declares no read): each package is the app's own, with
     the probe as its entrypoint and the routes to try in its payload. Bakes the
     probe's runtime bundle into the session, signed by its runtime publisher."""
@@ -846,7 +846,7 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
 
 
 def check_routes(session: Session) -> dict:
-    """Launch the probe as Board and as Todo and read what the broker let
+    """Launch the probe as Today and as Todo and read what the broker let
     each do on the routes it tried."""
     # As in the first start, the applications are listed before any opens:
     # an app opened in the session's first moments, before its broker has
@@ -860,10 +860,10 @@ def check_routes(session: Session) -> dict:
         return lines if len(lines) >= sum(map(len, PROBE_ROUTES.values())) else None
     lines = until("the probes' route answers", answered, 60)
     result = {f"{who} -> {route}": answer for who, route, answer in lines}
-    board = result.get(f"{app_id('board')} -> {app_id('notes')}", "")
+    today = result.get(f"{app_id('today')} -> {app_id('notes')}", "")
     todo = result.get(f"{app_id('todo')} -> {app_id('notes')}", "")
-    if not (board.startswith("JOINED") and "WRITE-REFUSED" in board and "changes nothing" in board):
-        raise Failed(f"Board's declared read of Notes was not a read-only join: {board!r}")
+    if not (today.startswith("JOINED") and "WRITE-REFUSED" in today and "changes nothing" in today):
+        raise Failed(f"Today's declared read of Notes was not a read-only join: {today!r}")
     if not todo.startswith("JOIN-REFUSED"):
         raise Failed(f"Todo, which declares no read of Notes, joined its route: {todo!r}")
     return result
@@ -1006,7 +1006,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
     shutil.copy(state / "logs/shell.log", out / "shell-apps.log")
     if not ok:
         return False
-    # Route access, with the probe installed as Board and as Todo. The probes first: until
+    # Route access, with the probe installed as Today and as Todo. The probes first: until
     # a package names the probe's runtime, the collection after each install reclaims it.
     tapps = [*probe_packages(state, out), out / "build/notes.tapp"]
     proc, session = start_session(state, out, tapps, "routes")
@@ -1096,7 +1096,7 @@ def main() -> int:
              "-p", "collab-probe", "--bin", "tilo-collab-probe"], cwd=REPO)
     runtime = (state / "runtimes/.version").read_text().strip()
     print("==> tilolang build", file=sys.stderr)
-    run([tool, "build", REPO / "apps/tl/board", "--search", REPO / "apps/tl", "--out", out / "build",
+    run([tool, "build", REPO / "apps/tl/today", "--search", REPO / "apps/tl", "--out", out / "build",
          "--tilo-runtime", f"tilo-runtime/{runtime}"])
 
     summary: dict = {"checks": {}, "failed": []}

@@ -859,8 +859,15 @@ impl DrainQueues {
         for entry in drained_resp {
             // Pages this device asked for land in durable history, where the
             // requesting endpoint's next page request finds them.
-            if let Ok(mut ch) = self.channels.lock() {
-                let stored = ch.accept_peer_history(entry.artifact, &entry.ops);
+            let accepted = self
+                .channels
+                .lock()
+                .ok()
+                .map(|mut ch| ch.accept_peer_history(entry.artifact, &entry.ops));
+            // Synced once the channels' lock, which the main loop takes too,
+            // is released, and before the page's requester is answered.
+            if let Some((stored, unsynced)) = accepted {
+                unsynced.finish();
                 if stored > 0 {
                     tracing::debug!(artifact = ?entry.artifact, stored, "collab history: stored peer page");
                 }

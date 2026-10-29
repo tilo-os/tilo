@@ -879,6 +879,14 @@ impl NativeWorkspaceOwner {
             )
         })
     }
+    /// How many of this device's committed writes to `room` are still in
+    /// its outgoing custody: not yet admitted by the room's governor.
+    ///
+    /// # Errors
+    /// The room is not held here or is fenced.
+    pub fn unadmitted_writes(&self, room: RoomId) -> Result<usize, String> {
+        self.with_current(room, |view| Ok(state(view)?.entries.len()))
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
         &self,

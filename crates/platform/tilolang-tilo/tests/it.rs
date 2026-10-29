@@ -10,6 +10,7 @@
     reason = "test assertions"
 )]
 
+mod bundle;
 mod collab;
 mod columns;
 mod engines;
@@ -28,4 +29,5 @@ mod room;
 mod scenarios;
 mod surface;
 mod sync;
+mod unions;
 mod upgrade;

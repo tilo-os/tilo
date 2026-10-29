@@ -858,6 +858,9 @@ pub fn registry() -> &'static [Entry] {
             entry::<Card>(),
             entry::<PropertyList>(),
             entry::<Avatar>(),
+            entry::<crate::widget::Board>(),
+            entry::<crate::widget::Chip>(),
+            entry::<crate::widget::BlockEditor>(),
         ]
     })
 }
@@ -891,13 +894,15 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 /// list's facts, a navigation list's places, a menu's commands, a row's swipe and the items of a
 /// virtual list.
 #[must_use]
-pub fn parts() -> [fn() -> Description; 5] {
+pub fn parts() -> [fn() -> Description; 7] {
     [
         crate::widget::PropertyProps::describe,
         crate::widget::NavItemProps::describe,
         crate::widget::MenuItemProps::describe,
         crate::widget::SwipeActionProps::describe,
         crate::widget::ListItemProps::describe,
+        crate::widget::BoardLaneProps::describe,
+        crate::widget::BoardCardProps::describe,
     ]
 }
 

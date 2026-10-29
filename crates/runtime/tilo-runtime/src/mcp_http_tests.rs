@@ -181,8 +181,10 @@ impl ActionHost for StubHost {
         &self,
         _caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<tilo_actions::remote::Confirmation, ActionHostError>> {
-        Pending::ready(Ok(witnessed(request)))
+    ) -> Pending<Result<tilo_actions::remote::ConfirmedInvocation, ActionHostError>> {
+        Pending::ready(Ok(tilo_actions::remote::ConfirmedInvocation::unchanged(
+            witnessed(request),
+        )))
     }
 
     fn observe(

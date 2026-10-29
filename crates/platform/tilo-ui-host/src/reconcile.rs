@@ -48,6 +48,9 @@ pub enum UiEvent {
     Fire(String, String, Option<Value>),
     /// A row of a resource was activated: show the resource.
     Open(crate::ResourceRef),
+    /// A reference in rich text was activated: open what it refers to (the `mention` mark's
+    /// value).
+    OpenReference(String),
 }
 
 /// Where controls report what the person did.
@@ -97,6 +100,7 @@ pub fn display(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
+        Value::Rich(rich) => rich.plain_text(),
         _ => String::new(),
     }
 }
@@ -237,8 +241,10 @@ fn fit_of(node: &UiNode) -> Fit {
 fn placement(parent: &UiNode, child: &UiNode) -> Placement {
     let mut fit = fit_of(child);
     // Beside siblings in a row, a container takes the room they leave rather than hugging
-    // its content, so what it holds lays out in the width the row offers.
+    // its content, so what it holds lays out in the width the row offers. A row that wraps
+    // flows its items at their own width instead, as chips and tags do.
     if parent.kind == "row"
+        && !flag(parent, "wrap")
         && (is_container(&child.kind) || child.kind == "embed")
         && number(child, "fill").is_none()
     {

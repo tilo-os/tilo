@@ -67,7 +67,7 @@ mod https_completion {
     struct Sheet(
         tokio::sync::mpsc::UnboundedSender<(
             AppActionConsentRequest,
-            tokio::sync::oneshot::Sender<AppActionConsent>,
+            tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
         )>,
     );
 
@@ -75,7 +75,7 @@ mod https_completion {
         fn ask(
             &self,
             request: AppActionConsentRequest,
-        ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+        ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>> {
             let (answer, receive) = tokio::sync::oneshot::channel();
             self.0.send((request, answer)).ok()?;
             Some(receive)
@@ -548,11 +548,14 @@ mod https_completion {
                         "nothing is delivered before consent"
                     );
                     answer
-                        .send(if allow {
-                            AppActionConsent::Once
-                        } else {
-                            AppActionConsent::Deny
-                        })
+                        .send(
+                            if allow {
+                                AppActionConsent::Once
+                            } else {
+                                AppActionConsent::Deny
+                            }
+                            .into(),
+                        )
                         .unwrap();
                     let result = bounded("durable admission after consent", call).await;
                     if allow {
@@ -668,7 +671,7 @@ mod https_completion {
                         futures::poll!(&mut delivery).is_pending(),
                         "nothing is delivered before consent"
                     );
-                    answer.send(AppActionConsent::Once).unwrap();
+                    answer.send(AppActionConsent::Once.into()).unwrap();
                     bounded("native admission after consent", call)
                         .await
                         .unwrap();
