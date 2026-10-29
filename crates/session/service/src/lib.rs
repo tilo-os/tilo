@@ -155,17 +155,49 @@ impl Services {
     }
 
     /// Invoke `action` of `resource` on the service publishing it; `None`
-    /// when no service does.
+    /// when no service does. An action whose contract asks for
+    /// confirmation (restart, power off) is refused with
+    /// [`DoorError::ConfirmationRequired`]; once the person confirmed it,
+    /// the caller invokes it with [`Self::invoke_confirmed`].
     pub fn invoke(
         &mut self,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Option<Result<Started, DoorError>> {
+        self.route(resource, action, arguments, false)
+    }
+
+    /// [`Self::invoke`] after the person confirmed it.
+    pub fn invoke_confirmed(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Option<Result<Started, DoorError>> {
+        self.route(resource, action, arguments, true)
+    }
+
+    fn route(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+        confirmed: bool,
+    ) -> Option<Result<Started, DoorError>> {
         let address = ActionAddress::new(resource, action);
-        let service = self.services.iter_mut().find(|service| {
-            tilo_actions::door::resolve(&service.resources(), &address).is_some()
+        let (service, asks) = self.services.iter_mut().find_map(|service| {
+            let published = service.resources();
+            let spec = tilo_actions::door::resolve(&published, &address)?;
+            let asks = !matches!(
+                spec.confirmation_for_json(arguments),
+                tilo_actions::ConfirmationPolicy::None
+            );
+            Some((service, asks))
         })?;
+        if asks && !confirmed {
+            return Some(Err(DoorError::ConfirmationRequired));
+        }
         Some(service.invoke(resource, action, arguments))
     }
 

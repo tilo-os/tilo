@@ -22,6 +22,7 @@ tilo-quick-settings = { path = "../quick-settings" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-service = { path = "../service" }
 tilo-connectivity-service = { path = "../connectivity-service" }
+tilo-system-service = { path = "../system-service" }
 # The sound resource's specs, for the audio service the session starts.
 tilo-audio-service = { path = "../audio-service", default-features = false }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
