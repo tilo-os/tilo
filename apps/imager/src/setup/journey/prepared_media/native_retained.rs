@@ -577,8 +577,6 @@ fn run_owned_actor(selector: &str) {
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", control.display()))
         .env("TMPDIR", &tmp)
-        // Full framework journeys retain large App/test frames in debug builds.
-        .env("RUST_MIN_STACK", "16777216")
         // The actor's profile durability boundary must be owned and readable;
         // it must never inherit the builder user's real home directory.
         .env("HOME", &tmp)

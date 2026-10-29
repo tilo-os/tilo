@@ -3296,8 +3296,6 @@ mount --bind /var/tmp/imager /imager
 chmod 700 /imager
 export TMPDIR=/imager/tmp TILO_IMAGER_TEST_CACHE_ROOT=/imager/cache
 mkdir -p "$TMPDIR" "$TILO_IMAGER_TEST_CACHE_ROOT"
-# The stack .cargo/config.toml's [env] gives tests that cargo runs.
-export RUST_MIN_STACK=16777216
 # The tests run as the guest's root, with its capabilities: the original-image review's refusal
 # of a changed held image is observed only so (as uid 0 without capabilities, the job
 # sandbox's identity, it fails), and the fixtures that need root run instead of skipping.
