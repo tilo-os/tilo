@@ -22179,6 +22179,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-doc",
  "tilo-reference",
+ "tilo-resource",
  "tilolang",
  "wasmi",
  "wasmtime",

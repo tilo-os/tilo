@@ -96,39 +96,15 @@ impl Overlay {
         self.removed(resource).then(|| ListState::Whole(Vec::new()))
     }
 
-    /// The items of the collection `field` of `resource` the writes touched: added, removed or
-    /// moved, or one of their fields written.
-    pub fn touched_items(&self, resource: &str, field: &str, list: &str) -> BTreeSet<String> {
-        let mut out = BTreeSet::new();
-        match self.lists.get(list) {
-            Some(ListState::Delta { added, removed }) => {
-                out.extend(added.iter().chain(removed).map(|(_, id)| id.clone()));
-            }
-            Some(ListState::Whole(entries)) => {
-                out.extend(entries.iter().map(|(_, id)| id.clone()));
-            }
-            None => {}
-        }
-        let prefix = format!("{resource}/{field}:");
-        let direct = |path: &str| -> Option<String> {
-            let rest = path.strip_prefix(&prefix)?;
-            Some(rest.split('/').next().unwrap_or(rest).to_owned())
-        };
-        out.extend(self.fields.keys().filter_map(|(path, _)| direct(path)));
-        out.extend(self.texts.keys().filter_map(|(path, _)| direct(path)));
-        out.extend(self.removed.iter().filter_map(|path| direct(path)));
-        out
-    }
-
-    /// The items of the collection `field` of `resource` the writes may have moved in or out
-    /// of a query that reads the item fields `reads` holds of: added, removed or moved, made or
-    /// removed whole, or one of those fields written. An item whose other fields alone were
-    /// written stays where it was.
+    /// The items of a collection (its member list `list`; `item(path)` says whether the
+    /// resource at `path` is one of its items) the writes may have moved in or out of a query
+    /// that reads the item fields `reads` holds of: added, removed or moved, made or removed
+    /// whole, or one of those fields written. An item whose other fields alone were written
+    /// stays where it was.
     pub fn touched_reading(
         &self,
-        resource: &str,
-        field: &str,
         list: &str,
+        item: &dyn Fn(&str) -> bool,
         reads: &dyn Fn(&str) -> bool,
     ) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
@@ -141,11 +117,9 @@ impl Overlay {
             }
             None => {}
         }
-        let prefix = format!("{resource}/{field}:");
-        // The item itself, not a resource inside it.
         let item = |path: &str| -> Option<String> {
-            let rest = path.strip_prefix(&prefix)?;
-            (!rest.contains('/')).then(|| rest.to_owned())
+            let id = super::derive::id_of(path)?;
+            item(path).then(|| id.to_owned())
         };
         out.extend(
             self.fields

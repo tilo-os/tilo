@@ -93,25 +93,15 @@ fn reword(r: &mut Replica, message: &Value, text: &str) {
     let message = target(message);
     let parts = field_id(&meta, "Message", "parts");
     let spec = FieldSpec {
-        id: parts.clone(),
+        id: parts,
         kind: FieldKind::Collection,
     };
     let part = r.host.store().listing(&message, &spec).unwrap().ids()[0].clone();
-    let mut path: Vec<Segment> = message
-        .path
-        .iter()
-        .flat_map(|step| {
-            [
-                Segment::Field(step.field.clone()),
-                Segment::Item(Id::from_raw(step.item.clone())),
-            ]
-        })
-        .collect();
-    path.extend([
-        Segment::Field(parts),
+    // The part is stored by its id, wherever it is.
+    let path = vec![
         Segment::Item(Id::from_raw(part)),
         Segment::Field(field_id(&meta, "Part", "body")),
-    ]);
+    ];
     r.apply(&DynAction {
         app: APP.to_owned(),
         kind: format!("tl.{APP}.edit"),

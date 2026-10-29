@@ -42,6 +42,7 @@ pub mod calendar;
 mod checker;
 pub mod cli;
 mod codegen;
+pub mod describe;
 pub mod diag;
 pub mod duration;
 mod effects;

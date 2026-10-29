@@ -1485,6 +1485,9 @@ impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema()})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Collection(Box::new(T::field_type(types)))
+    }
     const SHAPE: crate::Shape = if S::ARRANGED {
         crate::Shape::Collection(&T::SHAPE)
     } else {

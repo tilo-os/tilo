@@ -73,6 +73,58 @@ fn the_root_the_host_creates_names_a_verb_the_surface_publishes() {
     }
 }
 
+/// The key of the node bound to the field `field` in `node`'s tree.
+fn bound_to(node: &tilolang_runtime::UiNode, field: &str) -> Option<String> {
+    if node
+        .binding
+        .as_ref()
+        .and_then(|binding| binding.field())
+        .is_some_and(|(_, bound)| bound == field)
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| bound_to(child, field))
+}
+
+/// Typing into a bound text field commits a change of its own: the package's surface publishes
+/// the verb that change names, or the identity service refuses to sign the app's first
+/// keystroke and the app's collaboration ends there.
+#[test]
+fn a_bound_fields_edit_names_a_verb_the_surface_publishes() {
+    let (mut replica, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
+    let meta = packages[0].meta.clone();
+    replica.host.root_of(&meta.app).unwrap();
+    replica.commit();
+    let view = replica.view(&meta.app);
+    let title = crate::fixtures::field_id(&meta, "TodoList", "title");
+    let input = bound_to(view.tree(), &title).expect("the list's title is bound");
+    let first = replica.host.next_ticket();
+    view.edit(&input, &tilolang_runtime::value::Value::text("Groceries"))
+        .unwrap();
+    let committed = replica.host.take_committed_from(first);
+    assert_eq!(committed.len(), 1, "the keystroke commits one change");
+    let surfaces = package_surfaces(&meta);
+    let action = &committed[0].action;
+    let surface = surfaces
+        .iter()
+        .find(|surface| surface.kind == action.kind)
+        .unwrap_or_else(|| panic!("no surface of kind {}", action.kind));
+    assert_eq!(
+        surface.verb(&action.action_id).map(|verb| verb.0),
+        Some(ActionKind::Undoable),
+        "{} publishes no {}",
+        action.kind,
+        action.action_id
+    );
+    assert_eq!(
+        action.args,
+        json!({"field": title, "value": "Groceries"}),
+        "the verb's arguments are the ones it publishes"
+    );
+}
+
 #[test]
 fn collection_fields_are_listed_below_their_item() {
     let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);

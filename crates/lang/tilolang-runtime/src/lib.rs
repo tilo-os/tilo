@@ -31,6 +31,7 @@ pub mod ids;
 mod live;
 pub mod meta;
 mod num;
+pub mod place;
 pub mod platform;
 pub mod program;
 pub mod project;

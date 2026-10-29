@@ -55,6 +55,13 @@ opens through the type's default view (`default view counter for Counter`).
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
 
+A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
+resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
+`chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+signatures against them. The language's tool (`tilolang check`) finds native apps among the
+`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
+invoking native actions come later; for now this is compile-time only.
+
 ## Syntax reference
 
 The full grammar is [grammar.md](grammar.md). In short:
@@ -147,11 +154,17 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
 
-**Collections.** `items.remove_where(pred)` removes what the predicate holds of and gives how
+**Collections.** An item is its id: a reference to it names its document and id
+(`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
+everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how
 many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`, or a place,
 `items.move(x, to: i)` (what a drag gives): the place is resolved, when the action runs, to the
 item it then comes before, and the move is recorded beside it, so concurrent moves converge
-where each person meant.
+where each person meant. The collection a move is called on is where the item goes, from
+whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
+takes a card from its column to the foot of `done`, the same card, with its history and every
+reference to it. An item cannot go inside itself. How moves, edits and removals made at the same
+time merge is convergence.md, "Storage and sync".
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:
@@ -348,6 +361,8 @@ tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: 
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
+tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
+                                          (its surface.toml) and a tilolang package alike
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;
