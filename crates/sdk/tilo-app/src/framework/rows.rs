@@ -14,8 +14,8 @@ use tilo_resource::Effect;
 /// sync, so it can never carry a document mutation. A change to the
 /// document is the resource's `Action` through the
 /// [`Dispatcher`](super::Dispatcher), bound to a row's item through
-/// [`ResourceSurface::bound_declarations`](super::ResourceSurface::bound_declarations)
-/// or the resource's `children`.
+/// [`Publishes::row_edits`](super::Publishes::row_edits) or the resource's
+/// `children`.
 ///
 /// Rows are merged by id into the resource's published children: a row with
 /// the id of a document child adds its operations to that child instead of

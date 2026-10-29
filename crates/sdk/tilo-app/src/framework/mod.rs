@@ -260,7 +260,6 @@
 //!   playhead, the folder shown — are typed builders of the resource's
 //!   action ([`ActionDecl`](tilo_resource::ActionDecl)), published on the
 //!   resource beside its declarations:
-//!   [`ResourceSurface::bound_declarations`] from a surface's view state,
 //!   [`ViewCx::bind_declarations`] from a view's local state, and
 //!   `Resource::bound_declarations` from the resource state itself.
 //! * **Live external rows** — processes, devices, containers, journal
@@ -276,9 +275,9 @@
 //!   `Resource::child`).
 //! * **One search source** — what the app's search finds is the resource's
 //!   entries ([`Resource::search`](tilo_resource::Resource::search)) and,
-//!   for what a surface shows that the resource does not hold (a page's
-//!   text, a book's outline, processes), the surface's own
-//!   ([`ResourceSurface::search_entries`]), indexed together. An entry says
+//!   for what a view shows that the resource does not hold (a page's
+//!   text, a book's outline, processes), the view's own
+//!   ([`Publishes::search_entries`]), indexed together. An entry says
 //!   how its hit reads — its result group, subtitle, icon and the action it
 //!   invokes — so the app needs no search provider beside it.
 //! * **One published tree** — the palette, agents and scripts see the

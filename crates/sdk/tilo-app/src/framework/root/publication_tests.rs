@@ -120,53 +120,11 @@ enum Side {
     Right,
 }
 
-/// A surface binding an edit to the viewer.
-struct Wave {
-    rect: Rect,
-}
-
-impl Widget for Wave {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy
-            .new_leaf(ui_core::taffy::Style::default())
-            .unwrap_or_else(|_| NodeId::from(0_u64))
-    }
-
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
-        self.rect = Rect::from_origin_size(origin, Size::ZERO);
-    }
-
-    fn name(&self) -> &'static str {
-        "Wave"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 /// Whether `row` names an even item.
 fn even(row: &str) -> bool {
     row.strip_prefix("shelf/item:")
         .and_then(|item| item.parse::<u32>().ok())
         .is_some_and(|item| item % 2 == 0)
-}
-
-impl ResourceSurface<Shelf> for Wave {
-    fn present(&mut self, _: &Rc<i64>) {}
-
-    fn bound_declarations(&self) -> Vec<ActionDecl<Shelf>> {
-        let viewer = ui_core::invocation_scope::current_viewer();
-        let viewer = viewer
-            .as_ref()
-            .map_or("nobody", tilo_actions::ParticipantId::as_str);
-        vec![add("wave", &format!("Wave at {viewer}"), 1)]
-    }
 }
 
 /// The live rows the left side shows.
@@ -234,6 +192,14 @@ impl ResourceApp for ShelfApp {
 
     fn view(cx: &mut ViewCx<Shelf>) -> Element {
         cx.bind_declarations(|count| vec![add("step", "Step", count.saturating_add(1))]);
+        // An edit bound to whoever reads the tree.
+        cx.bind_declarations(|_| {
+            let viewer = ui_core::invocation_scope::current_viewer();
+            let viewer = viewer
+                .as_ref()
+                .map_or("nobody", tilo_actions::ParticipantId::as_str);
+            vec![add("wave", &format!("Wave at {viewer}"), 1)]
+        });
         Box::new(
             Column::new()
                 .push(
@@ -244,7 +210,6 @@ impl ResourceApp for ShelfApp {
                         Box::new(ui_core::widget::Text::new("left")),
                     ),
                 )
-                .push(cx.surface(Wave { rect: Rect::ZERO }))
                 .push(Box::new(Probe(ui_core::widget::Text::new("probe"))))
                 .push(cx.publishing(
                     crate::framework::Publishes::new().row_edits(|row| row_edits(Side::Right, row)),
@@ -291,7 +256,7 @@ fn the_published_tree_is_the_one_recorded_before_rows_were_indexed() {
     let recorded: serde_json::Value =
         serde_json::from_str(include_str!("publication.golden.json")).expect("valid JSON");
     assert_eq!(nobody, recorded);
-    // What a surface binds to where someone is, it binds to that viewer.
+    // What a view binds to where someone is, it binds to that viewer.
     let waves = |outline: &serde_json::Value| {
         outline["actions"]
             .as_array()

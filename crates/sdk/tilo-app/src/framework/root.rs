@@ -760,7 +760,7 @@ impl ResourceRoot {
     }
 
     /// The resource as published: its own actions and children, the edits
-    /// views and surfaces bound to where the user is, the live rows surfaces
+    /// views bound to where the user is, the live rows views and surfaces
     /// show, and the framework's operations every app answers.
     #[inline(never)]
     fn publication(&self) -> ResourceSpec {
@@ -887,19 +887,18 @@ impl ResourceRoot {
         base
     }
 
-    /// What the views and surfaces add over `base` now, as
+    /// What the views add over `base` now, as
     /// [`Self::decorate_publication`] adds it: the edits they bound, their
     /// availability, and the app's effects. Few actions, built per refresh.
     fn binding_overlay(&self, base: &BindingBase) -> Vec<tilo_actions::ActionSpec> {
         let state = self.typed.state();
-        let mut bound = {
+        let bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
             self.typed.declarations(&*state)
         };
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            surface.bound_declarations(bound.as_mut());
             availability.extend(surface.availability());
         });
         let own = base
@@ -1029,7 +1028,7 @@ impl ResourceRoot {
         decoration: Decoration,
     ) -> ResourceSpec {
         let children = decoration == Decoration::Tree;
-        let mut bound = {
+        let bound = {
             let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
             self.typed.declarations(state)
         };
@@ -1037,7 +1036,6 @@ impl ResourceRoot {
         let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            surface.bound_declarations(bound.as_mut());
             availability.extend(surface.availability());
             if children {
                 rows.extend(
@@ -1585,9 +1583,9 @@ impl RootModel for ResourceRoot {
         self.reveal_launched();
         self.settle_arrival();
         self.follow_search();
-        // What the view's sync changed (a surface's bound edits, its
-        // availability) reaches the bindings; the document-owned head is
-        // rebuilt only when the sync moved the state.
+        // What the view's sync changed (its bound edits, its availability)
+        // reaches the bindings; the document-owned head is rebuilt only when
+        // the sync moved the state.
         let head = self.refresh_bindings(Some(head));
         *self.binding_head.borrow_mut() = Some(head);
         // The save status says itself in the window's bar.
@@ -2392,9 +2390,6 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         if let Some(participant) = ui_core::invocation_scope::current_participant() {
             self.typed.note_applied(&participant, action);
         }
-        // Whoever applied it here, a surface that carries out what it means
-        // on this device is told once the state holds it.
-        self.typed.note_applied_here(action);
         with_app_view_mut(&mut self.content, |view| {
             if let Some(content) = ui_core::widget::capability::capability_mut::<
                 dyn ui_core::history_mode::capability::DocumentHistory,

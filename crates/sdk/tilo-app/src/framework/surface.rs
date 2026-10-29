@@ -9,7 +9,7 @@ use std::sync::{
 };
 use ui_core::widget::{AppModel, ModelPath};
 
-use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
+use tilo_resource::{Effect, NoEffect, Resource, SearchEntry};
 use ui_core::PresencePayload;
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
@@ -173,11 +173,12 @@ impl SurfaceScope {
 ///   a capture waits for it.
 /// * **One published tree** — what the surface offers the palette, agents
 ///   and scripts joins the resource's own publication:
-///   [`bound_declarations`](Self::bound_declarations) for edits bound to
-///   where the user is (delete the selected clip, bookmark the current
-///   folder), and [`live_rows`](Self::live_rows) for the live external
-///   entities it shows (processes, containers), which carry only view and
-///   effect operations. A document action the surface's own
+///   [`live_rows`](Self::live_rows) for the live external entities it
+///   shows (processes, containers), which carry only view and effect
+///   operations. Edits bound to where the user is are the view's
+///   ([`ViewCx::bind_declarations`](super::ViewCx::bind_declarations)), and
+///   so are search entries for what it shows
+///   ([`Publishes::search_entries`](super::Publishes::search_entries)). A document action the surface's own
 ///   `PublishesResources` offers is dropped, so nothing reaches the
 ///   document beside the resource's actions.
 pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
@@ -237,26 +238,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         let _ = (participant, place);
     }
 
-    /// Whether the surface is told of the actions applied here
-    /// ([`applied`](Self::applied)). A surface that implements it says so
-    /// here; no other surface's window keeps them.
-    const APPLIED: bool = false;
-
-    /// `action` was applied to the resource here through the door: invoked
-    /// from the palette, a script or an agent, or submitted by the surface's
-    /// own control, and only once the person agreed when it asks first.
-    /// Called after [`present`](Self::present) showed the state holding it;
-    /// never for a collaborator's change merged in, nor for an undo or a
-    /// restore.
-    ///
-    /// What an action means on this device beyond the document (a file
-    /// grant a removal forgets) is carried out here, so it happens when the
-    /// action applies and never when the person cancelled it. Asked only of
-    /// a surface that sets [`APPLIED`](Self::APPLIED).
-    fn applied(&mut self, action: &R::Action) {
-        let _ = action;
-    }
-
     /// The participant's permission to edit changed while the app runs: a
     /// role granted or taken away. Present accordingly. The dispatcher already
     /// refuses or accepts edits under the new permissions.
@@ -302,19 +283,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         Vec::new()
     }
 
-    /// Edits bound to the surface's view state — the selection, the caret,
-    /// the playhead, the folder or page shown — as typed builders of the
-    /// resource's action, published on the resource beside its declared
-    /// actions. Invoking one dispatches the action it builds through the
-    /// same permission check, confirmation and undo as any other. An id the
-    /// resource already publishes keeps the resource's action, unless the
-    /// bound one refines it ([`tilo_resource::bind_declaration`]): same
-    /// parameters, permission and risk, adding only where it was invoked
-    /// from, such as the caret an append leaves its writer at.
-    fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
-        Vec::new()
-    }
-
     /// The live external entities the surface shows, published as children
     /// of the resource and merged by id with its document children. Keep it
     /// to what fits a published tree (the rows on screen, a bounded page)
@@ -329,15 +297,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let _ = id;
         None
-    }
-
-    /// Search entries for what the surface shows that the resource does not
-    /// hold — a page's text, a book's outline, the processes running —
-    /// indexed with the resource's own ([`Resource::search`]) as the app's
-    /// one search source. Read whenever someone searches, so keep it to what
-    /// the surface already has at hand.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        Vec::new()
     }
 }
 
@@ -382,9 +341,6 @@ pub(crate) trait SurfacePublication {
     /// The resource type the surface is hosted on; a root collects only its
     /// own type's surfaces.
     fn resource(&self) -> std::any::TypeId;
-    /// Add the edits the surface binds to where the user is to `into`, a
-    /// `Vec<ActionDecl<R>>` of its resource type `R`.
-    fn bound_declarations(&self, _into: &mut dyn std::any::Any) {}
     fn availability(&self) -> Vec<EffectStatus> {
         Vec::new()
     }
@@ -406,7 +362,9 @@ pub(crate) trait SurfacePublication {
     fn row_declarations(&self, _row: &str, _into: &mut dyn std::any::Any) -> bool {
         false
     }
-    fn search_entries(&self) -> Vec<SearchEntry>;
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        Vec::new()
+    }
     fn secrets_unlocked(&self) -> Option<bool> {
         None
     }
@@ -621,9 +579,6 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
     presented: (u64, u64),
     /// The number of the next landing to tell the surface of.
     landings: u64,
-    /// The number of the next action applied here to tell the surface of,
-    /// when it follows them ([`ResourceSurface::APPLIED`]).
-    applied: Option<u64>,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
@@ -641,9 +596,6 @@ pub(crate) struct SurfaceHost<R: Resource, S, E> {
 impl<R: Resource, S, E> Drop for SurfaceHost<R, S, E> {
     fn drop(&mut self) {
         self.scope.retire();
-        if self.applied.is_some() {
-            self.live.unfollow_applied();
-        }
     }
 }
 
@@ -681,7 +633,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         Self {
             presented: (live.revision(), live.loads()),
             landings: live.next_landing(),
-            applied: S::APPLIED.then(|| live.follow_applied()),
             live,
             read_only: dispatch.read_only(),
             dispatch,
@@ -776,13 +727,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         self.landings = next;
         for (participant, place) in &landed {
             self.surface.landed(participant, place);
-        }
-        if let Some(from) = self.applied {
-            let (applied, next) = self.live.applied_since(from);
-            self.applied = Some(next);
-            for action in &applied {
-                self.surface.applied(action);
-            }
         }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {
@@ -1037,17 +981,11 @@ impl SurfacePublication for HostedSurface {
     fn resource(&self) -> std::any::TypeId {
         self.host.resource()
     }
-    fn bound_declarations(&self, into: &mut dyn std::any::Any) {
-        self.host.bound_declarations(into);
-    }
     fn live_rows(&self) -> Vec<LiveRow> {
         self.host.live_rows()
     }
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.host.live_row(id)
-    }
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.host.search_entries()
     }
     fn supports_device_shell(&self) -> bool {
         self.host.supports_device_shell()
@@ -1090,22 +1028,12 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
         self.surface.take_host_intent()
     }
 
-    fn bound_declarations(&self, into: &mut dyn std::any::Any) {
-        if let Some(into) = into.downcast_mut::<Vec<ActionDecl<R>>>() {
-            into.extend(self.surface.bound_declarations());
-        }
-    }
-
     fn live_rows(&self) -> Vec<LiveRow> {
         self.surface.live_rows()
     }
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.surface.live_row(id)
-    }
-
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.surface.search_entries()
     }
 }
 
