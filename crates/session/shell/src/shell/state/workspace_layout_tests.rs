@@ -524,8 +524,17 @@ fn where_a_device_left_off_travels_with_the_layout() {
         .desktop
         .set_active_group(StripId(laptop_id(1)), laptop_id(2));
 
-    assert!(laptop.capture_continuations(room));
-    assert!(!laptop.capture_continuations(room), "nothing changed since");
+    assert!(laptop.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface
+    ));
+    assert!(
+        !laptop.capture_continuations(
+            room,
+            crate::shell::doc_open::continuation_file_reference_for_surface
+        ),
+        "nothing changed since"
+    );
     hear(&mut desk, &mut laptop, room, LAPTOP);
     desk.apply_continuations(room);
 
@@ -555,13 +564,19 @@ fn where_a_device_left_off_travels_with_the_layout() {
     );
 
     // The desk has nothing of its own to add about the laptop's windows.
-    desk.capture_continuations(room);
+    desk.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface,
+    );
     assert_eq!(notes::windows(&desk.layout_docs[&room]), noted);
-    assert!(notes::focus(&desk.layout_docs[&room]).get(&DESK).is_none());
+    assert!(!notes::focus(&desk.layout_docs[&room]).contains_key(&DESK));
 
     // Off on the laptop: its notes go.
     laptop.continuation_device = None;
-    assert!(laptop.capture_continuations(room));
+    assert!(laptop.capture_continuations(
+        room,
+        crate::shell::doc_open::continuation_file_reference_for_surface
+    ));
     assert!(notes::windows(&laptop.layout_docs[&room]).is_empty());
     assert!(notes::focus(&laptop.layout_docs[&room]).is_empty());
     replace_test_registry(previous);

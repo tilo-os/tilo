@@ -62,10 +62,6 @@ name = "search-latency"
 path = "examples/search_latency.rs"
 
 [[example]]
-name = "ui-managed-history-probe"
-path = "examples/managed_history_probe.rs"
-
-[[example]]
 name = "ui-native-input-probe"
 path = "examples/native_input_probe.rs"
 

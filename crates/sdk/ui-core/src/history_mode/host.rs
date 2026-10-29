@@ -748,30 +748,13 @@ impl HistoryHost {
                 // Embedded capture has already borrowed the enclosing owner's exact
                 // content. Preserve its dispatch origin; resolve only the witness
                 // against the checked owner document, never by address selection.
-                let witness = match (&control.origin, &self.enclosing_owner) {
-                    (
-                        super::pending_controls::PendingControlOrigin::Legacy(target),
-                        Some(owner),
-                    ) if owner.same_owner(&target.owner) => owner
-                        .document(doc)
-                        .map_err(|error| error.to_string())
-                        .and_then(|owned| {
-                            crate::bound_dispatch::control_witness(
-                                live,
-                                &owned,
-                                &crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
-                                &control.invocation,
-                            )
-                            .map_err(|error| error.to_string())
-                        }),
-                    _ => crate::bound_dispatch::control_witness(
-                        live,
-                        doc,
-                        &control.origin.target(),
-                        &control.invocation,
-                    )
-                    .map_err(|error| error.to_string()),
-                };
+                let witness = crate::bound_dispatch::control_witness(
+                    live,
+                    doc,
+                    &control.origin.target(),
+                    &control.invocation,
+                )
+                .map_err(|error| error.to_string());
                 self.pending_controls.capture_registered(control, witness);
             }
         }
@@ -785,7 +768,7 @@ impl HistoryHost {
                 let witness = crate::bound_dispatch::control_witness(
                     live,
                     doc,
-                    &crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                    &crate::bound_dispatch::local_target::LocalResourceTarget::Component(
                         target.clone(),
                     ),
                     &invocation,
@@ -821,65 +804,33 @@ impl HistoryHost {
                 .into_iter()
                 .map(|error| format!("component capture refused: {error:?}; unobserved entry direct-take output cannot be recovered, later output is discarded")),
         );
-        let legacy = crate::bound_dispatch::legacy_document::drain_legacy_controls(live);
-        for (target, invocation) in legacy.controls {
-            let origin = super::pending_controls::PendingControlOrigin::Legacy(target);
-            let witness =
-                crate::bound_dispatch::control_witness(live, doc, &origin.target(), &invocation)
-                    .map_err(|error| error.to_string());
-            self.pending_controls.capture(origin, invocation, witness);
-        }
-        self.pending_control_capture_failures.extend(
-            legacy
-                .failures
-                .into_iter()
-                .map(|error| format!("document capture refused: {error}")),
-        );
         while let Some(invocation) = crate::widget::controls::take_control_invocation(live) {
-            let (origin, witness) = match self.enclosing_owner.clone() {
-                Some(owner) => match &owner.0 {
-                    super::owner::OwnerKind::Component(binding) => {
-                        let origin = super::pending_controls::PendingControlOrigin::Component(
-                            crate::bound_dispatch::BoundActionTarget {
-                                input: crate::bound_dispatch::Input::Discrete,
-                                binding: binding.clone(),
-                                address: crate::bound_dispatch::BoundActionAddress {
-                                    instance_id: binding.instance_id,
-                                    address: invocation.address.clone(),
-                                },
-                            },
-                        );
-                        let witness = crate::bound_dispatch::control_witness(
-                            live,
-                            doc,
-                            &origin.target(),
-                            &invocation,
-                        )
-                        .map_err(|error| error.to_string());
-                        (origin, witness)
-                    }
-                    super::owner::OwnerKind::Legacy { .. } => {
-                        let origin = super::pending_controls::PendingControlOrigin::Legacy(
-                            crate::bound_dispatch::legacy_document::LegacyResourceTarget {
-                                owner: owner.clone(),
+            let enclosing = self
+                .enclosing_owner
+                .as_ref()
+                .and_then(super::HistoryOwner::component_binding)
+                .cloned();
+            let (origin, witness) = match enclosing {
+                Some(binding) => {
+                    let origin = super::pending_controls::PendingControlOrigin::Component(
+                        crate::bound_dispatch::BoundActionTarget {
+                            input: crate::bound_dispatch::Input::Discrete,
+                            binding: binding.clone(),
+                            address: crate::bound_dispatch::BoundActionAddress {
+                                instance_id: binding.instance_id,
                                 address: invocation.address.clone(),
                             },
-                        );
-                        let witness = owner
-                            .document(doc)
-                            .map_err(|error| error.to_string())
-                            .and_then(|owned| {
-                                crate::bound_dispatch::control_witness(
-                                    live,
-                                    &owned,
-                                    &crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
-                                    &invocation,
-                                )
-                                .map_err(|error| error.to_string())
-                            });
-                        (origin, witness)
-                    }
-                },
+                        },
+                    );
+                    let witness = crate::bound_dispatch::control_witness(
+                        live,
+                        doc,
+                        &origin.target(),
+                        &invocation,
+                    )
+                    .map_err(|error| error.to_string());
+                    (origin, witness)
+                }
                 None => {
                     let origin =
                         super::pending_controls::PendingControlOrigin::Outer { root_lifetime };
@@ -932,7 +883,6 @@ impl HistoryHost {
     )]
     pub(crate) fn discard_pending_output(&mut self, live: &mut dyn Widget) {
         let _ = crate::bound_dispatch::drain_control_invocations(live);
-        crate::bound_dispatch::legacy_document::discard_legacy_controls(live);
         while crate::widget::controls::take_control_invocation(live).is_some() {}
         // Entry observed these exact queues even if mutable traversal failed.
         // Clear after every take: a component's fallback take may transfer a
@@ -1078,22 +1028,6 @@ impl HistoryHost {
         id: &str,
     ) -> Option<PendingControlCallback> {
         self.pending_control_callbacks.get(id).cloned()
-    }
-    #[cfg(test)]
-    pub(crate) fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
-        fn activate(widget: &mut dyn Widget, id: &str) -> bool {
-            crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
-                widget.perform_action(
-                    &crate::a11y::Action::Activate,
-                    &[],
-                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                    &automerge::ROOT,
-                )
-            })
-        }
-        // Invokes the retained production button callback. No phase, lease,
-        // descriptor, or producer behavior is replaced by this access seam.
-        activate(&mut self.toolbar, id)
     }
     pub(crate) fn has_saved_focus(&self) -> bool {
         self.saved_focus.is_some()
@@ -1409,7 +1343,7 @@ impl HistoryHost {
     /// Whether every document this surface answers for is a hosted
     /// component's (or the host's own), whose standing a quiet frame's
     /// witness follows: its record's frontier, and whether it can be read
-    /// at all. A legacy tile's document is not followed.
+    /// at all. A record owner outside a component is not followed.
     pub(crate) fn owners_followed_by_frame_witness(&self) -> bool {
         let followed =
             |owner: &super::HistoryOwner| matches!(owner.0, super::owner::OwnerKind::Component(_));
@@ -2478,8 +2412,6 @@ pub(crate) trait HistoryChromeApi: Widget {
     );
     #[cfg(test)]
     fn pending_control_callback_for_test(&self, id: &str) -> Option<PendingControlCallback>;
-    #[cfg(test)]
-    fn activate_retained_control_for_test(&mut self, id: &str) -> bool;
     fn has_saved_focus(&self) -> bool;
     fn controls_event(&self, event: &WindowEvent, scale: f64) -> bool;
     fn returning_live(&self) -> bool;
@@ -2796,10 +2728,6 @@ impl HistoryChromeApi for HistoryHost {
     #[cfg(test)]
     fn pending_control_callback_for_test(&self, id: &str) -> Option<PendingControlCallback> {
         HistoryHost::pending_control_callback_for_test(self, id)
-    }
-    #[cfg(test)]
-    fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
-        HistoryHost::activate_retained_control_for_test(self, id)
     }
     fn has_saved_focus(&self) -> bool {
         HistoryHost::has_saved_focus(self)

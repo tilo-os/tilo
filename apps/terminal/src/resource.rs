@@ -781,6 +781,14 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
                 cx.me().unwrap_or_default().to_owned(),
             );
         }
+        if cx.mode().is_live()
+            && let (Some(record), Some(device)) = (
+                cx.person::<crate::target::RecentEnvironments>(),
+                cx.device(),
+            )
+        {
+            self.recent_in(crate::target::RecentTarget::in_record(record, device));
+        }
     }
 
     #[cfg(feature = "samples")]
@@ -864,6 +872,14 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
                 record.uri(),
                 cx.me().unwrap_or_default().to_owned(),
             );
+        }
+        if cx.mode().is_live()
+            && let (Some(record), Some(device)) = (
+                cx.person::<crate::target::RecentEnvironments>(),
+                cx.device(),
+            )
+        {
+            self.recent_in(crate::target::RecentTarget::in_record(record, device));
         }
     }
     #[cfg(feature = "samples")]

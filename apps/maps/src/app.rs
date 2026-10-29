@@ -71,7 +71,6 @@ mod nav_surface;
 mod offline;
 mod places;
 mod places_panel;
-mod resource_surface;
 mod results;
 mod route;
 mod sheets;
@@ -79,6 +78,11 @@ mod sheets;
 mod stage;
 
 mod state;
+mod window;
+
+#[cfg(test)]
+use window::MapWindow;
+pub(crate) use window::window;
 
 // Geometry comes from the theme: the window margin is `s4`, the gap between
 // floating elements `s3`, the panel the list-panel width, the controls the
@@ -223,8 +227,8 @@ pub struct MapsApp {
 
     /// The framework's door for the map's edits (save a place, clear the
     /// route): one undo step each, replayed byte-identically on peers — the
-    /// same path a Ctrl+K palette dispatch takes. `None` until the surface is
-    /// attached; an unattached map only shows its edits.
+    /// same path a Ctrl+K palette dispatch takes. `None` until the view
+    /// attaches it; an unattached map only shows its edits.
     dispatch: Option<ui::framework::Dispatcher<Workspace>>,
     /// The offline areas record and this device's id; `None` when the map
     /// has no host to keep them.

@@ -205,7 +205,7 @@ enum ActionKind {
 struct ArgState {
     bound: Option<crate::bound_dispatch::BoundActionTarget>,
     address: tilo_actions::ActionAddress,
-    history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
+    history_target: Option<crate::bound_dispatch::local_target::LocalResourceTarget>,
     history_draft_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
 }
 
@@ -230,7 +230,7 @@ pub struct PendingOperation {
     input: PendingInput,
     confirmation: ConfirmationPolicy,
     confirmation_evidence: serde_json::Value,
-    pub(crate) history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
+    pub(crate) history_target: Option<crate::bound_dispatch::local_target::LocalResourceTarget>,
     pub(crate) history_draft_identity:
         Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
     pub(crate) history_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
@@ -749,7 +749,7 @@ impl ActionPalette {
             }
         };
         let bound = match &request.target {
-            crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target) => {
+            crate::bound_dispatch::local_target::LocalResourceTarget::Component(target) => {
                 Some(target.clone())
             }
             _ => None,
@@ -1029,7 +1029,7 @@ impl ActionPalette {
     pub(crate) fn history_exact_capture_request(
         &self,
     ) -> Option<(
-        crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        crate::bound_dispatch::local_target::LocalResourceTarget,
         tilo_actions::ControlInvocation,
         crate::bound_dispatch::ControlContinuationArguments,
     )> {
@@ -1067,7 +1067,7 @@ impl ActionPalette {
 
     pub(crate) fn retain_history_custody(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
         witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
     ) {

@@ -40,7 +40,7 @@ pub(crate) trait ActionPaletteApi: crate::widget::Widget {
     fn history_has_custody(&self) -> bool;
     fn retain_history_custody(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
         witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
     );
@@ -160,7 +160,7 @@ impl ActionPaletteApi for ActionPalette {
     }
     fn retain_history_custody(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
         witness: Option<Result<crate::bound_dispatch::ControlWitness, String>>,
     ) {

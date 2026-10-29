@@ -106,6 +106,15 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(SettingsShell)
 }
 
+/// Run Settings as its binary does (`ui::main!` in `main.rs`): the release
+/// build's binary calls this through the Settings engine library, which
+/// carries this crate.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run() {
+    enable_provider_administration();
+    ui::framework::run::<SettingsShell>();
+}
+
 #[cfg(test)]
 mod cpu_profile;
 #[cfg(test)]

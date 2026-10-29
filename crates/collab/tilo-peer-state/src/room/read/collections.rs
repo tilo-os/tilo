@@ -13,9 +13,6 @@ impl Collections {
             remaining: usize::MAX,
         }
     }
-    pub(crate) fn limited(limit: usize) -> Self {
-        Self { remaining: limit }
-    }
     pub(crate) fn debit(&mut self, bytes: Option<usize>) -> Result<(), Capacity> {
         self.remaining = bytes
             .and_then(|n| self.remaining.checked_sub(n))
@@ -76,5 +73,3 @@ impl Collections {
         Ok(())
     }
 }
-#[cfg(test)]
-mod tests;

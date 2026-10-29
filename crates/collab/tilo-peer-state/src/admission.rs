@@ -3,7 +3,6 @@ use crate::ReceiveOutcome;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 mod resources;
-pub(crate) use resources::BoundedExactAdmissions;
 
 pub const MAX_EXACT_ADMISSIONS: usize = 65_536;
 pub const MAX_EXACT_ADMISSION_BYTES: usize = 4 * 1024 * 1024;

@@ -77,8 +77,8 @@ if grep -Fxq "BindsTo=$escaped" "$access" \
    && grep -Fq 'ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt' "$access" \
    && grep -Fxq 'After=systemd-update-done.service' "$access" \
    && grep -Fq 'TILO_VALIDATION_CERT_MISSING' "$access" \
-   && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on' "$vm" \
-   && grep -Fq -- '-device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$vm" \
+   && grep -Fq 'format=raw,id=tilo-validation,serial=tilo-validation,readonly' "$vm" \
+   && grep -Fq 'format=raw,if=none,id=tilo-validation,readonly=on -device virtio-blk-pci,drive=tilo-validation,serial=tilo-validation' "$repo/crates/dev/tilo-vm/src/qemu.rs" \
    && grep -Fq 'ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw' "$access"; then
   ok 'the validation unit merges only the signed extension on the disk vm.sh attaches'
 else

@@ -16,7 +16,7 @@ use ui::{PresenceCtx, TextRenderer, Theme};
 
 use super::caption;
 use crate::actions::NewArtwork;
-use crate::document::{self, RecentArtworks, SIZES, STARTS};
+use crate::document::{self, ArtworkRecents, SIZES, STARTS};
 use crate::model::{Artwork, Ground};
 use crate::render::{Options, Renderer};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
@@ -662,88 +662,93 @@ const RECENT_ROWS: usize = 4;
 /// recently changed first, then the files opened or saved lately.
 fn recent_list(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let files = tools.files.clone();
-    cx.switch(&tools.recents, move |cx, recents: &RecentArtworks| {
-        // A window that was opened and left blank made nothing to return to.
-        let mut kept = cx.window_documents();
-        kept.retain(|kept| !kept.state.marks.is_empty() || !kept.state.title.is_empty());
-        kept.truncate(RECENT_ROWS);
-        let recents = &recents.artworks;
-        if recents.is_empty() && kept.is_empty() {
-            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
-        }
-        let mut list = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Tight)
-            .push(super::heading("canvas-recent"));
-        let here = ui::i18n::I18nManager::lookup_plain("canvas-recent-workspace");
-        for (index, artwork) in kept.iter().enumerate() {
-            let art = &artwork.state;
-            let name = if art.title.is_empty() {
-                ui::i18n::I18nManager::lookup_plain("canvas-untitled")
-            } else {
-                art.title.clone()
-            };
-            let content = Row::new()
-                .no_wrap()
-                .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Tight)
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(ui::widget::IconWidget::new(Icon::Image).dim()))
-                .push(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(0.0)
-                        .push(Box::new(Text::new(&name)))
-                        .push(caption(&sides(art.width, art.height)))
-                        .push(caption(&here)),
+    let device = std::rc::Rc::clone(&tools.device);
+    cx.switch(
+        &tools.recents,
+        move |cx, recents: &std::rc::Rc<ArtworkRecents>| {
+            let recents = recents.on(&device);
+            // A window that was opened and left blank made nothing to return to.
+            let mut kept = cx.window_documents();
+            kept.retain(|kept| !kept.state.marks.is_empty() || !kept.state.title.is_empty());
+            kept.truncate(RECENT_ROWS);
+            let recents = &recents.artworks;
+            if recents.is_empty() && kept.is_empty() {
+                return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
+            }
+            let mut list = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Tight)
+                .push(super::heading("canvas-recent"));
+            let here = ui::i18n::I18nManager::lookup_plain("canvas-recent-workspace");
+            for (index, artwork) in kept.iter().enumerate() {
+                let art = &artwork.state;
+                let name = if art.title.is_empty() {
+                    ui::i18n::I18nManager::lookup_plain("canvas-untitled")
+                } else {
+                    art.title.clone()
+                };
+                let content = Row::new()
+                    .no_wrap()
+                    .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Tight)
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .with_align_items(ui::taffy::AlignItems::Center)
+                    .push(Box::new(ui::widget::IconWidget::new(Icon::Image).dim()))
+                    .push(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(0.0)
+                            .push(Box::new(Text::new(&name)))
+                            .push(caption(&sides(art.width, art.height)))
+                            .push(caption(&here)),
+                    ));
+                // The file desk opens it in this window and clears the request.
+                list = list.push(Box::new(
+                    ui::widget::ControlRow::new(content)
+                        .choosing(&files, Some(FileRequest::OpenWorkspace(artwork.uri())))
+                        .with_id(format!("canvas-recent-artwork-{index}"))
+                        .with_accessible_name(format!("{name}, {here}")),
                 ));
-            // The file desk opens it in this window and clears the request.
-            list = list.push(Box::new(
-                ui::widget::ControlRow::new(content)
-                    .choosing(&files, Some(FileRequest::OpenWorkspace(artwork.uri())))
-                    .with_id(format!("canvas-recent-artwork-{index}"))
-                    .with_accessible_name(format!("{name}, {here}")),
-            ));
-        }
-        for recent in recents.iter().take(RECENT_ROWS.saturating_sub(kept.len())) {
-            let name = if recent.title.is_empty() {
-                std::path::Path::new(&recent.path)
-                    .file_stem()
-                    .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
-            } else {
-                recent.title.clone()
-            };
-            let place = std::path::Path::new(&recent.path)
-                .parent()
-                .map_or_else(String::new, |parent| parent.display().to_string());
-            let content = Row::new()
-                .no_wrap()
-                .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Tight)
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(ui::widget::IconWidget::new(Icon::Image).dim()))
-                .push(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(0.0)
-                        .push(Box::new(Text::new(&name)))
-                        .push(caption(&sides(recent.width, recent.height)))
-                        .push(caption(&place)),
+            }
+            for recent in recents.iter().take(RECENT_ROWS.saturating_sub(kept.len())) {
+                let name = if recent.title.is_empty() {
+                    std::path::Path::new(&recent.path)
+                        .file_stem()
+                        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
+                } else {
+                    recent.title.clone()
+                };
+                let place = std::path::Path::new(&recent.path)
+                    .parent()
+                    .map_or_else(String::new, |parent| parent.display().to_string());
+                let content = Row::new()
+                    .no_wrap()
+                    .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Tight)
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .with_align_items(ui::taffy::AlignItems::Center)
+                    .push(Box::new(ui::widget::IconWidget::new(Icon::Image).dim()))
+                    .push(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(0.0)
+                            .push(Box::new(Text::new(&name)))
+                            .push(caption(&sides(recent.width, recent.height)))
+                            .push(caption(&place)),
+                    ));
+                // Choosing the row asks Files for it; the file desk takes the
+                // request and clears it.
+                list = list.push(Box::new(
+                    ui::widget::ControlRow::new(content)
+                        .choosing(&files, Some(FileRequest::OpenRecent(recent.path.clone())))
+                        .with_id(format!("canvas-recent-{}", recent.at_ms))
+                        .with_accessible_name(format!("{name}, {place}")),
                 ));
-            // Choosing the row asks Files for it; the file desk takes the
-            // request and clears it.
-            list = list.push(Box::new(
-                ui::widget::ControlRow::new(content)
-                    .choosing(&files, Some(FileRequest::OpenRecent(recent.path.clone())))
-                    .with_id(format!("canvas-recent-{}", recent.at_ms))
-                    .with_accessible_name(format!("{name}, {place}")),
-            ));
-        }
-        Box::new(list)
-    })
+            }
+            Box::new(list)
+        },
+    )
 }
 
 /// The welcome card as one group: its buttons are a person's way to the

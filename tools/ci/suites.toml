@@ -887,7 +887,7 @@ readers = [
 package = "tilolang-app"
 # The window's tests compile the built-in tilolang packages (source and ids lock).
 inputs = ["apps/tl/"]
-readers = ["apps/tilolang/tests/opening.rs"]
+readers = ["apps/tilolang/tests/board.rs", "apps/tilolang/tests/opening.rs"]
 
 [[cargo]]
 package = "tilolang"
@@ -1529,7 +1529,6 @@ readers = [
   "crates/session/shell/tests/support/snapshot.rs",
   "crates/session/shell/tests/input_method_wire.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
-  "crates/session/shell/src/shell/network/paired_continuity_tests.rs",
   "crates/session/shell/src/compositor/chooser_service.rs",
   "crates/session/shell/src/shell/settings_records.rs",
 ]

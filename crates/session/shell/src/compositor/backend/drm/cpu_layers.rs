@@ -185,11 +185,11 @@ fn full(size: (u32, u32)) -> FineDamageRect {
 }
 
 /// The canvas pixels strip `blit` shows: its destination, read `scroll_x`
-/// pixels to the right.
+/// pixels to the right and `scroll_y` below.
 fn strip_source(blit: &StripBlit) -> FineDamageRect {
     FineDamageRect {
         x: blit.dest_x + blit.scroll_x,
-        y: blit.dest_y,
+        y: blit.dest_y + blit.scroll_y,
         width: blit.dest_w,
         height: blit.dest_h,
     }
@@ -370,6 +370,7 @@ mod tests {
                 dest_w: 128,
                 dest_h: 96,
                 scroll_x,
+                scroll_y: 0,
             }],
             layers: FrameLayers {
                 backdrop: filled(&[(

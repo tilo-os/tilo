@@ -44,3 +44,19 @@ params = [
   { name = "config", required = true, schema = {} },
 ]
 
+[[resources]]
+kind = "firewall.applied"
+label = "Applied configuration"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, String>" },
+]
+
+[[resources.verbs]]
+id = "applied"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "config", required = true, schema = { type = "string" } },
+]
+

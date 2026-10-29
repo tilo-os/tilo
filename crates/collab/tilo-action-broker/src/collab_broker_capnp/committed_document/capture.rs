@@ -254,7 +254,7 @@ mod tests {
         use runtime_collab::committed_document::{
             CreationChunk, CreationReceipt, CreationWorkspace, Reply,
         };
-        use tilo_peer_state::{BoundedStatePeer, PeerLimits, SeedDocument, SeedState, StatePeer};
+        use tilo_peer_state::{SeedDocument, SeedState, StatePeer};
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
         let person = ed25519_dalek::SigningKey::from_bytes(&[21; 32]);
         let device = ed25519_dalek::SigningKey::from_bytes(&[22; 32]);
@@ -294,24 +294,13 @@ mod tests {
                 now,
             )
             .unwrap();
-        let bounded = BoundedStatePeer::restore(
-            &source.durable().unwrap(),
-            room,
-            &certificate,
-            &roster,
-            &RevocationList::new(),
-            now,
-            &PeerLimits::default(),
-        )
-        .unwrap();
-        let record = bounded
-            .read()
+        let record = source
             .capture_document(
                 certificate.device_public_key,
                 ("test.app", ""),
                 now,
                 64 * 1024,
-                &mut |_| Err("empty plaintext record has no epoch opener".into()),
+                None,
             )
             .unwrap();
         let reservation = Arc::new(Budget::default()).try_reserve().unwrap();

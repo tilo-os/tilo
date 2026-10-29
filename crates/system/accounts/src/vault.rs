@@ -107,6 +107,32 @@ pub struct SecretVault {
     custody: SecretCustody,
     load_error: Option<String>,
     read_only: bool,
+    /// The file the entries were read from, as it was then: another process
+    /// that saved since leaves a different one, and [`Self::refresh`] reads
+    /// it again.
+    stamp: Option<FileStamp>,
+}
+
+/// What tells one written `vault.enc` from the next: every save replaces
+/// the file atomically.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl FileStamp {
+    fn of(dir: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(dir.join("vault.enc")).ok()?;
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            inode: std::os::unix::fs::MetadataExt::ino(&metadata),
+        })
+    }
 }
 
 pub(crate) fn explicit_root_custody() -> SecretCustody {
@@ -140,6 +166,7 @@ impl SecretVault {
                     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                     page_in_flight: std::sync::Mutex::default(),
                     custody: explicit_root_custody(),
+                    stamp: None,
                     read_only: false,
                     load_error: Some(format!("user config directory unavailable: {error}")),
                 },
@@ -181,6 +208,7 @@ impl SecretVault {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 page_in_flight: std::sync::Mutex::default(),
                 custody: explicit_root_custody(),
+                stamp: None,
                 read_only: true,
                 load_error: Some("native credential custody unavailable".into()),
             },
@@ -188,6 +216,7 @@ impl SecretVault {
     }
 
     fn open_read_only_at(dir: PathBuf, custody: SecretCustody) -> Self {
+        let stamp = FileStamp::of(&dir);
         let (entries, load_error) = match load_entries_read_only(&dir, custody) {
             Ok(entries) => (entries, None),
             Err(error) => (BTreeMap::new(), Some(error)),
@@ -201,6 +230,7 @@ impl SecretVault {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody,
+            stamp,
             load_error,
             read_only: true,
         }
@@ -227,6 +257,7 @@ impl SecretVault {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody: SecretCustody::System,
+            stamp: None,
             load_error,
             read_only: false,
         }
@@ -245,6 +276,7 @@ impl SecretVault {
                 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
                 page_in_flight: std::sync::Mutex::default(),
                 custody,
+                stamp: None,
                 read_only: false,
                 load_error: Some(
                     "protected credential storage unavailable; restore the system keyring or explicitly open a recovery store".into(),
@@ -255,6 +287,7 @@ impl SecretVault {
     }
 
     fn open_at(dir: PathBuf, custody: SecretCustody) -> Self {
+        let stamp = FileStamp::of(&dir);
         let (entries, load_error) = match load_entries(&dir, custody) {
             Ok(entries) => (entries, None),
             Err(error) => {
@@ -271,8 +304,53 @@ impl SecretVault {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             page_in_flight: std::sync::Mutex::default(),
             custody,
+            stamp,
             load_error,
             read_only: false,
+        }
+    }
+
+    /// Read the file again when another process saved it since this view
+    /// read it, keeping this view's own unsaved edits on top. Every process
+    /// that holds the vault sees what the others wrote (a grant Passwords
+    /// revoked, a key the messaging service prepared); saves already merge
+    /// into the file under its lock. A file that cannot be read now leaves
+    /// the view as it was.
+    pub fn refresh(&mut self) {
+        if self.page.is_some() || self.load_error.is_some() {
+            return;
+        }
+        let stamp = FileStamp::of(&self.dir);
+        if stamp == self.stamp {
+            return;
+        }
+        let loaded = if self.read_only {
+            load_entries_read_only(&self.dir, self.custody)
+        } else {
+            load_entries(&self.dir, self.custody)
+        };
+        match loaded {
+            Ok(mut entries) => {
+                let pending = self
+                    .pending
+                    .get_mut()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                for (id, (_, replacement)) in pending.iter() {
+                    match replacement {
+                        Some(secret) => {
+                            entries.insert(id.clone(), secret.clone());
+                        }
+                        None => {
+                            entries.remove(id);
+                        }
+                    }
+                }
+                self.entries = entries;
+                self.stamp = stamp;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "accounts: vault changed but could not be read again");
+            }
         }
     }
 
@@ -1328,6 +1406,34 @@ mod tests {
     }
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-accounts-vault-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn a_view_sees_what_another_process_saved_and_keeps_its_own_unsaved_edits() {
+        let root = temp_root();
+        let mut messaging = SecretVault::open_in(&root);
+        let mut passwords = SecretVault::open_in(&root);
+        let (key, grant, draft) = (
+            AccountId::from("profile-key"),
+            AccountId::from("grant"),
+            AccountId::from("draft"),
+        );
+        messaging.put(&key, &Secret::password("prepared"));
+        messaging.put(&grant, &Secret::password("granted"));
+        messaging.try_save().unwrap();
+        passwords.put(&draft, &Secret::password("unsaved"));
+        assert_eq!(passwords.get(&key), None, "not read again yet");
+        passwords.refresh();
+        assert_eq!(passwords.get(&key), Some(Secret::password("prepared")));
+        assert_eq!(passwords.get(&draft), Some(Secret::password("unsaved")));
+        // Passwords revokes; the other view honours it once it looks again.
+        passwords.remove(&grant);
+        passwords.try_save().unwrap();
+        messaging.refresh();
+        assert_eq!(messaging.get(&grant), None);
+        assert_eq!(messaging.get(&draft), Some(Secret::password("unsaved")));
+        assert_eq!(messaging.get(&key), Some(Secret::password("prepared")));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

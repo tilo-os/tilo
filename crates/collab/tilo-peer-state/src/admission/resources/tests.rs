@@ -24,18 +24,11 @@ fn actual_index() -> (ExactAdmissions, Vec<DocumentAdmission>) {
     assert_eq!(index.iter().count(), 2);
     (index, admissions)
 }
-fn limits() -> OuterLimits {
-    OuterLimits {
-        allocation_bytes: 256 * 1024,
-        collection_entries: MAX_EXACT_ADMISSIONS,
-    }
-}
-
 #[test]
 fn exact_resource_decode_preserves_actual_signed_admissions() {
     let (index, admissions) = actual_index();
     let bytes = index.encode().unwrap();
-    let decoded = BoundedExactAdmissions::decode(&bytes, limits()).unwrap();
+    let decoded = ExactAdmissions::decode(&bytes).unwrap();
     drop(bytes);
     for admission in &admissions {
         assert_eq!(decoded.get(&admission.key), Some(&admission.operation_id));
@@ -64,27 +57,7 @@ fn exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms(
         vec![1, 0xff, 0xff, 0xff, 0xff, 0x7f],
     ] {
         assert!(ExactAdmissions::decode(&bytes).is_err());
-        assert!(matches!(
-            BoundedExactAdmissions::decode(&bytes, limits()),
-            Err(PeerResourceError::Malformed | PeerResourceError::Capacity)
-        ));
     }
-}
-
-#[test]
-fn exact_resource_small_output_budget_refuses_before_owned_key_growth() {
-    let (index, _) = actual_index();
-    let bytes = index.encode().unwrap();
-    assert!(matches!(
-        BoundedExactAdmissions::decode(
-            &bytes,
-            OuterLimits {
-                allocation_bytes: 128,
-                ..limits()
-            },
-        ),
-        Err(PeerResourceError::Capacity)
-    ));
 }
 
 #[test]

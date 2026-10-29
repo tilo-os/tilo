@@ -142,8 +142,22 @@ impl AdoptionWitness {
         &self,
         expected: impl IntoIterator<Item = io::Result<PathBuf>>,
     ) -> io::Result<()> {
-        let mut actual = self.selected_items();
-        for expected in expected {
+        self.verify_archive_items_beside(expected, None)
+    }
+    /// The same check, except that applications deployed before adoption own
+    /// `installation`: items in it or on the way to it are left to the
+    /// per-entry verification and the applier's receipts.
+    pub fn verify_archive_items_beside(
+        &self,
+        expected: impl IntoIterator<Item = io::Result<PathBuf>>,
+        installation: Option<&Path>,
+    ) -> io::Result<()> {
+        let outside = |path: &io::Result<PathBuf>| match (path, installation) {
+            (Ok(path), Some(root)) => !path.starts_with(root) && !root.starts_with(path),
+            _ => true,
+        };
+        let mut actual = self.selected_items().filter(outside);
+        for expected in expected.into_iter().filter(outside) {
             let expected = expected?;
             if actual.next().transpose()?.as_ref() != Some(&expected) {
                 return Err(changed(

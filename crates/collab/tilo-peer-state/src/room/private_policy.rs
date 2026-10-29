@@ -1,6 +1,5 @@
 //! Shared private policy data. These values confer no caller or owner authority.
 use super::read::{LegacyRead, collections::Collections};
-use crate::resources::{PeerResourceError, json::JsonLimits};
 use automerge::{AutoCommit, AutomergeError};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
@@ -8,7 +7,6 @@ use tilo_user_identity::{DeviceCert, RevocationEntry};
 pub(crate) enum Error {
     Legacy(AutomergeError),
     Capacity,
-    Decode(PeerResourceError),
     Rule(Rule),
     Encoding(postcard::Error),
 }
@@ -55,30 +53,12 @@ pub(crate) struct Metadata<'a, I, J> {
     pub(crate) certificates: I,
     pub(crate) revocations: J,
 }
-#[derive(Clone, Copy)]
-pub(crate) struct Limits {
-    pub(crate) collections: usize,
-    pub(crate) json: JsonLimits,
-}
 pub(crate) struct LegacyBasis {
     pub(crate) revision: String,
     pub(crate) expiries: Vec<u64>,
 }
-pub(crate) struct NativeBasis {
-    revision: String,
-    expiries: Vec<u64>,
-}
-impl NativeBasis {
-    pub(crate) fn revision(&self) -> &str {
-        &self.revision
-    }
-    pub(crate) fn next_expiry_after(&self, at: u64) -> Option<u64> {
-        self.expiries.iter().copied().find(|v| *v > at)
-    }
-}
 use super::media::fingerprint::FingerprintRead;
 use super::read::{self, Capacity, ReadError, RoomValue};
-use crate::resources::json;
 use automerge::{ObjType, ReadDoc};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::BTreeMap;
@@ -128,17 +108,6 @@ struct LegacyDecode;
 impl Decode for LegacyDecode {
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         serde_json::from_slice(bytes).map_err(|_| rule(Rule::GrantInvalid))
-    }
-}
-struct NativeDecode {
-    limits: JsonLimits,
-}
-impl Decode for NativeDecode {
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
-        json::decode(bytes, self.limits).map_err(|error| match error {
-            PeerResourceError::Malformed => rule(Rule::GrantInvalid),
-            PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
-        })
     }
 }
 fn grants<R: PrivateRead, D: Decode>(
@@ -377,26 +346,6 @@ where
     let expiries = grants(read, &LegacyDecode, &mut work)?;
     let revision = revision(read, meta, &mut work)?;
     Ok(LegacyBasis { revision, expiries })
-}
-pub(crate) fn native<'a, I, J>(
-    read: &LegacyRead<'_, AutoCommit>,
-    meta: Metadata<'a, I, J>,
-    limits: Limits,
-) -> Result<NativeBasis, Error>
-where
-    I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
-    J: Iterator<Item = &'a RevocationEntry>,
-{
-    let mut work = Collections::limited(limits.collections);
-    let expiries = grants(
-        read,
-        &NativeDecode {
-            limits: limits.json,
-        },
-        &mut work,
-    )?;
-    let revision = revision(read, meta, &mut work)?;
-    Ok(NativeBasis { revision, expiries })
 }
 #[cfg(test)]
 mod tests;

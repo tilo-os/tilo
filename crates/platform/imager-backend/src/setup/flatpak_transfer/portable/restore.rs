@@ -262,8 +262,8 @@ impl ApplicationImport {
         }
     }
     /// Explicitly adopt only authenticated user Flatpak state when the person
-    /// deselected their documents. The canonical namespace/copy/promotion engine
-    /// preserves collisions and private Tilo custody.
+    /// deselected their documents. The state travels as a sealed Home unit and
+    /// the promotion engine preserves collisions and private Tilo custody.
     /// # Errors
     /// Refuses incomplete copies, changed receipts, collisions or cancellation.
     pub fn adopt_user_state(

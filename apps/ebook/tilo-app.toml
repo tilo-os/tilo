@@ -33,7 +33,7 @@ aarch64 = "aarch64"
 optional = ["clipboard", "files.open", "files.paths", "app-files", "settings", "threads", "media.decode", "network.http"]
 
 [resources]
-kinds = ["ebook.library", "tilo.rich-text", "settings.books-catalogues"]
+kinds = ["ebook.library", "tilo.rich-text", "settings.books-catalogues", "ebook.files"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

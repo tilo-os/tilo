@@ -358,6 +358,39 @@ impl ViewportState {
         )
     }
 
+    /// How far the content is panned from where it shows unpanned: the
+    /// scroll along each axis it overflows.
+    pub fn pan(&self) -> Vec2 {
+        Vec2::new(
+            if self.overflows_x() {
+                self.scroll_x
+            } else {
+                0.0
+            },
+            if self.overflows_y() {
+                self.scroll_y
+            } else {
+                0.0
+            },
+        )
+    }
+
+    /// [`Self::content_to_screen`] with no pan: where the content shows
+    /// with [`Self::pan`] taken out, the same at every pan.
+    pub fn content_to_canvas(&self) -> Affine {
+        let x = if self.overflows_x() {
+            self.rect.x0 + self.pad
+        } else {
+            self.origin_x()
+        };
+        let y = if self.overflows_y() {
+            self.rect.y0 + self.pad
+        } else {
+            self.origin_y()
+        };
+        compose(Affine::translate(Vec2::new(x, y)), Affine::scale(self.zoom))
+    }
+
     /// Map a single content-space point to screen space.
     pub fn content_point_to_screen(&self, p: Point) -> Point {
         let o = self.content_origin();
@@ -1258,9 +1291,21 @@ impl Widget for DocumentViewport {
             transform: crate::scroll_copy::on_screen(transform),
             tracks: [self.state.v_track(), self.state.h_track()],
         });
-        match &mut self.content {
-            Content::Widget(c) => c.draw(scene, content_xf, text_renderer, theme, presence),
-            Content::Draw(draw) => draw(scene, content_xf, text_renderer, theme, self.rect),
+        // A host drawing the frame as layers keeps the content panned on
+        // its own (`crate::strip_layers::draw_strip`): it is drawn where it
+        // shows with no pan, the same drawing at every pan.
+        let pan = self.state.pan();
+        let rect = self.rect;
+        let content = &mut self.content;
+        let mut draw_content = |scene: &mut Scene, at: Affine| match content {
+            Content::Widget(c) => c.draw(scene, at, text_renderer, theme, presence),
+            Content::Draw(draw) => draw(scene, at, text_renderer, theme, rect),
+        };
+        let canvas_xf = compose(transform, self.state.content_to_canvas());
+        if !crate::strip_layers::draw_strip(scene, transform, rect, pan, |canvas| {
+            draw_content(canvas, canvas_xf);
+        }) {
+            draw_content(scene, content_xf);
         }
         self.state.draw_scrollbars(scene, transform, theme);
         self.publish_scroll();
@@ -2155,3 +2200,7 @@ mod tests {
 #[cfg(test)]
 #[path = "document_viewport_copy_tests.rs"]
 mod copy_tests;
+
+#[cfg(all(test, feature = "native"))]
+#[path = "document_viewport_layers_tests.rs"]
+mod layers_tests;

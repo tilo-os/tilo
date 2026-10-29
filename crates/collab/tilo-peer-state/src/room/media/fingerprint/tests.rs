@@ -1,5 +1,5 @@
 use super::*;
-use crate::resources::native::NativeBatch;
+use crate::room::read::LegacyRead;
 use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ScalarValue, Value, transaction::Transactable,
 };
@@ -58,14 +58,11 @@ fn compare(doc: &AutoCommit) {
         },
         expected
     );
-    // The same fingerprints from the document as the isolated loader admits it.
-    let admitted = NativeBatch::new(usize::MAX)
-        .load(&doc.clone().save())
-        .unwrap();
+    // The same fingerprints from the document as loaded from its bytes.
+    let admitted = AutoCommit::load(&doc.clone().save()).unwrap();
     let mut hashes = [[0; 32]; 8];
     let mut index = 0;
-    let count = admitted
-        .read()
+    let count = LegacyRead(&admitted)
         .visit_media_fingerprints(|hash| {
             hashes[index] = hash;
             index = index.checked_add(1).unwrap();
@@ -133,11 +130,9 @@ fn shared_fingerprint_preserves_actual_conflicts_and_visitor_refusal() {
     doc.merge_incoming(&mut a).unwrap();
     doc.merge_incoming(&mut b).unwrap();
     compare(&doc);
-    let admitted = NativeBatch::new(usize::MAX)
-        .load(&doc.clone().save())
-        .unwrap();
+    let admitted = AutoCommit::load(&doc.clone().save()).unwrap();
     assert_eq!(
-        admitted.read().visit_media_fingerprints(|_| Err(7u8)),
+        LegacyRead(&admitted).visit_media_fingerprints(|_| Err(7u8)),
         Err(ReadError::Visitor(7))
     );
 }

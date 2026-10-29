@@ -3766,6 +3766,7 @@ impl FrameBuilder {
                 dest_w: x1.saturating_sub(x0).max(1),
                 dest_h: y1.saturating_sub(y0).max(1),
                 scroll_x: scene_px(shift.round()),
+                scroll_y: 0,
             });
             plan.ids.push(strip);
         }
