@@ -118,8 +118,6 @@ pub mod public_avatars;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_offers;
 #[cfg(feature = "agents")]
-pub mod reseal;
-#[cfg(feature = "agents")]
 pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod state_lock;

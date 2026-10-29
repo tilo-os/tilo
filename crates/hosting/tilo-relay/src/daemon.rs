@@ -163,10 +163,6 @@ pub struct Relay {
     compute_ready: Arc<AtomicBool>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
-    /// Sealing what the rooms whose channels it takes part in hold in the clear, started when
-    /// its operator decided it ([`crate::reseal`]).
-    #[cfg(feature = "agents")]
-    resealing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -437,15 +433,6 @@ impl Relay {
             shell_payloads,
         } = planes;
         validate_additional_protocols(&additional_protocols)?;
-        if cfg.retired_peer_relays.take().is_some() {
-            tracing::warn!("the relay configuration's peer_relays are ignored");
-        }
-        if cfg.retired_workspaces.take().is_some() {
-            tracing::warn!(
-                "the relay configuration's [[workspace]] tables are ignored: the rooms this relay \
-                 holds are those whose governance makes it one of their hosts"
-            );
-        }
         import_home_peer(&mut cfg)?;
         validate_relay_identity(&identity)?;
         if !cfg.device_role.can_serve() {
@@ -568,21 +555,6 @@ impl Relay {
             certification: certification.clone(),
             node_session: Arc::default(),
         });
-        #[cfg(feature = "agents")]
-        let mut resealing = None;
-        // What the rooms whose channels it takes part in hold in the clear is sealed only once
-        // its operator decided it, recorded in its state.
-        #[cfg(feature = "agents")]
-        if let Some(rooms) = &rooms
-            && crate::reseal::decided(&cfg.state_root)
-        {
-            let (rooms, compactor) = (rooms.clone(), handler.compactor.clone());
-            rooms.reseal_existing();
-            compactor.reseal_existing();
-            resealing = Some(tokio::spawn(async move {
-                rooms.reseal_own_channels(&compactor).await;
-            }));
-        }
         let mut router = Router::builder(endpoint.clone())
             .accept(ALPN, handler)
             .accept(crate::certify::CERTIFY_ALPN, certification)
@@ -641,8 +613,6 @@ impl Relay {
             endpoint,
             router,
             sessions,
-            #[cfg(feature = "agents")]
-            resealing: std::sync::Mutex::new(resealing),
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
             background_tasks,
@@ -739,21 +709,6 @@ impl Relay {
     /// what a peer needs to dial this relay.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
-    }
-
-    /// Wait until the relay has sealed what the rooms whose channels it takes part in held in
-    /// the clear when it started, if its operator decided it
-    /// ([`crate::reseal`]).
-    #[cfg(feature = "agents")]
-    pub async fn resealed(&self) {
-        let task = self
-            .resealing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if let Some(task) = task {
-            let _ = task.await;
-        }
     }
 
     /// The compactor keeping this relay's retained document channels short.
