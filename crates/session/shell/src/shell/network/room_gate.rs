@@ -82,8 +82,6 @@ impl ShellNetwork {
             // the personal lane is the person's own topic, never a room's.
             NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::MediaCapabilities { .. }
-            | NeighbourMsg::PersonalContinuityRequest { .. }
-            | NeighbourMsg::PersonalContinuityCheckpoint { .. }
             | NeighbourMsg::PersonalWorkspaces { .. }
             | NeighbourMsg::RoomArchive { .. }
             // Retired generations, refused where they enter

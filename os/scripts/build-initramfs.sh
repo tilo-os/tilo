@@ -50,7 +50,7 @@ dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
     --omit-drivers "amdgpu nouveau xe xfs" \
     --add-drivers ext4 \
-    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter tilo-boot-face" \
+    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
   || { cat "$log" >&2; exit 1; }
 test -s "/usr/lib/modules/$kver/initramfs.img"
@@ -73,11 +73,6 @@ for m in $omit_modules; do
   ! grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || {
     echo "unsupported initramfs module $m was included" >&2; exit 1; }
 done
-# Not needed to open the root, but without it the boot sign-in screen draws in
-# whatever font fontconfig defaults to rather than the login screen's face.
-grep -qx tilo-boot-face /usr/lib/tilo/initramfs-modules.txt || {
-  echo "dracut did not include tilo-boot-face; the boot screen would not draw in the login screen's face" >&2
-  exit 1; }
 # The greeter is the initramfs's largest part: its build, faces, keymaps,
 # voices and sound stack, measured by its module as it installs them. They
 # grow only on purpose: raise the budget with the change that needs it.

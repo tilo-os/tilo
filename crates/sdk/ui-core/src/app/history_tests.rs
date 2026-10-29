@@ -176,26 +176,15 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         layout(&mut app);
         let editor = node_for_test_id(&app, "draft-editor");
         app.set_focused_node(Some(editor));
-        app.dispatch_node(editor, |widget, doc, path| {
-            widget.perform_action(
-                &crate::a11y::Action::SetValue("unfinished".into()),
-                &[],
-                &mut crate::widget::Edits::lend(doc),
-                path,
-            )
-        })
-        .unwrap();
-        app.dispatch_node(editor, |widget, doc, path| {
-            widget.perform_action(
-                &crate::a11y::Action::SetSelection {
-                    anchor: 2,
-                    focus: 7,
-                },
-                &[],
-                &mut crate::widget::Edits::lend(doc),
-                path,
-            )
-        })
+        app.perform_node_action(editor, &crate::a11y::Action::SetValue("unfinished".into()))
+            .unwrap();
+        app.perform_node_action(
+            editor,
+            &crate::a11y::Action::SetSelection {
+                anchor: 2,
+                focus: 7,
+            },
+        )
         .unwrap();
         app.state.doc.put(ROOT, "in-progress", "pending").unwrap();
         let heads = app.state.doc.base_heads();
@@ -379,15 +368,8 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         layout(&mut app);
         let editor = node_for_test_id(&app, "pending-editor");
         app.set_focused_node(Some(editor));
-        app.dispatch_node(editor, |widget, doc, path| {
-            widget.perform_action(
-                &crate::a11y::Action::SetValue("draft".into()),
-                &[],
-                &mut crate::widget::Edits::lend(doc),
-                path,
-            )
-        })
-        .unwrap();
+        app.perform_node_action(editor, &crate::a11y::Action::SetValue("draft".into()))
+            .unwrap();
         app.state.doc.put(ROOT, "unrelated", "pending").unwrap();
         let before = (app.state.doc.base_heads(), app.state.doc.pending_ops());
         let target = named(&mut app, "History");
@@ -5365,15 +5347,8 @@ fn emit_pending_control_command(
     test_id: &str,
 ) -> crate::history_mode::pending_controls::ContinuationCommand {
     let node = node_for_test_id(app, test_id);
-    app.dispatch_node(node, |widget, doc, path| {
-        widget.perform_action(
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(doc),
-            path,
-        )
-    })
-    .unwrap();
+    app.perform_node_action(node, &crate::a11y::Action::Activate)
+        .unwrap();
     let mut commands = app
         .history
         .as_ref()
@@ -5413,14 +5388,10 @@ fn delayed_framework_continue_confirm_and_cancel_callbacks_cannot_cross_reentry_
                 app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
                 layout(&mut app);
                 let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-                app.dispatch_node(phrase, |widget, doc, path| {
-                    widget.perform_action(
-                        &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
-                        &[],
-                        &mut crate::widget::Edits::lend(doc),
-                        path,
-                    )
-                })
+                app.perform_node_action(
+                    phrase,
+                    &crate::a11y::Action::SetValue("RUN COMPONENT".into()),
+                )
                 .unwrap();
                 emit_pending_control_command(&mut app, "history-pending-1")
             }
@@ -5505,14 +5476,10 @@ fn retained_framework_callback_objects_cannot_acquire_current_tokens_after_reent
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
             let phrase = node_for_test_id(&app, "history-pending-1-phrase");
-            app.dispatch_node(phrase, |widget, doc, path| {
-                widget.perform_action(
-                    &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
-                    &[],
-                    &mut crate::widget::Edits::lend(doc),
-                    path,
-                )
-            })
+            app.perform_node_action(
+                phrase,
+                &crate::a11y::Action::SetValue("RUN CALLBACK".into()),
+            )
             .unwrap();
         }
         let callback = app
@@ -7248,13 +7215,8 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
     layout(&mut app);
     let a = node_for_test_id(&app, "A");
     assert!(
-        app.dispatch_node(a, |widget, doc, path| widget.perform_action(
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(doc),
-            path
-        ))
-        .unwrap()
+        app.perform_node_action(a, &crate::a11y::Action::Activate)
+            .unwrap()
     );
     let named_action_target = named(&mut app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
@@ -7377,13 +7339,8 @@ fn control_custody_core_actual_nested_surfaces_finish_in_both_orders() {
         layout(&mut app);
         let a = node_for_test_id(&app, "A");
         assert!(
-            app.dispatch_node(a, |widget, doc, path| widget.perform_action(
-                &crate::a11y::Action::Activate,
-                &[],
-                &mut crate::widget::Edits::lend(doc),
-                path
-            ))
-            .unwrap()
+            app.perform_node_action(a, &crate::a11y::Action::Activate)
+                .unwrap()
         );
         custody_embedded_click(&mut app, "history-open");
         custody_outer_history(&mut app);
@@ -7478,13 +7435,8 @@ fn control_custody_core_actual_retained_tile_rebind_closes_old_outboxes() {
     layout(&mut app);
     let node = node_for_test_id(&app, "A");
     assert!(
-        app.dispatch_node(node, |widget, doc, path| widget.perform_action(
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(doc),
-            path
-        ))
-        .unwrap()
+        app.perform_node_action(node, &crate::a11y::Action::Activate)
+            .unwrap()
     );
     custody_outer_history(&mut app);
     let saved = app.pending_history_controls();
@@ -7789,13 +7741,8 @@ fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     layout(&mut app);
     let a = node_for_test_id(&app, "A");
     assert!(
-        app.dispatch_node(a, |widget, doc, path| widget.perform_action(
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(doc),
-            path
-        ))
-        .unwrap()
+        app.perform_node_action(a, &crate::a11y::Action::Activate)
+            .unwrap()
     );
     let named_action_target = named(&mut app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
@@ -7987,13 +7934,8 @@ fn control_custody_core_nested_unbound_tile_follows_authorized_record_renewal() 
 
     let node = node_for_test_id(&app, "nested-renewal");
     assert!(
-        app.dispatch_node(node, |widget, doc, path| widget.perform_action(
-            &crate::a11y::Action::Activate,
-            &[],
-            &mut crate::widget::Edits::lend(doc),
-            path,
-        ))
-        .unwrap()
+        app.perform_node_action(node, &crate::a11y::Action::Activate)
+            .unwrap()
     );
     custody_outer_history(&mut app);
     let saved = app.pending_history_controls();

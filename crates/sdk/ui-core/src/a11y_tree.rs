@@ -61,10 +61,13 @@ mod reading_order;
 mod component_nodes;
 #[path = "a11y_tree/pointed.rs"]
 mod pointed;
+#[path = "a11y_tree/walk.rs"]
+pub(crate) mod walk;
 use component_nodes::ComponentNodes;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
+use walk::{A11yVisitor, Visit, walk, walk_synthetic};
 
 /// A widget hosted inside its parent's synthetic tree, and the synthetic path
 /// below the child it hangs off ([`Widget::accessibility_child_path`]).
@@ -578,8 +581,14 @@ impl SemanticTree {
         let root_id = SemanticId::root();
         builder.order.push(root_id.clone());
 
-        let mut root_children: Vec<SemanticId> = Vec::new();
-        builder.visit_widget(root, &root_id, true, &mut root_children);
+        let mut top = Level {
+            id: root_id.clone(),
+            durable: true,
+            owner: None,
+            children: Vec::new(),
+        };
+        walk::<BOUND, _>(&mut builder, root, None, &mut top);
+        let mut root_children = top.children;
 
         // Resource affordances hang off the root as their own subtrees.
         for res in resources {
@@ -1250,14 +1259,6 @@ impl Synthetic {
     }
 }
 
-/// The node a synthetic child hangs off: its id, and whether that id is
-/// durable (a keyed id is durable only under a durable parent).
-#[derive(Clone, Copy)]
-struct SyntheticParent<'a> {
-    id: &'a SemanticId,
-    durable: bool,
-}
-
 /// One frame's nodes as the tree keeps them: the widget and declared-resource
 /// nodes, and each bound component's.
 struct Sections<'a> {
@@ -1349,153 +1350,18 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             self.duplicate_ids.push(id);
         }
     }
-    /// A presentational widget (`accessibility() == None`) is collapsed
-    /// out and its children reparented — matching the AccessKit bridge.
-    ///
-    /// A keyed id embeds its parent's, so it is durable only under a
-    /// durable parent: a key under a layout id moves when the UI rebuilds.
-    fn visit_widget(
-        &mut self,
-        w: &dyn Widget,
-        semantic_parent: &SemanticId,
-        parent_durable: bool,
-        parent_children: &mut Vec<SemanticId>,
-    ) {
-        // Under a parent without a durable identity nothing is durable, and
-        // the projection for actions keeps only durable nodes: it need not
-        // ask this widget or anything under it for its node.
-        if self.actions_only && !parent_durable {
-            return;
-        }
-        let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
-            return;
-        };
-        let taffy_id = self.ptr_to_taffy.get(w);
-        // A retained widget the window's layout gave no node is reached
-        // through the nearest widget that has one.
-        let route = self.routes.enter(w, taffy_id);
-        let (access, shared) = match w.accessibility_shared() {
-            Some(SharedAccessNode { node, children }) => (Some(node), children),
-            None => (w.accessibility(), Vec::new()),
-        };
-        match access {
-            Some(mut access) => {
-                let id = if let Some(key) = &access.semantic_key {
-                    SemanticId::keyed(semantic_parent, key)
-                } else if let Some(t) = taffy_id {
-                    SemanticId::widget(t)
-                } else {
-                    // Rare (never laid out); key under the parent so it
-                    // still gets a stable id.
-                    let root = SemanticId::root();
-                    let parent = parent_children.last().unwrap_or(&root);
-                    SemanticId::synthetic(parent, parent_children.len())
-                };
-                let durable_identity = access.semantic_key.is_some() && parent_durable;
-                self.ambiguous_projection |= durable_identity
-                    && access
-                        .semantic_key
-                        .as_ref()
-                        .is_some_and(|key| key.contains('~'));
-                if self.actions_only && !durable_identity {
-                    return;
-                }
-
-                let mut children: Vec<SemanticId> = Vec::new();
-                let ExportedChildren {
-                    direct, mut hosted, ..
-                } = exported_children(w);
-                for (_, child) in direct {
-                    self.visit_widget(child, &id, durable_identity, &mut children);
-                }
-                // Placed where the widget draws them, as the AccessKit
-                // bridge places them, so a point finds a synthetic child.
-                if !access.children.is_empty() {
-                    access = crate::a11y::with_synthetic_bounds(access, w);
-                }
-                let synthetic = std::mem::take(&mut access.children)
-                    .into_iter()
-                    .map(Synthetic::Owned)
-                    .chain(shared.into_iter().map(Synthetic::Shared));
-                let outer_route = std::mem::replace(&mut self.synthetic_route, route.clone());
-                for (i, synth) in synthetic.enumerate() {
-                    let child = self.visit_synthetic_retained(
-                        SyntheticParent {
-                            id: &id,
-                            durable: durable_identity,
-                        },
-                        i,
-                        synth,
-                        taffy_id,
-                        hosted.remove(&i).unwrap_or_default(),
-                    );
-                    children.push(child);
-                }
-                self.synthetic_route = outer_route;
-
-                let mut state = access.state;
-                if let (Some(t), Some(f)) = (taffy_id, self.focused)
-                    && t == f
-                {
-                    state.focused = true;
-                }
-
-                // Disabled/read-only gate the verbs but focus does not, so
-                // compute against the focus-updated state.
-                let actions = verbs(access.role, &state);
-
-                let node = SemanticNode {
-                    id: id.clone(),
-                    durable_identity,
-                    role: access.role,
-                    name: access.name.clone(),
-                    value: if access.state.protected {
-                        None
-                    } else {
-                        access.value.clone()
-                    },
-                    state,
-                    bounds: Some(w.get_rect()),
-                    actions,
-                    children,
-                    // A widget with no layout node is acted on through the
-                    // nearest one that has.
-                    widget_taffy_id: taffy_id
-                        .or(route.as_ref().map(|(owner, _)| *owner))
-                        .map(u64::from),
-                    semantic_target: match (&route, taffy_id) {
-                        (Some((_, path)), None) => Some(crate::a11y_child_route::encode(
-                            path,
-                            access.action_target.as_deref(),
-                        )),
-                        _ => access.action_target.clone(),
-                    },
-                    place: SetPlace::of(&access),
-                };
-                self.order.push(id.clone());
-                self.insert_node(node);
-                parent_children.push(id);
-            }
-            None => {
-                for child in w.children() {
-                    self.visit_widget(child, semantic_parent, parent_durable, parent_children);
-                }
-            }
-        }
-    }
 
     /// A widget's synthetic child: its nodes moved over from the last frame
     /// when it built them from the same parts ([`RetainedSubtree`]), else
-    /// [`visit_synthetic`](Self::visit_synthetic) builds them and they are
-    /// retained for the next.
+    /// [`walk_synthetic`] builds them and they are retained for the next.
     fn visit_synthetic_retained(
         &mut self,
-        parent: SyntheticParent<'_>,
+        owner: &dyn Widget,
         index: usize,
         access: Synthetic,
-        owner: Option<TaffyNodeId>,
         hosted: Vec<HostedWidget<'_>>,
-    ) -> SemanticId {
+        parent: &mut Level,
+    ) {
         // A widget hosted in the child is walked afresh, and the projection
         // for actions keeps nothing; nor does a routed widget's, whose
         // targets carry its route.
@@ -1504,15 +1370,23 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             {
                 self.compared = self.compared.saturating_add(1);
             }
-            return self.visit_synthetic(parent, index, access.node(), owner, hosted);
+            walk_synthetic::<BOUND, Self>(
+                self,
+                owner,
+                &mut vec![index],
+                access.node(),
+                hosted,
+                parent,
+            );
+            return;
         }
         let id = access.node().key.map_or_else(
-            || SemanticId::synthetic(parent.id, index),
-            |key| SemanticId::keyed(parent.id, key),
+            || SemanticId::synthetic(&parent.id, index),
+            |key| SemanticId::keyed(&parent.id, key),
         );
         if let Some(retained) = self.retained_before.remove(&id)
             && retained.durable == parent.durable
-            && retained.owner == owner
+            && retained.owner == parent.owner
             && access.is(&retained.access)
         {
             #[cfg(any(test, feature = "test-support"))]
@@ -1527,7 +1401,8 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
                     ..retained
                 },
             );
-            return id;
+            parent.children.push(id);
+            return;
         }
         #[cfg(any(test, feature = "test-support"))]
         {
@@ -1535,71 +1410,248 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         }
         let start = self.order.mark();
         let duplicates = self.duplicate_ids.len();
-        let built = self.visit_synthetic(parent, index, access.node(), owner, hosted);
+        walk_synthetic::<BOUND, Self>(self, owner, &mut vec![index], access.node(), hosted, parent);
         // A subtree that repeated an id is left to the full walk.
-        if built == id && self.duplicate_ids.len() == duplicates {
+        if parent.children.last() == Some(&id) && self.duplicate_ids.len() == duplicates {
             let ids = self.order.since(start).into();
             let replaced = self.retained.insert(
                 id,
                 RetainedSubtree {
                     access: access.into_shared(),
                     durable: parent.durable,
-                    owner,
+                    owner: parent.owner,
                     ids,
                     kept: false,
                 },
             );
             self.kept_overwritten |= replaced.is_some_and(|subtree| subtree.kept);
         }
-        built
+    }
+    /// A declared resource's node and its children's, beneath the root.
+    fn visit_resource(&mut self, res: &ResourceSpec) -> SemanticId {
+        let id = SemanticId::resource(res.id.as_str());
+        let actions = component_nodes::resource_actions(&id, res, None, &mut self.prompted, None);
+        let mut children: Vec<SemanticId> = Vec::new();
+        for child in &res.children {
+            children.push(self.visit_resource(child));
+        }
+        let node =
+            component_nodes::resource_semantic_node(id.clone(), res, actions, children, true);
+        self.order.push(id.clone());
+        self.insert_node(node);
+        id
+    }
+}
+
+/// A widget's node between [`A11yVisitor::open`] and
+/// [`A11yVisitor::close`].
+struct PendingWidget {
+    access: AccessNode,
+    /// Synthetic children shared with the frame that built them
+    /// ([`Widget::accessibility_shared`]).
+    shared: Vec<Arc<AccessNode>>,
+    taffy_id: Option<TaffyNodeId>,
+    route: Option<crate::a11y_child_route::ChildRoute>,
+}
+
+/// The node children attach under: its id, whether that id is durable (a
+/// keyed id is durable only under a durable parent), the laid-out widget
+/// whose synthetic tree it is in, and the children gathered so far.
+struct Level {
+    id: SemanticId,
+    durable: bool,
+    owner: Option<TaffyNodeId>,
+    children: Vec<SemanticId>,
+}
+
+/// A keyed id embeds its parent's, so it is durable only under a durable
+/// parent: a key under a layout id moves when the UI rebuilds.
+impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
+    type Scope = Level;
+    type Pending = PendingWidget;
+    type SyntheticPending = ();
+
+    fn open(
+        &mut self,
+        w: &dyn Widget,
+        _slot: Option<(&dyn Widget, usize)>,
+        parent: &mut Level,
+    ) -> Visit<PendingWidget, Level> {
+        // Under a parent without a durable identity nothing is durable, and
+        // the projection for actions keeps only durable nodes: it need not
+        // ask this widget or anything under it for its node.
+        if self.actions_only && !parent.durable {
+            return Visit::Skip;
+        }
+        let taffy_id = self.ptr_to_taffy.get(w);
+        // A retained widget the window's layout gave no node is reached
+        // through the nearest widget that has one.
+        let route = self.routes.enter(w, taffy_id);
+        let (access, shared) = match w.accessibility_shared() {
+            Some(SharedAccessNode { node, children }) => (Some(node), children),
+            None => (w.accessibility(), Vec::new()),
+        };
+        let Some(access) = access else {
+            return Visit::Collapse;
+        };
+        let id = if let Some(key) = &access.semantic_key {
+            SemanticId::keyed(&parent.id, key)
+        } else if let Some(t) = taffy_id {
+            SemanticId::widget(t)
+        } else {
+            // Rare (never laid out); key under the parent so it still gets
+            // a stable id.
+            let root = SemanticId::root();
+            let sibling = parent.children.last().unwrap_or(&root);
+            SemanticId::synthetic(sibling, parent.children.len())
+        };
+        let durable = access.semantic_key.is_some() && parent.durable;
+        self.ambiguous_projection |= durable
+            && access
+                .semantic_key
+                .as_ref()
+                .is_some_and(|key| key.contains('~'));
+        if self.actions_only && !durable {
+            return Visit::Skip;
+        }
+        Visit::Node(
+            PendingWidget {
+                access,
+                shared,
+                taffy_id,
+                route,
+            },
+            Level {
+                id,
+                durable,
+                owner: taffy_id,
+                children: Vec::new(),
+            },
+        )
     }
 
-    /// A virtual row/cell — has no backing widget, but may carry geometry.
-    /// The parent's durability is passed down rather than read from
-    /// `self.nodes`: a parent is stored only after its children are visited.
-    fn visit_synthetic(
+    fn close<'w>(
         &mut self,
-        SyntheticParent {
-            id: parent,
-            durable: parent_durable,
-        }: SyntheticParent<'_>,
-        index: usize,
-        access: &AccessNode,
-        owner: Option<TaffyNodeId>,
-        hosted: Vec<HostedWidget<'_>>,
-    ) -> SemanticId {
-        let id = access.key.map_or_else(
-            || SemanticId::synthetic(parent, index),
-            |key| SemanticId::keyed(parent, key),
-        );
-        let durable_identity = access.key.is_some() && parent_durable;
-        let semantic_target = access.action_target.as_deref();
-        let mut children: Vec<SemanticId> = Vec::new();
-        match hosted_in(hosted) {
-            HostedIn::Nested(mut nested) => {
-                for (i, child) in access.children.iter().enumerate() {
-                    let c = self.visit_synthetic(
-                        SyntheticParent {
-                            id: &id,
-                            durable: durable_identity,
-                        },
-                        i,
-                        child,
-                        owner,
-                        nested.remove(&i).unwrap_or_default(),
-                    );
-                    children.push(c);
-                }
-            }
-            HostedIn::Direct(direct) => {
-                for child in direct {
-                    self.visit_widget(child, &id, durable_identity, &mut children);
-                }
-            }
+        w: &'w dyn Widget,
+        PendingWidget {
+            mut access,
+            shared,
+            taffy_id,
+            route,
+        }: PendingWidget,
+        mut scope: Level,
+        mut hosted: HostedByIndex<'w>,
+        _represented: Vec<&'w dyn Widget>,
+        parent: &mut Level,
+    ) {
+        // Placed where the widget draws them, as the AccessKit bridge places
+        // them, so a point finds a synthetic child.
+        if !access.children.is_empty() {
+            access = crate::a11y::with_synthetic_bounds(access, w);
         }
+        let synthetic = std::mem::take(&mut access.children)
+            .into_iter()
+            .map(Synthetic::Owned)
+            .chain(shared.into_iter().map(Synthetic::Shared));
+        let outer_route = std::mem::replace(&mut self.synthetic_route, route.clone());
+        for (i, synth) in synthetic.enumerate() {
+            let hosted = hosted.remove(&i).unwrap_or_default();
+            self.visit_synthetic_retained(w, i, synth, hosted, &mut scope);
+        }
+        self.synthetic_route = outer_route;
+
+        let mut state = access.state;
+        if let (Some(t), Some(f)) = (taffy_id, self.focused)
+            && t == f
+        {
+            state.focused = true;
+        }
+
+        // Disabled/read-only gate the verbs but focus does not, so compute
+        // against the focus-updated state.
+        let actions = verbs(access.role, &state);
+
+        let Level {
+            id,
+            durable,
+            children,
+            ..
+        } = scope;
         let node = SemanticNode {
             id: id.clone(),
-            durable_identity,
+            durable_identity: durable,
+            role: access.role,
+            name: access.name.clone(),
+            value: if access.state.protected {
+                None
+            } else {
+                access.value.clone()
+            },
+            state,
+            bounds: Some(w.get_rect()),
+            actions,
+            children,
+            // A widget with no layout node is acted on through the nearest
+            // one that has.
+            widget_taffy_id: taffy_id
+                .or(route.as_ref().map(|(owner, _)| *owner))
+                .map(u64::from),
+            semantic_target: match (&route, taffy_id) {
+                (Some((_, path)), None) => Some(crate::a11y_child_route::encode(
+                    path,
+                    access.action_target.as_deref(),
+                )),
+                _ => access.action_target.clone(),
+            },
+            place: SetPlace::of(&access),
+        };
+        self.order.push(id.clone());
+        self.insert_node(node);
+        parent.children.push(id);
+    }
+
+    /// A virtual row/cell: no backing widget, but it may carry geometry.
+    /// The parent's durability is carried down rather than read from
+    /// `self.nodes`: a parent is stored only after its children are visited.
+    fn open_synthetic(
+        &mut self,
+        _owner: &dyn Widget,
+        path: &[usize],
+        access: &AccessNode,
+        parent: &mut Level,
+    ) -> ((), Level) {
+        let index = path.last().copied().unwrap_or_default();
+        let id = access.key.map_or_else(
+            || SemanticId::synthetic(&parent.id, index),
+            |key| SemanticId::keyed(&parent.id, key),
+        );
+        let level = Level {
+            id,
+            durable: access.key.is_some() && parent.durable,
+            owner: parent.owner,
+            children: Vec::new(),
+        };
+        ((), level)
+    }
+
+    fn close_synthetic(
+        &mut self,
+        _owner: &dyn Widget,
+        _path: &[usize],
+        access: &AccessNode,
+        (): (),
+        Level {
+            id,
+            durable,
+            owner,
+            children,
+        }: Level,
+        parent: &mut Level,
+    ) {
+        let semantic_target = access.action_target.as_deref();
+        let node = SemanticNode {
+            id: id.clone(),
+            durable_identity: durable,
             role: access.role,
             name: access.name.clone(),
             value: if access.state.protected {
@@ -1627,25 +1679,9 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         };
         self.order.push(id.clone());
         self.insert_node(node);
-        id
-    }
-
-    /// A declared resource's node and its children's, beneath the root.
-    fn visit_resource(&mut self, res: &ResourceSpec) -> SemanticId {
-        let id = SemanticId::resource(res.id.as_str());
-        let actions = component_nodes::resource_actions(&id, res, None, &mut self.prompted, None);
-        let mut children: Vec<SemanticId> = Vec::new();
-        for child in &res.children {
-            children.push(self.visit_resource(child));
-        }
-        let node =
-            component_nodes::resource_semantic_node(id.clone(), res, actions, children, true);
-        self.order.push(id.clone());
-        self.insert_node(node);
-        id
+        parent.children.push(id);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

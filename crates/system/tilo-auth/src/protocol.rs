@@ -35,8 +35,11 @@ pub enum Request {
         user: String,
         secret: Zeroizing<String>,
     },
-    /// Change a person's secret, proven by the current one, or by their
-    /// recovery key when the peer is root.
+    /// Change a person's secret, proven by the current one when the peer is
+    /// root or that person, or by their recovery key when the peer is root
+    /// or the greeter. The login screen offers the recovery key to whoever
+    /// cannot sign in; the key is the proof, and it already opens the
+    /// volume at the disk prompt.
     SetSecret {
         user: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

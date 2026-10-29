@@ -144,10 +144,11 @@ runner architecture (`x86_64` or `aarch64`); set it only for a deliberate TCG
 cross-architecture diagnostic. ARM uses `qemu-system-aarch64 -machine
 virt,gic-version=max`, AAVMF/QEMU_EFI pflash, `virtio-gpu-pci`, and an explicit
 xHCI tablet. Install `edk2-aarch64` on Fedora or `qemu-efi-aarch64` on
-Debian/Ubuntu. The ARM full cycle currently supports the strong-passphrase
-`--no-tpm` scenario. It rejects `--tpm` and Secure Boot key-store selection
-until one exact measured AAVMF build and its PCR behavior have a release proof;
-merely finding a TPM-capable firmware is not evidence of measured boot.
+Debian/Ubuntu. `--tpm` attaches swtpm as `tpm-tis-device` on the virt machine.
+That covers what is not PCR-bound, such as the TPM-and-secret sign-in wrapper.
+No AAVMF build is taken to measure, so ARM proves nothing PCR-bound and still
+rejects Secure Boot key-store selection until one exact measured AAVMF build
+and its PCR behavior have a release proof.
 
 Protected `imager-v*` release jobs additionally run the x86-64 graphical cycle
 with `--software-tpm`. The job exports only the public certificate from the

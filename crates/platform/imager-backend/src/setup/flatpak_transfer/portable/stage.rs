@@ -369,7 +369,6 @@ fn stage_user_state(
     cancel: &AtomicBool,
 ) -> io::Result<()> {
     let transfer = crate::setup::user_transfer::review(
-        runner,
         crate::setup::user_transfer::TransferRequest {
             source_home: source.home.clone(),
             target_home: grant.root.join("user-state"),
@@ -378,6 +377,7 @@ fn stage_user_state(
             copy_flatpak: true,
             system_refs: Vec::new(),
         },
+        None,
     )
     .map_err(io::Error::other)?;
     let report = transfer

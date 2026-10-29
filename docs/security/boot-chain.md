@@ -575,7 +575,8 @@ it, and everything below runs as on any other root, with one difference: while
 and `tilo-boot-signin other-ways` asks its questions on the boot screen instead,
 word for word. An empty answer there, which Plymouth's agent would simply ask
 again, stops that attempt and shows the sign-in screen again. Without Plymouth
-that agent steps aside, and the console prompts offer no way back. The key file is removed once
+(it ends when the greeter can't start, so the console can ask) that agent steps
+aside, and the console prompts offer no way back. The key file is removed once
 the volume is attached, because `/run` is carried into the booted system. The
 `tilo-rollback` dracut module installs the binary, its TPM tools and public policy
 key, the root generator and the discovery helper. The hook asks for the PIN only

@@ -192,17 +192,12 @@ fn adopt_toplevel_unpersisted(
         crate::shell::doc_open::claim_surface_for_document(id, surface_id);
     }
     let tab = adopt_toplevel_at(tree, surface_id, app_id, placement);
-    if matches!(placement, Placement::IntoTab(_)) {
-        tree.claim_continuation_tab(tab);
-    }
     if let Some((_, Some(instance))) = pending {
         tree.remember_local_app_record(tab, instance);
-        if let Ok(mut reports) =
-            crate::shell::personal_continuity_registry::global_registry().lock()
-        {
+        if let Ok(mut reports) = crate::shell::continuation_registry::global_registry().lock() {
             reports.bind_tab(
-                crate::shell::personal_continuity::AppInstanceId(tab),
-                crate::shell::personal_continuity::AppInstanceId(instance),
+                crate::shell::continuation::AppInstanceId(tab),
+                crate::shell::continuation::AppInstanceId(instance),
             );
         }
     }
@@ -1537,11 +1532,8 @@ fn remove_tab_choosing(tree: &mut WorkspaceTree, tab_id: TabId, back_to_previous
     };
     tree.local_app_records.remove(&tab_id);
     crate::shell::foreign::store().forget_opening_tab(tab_id);
-    if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
-        tree.continuation_closed_tabs.insert(tab_id, room);
-    }
-    if let Ok(mut registry) = crate::shell::personal_continuity_registry::global_registry().lock() {
-        registry.forget_local_tab(crate::shell::personal_continuity::AppInstanceId(removed.id));
+    if let Ok(mut registry) = crate::shell::continuation_registry::global_registry().lock() {
+        registry.forget_local_tab(crate::shell::continuation::AppInstanceId(removed.id));
     }
     mark_tree_changed(tree);
     crate::shell::stepped_back::give_back_place(tree, tab_id);
@@ -2681,65 +2673,6 @@ mod tests {
                     )),
                 "destroying the adopted surface must remove its durable card before reload"
             );
-        }
-
-        {
-            use crate::shell::personal_continuity::{
-                AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot,
-                LaunchIntent, TabPlacement, WorkspaceContinuation,
-            };
-            use tilo_network_actor::fabric::DeviceId;
-            crate::shell::launcher::clear_pending_placements();
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let room = crate::shell::state::RoomId::new();
-            tree.join_room("Plans", room);
-            let source = DeviceId::new("laptop").unwrap();
-            tree.materialize_continuation_workspace(
-                "Laptop",
-                &WorkspaceContinuation {
-                    room,
-                    apps: vec![AppInstanceState::new(
-                        AppInstanceId(0x7171),
-                        TabPlacement {
-                            strip: 0,
-                            group: 0,
-                            tab: 0,
-                        },
-                        LaunchIntent::app("so.tilo.browser").unwrap(),
-                        None,
-                        ContinuityStamp {
-                            counter: 10,
-                            device: source,
-                        },
-                    )],
-                },
-                &crate::shell::doc_open::DesktopContinuationLabels,
-            );
-            crate::shell::launcher::set_pending_placement(
-                "so.tilo.browser",
-                Placement::IntoTab(0x7171),
-            );
-            assert_eq!(
-                adopt_toplevel(&mut tree, 8080, Some("so.tilo.browser".into())),
-                0x7171
-            );
-            assert!(!tree.continuation_tabs.contains(&0x7171));
-
-            let desktop = DeviceId::new("desktop").unwrap();
-            let claimed = DeviceContinuationSnapshot::capture(&tree, desktop.clone(), 11).snapshot;
-            assert!(claimed.workspaces.iter().any(|workspace| {
-                workspace.room == room && workspace.apps.iter().any(|app| app.id.0 == 0x7171)
-            }));
-            assert!(close_tab_for_destroyed_surface(&mut tree, 8080));
-            let mut closed = DeviceContinuationSnapshot::capture(&tree, desktop, 12).snapshot;
-            closed.record_closures_from(&claimed).unwrap();
-            assert!(
-                closed
-                    .tombstones
-                    .iter()
-                    .any(|tombstone| tombstone.room == room && tombstone.id.0 == 0x7171)
-            );
-            crate::shell::launcher::clear_pending_placements();
         }
     }
 

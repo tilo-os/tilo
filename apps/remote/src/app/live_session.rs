@@ -16,9 +16,9 @@ use crate::view::Destination;
 use crate::vnc::{VncConfig, VncSession};
 
 use super::secrets::{VNC_PASSWORD, secret_purpose};
-use super::{Action, LiveSession, PendingConfirmation, RemoteApp, TiloSession, owner};
+use super::{Action, LiveSession, PendingConfirmation, Store, TiloSession, owner};
 
-impl RemoteApp {
+impl Store {
     pub(super) fn request_connect(&mut self, id: ConnectionId) {
         let Some(connection) = self.workspace.get(id) else {
             Self::notify("That saved connection no longer exists.");
@@ -94,13 +94,17 @@ impl RemoteApp {
         self.show_confirmation();
     }
 
-    /// Build the dialog that asks the pending confirmation. It states the
-    /// scope in plain language; cancel is the safe default.
+    /// Ask the pending confirmation, in the dialog the window builds when
+    /// it next looks.
     pub(super) fn show_confirmation(&mut self) {
-        let Some(pending) = self.pending_confirmation.clone() else {
-            self.dialog = None;
-            return;
-        };
+        self.asking = true;
+        self.dirty = true;
+    }
+
+    /// The dialog that asks the pending confirmation. It states the scope
+    /// in plain language; cancel is the safe default.
+    pub(super) fn confirmation_dialog(&self) -> Option<ModalDialog<Column>> {
+        let pending = self.pending_confirmation.clone()?;
         let name = self
             .workspace
             .get(pending.id())
@@ -155,7 +159,7 @@ impl RemoteApp {
         let confirm = Rc::clone(&self.requests);
         let cancel = Rc::clone(&self.requests);
         let dismiss = Rc::clone(&self.requests);
-        self.dialog = Some(
+        Some(
             ModalDialog::new(title, body)
                 .with_test_id("remote.confirmation")
                 .primary_action(primary, move || {
@@ -167,8 +171,7 @@ impl RemoteApp {
                 .on_dismiss(move || dismiss.borrow_mut().push(Action::CancelPending))
                 .with_destructive(destructive)
                 .open(true),
-        );
-        self.dirty = true;
+        )
     }
 
     /// Revalidate against the current shared projection immediately before a
