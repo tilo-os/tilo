@@ -460,8 +460,13 @@ impl Host for Guest {
     fn open_read(&self, path: &Path) -> std::io::Result<Box<dyn Read + Send>> {
         self.files.open_read(path)
     }
-    fn open_write(&self, path: &Path, mode: WriteMode) -> std::io::Result<Box<dyn Write + Send>> {
-        self.files.open_write(path, mode)
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        run: Option<&ush_shell::host::Run>,
+    ) -> std::io::Result<Box<dyn Write + Send>> {
+        self.files.open_write(path, mode, run)
     }
     fn file_action(&self, call: &FileCall<'_>) -> i32 {
         self.files.file_action(call)
