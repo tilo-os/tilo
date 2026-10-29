@@ -10,25 +10,18 @@
 //! Refreshing and OPML import/export change nothing by themselves: they are
 //! the reader's [`FeedsEffect`]s, whose results reach the library as verbs
 //! (what a refresh fetched lands through [`Library::refreshed`]). How articles
-//! read (text size, face, paper) is the person's [`ReadSettings`], a personal
+//! read (text size, face, paper) is the person's
+//! [`ReadSettings`](crate::model::ReadSettings), a personal
 //! setting the reader's effects change.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{self, ActionCx, Derived, Effect, Id, Refusal, resource};
 use ui::widget::Element;
 
-use crate::app::FeedsApp;
-use crate::model::{
-    Article, Feed, Fetched, Filter, Folder, Library, Outline, ReadFont, ReadSettings, ReadTheme,
-    tag_key,
-};
+use crate::model::{Article, Feed, Fetched, Filter, Folder, Library, Outline, tag_key};
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
@@ -296,10 +289,7 @@ impl ResourceApp for FeedsShell {
     const ICON: Option<&'static str> = Some("feeds");
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
-        let app = FeedsApp::new();
-        // A picked search hit (or an agent's `open`) shows its item.
-        cx.on_open_item(app.opener());
-        cx.surface(app)
+        crate::app::window(cx)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -367,76 +357,6 @@ impl ResourceApp for FeedsShell {
             _ => {}
         }
         invokes
-    }
-}
-
-impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
-    fn present(&mut self, state: &Rc<Library>) {
-        self.present_library(Rc::clone(state));
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Library>) {
-        self.attach_dispatcher(cx.dispatcher());
-        self.follow_read_settings(cx.settings::<ReadSettings>());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: FeedsEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
-        match effect {
-            FeedsEffect::RefreshAll => {
-                if let Some((_, reason)) = self.refresh_unavailable() {
-                    return Err(reason.into());
-                }
-                self.refresh_for(cx.reply());
-                Ok(Effected::Pending)
-            }
-            FeedsEffect::ImportOpml => {
-                self.request_import();
-                Ok(Effected::done())
-            }
-            FeedsEffect::ExportOpml => {
-                self.export_opml();
-                Ok(Effected::done())
-            }
-            FeedsEffect::RevealTag { tag } => {
-                self.reveal_tag(&tag)?;
-                Ok(Effected::done())
-            }
-            FeedsEffect::ReaderTextLarger => {
-                self.change_read_settings(|s| s.adjust_text_percent(1))?;
-                Ok(Effected::done())
-            }
-            FeedsEffect::ReaderTextSmaller => {
-                self.change_read_settings(|s| s.adjust_text_percent(-1))?;
-                Ok(Effected::done())
-            }
-            FeedsEffect::ReaderFont { font } => {
-                let font = ReadFont::ALL
-                    .into_iter()
-                    .find(|candidate| candidate.as_str() == font)
-                    .ok_or_else(|| format!("no reader font {font:?}: sans, serif or mono"))?;
-                self.change_read_settings(|s| s.font = font)?;
-                Ok(Effected::done())
-            }
-            FeedsEffect::ReaderPaper { paper } => {
-                let theme = ReadTheme::ALL
-                    .into_iter()
-                    .find(|candidate| candidate.as_str() == paper)
-                    .ok_or_else(|| format!("no reader paper {paper:?}: light, sepia or dark"))?;
-                self.change_read_settings(|s| s.theme = theme)?;
-                Ok(Effected::done())
-            }
-        }
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.refresh_unavailable()
-            .map(|(code, reason)| EffectStatus::unavailable(FeedsEffect::REFRESH_ALL, code, reason))
-            .into_iter()
-            .collect()
     }
 }
 
