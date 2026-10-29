@@ -87,6 +87,8 @@ pub(crate) struct Pending {
     pub(crate) changes: Vec<OutputChange>,
     /// Only check it (`test`), do not apply it.
     pub(crate) test: bool,
+    /// The executable of the client that sent it, when known.
+    pub(crate) tool: Option<std::path::PathBuf>,
 }
 
 /// The global's state: bound managers and configurations to apply.
@@ -402,11 +404,11 @@ impl Dispatch<ZwlrOutputModeV1, ModeData> for State {
 impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
     fn request(
         state: &mut Self,
-        _client: &Client,
+        client: &Client,
         configuration: &ZwlrOutputConfigurationV1,
         request: zwlr_output_configuration_v1::Request,
         data: &ConfigurationData,
-        _display: &DisplayHandle,
+        display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
         let Ok(mut changes) = data.changes.lock() else {
@@ -478,11 +480,19 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
                     configuration: configuration.clone(),
                     changes: list,
                     test,
+                    tool: executable_of(client, display),
                 });
             }
             _ => {}
         }
     }
+}
+
+/// The program behind a client's connection, which the person trusts or
+/// not as a display tool.
+fn executable_of(client: &Client, display: &DisplayHandle) -> Option<std::path::PathBuf> {
+    let credentials = client.get_credentials(display).ok()?;
+    std::fs::read_link(format!("/proc/{}/exe", credentials.pid)).ok()
 }
 
 impl Dispatch<ZwlrOutputConfigurationHeadV1, ConfigurationHeadData> for State {

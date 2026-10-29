@@ -26,6 +26,7 @@ pub mod backend;
 pub mod config;
 mod cursor;
 pub mod dim;
+mod display_change;
 pub mod gestures;
 pub mod host;
 pub mod idle;
@@ -48,11 +49,13 @@ mod touch;
 mod xwayland;
 
 use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
+
+use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
 pub use backend::drm::devices::RequestedMode;
@@ -62,6 +65,7 @@ pub use backend::{
 };
 pub use config::{KeyboardLayout, Settings};
 pub use dim::Backlight;
+pub use display_change::{CONFIRM_FOR, DisplayEvent};
 pub use host::{CursorIcon, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
@@ -271,6 +275,9 @@ impl Compositor {
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
         self.configure_from_clients();
+        if let Some(undo) = self.data.state.display_changes.due(Instant::now()) {
+            self.put_back(&undo);
+        }
         self.data.state.tick_idle();
         self.sync_power();
         self.display.flush_clients()?;
@@ -417,6 +424,47 @@ impl Compositor {
         Ok(reader)
     }
 
+    /// The executables of display tools the person trusts: their risky
+    /// changes apply without asking (see [`DisplayEvent::Confirm`]).
+    pub fn set_trusted_display_tools(
+        &mut self,
+        tools: impl IntoIterator<Item = std::path::PathBuf>,
+    ) {
+        self.data.state.display_changes.set_trusted(tools);
+    }
+
+    /// What happened to display tools' changes since the last call.
+    pub fn take_display_events(&mut self) -> Vec<DisplayEvent> {
+        self.data.state.display_changes.take_events()
+    }
+
+    /// The person keeps the change they were asked about; false when `id`
+    /// is no longer the open question.
+    pub fn keep_display_change(&mut self, id: u64) -> bool {
+        let heads = self.data.state.heads_now();
+        self.data.state.display_changes.keep(id, &heads)
+    }
+
+    /// The person reverts the change they were asked about; false when
+    /// `id` is no longer the open question.
+    pub fn revert_display_change(&mut self, id: u64) -> Result<bool, Error> {
+        let Some(undo) = self.data.state.display_changes.revert(id, Instant::now()) else {
+            return Ok(false);
+        };
+        self.put_back(&undo);
+        self.display.flush_clients()?;
+        Ok(true)
+    }
+
+    /// Put outputs back after a reverted change.
+    fn put_back(&mut self, undo: &[OutputChange]) {
+        let LoopData { state, backend } = &mut self.data;
+        if let Err(error) = backend.configure_checked(state, undo, false) {
+            tracing::warn!(%error, "reverting a display change failed");
+        }
+        self.configure_from_clients();
+    }
+
     /// Whether the panel of the output named `name` is lit (not blanked,
     /// switched off by a tool or turned off).
     pub fn output_lit(&self, name: &str) -> bool {
@@ -428,16 +476,40 @@ impl Compositor {
     fn configure_from_clients(&mut self) {
         let state = &mut self.data.state;
         for pending in state.output_management.take_pending() {
-            match self
-                .data
-                .backend
-                .configure_checked(state, &pending.changes, pending.test)
+            let Pending {
+                configuration,
+                changes,
+                test,
+                tool,
+            } = pending;
+            let now = Instant::now();
+            if !test
+                && state
+                    .display_changes
+                    .refuses_reapply(tool.as_ref(), &changes, now)
             {
-                Ok(()) => pending.configuration.succeeded(),
-                Err(error) => {
-                    tracing::info!(%error, "display configuration refused");
-                    pending.configuration.failed();
-                }
+                configuration.failed();
+                continue;
+            }
+            let risk =
+                state
+                    .display_changes
+                    .risk(&changes, &state.heads_now(), &state.watched_outputs());
+            let undo = state.undo_for(&changes);
+            if let Err(error) = self.data.backend.configure_checked(state, &changes, test) {
+                tracing::info!(%error, "display configuration refused");
+                configuration.failed();
+                continue;
+            }
+            configuration.succeeded();
+            if test {
+                continue;
+            }
+            if state.display_changes.keeps_unasked(risk, tool.as_ref()) {
+                let heads = state.heads_now();
+                state.display_changes.kept(changes, &heads);
+            } else {
+                state.display_changes.ask(tool, changes, undo, now);
             }
         }
         let display = state.display.clone();
