@@ -58,7 +58,8 @@ impl GroupRow {
     /// `None` off every edge, on a maximized or fullscreen window, or where
     /// the viewport clips the edge away.
     pub fn edge_grab_at(&self, p: Point) -> Option<EdgeGrab> {
-        if self.hidden || !self.rect.contains(p) {
+        // A window's edge on a canvas sizes no strip slot.
+        if self.hidden || self.canvas.is_some() || !self.rect.contains(p) {
             return None;
         }
         // The windows with edges to grab, in strip order: index, lane, rect.
