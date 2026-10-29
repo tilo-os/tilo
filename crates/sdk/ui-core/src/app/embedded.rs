@@ -1135,8 +1135,8 @@ impl EmbeddedApp {
 
     /// The app's semantic node `id`, the `ordinal`th child of the node at
     /// `parent`, and what is below it, as synthetic accessibility nodes
-    /// placed in the host. Nodes with no place on screen (published
-    /// resources) are left out.
+    /// placed in the host. Nodes with no place on screen and none placed
+    /// below them (published resources) are left out.
     fn access_subtree(
         &self,
         id: &crate::a11y_tree::SemanticId,
@@ -1145,10 +1145,20 @@ impl EmbeddedApp {
     ) -> Option<crate::a11y::AccessNode> {
         let tree = self.app.semantic_tree();
         let node = tree.node(id)?;
-        let bounds = node.bounds?;
         let name = self.hosted_name(node);
         let key = Self::hosted_key(node, name.as_deref(), ordinal);
         let path = [parent, &[key]].concat();
+        let children: Vec<_> = node
+            .children
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, child)| self.access_subtree(child, ordinal, &path))
+            .collect();
+        // A container that names no place of its own (a menu around its
+        // painted rows) still holds the controls placed inside it.
+        if node.bounds.is_none() && children.is_empty() {
+            return None;
+        }
         let mut access = crate::a11y::AccessNode::new(node.role);
         access.name.clone_from(&node.name);
         access.value.clone_from(&node.value);
@@ -1163,19 +1173,16 @@ impl EmbeddedApp {
             Some(name) => Some(name),
             None => (!node.actions.is_empty()).then(|| encode_key_route(&path)),
         };
-        let placed = bounds + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
-        access.bounds = Some(crate::a11y::AccessBounds {
-            x0: placed.x0,
-            y0: placed.y0,
-            x1: placed.x1,
-            y1: placed.y1,
+        access.bounds = node.bounds.map(|bounds| {
+            let placed = bounds + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
+            crate::a11y::AccessBounds {
+                x0: placed.x0,
+                y0: placed.y0,
+                x1: placed.x1,
+                y1: placed.y1,
+            }
         });
-        access.children = node
-            .children
-            .iter()
-            .enumerate()
-            .filter_map(|(ordinal, child)| self.access_subtree(child, ordinal, &path))
-            .collect();
+        access.children = children;
         // The app's tree marks both its focused widget and the part of it
         // that has the keyboard (a dialog and its field). Here every node is
         // the tile's descendant and the first focused one is taken as the
