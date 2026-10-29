@@ -208,6 +208,28 @@ impl Questions {
             .map(|pending| pending.question.clone())
     }
 
+    /// Change what pending question `handle` shows to `details` (an app
+    /// offering other choices while it waits), keeping its asker waiting;
+    /// `false` when it is no longer pending.
+    pub fn update(&self, handle: &str, details: Value) -> bool {
+        let wake = {
+            let mut state = self.state.lock_recover();
+            let Some(pending) = state
+                .pending
+                .iter_mut()
+                .find(|pending| pending.question.handle == handle)
+            else {
+                return false;
+            };
+            pending.question.details = details;
+            state.wake.clone()
+        };
+        if let Some(wake) = wake {
+            wake();
+        }
+        true
+    }
+
     fn take(&self, handle: &str) -> Option<Pending> {
         let (taken, wake) = {
             let mut state = self.state.lock_recover();

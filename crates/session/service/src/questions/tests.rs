@@ -180,3 +180,17 @@ fn typed_values_never_show_in_debug_output() {
     };
     assert!(!format!("{answer:?}").contains("hunter2"));
 }
+
+#[tokio::test]
+async fn an_update_changes_what_shows_and_keeps_the_asker_waiting() {
+    let questions = Questions::new();
+    let asked = questions.ask(question("q"));
+    assert!(questions.update("q", serde_json::json!({ "choices": ["b"] })));
+    assert_eq!(
+        questions.question("q").map(|question| question.details),
+        Some(serde_json::json!({ "choices": ["b"] }))
+    );
+    assert!(questions.answer("q", Answer::default()));
+    assert!(asked.await.is_some());
+    assert!(!questions.update("q", serde_json::Value::Null), "answered");
+}
