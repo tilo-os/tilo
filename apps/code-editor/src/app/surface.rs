@@ -1,6 +1,6 @@
-//! The editor as the surface over its project resource: the effects it
-//! answers, the live rows it publishes beside the project's files, and the
-//! view state a screenshot scenario stages.
+//! What the editor does for the view it is laid out in: the effects it
+//! answers, the rows it publishes beside the project's files, and the view
+//! state a screenshot scenario stages.
 
 use std::path::PathBuf;
 
@@ -14,16 +14,61 @@ use crate::project::Project;
 
 /// How many files, symbols and search hits the published tree carries; the
 /// rest resolve by id.
-const ROW_LIMIT: usize = actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
+pub(super) const ROW_LIMIT: usize = actions::EAGER_RESOURCE_SNAPSHOT_LIMIT;
 
 /// How long the terminal scenario lets the shell answer before the capture.
 const SHELL_ANSWER: ui::time::Duration = ui::time::Duration::from_millis(1500);
 
 impl CodeApp {
-    fn answer_text_read(
-        effect: &CodeEditorEffect,
-        cx: &EffectCx<Project, Self>,
-    ) -> Option<EffectAnswer> {
+    /// Follow the project the view's document holds, with the host's
+    /// dispatcher, waker and preferences; a capture opens the sample project
+    /// its fixture wrote.
+    pub(super) fn follow(&mut self, cx: &ui::framework::ViewCx<Project>) {
+        self.set_highlight_waker(cx.waker());
+        self.attach_framework(
+            cx.dispatcher(),
+            cx.mode().is_live(),
+            cx.settings(),
+            cx.live().clone(),
+        );
+        #[cfg(feature = "samples")]
+        if cx.mode() == ui::framework::RunMode::Capture
+            && let Some(sample) = cx.fixture::<crate::resource::SampleProject>()
+        {
+            self.open_sample(&sample.0);
+        }
+    }
+
+    /// What the editor shares with the view: what it publishes, and what a
+    /// capture staged.
+    pub(super) fn store(&self) -> super::view::Shared {
+        std::rc::Rc::clone(&self.store)
+    }
+
+    /// Show the project the document holds, and its terminal session, when
+    /// it changed since the editor last showed it. Shared file records are
+    /// adopted only: an unpublished local tree is never wiped.
+    pub(super) fn follow_document(&mut self) {
+        let Some(shown) = self
+            .live_state
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.followed))
+        else {
+            return;
+        };
+        self.adopt_resource_state(&shown);
+        self.present_terminal(shown.terminal_panel.as_ref());
+    }
+
+    /// Stage the scenarios a capture asked for since the editor last looked.
+    pub(super) fn follow_store(&mut self) {
+        let staged = std::mem::take(&mut self.store.borrow_mut().staged);
+        for scenario in staged {
+            self.stage_scenario(scenario.as_deref());
+        }
+    }
+
+    fn answer_text_read(effect: &CodeEditorEffect, cx: &EffectCx<Project>) -> Option<EffectAnswer> {
         let answer = || match effect {
             CodeEditorEffect::ReadText {
                 file,
@@ -39,10 +84,10 @@ impl CodeApp {
         matches!(effect, CodeEditorEffect::ReadText { .. }).then(answer)
     }
 
-    pub(crate) fn answer_effect(
+    pub(super) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<Project, Self>,
+        cx: &mut EffectCx<Project>,
     ) -> EffectAnswer {
         if let Some(answer) = Self::answer_text_read(&effect, cx) {
             return answer;
@@ -123,7 +168,7 @@ impl CodeApp {
     fn answer_reveal(
         &mut self,
         effect: CodeEditorEffect,
-        cx: &mut EffectCx<Project, Self>,
+        cx: &mut EffectCx<Project>,
     ) -> EffectAnswer {
         let CodeEditorEffect::Reveal {
             file,
@@ -197,11 +242,7 @@ impl CodeApp {
 
     /// Run one of the editor's commands. Those that need the document run on the
     /// next sync; those that ask the user for a file answer once they did.
-    fn answer_command(
-        &mut self,
-        command: Command,
-        cx: &mut EffectCx<Project, Self>,
-    ) -> EffectAnswer {
+    fn answer_command(&mut self, command: Command, cx: &mut EffectCx<Project>) -> EffectAnswer {
         if command == Command::NextTheme {
             return Err("Appearance is controlled by the operating system; choose it in Appearance settings".into());
         }
@@ -283,7 +324,7 @@ impl CodeApp {
     }
 
     /// What the file effects can do right now.
-    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = vec![EffectStatus::unavailable(
             CodeEditorEffect::NEXT_THEME,
             "code_editor.os_appearance",
@@ -321,71 +362,15 @@ impl CodeApp {
         statuses
     }
 
-    /// The project's files as the editor can open and save them, then the
-    /// symbols it found and the hits of the project search. A file row shares
-    /// its id with the file the project publishes, so its effects join that
-    /// file.
-    pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
-        let open: Vec<TreeId> = self
-            .session
-            .buffer
-            .iter()
-            .map(|buffer| buffer.node)
-            .collect();
-        let files = open
-            .iter()
-            .copied()
-            .chain(
-                self.session
-                    .project
-                    .nodes
-                    .keys()
-                    .copied()
-                    .filter(|node| !open.contains(node)),
-            )
-            .filter_map(|node| self.file_row(node))
-            .take(ROW_LIMIT);
-        let symbols = self.search_symbols.iter().take(ROW_LIMIT).map(symbol_row);
-        let results = self
-            .search_result_refs()
-            .into_iter()
-            .take(ROW_LIMIT)
-            .map(|result| result_row(&result));
-        files.chain(symbols).chain(results).collect()
-    }
-
-    /// The live row `id`, beyond the ones [`Self::live_rows`] publishes.
-    pub(crate) fn live_row(&self, id: &str) -> Option<LiveRow> {
-        if let Some((_, file)) =
-            ui::tilo_resource::items::item_of_resource::<crate::project::Project>(id)
-        {
-            return self
-                .session
-                .project
-                .node_for_resource(file.as_str())
-                .and_then(|node| self.file_row(node));
-        }
-        if let Some(symbol) = self
-            .search_symbols
-            .iter()
-            .find(|symbol| actions::symbol_resource_id(symbol) == id)
-        {
-            return Some(symbol_row(symbol));
-        }
-        self.search_result_refs()
-            .iter()
-            .find(|result| actions::result_resource_id(result) == id)
-            .map(result_row)
-    }
-
-    /// The row of the file at `node`: open it, and save it when it has a file
-    /// on disk to save to.
-    fn file_row(&self, node: TreeId) -> Option<LiveRow> {
+    /// The row of the file at `node`, by its resource id: open it and read
+    /// it. What the open file adds (saving it) is the view's
+    /// ([`super::view::Shown`]).
+    fn file_row(&self, node: TreeId) -> Option<(String, LiveRow)> {
         let item = self.session.project.get(node)?;
         if item.is_folder() {
             return None;
         }
-        let mut row = LiveRow::new(
+        let row = LiveRow::new(
             actions::file_resource_id(&item.resource_id),
             crate::actions::FILE_KIND,
             item.name.clone(),
@@ -400,21 +385,47 @@ impl CodeApp {
                 max_chars: 1024,
             }
             .bound_asking(&["start_chars", "max_chars"]),
-        );
-        row = row.operation(crate::text_operations::snapshot_spec(
+        )
+        .operation(crate::text_operations::snapshot_spec(
             item.resource_id.clone(),
         ));
-        if self
-            .session
-            .buffer_of(node)
-            .is_some_and(|buffer| buffer.path.is_some())
-        {
-            row = row.effect(&CodeEditorEffect::Save {
-                file: Some(item.resource_id.clone()),
-                path: None,
-            });
+        Some((item.resource_id.clone(), row))
+    }
+
+    /// Keep what the editor shows where the view publishes it: the project's
+    /// files, symbols and search hits once they were projected again, the
+    /// file on screen and what the effects can do every time.
+    pub(super) fn publish_shown(&mut self) {
+        let projected = std::mem::take(&mut self.shown_stale).then(|| {
+            let files: Vec<(String, LiveRow)> = self
+                .session
+                .project
+                .nodes
+                .keys()
+                .filter_map(|node| self.file_row(*node))
+                .collect();
+            (
+                std::rc::Rc::new(files),
+                std::rc::Rc::new(self.search_symbols.clone()),
+                std::rc::Rc::new(self.projected_search_results.clone()),
+                std::rc::Rc::new(self.search_entries.clone()),
+            )
+        });
+        let open = self.session.active_buffer().and_then(|buffer| {
+            let file = self.session.project.get(buffer.node)?;
+            Some((file.resource_id.clone(), buffer.path.is_some()))
+        });
+        let statuses = self.effect_statuses();
+        let mut store = self.store.borrow_mut();
+        let shown = &mut store.shown;
+        if let Some((files, symbols, results, entries)) = projected {
+            shown.files = files;
+            shown.symbols = symbols;
+            shown.results = results;
+            shown.entries = entries;
         }
-        Some(row)
+        shown.open = open;
+        shown.statuses = statuses;
     }
 
     /// Open the sample project a capture's fixture wrote, on its main file.
@@ -497,7 +508,7 @@ impl CodeApp {
 }
 
 /// A declaration the symbol scan found, opening where it is declared.
-fn symbol_row(symbol: &actions::SymbolRef) -> LiveRow {
+pub(super) fn symbol_row(symbol: &actions::SymbolRef) -> LiveRow {
     LiveRow::new(
         actions::symbol_resource_id(symbol),
         "code_editor.symbol",
@@ -513,7 +524,7 @@ fn symbol_row(symbol: &actions::SymbolRef) -> LiveRow {
 }
 
 /// One hit of the project search, revealed beside the results.
-fn result_row(result: &actions::SearchResultRef) -> LiveRow {
+pub(super) fn result_row(result: &actions::SearchResultRef) -> LiveRow {
     LiveRow::new(
         actions::result_resource_id(result),
         "code_editor.search-result",
