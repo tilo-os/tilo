@@ -52,7 +52,7 @@ id = "rename-folder"
 kind = "undoable"
 params = [
   { name = "folder", required = true, schema = { type = "string" } },
-  { name = "to", required = true, schema = { type = "string" } },
+  { name = "to", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

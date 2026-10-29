@@ -477,13 +477,15 @@ impl ChatApp {
             if !self.keeps_layout() {
                 return Err("The room has no voice channel; its moderators make channels".into());
             }
+            let name = ui::tilo_resource::NonBlank::parse("Voice")
+                .ok_or_else(|| "The voice channel could not be named".to_owned())?;
             let Some(doc) = doc else {
                 if self.dispatch.is_none() {
                     return Err("Chat is open to view only".into());
                 }
                 self.submit(crate::resource::Chat::CREATE_CHANNEL.with(
                     crate::record::chat::CreateChannel {
-                        name: "Voice".into(),
+                        name,
                         category: None,
                         kind: Some(ChannelKind::Voice),
                         topic: None,
@@ -494,7 +496,7 @@ impl ChatApp {
                 self.pending_call = Some(String::new());
                 return Ok(());
             };
-            let made = self.create_channel_now(doc, "", "Voice", ChannelKind::Voice);
+            let made = self.create_channel_now(doc, "", name, ChannelKind::Voice);
             if made.is_empty() {
                 return Err("The voice channel could not be made".into());
             }

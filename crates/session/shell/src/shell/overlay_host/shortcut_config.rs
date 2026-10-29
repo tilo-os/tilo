@@ -203,48 +203,6 @@ impl ShellOverlayHost {
         }
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "kept as a host helper alongside the focus state it describes"
-    )]
-    pub(super) fn shortcut_guide_controls(&self) -> Vec<ShortcutGuideFocus> {
-        let config = &self.shortcut_config;
-        let defaults = settings_store::hardware::ShortcutConfig::default();
-        let mut controls = Vec::with_capacity(22);
-        for (_, first, second) in SHORTCUT_GUIDE_ROWS {
-            controls.push(ShortcutGuideFocus::Binding(first));
-            controls.push(ShortcutGuideFocus::Binding(second));
-            if [first, second]
-                .into_iter()
-                .any(|action| config.bindings.get(&action) != defaults.bindings.get(&action))
-            {
-                controls.push(ShortcutGuideFocus::Reset(first, second));
-            }
-        }
-        controls.push(ShortcutGuideFocus::Done);
-        controls
-    }
-
-    pub(super) fn move_shortcut_guide_focus(&mut self, backwards: bool) {
-        // Focus walks the editable pairs at the top of the body; bring them
-        // back into view rather than focusing something scrolled away.
-        self.shortcut_guide_scroll = 0.0;
-        let controls = self.shortcut_guide_controls();
-        let current = self
-            .shortcut_guide_focus
-            .and_then(|focus| controls.iter().position(|candidate| *candidate == focus));
-        let next = match (current, backwards) {
-            (Some(0) | None, true) => controls.len().saturating_sub(1),
-            (Some(index), true) => index.saturating_sub(1),
-            (Some(index), false) => index
-                .saturating_add(1)
-                .checked_rem(controls.len())
-                .unwrap_or_default(),
-            (None, false) => 0,
-        };
-        self.shortcut_guide_focus = controls.get(next).copied();
-    }
-
     /// The role and revoke sheets are genuinely modal within Workspace
     /// Settings: arrows move the visible choice, Enter (or Space) chooses it,
     /// and Escape abandons it. All other keys are consumed so a shortcut or
@@ -345,7 +303,6 @@ impl ShellOverlayHost {
         if self.shortcut_rebind.is_none() {
             self.shortcut_rebind_message = None;
         }
-        self.shortcut_guide_focus = None;
         self.strip_navigator.close();
         let Some(chrome) = self.chrome.as_ref() else {
             return;
@@ -428,19 +385,8 @@ impl ShellOverlayHost {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ShortcutGuideFocus {
-    Binding(settings_store::hardware::ShortcutAction),
-    Reset(
-        settings_store::hardware::ShortcutAction,
-        settings_store::hardware::ShortcutAction,
-    ),
-    Done,
-}
-
 /// The keyboard guide's navigation rows: a label and the previous/next pair
-/// it edits. The guide paints these and Tab walks these, so a binding is
-/// focusable exactly when it is drawn.
+/// it edits.
 pub(super) const SHORTCUT_GUIDE_ROWS: [(
     &str,
     settings_store::hardware::ShortcutAction,

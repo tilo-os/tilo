@@ -2,8 +2,8 @@
 //! library beside the shared runtime (`libtilo_settings_engine.so`).
 //!
 //! Settings' library (`settings`: the window, its effects and every pane) is
-//! here; the app's binary is one call into it,
-//! [`tilo_settings_engine_run`], so the app's package carries next to nothing
+//! here; the app's binary is one call into it, `tilo_app_engine_main`
+//! (`ui::engine_main!`), so the app's package carries next to nothing
 //! and Settings' code ships in the runtime bundle beside the runtime it is
 //! built against. Settings edits the settings sections as resource models
 //! (`settings-sections`, whose derived models are about 1.5 MB of code),
@@ -48,14 +48,30 @@ pub use tilo_wallpapers;
 #[cfg(feature = "thin")]
 pub use zone_globe;
 
-/// Run Settings: the whole of the app's binary (apps/settings/src/main.rs),
-/// which names this library and calls this function by its unmangled name:
-/// this library depends on the app's package, so the package cannot depend
-/// on it in turn. A panic unwinds through it as through any Rust call.
+// Run Settings: the whole of the app's binary (apps/settings/src/main.rs).
+#[cfg(feature = "thin")]
+ui::engine_main!(
+    settings::SettingsShell,
+    init = settings::enable_provider_administration
+);
+
+/// The engine's self-check ([`self_check`]) for its check binary, by the
+/// unmangled name the binary links, as Settings' binary links
+/// [`tilo_settings_engine_run`]: nothing compiles against this library, so
+/// it exports no Rust item. Prints the report; whether it passed.
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]
-pub extern "C-unwind" fn tilo_settings_engine_run() {
-    settings::run();
+pub extern "C-unwind" fn tilo_settings_engine_check() -> bool {
+    match self_check() {
+        Ok(report) => {
+            println!("tilo-settings-engine: {report}");
+            true
+        }
+        Err(error) => {
+            eprintln!("tilo-settings-engine: {error}");
+            false
+        }
+    }
 }
 
 /// Run the engine's own code: read the wallpaper catalogue, which must name a
@@ -63,8 +79,8 @@ pub extern "C-unwind" fn tilo_settings_engine_run() {
 /// mount service at a socket that does not exist, which must fail rather
 /// than answer.
 ///
-/// The engine's check binary calls it, so a release proves the library loads
-/// and runs against the runtime it ships with.
+/// The check binary runs it through its unmangled entry, so a release proves
+/// the library loads and runs against the runtime it ships with.
 ///
 /// # Errors
 /// Names what was read or answered wrongly.

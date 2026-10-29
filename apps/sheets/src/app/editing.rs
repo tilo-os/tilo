@@ -114,23 +114,22 @@ impl SheetsApp {
                 let Some(rename) = self.tab_rename.take() else {
                     return;
                 };
-                let trimmed = name.trim();
-                let unchanged = self
-                    .sheet_names
-                    .get(rename.idx)
-                    .is_some_and(|current| current == trimmed);
-                if !trimmed.is_empty() && !unchanged {
+                let name = ui::tilo_resource::NonBlank::parse(&name);
+                let unchanged = |name: &ui::tilo_resource::NonBlank| {
+                    self.sheet_names
+                        .get(rename.idx)
+                        .is_some_and(|current| current == name.as_str())
+                };
+                if let Some(name) = name.filter(|name| !unchanged(name)) {
+                    let status = format!("Renamed sheet to {name}");
                     if let Some(sheet) = self.sheet_ids.get(rename.idx).cloned() {
                         self.submit(
                             doc,
-                            Workbook::RENAME_SHEET.with(verbs::RenameSheet {
-                                sheet,
-                                name: trimmed.to_owned(),
-                            }),
+                            Workbook::RENAME_SHEET.with(verbs::RenameSheet { sheet, name }),
                         );
                     }
                     self.reload();
-                    self.status = format!("Renamed sheet to {trimmed}");
+                    self.status = status;
                 }
             }
             EditOutcome::Cancelled => {

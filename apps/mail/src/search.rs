@@ -2,10 +2,11 @@
 //! in memory (excluding Trash) by its subject, sender, recipients or body.
 //!
 //! Folders are the mailbox resource's own search entries; loaded messages
-//! are the mail surface's, because their subjects, senders and bodies come
-//! from the engine rather than the document. Both are indexed into the one
-//! search source the framework keeps for the app, so a query never reaches
-//! the IMAP engine: the live server search stays in Mail's own search field.
+//! are the window's, published by its view, because their subjects,
+//! senders and bodies come from the engine rather than the document. Both
+//! are indexed into the one search source the framework keeps for the app,
+//! so a query never reaches the IMAP engine: the live server search stays in
+//! Mail's own search field.
 
 use ui::tilo_resource::{SearchEntry, SearchWeight};
 

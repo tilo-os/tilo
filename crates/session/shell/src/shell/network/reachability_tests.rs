@@ -547,7 +547,7 @@ fn a_room_hosted_here_takes_in_the_membership_its_device_writes() {
     });
 
     first
-        .ask_governor(
+        .write_governance(
             room,
             GovernanceRequest::Policy(tilo_action_policy::Change::SetRole {
                 person: collaborator.clone(),
@@ -561,7 +561,7 @@ fn a_room_hosted_here_takes_in_the_membership_its_device_writes() {
     });
     drop(second);
     first
-        .ask_governor(
+        .write_governance(
             room,
             GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
                 person: collaborator.clone(),
@@ -580,9 +580,9 @@ fn a_room_hosted_here_takes_in_the_membership_its_device_writes() {
 }
 
 /// A rename made on a desktop of a room its own host holds, with the relays
-/// down and nobody else to reach, is the host's room governance action,
-/// asked through its in-process caller: the room's admitted document here
-/// carries the new name, and nothing waits.
+/// down and nobody else to reach, is written by this device into its
+/// replica: the room's admitted document here carries the new name, and
+/// nothing waits.
 #[test]
 #[serial_test::serial]
 fn a_rename_of_a_room_hosted_here_applies_with_the_relays_down() {

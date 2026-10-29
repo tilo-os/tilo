@@ -511,10 +511,10 @@ fn people_are_shared_labels_offered_as_places() {
     let second = portable_photo("people-two.png", 40, 20);
     let mut library = library_of(&[first.clone(), second.clone()]);
     library
-        .apply(
-            PhotoLibrary::SET_PERSON_MEMBERSHIP
-                .with(("Sam".to_owned(), vec![first.id.clone(), second.id.clone()])),
-        )
+        .apply(PhotoLibrary::SET_PERSON_MEMBERSHIP.with((
+            "Sam".parse().unwrap(),
+            vec![first.id.clone(), second.id.clone()],
+        )))
         .unwrap();
     assert_eq!(photo(&library, &first.id).people(), ["Sam"]);
     assert_eq!(photo(&library, &second.id).people(), ["Sam"]);
@@ -536,18 +536,23 @@ fn people_are_shared_labels_offered_as_places() {
         library
             .apply(
                 PhotoLibrary::SET_PERSON_MEMBERSHIP
-                    .with(("Sam".to_owned(), vec!["photos.photo:gone".to_owned()])),
+                    .with(("Sam".parse().unwrap(), vec!["photos.photo:gone".to_owned()])),
             )
             .is_err(),
         "a stale membership refuses whole"
     );
 
     library
-        .apply(PhotoLibrary::RENAME_PERSON.with(("Sam".to_owned(), "Samantha".to_owned())))
+        .apply(
+            PhotoLibrary::RENAME_PERSON.with(("Sam".parse().unwrap(), "Samantha".parse().unwrap())),
+        )
         .unwrap();
     assert_eq!(photo(&library, &first.id).people(), ["Samantha"]);
     library
-        .apply_confirmed(PhotoLibrary::REMOVE_PERSON.with("Samantha"))
+        .apply_confirmed(
+            PhotoLibrary::REMOVE_PERSON
+                .with("Samantha".parse::<ui::tilo_resource::NonBlank>().unwrap()),
+        )
         .unwrap();
     assert!(photo(&library, &first.id).people.is_empty());
     let state = library.state().unwrap();
@@ -557,7 +562,10 @@ fn people_are_shared_labels_offered_as_places() {
     );
     assert!(
         library
-            .apply_confirmed(PhotoLibrary::REMOVE_PERSON.with("Nobody"))
+            .apply_confirmed(
+                PhotoLibrary::REMOVE_PERSON
+                    .with("Nobody".parse::<ui::tilo_resource::NonBlank>().unwrap())
+            )
             .is_err()
     );
 }

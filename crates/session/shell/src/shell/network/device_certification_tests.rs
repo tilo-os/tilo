@@ -72,7 +72,7 @@ fn pair_of_devices(root: &ed25519_dalek::SigningKey, seed: u8, held: Held) -> (D
             crate::shell::state::WorkspaceTree::default(),
         );
         let id = DeviceId::new(hex::encode(key.public().as_bytes())).unwrap();
-        network.personal_continuity_device = Some(id.clone());
+        network.local_device = Some(id.clone());
         certification::set_keys(&id, keys);
         let (wake, woken) = std_mpsc::channel();
         let wake = std::sync::Mutex::new(wake);

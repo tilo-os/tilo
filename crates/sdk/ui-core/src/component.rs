@@ -1056,14 +1056,15 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 }
 
 /// The components that stand only in a slot of another, which reads their props: a property
-/// list's facts, a navigation list's places, a menu's commands, separators and emoji bar, a
+/// list's facts, a navigation list's places and sections, a menu's commands, separators and emoji bar, a
 /// row's swipe, the items of a virtual list, and what a view attaches to the element it stands
 /// in (its context menu, hover toolbar and swipe).
 #[must_use]
-pub fn parts() -> [fn() -> Description; 12] {
+pub fn parts() -> [fn() -> Description; 13] {
     [
         crate::widget::PropertyProps::describe,
         crate::widget::NavItemProps::describe,
+        crate::widget::NavSectionProps::describe,
         crate::widget::MenuItemProps::describe,
         crate::widget::MenuSeparatorProps::describe,
         crate::widget::EmojiBarProps::describe,

@@ -21156,6 +21156,7 @@ dependencies = [
  "settings-sections",
  "tilo-accessibility-settings",
  "tilo-accounts-engine",
+ "tilo-app",
  "tilo-ntfs-mount",
  "tilo-pc-keyboard-geometry",
  "tilo-wallpapers",

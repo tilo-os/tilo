@@ -108,10 +108,18 @@ impl ShellOverlayHost {
             None
         });
 
+        let outputs = self.layer_outputs();
         overlay_part(scene, "shell.shortcut-help", desktop, |scene| {
-            if self.overlay_flags().shortcut_help {
-                self.draw_shortcut_help(scene, transform, text_renderer, theme);
-            }
+            use super::layers::ShellLayer as _;
+            self.layers.shortcut_guide.draw(&mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&outputs),
+                thumbnails: &mut self.window_previews,
+            });
             None
         });
 

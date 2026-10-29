@@ -1570,9 +1570,6 @@ impl GitClientApp {
             }
             GitClientEffect::Commit { message } => self.commit_from_effect(&message)?,
             GitClientEffect::CreateBranch { name } => {
-                if name.trim().is_empty() {
-                    return Err("branch name cannot be empty".into());
-                }
                 if self.repo_path.is_none() {
                     return Err("branch creation requires a real repository".into());
                 }

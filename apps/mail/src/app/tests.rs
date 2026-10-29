@@ -103,10 +103,10 @@ struct InterleavedEngineFixture {
 
 impl InterleavedEngineFixture {
     fn new() -> Self {
-        let (mut app, doc) = app();
+        let (app, doc) = app();
         let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
         let (incoming, incoming_rx) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
+        app.state().engine = Some(EngineHandle {
             tx: outgoing,
             rx: incoming_rx,
         });
@@ -114,7 +114,7 @@ impl InterleavedEngineFixture {
         let send_id = uuid::Uuid::new_v4();
         let unrelated_id = uuid::Uuid::new_v4();
         let invocation = tilo_actions::InvocationId::new();
-        app.resource_refresh_invocation = Some((refresh_id, invocation));
+        app.state().resource_refresh_invocation = Some((refresh_id, invocation));
         let message = app.shared.borrow().mailbox.messages_in(Folder::Inbox)[0].clone();
         let outgoing = Outgoing::new(
             "me@example.test",
@@ -123,7 +123,7 @@ impl InterleavedEngineFixture {
                 ..Default::default()
             },
         );
-        app.pending_send.insert(
+        app.state().pending_send.insert(
             send_id,
             PendingSend {
                 outgoing,
@@ -136,7 +136,7 @@ impl InterleavedEngineFixture {
             (send_id, EngineRequestKind::Send),
             (unrelated_id, EngineRequestKind::StoreFlag),
         ] {
-            app.pending_engine_requests.insert(
+            app.state().pending_engine_requests.insert(
                 id,
                 PendingEngineRequest {
                     kind,
@@ -144,7 +144,7 @@ impl InterleavedEngineFixture {
                 },
             );
         }
-        app.awaiting_engine = true;
+        app.state().awaiting_engine = true;
         Self {
             app,
             doc,

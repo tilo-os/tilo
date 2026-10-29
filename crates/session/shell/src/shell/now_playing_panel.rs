@@ -308,6 +308,12 @@ impl NowPlayingCard {
         Rect::new(inner.x0, top, inner.x0 + ART, top + ART)
     }
 
+    /// The song as laid out: its artwork and the lines beside it.
+    #[must_use]
+    pub fn song_rect(&self) -> Rect {
+        self.header_rect()
+    }
+
     fn header_rect(&self) -> Rect {
         let inner = self.inner();
         Rect::new(

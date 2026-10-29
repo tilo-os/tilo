@@ -24,6 +24,10 @@ pub struct PackageMeta {
     /// platform reads its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
+    /// Each member keeps the app's records in their own record of the workspace
+    /// (`app ... (records: .own)`), which only that person's devices read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_records: bool,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,

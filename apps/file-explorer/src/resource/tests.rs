@@ -126,7 +126,7 @@ fn sync(a: &mut TestApp<FileExplorerShell>, b: &mut TestApp<FileExplorerShell>) 
 
 fn pin(place: &str, at: Option<usize>) -> Invoke<FileExplorer> {
     FileExplorer::ADD_BOOKMARK.with(file_explorer::AddBookmark {
-        place: place.into(),
+        place: place.parse().unwrap(),
         at,
     })
 }
@@ -775,7 +775,7 @@ fn only_the_device_a_change_names_carries_it_out() {
         .invoke(FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
             device: "phone".into(),
             parent: AbsolutePath::new(&parent).unwrap(),
-            name: "Inbox".into(),
+            name: "Inbox".parse().unwrap(),
         }))
         .unwrap();
     laptop.settle();
@@ -1489,7 +1489,7 @@ fn workspace_file_actions_remain_available_to_guests() {
         &FileExplorer::NEW_FOLDER.with(file_explorer::NewFolder {
             device: "test-device".into(),
             parent: AbsolutePath::new(folder.path()).unwrap(),
-            name: "Shared folder".into(),
+            name: "Shared folder".parse().unwrap(),
         }),
     )
     .unwrap();

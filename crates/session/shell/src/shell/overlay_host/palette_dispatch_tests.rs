@@ -1013,6 +1013,14 @@ fn escape_unwinds_the_innermost_overlay_state_first() {
     escape_cancels_wifi_password_then_closes_the_section_then_the_panel();
 }
 
+/// The reference rows, every group's, in order.
+fn reference_rows(shortcuts: &settings_store::hardware::ShortcutConfig) -> Vec<(String, String)> {
+    shortcut_reference_groups(shortcuts)
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1023,7 +1031,7 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         // The rows spell chords in the US keycaps they are compared with,
         // whatever layout another test or the process last published.
         let _us = ui::keycaps::scoped(ui::Keycaps::US);
-        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let rows = reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let visible = rows
             .iter()
             .map(|(label, chord)| format!("{label}:{chord}"))
@@ -1062,31 +1070,21 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
                 settings_store::hardware::KeyChord::parse("Alt+G").unwrap(),
             )
             .unwrap();
-        let rows = shortcut_reference_rows(&shortcuts);
+        let rows = reference_rows(&shortcuts);
         assert!(rows.contains(&("Search everywhere".into(), "Alt+G".into())));
         assert!(!rows.contains(&("Search everywhere".into(), "Super+Space".into())));
     }
 
     fn shortcut_reference_does_not_repeat_the_open_guide_action() {
-        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let rows = reference_rows(&settings_store::hardware::ShortcutConfig::default());
         // Super+T opens a new tab of the focused app: one row, where adding
         // a tab and duplicating one were two.
         assert_eq!(rows.len(), 17);
         assert!(rows.iter().all(|(label, _)| *label != "Shortcut guide"));
     }
 
-    fn shortcut_reference_groups_keep_a_consistent_responsive_rhythm() {
-        assert_eq!(shortcut_reference_columns(688.0), 3);
-        assert_eq!(shortcut_reference_columns(912.0), 3);
-        assert_eq!(shortcut_reference_columns(520.0), 2);
-        assert!(
-            shortcut_reference_group_height() >= 6.0 * shortcut_reference_step(),
-            "a group must hold its six rows"
-        );
-    }
-
     fn shortcut_reference_keeps_the_complete_action_set() {
-        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
+        let rows = reference_rows(&settings_store::hardware::ShortcutConfig::default());
         assert_eq!(
             rows.len(),
             17,
@@ -1102,24 +1100,6 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
         }
     }
 
-    fn shortcut_reference_keycaps_fit_their_cells() {
-        let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
-        let theme = Theme::dark();
-        let mut renderer = TextRenderer::new();
-        // The narrowest three-column body is 640 wide.
-        let cell = (640.0 - 12.0 * 2.0) / 3.0 - 24.0;
-        for (_, chord) in rows {
-            let mut width = 0.0;
-            for (index, keys) in shortcut_chord_keycaps(&chord).iter().enumerate() {
-                if index > 0 {
-                    width += 20.0;
-                }
-                width += ui::widget::InputHint::measure_keycap_labels(keys, &mut renderer, &theme);
-            }
-            assert!(width <= cell, "{chord:?} is {width}px, cell is {cell}px");
-        }
-    }
-
     fn shortcut_reference_columns_stay_semantically_grouped() {
         let groups =
             shortcut_reference_groups(&settings_store::hardware::ShortcutConfig::default());
@@ -1131,53 +1111,43 @@ fn shortcut_reference_is_complete_truthful_grouped_and_fits_compact_cells() {
             [5, 6, 6],
             "{groups:?}"
         );
-        assert!(
-            groups
-                .iter()
-                .all(|group| group.len() <= shortcuts::SHORTCUT_REFERENCE_GROUP_ROWS)
-        );
+        assert!(groups.iter().all(|group| group.len() <= 6));
         let first = |group: usize| groups[group][0].0.as_str();
         assert_eq!(first(0), "Switch windows");
         assert_eq!(first(1), "Search everywhere");
         assert_eq!(first(2), "Screenshot");
     }
 
-    fn shortcut_accessibility_names_workspace_and_group_navigation() {
-        let (host, chrome) = host_with_chrome();
-        chrome.borrow_mut().overlays.shortcut_help = true;
-        let root = host.accessibility().expect("shell semantics");
-        let guide = root
-            .children
+    fn the_guide_shows_every_navigation_pair_and_the_strip_jump() {
+        let (host, _chrome) = host_with_chrome();
+        let _us = ui::keycaps::scoped(ui::Keycaps::US);
+        let guide = host.shortcut_guide();
+        let labels: Vec<&str> = guide.pairs.iter().map(|pair| pair.label.as_str()).collect();
+        assert_eq!(labels.len(), SHORTCUT_GUIDE_ROWS.len(), "{labels:?}");
+        assert!(
+            guide
+                .notes
+                .iter()
+                .any(|note| note.contains("Super+1") && note.contains("Super+9")),
+            "{:?}",
+            guide.notes
+        );
+        let essentials: Vec<&str> = guide
+            .essentials
             .iter()
-            .find(|node| node.name.as_deref() == Some("Keyboard shortcuts"))
-            .expect("guide dialog semantics");
-        let description = guide.description.as_deref().expect("guide description");
-        assert!(description.contains("workspaces with"));
-        assert!(description.contains("move groups with"));
-        assert!(
-            description.contains("maximize with Super+Up and restore with Super+Down"),
-            "{description}"
-        );
-        assert!(
-            description.contains("strips with Super+Ctrl+Up or Super+Ctrl+Down"),
-            "{description}"
-        );
-        assert!(
-            description.contains("straight to one with Super+1 through Super+9"),
-            "{description}"
-        );
-        assert!(description.contains("Screenshot: Print Screen"));
-        assert!(!description.contains("Shortcut guide:"));
+            .flatten()
+            .map(|(label, _)| label.as_str())
+            .collect();
+        assert!(essentials.contains(&"Screenshot"), "{essentials:?}");
+        assert!(!essentials.contains(&"Shortcut guide"));
     }
 
     shortcut_reference_covers_every_production_essential();
     shortcut_reference_never_promises_a_rebound_default();
     shortcut_reference_does_not_repeat_the_open_guide_action();
-    shortcut_reference_groups_keep_a_consistent_responsive_rhythm();
     shortcut_reference_keeps_the_complete_action_set();
-    shortcut_reference_keycaps_fit_their_cells();
     shortcut_reference_columns_stay_semantically_grouped();
-    shortcut_accessibility_names_workspace_and_group_navigation();
+    the_guide_shows_every_navigation_pair_and_the_strip_jump();
 }
 
 /// The guide lists maximize/restore and strip switching as editable pairs,
@@ -1216,41 +1186,25 @@ fn shortcut_guide_teaches_maximize_and_strip_chords() {
 fn shortcut_guide_names_keys_as_the_active_layout_prints_them() {
     use settings_store::hardware::{KeyChord, ShortcutAction};
 
-    let (mut host, chrome) = host_with_chrome();
+    let (mut host, _chrome) = host_with_chrome();
     host.shortcut_config
         .set(
             ShortcutAction::Search,
             KeyChord::parse("Ctrl+Shift+G").expect("chord"),
         )
         .expect("free chord");
-    chrome.borrow_mut().overlays.shortcut_help = true;
-    let guide_description = |host: &ShellOverlayHost| {
-        host.accessibility()
-            .expect("shell semantics")
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Keyboard shortcuts"))
-            .and_then(|guide| guide.description.clone())
-            .expect("guide description")
-    };
-
-    let (german_rows, german) = {
+    let german_rows = {
         let _german = ui::keycaps::scoped(ui::Keycaps::from_xkb("de", ""));
-        (
-            shortcut_reference_rows(&host.shortcut_config),
-            guide_description(&host),
-        )
+        reference_rows(&host.shortcut_config)
     };
     let _english = ui::keycaps::scoped(ui::Keycaps::US);
-    let english = guide_description(&host);
+    let english_rows = reference_rows(&host.shortcut_config);
 
     assert!(german_rows.contains(&("Search everywhere".into(), "Strg+Umschalt+G".into())));
     assert!(german_rows.contains(&("Reopen closed tab".into(), "Super+Umschalt+T".into())));
-    assert!(german.contains("Screenshot: Druck"), "{german}");
-    assert!(german.contains("Strg+Umschalt+G"), "{german}");
+    assert!(german_rows.contains(&("Screenshot".into(), "Druck".into())));
     // The layout, not the stored chord, changed: switching back restores it.
-    assert!(english.contains("Ctrl+Shift+G"), "{english}");
-    assert!(english.contains("Screenshot: Print Screen"), "{english}");
+    assert!(english_rows.contains(&("Search everywhere".into(), "Ctrl+Shift+G".into())));
     assert_eq!(
         host.shortcut_config.bindings[&ShortcutAction::Search].display(),
         "Ctrl+Shift+g"
@@ -1301,29 +1255,38 @@ fn shortcut_guide_opens_from_every_help_route_and_is_keyboard_editable() {
         assert!(chrome.borrow().overlays.shortcut_help);
     }
 
-    fn clicking_a_painted_shortcut_starts_capture_and_escape_only_cancels_capture() {
+    fn choosing_a_key_starts_capture_and_escape_only_cancels_capture() {
         let (mut host, chrome) = host_with_chrome();
         chrome.borrow_mut().overlays.shortcut_help = true;
+        let doc = AutoCommit::new();
+        host.update(&doc, &automerge::ROOT);
+        assert!(host.layers.shortcut_guide.requested(), "the guide is up");
         let action = settings_store::hardware::ShortcutAction::FocusPreviousWindow;
-        host.shortcut_binding_rects
-            .push((action, Rect::new(20.0, 20.0, 80.0, 50.0)));
-        host.last_cursor = Some(Point::new(40.0, 35.0));
-        let click = ui::synthetic_input::mouse_press();
-        let mut handled = false;
-        assert!(host.handle_shell_mouse_click_event(&click, &mut handled));
-        assert!(handled);
-        assert_eq!(host.shortcut_rebind, Some(action));
+        host.shortcut_rebind = Some(action);
 
-        let mut key_handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Escape),
-            winit::event::Modifiers::default(),
-            false,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-            &mut key_handled,
+        let escape = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            Key::Named(NamedKey::Escape),
+            None,
+            winit::event::ElementState::Pressed,
         ));
-        assert!(key_handled);
+        let mut tree = taffy::TaffyTree::<()>::new();
+        let node = tree.new_leaf(taffy::Style::default()).expect("leaf");
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut edits = AutoCommit::new();
+        let mut ctx = ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut edits),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &tree,
+        };
+        assert!(host.route_shortcut_guide(&escape, &mut ctx));
+        assert!(handled);
         assert_eq!(host.shortcut_rebind, None);
         assert!(
             chrome.borrow().overlays.shortcut_help,
@@ -1331,43 +1294,8 @@ fn shortcut_guide_opens_from_every_help_route_and_is_keyboard_editable() {
         );
     }
 
-    fn shortcut_guide_controls_are_keyboard_reachable() {
-        let (mut host, chrome) = host_with_chrome();
-        chrome.borrow_mut().overlays.shortcut_help = true;
-        let mut handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Tab),
-            winit::event::Modifiers::default(),
-            false,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert_eq!(
-            host.shortcut_guide_focus,
-            Some(ShortcutGuideFocus::Binding(
-                settings_store::hardware::ShortcutAction::FocusPreviousWindow
-            ))
-        );
-
-        handled = false;
-        assert!(host.handle_shell_keyboard_event(
-            &Key::Named(NamedKey::Enter),
-            winit::event::Modifiers::default(),
-            false,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-        ));
-        assert_eq!(
-            host.shortcut_rebind,
-            Some(settings_store::hardware::ShortcutAction::FocusPreviousWindow)
-        );
-    }
-
     f1_and_configured_global_help_both_open_the_same_desktop_guide();
-    clicking_a_painted_shortcut_starts_capture_and_escape_only_cancels_capture();
-    shortcut_guide_controls_are_keyboard_reachable();
+    choosing_a_key_starts_capture_and_escape_only_cancels_capture();
 }
 
 #[test]

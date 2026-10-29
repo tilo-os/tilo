@@ -1414,7 +1414,7 @@ mod tests {
             let reply = verb(crate::model::DocumentAction::ReplyToComment(
                 crate::model::document::ReplyToComment {
                     comment: ui::tilo_resource::Id::from_raw(comment.clone()),
-                    text: "Will do.".into(),
+                    text: "Will do.".parse().unwrap(),
                     body: None,
                 },
             ));
@@ -1454,7 +1454,7 @@ mod tests {
                     block,
                     start: 0,
                     end: 6,
-                    text: "Please clarify".into(),
+                    text: "Please clarify".parse().unwrap(),
                 },
             ));
             apply_verb_by(&mut a.doc, &add, "Maya");
@@ -1471,7 +1471,7 @@ mod tests {
             let reply = verb(crate::model::DocumentAction::ReplyToComment(
                 crate::model::document::ReplyToComment {
                     comment: ui::tilo_resource::Id::from_raw(comment),
-                    text: "Will do".into(),
+                    text: "Will do".parse().unwrap(),
                     body: None,
                 },
             ));

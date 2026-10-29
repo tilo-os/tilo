@@ -6,7 +6,7 @@
 //! (`crate::rows`); they offer effects. The shared library's changes are the
 //! resource's own ([`crate::resource::Library`]).
 
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, Effect, NonBlank};
 
 use crate::action::SettingFlag;
 use crate::model::{Category, Route, Settings, SkipMode};
@@ -60,7 +60,7 @@ pub enum TubeEffect {
     #[effect(kind = "read")]
     Search {
         #[param("What to search for")]
-        query: String,
+        query: NonBlank,
     },
     /// Play or pause.
     #[effect(kind = "read")]

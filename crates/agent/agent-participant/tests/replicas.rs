@@ -93,7 +93,7 @@ fn read_only_resource_views_filter_roles_and_never_join_the_document_door() {
         &mut doc,
         "ada",
         chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
-            name: "Resource view fixture".into(),
+            name: "Resource view fixture".parse().unwrap(),
         }),
     )
     .unwrap();
@@ -559,7 +559,7 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
         &mut doc,
         "ada",
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,
@@ -667,7 +667,7 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         &mut doc,
         "ada",
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,

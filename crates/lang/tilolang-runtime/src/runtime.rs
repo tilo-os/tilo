@@ -527,6 +527,12 @@ impl Runtime {
         *self.core.clock.borrow_mut() = Some(Box::new(clock));
     }
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. Until it is set, UTC.
+    pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
+        *self.core.zone.borrow_mut() = Some(Box::new(zone));
+    }
+
     /// What `phrase(id, ...)` reads: the platform's phrases in the person's language. Until
     /// it is set, a phrase is its id.
     pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {

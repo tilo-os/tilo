@@ -43,7 +43,7 @@ id = "save-query"
 kind = "undoable"
 params = [
   { name = "name", required = true, schema = { type = "string" } },
-  { name = "sql", required = false, schema = { type = ["string", "null"] } },
+  { name = "sql", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

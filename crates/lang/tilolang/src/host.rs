@@ -100,6 +100,28 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Dated",
+        id: "host-dated",
+        doc: "When a text says something is due, as `dated(text, at)` read it.",
+        fields: &[
+            (
+                "text",
+                "Text",
+                "The text without the phrase that said when: `Call the landlord`.",
+            ),
+            (
+                "day",
+                "Option<Date>",
+                "The day it named, in the zone of who typed it.",
+            ),
+            (
+                "at",
+                "Option<Time>",
+                "The moment it named, when it named a time.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Lens",
         id: "host-lens",
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",
