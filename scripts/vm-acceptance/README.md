@@ -97,9 +97,8 @@ streams with the tree's own `tilo-vm` (`layer_artifacts.py produce`), and
 head, fetched from the forge, and checks the handoff with main's `layer_artifacts.py`: the
 code under test never verifies its own artifacts. The receipt names an exact clean commit,
 so the producer refuses a working tree with uncommitted changes. The handoff's identity (the
-source commit, the builder image t.toml pins, a random handoff number standing for the
-workflow run, and the receipt's SHA256) travels in the producer's outputs, which t hands
-only to the checks that need that result; the consumer checks them, the architecture and the
+source commit, the builder image, a random handoff number standing for the
+workflow run, and the receipt's SHA256) travels in the producer's outputs; the consumer checks them, the architecture and the
 component completeness before the VM is created, and verifies and imports through the normal
 signed cohort path. Any artifact error fails without a build fallback; slot readback and P01
 still describe the installed layers, and each swap entry names the consumer that installed

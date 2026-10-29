@@ -184,8 +184,7 @@ To add a benchmark (a KPI group):
    ... --runner ...`. State the environment truthfully: llvmpipe, TCG or a dev
    build is a different environment from GPU, KVM or release, and is never
    compared with them.
-3. Add the group to `tools/ci/perf-scheduled.sh`, a `perf-<group>` check to
-   t.toml and to `perf-scheduled`'s `needs_any_outcome`, and the group to
+3. Add the group to `tools/ci/perf-scheduled.sh`, and the group to
    `[lanes.perf-scheduled]` in `tools/perf/kpi-budgets.toml`. If the group
    has an A/B (`tools/perf/ab.py` `GROUPS`), build the same benchmarks there.
    The check runs on the node class the KPI is defined for and consumes

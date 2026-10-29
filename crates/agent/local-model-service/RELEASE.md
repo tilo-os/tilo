@@ -285,9 +285,7 @@ panfrost, panthor, msm, v3d, asahi) takes the Vulkan build, also without ROCm.
 
 ### Building
 
-`tools/release/local-model-runtime.sh build <id> <out>` builds one, as the
-`local-model-runtime-*` checks in `t.toml` do; stable rebuilds them when their
-inputs change. Everything is pinned: llama.cpp's source by commit and hash,
+`tools/release/local-model-runtime.sh build <id> <out>` builds one. Everything is pinned: llama.cpp's source by commit and hash,
 the bases by digest (mirrored in `tools/ci/publish/mirrored-images.tsv`), the
 CPU and Vulkan images' packages by Fedora 44's frozen release repository, the
 CUDA build's CMake by Kitware's release and its hash, and vLLM by

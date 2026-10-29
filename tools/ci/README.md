@@ -1,7 +1,7 @@
 # CI tooling
 
 This directory owns the implementation used only to plan, execute, measure, and
-report continuous-integration work: the scripts t's checks run (t.toml),
+report continuous-integration work: the scripts CI runs,
 compiler-cache setup, lint ratchets, builder resolution, and CI receipts.
 
 Repository policy and release utilities remain in `tools/`; their behavior is
@@ -42,15 +42,14 @@ not listed here.
 | `imager-macos-aarch64` | aarch64 | Imager and runtime builds on Apple silicon with Xcode | macos-15 |
 | `macos-aarch64` | aarch64 | Development builds and tests on a persistent Apple-silicon Mac; never release signing | macos-15 |
 
-## Running t's checks locally
+## Running CI's checks locally
 
-Each check runs commands from this repository; t.toml only chooses the node and
-image. Run them from the checkout on Linux, in the builder image
+Each check runs commands from this repository. Run them from the checkout on Linux, in the builder image
 (`os/Containerfile.builder`) or a developer image with the same tools
 (`dist/dev/Containerfile.fedora44`). Lint checks run in the smaller
 `os/Containerfile.ci-fast`.
 
-| t check                                                 | Local command                                                                                                                                                                                                                                                                                                 |
+| Check                                                   | Local command                                                                                                                                                                                                                                                                                                 |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `security`                                              | `bash tools/run-security-boundary-invariants.sh`                                                                                                                                                                                                                                                              |
 | `suite-<group>`                                         | `python3 tools/ci/suites.py run --group <group>` (`suites.py list` names the suites)                                                                                                                                                                                                                          |
@@ -111,8 +110,8 @@ run them on a Forgejo instance with stock runners. They need:
   matrices come from `runner_labels.py`.
 - **Images.** `images.toml` pins the CI images by digest. They are public, so a
   fork can pull them as they are. To build its own, publish
-  `os/Containerfile.ci-fast` and `os/Containerfile.builder` (t's `image-ci-fast`
-  and `image-ci-builder` checks in `t.toml`), change the pins, and set
+  `os/Containerfile.ci-fast` and `os/Containerfile.builder` (`build-ci-fast-images.yml`
+  and `tools/ci/publish/ci-builder.sh`), change the pins, and set
   `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
   `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
 - **Artifact actions.** The `actions/upload-artifact` and
