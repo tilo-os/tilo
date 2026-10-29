@@ -59,6 +59,21 @@ pub(crate) struct WindowBarRuntime {
     /// The app declared window-bar slots when last looked at: its History
     /// then stands in the bar, not in a band above it.
     slots_declared: bool,
+    /// What the person did in the bar after input the window has not handled yet, oldest
+    /// first, each with the serial of the input it came after
+    /// ([`crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent`]).
+    held: std::collections::VecDeque<(u32, crate::window_toolbar::ToolbarEvent)>,
+    /// The serial of the newest input the window handled, once it handled one.
+    handled_input: Option<u32>,
+}
+
+impl WindowBarRuntime {
+    /// Whether the window handled the input with the serial `serial`: serials grow by one per
+    /// event and wrap.
+    fn handled(&self, serial: u32) -> bool {
+        self.handled_input
+            .is_some_and(|handled| handled.wrapping_sub(serial) < 1 << 31)
+    }
 }
 
 impl WindowBarRuntime {
@@ -185,6 +200,64 @@ impl App {
         }
         self.floating.window_bar.sent = Some(offer.clone());
         Some(offer)
+    }
+
+    /// What the person did in the window's bar, after the input with the serial `after_input`
+    /// (the shell's): run at once when the window handled that input, else once it has, before
+    /// any input after it.
+    #[cfg(feature = "native")]
+    pub(crate) fn receive_bar_event(&mut self, event: ToolbarEvent, after_input: Option<u32>) {
+        let bar = &mut self.floating.window_bar;
+        match after_input {
+            Some(serial) if !bar.held.is_empty() || !bar.handled(serial) => {
+                bar.held.push_back((serial, event));
+            }
+            // Behind what is held, in the order the person used the bar.
+            None if !bar.held.is_empty() => {
+                let serial = bar.held.back().map_or(0, |(serial, _)| *serial);
+                bar.held.push_back((serial, event));
+            }
+            _ => self.run_bar_event(&event),
+        }
+    }
+
+    /// The window handled the input with the serial `serial`, and everything before it: what
+    /// the person did in the bar after it runs now, before the window handles the input after.
+    #[cfg(feature = "native")]
+    pub fn input_handled(&mut self, serial: u32) {
+        let bar = &mut self.floating.window_bar;
+        if bar.handled_input == Some(serial) {
+            return;
+        }
+        bar.handled_input = Some(serial);
+        while let Some((after, _)) = self.floating.window_bar.held.front()
+            && self.floating.window_bar.handled(*after)
+        {
+            if let Some((_, event)) = self.floating.window_bar.held.pop_front() {
+                self.run_bar_event(&event);
+            }
+        }
+    }
+
+    /// Run what the person did in the window's bar: the bar's search and History here, the
+    /// app's own slots by the widgets that declared them, now, so that what it does comes
+    /// before what the input after it does.
+    #[cfg(feature = "native")]
+    fn run_bar_event(&mut self, event: &ToolbarEvent) {
+        if self.apply_window_bar_event(event).is_some() {
+            return;
+        }
+        self.deliver_app_slot_event(event.clone());
+        // A host message asks for a new frame, but a frame syncs only when something asked
+        // for it: without this, what the person typed or committed in the bar waited, unread,
+        // for whatever made the app sync next (Enter in the address opened nothing).
+        self.needs_sync = true;
+        self.root_widget.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        // A slot bound to an action runs it as a control invocation, as a frame's sync does.
+        self.dispatch_control_invocations();
     }
 
     /// Hand the app an event about its own slots

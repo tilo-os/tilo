@@ -81,8 +81,11 @@ impl OwnProcessApp {
         events: Vec<ui::window_toolbar::ToolbarEvent>,
     ) {
         for event in events {
-            let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::ToolbarEvent { event })
-                .unwrap_or_default();
+            let mut wire = serde_json::to_vec(&FloatingSurfaceHostMessage::ToolbarEvent {
+                event,
+                after_input: None,
+            })
+            .unwrap_or_default();
             wire.push(b'\n');
             if let Err(error) = self.socket.write_all(&wire) {
                 eprintln!("shots: the app's connection broke: {error}");

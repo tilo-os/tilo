@@ -631,8 +631,16 @@ pub enum FloatingSurfaceHostMessage {
     /// The person used this app's slots in its window's bar
     /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or
     /// History control on its window ([`FloatingSurfaceClientMessage::WindowOffer`]).
+    ///
+    /// `after_input` is the serial of the last input event (a key, a pointer button, a touch
+    /// going down or up) the shell had sent this app's process on its Wayland connection when
+    /// the person used the bar: the app runs the event once it has handled that input, and
+    /// before any input that came after it, so the two ways input reaches it keep the order
+    /// the person used them in. `None`: the app had been sent no input.
     ToolbarEvent {
         event: crate::window_toolbar::ToolbarEvent,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_input: Option<u32>,
     },
     /// What the changes of a [`FloatingSurfaceClientMessage::DescribeHistory`]
     /// did, as the model on this device described them. A change it could

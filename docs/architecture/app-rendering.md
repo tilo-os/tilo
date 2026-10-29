@@ -216,8 +216,24 @@ the app never takes a person's typing back. Every edit names the resource its
 lane showed when the person made it, and the app applies it there, whatever
 the lane shows by the time the edit arrives. What is typed after a press
 waits until the app says it ran that press (`ToUi::Took`, sent right after
-what the press opened), then goes to the field the press left the keyboard
-in: several quick presses keep each one's typing apart.
+what the press opened), then goes where the keyboard would have been had
+the press run at once: typed where the keyboard was at the press, or with
+no field focused, it goes to the field the press left the keyboard in;
+typed into a field the person put the keyboard in since, it stays with
+that field and the resource it showed. Typing that nothing opened a field
+for goes to the field the keyboard is in, or the window says it went
+nowhere. Several quick presses keep each one's typing apart.
+
+**One order for input.** A press on one of the app's slots in the
+desktop's window bar reaches the window on its shell-ui connection, the
+window's own keys and clicks on its Wayland connection. Each bar event
+names the serial of the last input the shell had sent the window's process
+when the person used the bar (`ToolbarEvent { after_input }`,
+`shell::compositor::input_order`); the window's event loop says which
+serials it has handed the app (`winit::platform::wayland::delivered_input_serial`),
+and the app runs the bar event once it handled that input and before the
+input after it (`App::input_handled`), so a press neither overtakes the keys
+typed before it nor lets the keys after it run first.
 
 **Hostile until validated.** A batch is decoded once into the window's own
 memory and checked before a widget is touched: a described component's node

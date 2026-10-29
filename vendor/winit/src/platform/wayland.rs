@@ -330,6 +330,23 @@ impl WindowExtWayland for Window {
     }
 }
 
+/// The compositor's serial of the newest input event (a key, a pointer button, a touch going
+/// down or up) this process's event loop has handed the application, or that it dropped for
+/// having no window: every input the compositor sent before it has been handed over too. Input
+/// that reaches the application by another way (a desktop's bar telling it a button of its
+/// own was pressed) names the serial it came after, and waits until this one reaches it.
+/// `None` until the first.
+pub fn delivered_input_serial() -> Option<u32> {
+    #[cfg(wayland_platform)]
+    {
+        crate::platform_impl::wayland::delivered_input_serial()
+    }
+    #[cfg(not(wayland_platform))]
+    {
+        None
+    }
+}
+
 /// Content-free identity of a key delivered by the Wayland compositor.
 /// The timestamp is the protocol's wrapping millisecond clock, not an
 /// assumed Unix/monotonic epoch. Repeats and synthesized keys have no stamp.

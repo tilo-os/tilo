@@ -163,6 +163,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     false,
                     Some((serial, time)),
                 );
+                state.events_sink.push_input_serial(serial);
 
                 let delay = match keyboard_state.repeat_info {
                     RepeatInfo::Repeat { delay, .. } => delay,
@@ -247,6 +248,7 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
                     false,
                     Some((serial, time)),
                 );
+                state.events_sink.push_input_serial(serial);
 
                 if keyboard_state.repeat_info != RepeatInfo::Disable
                     && keyboard_state
