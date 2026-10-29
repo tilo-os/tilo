@@ -26,11 +26,12 @@ impl PreparedMedia {
         ) || self.home.is_some()
             || self.retained.is_some()
             || self.applications.is_some()
-            || self.manifest.portable_home.is_some()
-            || self.manifest.completed_home.is_some()
-            || self.manifest.portable_flatpak.is_some()
+            || self.manifest.units.portable_home().is_some()
+            || self.manifest.units.completed_home().is_some()
+            || self.manifest.units.portable_flatpak().is_some()
             || (!plan.categories.accounts
-                && (!self.account_ids.is_empty() || self.manifest.service_sessions.is_some()))
+                && (!self.account_ids.is_empty()
+                    || self.manifest.units.service_sessions().is_some()))
         {
             return Err(io::Error::other(
                 "Applications-only pending selection differs",

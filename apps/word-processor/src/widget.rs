@@ -1077,8 +1077,8 @@ pub struct WordProcessorWidget {
     /// blocks whose layout was reused (`hits`) vs re-shaped (`misses`).
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
-    /// The command each of the window bar's slots runs, as last declared.
-    bar_commands: Vec<(String, window_bar::BarCommand)>,
+    /// The window bar's slots, each carrying the command it runs.
+    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     paper_theme: Theme,
     /// The window's theme this frame, for what is drawn on the desk.
     desk_theme: Theme,
@@ -1403,7 +1403,7 @@ impl WordProcessorWidget {
             recent_layout_cache: HashMap::new(),
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
-            bar_commands: Vec::new(),
+            bar: ui::framework::BarCommands::new(),
             paper_theme: Theme::light(),
             desk_theme: Theme::dark(),
             text_scale: 1.0,

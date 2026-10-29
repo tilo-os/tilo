@@ -27,6 +27,16 @@ path = "tests/it.rs"
 name = "counter"
 path = "tests/counter.rs"
 
+# The interaction layer (menus, hover toolbars, swipes) over a small package of its own.
+[[test]]
+name = "interaction"
+path = "tests/interaction.rs"
+
+# Rich text with references and times, as a reader sees it, over a package of its own.
+[[test]]
+name = "mentions"
+path = "tests/mentions.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 

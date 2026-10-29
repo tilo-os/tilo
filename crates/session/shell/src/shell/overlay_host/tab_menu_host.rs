@@ -665,7 +665,7 @@ impl ShellOverlayHost {
                         // desktop says so.
                         self.open_ask_agent(
                             seed.drawn_at(Some(Rect::from_center_size(at, (1.0, 1.0))))
-                                .asking(text),
+                                .asking(&text),
                         );
                         true
                     }

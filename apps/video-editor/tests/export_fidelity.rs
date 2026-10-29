@@ -158,26 +158,22 @@ fn paused_editor_schedules_preroll_without_pointer_input() {
     )
     .unwrap();
     app.harness().key("Home");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the paused editor to present decoded footage", || {
         let (real, pending) = app
             .with_widget::<video_editor::VideoEditorApp, _>(|editor| {
                 (editor.has_preview_frame(), editor.needs_animation_frame())
             })
             .expect("editor surface");
         if real {
-            break;
+            return true;
         }
         assert!(
             pending,
             "a paused seek must keep requesting frames until its picture arrives"
         );
-        assert!(
-            ui::time::now() < deadline,
-            "paused editor never presented decoded footage"
-        );
         app.harness().poll_frame().expect("scheduled preview frame");
-    }
+        false
+    });
 }
 
 /// Decode `path` and return its frame at `at_secs`, scaled to a fixed

@@ -800,7 +800,6 @@ mod tests {
     use crate::shell::search::action_api::ArgValue;
     use crate::shell::search::{SearchContext, SearchProvider};
     use automerge::{AutoCommit, ROOT};
-    use std::sync::Arc;
 
     fn with_context<R>(
         provider: &SettingsPagesProvider,
@@ -867,9 +866,9 @@ mod tests {
     #[serial_test::serial]
     fn typed_settings_are_index_rows_reachable_by_name_and_stored_through_the_store() {
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let paths = settings_store::config_root().unwrap();
+        let session = settings_store::profile(&paths);
+        let settings = crate::shell::test_support::install_settings(session.clone());
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
         let provider = SettingsPagesProvider::new();
         let provider = &provider;

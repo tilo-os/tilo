@@ -198,8 +198,8 @@ impl SelectedGrant {
             || review.manifest().identity_public_key != self.identity.public_key()
             || review
                 .manifest()
-                .retained_home
-                .as_ref()
+                .units
+                .retained_home()
                 .is_none_or(|p| p.as_plan() != &original_plan)
         {
             return Err(denied());

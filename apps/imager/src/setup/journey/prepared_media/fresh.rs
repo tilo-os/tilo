@@ -85,10 +85,14 @@ impl PreparedMedia {
             cancel,
         )?;
         let mut manifest = self.manifest.clone();
-        manifest.browser = Some(prepared_setup::BrowserHandoff {
-            plan: refreshed.plan.clone(),
-            payload: refreshed.expectation.clone(),
-        });
+        manifest
+            .units
+            .insert(imager_backend::setup::prepared_setup::Unit::Browser(
+                prepared_setup::BrowserHandoff {
+                    plan: refreshed.plan.clone(),
+                    payload: refreshed.expectation.clone(),
+                },
+            ));
         let tree = quarantine.join("home");
         std::fs::remove_file(tree.join(prepared_setup::MANIFEST_FILE))?;
         manifest.write(&tree)?;
@@ -281,7 +285,7 @@ mod tests {
             original.sealed_bytes + ordinary_home + browser_bytes + 128 * 1024
         );
         assert!(original.transfer_generation.lock().unwrap().is_none());
-        assert!(original.manifest.offline_home.is_none());
+        assert!(original.manifest.units.offline_home().is_none());
     }
 
     #[test]
@@ -376,7 +380,7 @@ mod tests {
         );
         let browser = fresh.browser.as_ref().unwrap();
         assert_eq!(
-            parent.manifest().browser.as_ref().unwrap().payload,
+            parent.manifest().units.browser().unwrap().payload,
             browser.expectation
         );
         assert!(!browser.plan.profiles[0].history);

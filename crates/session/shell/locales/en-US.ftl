@@ -2425,7 +2425,7 @@ capture-uncapturable-selection = This selection can't be captured. Try capturing
 capture-uncapturable-strip = The strip can't be captured. Try capturing the screen.
 capture-uncapturable-screen = The screen can't be captured right now. Try again.
 settings-not-saved-title = Setting not saved
-settings-not-saved-body = A change to your settings couldn't be saved, so it went back to what it was. Check that the disk has free space, then try again.
+settings-not-saved-body = A change to your settings couldn't be saved yet. It stays in effect and is saved again with your next change. Check that the disk has free space.
 idle-inhibit-unnamed-app = An app
 
 # Sending a screenshot to a device or into the workspace files

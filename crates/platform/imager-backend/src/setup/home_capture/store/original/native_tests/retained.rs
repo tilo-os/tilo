@@ -41,8 +41,16 @@ fn capsule(
         vec![],
     )
     .unwrap();
-    manifest.retained_home = Some(RetainedHomePlan::new(plan.clone()).unwrap());
-    manifest.retained_caller = Some(declaration);
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::RetainedHome {
+            plan: RetainedHomePlan::new(plan.clone()).unwrap(),
+            caller: None,
+        });
+    manifest
+        .units
+        .set_retained_caller(Some(declaration))
+        .unwrap();
     manifest.write(&staging).unwrap();
     let path = root.join(format!("{suffix}.sealed"));
     ExportReview::review(
@@ -311,8 +319,8 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
         let plan = selected
             .review
             .manifest()
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .unwrap()
             .as_plan()
             .clone();

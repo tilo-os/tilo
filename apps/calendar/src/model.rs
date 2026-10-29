@@ -1657,6 +1657,7 @@ mod tests {
     /// exports, as the `rrule` crate expands it.
     #[test]
     fn expansion_matches_the_exported_rrule() {
+        use std::fmt::Write as _;
         let seeds = [
             date(2024, 1, 31),
             date(2024, 2, 29),
@@ -1687,19 +1688,17 @@ mod tests {
                         event.recurrence_until = until;
                         let mut rule = format!("{};INTERVAL={interval}", recurrence.to_rrule());
                         if let Some(count) = count {
-                            rule.push_str(&format!(";COUNT={count}"));
+                            let _ = write!(rule, ";COUNT={count}");
                         }
                         if let Some(until) = until {
-                            rule.push_str(&format!(";UNTIL={}T235959Z", until.format("%Y%m%d")));
+                            let _ = write!(rule, ";UNTIL={}T235959Z", until.format("%Y%m%d"));
                         }
                         let rfc = |exdate: Option<NaiveDate>| -> Vec<NaiveDate> {
                             let mut text =
                                 format!("DTSTART:{}T000000Z\nRRULE:{rule}", seed.format("%Y%m%d"));
                             if let Some(exdate) = exdate {
-                                text.push_str(&format!(
-                                    "\nEXDATE:{}T000000Z",
-                                    exdate.format("%Y%m%d")
-                                ));
+                                let _ =
+                                    write!(text, "\nEXDATE:{}T000000Z", exdate.format("%Y%m%d"));
                             }
                             let set: rrule::RRuleSet = text.parse().expect("valid rule");
                             let end = to

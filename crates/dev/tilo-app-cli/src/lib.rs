@@ -4,7 +4,7 @@
 //! while the command performs one checked write phase only after all inputs
 //! have been validated.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, BufRead as _, BufReader, IsTerminal, Write as _};
@@ -20,7 +20,8 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use tilo_files::ChangeKind;
+use tilo_files::native::{ChangeWatch, WatchEvent as Event};
 
 pub mod android;
 pub mod capability_usage;
@@ -6026,21 +6027,12 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Val
     let source_revision = Arc::new(AtomicU64::new(0));
     let callback_revision = Arc::clone(&source_revision);
     let callback_roots = roots.clone();
-    let watcher: RecommendedWatcher =
-        notify::recommended_watcher(move |event: notify::Result<Event>| {
-            if event
-                .as_ref()
-                .is_ok_and(|event| event_requires_restart(event, &callback_roots))
-            {
-                callback_revision.fetch_add(1, Ordering::Release);
-            }
-            let _ = event_tx.send(event);
-        })
-        .context("creating app file watcher")?;
-    let mut watcher = DevWatcher::new(watcher);
-    for root in &roots {
-        watcher.watch_tree(root)?;
-    }
+    let _watches = watch_dev_roots(&roots, move |event| {
+        if event_requires_restart(event, &callback_roots) {
+            callback_revision.fetch_add(1, Ordering::Release);
+        }
+        let _ = event_tx.send(event.clone());
+    })?;
     let _signals = DevSignalGuard::install()?;
     provide_runtime_host(&app_dir);
     let _runtime = DevRuntimeGuard;
@@ -6052,10 +6044,7 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Val
             .collect::<Vec<_>>()
             .join(", ")
     );
-    // inotify does not cross every bind mount, and a busy editor keeps the
-    // event channel from ever going idle. Stamp polls run on a timer either way.
     let mut sources = snapshot_restart_sources(&roots).unwrap_or_default();
-    let mut next_source_poll = Instant::now();
     let mut dev = dev_reload::DevLoop::new(
         dev_session_dir(&app_dir),
         request.timings,
@@ -6078,7 +6067,6 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Val
             &mut child,
             &event_rx,
             &roots,
-            &mut watcher,
             &mut sources,
             &mut dev,
         )
@@ -6088,26 +6076,16 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Val
         return Ok(Vec::new());
     }
     'watching: while !DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
-        match watch_tick(
-            &event_rx,
-            &roots,
-            &mut watcher,
-            &mut sources,
-            &mut next_source_poll,
-        ) {
+        match watch_tick(&event_rx, &roots) {
             WatchTick::Stop => bail!("app file watcher stopped"),
-            WatchTick::Rebuild { bump_revision } => {
+            WatchTick::Rebuild => {
                 dev.changed_at = Some(SystemTime::now());
-                if bump_revision {
-                    source_revision.fetch_add(1, Ordering::Release);
-                }
                 if rebuild_running_dev_app(
                     &initial,
                     request,
                     &mut child,
                     &event_rx,
                     &roots,
-                    &mut watcher,
                     &mut sources,
                     &mut dev,
                 ) {
@@ -6131,13 +6109,12 @@ fn rebuild_running_dev_app(
     plan: &CargoPlan,
     request: &DevRequest,
     child: &mut Option<Child>,
-    events: &mpsc::Receiver<notify::Result<Event>>,
+    events: &mpsc::Receiver<Event>,
     roots: &[PathBuf],
-    watcher: &mut DevWatcher,
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
     dev: &mut dev_reload::DevLoop,
 ) -> bool {
-    drain_until_quiet(events, roots, request.debounce, watcher);
+    drain_until_quiet(events, roots, request.debounce);
     if reload_catalogs_without_build(plan, request.profile(), child.as_ref(), roots, sources) {
         dev.changed_at = None;
         return false;
@@ -6164,26 +6141,15 @@ fn rebuild_running_dev_app(
                 plan,
                 events,
                 roots,
-                watcher,
                 child.is_none(),
                 sources,
                 dev,
                 &mut timings,
             )
         } else {
-            build_dev_candidate_interruptible(
-                plan,
-                request.profile(),
-                Some(events),
-                roots,
-                |event| {
-                    watcher.observe(event);
-                },
-            )
+            build_dev_candidate_interruptible(plan, request.profile(), Some(events), roots)
         };
-        let queued_restart = drain_pending_restart_events(events, roots, |event| {
-            watcher.observe(event);
-        });
+        let queued_restart = drain_pending_restart_events(events, roots);
         let superseded =
             queued_restart || dev.source_revision.load(Ordering::Acquire) != building_revision;
         if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
@@ -6194,7 +6160,7 @@ fn rebuild_running_dev_app(
                 "[tilo-app] newer change arrived during the build; skipping the stale candidate"
             );
             dev.changed_at = Some(SystemTime::now());
-            drain_until_quiet(events, roots, request.debounce, watcher);
+            drain_until_quiet(events, roots, request.debounce);
             continue;
         }
         match candidate {
@@ -6223,7 +6189,7 @@ fn rebuild_running_dev_app(
                     "[tilo-app] newer change arrived during the build; skipping the stale candidate"
                 );
                 dev.changed_at = Some(SystemTime::now());
-                drain_until_quiet(events, roots, request.debounce, watcher);
+                drain_until_quiet(events, roots, request.debounce);
                 continue;
             }
             Err(error) => {
@@ -6312,19 +6278,11 @@ fn is_locale_catalog(app_dir: &Path, path: &Path) -> bool {
 /// Drain edits queued while Cargo was compiling. Returning `true` makes the
 /// caller discard that candidate and rebuild the newest source instead of
 /// briefly launching an already-stale app.
-fn drain_pending_restart_events(
-    events: &mpsc::Receiver<notify::Result<Event>>,
-    roots: &[PathBuf],
-    mut observe: impl FnMut(&Event),
-) -> bool {
+fn drain_pending_restart_events(events: &mpsc::Receiver<Event>, roots: &[PathBuf]) -> bool {
     let mut restart = false;
     for _ in 0..DEV_EVENT_DRAIN_LIMIT {
         match events.try_recv() {
-            Ok(Ok(event)) => {
-                observe(&event);
-                restart |= event_requires_restart(&event, roots);
-            }
-            Ok(Err(error)) => eprintln!("[tilo-app] watch error: {error}"),
+            Ok(event) => restart |= event_requires_restart(&event, roots),
             Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => return restart,
         }
     }
@@ -6350,7 +6308,7 @@ enum DevPick {
 
 #[cfg(test)]
 fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
-    match build_dev_candidate_interruptible(plan, None, None, &[], |_| {})? {
+    match build_dev_candidate_interruptible(plan, None, None, &[])? {
         DevCandidate::Built(executable) => Ok(executable),
         DevCandidate::Superseded => bail!("development build was cancelled without a watcher"),
     }
@@ -6362,9 +6320,8 @@ fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
 fn build_dev_candidate_interruptible(
     plan: &CargoPlan,
     profile: Option<&str>,
-    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    events: Option<&mpsc::Receiver<Event>>,
     roots: &[PathBuf],
-    observe: impl FnMut(&Event),
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_binary = dev_binary_name(&manifest)?;
@@ -6381,7 +6338,6 @@ fn build_dev_candidate_interruptible(
         plan,
         events,
         roots,
-        observe,
         &DevCargo {
             args,
             env: Vec::new(),
@@ -6393,9 +6349,8 @@ fn build_dev_candidate_interruptible(
 
 fn run_dev_cargo(
     plan: &CargoPlan,
-    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    events: Option<&mpsc::Receiver<Event>>,
     roots: &[PathBuf],
-    mut observe: impl FnMut(&Event),
     cargo: &DevCargo,
     mut span: Option<&mut RustcSpan>,
 ) -> Result<DevCandidate> {
@@ -6432,7 +6387,7 @@ fn run_dev_cargo(
             terminate_build_child(&mut build);
             bail!("development stopped");
         }
-        if events.is_some_and(|events| newer_source_during_build(events, roots, &mut observe)) {
+        if events.is_some_and(|events| newer_source_during_build(events, roots)) {
             terminate_build_child(&mut build);
             return Ok(DevCandidate::Superseded);
         }
@@ -6476,25 +6431,10 @@ fn run_dev_cargo(
     }
 }
 
-fn newer_source_during_build(
-    events: &mpsc::Receiver<notify::Result<Event>>,
-    roots: &[PathBuf],
-    observe: &mut impl FnMut(&Event),
-) -> bool {
-    // A bound keeps Cargo reapable when the editor opens files faster than
+fn newer_source_during_build(events: &mpsc::Receiver<Event>, roots: &[PathBuf]) -> bool {
+    // A bound keeps Cargo reapable when the editor writes files faster than
     // this loop can drain them. The next build tick sees whatever remains.
-    let mut restart = false;
-    for _ in 0..DEV_EVENT_DRAIN_LIMIT {
-        match events.try_recv() {
-            Ok(Ok(event)) => {
-                restart |= event_requires_restart(&event, roots);
-                observe(&event);
-            }
-            Ok(Err(error)) => eprintln!("[tilo-app] watch error: {error}"),
-            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
-        }
-    }
-    restart
+    drain_pending_restart_events(events, roots)
 }
 
 fn terminate_build_child(child: &mut Child) {
@@ -6676,83 +6616,26 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
     Ok(Some(resolved))
 }
 
-struct DevWatcher {
-    inner: RecommendedWatcher,
-    watched: HashSet<PathBuf>,
-    /// The OS ran out of watches; the source stamp poll carries on alone.
-    exhausted: bool,
+/// Watch each root's tree, leaving build output and editor folders out,
+/// handing every change to `on_event` on the watches' threads.
+fn watch_dev_roots(
+    roots: &[PathBuf],
+    on_event: impl Fn(&Event) + Clone + Send + 'static,
+) -> Result<Vec<ChangeWatch>> {
+    roots
+        .iter()
+        .map(|root| {
+            let on_event = on_event.clone();
+            tilo_files::native::Watcher::tree(root)
+                .skip(|directory| {
+                    ignored_watch_component(directory.file_name().and_then(|name| name.to_str()))
+                })
+                .start(move |events| events.iter().for_each(&on_event))
+                .with_context(|| format!("watching {}", root.display()))
+        })
+        .collect()
 }
 
-impl DevWatcher {
-    fn new(inner: RecommendedWatcher) -> Self {
-        Self {
-            inner,
-            watched: HashSet::new(),
-            exhausted: false,
-        }
-    }
-
-    fn watch_tree(&mut self, root: &Path) -> Result<()> {
-        if self.exhausted {
-            return Ok(());
-        }
-        for directory in source_watch_directories(root)? {
-            if !self.watched.insert(directory.clone()) {
-                continue;
-            }
-            if let Err(error) = self.inner.watch(&directory, RecursiveMode::NonRecursive) {
-                self.watched.remove(&directory);
-                if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
-                    self.exhausted = true;
-                    eprintln!(
-                        "[tilo-app] the OS file watch limit is reached (another program holds \
-                         most of fs.inotify.max_user_watches); checking for changes every {} ms instead",
-                        SOURCE_POLL_INTERVAL.as_millis()
-                    );
-                    return Ok(());
-                }
-                return Err(error).with_context(|| format!("watching {}", directory.display()));
-            }
-        }
-        Ok(())
-    }
-
-    fn observe(&mut self, event: &Event) {
-        if matches!(event.kind, EventKind::Remove(_)) {
-            for path in &event.paths {
-                let removed = self
-                    .watched
-                    .iter()
-                    .filter(|directory| directory.starts_with(path))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for directory in removed {
-                    let _ = self.inner.unwatch(&directory);
-                    self.watched.remove(&directory);
-                }
-            }
-        }
-        // Opening a directory we already watch must not walk it again.
-        // `read_dir` emits another open event, and following those never ends.
-        if !event_introduces_directory(event) {
-            return;
-        }
-        for path in &event.paths {
-            if self.watched.contains(path) || !path.is_dir() {
-                continue;
-            }
-            if ignored_watch_component(path.file_name().and_then(|name| name.to_str())) {
-                continue;
-            }
-            if let Err(error) = self.watch_tree(path) {
-                eprintln!("[tilo-app] cannot watch new directory: {error:#}");
-            }
-        }
-    }
-}
-
-/// How often to compare file stamps. inotify delivery is not required.
-const SOURCE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Events inspected per build tick. The rest stay queued for the next tick
 /// so a flood cannot postpone reaping Cargo.
 const DEV_EVENT_DRAIN_LIMIT: usize = 128;
@@ -6760,79 +6643,17 @@ const DEV_EVENT_DRAIN_LIMIT: usize = 128;
 #[derive(Debug)]
 enum WatchTick {
     Idle,
-    /// `bump_revision` is set for a stamp poll. inotify already bumped it.
-    Rebuild {
-        bump_revision: bool,
-    },
+    Rebuild,
     Stop,
 }
 
-/// One wait on the watcher. Access traffic does not postpone the stamp poll.
-fn watch_tick(
-    events: &mpsc::Receiver<notify::Result<Event>>,
-    roots: &[PathBuf],
-    watcher: &mut DevWatcher,
-    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
-    next_source_poll: &mut Instant,
-) -> WatchTick {
-    let timeout = next_source_poll
-        .saturating_duration_since(Instant::now())
-        .min(Duration::from_millis(100));
-    let event_restart = match events.recv_timeout(timeout) {
-        Ok(Ok(event)) => {
-            watcher.observe(&event);
-            event_requires_restart(&event, roots)
-        }
-        Err(RecvTimeoutError::Timeout) => false,
-        Ok(Err(error)) => {
-            eprintln!("[tilo-app] watch error: {error}");
-            false
-        }
-        Err(RecvTimeoutError::Disconnected) => return WatchTick::Stop,
-    };
-    if event_restart {
-        return WatchTick::Rebuild {
-            bump_revision: false,
-        };
+/// One wait on the watcher, short enough to notice a stop request.
+fn watch_tick(events: &mpsc::Receiver<Event>, roots: &[PathBuf]) -> WatchTick {
+    match events.recv_timeout(Duration::from_millis(100)) {
+        Ok(event) if event_requires_restart(&event, roots) => WatchTick::Rebuild,
+        Ok(_) | Err(RecvTimeoutError::Timeout) => WatchTick::Idle,
+        Err(RecvTimeoutError::Disconnected) => WatchTick::Stop,
     }
-    if take_source_stamp_change(roots, sources, next_source_poll, Instant::now()) {
-        return WatchTick::Rebuild {
-            bump_revision: true,
-        };
-    }
-    WatchTick::Idle
-}
-
-fn take_source_stamp_change(
-    roots: &[PathBuf],
-    sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
-    next_source_poll: &mut Instant,
-    now: Instant,
-) -> bool {
-    if now < *next_source_poll {
-        return false;
-    }
-    *next_source_poll = now.checked_add(SOURCE_POLL_INTERVAL).unwrap_or(now);
-    let Some(next) = snapshot_restart_sources(roots) else {
-        return false;
-    };
-    let changed = next != *sources;
-    if !changed {
-        *sources = next;
-    }
-    changed
-}
-
-fn event_introduces_directory(event: &Event) -> bool {
-    matches!(
-        event.kind,
-        EventKind::Create(_)
-            | EventKind::Modify(notify::event::ModifyKind::Name(
-                notify::event::RenameMode::To
-                    | notify::event::RenameMode::Both
-                    | notify::event::RenameMode::Any,
-            ))
-    )
 }
 
 fn source_watch_directories(root: &Path) -> Result<Vec<PathBuf>> {
@@ -6903,10 +6724,7 @@ fn snapshot_restart_sources(roots: &[PathBuf]) -> Option<HashMap<PathBuf, (Syste
 }
 
 fn event_requires_restart(event: &Event, roots: &[PathBuf]) -> bool {
-    if matches!(event.kind, EventKind::Access(_)) {
-        return false;
-    }
-    event.paths.iter().any(|path| restart_path(path, roots))
+    event.kind == ChangeKind::Rescan || restart_path(&event.path, roots)
 }
 
 fn restart_path(path: &Path, roots: &[PathBuf]) -> bool {
@@ -6944,12 +6762,7 @@ fn restart_path(path: &Path, roots: &[PathBuf]) -> bool {
     name != "Cargo.lock" && !name.ends_with('~') && !name.starts_with(".#") && !temporary_extension
 }
 
-fn drain_until_quiet(
-    events: &mpsc::Receiver<notify::Result<Event>>,
-    roots: &[PathBuf],
-    quiet: Duration,
-    watcher: &mut DevWatcher,
-) {
+fn drain_until_quiet(events: &mpsc::Receiver<Event>, roots: &[PathBuf], quiet: Duration) {
     let mut deadline = Instant::now().checked_add(quiet);
     loop {
         if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
@@ -6964,13 +6777,11 @@ fn drain_until_quiet(
         }
         let poll = remaining.min(Duration::from_millis(100));
         match events.recv_timeout(poll) {
-            Ok(Ok(event)) => {
-                watcher.observe(&event);
+            Ok(event) => {
                 if event_requires_restart(&event, roots) {
                     deadline = Instant::now().checked_add(quiet);
                 }
             }
-            Ok(Err(error)) => eprintln!("[tilo-app] watch error: {error}"),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -7471,12 +7282,11 @@ fn app_supports_in_place_reload(app_dir: &Path) -> bool {
 #[cfg(test)]
 fn build_in_place_dev_app(
     plan: &CargoPlan,
-    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    events: Option<&mpsc::Receiver<Event>>,
     roots: &[PathBuf],
-    observe: impl FnMut(&Event),
     need_host: bool,
 ) -> Result<DevCandidate> {
-    build_in_place_dev_app_with_cargo(plan, None, events, roots, observe, need_host, &mut None)
+    build_in_place_dev_app_with_cargo(plan, None, events, roots, need_host, &mut None)
 }
 
 /// The watch loop's in-place build. Once the app is running and every edit
@@ -7484,9 +7294,8 @@ fn build_in_place_dev_app(
 /// rustc read, rustc alone rebuilds it; anything else goes through Cargo.
 fn build_in_place_dev_app_for_loop(
     plan: &CargoPlan,
-    events: &mpsc::Receiver<notify::Result<Event>>,
+    events: &mpsc::Receiver<Event>,
     roots: &[PathBuf],
-    watcher: &mut DevWatcher,
     need_host: bool,
     sources: &HashMap<PathBuf, (SystemTime, u64)>,
     dev: &mut dev_reload::DevLoop,
@@ -7498,13 +7307,7 @@ fn build_in_place_dev_app_for_loop(
         .filter(|fast| fast.covers(&changed_sources(&dev.baseline, sources)));
     if let Some(fast) = fast {
         eprintln!("[tilo-app] building the reload library with rustc");
-        match dev_reload::rebuild_with_rustc(
-            &fast,
-            events,
-            roots,
-            |event| watcher.observe(event),
-            timings,
-        ) {
+        match dev_reload::rebuild_with_rustc(&fast, events, roots, timings) {
             dev_reload::FastOutcome::Done(DevCandidate::Built(library)) => {
                 let staging = SystemTime::now();
                 let staged = stage_dev_reload_library(&plan.app_dir, &library)?;
@@ -7533,7 +7336,6 @@ fn build_in_place_dev_app_for_loop(
         profile.as_deref(),
         Some(events),
         roots,
-        |event| watcher.observe(event),
         need_host,
         &mut Some((session.as_path(), timings)),
     )
@@ -7552,9 +7354,8 @@ fn elapsed_ms(since: SystemTime) -> f64 {
 fn build_in_place_dev_app_with_cargo(
     plan: &CargoPlan,
     profile: Option<&str>,
-    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    events: Option<&mpsc::Receiver<Event>>,
     roots: &[PathBuf],
-    mut observe: impl FnMut(&Event),
     need_host: bool,
     loop_state: &mut Option<(&Path, &mut Option<dev_reload::ReloadTimings>)>,
 ) -> Result<DevCandidate> {
@@ -7583,14 +7384,7 @@ fn build_in_place_dev_app_with_cargo(
             .and_then(|(_, timings)| timings.as_mut());
         let mut span = timing.is_some().then(RustcSpan::default);
         let started = SystemTime::now();
-        let built = run_dev_cargo(
-            plan,
-            events,
-            roots,
-            &mut observe,
-            &step.cargo,
-            span.as_mut(),
-        )?;
+        let built = run_dev_cargo(plan, events, roots, &step.cargo, span.as_mut())?;
         if let Some(timings) = loop_state
             .as_mut()
             .and_then(|(_, timings)| timings.as_mut())

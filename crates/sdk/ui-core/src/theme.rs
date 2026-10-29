@@ -542,27 +542,17 @@ impl Theme {
         self.status_success = c.semantic.success;
     }
 
-    /// Reads `$XDG_CONFIG_HOME/tilo/session/settings.json` (falling back to
-    /// `~/.config/tilo/session/settings.json`), the shared preference Settings and
-    /// Theme Studio update through their respective domain stores.
-    /// Unreadable, absent and unrecognised all mean the dark default — a
-    /// machine with no preference and one whose settings file is corrupt
-    /// both want a desktop that starts.
+    /// Reads the person's settings ([`settings_store::load`]), the shared
+    /// preference Settings and Theme Studio update through their respective
+    /// domain stores. Absent and unrecognised both mean the dark default — a
+    /// machine with no preference wants a desktop that starts.
     pub fn configured() -> Self {
-        if let Some(source) = settings_store::installed_source() {
-            let text = serde_json::Value::Object(source.load()).to_string();
-            let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
-            return Self::configured_from_text(&text, reduce_motion_override);
-        }
-        Self::configured_from(settings_store::settings_path().as_deref())
+        Self::configured_from(&settings_store::load())
     }
 
-    /// [`Theme::configured`] from an explicit settings file; `None` or an
-    /// unreadable path yields the dark default.
-    pub fn configured_from(settings: Option<&std::path::Path>) -> Self {
-        let text = settings
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .unwrap_or_default();
+    /// [`Theme::configured`] from an explicit settings document.
+    pub fn configured_from(settings: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let text = serde_json::Value::Object(settings.clone()).to_string();
         let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
         Self::configured_from_text(&text, reduce_motion_override)
     }
@@ -612,14 +602,7 @@ impl Theme {
     /// document names at all: a host keeps its own value for one it does not.
     #[must_use]
     pub fn configured_comforts() -> ConfiguredComforts {
-        let document = match settings_store::installed_source() {
-            Some(source) => serde_json::Value::Object(source.load()),
-            None => serde_json::Value::Object(
-                settings_store::settings_path()
-                    .map(|path| settings_store::load_at(&path))
-                    .unwrap_or_default(),
-            ),
-        };
+        let document = serde_json::Value::Object(settings_store::load());
         Self::comforts_in(&document, crate::host::environment().accessibility)
     }
 
@@ -701,19 +684,18 @@ impl Theme {
         Self::from_document(&document)
     }
 
-    /// The day/night schedule an automatic appearance in `settings` follows,
+    /// The day/night schedule an automatic appearance in `document` follows,
     /// or `None` when the mode is fixed. Hosts keep it to notice sunrise and
-    /// sunset, which change the theme without changing the file.
+    /// sunset, which change the theme without changing the settings.
     pub fn automatic_schedule_from(
-        settings: Option<&std::path::Path>,
+        document: &serde_json::Map<String, serde_json::Value>,
     ) -> Option<settings_store::day_schedule::Scheduled> {
-        let document = settings_store::load_at(settings?);
         let mode = document
             .get("appearance")?
             .get(settings_store::day_schedule::MODE_KEY)?
             .as_str()?;
         settings_store::day_schedule::is_automatic(mode)
-            .then(|| settings_store::day_schedule::Scheduled::from_settings(&document))
+            .then(|| settings_store::day_schedule::Scheduled::from_settings(document))
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
@@ -1720,64 +1702,45 @@ mod configured_theme {
     #[test]
     fn startup_theme_follows_the_settings_file_or_its_absence() {
         {
-            let dir = tempfile::tempdir().expect("temp config dir");
-            let settings = dir.path().join("settings.json");
-            std::fs::write(
-                &settings,
+            let settings = settings_store::parse(
                 r#"{"version":1,"appearance":{"dark_theme":"high-contrast"}}"#,
-            )
-            .expect("write settings");
+            );
 
             assert_eq!(
-                Theme::configured_from(Some(&settings)).name,
+                Theme::configured_from(&settings).name,
                 Theme::high_contrast().name,
                 "a settings file asking for high contrast must produce it",
             );
 
-            std::fs::write(
-                &settings,
-                r#"{"appearance":{"mode":"light","high_contrast":true}}"#,
-            )
-            .expect("write settings");
+            let settings =
+                settings_store::parse(r#"{"appearance":{"mode":"light","high_contrast":true}}"#);
             assert_eq!(
-                Theme::configured_from(Some(&settings)).name,
+                Theme::configured_from(&settings).name,
                 "High contrast light",
                 "appearance.high_contrast must reach the shell's chrome",
             );
-            std::fs::write(
-                &settings,
-                r#"{"appearance":{"mode":"light","high_contrast":false}}"#,
-            )
-            .expect("write settings");
-            assert_eq!(
-                Theme::configured_from(Some(&settings)).name,
-                Theme::light().name
-            );
+            let settings =
+                settings_store::parse(r#"{"appearance":{"mode":"light","high_contrast":false}}"#);
+            assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
         }
 
         // Case `the_reduce_motion_switch_reaches_the_shells_chrome_live`:
         // the shell re-reads its theme through this door on every settings
         // change, so flipping the switch must flip the chrome's motion.
         if !crate::host::environment().accessibility.reduce_motion {
-            let dir = tempfile::tempdir().expect("temp config dir");
-            let settings = dir.path().join("settings.json");
-            std::fs::write(&settings, r#"{"appearance":{"reduce_motion":true}}"#)
-                .expect("write settings");
-            assert!(Theme::configured_from(Some(&settings)).reduce_motion);
-            std::fs::write(&settings, r#"{"appearance":{"reduce_motion":false}}"#)
-                .expect("write settings");
-            assert!(!Theme::configured_from(Some(&settings)).reduce_motion);
+            let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":true}}"#);
+            assert!(Theme::configured_from(&settings).reduce_motion);
+            let settings = settings_store::parse(r#"{"appearance":{"reduce_motion":false}}"#);
+            assert!(!Theme::configured_from(&settings).reduce_motion);
         }
 
         // Case `the_configured_theme_does_not_read_the_identity`: the
         // person's colour reaches a window through its host
         // (`Theme::in_window`), never through the theme.
         {
-            let dir = tempfile::tempdir().expect("temp config dir");
-            let settings = dir.path().join("settings.json");
-            std::fs::write(&settings, r#"{"identity":{"colour":"teal"}}"#).expect("write");
+            let settings = settings_store::parse(r#"{"identity":{"colour":"teal"}}"#);
             assert_eq!(
-                Theme::configured_from(Some(&settings)).tokens.colors.you,
+                Theme::configured_from(&settings).tokens.colors.you,
                 Theme::dark().tokens.colors.you
             );
         }
@@ -1785,13 +1748,10 @@ mod configured_theme {
         // Case `an_absent_settings_file_still_yields_a_usable_theme`:
         // No preference is not an error, and must not stop a desktop starting.
         {
-            let dir = tempfile::tempdir().expect("temp config dir");
-            let missing = dir.path().join("settings.json");
             assert_eq!(
-                Theme::configured_from(Some(&missing)).name,
+                Theme::configured_from(&serde_json::Map::new()).name,
                 Theme::dark().name
             );
-            assert_eq!(Theme::configured_from(None).name, Theme::dark().name);
         }
     }
 }

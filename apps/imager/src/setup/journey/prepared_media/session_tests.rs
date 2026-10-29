@@ -60,9 +60,9 @@ fn selected_website_session_preparation_is_separate_authenticated_custody() {
     .unwrap();
     assert_eq!(prepared.service_session_protocol(), Some(1));
     assert!(prepared.account_custody_protocol().is_none());
-    assert!(prepared.manifest.browser.is_none());
+    assert!(prepared.manifest.units.browser().is_none());
     assert!(prepared.manifest.account_ids.is_empty());
-    let declaration = prepared.manifest.service_sessions.as_ref().unwrap();
+    let declaration = prepared.manifest.units.service_sessions().unwrap();
     assert_eq!(declaration.sessions.len(), 1);
     let held_artifact = prepared.staging_artifact().unwrap();
     let review = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
@@ -153,7 +153,7 @@ fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_decl
     )
     .unwrap();
     assert!(prepared.service_session_protocol().is_none());
-    assert!(prepared.manifest.service_sessions.is_none());
+    assert!(prepared.manifest.units.service_sessions().is_none());
     let artifact = prepared.staging_artifact().unwrap();
     let review = imager_backend::setup::prepared_setup::PreparedSetupReview::open(
         std::path::Path::new(&artifact.source_path),
@@ -162,7 +162,7 @@ fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_decl
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert!(review.manifest().service_sessions.is_none());
+    assert!(review.manifest().units.service_sessions().is_none());
     assert!(!profile.join("Cookies").exists());
     assert!(
         sources

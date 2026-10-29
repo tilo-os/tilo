@@ -70,7 +70,7 @@ impl VideoEditorApp {
             .as_ref()
             .map(|kept| Path::new(kept.name()));
         match self.project_path.as_deref().or(kept) {
-            Some(p) => crate::project_file::recents::label(p),
+            Some(p) => crate::project_file::label(p),
             None if self.project.name.trim().is_empty() => "Untitled".to_string(),
             None => self.project.name.clone(),
         }
@@ -101,7 +101,8 @@ impl VideoEditorApp {
     /// saved.
     pub(super) fn save_project(&mut self, doc: &AutoCommit) {
         if let Some(path) = self.project_path.clone() {
-            self.write_project_to(doc, path);
+            // A failure is held and shown by the save's own notice.
+            let _ = self.write_project_to(doc, path);
         } else if self.project_destination.is_some() {
             self.write_project_to_destination(doc);
         } else {
@@ -156,15 +157,32 @@ impl VideoEditorApp {
         self.project_rx = Some(portal::request_open_project());
     }
 
+    /// Remember that the project at `path` was just opened or saved. A
+    /// setting that cannot be written costs a recents entry, never work.
+    fn remember_project(&mut self, path: &Path) {
+        self.recents.remember(path.to_path_buf());
+        if let Some(setting) = &self.recents_setting
+            && let Err(error) =
+                setting.update(|recent| recent.projects.remember(path.to_path_buf()))
+        {
+            tracing::warn!(%error, "could not remember the recent project");
+        }
+    }
+
     /// Write the project to `path` and remember it as the project's home.
     ///
     /// A failure is reported in the words the file layer produced and the
     /// project keeps its old path: claiming a save that did not happen is the
     /// one outcome that could actually cost someone their work.
-    pub(super) fn write_project_to(&mut self, doc: &AutoCommit, path: PathBuf) {
+    /// Write the project to `path`; why not, when it could not be written.
+    pub(super) fn write_project_to(
+        &mut self,
+        doc: &AutoCommit,
+        path: PathBuf,
+    ) -> Result<(), String> {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
-                self.recents = crate::project_file::recents::remember(&self.recents, &path);
+                self.remember_project(&path);
                 // The location's edited state clears; saving says
                 // nothing more.
                 self.project_notice.dismiss();
@@ -178,10 +196,13 @@ impl VideoEditorApp {
                 // stamp the pre-edit heads and leave the project reading as
                 // unsaved the instant after it was written.
                 self.saved_now(doc);
+                Ok(())
             }
             Err(e) => {
                 self.save_then_open = None;
-                self.hold_save_failure(e.to_string());
+                let reason = e.to_string();
+                self.hold_save_failure(reason.clone());
+                Err(reason)
             }
         }
     }
@@ -202,6 +223,17 @@ impl VideoEditorApp {
                 .take()
                 .unwrap_or_else(|| self.doc_heads.clone()),
         );
+        // A save asked of the editor is answered here: a saved project shows
+        // no notice to read the outcome from.
+        if matches!(
+            self.resource_operation,
+            Some(
+                crate::actions::VideoEditorEffect::Save { .. }
+                    | crate::actions::VideoEditorEffect::SaveAs { .. }
+            )
+        ) {
+            self.settle_resource_job(Ok(()));
+        }
         if let Some(next) = self.save_then_open.take() {
             self.pending_open = None;
             self.load_project_file(next.path, next.contents.as_deref());
@@ -289,7 +321,7 @@ impl VideoEditorApp {
         // Wherever the last project was saved is not this one's place.
         self.project_destination = None;
         if located {
-            self.recents = crate::project_file::recents::remember(&self.recents, &path);
+            self.remember_project(&path);
             self.project_path = Some(path);
         } else {
             // Save asks where again: there is no path to write back to.
@@ -313,7 +345,7 @@ impl VideoEditorApp {
     /// be read here — which sources, in the same words the bin and the
     /// timeline use for the same states.
     pub(super) fn opened_notice(path: &Path, project: &crate::model::Project) -> Notice {
-        let name = crate::project_file::recents::label(path);
+        let name = crate::project_file::label(path);
         let missing = crate::project_file::missing_sources(project);
         if missing.is_empty() {
             return Notice::ok(format!("Opened {name}"));
@@ -357,7 +389,10 @@ impl VideoEditorApp {
             self.project_rx = None;
         }
         match outcome {
-            Some(portal::ProjectOutcome::Save(path)) => self.write_project_to(doc, path),
+            Some(portal::ProjectOutcome::Save(path)) => {
+                // A failure is held and shown by the save's own notice.
+                let _ = self.write_project_to(doc, path);
+            }
             Some(portal::ProjectOutcome::SaveTo(destination)) => {
                 // Kept: the next Save writes here without asking.
                 self.project_destination = Some(destination);
@@ -449,7 +484,7 @@ impl VideoEditorApp {
             for p in recent {
                 rows.push((
                     ProjectMenuItem::Recent(p.clone()),
-                    crate::project_file::recents::label(p),
+                    crate::project_file::label(p),
                 ));
             }
         }
@@ -648,14 +683,9 @@ impl VideoEditorApp {
             return None;
         }
         let names: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
-        let refers = if names.len() == 1 {
-            "refers to"
-        } else {
-            "refer to"
-        };
         let it = if names.len() == 1 { "it" } else { "them" };
         Some(format!(
-            "This cut {refers} {}. Bring {it} onto this device first.",
+            "This cut refers to {}. Bring {it} onto this device first.",
             names.join(", "),
         ))
     }

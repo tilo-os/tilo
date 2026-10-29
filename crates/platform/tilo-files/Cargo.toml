@@ -37,7 +37,9 @@ json = ["dep:serde", "dep:serde_json"]
 # the publication protocol's checkpoints, for tests.
 test-support = ["windows-sys/Win32_System_LibraryLoader", "windows-sys/Win32_System_SystemInformation"]
 
-[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+# Elsewhere than Linux, the native watch speaks the platform's own API
+# (`FSEvents`, `ReadDirectoryChangesW`) through `notify`.
+[target.'cfg(not(any(target_os = "linux", all(target_arch = "wasm32", target_os = "unknown"))))'.dependencies]
 notify = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -104,7 +106,7 @@ workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
-# The change-only directory watch (`native::watch_changes`) on Linux, where
-# `notify` always watches opens.
+# The native watch (`native::Watcher`) on Linux, where `notify` always
+# watches opens.
 [target.'cfg(target_os = "linux")'.dependencies]
 inotify = { version = "0.11", default-features = false, optional = true }

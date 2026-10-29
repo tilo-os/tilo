@@ -2,8 +2,7 @@
 
 use super::{
     Addr, CellFormat, CellValue, ClipboardGrid, Edits, Grid, GridCmd, Id, Rc, ReloadCache,
-    SheetsApp, delta, explain_formula_error, fill, format_value, formula, infer_entry, offset_addr,
-    span, tile_count, tsv_cell,
+    SheetsApp, delta, fill, format_value, infer_entry, offset_addr, span, tile_count, tsv_cell,
 };
 
 impl SheetsApp {
@@ -37,7 +36,7 @@ impl SheetsApp {
                     // Formulas reading other sheets evaluate with the workbook.
                     let snap = sheet.snapshot_in(layout);
                     match self.active_sheet_id() {
-                        Some(id) if crate::formula::Book::needed(&snap.raw) => {
+                        Some(id) if crate::calc::Book::needed(&snap.raw) => {
                             state.snapshot_of(&id).unwrap_or(snap)
                         }
                         _ => snap,
@@ -57,7 +56,7 @@ impl SheetsApp {
         // The dock takes its height from the annotations, so the sheet
         // re-lays out whenever they change.
         self.relayout();
-        let values = formula::recalculate_snapshot(&snap);
+        let values = self.calc.snapshot_values(&snap);
 
         // Effective per-cell formats: an explicit cell format wins; a
         // formula cell with no explicit format inherits from its operands.
@@ -67,7 +66,7 @@ impl SheetsApp {
                 continue; // user set it explicitly
             }
             if let Some(body) = raw.strip_prefix('=')
-                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt)
+                && let Some(inferred) = crate::calc::infer_result_format(body, &snap.fmt)
             {
                 fmt.insert(*addr, inferred);
             }
@@ -136,7 +135,7 @@ impl SheetsApp {
         let Some(CellValue::Error(err)) = self.grid.cell_value_at(addr) else {
             return None;
         };
-        Some(explain_formula_error(&self.grid.cell_raw_at(addr), err))
+        Some(crate::calc::explain(&self.grid.cell_raw_at(addr), err))
     }
 
     pub(super) fn apply_format(&mut self, doc: &mut Edits<'_>, fmt: CellFormat) {
@@ -297,7 +296,7 @@ impl SheetsApp {
                             let out_raw = if cb.cut {
                                 raw.clone()
                             } else {
-                                formula::offset_refs(
+                                crate::refs::offset_refs(
                                     raw,
                                     dc.saturating_add(i64::from(tile_col_off)),
                                     dr.saturating_add(i64::from(tile_row_off)),
@@ -421,7 +420,7 @@ impl SheetsApp {
             let src_fmt = self.grid.cell_fmt_at((c, r0));
             // `offset` counts rows below the source, so it is exactly `r - r0`.
             for (offset, r) in (1i64..).zip(r0.saturating_add(1)..=r1) {
-                let out_raw = formula::offset_refs(&src_raw, 0, offset);
+                let out_raw = crate::refs::offset_refs(&src_raw, 0, offset);
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
@@ -446,7 +445,7 @@ impl SheetsApp {
             let src_fmt = self.grid.cell_fmt_at((c0, r));
             // `offset` counts columns right of the source, i.e. `c - c0`.
             for (offset, c) in (1i64..).zip(c0.saturating_add(1)..=c1) {
-                let out_raw = formula::offset_refs(&src_raw, offset, 0);
+                let out_raw = crate::refs::offset_refs(&src_raw, offset, 0);
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }

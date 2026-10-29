@@ -111,12 +111,13 @@ fn remove_where_removes_and_counts() {
 }
 
 #[test]
-fn moves_name_a_neighbour_never_an_index() {
+fn a_move_names_a_neighbour_or_a_place() {
     ok("action m(c: C, x: C, y: C) {\n    c.items.move(x, after: y)\n}");
     ok("action m(c: C, x: C, y: C) {\n    c.items.move(x, before: y)\n}");
-    expect("E107", "action m(c: C, x: C) {\n    c.items.move(x, 2)\n}");
+    ok("action m(c: C, x: C, i: Int) {\n    c.items.move(x, to: i)\n}");
+    expect("E022", "action m(c: C, x: C) {\n    c.items.move(x, 2)\n}");
     expect(
-        "E107",
+        "E020",
         "action m(c: C, x: C, y: C) {\n    c.items.move(x, to: y)\n}",
     );
 }

@@ -66,7 +66,6 @@ use overlays::SettingsSheet;
 
 use crate::actions;
 use crate::fill;
-use crate::formula;
 use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
 use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
@@ -510,6 +509,9 @@ pub struct SheetsApp {
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
+    /// The formula engine's workbook, kept between reloads so an edit
+    /// re-reads only the cells it changed.
+    calc: crate::calc::Calc,
     pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
@@ -574,42 +576,6 @@ impl Default for SheetsApp {
 }
 
 impl SheetsApp {}
-
-/// A sentence saying why a cell holding `raw` evaluates to `err`. For a
-/// formula that could not be read, it names the most likely mistake.
-fn explain_formula_error(raw: &str, err: crate::model::FormulaError) -> String {
-    use crate::model::FormulaError;
-    match err {
-        FormulaError::Error => {
-            let body = raw.trim_start_matches('=').trim_end();
-            let opens = body.matches('(').count();
-            let closes = body.matches(')').count();
-            if body.is_empty() {
-                "The formula is empty: type a value or reference after =".into()
-            } else if body.ends_with(['+', '-', '*', '/', '^', '&', '=', '<', '>', ',', ';']) {
-                "The formula ends with an operator: add a value or reference after it".into()
-            } else if opens > closes {
-                "A parenthesis is opened but not closed".into()
-            } else if closes > opens {
-                "A closing parenthesis has no matching opening one".into()
-            } else if body.matches('"').count() % 2 == 1 {
-                "A text value is missing its closing quote".into()
-            } else {
-                "The formula could not be read: check for a missing value, operator or parenthesis"
-                    .into()
-            }
-        }
-        FormulaError::Div0 => "Division by zero or by an empty cell".into(),
-        FormulaError::Name => "Unknown function or name".into(),
-        FormulaError::Ref => "The formula refers to a cell that does not exist".into(),
-        FormulaError::Value => {
-            "A value has the wrong type for this operation, such as text in arithmetic".into()
-        }
-        FormulaError::Na => "No value is available, such as a lookup that found nothing".into(),
-        FormulaError::Num => "The result is not a valid number".into(),
-        FormulaError::Cycle => "The formula depends on its own cell (circular reference)".into(),
-    }
-}
 
 /// A numeric summary of the selection shown in the status bar.
 struct SelectionSummary {

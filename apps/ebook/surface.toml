@@ -51,8 +51,8 @@ fields = [
   { path = "annotations.*.start", type = "usize" },
   { path = "annotations.*.end", type = "usize" },
   { path = "annotations.*.excerpt", type = "String", label = true },
-  { path = "annotations.*.text", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
-  { path = "annotations.*.color", type = "HiColor" },
+  { path = "annotations.*.text", type = "RichText", ops = "sha256:10bf507639fdd4f3" },
+  { path = "annotations.*.color", type = "HighlightColor" },
   { path = "annotations.*.created", type = "u64" },
   { path = "annotations.*.group", type = "Uuid", readonly = true },
 ]
@@ -113,7 +113,7 @@ kind = "undoable"
 writes = ["record", "annotations.*"]
 params = [
   { name = "passage", required = true, schema = { type = "object", additionalProperties = false, properties = { block = { type = "integer", minimum = 0 }, book = { type = "string" }, chapter = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, excerpt = { type = "string" }, start = { type = "integer", minimum = 0 } }, required = ["book", "chapter", "block", "start", "end", "excerpt"] } },
-  { name = "color", required = true, schema = { type = "string", enum = ["yellow", "green", "blue", "pink", "purple"] } },
+  { name = "color", required = true, schema = { type = "string" } },
   { name = "text", required = true, schema = { type = "string" } },
 ]
 
@@ -144,7 +144,7 @@ writes = ["record", "annotations.*"]
 params = [
   { name = "book", required = true, schema = { type = "string" } },
   { name = "chapter", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "color", required = true, schema = { type = "string", enum = ["yellow", "green", "blue", "pink", "purple"] } },
+  { name = "color", required = true, schema = { type = "string" } },
   { name = "replacing", required = true, schema = { type = "array", items = { type = "string", format = "uuid" } } },
   { name = "pieces", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { block = { type = "integer", minimum = 0 }, end = { type = "integer", minimum = 0 }, excerpt = { type = "string" }, start = { type = "integer", minimum = 0 } }, required = ["block", "start", "end", "excerpt"] } } },
 ]
@@ -155,7 +155,7 @@ kind = "undoable"
 writes = ["record", "annotations.*"]
 params = [
   { name = "highlight", required = true, schema = { type = "string", format = "uuid" } },
-  { name = "color", required = true, schema = { type = "string", enum = ["yellow", "green", "blue", "pink", "purple"] } },
+  { name = "color", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]

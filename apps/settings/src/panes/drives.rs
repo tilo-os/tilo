@@ -651,7 +651,7 @@ mod tests {
     }
 
     fn test_cx() -> PaneCx {
-        PaneCx::in_file(std::env::temp_dir().join("tilo-drives-test-settings.json"))
+        PaneCx::in_profile(std::env::temp_dir().join("tilo-drives-test-settings"))
     }
 
     fn texts(widget: &dyn Widget) -> Vec<String> {

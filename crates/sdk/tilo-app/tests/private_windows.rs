@@ -92,13 +92,11 @@ fn a_private_window_runs_on_a_throwaway_profile_without_the_persons_records() {
     let spec = tilo_app::framework::launch_spec::<Browsing>();
     let prepared = spec.prepare_hosted(&args).unwrap();
     assert!(prepared.context.is_private());
-    let settings = prepared
-        .context
-        .storage()
-        .settings_document()
-        .path()
-        .expect("a private window's settings are a file of its profile");
-    let profile = settings.parent().unwrap().to_path_buf();
+    let tilo_app::storage::SettingsDocument::Profile(profile) =
+        prepared.context.storage().settings_document().clone()
+    else {
+        panic!("a private window's settings are its profile's");
+    };
     assert!(
         profile.starts_with(std::env::temp_dir()),
         "the profile is not the person's: {}",

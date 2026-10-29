@@ -19,7 +19,7 @@ use ui::tilo_resource;
 use ui::tilo_resource::{Edit, Effect, Id, Invoke};
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
-use crate::model::{Annotation, FormEntry, GeomSpace, PtRect, Signature, Swatch, Tool};
+use crate::model::{Annotation, FormEntry, GeomSpace, HighlightColor, PtRect, Signature, Tool};
 use crate::resource::{NewAnnotation, NewComment, NewNote, NewSignature, pdf_markup};
 
 /// The action palette is refreshed frequently. Keep that contextual snapshot
@@ -127,7 +127,7 @@ pub enum PdfEffect {
     #[effect(view, idempotent)]
     SetMarkerColour {
         #[param("yellow, green, pink, blue or purple")]
-        colour: Swatch,
+        colour: HighlightColor,
     },
     /// Mark text as highlight
     #[effect(view, idempotent)]
@@ -273,7 +273,7 @@ pub fn add_annotation_on(a: &Annotation, page_id: &str) -> Invoke<PdfMarkup> {
     })
 }
 
-pub fn set_annotation_color_action(id: &str, color: Swatch) -> Invoke<PdfMarkup> {
+pub fn set_annotation_color_action(id: &str, color: HighlightColor) -> Invoke<PdfMarkup> {
     edit(&annotation(id).color.set(color))
 }
 
@@ -407,7 +407,7 @@ pub fn delete_annotation_action(id: &str) -> Invoke<PdfMarkup> {
 pub struct NoteDraft<'a> {
     pub anno_id: &'a str,
     pub comment_id: &'a str,
-    pub color: Swatch,
+    pub color: HighlightColor,
     pub body: &'a str,
 }
 

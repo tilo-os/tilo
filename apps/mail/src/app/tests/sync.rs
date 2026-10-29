@@ -1271,7 +1271,7 @@ fn account_roots_follow_each_mode() {
         let storage = ui::storage::AppStorage::new(
             "so.tilo.mail",
             session.secrets(),
-            ui::storage::SettingsDocument::File(profile.path().join("settings.json")),
+            ui::storage::SettingsDocument::Profile(profile.path().to_path_buf()),
         );
         assert_eq!(storage.config_root().as_deref(), Some(profile.path()));
         let app = MailApp::for_window(&storage, Some(ContentStore::memory()));

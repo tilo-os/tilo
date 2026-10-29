@@ -22,23 +22,20 @@
     reason = "test harness failures are assertions"
 )]
 
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
+use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ROOT};
 use vello::kurbo::{Point, Rect};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
 };
 
-use shell::shell::frame::FrameBuilder;
-
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 /// The buffer the window commits, in pixels a side.
 const BUFFER: i32 = 64;
@@ -61,7 +58,7 @@ struct Client {
     heard: Vec<Heard>,
 }
 
-wayland::test_client!(Client);
+wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     fn event(
@@ -89,19 +86,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
-
 struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-    doc: AutoCommit,
-    focus: Option<taffy::NodeId>,
+    f: wayland::Framed<Client>,
     id: u64,
     _surface: wl_surface::WlSurface,
     _toplevel: xdg_toplevel::XdgToplevel,
@@ -109,38 +95,40 @@ struct Harness {
     _pool_file: std::fs::File,
 }
 
+impl Deref for Harness {
+    type Target = wayland::Framed<Client>;
+    fn deref(&self) -> &Self::Target {
+        &self.f
+    }
+}
+
+impl DerefMut for Harness {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.f
+    }
+}
+
 impl Harness {
     /// One mapped terminal window on the desktop, with a pointer bound.
     fn with_window() -> Self {
-        let mut wl = wayland::Harness::<Client>::new();
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        let qh = wl.queue.handle();
-        let seat = wl.bind::<wl_seat::WlSeat>("wl_seat", 9);
+        let mut f = wayland::Framed::<Client>::new();
+        let qh = f.queue.handle();
+        let seat = f.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _pointer = seat.get_pointer(&qh, ());
-        let compositor = wl.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
-        let wm = wl.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-        let shm = wl.bind::<wl_shm::WlShm>("wl_shm", 1);
+        let compositor = f.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = f.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+        let shm = f.bind::<wl_shm::WlShm>("wl_shm", 1);
         let len = BUFFER.saturating_mul(BUFFER).saturating_mul(4);
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-scroll-reaches-windows".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor.
-        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-        file.set_len(u64::try_from(len).unwrap()).unwrap();
-        let pool = shm.create_pool(file.as_fd(), len, &qh, ());
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.Terminal".into());
+        let (pool, file) = wayland::shm_pool(&shm, &qh, &vec![0; usize::try_from(len).unwrap()]);
+        let Toplevel {
+            surface,
+            xdg: _,
+            toplevel,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.Terminal");
         toplevel.set_title("Terminal".into());
         surface.commit();
-        wl.pump();
-        let id = wl.foreign_id("org.example.Terminal");
+        f.pump();
+        let id = f.foreign_id("org.example.Terminal");
         let buffer = pool.create_buffer(
             0,
             BUFFER,
@@ -153,12 +141,9 @@ impl Harness {
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, BUFFER, BUFFER);
         surface.commit();
-        wl.pump();
+        f.pump();
         let mut h = Self {
-            wl,
-            fb,
-            doc: AutoCommit::new(),
-            focus: None,
+            f,
             id,
             _surface: surface,
             _toplevel: toplevel,
@@ -167,14 +152,6 @@ impl Harness {
         };
         h.settle();
         h
-    }
-
-    /// One frame the way the native loop runs it: clients, apps, layout,
-    /// paint.
-    fn frame(&mut self) {
-        self.wl.pump();
-        self.fb.pump_apps(&mut self.doc, &ROOT);
-        let _ = self.fb.paint_settled();
     }
 
     /// Frames until the window's tile is on screen and keeps its place.
@@ -227,21 +204,7 @@ impl Harness {
     /// it leaves.
     fn input(&mut self, event: &WindowEvent) {
         let modifiers = Modifiers::default();
-        let to_client = shell::compositor::client_input::route_input(
-            &mut self.wl.state,
-            &mut self.fb,
-            event,
-            &modifiers,
-        );
-        if !to_client {
-            self.fb.dispatch_event(
-                event,
-                &modifiers,
-                &mut ui::widget::Edits::lend(&mut self.doc),
-                &ROOT,
-                &mut self.focus,
-            );
-        }
+        self.route(event, modifiers);
         self.frame();
     }
 
@@ -316,8 +279,8 @@ fn scrolling_over_a_terminal_window_scrolls_it_even_after_a_release_went_missing
     h.move_to(shell);
     let modifiers = Modifiers::default();
     let _ = shell::compositor::client_input::route_input(
-        &mut h.wl.state,
-        &mut h.fb,
+        &mut h.f.wl.state,
+        &mut h.f.fb,
         &WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,

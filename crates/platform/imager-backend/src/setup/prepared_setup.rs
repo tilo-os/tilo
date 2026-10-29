@@ -61,6 +61,8 @@ pub use installed_retained::AuthenticatedInstalledRetained;
 pub use original_copy::OriginalCopyDeclaration;
 mod planned_btrfs_resize;
 pub use planned_btrfs_resize::PlannedBtrfsResize;
+mod units;
+pub use units::{ApplicationsCarriage, HomeCarriage, Kind, Route, Unit, UnitKey, Units};
 
 pub const IDENTITY_FILE: &str = "identity.sealed";
 pub const ACCOUNTS_FILE: &str = "accounts.sealed";
@@ -129,44 +131,12 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_custody_protocol: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_home: Option<PortableHomePlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline_home: Option<OfflineHomePlan>,
-    #[cfg(target_os = "linux")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub offline_applications: Option<OfflineApplicationsPlan>,
-    /// Exact verified Home ciphertext bound inside the completed setup package.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed_home: Option<super::portable_home_media::Expectation>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub completed_applications_only: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_profile: Option<PublicInstallProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retained_home: Option<RetainedHomePlan>,
-    #[cfg(target_os = "linux")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_copy: Option<OriginalCopyDeclaration>,
-    #[cfg(target_os = "linux")]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub computer_applications: Option<SharedHomeApplicationsDeclaration>,
-    /// Authenticated requested source credentials; only the protected source
-    /// record and root-held RW lease can turn these bytes into scoped authority.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retained_caller: Option<super::home_capture::RetainedCallerDeclaration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planned_btrfs_resize: Option<PlannedBtrfsResize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portable_flatpak: Option<super::flatpak_transfer::portable::Expectation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub browser: Option<BrowserHandoff>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_sessions: Option<super::service_sessions::Declaration>,
-    /// Selected Thunderbird accounts, folders, address books and calendars.
-    /// Each artifact is authenticating ciphertext inside this package; the
-    /// declaration names only opaque source IDs and never a path or address.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mail: Vec<MailHandoff>,
+    /// The data this setup carries, one unit per kind and route.
+    #[serde(default, skip_serializing_if = "Units::is_empty")]
+    pub units: Units,
 }
 /// One selected-mail artifact in the prepared package.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -416,135 +386,113 @@ impl Manifest {
             identity_kind: IdentityKind::SingleDeviceBackup,
             account_ids,
             account_custody_protocol: None,
-            portable_home: None,
-            offline_home: None,
-            #[cfg(target_os = "linux")]
-            offline_applications: None,
-            completed_home: None,
-            completed_applications_only: false,
             install_profile: None,
-            retained_home: None,
-            #[cfg(target_os = "linux")]
-            original_copy: None,
-            #[cfg(target_os = "linux")]
-            computer_applications: None,
-            retained_caller: None,
             planned_btrfs_resize: None,
-            portable_flatpak: None,
-            browser: None,
-            service_sessions: None,
-            mail: Vec::new(),
+            units: Units::default(),
         };
         manifest.validate()?;
         Ok(manifest)
     }
     fn validate(&self) -> io::Result<()> {
+        let units = &self.units;
+        let accounts_declared = !self.account_ids.is_empty()
+            || units.service_sessions().is_some()
+            || !units.mail().is_empty();
         #[cfg(target_os = "linux")]
-        if let Some(composite) = &self.computer_applications {
+        if let Some(composite) = units.computer_applications() {
             composite.validate(self)?;
         }
         #[cfg(target_os = "linux")]
-        if let Some(copy) = &self.original_copy {
+        if let Some(copy) = units.original_copy() {
             copy.bytes()?;
             if copy.setup_binding() != self.setup_binding
                 || copy.identity_public_key() != self.identity_public_key
                 || matches!(self.identity_kind, IdentityKind::CurrentDevice { .. })
-                || self.retained_home.is_some()
-                || self.retained_caller.is_some()
+                || units.contains(UnitKey::RETAINED_HOME)
                 || self.planned_btrfs_resize.is_some()
-                || self.portable_home.is_some()
-                || self.offline_home.is_some()
-                || self.offline_applications.is_some()
-                || self.completed_home.is_some()
-                || self.completed_applications_only
-                || self.portable_flatpak.is_some()
+                || units.contains(UnitKey::MEDIUM_HOME)
+                || units.contains(UnitKey::MEDIUM_APPLICATIONS)
             {
                 return Err(invalid());
             }
         }
         if matches!(self.identity_kind, IdentityKind::CurrentDevice { .. })
-            && (self.portable_home.is_some()
-                || self.offline_home.is_some()
-                || self.completed_home.is_some()
-                || self.retained_home.is_some()
-                || self.portable_flatpak.is_some()
+            && (units.contains(UnitKey::MEDIUM_HOME)
+                || units.contains(UnitKey::RETAINED_HOME)
+                || units.portable_flatpak().is_some()
                 || self.planned_btrfs_resize.is_some())
         {
             return Err(invalid());
         }
-        if let Some(caller) = &self.retained_caller {
+        if let Some(caller) = units.retained_caller() {
             caller.validate_binding(
-                self.retained_home.as_ref().ok_or_else(invalid)?.as_plan(),
+                units.retained_home().ok_or_else(invalid)?.as_plan(),
                 &self.setup_binding,
                 &self.identity_public_key,
             )?;
         }
         if let Some(resize) = &self.planned_btrfs_resize {
-            resize.validate(self.retained_home.as_ref().ok_or_else(invalid)?)?;
+            resize.validate(units.retained_home().ok_or_else(invalid)?)?;
             if self.install_profile.is_none() {
                 return Err(invalid());
             }
         }
-        if self.completed_applications_only
-            && (self.offline_home.is_some()
-                || self.offline_applications.is_some()
-                || self.portable_home.is_some()
-                || self.completed_home.is_some()
-                || self.retained_home.is_some()
-                || self.portable_flatpak.is_none())
+        if units.completed_applications_only()
+            && (units.contains(UnitKey::MEDIUM_HOME) || units.contains(UnitKey::RETAINED_HOME))
         {
             return Err(invalid());
         }
-        if let Some(home) = &self.completed_home {
-            home.validate()?;
-            if self.offline_home.is_some()
-                || self.portable_home.is_none()
-                || self.retained_home.is_some()
-                || home.setup_binding != self.setup_binding
-                || (self.portable_flatpak.is_some()
-                    && !self
-                        .portable_home
-                        .as_ref()
-                        .is_some_and(|plan| plan.applications))
-            {
+        if let Some(Unit::MediumHome { plan, carriage }) = units.get(UnitKey::MEDIUM_HOME) {
+            if plan.schema != 1 || units.contains(UnitKey::RETAINED_HOME) {
                 return Err(invalid());
             }
-        }
-        if let Some(offline) = &self.offline_home {
-            offline.validate()?;
-            let home = self.portable_home.as_ref().ok_or_else(invalid)?;
-            if offline.setup_binding != self.setup_binding
-                || offline.identity_public_key != self.identity_public_key
-                || offline.source.categories.flatpak != home.applications
-                || (!offline.source.categories.accounts
-                    && (!self.account_ids.is_empty()
-                        || self.service_sessions.is_some()
-                        || !self.mail.is_empty()))
-                || self.retained_home.is_some()
-            {
-                return Err(invalid());
+            match carriage {
+                HomeCarriage::Planned => {}
+                HomeCarriage::Sealed(home) => {
+                    home.validate()?;
+                    if home.setup_binding != self.setup_binding
+                        || (units.portable_flatpak().is_some() && !plan.applications)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                HomeCarriage::Offline(offline) => {
+                    offline.validate()?;
+                    if offline.setup_binding != self.setup_binding
+                        || offline.identity_public_key != self.identity_public_key
+                        || offline.source.categories.flatpak != plan.applications
+                        || (!offline.source.categories.accounts && accounts_declared)
+                    {
+                        return Err(invalid());
+                    }
+                }
             }
         }
-        #[cfg(target_os = "linux")]
-        if let Some(applications) = &self.offline_applications {
-            applications.validate()?;
-            if self.offline_home.is_some()
-                || self.portable_home.is_some()
-                || self.completed_home.is_some()
-                || self.portable_flatpak.is_some()
-                || self.retained_home.is_some()
-                || self.retained_caller.is_some()
-                || applications.setup_binding != self.setup_binding
-                || applications.identity_public_key != self.identity_public_key
-                || (!applications.source().categories.accounts
-                    && (!self.account_ids.is_empty()
-                        || self.service_sessions.is_some()
-                        || !self.mail.is_empty()))
-            {
-                return Err(invalid());
+        if let Some(Unit::MediumApplications(carriage)) = units.get(UnitKey::MEDIUM_APPLICATIONS) {
+            match carriage {
+                #[cfg(target_os = "linux")]
+                ApplicationsCarriage::Offline(applications) => {
+                    applications.validate()?;
+                    if units.contains(UnitKey::MEDIUM_HOME)
+                        || units.contains(UnitKey::RETAINED_HOME)
+                        || applications.setup_binding != self.setup_binding
+                        || applications.identity_public_key != self.identity_public_key
+                        || (!applications.source().categories.accounts && accounts_declared)
+                    {
+                        return Err(invalid());
+                    }
+                }
+                ApplicationsCarriage::Sealed { expectation, .. } => {
+                    expectation.validate()?;
+                    if expectation.setup_binding != self.setup_binding
+                        || units.contains(UnitKey::RETAINED_HOME)
+                    {
+                        return Err(invalid());
+                    }
+                }
             }
         }
-        if let Some(sessions) = &self.service_sessions {
+        if let Some(sessions) = units.service_sessions() {
             sessions.validate()?;
             if sessions
                 .sessions
@@ -555,13 +503,13 @@ impl Manifest {
             }
         }
         let mut mail_files = BTreeSet::new();
-        for mail in &self.mail {
+        for mail in units.mail() {
             mail.validate()?;
             if !mail_files.insert(mail.filename.as_str()) {
                 return Err(invalid());
             }
         }
-        if let Some(browser) = &self.browser {
+        if let Some(browser) = units.browser() {
             browser.payload.validate_plan(&browser.plan)?;
             if browser.plan.setup_binding != self.setup_binding
                 || browser.plan.identity_public_key != self.identity_public_key
@@ -569,35 +517,18 @@ impl Manifest {
                 return Err(invalid());
             }
         }
-        if let Some(applications) = &self.portable_flatpak {
-            applications.validate()?;
-            if applications.setup_binding != self.setup_binding || self.retained_home.is_some() {
-                return Err(invalid());
-            }
-        }
         if let Some(profile) = &self.install_profile {
             profile.validate()?;
         }
-        if let Some(plan) = &self.retained_home {
+        if let Some(plan) = units.retained_home() {
             plan.validate()?;
-            if self.portable_home.is_some() {
-                return Err(invalid());
-            }
         }
         crate::prepared_media::validate_manifest_binding(
             self.schema,
             &self.setup_binding,
             &self.account_ids,
             self.account_custody_protocol,
-        )?;
-        if self
-            .portable_home
-            .as_ref()
-            .is_some_and(|plan| plan.schema != 1)
-        {
-            return Err(invalid());
-        }
-        Ok(())
+        )
     }
     /// Create a fresh private manifest in an explicitly granted staging root.
     pub fn write(&self, directory: &Path) -> io::Result<()> {
@@ -657,16 +588,16 @@ fn members(pin: &Arc<PinnedDirectory>, manifest: &Manifest) -> io::Result<()> {
     if !manifest.account_ids.is_empty() {
         expected.insert(std::ffi::OsString::from(ACCOUNTS_FILE));
     }
-    if manifest.service_sessions.is_some() {
+    if manifest.units.service_sessions().is_some() {
         expected.insert(std::ffi::OsString::from(SERVICE_SESSIONS_FILE));
     }
-    for mail in &manifest.mail {
+    for mail in manifest.units.mail() {
         expected.insert(std::ffi::OsString::from(mail.filename.as_str()));
     }
     let mut found = BTreeSet::new();
     for entry in directory.entries()? {
         found.insert(entry?.file_name());
-        if found.len() > 4 + manifest.mail.len() {
+        if found.len() > 4 + manifest.units.mail().len() {
             return Err(invalid());
         }
     }
@@ -771,8 +702,8 @@ impl PreparedSetupReview {
             }
             Some(artifact)
         };
-        let mut mail_artifacts = Vec::with_capacity(manifest.mail.len());
-        for declaration in &manifest.mail {
+        let mut mail_artifacts = Vec::with_capacity(manifest.units.mail().len());
+        for declaration in manifest.units.mail() {
             let artifact = super::account_transfer::PasswordSealedThunderbird::from_bytes(
                 &bounded_file(&pin, &declaration.filename, LIMITS.plaintext_bytes)?,
             )
@@ -780,7 +711,7 @@ impl PreparedSetupReview {
             declaration.verify_ciphertext(&artifact)?;
             mail_artifacts.push((declaration.clone(), artifact));
         }
-        let session_artifact = if let Some(declaration) = &manifest.service_sessions {
+        let session_artifact = if let Some(declaration) = manifest.units.service_sessions() {
             let artifact = PasswordSealedAccounts::from_bytes(&bounded_file(
                 &pin,
                 SERVICE_SESSIONS_FILE,
@@ -814,7 +745,7 @@ impl PreparedSetupReview {
     /// This deliberately does not admit identity/account adoption or completion.
     pub fn pending_offline_declaration(&self) -> io::Result<OfflineHomePlan> {
         self.validate()?;
-        let declaration = self.manifest.offline_home.as_ref().ok_or_else(invalid)?;
+        let declaration = self.manifest.units.offline_home().ok_or_else(invalid)?;
         if declaration.source_witness().is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -827,8 +758,8 @@ impl PreparedSetupReview {
     pub fn pending_original_declaration(&self) -> io::Result<OriginalSelectionPlan> {
         self.validate()?;
         match (
-            &self.manifest.offline_home,
-            &self.manifest.offline_applications,
+            self.manifest.units.offline_home(),
+            self.manifest.units.offline_applications(),
         ) {
             (Some(_), None) => Ok(OriginalSelectionPlan::Home(
                 self.pending_offline_declaration()?,
@@ -849,7 +780,7 @@ impl PreparedSetupReview {
     /// Refuses changed setup custody or an unfinished offline export.
     pub fn require_completed_export(&self) -> io::Result<()> {
         self.validate()?;
-        if self.manifest.offline_home.is_some() || self.pending_applications_export() {
+        if self.manifest.units.offline_home().is_some() || self.pending_applications_export() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "Prepared home export awaits explicit offline completion",
@@ -860,7 +791,7 @@ impl PreparedSetupReview {
     fn pending_applications_export(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            self.manifest.offline_applications.is_some()
+            self.manifest.units.offline_applications().is_some()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -1045,9 +976,9 @@ impl PreparedSetupReview {
         if !matches!(
             self.manifest.identity_kind,
             IdentityKind::EnrolledDevice { .. }
-        ) || self.manifest.portable_home.is_some()
-            || self.manifest.portable_flatpak.is_some()
-            || self.manifest.retained_home.is_some()
+        ) || self.manifest.units.portable_home().is_some()
+            || self.manifest.units.portable_flatpak().is_some()
+            || self.manifest.units.retained_home().is_some()
         {
             return Err(invalid());
         }
@@ -1119,7 +1050,10 @@ impl PreparedSetupReview {
     pub fn import_service_sessions(&self, config_root: &Path, password: &[u8]) -> io::Result<()> {
         self.require_completed_export()?;
         self.target(config_root)?;
-        match (&self.session_artifact, &self.manifest.service_sessions) {
+        match (
+            &self.session_artifact,
+            self.manifest.units.service_sessions(),
+        ) {
             (Some(artifact), Some(declaration)) => super::service_sessions::import(
                 artifact,
                 declaration,
@@ -1147,10 +1081,10 @@ impl PreparedSetupReview {
         password: &[u8],
     ) -> io::Result<Vec<super::account_transfer::ThunderbirdImportReceipt>> {
         self.require_completed_export()?;
-        if self.mail_artifacts.len() != self.manifest.mail.len() {
+        if self.mail_artifacts.len() != self.manifest.units.mail().len() {
             return Err(invalid());
         }
-        if self.manifest.mail.is_empty() {
+        if self.manifest.units.mail().is_empty() {
             return Ok(Vec::new());
         }
         // The package itself lives below this Home, so an ancestor-overlap

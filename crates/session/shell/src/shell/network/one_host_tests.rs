@@ -234,7 +234,58 @@ impl Drop for Device {
 /// broker (`shell::workspace_layouts`). The records go before the broker.
 struct SessionLayouts {
     records: crate::shell::workspace_layouts::WorkspaceLayouts,
-    _broker: crate::shell::collab_broker::BrokerHandle,
+    /// Wakes the test's loop on the broker's channel changes; ends first.
+    _channel_wake: Option<ChannelWake>,
+    broker: crate::shell::collab_broker::BrokerHandle,
+}
+
+/// Wakes the test's loop whenever a channel's keys or access change in a
+/// session broker's channel service, as the device's own drain does when no
+/// broker runs ([`Drain`]): what the loop's probes read (a note's keys)
+/// changes then, and nothing else may wake it.
+struct ChannelWake {
+    quit: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ChannelWake {
+    fn start(mut changes: tokio::sync::watch::Receiver<u64>, wakes: &Arc<Wakes>) -> Self {
+        let (quit, mut quitting) = tokio::sync::oneshot::channel();
+        let wakes = Arc::clone(wakes);
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("the channel wake's runtime");
+            runtime.block_on(async move {
+                loop {
+                    tokio::select! {
+                        seen = changes.changed() => {
+                            if seen.is_err() {
+                                return;
+                            }
+                            wakes.wake();
+                        }
+                        _ = &mut quitting => return,
+                    }
+                }
+            });
+        });
+        Self {
+            quit: Some(quit),
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ChannelWake {
+    fn drop(&mut self) {
+        if let Some(quit) = self.quit.take() {
+            let _ = quit.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The session broker's drain, as far as channels go: parked until the
@@ -457,8 +508,11 @@ impl Device {
     /// Take this device off the network, as shutting it down does: its
     /// session ends, its state stays on disk.
     pub(crate) fn go_offline(&mut self) {
-        // The session's broker holds its network: it ends with the session.
+        // The session's broker holds its network: it ends with the session,
+        // and so do the channel keys it handed its apps, which reach the
+        // network through its channel service.
         SESSION_LAYOUTS.with(|held| held.borrow_mut().remove(&self.layouts));
+        *self.endpoint_keys.lock().unwrap() = None;
         let net = self.net.take().expect("the device is online");
         self.channels = None;
         self.notes.lock().unwrap().clear();
@@ -509,6 +563,10 @@ impl Device {
         self.serve_layouts();
     }
 
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the broker starts before the layout records, whose identity carries the keys it hands its apps, and is kept with them"
+    )]
     fn serve_layouts(&mut self) {
         use std::os::fd::IntoRawFd as _;
         use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD};
@@ -519,53 +577,61 @@ impl Device {
             .expect("the broker directory is the device's alone");
         let socket = parent.join("collab.sock");
         let _ = std::fs::remove_file(&socket);
+        // Started first: the layout records' identity carries the channel
+        // keys this broker hands its apps.
+        let broker = self.start_broker(&socket);
         let (key, cert) = (self.key(), self.cert());
         let keys = self.endpoint_keys.lock().unwrap().clone();
         let wakes = Arc::clone(&self.wakes);
-        let held = SessionLayouts {
-            _broker: self.start_broker(&socket),
-            records: crate::shell::workspace_layouts::WorkspaceLayouts::with_connect(
-                move |room, woken| {
-                    let room_text = room.to_string();
-                    crate::shell::launcher::register_in_process_launch(DESKTOP_APP, &room_text);
-                    let identity = cold_reads::certified_identity(&key, &cert, room, keys.clone());
-                    let device = hex::encode(cert.device_public_key);
-                    let route = ui::collaboration::RouteSpec::record(
-                        DESKTOP_APP,
-                        room.as_uuid(),
-                        DESKTOP_RECORD,
-                    );
-                    let socket = socket.clone();
-                    let wakes = Arc::clone(&wakes);
-                    ui::app::record_routes::RouteDocument::connect_with(
-                        {
-                            let route = route.clone();
-                            move || {
-                                let mut stream = std::os::unix::net::UnixStream::connect(&socket)
-                                    .expect("connect to the session's broker");
-                                ::launcher::services::write_collab_handoff(
-                                    &mut stream,
-                                    DESKTOP_APP,
-                                    &room_text,
-                                )
-                                .expect("hand the connection over as the session does");
-                                ui::collaboration::CollaborationManager::for_record_fd_with_identity(
-                                    stream.into_raw_fd(),
-                                    route,
-                                    Some(DESKTOP_KIND.to_owned()),
-                                    Some(device),
-                                    identity,
-                                )
-                            }
-                        },
-                        route,
+        let records =
+            crate::shell::workspace_layouts::WorkspaceLayouts::with_connect(move |room, woken| {
+                let room_text = room.to_string();
+                crate::shell::launcher::register_in_process_launch(DESKTOP_APP, &room_text);
+                let identity = cold_reads::certified_identity(&key, &cert, room, keys.clone());
+                let device = hex::encode(cert.device_public_key);
+                let route = ui::collaboration::RouteSpec::record(
+                    DESKTOP_APP,
+                    room.as_uuid(),
+                    DESKTOP_RECORD,
+                );
+                let socket = socket.clone();
+                let wakes = Arc::clone(&wakes);
+                ui::app::record_routes::RouteDocument::connect_with(
+                    {
+                        let route = route.clone();
                         move || {
-                            woken.store(true, Ordering::Release);
-                            wakes.wake();
-                        },
-                    )
-                },
-            ),
+                            let mut stream = std::os::unix::net::UnixStream::connect(&socket)
+                                .expect("connect to the session's broker");
+                            ::launcher::services::write_collab_handoff(
+                                &mut stream,
+                                DESKTOP_APP,
+                                &room_text,
+                            )
+                            .expect("hand the connection over as the session does");
+                            ui::collaboration::CollaborationManager::for_record_fd_with_identity(
+                                stream.into_raw_fd(),
+                                route,
+                                Some(DESKTOP_KIND.to_owned()),
+                                Some(device),
+                                identity,
+                            )
+                        }
+                    },
+                    route,
+                    move || {
+                        woken.store(true, Ordering::Release);
+                        wakes.wake();
+                    },
+                )
+            });
+        let channel_wake = broker
+            .channel_encryption()
+            .and_then(|channels| channels.changes())
+            .map(|changes| ChannelWake::start(changes, &self.wakes));
+        let held = SessionLayouts {
+            records,
+            _channel_wake: channel_wake,
+            broker,
         };
         SESSION_LAYOUTS.with(|layouts| layouts.borrow_mut().insert(self.layouts, held));
     }
@@ -1144,30 +1210,17 @@ impl Device {
         reason = "every arrived write opens into the note's document in one hold"
     )]
     fn read_notes(&self, room: RoomId, keys: &channel_crypto::ChannelContentKeys) {
-        let room_id = room.to_string();
-        let arrived: Vec<_> = {
-            let inbound = self.net().inbound_documents_handle();
-            let mut inbound = inbound.lock().unwrap();
-            let (notes, rest) = std::mem::take(&mut *inbound)
-                .into_iter()
-                .partition(|document| {
-                    document.app_id == NOTES
-                        && document.cluster_id == room_id
-                        && document.record_id == NOTE_RECORD
-                });
-            *inbound = rest;
-            notes
-        };
+        let arrived = self.arrived_note_writes(room);
         let mut notes = self.notes.lock().unwrap();
         let document = notes.entry(room).or_default();
-        for entry in arrived {
-            let envelope = entry.envelope;
-            self.note_writes
-                .lock()
-                .unwrap()
-                .entry(room)
-                .or_default()
-                .push((*envelope).clone());
+        for envelope in arrived {
+            {
+                let mut opened = self.note_writes.lock().unwrap();
+                let opened = opened.entry(room).or_default();
+                if !opened.contains(&envelope) {
+                    opened.push(envelope.clone());
+                }
+            }
             let opened = keys
                 .open_content(
                     envelope.artifact,
@@ -1191,6 +1244,45 @@ impl Device {
                 other => panic!("a note's write is one whole frame: {other:?}"),
             }
         }
+    }
+
+    /// The sealed writes to the note in `room` that reached this device. A
+    /// device serving through its session's broker ([`Self::carry_layouts`])
+    /// has the broker drain what the network received, and finds them where
+    /// the notes app's read does: every write the broker admitted, which
+    /// the note's document takes again as the changes it holds. Otherwise
+    /// those that arrived since it last looked wait in the network's
+    /// inbound documents.
+    fn arrived_note_writes(&self, room: RoomId) -> Vec<collab_types::SignedOp> {
+        let room_id = room.to_string();
+        let artifact = collab_types::document_artifact_id(NOTES, &room_id, NOTE_RECORD);
+        let admitted = SESSION_LAYOUTS.with(|held| {
+            held.borrow().get(&self.layouts).map(|layouts| {
+                layouts
+                    .broker
+                    .channels()
+                    .lock()
+                    .unwrap()
+                    .sealed_writes(artifact)
+            })
+        });
+        if let Some(admitted) = admitted {
+            return admitted;
+        }
+        let inbound = self.net().inbound_documents_handle();
+        let notes: Vec<_> = {
+            let mut inbound = inbound.lock().unwrap();
+            let (notes, rest) = std::mem::take(&mut *inbound)
+                .into_iter()
+                .partition(|document| {
+                    document.app_id == NOTES
+                        && document.cluster_id == room_id
+                        && document.record_id == NOTE_RECORD
+                });
+            *inbound = rest;
+            notes
+        };
+        notes.into_iter().map(|entry| *entry.envelope).collect()
     }
 
     /// The note's text in `room` as the notes app here shows it.
@@ -1395,6 +1487,35 @@ impl Device {
         super::embedded_host::host_state_root(&self.dir.join("state.json"))
     }
 
+    /// Where this device stands on `room`'s note channel, for
+    /// [`Self::catch_up`].
+    fn channel_standing(&self, room: RoomId) -> String {
+        // A device serving through its session's broker holds its channels
+        // there: what the broker hands the notes app, and the shared desktop
+        // record, whose writes carry the room's windows.
+        if self.carries_layouts {
+            let note = self.note_keys(room).map_or("not handed", |_| "ready");
+            let desktop = self.endpoint_keys.lock().unwrap().clone().map_or_else(
+                || "no broker".to_owned(),
+                |keys| match keys(
+                    &room.to_string(),
+                    tilo_desktop_model::ownership::DESKTOP_APP,
+                    tilo_desktop_model::ownership::DESKTOP_RECORD,
+                    0,
+                ) {
+                    Ok(reply) => format!("{:?}", reply.access),
+                    Err(error) => error.to_string(),
+                },
+            );
+            format!("{note} by the session's broker, the desktop record's {desktop}")
+        } else {
+            match self.note_access(room) {
+                ChannelAccess::Ready(_) => "ready".to_owned(),
+                other => format!("{other:?}"),
+            }
+        }
+    }
+
     /// Where this device stands on `room`, for a wait that timed out: its
     /// native owner, whether it holds the room, the note as the notes app
     /// here has it (and the changes it still lacks), the note's writes
@@ -1419,10 +1540,7 @@ impl Device {
                 tree.seals_records(room),
             )
         };
-        let access = match self.note_access(room) {
-            ChannelAccess::Ready(_) => "ready".to_owned(),
-            other => format!("{other:?}"),
-        };
+        let access = self.channel_standing(room);
         let (text, heads, missing) = {
             let mut notes = self.notes.lock().unwrap();
             notes.get_mut(&room).map_or((None, 0, 0), |document| {

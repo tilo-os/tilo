@@ -20,7 +20,7 @@ use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use tilo_files::native::{ChangeWatch, Watcher};
 
 use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::ActionError;
@@ -419,7 +419,7 @@ pub struct FilesIndexes {
     /// Test helpers that inject an index pre-set this so a walk never runs.
     ready: OnceLock<()>,
     /// Lives as long as the provider so dropping it closes the watch.
-    watch: OnceLock<RecommendedWatcher>,
+    watch: OnceLock<Vec<ChangeWatch>>,
 }
 
 /// Home the files search walks.
@@ -580,14 +580,17 @@ impl FilesIndexes {
         let wake = crate::shell::search::invocation_wake::waker();
         let name_index = Arc::clone(&self.name_index);
         let home = self.home.clone();
+        let watching = start_name_watch(&self.home, &self.name_index, &self.watch);
         thread::Builder::new()
             .name("tilo-search-files-walk".into())
             .spawn(move || {
                 walk_home(&home, &name_index);
+                if let Some(watching) = watching {
+                    let _ = watching.send(Notice::Walked);
+                }
                 wake.wake();
             })
             .ok();
-        start_name_watch(&self.home, &self.name_index, &self.watch);
     }
 
     /// The paths whose names match `needle`, best first, then those whose
@@ -1287,70 +1290,72 @@ fn notify_open_failure(path: &Path, detail: &str, chrome: &Chrome) {
     crate::shell::doc_open::report_open_failure(chrome, path, detail, Some("Files"));
 }
 
-/// Arm inotify on `home` and the well-known user folders, then fold
-/// create/remove events into the published name index after the first walk.
+/// What the name watch's thread is told.
+enum Notice {
+    /// Paths the watch saw change.
+    Changed(Vec<PathBuf>),
+    /// The first walk published the index: changes seen so far can be
+    /// folded into it.
+    Walked,
+}
+
+/// Watch `home` and the well-known user folders, then fold changes into the
+/// published name index after the first walk. The sender the walk tells
+/// [`Notice::Walked`] through, the first time only.
 fn start_name_watch(
     home: &Path,
     index: &Arc<RwLock<NameIndex>>,
-    slot: &OnceLock<RecommendedWatcher>,
-) {
+    slot: &OnceLock<Vec<ChangeWatch>>,
+) -> Option<mpsc::Sender<Notice>> {
     if slot.get().is_some() {
-        return;
+        return None;
     }
     let (tx, rx) = mpsc::channel();
-    let Ok(mut watcher) = notify::recommended_watcher(move |event| {
-        let _ = tx.send(event);
-    }) else {
-        return;
-    };
-    arm_name_watches(&mut watcher, home);
-    if slot.set(watcher).is_err() {
-        return;
+    let watches = std::iter::once(Watcher::entries(home))
+        .chain(user_folders(home).into_iter().map(Watcher::tree))
+        .filter_map(|watcher| {
+            let tx = tx.clone();
+            watcher
+                .start(move |events| {
+                    let paths = events.iter().map(|event| event.path.clone()).collect();
+                    let _ = tx.send(Notice::Changed(paths));
+                })
+                .ok()
+        })
+        .collect();
+    if slot.set(watches).is_err() {
+        return None;
     }
     let home = home.to_owned();
     let index = Arc::clone(index);
     thread::Builder::new()
         .name("tilo-search-files-watch".into())
         .spawn(move || watch_name_index(&home, &index, &rx))
-        .ok();
+        .ok()?;
+    Some(tx)
 }
 
-fn arm_name_watches(watcher: &mut RecommendedWatcher, home: &Path) {
-    let _ = watcher.watch(home, RecursiveMode::NonRecursive);
-    for dir in user_folders(home) {
-        let _ = watcher.watch(&dir, RecursiveMode::Recursive);
-    }
-}
-
-fn watch_name_index(
-    home: &Path,
-    index: &RwLock<NameIndex>,
-    rx: &mpsc::Receiver<notify::Result<notify::Event>>,
-) {
+fn watch_name_index(home: &Path, index: &RwLock<NameIndex>, rx: &mpsc::Receiver<Notice>) {
+    // Changes seen before the first walk published the index.
     let mut pending = Vec::new();
-    let mut walked = false;
     loop {
-        if !walked {
-            if published_generation(index) > 0 {
-                walked = true;
-                apply_watched_paths(home, index, &pending);
-                pending.clear();
-                continue;
-            }
-            match rx.recv_timeout(Duration::from_millis(20)) {
-                Ok(event) => pending.extend(event_paths(&event)),
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-            continue;
+        match rx.recv() {
+            Ok(Notice::Changed(paths)) => pending.extend(paths),
+            Ok(Notice::Walked) => break,
+            Err(_) => return,
         }
-        let Ok(first) = rx.recv() else {
-            return;
+    }
+    apply_watched_paths(home, index, &pending);
+    loop {
+        let mut paths = match rx.recv() {
+            Ok(Notice::Changed(paths)) => paths,
+            Ok(Notice::Walked) => continue,
+            Err(_) => return,
         };
-        let mut paths = event_paths(&first);
         loop {
             match rx.recv_timeout(WATCH_DEBOUNCE) {
-                Ok(event) => paths.extend(event_paths(&event)),
+                Ok(Notice::Changed(more)) => paths.extend(more),
+                Ok(Notice::Walked) => {}
                 Err(RecvTimeoutError::Timeout) => break,
                 Err(RecvTimeoutError::Disconnected) => {
                     apply_watched_paths(home, index, &paths);
@@ -1361,18 +1366,6 @@ fn watch_name_index(
         paths.sort();
         paths.dedup();
         apply_watched_paths(home, index, &paths);
-    }
-}
-
-fn published_generation(index: &RwLock<NameIndex>) -> u64 {
-    index.read().ok().map_or(0, |guard| guard.generation)
-}
-
-fn event_paths(event: &notify::Result<notify::Event>) -> Vec<PathBuf> {
-    match event {
-        Ok(event) if matches!(event.kind, EventKind::Access(_)) => Vec::new(),
-        Ok(event) => event.paths.clone(),
-        Err(_) => Vec::new(),
     }
 }
 

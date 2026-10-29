@@ -783,11 +783,13 @@ pub fn default_model() -> MapModel {
     for id in ["hofgarten", "cafe-glueck"] {
         m.toggle_saved(id);
     }
-    m.recents = vec![
+    m.recents = [
         "Marienplatz".to_string(),
         "coffee near me".to_string(),
         "Hauptbahnhof".to_string(),
-    ];
+    ]
+    .into_iter()
+    .collect();
     m.results = m
         .places
         .iter()

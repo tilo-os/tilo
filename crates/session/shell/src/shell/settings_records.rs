@@ -810,9 +810,9 @@ mod tests {
     fn with_settings_closed_an_agent_weakens_the_lock_only_with_the_persons_answer() {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let _held = super::Holder::of(&crate::shell::state::local_user_id()).unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let paths = settings_store::config_root().unwrap();
+        let session = settings_store::profile(&paths);
+        let settings = crate::shell::test_support::install_settings(session.clone());
         let mut workspace = Workspace::new(WorkspaceId(7), "Settings");
         workspace.set_owner("owner");
         workspace.admit_agent("scribe", KindSet::READ);
@@ -1020,9 +1020,9 @@ mod tests {
     #[serial_test::serial]
     fn the_persons_change_through_the_session_is_a_step_they_undo() {
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let paths = settings_store::config_root().unwrap();
+        let session = settings_store::profile(&paths);
+        let settings = crate::shell::test_support::install_settings(session.clone());
         let palette = settings_store::InvokingAction::action("power.lock");
         let before = settings_store::power::LOCK_MINUTES.get();
         let sooner = if before == 1 { 2 } else { 1 };
@@ -1054,9 +1054,9 @@ mod tests {
     #[serial_test::serial]
     fn with_settings_closed_the_desktop_sections_are_changed_through_the_session() {
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let paths = settings_store::config_root().unwrap();
+        let session = settings_store::profile(&paths);
+        let settings = crate::shell::test_support::install_settings(session.clone());
         let palette = settings_store::InvokingAction::action("shortcuts.vim");
         super::change(
             &super::address("settings.desktop-controls", "field-edit"),
@@ -1102,9 +1102,9 @@ mod tests {
         use settings_store::magnifier::{MagnifierState, SECTION};
 
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let paths = settings_store::config_root().unwrap();
+        let session = settings_store::profile(&paths);
+        let settings = crate::shell::test_support::install_settings(session.clone());
         let zoom = || MagnifierState::from_section(&settings_store::load_section(SECTION)).zoom;
         let shortcut = settings_store::InvokingAction::action("magnifier.zoom-in");
         let mut step = serde_json::Map::new();
@@ -1129,9 +1129,9 @@ mod tests {
         use settings_store::device_vpn::{EXIT, SECTION, THROUGH};
 
         let _home = tilo_test_env::TestHome::new().unwrap();
-        let paths = settings_store::SessionPaths::configured().unwrap();
-        let session = Arc::new(settings_store::SessionSettings::open(paths).unwrap());
-        let settings = crate::shell::test_support::install_settings(session.host_view().unwrap());
+        let paths = settings_store::config_root().unwrap();
+        let session = settings_store::profile(&paths);
+        let settings = crate::shell::test_support::install_settings(session.clone());
         crate::shell::device_vpn::choose("desk", true).unwrap();
         crate::shell::device_vpn::set_exit(true).unwrap();
         let section = settings_store::load_section(SECTION);

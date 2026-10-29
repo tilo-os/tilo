@@ -1,4 +1,7 @@
-//! Retained unified backup views over the resource-native device runtime.
+//! The Backups window over the device's repository: the [`Store`] the
+//! view shares with its effect handler (the catalog, where it backs up from
+//! and to, the work running on it) and the [`BackupsWindow`] that lays it
+//! out.
 use crate::actions::{BackupsEffect, Blocked};
 use crate::i18n;
 use crate::model::MAX_KEPT;
@@ -7,11 +10,11 @@ use crate::model::{Catalog, Filter, RetentionPolicy};
 use crate::resource::{BackupLocation, Backups, DemoRepository};
 use crate::view::{self, Intent, Intents, JobKind, Order, Page, Setup};
 use chrono::NaiveDateTime;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 /// How often a running job's progress line is read.
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
-/// The window bar's Back up now ([`BackupsApp::sync_window_toolbar`]).
+/// The window bar's Back up now ([`BackupsWindow::sync_window_toolbar`]).
 const BACK_UP_NOW: &str = "back-up-now";
 
 /// Who raises a job or a notice: this app, in the jobs band and in what
@@ -24,13 +27,13 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::LocalState;
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Setting, SurfaceCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, Publishes, Setting, ViewCx,
 };
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
-use ui::widget::{AppModel, Column, ModalDialog, ModelPath, NavShell, Widget};
+use ui::widget::{AppModel, Column, Element, ModalDialog, ModelPath, NavShell, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
@@ -64,8 +67,13 @@ struct ViewKey {
     failure: Option<(String, String)>,
 }
 
-pub struct BackupsApp {
-    shell: NavShell,
+/// The repository a window shows and the work running on it, shared by the
+/// window and the view's effect handler.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent flag (redraw, drawer, a sheet to close or show)"
+)]
+pub(crate) struct Store {
     intents: Intents,
     /// What the jobs band reports back: the person pressing Stop.
     jobs: ui::jobs::Presses,
@@ -79,8 +87,6 @@ pub struct BackupsApp {
     policy: RetentionPolicy,
     retention: [LocalState<f64>; 4],
     order: Order,
-    restore: Option<ModalDialog<Column>>,
-    restore_changed: bool,
     failure: Option<(String, String)>,
     /// Said in the window's bar for a while when the backups' health
     /// changes: all healthy again, or how many now need a look.
@@ -89,7 +95,6 @@ pub struct BackupsApp {
     /// first read, which is the window opening, not news.
     failed_seen: Option<u64>,
     scroll: Rc<Cell<(f32, f32)>>,
-    built: Option<ViewKey>,
     dirty: bool,
     open_drawer: bool,
     source_path: Option<PathBuf>,
@@ -104,6 +109,29 @@ pub struct BackupsApp {
     job_status: Option<view::Job>,
     job_kind: Option<JobKind>,
     ui: UiCache,
+    /// What the window says in a toast next.
+    toasts: Vec<(String, ToastKind)>,
+    /// The restore sheet closes: a folder to restore into was chosen.
+    close_restore: bool,
+    /// A capture shows the restore sheet.
+    show_restore: bool,
+}
+
+/// The [`Store`] as the window and the effect handler share it.
+pub(crate) type Shared = Rc<RefCell<Store>>;
+
+/// The window: the repository in a [`NavShell`], with the restore sheet
+/// over it while it is open.
+pub struct BackupsWindow {
+    repo: Shared,
+    /// The policy as the document holds it, shown as it changes; `None` for
+    /// a window outside the framework.
+    live: Option<Live<Backups>>,
+    presented: Option<(u64, u64)>,
+    shell: NavShell,
+    restore: Option<ModalDialog<Column>>,
+    restore_changed: bool,
+    built: Option<ViewKey>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,11 +194,6 @@ fn pick_folder(title: &str, accept: &str) -> Picked {
             ui::portal::PortalOutcome::Failed("The folder chooser closed unexpectedly".into())
         })
 }
-impl Default for BackupsApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 fn now() -> NaiveDateTime {
     ui::clock::local_now().naive_local()
 }
@@ -191,29 +214,15 @@ fn sample_job() {
     );
     job.progress(642, 1_502);
 }
-impl BackupsApp {
-    pub fn new() -> Self {
-        Self::with_catalog(Catalog::empty())
-    }
+impl Store {
     fn with_catalog(catalog: Catalog) -> Self {
         let policy = RetentionPolicy::default();
-        // What runs, across the window's foot: it stays whatever page the
-        // window shows, so a backup outlives the page that started it and its
-        // Stop is reachable from every page.
-        let jobs = ui::jobs::Presses::new();
         Self {
-            shell: NavShell::new()
-                .content_kind(ui::widget::ContentKind::List)
-                .with_window_toolbar()
-                .with_id("backups-shell")
-                .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone()))),
             intents: Intents::default(),
-            jobs,
             needs: ui::attention::Presses::new(),
             catalog,
             catalog_rev: 0,
             catalog_key: String::new(),
-            restore_changed: false,
             dispatcher: None,
             location: None,
             loaded: BackupLocation::default(),
@@ -232,22 +241,21 @@ impl BackupsApp {
                 LocalState::new(f64::from(policy.monthly)),
             ],
             order: Order::NewestFirst,
-            restore: None,
             failure: None,
             health: ui::widget::toast::Transient::new(),
             failed_seen: None,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
-            built: None,
             dirty: true,
             open_drawer: false,
             source_path: None,
             destination_path: None,
             repository_error: None,
             job_status: None,
+            toasts: Vec::new(),
+            close_restore: false,
+            show_restore: false,
+            jobs: ui::jobs::Presses::new(),
         }
-    }
-    pub(crate) fn resource_catalog(&self) -> &Catalog {
-        &self.catalog
     }
     pub(crate) fn is_configured(&self) -> bool {
         self.source_path.is_some()
@@ -258,7 +266,7 @@ impl BackupsApp {
     /// Take part in the resource: edits and effects go through the
     /// dispatcher, and the repository shown is this device's (a live
     /// window) or the scenario's (a capture).
-    pub(crate) fn attach_framework(&mut self, cx: &SurfaceCx<Backups>) {
+    fn attach(&mut self, cx: &ViewCx<Backups>) {
         self.dispatcher = Some(cx.dispatcher());
         if let Some(demo) = cx.fixture::<DemoRepository>() {
             self.catalog = demo.catalog.clone();
@@ -352,7 +360,8 @@ impl BackupsApp {
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
-        self.shell.toast(msg, ToastKind::Success);
+        self.toasts.push((msg.into(), ToastKind::Success));
+        self.dirty = true;
     }
 
     /// Errors must read as errors — a green success toast after a rejected
@@ -360,7 +369,8 @@ impl BackupsApp {
     fn toast_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
         self.failure = Some(("Backup paused".into(), msg.clone()));
-        self.shell.toast(msg, ToastKind::Error);
+        self.toasts.push((msg, ToastKind::Error));
+        self.dirty = true;
     }
 
     /// Why the repository effects cannot run here now, if they cannot.
@@ -427,7 +437,8 @@ impl BackupsApp {
     pub(crate) fn answer_backend(
         &mut self,
         effect: BackupsEffect,
-        cx: &mut EffectCx<Backups, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<Backups>,
     ) -> EffectAnswer {
         match effect {
             BackupsEffect::Setup => {
@@ -439,9 +450,9 @@ impl BackupsApp {
                 // A saved location that can no longer be read keeps its
                 // source: only a new destination is chosen.
                 if self.source_path.is_some() && !self.is_configured() {
-                    Ok(self.choose_destination(cx))
+                    Ok(self.choose_destination(me, cx))
                 } else {
-                    Ok(self.choose_source(cx))
+                    Ok(self.choose_source(me, cx))
                 }
             }
             BackupsEffect::BackupNow => {
@@ -449,17 +460,17 @@ impl BackupsApp {
                     self.toast_error(blocked.reason.clone());
                     return Err(blocked.reason);
                 }
-                Ok(self.start_backup(cx))
+                Ok(self.start_backup(me, cx))
             }
             BackupsEffect::Verify { snapshot_id } => {
                 self.repository_ready(&snapshot_id)?;
                 self.ui.sel_snapshot = Some(snapshot_id.clone());
-                Ok(self.start_verify(snapshot_id, cx))
+                Ok(self.start_verify(snapshot_id, me, cx))
             }
             BackupsEffect::RestoreSnapshot { snapshot_id } => {
                 self.repository_ready(&snapshot_id)?;
                 self.ui.sel_snapshot = Some(snapshot_id.clone());
-                Ok(self.choose_restore_folder(snapshot_id, cx))
+                Ok(self.choose_restore_folder(snapshot_id, me, cx))
             }
             BackupsEffect::ShowSource { source_id } => {
                 if !self
@@ -524,16 +535,18 @@ impl BackupsApp {
         Ok(())
     }
 
-    fn choose_source(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
+    fn choose_source(&mut self, me: &Shared, cx: &mut EffectCx<Backups>) -> Effected {
         self.work = Work::Choosing;
+        let me = Rc::clone(me);
         cx.thread(
             |_| pick_folder("Choose a folder to protect", "Protect folder"),
-            |app: &mut Self, picked, cx| {
+            move |(), picked, cx| {
+                let mut app = me.borrow_mut();
                 app.work = Work::Idle;
                 match picked {
                     Picked::Opened(path) => {
                         app.source_path = Some(path);
-                        Ok(app.choose_destination(cx))
+                        Ok(app.choose_destination(&me, cx))
                     }
                     Picked::Cancelled => Err("No folder was chosen; nothing was set up.".into()),
                     Picked::Failed(error) => {
@@ -545,11 +558,13 @@ impl BackupsApp {
         )
     }
 
-    fn choose_destination(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
+    fn choose_destination(&mut self, me: &Shared, cx: &mut EffectCx<Backups>) -> Effected {
         self.work = Work::Choosing;
+        let me = Rc::clone(me);
         cx.thread(
             |_| pick_folder("Choose a backup location", "Use this location"),
-            |app: &mut Self, picked, cx| {
+            move |(), picked, cx| {
+                let mut app = me.borrow_mut();
                 app.work = Work::Idle;
                 let destination = match picked {
                     Picked::Opened(path) => path,
@@ -580,7 +595,7 @@ impl BackupsApp {
                     return Err(error);
                 }
                 app.load_location(location);
-                Ok(app.start_backup(cx))
+                Ok(app.start_backup(&me, cx))
             },
         )
     }
@@ -638,7 +653,7 @@ impl BackupsApp {
         }
     }
 
-    fn start_backup(&mut self, cx: &mut EffectCx<Backups, Self>) -> Effected {
+    fn start_backup(&mut self, me: &Shared, cx: &mut EffectCx<Backups>) -> Effected {
         let (Some(source), Some(destination)) =
             (self.source_path.clone(), self.destination_path.clone())
         else {
@@ -650,6 +665,7 @@ impl BackupsApp {
         let shown = Arc::clone(&run.progress);
         let job = run.job.clone();
         let stopped = Arc::clone(&run.stopped);
+        let me = Rc::clone(me);
         cx.thread(
             move |progress| {
                 let asked = || stopped.load(std::sync::atomic::Ordering::Acquire);
@@ -668,7 +684,8 @@ impl BackupsApp {
                     .map_err(|error| error.to_string());
                 Ok::<_, crate::engine::BackupError>((created, pruned))
             },
-            move |app: &mut Self, result, _| {
+            move |(), result, _| {
+                let mut app = me.borrow_mut();
                 app.finish_job();
                 let (manifest, pruned) = match result {
                     Ok(both) => both,
@@ -676,12 +693,12 @@ impl BackupsApp {
                         // The person stopped it: nothing failed, so nothing
                         // is reported as a failure. The ledger says what
                         // happened instead.
-                        BackupsApp::end_job(JobKind::Backup, &run, &Err(error), "");
+                        Store::end_job(JobKind::Backup, &run, &Err(error), "");
                         return Ok(Effected::done());
                     }
                     Err(error) => {
                         let reason = error.to_string();
-                        BackupsApp::end_job(JobKind::Backup, &run, &Err(error), "");
+                        Store::end_job(JobKind::Backup, &run, &Err(error), "");
                         app.toast_error(reason.clone());
                         return Err(reason);
                     }
@@ -689,7 +706,7 @@ impl BackupsApp {
                 if let Err(error) = app.reload_repository() {
                     // The backup itself succeeded; it is the history that
                     // could not be read back here.
-                    BackupsApp::end_job(
+                    Store::end_job(
                         JobKind::Backup,
                         &run,
                         &Err(crate::engine::BackupError::InvalidSnapshot(error.clone())),
@@ -705,7 +722,7 @@ impl BackupsApp {
                     manifest.files,
                     ui::format::size(manifest.bytes)
                 );
-                BackupsApp::end_job(JobKind::Backup, &run, &Ok(()), &done);
+                Store::end_job(JobKind::Backup, &run, &Ok(()), &done);
                 // Pruning deletes snapshots: say which ones went, so history
                 // never shrinks without a word.
                 match &pruned {
@@ -770,7 +787,7 @@ impl BackupsApp {
             .unwrap_or_else(|| id.to_owned())
     }
 
-    fn start_verify(&mut self, id: String, cx: &mut EffectCx<Backups, Self>) -> Effected {
+    fn start_verify(&mut self, id: String, me: &Shared, cx: &mut EffectCx<Backups>) -> Effected {
         let Some(destination) = self.destination_path.clone() else {
             return Effected::done();
         };
@@ -779,6 +796,7 @@ impl BackupsApp {
         let shown = Arc::clone(&run.progress);
         let job = run.job.clone();
         let stopped = Arc::clone(&run.stopped);
+        let me = Rc::clone(me);
         cx.thread(
             move |progress| {
                 let asked = || stopped.load(std::sync::atomic::Ordering::Acquire);
@@ -809,17 +827,18 @@ impl BackupsApp {
                     }
                 })
             },
-            move |app: &mut Self, result, _| {
+            move |(), result, _| {
+                let mut app = me.borrow_mut();
                 app.finish_job();
                 let result = match result {
                     Ok(result) => result,
                     Err(error) if error.is_stopped() => {
-                        BackupsApp::end_job(JobKind::Verify, &run, &Err(error), "");
+                        Store::end_job(JobKind::Verify, &run, &Err(error), "");
                         return Ok(Effected::done());
                     }
                     Err(error) => {
                         let reason = error.to_string();
-                        BackupsApp::end_job(JobKind::Verify, &run, &Err(error), "");
+                        Store::end_job(JobKind::Verify, &run, &Err(error), "");
                         app.toast_error(reason.clone());
                         return Err(reason);
                     }
@@ -829,7 +848,7 @@ impl BackupsApp {
                     result.files,
                     ui::format::size(result.bytes)
                 );
-                BackupsApp::end_job(JobKind::Verify, &run, &Ok(()), &done);
+                Store::end_job(JobKind::Verify, &run, &Ok(()), &done);
                 app.toast_now(done);
                 Ok(Effected::value(serde_json::json!({
                     "files": result.files,
@@ -839,20 +858,26 @@ impl BackupsApp {
         )
     }
 
-    fn choose_restore_folder(&mut self, id: String, cx: &mut EffectCx<Backups, Self>) -> Effected {
+    fn choose_restore_folder(
+        &mut self,
+        id: String,
+        me: &Shared,
+        cx: &mut EffectCx<Backups>,
+    ) -> Effected {
         self.work = Work::Choosing;
+        let me = Rc::clone(me);
         cx.thread(
             |_| pick_folder("Restore into an empty folder", "Restore here"),
-            |app: &mut Self, picked, cx| {
+            move |(), picked, cx| {
+                let mut app = me.borrow_mut();
                 app.work = Work::Idle;
                 match picked {
                     // The sheet promises a destination chooser, not a
                     // background restore: it closes only once a folder was
                     // chosen, and the engine never overwrites one.
                     Picked::Opened(path) => {
-                        app.restore = None;
-                        app.restore_changed = true;
-                        Ok(app.start_restore(id, path, cx))
+                        app.close_restore = true;
+                        Ok(app.start_restore(id, path, &me, cx))
                     }
                     Picked::Cancelled => Err("No folder was chosen; nothing was restored.".into()),
                     Picked::Failed(error) => {
@@ -868,7 +893,8 @@ impl BackupsApp {
         &mut self,
         id: String,
         restore_to: PathBuf,
-        cx: &mut EffectCx<Backups, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<Backups>,
     ) -> Effected {
         let Some(destination) = self.destination_path.clone() else {
             return Effected::done();
@@ -878,6 +904,7 @@ impl BackupsApp {
         let shown = Arc::clone(&run.progress);
         let job = run.job.clone();
         let stopped = Arc::clone(&run.stopped);
+        let me = Rc::clone(me);
         cx.thread(
             move |progress| {
                 let asked = || stopped.load(std::sync::atomic::Ordering::Acquire);
@@ -915,17 +942,18 @@ impl BackupsApp {
                     },
                 )
             },
-            move |app: &mut Self, result, _| {
+            move |(), result, _| {
+                let mut app = me.borrow_mut();
                 app.finish_job();
                 let result = match result {
                     Ok(result) => result,
                     Err(error) if error.is_stopped() => {
-                        BackupsApp::end_job(JobKind::Restore, &run, &Err(error), "");
+                        Store::end_job(JobKind::Restore, &run, &Err(error), "");
                         return Ok(Effected::done());
                     }
                     Err(error) => {
                         let reason = error.to_string();
-                        BackupsApp::end_job(JobKind::Restore, &run, &Err(error), "");
+                        Store::end_job(JobKind::Restore, &run, &Err(error), "");
                         app.toast_error(reason.clone());
                         return Err(reason);
                     }
@@ -935,7 +963,7 @@ impl BackupsApp {
                     result.files,
                     ui::format::size(result.bytes)
                 );
-                BackupsApp::end_job(JobKind::Restore, &run, &Ok(()), &done);
+                Store::end_job(JobKind::Restore, &run, &Ok(()), &done);
                 app.toast_now(done);
                 Ok(Effected::value(serde_json::json!({
                     "files": result.files,
@@ -945,11 +973,12 @@ impl BackupsApp {
         )
     }
 }
-impl BackupsApp {
+impl Store {
     pub(crate) fn answer_effect(
         &mut self,
         effect: BackupsEffect,
-        cx: &mut EffectCx<Backups, Self>,
+        me: &Shared,
+        cx: &mut EffectCx<Backups>,
     ) -> EffectAnswer {
         self.job_kind = match &effect {
             BackupsEffect::BackupNow => Some(JobKind::Backup),
@@ -957,7 +986,7 @@ impl BackupsApp {
             BackupsEffect::RestoreSnapshot { .. } => Some(JobKind::Restore),
             _ => self.job_kind,
         };
-        let result = self.answer_backend(effect, cx);
+        let result = self.answer_backend(effect, me, cx);
         self.page = match self.ui.view {
             View::Sources | View::Schedules => self
                 .ui
@@ -972,7 +1001,7 @@ impl BackupsApp {
             View::Timeline => Page::All,
         };
         self.selected.clone_from(&self.ui.sel_snapshot);
-        self.refresh_view();
+        self.dirty = true;
         result
     }
     fn refresh_runtime(&mut self) {
@@ -1027,7 +1056,7 @@ impl BackupsApp {
             ),
             "restore" => {
                 self.keep_selection();
-                self.open_restore();
+                self.show_restore = true;
             }
             "schedules" => self.page = Page::Retention,
             "sources" => {
@@ -1044,79 +1073,7 @@ impl BackupsApp {
             _ => {}
         }
         self.refresh_runtime();
-        self.refresh_view();
-    }
-    fn open_restore(&mut self) {
-        let Some(snapshot) = self
-            .selected
-            .as_deref()
-            .and_then(|id| self.catalog.snapshot(id))
-        else {
-            return;
-        };
-        self.restore_changed = true;
-        self.restore = Some(
-            view::restore_dialog(snapshot, &self.catalog, now(), &self.intents)
-                .with_primary_enabled(self.blocked().is_none()),
-        );
         self.dirty = true;
-    }
-
-    fn drain_intents(&mut self) {
-        for intent in self.intents.take() {
-            self.dirty = true;
-            match intent {
-                Intent::Navigate(page) => {
-                    self.page = page;
-                    self.selected = None;
-                    self.scroll.set((0.0, 0.0));
-                }
-                Intent::SelectSnapshot(id) => {
-                    self.selected = Some(id);
-                    if !self.shell.is_inspector_open() {
-                        self.shell.toggle_inspector();
-                    }
-                }
-                Intent::BackUpNow => self.invoke(&BackupsEffect::BackupNow),
-                Intent::Verify => {
-                    if let Some(id) = &self.selected {
-                        self.invoke(&BackupsEffect::Verify {
-                            snapshot_id: id.clone(),
-                        });
-                    }
-                }
-                Intent::OpenRestore => self.open_restore(),
-                Intent::ChooseRestoreFolder => {
-                    if let Some(id) = &self.selected {
-                        self.invoke(&BackupsEffect::RestoreSnapshot {
-                            snapshot_id: id.clone(),
-                        });
-                    }
-                }
-                Intent::CloseRestore => {
-                    self.restore = None;
-                    self.restore_changed = true;
-                }
-                Intent::Setup => self.invoke(&BackupsEffect::Setup),
-                Intent::DismissFailure => self.failure = None,
-                Intent::SetOrder(order) => self.order = order,
-            }
-        }
-        for ((field, current), retained) in [
-            (PolicyField::Hourly, self.policy.hourly),
-            (PolicyField::Daily, self.policy.daily),
-            (PolicyField::Weekly, self.policy.weekly),
-            (PolicyField::Monthly, self.policy.monthly),
-        ]
-        .into_iter()
-        .zip(self.retention.clone())
-        {
-            let value = retained.get().clamp(0.0, 999.0) as i64;
-            if value != i64::from(current) {
-                self.bump_retention(field, value - i64::from(current));
-                retained.set(f64::from(current));
-            }
-        }
     }
     /// The newest snapshot of the page, unless one is chosen there already.
     fn keep_selection(&mut self) {
@@ -1175,75 +1132,6 @@ impl BackupsApp {
         }
     }
 
-    /// Rebuild the columns when what they show changed.
-    fn refresh_view(&mut self) {
-        self.keep_selection();
-        let key = self.view_key();
-        if self.built.as_ref() == Some(&key) {
-            return;
-        }
-        let sidebar_stale = self
-            .built
-            .as_ref()
-            .is_none_or(|built| built.catalog != key.catalog || built.setup != key.setup);
-        self.built = Some(key.clone());
-        self.dirty = true;
-        if let Some(setup) = &key.setup {
-            let state = match setup {
-                SetupKey::Start => Setup::Start,
-                SetupKey::ChooseDestination => Setup::ChooseDestination,
-                SetupKey::Running(line) => Setup::Running(line),
-                SetupKey::Unavailable(error) => Setup::Unavailable(error),
-            };
-            self.shell.set_sidebar(None);
-            self.shell.set_inspector(None);
-            self.shell.set_content(view::setup(&state, &self.intents));
-            return;
-        }
-        if sidebar_stale {
-            self.shell.set_sidebar(Some(Box::new(view::sidebar(
-                &self.catalog,
-                &self.page,
-                &self.intents,
-            ))));
-        } else if let Some(sidebar) = self.shell.sidebar_mut::<ui::widget::NavList>() {
-            let selected = self.page.nav_id();
-            if sidebar.selected_id().as_deref() != Some(selected.as_str()) {
-                sidebar.set_selected(Some(&selected));
-            }
-        }
-        let now = now();
-        let model = view::Model {
-            catalog: &self.catalog,
-            page: &self.page,
-            selected: self.selected.as_deref(),
-            now,
-            order: self.order,
-            job: self.job_status.as_ref(),
-            failure: self
-                .failure
-                .as_ref()
-                .map(|(title, message)| (title.as_str(), message.as_str())),
-        };
-        let content = view::content(&model, &self.intents, &self.scroll, &self.retention);
-        self.shell.set_content(content);
-        let details = self
-            .selected
-            .as_deref()
-            .filter(|_| self.page.lists_snapshots())
-            .and_then(|id| self.catalog.snapshot(id))
-            .map(|snapshot| {
-                view::snapshot_details(
-                    snapshot,
-                    &self.catalog,
-                    now,
-                    key.can_act && key.job.is_none(),
-                    &self.intents,
-                )
-            });
-        self.shell.set_inspector(details);
-    }
-
     fn failed_count(&self) -> u64 {
         self.catalog.failed(Filter::All) as u64
     }
@@ -1282,11 +1170,233 @@ impl BackupsApp {
         self.health
             .publish(|(text, kind)| ui::window_toolbar::ToolbarNotice::new(text.clone(), *kind));
     }
+}
+impl BackupsWindow {
+    /// A window over `repo`.
+    fn new(repo: Store, live: Option<Live<Backups>>) -> Self {
+        // What runs, across the window's foot: it stays whatever page the
+        // window shows, so a backup outlives the page that started it and its
+        // Stop is reachable from every page.
+        let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
+            .with_window_toolbar()
+            .with_id("backups-shell")
+            .bottom_band(Box::new(ui::jobs::Band::with_presses(repo.jobs.clone())));
+        let mut window = Self {
+            repo: Rc::new(RefCell::new(repo)),
+            live,
+            presented: None,
+            shell,
+            restore: None,
+            restore_changed: false,
+            built: None,
+        };
+        window.follow_document();
+        window
+    }
+
+    /// A window outside the framework over `catalog`, which changes nothing.
+    #[cfg(test)]
+    fn with_catalog(catalog: Catalog) -> Self {
+        Self::new(Store::with_catalog(catalog), None)
+    }
+
+    /// Show the retention policy the document holds when it changed.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let held = (live.revision(), live.loads());
+        if self.presented == Some(held) {
+            return;
+        }
+        self.presented = Some(held);
+        let policy = live.with(|backups| backups.policy);
+        self.repo.borrow_mut().present_policy(policy);
+    }
+
+    /// Bring the window in step with the repository: what it asked to say,
+    /// the restore sheet it opened or closed, and the columns.
+    fn show_repository(&mut self) {
+        let (toasts, close, open) = {
+            let mut repo = self.repo.borrow_mut();
+            (
+                std::mem::take(&mut repo.toasts),
+                std::mem::take(&mut repo.close_restore),
+                std::mem::take(&mut repo.show_restore),
+            )
+        };
+        for (message, kind) in toasts {
+            self.shell.toast(message, kind);
+        }
+        if close {
+            self.restore = None;
+            self.restore_changed = true;
+        }
+        if open {
+            self.open_restore();
+        }
+        self.refresh_view();
+    }
+
+    fn open_restore(&mut self) {
+        let repo = Rc::clone(&self.repo);
+        let mut repo = repo.borrow_mut();
+        let Some(snapshot) = repo
+            .selected
+            .as_deref()
+            .and_then(|id| repo.catalog.snapshot(id))
+        else {
+            return;
+        };
+        self.restore_changed = true;
+        self.restore = Some(
+            view::restore_dialog(snapshot, &repo.catalog, now(), &repo.intents)
+                .with_primary_enabled(repo.blocked().is_none()),
+        );
+        repo.dirty = true;
+    }
+
+    fn drain_intents(&mut self) {
+        let repo = Rc::clone(&self.repo);
+        let mut repo = repo.borrow_mut();
+        let mut open_restore = false;
+        for intent in repo.intents.take() {
+            repo.dirty = true;
+            match intent {
+                Intent::Navigate(page) => {
+                    repo.page = page;
+                    repo.selected = None;
+                    repo.scroll.set((0.0, 0.0));
+                }
+                Intent::SelectSnapshot(id) => {
+                    repo.selected = Some(id);
+                    if !self.shell.is_inspector_open() {
+                        self.shell.toggle_inspector();
+                    }
+                }
+                Intent::BackUpNow => repo.invoke(&BackupsEffect::BackupNow),
+                Intent::Verify => {
+                    if let Some(id) = &repo.selected {
+                        repo.invoke(&BackupsEffect::Verify {
+                            snapshot_id: id.clone(),
+                        });
+                    }
+                }
+                Intent::OpenRestore => open_restore = true,
+                Intent::ChooseRestoreFolder => {
+                    if let Some(id) = &repo.selected {
+                        repo.invoke(&BackupsEffect::RestoreSnapshot {
+                            snapshot_id: id.clone(),
+                        });
+                    }
+                }
+                Intent::CloseRestore => {
+                    self.restore = None;
+                    self.restore_changed = true;
+                }
+                Intent::Setup => repo.invoke(&BackupsEffect::Setup),
+                Intent::DismissFailure => repo.failure = None,
+                Intent::SetOrder(order) => repo.order = order,
+            }
+        }
+        for ((field, current), retained) in [
+            (PolicyField::Hourly, repo.policy.hourly),
+            (PolicyField::Daily, repo.policy.daily),
+            (PolicyField::Weekly, repo.policy.weekly),
+            (PolicyField::Monthly, repo.policy.monthly),
+        ]
+        .into_iter()
+        .zip(repo.retention.clone())
+        {
+            let value = retained.get().clamp(0.0, 999.0) as i64;
+            if value != i64::from(current) {
+                repo.bump_retention(field, value - i64::from(current));
+                retained.set(f64::from(current));
+            }
+        }
+        drop(repo);
+        if open_restore {
+            self.open_restore();
+        }
+    }
+    /// Rebuild the columns when what they show changed.
+    fn refresh_view(&mut self) {
+        let repo = Rc::clone(&self.repo);
+        let mut repo = repo.borrow_mut();
+        repo.keep_selection();
+        let key = repo.view_key();
+        if self.built.as_ref() == Some(&key) {
+            return;
+        }
+        let sidebar_stale = self
+            .built
+            .as_ref()
+            .is_none_or(|built| built.catalog != key.catalog || built.setup != key.setup);
+        self.built = Some(key.clone());
+        repo.dirty = true;
+        if let Some(setup) = &key.setup {
+            let state = match setup {
+                SetupKey::Start => Setup::Start,
+                SetupKey::ChooseDestination => Setup::ChooseDestination,
+                SetupKey::Running(line) => Setup::Running(line),
+                SetupKey::Unavailable(error) => Setup::Unavailable(error),
+            };
+            self.shell.set_sidebar(None);
+            self.shell.set_inspector(None);
+            self.shell.set_content(view::setup(&state, &repo.intents));
+            return;
+        }
+        if sidebar_stale {
+            self.shell.set_sidebar(Some(Box::new(view::sidebar(
+                &repo.catalog,
+                &repo.page,
+                &repo.intents,
+            ))));
+        } else if let Some(sidebar) = self.shell.sidebar_mut::<ui::widget::NavList>() {
+            let selected = repo.page.nav_id();
+            if sidebar.selected_id().as_deref() != Some(selected.as_str()) {
+                sidebar.set_selected(Some(&selected));
+            }
+        }
+        let now = now();
+        let model = view::Model {
+            catalog: &repo.catalog,
+            page: &repo.page,
+            selected: repo.selected.as_deref(),
+            now,
+            order: repo.order,
+            job: repo.job_status.as_ref(),
+            failure: repo
+                .failure
+                .as_ref()
+                .map(|(title, message)| (title.as_str(), message.as_str())),
+        };
+        let content = view::content(&model, &repo.intents, &repo.scroll, &repo.retention);
+        self.shell.set_content(content);
+        let details = repo
+            .selected
+            .as_deref()
+            .filter(|_| repo.page.lists_snapshots())
+            .and_then(|id| repo.catalog.snapshot(id))
+            .map(|snapshot| {
+                view::snapshot_details(
+                    snapshot,
+                    &repo.catalog,
+                    now,
+                    key.can_act && key.job.is_none(),
+                    &repo.intents,
+                )
+            });
+        self.shell.set_inspector(details);
+    }
 
     /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's
     /// own (the sources list, Back, the snapshot's details), the page as the
     /// window's location and Back up now; and run what the person did there.
     fn sync_window_toolbar(&mut self) {
+        let repo = Rc::clone(&self.repo);
+        let repo = repo.borrow();
         for event in ui::window_toolbar::take_events() {
             if self.shell.window_toolbar_event(&event) {
                 continue;
@@ -1294,16 +1404,16 @@ impl BackupsApp {
             if let ui::window_toolbar::ToolbarEvent::Action { id } = &event
                 && id == BACK_UP_NOW
             {
-                self.intents.push(Intent::BackUpNow);
+                repo.intents.push(Intent::BackUpNow);
             }
         }
         let mut toolbar = self.shell.window_toolbar();
-        if self.setup_key().is_none() {
+        if repo.setup_key().is_none() {
             toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
-                label: view::page_title(&self.catalog, &self.page),
+                label: view::page_title(&repo.catalog, &repo.page),
                 ..ui::window_toolbar::ToolbarLocation::default()
             });
-            let job = self.job_status.as_ref().map(|job| job.kind);
+            let job = repo.job_status.as_ref().map(|job| job.kind);
             let back_up = ui::window_toolbar::ToolbarAction::new(
                 BACK_UP_NOW,
                 "upload",
@@ -1313,7 +1423,7 @@ impl BackupsApp {
                     "Back up now"
                 },
             )
-            .enabled(self.can_act() && job.is_none());
+            .enabled(repo.can_act() && job.is_none());
             NavShell::push_window_actions(&mut toolbar, [back_up]);
         } else {
             // Before anything is set up nothing is open: the window is
@@ -1326,14 +1436,62 @@ impl BackupsApp {
         ui::window_toolbar::declare(Some(toolbar));
     }
 }
-impl ui::widget::Decorator for BackupsApp {
+
+/// The Backups window over this device's repository, answering its effects
+/// and publishing its catalog as live rows.
+pub(crate) fn window(cx: &ViewCx<Backups>) -> Element {
+    let mut repo = Store::with_catalog(Catalog::empty());
+    repo.attach(cx);
+    let window = BackupsWindow::new(repo, Some(cx.live().clone()));
+    let repo = Rc::clone(&window.repo);
+    {
+        let (answer, status) = (Rc::clone(&repo), Rc::clone(&repo));
+        cx.effects(move |effect: BackupsEffect, cx| {
+            answer.borrow_mut().answer_effect(effect, &answer, cx)
+        })
+        .status(move || status.borrow().effect_statuses());
+    }
+    {
+        let repo = Rc::clone(&repo);
+        cx.on_stage(move |scenario| {
+            if let Some(scenario) = scenario {
+                repo.borrow_mut().stage_scenario(scenario);
+            }
+        });
+    }
+    let (rows, row, entries) = (Rc::clone(&repo), Rc::clone(&repo), repo);
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || {
+                let repo = rows.borrow();
+                crate::actions::live_rows(&repo.catalog, repo.blocked().as_ref())
+            })
+            .live_row(move |id| {
+                let repo = row.borrow();
+                crate::actions::live_row(&repo.catalog, repo.blocked().as_ref(), id)
+            })
+            // Every loaded recovery point, older than the published page too.
+            .search_entries(move || crate::search::snapshot_entries(&entries.borrow().catalog)),
+        Box::new(window),
+    )
+}
+
+impl ui::widget::Decorator for BackupsWindow {
     type Inner = NavShell;
 
+    // While the restore sheet is open it is the window's one live child:
+    // what its controls run reaches it, not the shell behind its scrim.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        self.shell.provide(request);
+        match &self.restore {
+            Some(dialog) => dialog.provide(request),
+            None => self.shell.provide(request),
+        }
     }
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        self.shell.provide_mut(request);
+        match &mut self.restore {
+            Some(dialog) => dialog.provide_mut(request),
+            None => self.shell.provide_mut(request),
+        }
     }
     fn inner(&self) -> &NavShell {
         &self.shell
@@ -1344,23 +1502,24 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.refresh_runtime();
+        self.follow_document();
+        self.repo.borrow_mut().refresh_runtime();
         self.sync_window_toolbar();
         self.drain_intents();
-        self.refresh_view();
+        self.show_repository();
         // A narrow window shows the list as a drawer or as its own screen.
-        if self.open_drawer
+        if self.repo.borrow().open_drawer
             && matches!(
                 self.shell.geometry().sidebar,
                 ui::widget::SidebarPlacement::Drawer | ui::widget::SidebarPlacement::Screen
             )
         {
-            self.open_drawer = false;
+            self.repo.borrow_mut().open_drawer = false;
             self.shell.open_sidebar();
             self.shell.snap();
         }
         self.shell.sync(state, path);
-        self.publish_health();
+        self.repo.borrow_mut().publish_health();
         if let Some(dialog) = &mut self.restore {
             dialog.sync(state, path);
         }
@@ -1368,29 +1527,33 @@ impl ui::widget::Decorator for BackupsApp {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // A running job's progress line, read on its wake deadline.
-        let progressed = self.work == Work::Running
-            && self
-                .job_progress
-                .lock()
-                .is_ok_and(|shown| *shown != self.operation_status);
-        // A job's rows move when one starts, reports or ends.
-        let jobs_moved = self.jobs.changed();
+        let (progressed, jobs_moved) = {
+            let repo = self.repo.borrow();
+            let progressed = repo.work == Work::Running
+                && repo
+                    .job_progress
+                    .lock()
+                    .is_ok_and(|shown| *shown != repo.operation_status);
+            // A job's rows move when one starts, reports or ends.
+            (progressed, repo.jobs.changed())
+        };
         self.sync_window_toolbar();
         self.drain_intents();
-        self.refresh_view();
-        self.shell.update(state, path) || self.dirty || progressed || jobs_moved
+        self.show_repository();
+        self.shell.update(state, path) || self.repo.borrow().dirty || progressed || jobs_moved
     }
 
     /// A running job reports progress through a shared line; the app reads
     /// it a few times a second on a deadline. Choosing a folder and the job's
     /// end wake the app themselves (framework effects).
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        let progress = (self.work == Work::Running)
+        let repo = self.repo.borrow();
+        let progress = (repo.work == Work::Running)
             .then(|| ui::time::now().checked_add(PROGRESS_READ))
             .flatten();
         progress
             .into_iter()
-            .chain(self.health.deadline())
+            .chain(repo.health.deadline())
             .chain(self.shell.next_wake_deadline())
             .min()
     }
@@ -1471,11 +1634,11 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.restore.is_some() || self.shell.needs_redraw()
+        self.repo.borrow().dirty || self.restore.is_some() || self.shell.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
-        self.dirty = false;
+        self.repo.borrow_mut().dirty = false;
         self.shell.mark_drawn();
     }
 
@@ -1488,7 +1651,7 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn name(&self) -> &'static str {
-        "BackupsApp"
+        "BackupsWindow"
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1504,8 +1667,8 @@ mod tests {
     use ui::headless::Framed;
     use ui::widget::{NavList, SidebarPlacement};
     use vello::kurbo::Point;
-    fn demo() -> BackupsApp {
-        BackupsApp::with_catalog(Catalog::sample(now()))
+    fn demo() -> BackupsWindow {
+        BackupsWindow::with_catalog(Catalog::sample(now()))
     }
 
     /// The wire between the band's Stop and the work: a backup, verification
@@ -1513,7 +1676,7 @@ mod tests {
     /// flag the engine checks between files.
     #[test]
     fn a_backup_job_offers_stop_and_stop_reaches_the_worker() {
-        let mut app = demo();
+        let mut app = Store::with_catalog(Catalog::sample(now()));
         let run = app.start_job(JobKind::Backup, "Home", "Preparing files…");
         let job = ui::jobs::rows()
             .into_iter()
@@ -1528,7 +1691,7 @@ mod tests {
         );
         app.finish_job();
     }
-    fn frame(app: BackupsApp, width: f64, height: f64, scale: f32) -> Framed<BackupsApp> {
+    fn frame(app: BackupsWindow, width: f64, height: f64, scale: f32) -> Framed<BackupsWindow> {
         let mut theme = Theme::dark();
         theme.text_scale = scale;
         Framed::new(
@@ -1538,17 +1701,17 @@ mod tests {
             theme,
         )
     }
-    fn target(app: &Framed<BackupsApp>, id: &str) -> Rect {
+    fn target(app: &Framed<BackupsWindow>, id: &str) -> Rect {
         *Framed::harness(app)
             .targets()
             .get(id)
             .unwrap_or_else(|| panic!("missing target {id}"))
     }
-    fn click(app: &mut Framed<BackupsApp>, at: Point) {
+    fn click(app: &mut Framed<BackupsWindow>, at: Point) {
         Framed::harness_mut(app).click_at(at.x, at.y);
         Framed::harness_mut(app).relayout();
     }
-    fn place(app: &mut Framed<BackupsApp>, id: &str) {
+    fn place(app: &mut Framed<BackupsWindow>, id: &str) {
         // Narrow, the list is a screen of its own: go back to it first.
         if app.shell.geometry().sidebar == SidebarPlacement::Screen {
             app.shell.open_sidebar();
@@ -1570,7 +1733,7 @@ mod tests {
     }
     fn live_constructor_starts_with_an_empty_catalog() {
         // The live app must not fabricate sources / snapshots / destinations.
-        let app = BackupsApp::with_catalog(Catalog::empty());
+        let app = Store::with_catalog(Catalog::empty());
         assert!(app.catalog.sources.is_empty(), "no fabricated sources");
         assert!(app.catalog.snapshots.is_empty(), "no fabricated snapshots");
         assert!(
@@ -1579,7 +1742,7 @@ mod tests {
         );
     }
     fn unreadable_saved_repository_blocks_effects_until_reselected() {
-        let mut app = BackupsApp::with_catalog(Catalog::empty());
+        let mut app = Store::with_catalog(Catalog::empty());
         app.source_path = Some(PathBuf::from("/documents"));
         app.destination_path = Some(PathBuf::from("/backup-drive"));
         app.repository_error = Some("Couldn’t read the saved backup location: unavailable".into());
@@ -1633,11 +1796,16 @@ mod tests {
         live_constructor_starts_with_an_empty_catalog();
         unreadable_saved_repository_blocks_effects_until_reselected();
         the_sample_catalog_indexes_every_snapshot();
-        let app = demo();
+        let app = Store::with_catalog(Catalog::sample(now()));
         assert!(!app.catalog.sources.is_empty());
         assert!(!app.catalog.snapshots.is_empty());
         assert!(!app.catalog.destinations.is_empty());
-        let app = frame(BackupsApp::new(), 1280.0, 800.0, 1.0);
+        let app = frame(
+            BackupsWindow::with_catalog(Catalog::empty()),
+            1280.0,
+            800.0,
+            1.0,
+        );
         assert!(!app.shell.has_sidebar());
         assert!(
             Framed::harness(&app)
@@ -1645,12 +1813,15 @@ mod tests {
                 .keys()
                 .any(|id| id.ends_with("EmptyState"))
         );
-        let mut app = BackupsApp::new();
-        app.source_path = Some("/documents".into());
-        app.destination_path = Some("/backup".into());
+        let app = BackupsWindow::with_catalog(Catalog::empty());
+        {
+            let mut repo = app.repo.borrow_mut();
+            repo.source_path = Some("/documents".into());
+            repo.destination_path = Some("/backup".into());
+        }
         let app = frame(app, 1280.0, 800.0, 1.0);
-        assert!(app.is_configured());
-        assert!(app.selected.is_none());
+        assert!(app.repo.borrow().is_configured());
+        assert!(app.repo.borrow().selected.is_none());
         let text = Framed::harness(&app).inspection_json().unwrap();
         assert!(!text.contains("backups-restore"));
     }
@@ -1711,13 +1882,15 @@ mod tests {
                 app.shell.open_sidebar();
                 app.shell.snap();
                 Framed::harness_mut(&mut app).relayout();
-                let rows = app
+                let repo = Rc::clone(&app.repo);
+                let repo = repo.borrow();
+                let rows = repo
                     .catalog
                     .sources
                     .iter()
                     .map(|s| format!("source:{}", s.id))
                     .chain(
-                        app.catalog
+                        repo.catalog
                             .destinations
                             .iter()
                             .map(|d| format!("destination:{}", d.id)),
@@ -1762,14 +1935,17 @@ mod tests {
         let mut app = frame(demo(), 1280.0, 800.0, 1.0);
         let before = Framed::harness_mut(&mut app).state_mut().doc.get_heads();
         place(&mut app, "source:etc");
-        assert_eq!(app.page, Page::Source("etc".into()));
-        let snapshot = app
-            .catalog
-            .snapshot(app.selected.as_deref().unwrap())
-            .unwrap();
-        assert_eq!(snapshot.source_id, "etc");
+        {
+            let repo = app.repo.borrow();
+            assert_eq!(repo.page, Page::Source("etc".into()));
+            let snapshot = repo
+                .catalog
+                .snapshot(repo.selected.as_deref().unwrap())
+                .unwrap();
+            assert_eq!(snapshot.source_id, "etc");
+        }
         place(&mut app, "retention");
-        assert_eq!(app.page, Page::Retention);
+        assert_eq!(app.repo.borrow().page, Page::Retention);
         let at = app
             .shell
             .sidebar_mut::<NavList>()
@@ -1779,7 +1955,7 @@ mod tests {
         click(&mut app, at.center());
         Framed::harness_mut(&mut app).key("ArrowDown");
         Framed::harness_mut(&mut app).key("Enter");
-        assert_ne!(app.page, Page::All);
+        assert_ne!(app.repo.borrow().page, Page::All);
         let owner = "backups-places";
         let inspection = Framed::harness(&app).inspection();
 
@@ -1787,8 +1963,8 @@ mod tests {
         Framed::harness_mut(&mut app)
             .perform_semantic_named(owner, Some(&semantic), &Action::Activate)
             .unwrap();
-        assert_eq!(app.page, Page::Retention);
-        app.intents.push(Intent::Navigate(Page::All));
+        assert_eq!(app.repo.borrow().page, Page::Retention);
+        app.repo.borrow().intents.push(Intent::Navigate(Page::All));
         app.drain_intents();
         app.refresh_view();
         Framed::harness_mut(&mut app).relayout();
@@ -1860,7 +2036,7 @@ mod tests {
                     .into();
         }
         for scale in [1.0, 2.0] {
-            let app = BackupsApp::with_catalog(catalog.clone());
+            let app = BackupsWindow::with_catalog(catalog.clone());
             let mut app = frame(app, 390.0, 844.0, scale);
             app.open_restore();
             Framed::harness_mut(&mut app).relayout();
@@ -1871,8 +2047,11 @@ mod tests {
             assert!(primary.x1 <= 390.0);
             assert!(secondary.x1 <= primary.x0);
             assert!(primary.height() > 0.0);
-            let mut unavailable = BackupsApp::new();
-            unavailable.repository_error=Some("The saved backup location is unavailable. Reconnect it or choose another location.".into());
+            let unavailable = BackupsWindow::with_catalog(Catalog::empty());
+            unavailable.repo.borrow_mut().repository_error = Some(
+                "The saved backup location is unavailable. Reconnect it or choose another location."
+                    .into(),
+            );
             let unavailable = frame(unavailable, 390.0, 844.0, scale);
             let text = Framed::harness(&unavailable).inspection_json().unwrap();
             assert!(text.contains("Reconnect it or choose another location."));
@@ -1909,9 +2088,9 @@ mod tests {
         let text = Framed::harness(&app).inspection_json().unwrap();
         assert!(text.contains("Choose folder"));
         assert!(!text.contains("Choose files"));
-        let before = app.page.clone();
+        let before = app.repo.borrow().page.clone();
         click(&mut app, behind.center());
-        assert_eq!(app.page, before);
+        assert_eq!(app.repo.borrow().page, before);
         assert!(
             app.restore.is_none(),
             "a scrim click dismisses without navigating behind it"
@@ -1921,7 +2100,7 @@ mod tests {
         let cancel = app.restore.as_ref().unwrap().secondary_rect();
         click(&mut app, cancel.center());
         assert!(app.restore.is_none());
-        let rows = crate::actions::live_rows(app.resource_catalog(), None)
+        let rows = crate::actions::live_rows(&app.repo.borrow().catalog, None)
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
             .collect::<Vec<_>>();
@@ -1952,7 +2131,12 @@ mod tests {
     }
     #[test]
     fn the_window_alone_writes_nothing_to_the_record() {
-        let app = frame(BackupsApp::new(), 1280.0, 800.0, 1.0);
+        let app = frame(
+            BackupsWindow::with_catalog(Catalog::empty()),
+            1280.0,
+            800.0,
+            1.0,
+        );
         assert!(
             Framed::harness(&app)
                 .state()

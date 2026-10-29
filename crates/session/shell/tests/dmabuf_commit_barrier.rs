@@ -14,16 +14,18 @@
 //! The server side runs on its own thread so a regression fails the test
 //! instead of hanging the suite.
 
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::sync::mpsc;
 
 use vello::kurbo::Rect;
 use wayland_client::delegate_noop;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_surface};
+use wayland_client::protocol::wl_compositor;
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
+
+use crate::support::wayland::{Toplevel, create_toplevel, memfd};
 
 /// `DRM_FORMAT_ARGB8888`, one of the formats the compositor advertises.
 const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
@@ -38,32 +40,12 @@ struct Client {
     configured: bool,
 }
 
-crate::support::wayland::test_client!(Client: registry, ping, configured);
+crate::support::wayland::test_client!(Client: registry, ping, configured, surface, toplevel, buffer);
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
 delegate_noop!(Client: ignore zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
 
 type Harness = crate::support::wayland::Harness<Client>;
-
-fn linear_argb_memfd() -> OwnedFd {
-    let name = c"dmabuf-commit-barrier";
-    // SAFETY: memfd_create with a static nul-terminated name and MFD_CLOEXEC.
-    let raw = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-    assert!(
-        raw >= 0,
-        "memfd_create failed: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: memfd_create returned a new descriptor that nothing else owns.
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    let file = std::fs::File::from(fd);
-    file.set_len(u64::from(BUFFER_LEN)).expect("size memfd");
-    OwnedFd::from(file)
-}
 
 /// `true` once the dmabuf commit has been dispatched, `false` when this
 /// machine advertises no dmabuf global.
@@ -79,10 +61,11 @@ fn commit_first_dmabuf() -> bool {
     h.pump();
 
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg_surface.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.tilo.test.dmabuf-commit".into());
+    let Toplevel {
+        surface,
+        xdg: xdg_surface,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.tilo.test.dmabuf-commit");
     surface.commit();
     h.pump();
 
@@ -97,7 +80,7 @@ fn commit_first_dmabuf() -> bool {
         "the toplevel was never configured, so the dmabuf commit below would be a protocol error rather than the path under test"
     );
 
-    let memfd = linear_argb_memfd();
+    let memfd = memfd(&vec![0; BUFFER_LEN as usize]);
     let params = dmabuf.create_params(&qh, ());
     params.add(memfd.as_fd(), 0, 0, STRIDE, 0, 0);
     let buffer = params.create_immed(
@@ -222,10 +205,11 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: 
     let target = restore_a_saved_tab(&h);
 
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg_surface.get_toplevel(&qh, ());
-    toplevel.set_app_id(RESTORED_APP.into());
+    let Toplevel {
+        surface,
+        xdg: xdg_surface,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, RESTORED_APP);
     surface.commit();
     h.pump();
     let id = h
@@ -267,7 +251,7 @@ fn restored_window_shows_its_first_frame(commit_on_map: bool, gpu_after_commit: 
         assert!(h.client.configured, "the second configure arrived");
     }
 
-    let memfd = linear_argb_memfd();
+    let memfd = memfd(&vec![0; BUFFER_LEN as usize]);
     let params = dmabuf.create_params(&qh, ());
     params.add(memfd.as_fd(), 0, 0, STRIDE, 0, 0);
     let buffer = params.create_immed(

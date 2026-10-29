@@ -295,16 +295,13 @@ fn tone_key(tone: u8) -> Option<&'static str> {
 ///
 /// Two spellings of one emoji (another skin tone, with or without
 /// U+FE0F) count as one entry, and the latest spelling wins.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EmojiRecents {
-    items: Vec<String>,
+    items: tilo_resource::Recents<String, RECENT_EMOJI>,
 }
 
-impl Default for EmojiRecents {
-    fn default() -> Self {
-        Self::from_items(Vec::new())
-    }
-}
+/// Four rows of the picker's grid.
+const RECENT_EMOJI: usize = 32;
 
 /// Identity for dedup: no tone modifiers, no presentation selectors.
 fn identity(text: &str) -> impl Iterator<Item = char> + '_ {
@@ -313,13 +310,13 @@ fn identity(text: &str) -> impl Iterator<Item = char> + '_ {
 }
 
 impl EmojiRecents {
-    /// Four rows of the picker's grid.
-    pub const CAPACITY: usize = 32;
+    /// How many are kept: four rows of the picker's grid.
+    pub const CAPACITY: usize = RECENT_EMOJI;
 
     /// `items` (most recent first), normalised.
     #[must_use]
     pub fn from_items(items: Vec<String>) -> Self {
-        let mut recents = Self { items: Vec::new() };
+        let mut recents = Self::default();
         for item in items.iter().rev() {
             recents.record(item);
         }
@@ -332,10 +329,9 @@ impl EmojiRecents {
         if emoji.is_empty() {
             return;
         }
-        self.items
-            .retain(|item| !identity(item).eq(identity(emoji)));
-        self.items.insert(0, emoji.to_owned());
-        self.items.truncate(Self::CAPACITY);
+        self.items.remember_by(emoji.to_owned(), |item, emoji| {
+            identity(item).eq(identity(emoji))
+        });
     }
 
     /// The emoji, most recent first.

@@ -190,11 +190,11 @@ pub fn publish_retained_primary_owner(
     current.validate()?;
     let manifest = installed.manifest();
     let plan = manifest
-        .retained_home
-        .as_ref()
+        .units
+        .retained_home()
         .ok_or_else(invalid)?
         .as_plan();
-    let declaration = manifest.retained_caller.as_ref().ok_or_else(invalid)?;
+    let declaration = manifest.units.retained_caller().ok_or_else(invalid)?;
     declaration.validate_binding(plan, &manifest.setup_binding, &manifest.identity_public_key)?;
     if !matches!(
         manifest.identity_kind,

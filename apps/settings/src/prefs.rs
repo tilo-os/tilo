@@ -101,21 +101,40 @@ mod tests {
 
     use ui::storage::SettingsSchema;
 
-    /// The settings file at `path` after storing `value` as its section, as
-    /// the panes and the door store it.
-    fn store<T: SettingsSchema>(path: &std::path::Path, value: &T) -> serde_json::Value {
-        crate::host::PaneCx::in_file(path.to_owned())
+    /// A profile whose settings hold the sections of the document `text`.
+    fn seeded(text: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let store = settings_store::profile(dir.path());
+        for (section, values) in settings_store::parse(text) {
+            if let serde_json::Value::Object(values) = values {
+                settings_store::SettingsSource::update_section(&store, &section, values).unwrap();
+            }
+        }
+        dir
+    }
+
+    /// The settings of the profile at `root`.
+    fn document(root: &std::path::Path) -> serde_json::Value {
+        serde_json::Value::Object(settings_store::SettingsSource::load(
+            &settings_store::profile(root),
+        ))
+    }
+
+    /// The settings of the profile at `root` after storing `value` as its
+    /// section, as the panes and the door store it.
+    fn store<T: SettingsSchema>(root: &std::path::Path, value: &T) -> serde_json::Value {
+        crate::host::PaneCx::in_profile(root.to_owned())
             .settings::<T>()
             .set(value)
             .unwrap();
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        document(root)
     }
 
-    /// The settings file at `path` with every leaf of `value` written to its
-    /// section: what a check enumerating the leaves needs, since a store
-    /// writes only what differs from what is read.
+    /// The settings of the profile at `root` with every leaf of `value`
+    /// written to its section: what a check enumerating the leaves needs,
+    /// since a store writes only what differs from what is read.
     fn store_whole<T: SettingsSchema + serde::Serialize>(
-        path: &std::path::Path,
+        root: &std::path::Path,
         value: &T,
     ) -> serde_json::Value {
         let values = serde_json::to_value(value)
@@ -123,25 +142,27 @@ mod tests {
             .as_object()
             .cloned()
             .expect("a section serializes to an object");
-        settings_store::update_section_at(path, T::SCOPE.section(), values).unwrap();
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        settings_store::SettingsSource::update_section(
+            &settings_store::profile(root),
+            T::SCOPE.section(),
+            values,
+        )
+        .unwrap();
+        document(root)
     }
 
-    /// The settings file holding `existing` after storing `value` as its
-    /// section.
+    /// The settings holding `existing` after storing `value` as its section.
     fn stored<T: SettingsSchema>(existing: &str, value: &T) -> serde_json::Value {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, existing).unwrap();
-        store(&path, value)
+        let dir = seeded(existing);
+        store(dir.path(), value)
     }
 
-    /// Section `T` as read from a settings file holding `text`.
+    /// Section `T` as read from settings holding `text`.
     fn read<T: SettingsSchema>(text: &str) -> T {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, text).unwrap();
-        crate::host::PaneCx::in_file(path).settings::<T>().get()
+        let dir = seeded(text);
+        crate::host::PaneCx::in_profile(dir.path().to_owned())
+            .settings::<T>()
+            .get()
     }
 
     /// `value` stored and read back.
@@ -153,7 +174,7 @@ mod tests {
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
+        let path = dir.path().to_path_buf();
         store_whole(&path, &AudioPrefs::default());
         store_whole(&path, &DisplayPrefs::default());
         store_whole(&path, &InputPrefs::default());
@@ -389,7 +410,7 @@ mod tests {
         assert_eq!(p.theme_choice(), "Dark");
         assert_eq!(
             p.base_theme().name,
-            ui::Theme::configured_from(None).name,
+            ui::Theme::configured_from(&serde_json::Map::new()).name,
             "Settings and the desktop agree on the theme nobody chose"
         );
         assert!(!p.high_contrast);

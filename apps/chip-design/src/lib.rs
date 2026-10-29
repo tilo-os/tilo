@@ -41,6 +41,3 @@ mod placement_tests;
 
 #[cfg(test)]
 mod launch_tests;
-
-#[cfg(test)]
-mod window_bar_tests;

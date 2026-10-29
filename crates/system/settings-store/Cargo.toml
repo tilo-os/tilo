@@ -6,7 +6,7 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "The shared Tilo desktop settings file: one resolver, one forgiving read, one atomic write."
+description = "The Tilo desktop settings: the person's and the device's Automerge documents, one forgiving read, one holder per profile."
 
 [lib]
 name = "settings_store"
@@ -20,21 +20,26 @@ tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
+# The person's and the device's settings documents.
+automerge.workspace = true
+tracing.workspace = true
 unicode-normalization = "0.1.25"
 # Spec-correct `XDG_CONFIG_HOME` resolution (absolute, non-empty, else
 # `$HOME/.config`), shared with every other reader of the settings file.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Where the documents live: their files, the holder's lock, the follower's
+# watch and the holder's door.
+tilo-settings-records = { version = "0.1.0", path = "../../platform/tilo-settings-records" }
 # The sections' types as models, so an app edits them by path.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 
 [features]
-# Directory watch behind `watch_settings`; only long-lived readers opt in.
-watch = ["tilo-files/watch"]
+# Directory watches: a follower noticing the holder's saves at once, and the
+# identity and dictionary directories.
+watch = ["tilo-files/watch", "tilo-settings-records/watch"]
 model = ["dep:tilo-resource"]
-# Faults a test injects into the store's own writes (`faults`).
-test-support = []
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }

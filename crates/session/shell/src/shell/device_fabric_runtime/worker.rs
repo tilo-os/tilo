@@ -112,9 +112,6 @@ impl<F: Send + 'static> FabricWorker<F> {
         std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
-                // A settings write made here must not wait for the disk
-                // either, exactly as on the compositor thread it came from.
-                settings_store::defer_writes_on_this_thread();
                 let mut pump = make();
                 while let Some(facts) = worker.next() {
                     pump.pump(facts);

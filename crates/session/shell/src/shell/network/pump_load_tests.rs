@@ -102,10 +102,8 @@ async fn network_pump_under_load() {
         "DBUS_SESSION_BUS_ADDRESS",
         "unix:path=/nonexistent/tilo-continuity-test",
     );
-    let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-    let _settings = crate::shell::test_support::install_settings(Arc::new(
-        settings_store::SessionSettings::open(paths).unwrap(),
-    ));
+    let paths = home.config().to_path_buf();
+    let _settings = crate::shell::test_support::install_settings(settings_store::profile(&paths));
     let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target");
     std::fs::create_dir_all(&target).unwrap();
     let state = tempfile::tempdir_in(&target).unwrap();

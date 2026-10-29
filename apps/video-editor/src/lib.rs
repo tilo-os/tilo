@@ -10,7 +10,7 @@
 //!     (`/var/workspace/…`); bytes hydrate on demand.
 //!   * [`resource`] — the project's verbs and the app: the
 //!     collaborative, undoable source of truth is [`model::Project`] itself,
-//!     stored by `#[derive(Model)]`; [`seed`] holds the demo project.
+//!     stored by `#[derive(Model)]`; `seed` holds the demo project.
 //!   * [`project_file`] — the versioned `.qvp` file behind Save / Save As /
 //!     Open: the same Automerge document, framed and stamped,
 //!     so a project can be copied and handed to someone.
@@ -74,6 +74,7 @@ pub mod probe;
 pub mod project_file;
 pub mod resource;
 pub mod search;
+#[cfg(feature = "samples")]
 pub mod seed;
 pub mod shot;
 pub mod thumbnail;

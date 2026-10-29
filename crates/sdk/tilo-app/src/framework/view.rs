@@ -693,7 +693,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// entries for what the resource does not hold. It lasts as long as
     /// `content` stands in the view.
     pub fn publishing(&self, publishes: super::Publishes<R>, content: Element) -> Element {
-        super::publishing::publishing(publishes, content)
+        let wake = self.env.effects.env().map(|env| env.wake.clone());
+        super::publishing::publishing(publishes, content, wake)
     }
 
     /// Answer the effect vocabulary `E` — work with no document delta that a

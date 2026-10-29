@@ -30,6 +30,7 @@ pub const FIRST_PARTY_PACKAGES: &[&str] = &[
     "so.tilo.git-client",
     "so.tilo.hex-editor",
     "so.tilo.imager",
+    "so.tilo.launcher",
     "so.tilo.logs",
     "so.tilo.mail",
     "so.tilo.maps",

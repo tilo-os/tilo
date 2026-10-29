@@ -15,7 +15,7 @@ use ui::framework::Fixture;
 use ui::tilo_resource::{Collection, Edit, Id, Invoke};
 
 use crate::markup::{PdfMarkup, StoredAnnotation, StoredComment, StoredReply, StoredSignature};
-use crate::model::{AnnoKind, GeomSpace, PtRect, SignatureInk, Swatch};
+use crate::model::{AnnoKind, GeomSpace, HighlightColor, PtRect, SignatureInk};
 
 /// Every named scenario `--shots --scenario NAME` captures.
 pub const SCENARIOS: &[&str] = &[
@@ -118,7 +118,7 @@ pub(crate) fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
 )]
 pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
     let paths = PdfMarkup::paths();
-    let markup = |id: &str, mark: AnnoKind, color: Swatch, author: &str| {
+    let markup = |id: &str, mark: AnnoKind, color: HighlightColor, author: &str| {
         paths.annotations.insert(&StoredAnnotation {
             id: id.into(),
             page_id: "source-1".into(),
@@ -167,19 +167,19 @@ pub fn sample_review() -> Vec<Edit<PdfMarkup>> {
         markup(
             HIGHLIGHT,
             AnnoKind::highlight(PtRect::new(31.0, 146.5, 550.0, 12.5)),
-            Swatch::Yellow,
+            HighlightColor::Yellow,
             "Bob",
         ),
         markup(
             "sample-highlight-2",
             AnnoKind::highlight(PtRect::new(31.0, 162.5, 78.0, 12.5)),
-            Swatch::Yellow,
+            HighlightColor::Yellow,
             "Bob",
         ),
         markup(
             NOTE,
             AnnoKind::Note { x: 540.0, y: 222.0 },
-            Swatch::Blue,
+            HighlightColor::Blue,
             "Alice",
         ),
         paths.signatures.insert(&StoredSignature {

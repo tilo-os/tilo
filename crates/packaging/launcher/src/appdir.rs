@@ -549,9 +549,7 @@ mod tests {
                 ]
             );
             assert!(
-                !argv
-                    .iter()
-                    .any(|arg| arg.contains("/session") || arg == "TILO_SESSION_SETTINGS"),
+                !argv.iter().any(|arg| arg.contains("/records")),
                 "the settings document reaches Settings through the shell's settings service, \
                  never a bind: {argv:?}"
             );

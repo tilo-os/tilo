@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path("tools/policy/app_resource_action_baseline")
 
 RESOURCE_PROVIDER = re.compile(r"\bfn\s+resources\s*\(")
-RESOURCE_VALUE = re.compile(r"\bResource\s*::\s*new\s*\(")
+RESOURCE_VALUE = re.compile(r"\bResourceSpec\s*::\s*new\s*\(")
 ACTION_SPEC = re.compile(r"\bActionSpec\s*::\s*(?:immediate|prompted|typed|operation)")
 OPERATION_KIND = re.compile(r"\bOperationKind\s*::\s*(?:Effect|View)\b")
 OPERATION_HANDLER = re.compile(r"\bfn\s+start_operation\s*\(")
@@ -162,6 +162,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_load_request": "lazy loading of a tree's children",
     "on_open": "answers the resource's published open action",
     "on_open_item": "answers the resource's published open action",
+    "on_open_reference": "a reference in shown text opens where it lives through the dispatcher's "
+    "open, under the person's grants",
     "on_stage": "stages view state for a screenshot scenario",
     "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
 }

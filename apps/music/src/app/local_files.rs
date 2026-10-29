@@ -585,15 +585,13 @@ mod tests {
         wait_for_audio(&mut app);
         let duration = app.current_duration_ms();
         assert!(duration >= 2900);
-        let deadline = tilo_test_env::hang_deadline();
-        while app.pb.playing {
+        tilo_test_env::wait_until("the local decoder to reach EOS", || {
+            if !app.pb.playing {
+                return true;
+            }
             app.tick();
-            assert!(
-                ui::time::now() < deadline,
-                "local decoder did not reach EOS"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            false
+        });
         assert!(!app.audio.has_stream());
         assert!(app.playback_error.is_none());
         assert_eq!(
@@ -642,22 +640,17 @@ mod tests {
             "replay must not seek to the ended position"
         );
         assert_eq!(app.playhead_ms, 0.0);
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
+        let update = tilo_test_env::wait_for("the replay to produce actual PCM", || {
             app.tick();
-            if let Some(update) = app.take_effect_result(invocation) {
-                let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
-                    panic!("real replay did not succeed: {update:?}");
-                };
-                assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
-                action.contract.result.validate(&output).unwrap();
-                assert!(app.audio.frames_rendered() > 0);
-                assert!(app.audio.is_playing_confirmed());
-                break;
-            }
-            assert!(ui::time::now() < deadline, "replay produced no actual PCM");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            app.take_effect_result(invocation)
+        });
+        let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+            panic!("real replay did not succeed: {update:?}");
+        };
+        assert_eq!(output.value, Some(serde_json::json!({"state":"playing"})));
+        action.contract.result.validate(&output).unwrap();
+        assert!(app.audio.frames_rendered() > 0);
+        assert!(app.audio.is_playing_confirmed());
         app.audio.stop();
     }
 
@@ -686,18 +679,16 @@ mod tests {
             let _doc = automerge::AutoCommit::new();
             app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
-            let first_output = tilo_test_env::hang_deadline();
-            while app.audio.frames_rendered() < 2 {
+            tilo_test_env::wait_until("the first output frames", || {
+                if app.audio.frames_rendered() >= 2 {
+                    return true;
+                }
                 app.tick();
-                assert!(ui::time::now() < first_output);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+                false
+            });
             app.pb.playing = false;
             app.audio.pause();
-            while app.audio.is_playing_real() {
-                assert!(ui::time::now() < first_output);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            tilo_test_env::wait_until("the source to pause", || !app.audio.is_playing_real());
             assert!(!app.audio.reached_eos());
             assert!(!app.audio.is_playing_confirmed());
             let frames_before = app.audio.frames_rendered();
@@ -710,31 +701,28 @@ mod tests {
                 ui::framework::Effected::Pending
             ));
             assert!(app.take_effect_result(invocation).is_none());
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
+            let result = tilo_test_env::wait_for("the resume to settle", || {
                 app.tick();
-                if let Some(result) = app.take_effect_result(invocation) {
-                    assert!(matches!(
-                        result,
-                        tilo_actions::InvocationUpdate::Succeeded { .. }
-                    ));
-                    assert!(app.audio.is_playing_confirmed());
-                    assert_eq!(
-                        app.audio.frames_rendered(),
-                        frames_before,
-                        "the finite source already reached the sink during preroll"
-                    );
-                    assert!(app.resource_stream_resume.is_none());
-                    break;
+                app.take_effect_result(invocation)
+            });
+            assert!(matches!(
+                result,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ));
+            assert!(app.audio.is_playing_confirmed());
+            assert_eq!(
+                app.audio.frames_rendered(),
+                frames_before,
+                "the finite source already reached the sink during preroll"
+            );
+            assert!(app.resource_stream_resume.is_none());
+            tilo_test_env::wait_until("the source to reach EOS", || {
+                if app.audio.reached_eos() {
+                    return true;
                 }
-                assert!(ui::time::now() < deadline);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            while !app.audio.reached_eos() {
                 app.audio.pump();
-                assert!(ui::time::now() < deadline);
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+                false
+            });
             assert!(
                 !app.audio.is_playing_confirmed(),
                 "ended PCM cannot confirm a new resume"
@@ -874,15 +862,10 @@ mod tests {
         ));
         assert_eq!(app.resource_stream_invocation.as_ref().unwrap().2, 0);
         assert!(app.take_effect_result(invocation).is_none());
-        let deadline = tilo_test_env::hang_deadline();
-        let update = loop {
+        let update = tilo_test_env::wait_for("the cached decoder to settle", || {
             app.tick();
-            if let Some(update) = app.take_effect_result(invocation) {
-                break update;
-            }
-            assert!(ui::time::now() < deadline, "cached decoder never settled");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
+            app.take_effect_result(invocation)
+        });
         if valid_audio {
             assert!(matches!(
                 update,
@@ -1162,11 +1145,9 @@ mod tests {
             assert!(!json.contains("local song"));
             app.on_toggle_play(&mut ui::widget::Edits::lend(&mut doc));
             assert!(!app.pb.playing);
-            let paused_by = tilo_test_env::hang_deadline();
-            while app.audio.is_playing_real() {
-                assert!(ui::time::now() < paused_by, "native source did not pause");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            tilo_test_env::wait_until("the native source to pause", || {
+                !app.audio.is_playing_real()
+            });
             let resource = crate::app::MusicApp::publish_resource(
                 &app,
                 crate::actions::LOCAL_FILE_RESOURCE_ID,
@@ -1380,25 +1361,18 @@ mod tests {
                 app.start_effect(invocation, &payload).unwrap(),
                 ui::framework::Effected::Pending
             ));
-            let until = tilo_test_env::hang_deadline();
-            loop {
-                app.sync(&doc, &automerge::ROOT);
-                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-                app.sync(&doc, &automerge::ROOT);
-                app.tick();
-                if let Some(update) = app.take_effect_result(invocation) {
-                    assert!(matches!(
-                        update,
-                        tilo_actions::InvocationUpdate::Failed { .. }
-                    ));
-                    break;
-                }
-                assert!(
-                    ui::time::now() < until,
-                    "decoder failure never reached the operation"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            let update =
+                tilo_test_env::wait_for("the decoder failure to reach the operation", || {
+                    app.sync(&doc, &automerge::ROOT);
+                    app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                    app.sync(&doc, &automerge::ROOT);
+                    app.tick();
+                    app.take_effect_result(invocation)
+                });
+            assert!(matches!(
+                update,
+                tilo_actions::InvocationUpdate::Failed { .. }
+            ));
             assert!(!app.pb.playing);
             assert!(!app.audio.has_stream());
             assert!(app.playback_error.is_some());

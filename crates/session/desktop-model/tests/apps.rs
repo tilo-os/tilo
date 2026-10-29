@@ -80,7 +80,10 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             AppKind::Other("Files".into()).app_id(),
             AppKind::FileExplorer.app_id()
         );
-        assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
+        assert_eq!(
+            AppKind::Other("Scratch".into()).app_id(),
+            "org.tilo.Scratch"
+        );
         assert_eq!(
             AppKind::Other("org.gimp.GIMP".into()).app_id(),
             "org.gimp.GIMP"

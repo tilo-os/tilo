@@ -32,7 +32,7 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
@@ -207,39 +207,9 @@ impl Harness {
         self.host.set_output_geometry(&self.outputs);
         let mut theme = Theme::dark();
         theme.reduce_motion = self.reduce_motion;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self.host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size::from_lengths(W, H),
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let mut tr = ui::text_render::TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        self.host.apply_layout(&taffy, child, Point::ORIGIN);
-        self.taffy = taffy;
-        self.child = child;
+        let layout = crate::support::host::lay_out_with_theme(&mut self.host, W, H, &theme);
+        self.taffy = layout.taffy;
+        self.child = layout.child_node;
     }
 
     fn event(&mut self, event: &WindowEvent) -> bool {
@@ -1877,11 +1847,8 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
     let mut h = Harness::new();
     let super_alt = ModifiersState::SUPER | ModifiersState::ALT;
     let shown = |h: &Harness| h.chrome.borrow().osd.map(|osd| osd.kind);
-    let saved = || {
-        let path = settings_store::settings_path().expect("settings path");
-        MagnifierState::from_section(&settings_store::load_section_at(&path, magnifier::SECTION))
-            .zoom
-    };
+    let saved =
+        || MagnifierState::from_section(&settings_store::load_section(magnifier::SECTION)).zoom;
 
     h.key(Key::Character("=".into()), super_alt);
     assert_eq!(shown(&h), Some(OsdKind::Magnifier { zoom: 2 }));

@@ -24,7 +24,9 @@ use ui::paint::{PaintCtx, with_alpha};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
-use crate::model::{AnnoKind, Annotation, MarkupStyle, Page, Signature, SignatureInk, Swatch};
+use crate::model::{
+    AnnoKind, Annotation, HighlightColor, MarkupStyle, Page, Signature, SignatureInk,
+};
 
 /// The document's ink: signatures and note folds.
 pub fn ink() -> Color {
@@ -50,7 +52,7 @@ pub fn paper() -> Color {
 
 /// A markup swatch's colour: the one the markup is saved with, so the page
 /// on screen and the exported file agree.
-pub fn swatch_color(s: Swatch) -> Color {
+pub fn swatch_color(s: HighlightColor) -> Color {
     let (red, green, blue) = s.rgb();
     Color::from_rgb8(red, green, blue)
 }

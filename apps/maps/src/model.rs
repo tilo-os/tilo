@@ -504,7 +504,7 @@ pub struct MapModel {
     /// pinned, and saved favourites. The marker layer renders these.
     pub places: Vec<Place>,
     /// Recently searched query strings, most-recent first.
-    pub recents: Vec<String>,
+    pub recents: crate::workspace::RecentSearches,
     /// Currently selected place id (drives the place card).
     pub selected: Option<String>,
     /// Active road route, if any.
@@ -560,7 +560,7 @@ impl Default for MapModel {
     fn default() -> Self {
         Self {
             places: Vec::new(),
-            recents: Vec::new(),
+            recents: crate::workspace::RecentSearches::default(),
             selected: None,
             route: None,
             route_alternatives: Vec::new(),
@@ -609,17 +609,6 @@ impl MapModel {
         }
     }
 
-    /// Insert (or move-to-front) a recent search query, capped at 8.
-    pub fn push_recent(&mut self, q: &str) {
-        let q = q.trim();
-        if q.is_empty() {
-            return;
-        }
-        self.recents.retain(|r| !r.eq_ignore_ascii_case(q));
-        self.recents.insert(0, q.to_string());
-        self.recents.truncate(8);
-    }
-
     /// Merge a freshly-fetched place into `places` (dedupe by id) so the
     /// marker layer and the saved list stay coherent.
     pub fn upsert_place(&mut self, p: Place) {
@@ -637,26 +626,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recents_and_saved_places_dedupe_cap_and_keep_flags() {
-        {
-            let mut m = MapModel::default();
-            for i in 0..12 {
-                m.push_recent(&format!("q{i}"));
-            }
-            assert_eq!(m.recents.len(), 8);
-            assert_eq!(m.recents[0], "q11");
-            // Re-pushing an existing term moves it to front, not duplicates.
-            m.push_recent("Q7");
-            assert_eq!(m.recents[0], "Q7");
-            assert_eq!(
-                m.recents
-                    .iter()
-                    .filter(|r| r.eq_ignore_ascii_case("q7"))
-                    .count(),
-                1
-            );
-        }
-
+    fn saved_places_dedupe_and_keep_flags() {
         {
             let mut m = MapModel::default();
             m.places.push(Place::new(

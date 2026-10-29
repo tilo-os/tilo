@@ -14,6 +14,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use ui::application::{ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget};
 use ui::collaboration::CertifiedEndpointIdentity;
 use ui::permissions::{PermissionContext, Role, UserId};
+use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
 
 use super::{Device, Person, RoomId, Wakes, hosted_workspace, scratch, until};
@@ -371,7 +372,7 @@ pub(crate) fn open_record_cold(
     collaboration: ui::collaboration::CollaborationManager,
     checkout: RecordCheckout,
 ) -> (ui::App, RecordOwners) {
-    open_in_fresh_profile(
+    let (app, owners, _) = open_in_fresh_profile(
         profile,
         definition,
         room,
@@ -384,7 +385,8 @@ pub(crate) fn open_record_cold(
                 reveal: None,
             })
         },
-    )
+    );
+    (app, owners)
 }
 
 /// An app of `definition` launched in `room` as a window with no saved
@@ -399,6 +401,20 @@ pub(crate) fn open_launched(
     author: &str,
     collaboration: ui::collaboration::CollaborationManager,
 ) -> (ui::App, RecordOwners) {
+    let (app, owners, _) = open_launched_window(profile, definition, room, author, collaboration);
+    (app, owners)
+}
+
+/// [`open_launched`], with the records every app of the room opens as the
+/// window's host gave them to it: a record opened through them is one the
+/// window holds and syncs on its route.
+pub(crate) fn open_launched_window(
+    profile: &Path,
+    definition: &'static ApplicationDefinition,
+    room: RoomId,
+    author: &str,
+    collaboration: ui::collaboration::CollaborationManager,
+) -> (ui::App, RecordOwners, WorkspaceRecords) {
     open_in_fresh_profile(
         profile,
         definition,
@@ -421,7 +437,7 @@ fn open_in_fresh_profile(
         &'static ApplicationDefinition,
         &ui::record::RecordStore,
     ) -> Result<LaunchTarget, ui::record::RecordOpenError>,
-) -> (ui::App, RecordOwners) {
+) -> (ui::App, RecordOwners, WorkspaceRecords) {
     assert!(!profile.exists(), "the profile is fresh");
     std::fs::create_dir_all(profile).unwrap();
     let device_id = ui::application::NativeProfile::open(profile, None)
@@ -432,6 +448,7 @@ fn open_in_fresh_profile(
         Rc::new(app_state::FsStore::new(profile.to_path_buf()));
     let owners = RecordOwners::with_store(Rc::clone(&store));
     let room = room.to_string();
+    let workspace = std::cell::RefCell::new(None);
     let app = {
         let mut owners = owners.clone();
         // As the session's launch mounts it: `target` decides whether the
@@ -453,7 +470,7 @@ fn open_in_fresh_profile(
                     .map_err(ui::launch::LaunchError::Restore)?
                     .without_persistence(),
                 );
-                let context = HostContext::prepare(
+                let mut context = HostContext::prepare(
                     definition,
                     HostContextInputs {
                         records,
@@ -468,6 +485,13 @@ fn open_in_fresh_profile(
                     },
                     &target,
                 )?;
+                // The records every app of the room opens, beside the app's
+                // own in the same owners, as the session's host gives them.
+                context.provide_workspace_records(WorkspaceRecords::in_room(
+                    owners.clone(),
+                    room.clone(),
+                    UserId(author.to_owned()),
+                ));
                 Ok(ui::application::PreparedComponentInputs {
                     context,
                     target,
@@ -475,11 +499,17 @@ fn open_in_fresh_profile(
                     runner_inputs: ui::application::ComponentRunnerInputs::from_native_process(),
                 })
             },
-            |context, target, restore| definition.instantiate(context, target, restore),
+            |context, target, restore| {
+                *workspace.borrow_mut() = context.workspace_records().cloned();
+                definition.instantiate(context, target, restore)
+            },
         )
         .expect("the app opens")
     };
-    (app, owners)
+    let workspace = workspace
+        .into_inner()
+        .expect("the window's host gives it the room's records");
+    (app, owners, workspace)
 }
 
 /// The ids of the chat's channels in `room`, as the app holding `owners`

@@ -113,11 +113,11 @@ impl PreparedSetupReview {
             }
         }
         let mut manifest = self.manifest.clone();
-        manifest.offline_home = None;
-        manifest.offline_applications = None;
-        manifest.completed_home = origin.home().cloned();
-        manifest.completed_applications_only = declaration.is_applications_only();
-        manifest.portable_flatpak = origin.applications().cloned();
+        manifest.units.seal_offline(
+            origin.home().cloned(),
+            origin.applications().cloned(),
+            declaration.is_applications_only(),
+        )?;
         manifest.validate()?;
         super::super::migration::check_cancel(cancel)?;
         let stage = tempfile::Builder::new()
@@ -134,11 +134,18 @@ impl PreparedSetupReview {
             .chain((!manifest.account_ids.is_empty()).then(|| ACCOUNTS_FILE.to_owned()))
             .chain(
                 manifest
-                    .service_sessions
+                    .units
+                    .service_sessions()
                     .is_some()
                     .then(|| SERVICE_SESSIONS_FILE.to_owned()),
             )
-            .chain(manifest.mail.iter().map(|mail| mail.filename.clone()));
+            .chain(
+                manifest
+                    .units
+                    .mail()
+                    .iter()
+                    .map(|mail| mail.filename.clone()),
+            );
         for name in selected_names {
             let name = name.as_str();
             let bytes = Zeroizing::new(bounded_file(&self.pin, name, LIMITS.plaintext_bytes)?);

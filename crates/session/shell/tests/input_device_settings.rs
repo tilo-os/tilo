@@ -5,7 +5,9 @@
 //! recording device instead of libinput, so it runs without a seat.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use settings_store::{SettingsSource as _, Store};
 
 use settings_store::live::{LiveSettings, SectionFollower};
 use shell::compositor::backend::drm::input_config::{
@@ -42,23 +44,22 @@ impl ConfigurableDevice for FakeTouchpad {
     }
 }
 
-fn scratch_settings() -> PathBuf {
+fn scratch_settings() -> Arc<Store> {
     let dir = std::env::temp_dir().join(format!("tilo-input-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir.join("settings.json")
+    Store::open(&dir).unwrap()
 }
 
-/// Replace the document the way every settings writer does: a temp file
-/// renamed into place, so the watch sees one complete write.
-fn write_settings(path: &Path, body: &serde_json::Value) {
-    let staged = path.with_extension("json.tmp");
-    std::fs::write(&staged, serde_json::to_vec(body).unwrap()).unwrap();
-    std::fs::rename(&staged, path).unwrap();
+/// Write each section of `body` the way every settings writer does.
+fn write_settings(path: &Store, body: &serde_json::Value) {
+    for (section, values) in body.as_object().unwrap() {
+        path.update_section(section, values.as_object().unwrap().clone())
+            .unwrap();
+    }
 }
 
 /// Write `body` and wait until the live document has taken it in.
-fn write_and_wait(live: &LiveSettings, path: &Path, body: &serde_json::Value) {
+fn write_and_wait(live: &LiveSettings, path: &Store, body: &serde_json::Value) {
     let seen = live.generation();
     write_settings(path, body);
     let snapshot = live.wait_for_change(seen, tilo_test_env::hang_bound());
@@ -72,7 +73,7 @@ fn write_and_wait(live: &LiveSettings, path: &Path, body: &serde_json::Value) {
 fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     let path = scratch_settings();
     write_settings(&path, &serde_json::json!({"input": {"tap_to_click": true}}));
-    let live = LiveSettings::start_at(path.clone(), || {});
+    let live = LiveSettings::start_from(path.clone(), || {});
     let mut follower = SectionFollower::new(&live);
     assert!(
         follower.changed_sections(&live).is_empty(),
@@ -83,7 +84,7 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     let mut devices = [FakeTouchpad {
         applied: Vec::new(),
     }];
-    input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
+    input_config::reconfigure_all(&InputSettings::load_in(&*path), &mut devices);
     let added = devices[0].applied[0];
     assert_eq!(added.tap, Some(true));
     assert_eq!(added.tap_drag_lock, Some(false));
@@ -108,7 +109,7 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
         BTreeSet::from(["input".to_string()]),
         "the rewrite is noticed, as an input change"
     );
-    input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
+    input_config::reconfigure_all(&InputSettings::load_in(&*path), &mut devices);
     assert_eq!(devices[0].applied.len(), 2, "reconfigured exactly once");
     let changed = devices[0].applied[1];
     assert_eq!(changed.tap_drag_lock, Some(true));
@@ -127,7 +128,7 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
         follower.changed_sections(&live),
         BTreeSet::from(["input".to_string()])
     );
-    input_config::reconfigure_all(&InputSettings::load_at(&path), &mut devices);
+    input_config::reconfigure_all(&InputSettings::load_in(&*path), &mut devices);
     let off = devices[0].applied[2];
     assert_eq!(off.tap, Some(false));
     assert_eq!(off.tap_drag_lock, Some(false));
@@ -139,6 +140,4 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
         follower.changed_sections(&live).is_empty(),
         "no further change, no further reconfiguration"
     );
-
-    let _ = std::fs::remove_file(&path);
 }

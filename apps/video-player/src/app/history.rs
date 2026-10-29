@@ -18,10 +18,8 @@ impl PlayerApp {
         else {
             return;
         };
-        self.recent.retain(|item| item.id != entry.id);
-        self.recent.push_front(entry);
         self.recent
-            .truncate(crate::preferences::RECENT_HISTORY_LIMIT);
+            .remember_by(entry, |kept, entry| kept.id == entry.id);
         if let Err(error) = self.persist_recent_history() {
             tracing::warn!(%error, "video player: could not persist recent history");
         }
@@ -29,7 +27,7 @@ impl PlayerApp {
     }
 
     pub(super) fn persist_recent_history(&self) -> std::io::Result<()> {
-        let entries: Vec<RecentMedia> = self
+        let entries: crate::preferences::RecentHistory = self
             .recent
             .iter()
             .filter_map(|entry| self.saved_recent_row(entry))

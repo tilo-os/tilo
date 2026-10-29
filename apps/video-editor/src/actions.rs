@@ -21,19 +21,19 @@ use crate::resource::video_project;
 #[effect(operation = "video_editor.effect")]
 pub enum VideoEditorEffect {
     /// Reveal track.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent)]
     RevealTrack {
         #[param("The track's id")]
         track: String,
     },
     /// Reveal clip.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent)]
     RevealClip {
         #[param("The clip's id")]
         clip: String,
     },
     /// Reveal effect.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent)]
     RevealEffect {
         #[param("The clip the effect is on")]
         clip: String,
@@ -41,7 +41,7 @@ pub enum VideoEditorEffect {
         effect: String,
     },
     /// Reveal marker.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent)]
     RevealMarker {
         #[param("The marker's id")]
         marker: String,
@@ -49,7 +49,7 @@ pub enum VideoEditorEffect {
         clip: Option<String>,
     },
     /// Reveal media.
-    #[effect(view, row, idempotent)]
+    #[effect(view, idempotent)]
     RevealMedia {
         #[param("The source's id")]
         media: String,

@@ -234,12 +234,13 @@ pub(super) fn consume(
             || !capsule
                 .authenticated_setup()
                 .manifest()
-                .completed_applications_only
+                .units
+                .completed_applications_only()
             || capsule
                 .authenticated_setup()
                 .manifest()
-                .portable_flatpak
-                .as_ref()
+                .units
+                .portable_flatpak()
                 != Some(&evidence.applications)
         {
             return Err(invalid());

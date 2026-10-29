@@ -3,9 +3,7 @@
 //! fetched catalogue rows, running jobs — published beneath the resource for
 //! the palette, agents and scripts.
 
-use tilo_actions::{
-    ActionSpec, OperationKind, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
-};
+use tilo_actions::{ActionSpec, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec};
 use tilo_resource::Effect;
 
 /// One live external entity a surface publishes beneath its resource, with
@@ -131,46 +129,8 @@ impl LiveRow {
     }
 }
 
-/// Whether `operation` may ride outside the document: views and effects do,
-/// a document mutation never does.
-fn admits(operation: &ActionSpec, on: &str) -> bool {
-    let admitted = operation.kind != OperationKind::Document;
-    debug_assert!(
-        admitted,
-        "`{on}` offers document action `{}` outside the resource's actions; \
-         a document change is the resource's Action through its Dispatcher",
-        operation.id
-    );
-    admitted
-}
-
-/// `resource` without document actions, at any depth: what a content widget
-/// may add to the published tree beside the resource's own publication.
-pub(crate) fn outside_document(mut resource: ResourceSpec) -> ResourceSpec {
-    let on = resource.id.as_str().to_owned();
-    resource.actions.retain(|action| admits(action, &on));
-    resource.children = resource
-        .children
-        .into_iter()
-        .map(outside_document)
-        .collect();
-    resource
-}
-
-/// `resource`, resolved by id, without document actions. A lookup is asked
-/// for ids the resource itself publishes too (an item of its own), so this
-/// drops them without complaint: the resource's publication carries them.
-pub(crate) fn resolved_outside_document(mut resource: ResourceSpec) -> ResourceSpec {
-    resource
-        .actions
-        .retain(|action| action.kind != OperationKind::Document);
-    resource.children = resource
-        .children
-        .into_iter()
-        .map(resolved_outside_document)
-        .collect();
-    resource
-}
+use ui_core::resources::admits_outside_document as admits;
+pub(crate) use ui_core::resources::{outside_document, resolved_outside_document};
 
 /// Merge `rows` by id into `children`: a row naming an existing child adds
 /// the operations and rows that child lacks, and its presentation when the

@@ -27,6 +27,7 @@
 )]
 
 pub mod adapter;
+pub mod attach;
 pub mod body;
 pub mod date;
 pub mod i18n;

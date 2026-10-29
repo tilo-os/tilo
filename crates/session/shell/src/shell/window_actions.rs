@@ -102,8 +102,8 @@ pub const TERMINAL_PACKAGE: &str = "so.tilo.terminal";
 /// room already shows. Ordinary "Open Terminal" refocuses the running one;
 /// this is the explicit ask for another shell — the group's "+", the
 /// palette's "New terminal", Duplicate on a terminal tab. When no Terminal
-/// package is installed the tab is hosted in-process instead, so the first
-/// window of an image without one still opens.
+/// package is installed the tab still opens: it offers to get the app where
+/// the session runs its apps as processes, and is drawn here elsewhere.
 ///
 /// # Errors
 ///
@@ -128,13 +128,13 @@ pub fn new_terminal(
     }
 }
 
-/// Hosted in-process, so this is a tree splice rather than a launch — a
-/// sane recovery path when the last terminal is gone.
+/// A Terminal tab at `dest`, opened as [`open_hosted`] opens any app.
 pub fn open_terminal(st: &mut ChromeState, dest: Destination) -> TabId {
     open_hosted(st, AppKind::Terminal, "Terminal", dest)
 }
 
-/// Open any hosted app kind at `dest` and focus it.
+/// Open the app `kind` names at `dest` and focus it: as its own process
+/// where the session runs its apps that way, else drawn here.
 pub fn open_hosted(
     st: &mut ChromeState,
     kind: AppKind,
@@ -154,14 +154,35 @@ pub(crate) fn open_hosted_after_setup(
     setup: impl FnOnce(&mut ChromeState, TabId),
 ) -> TabId {
     let placement = placement_for(st, dest);
-    let id = {
-        let mut tree = st.tree_mut();
-        tab_binding::open_hosted_app(&mut tree, kind, title, placement)
-    };
+    let (id, drawn_here) = open_app_tab(st, kind, title, placement);
     setup(st, id);
-    st.create_new_tab_record(id);
+    if drawn_here {
+        st.create_new_tab_record(id);
+    }
     st.bump();
     id
+}
+
+/// A tab of the app `kind` at `placement`: the app's own process where the
+/// session runs its apps that way, else drawn here (`true`), on a scratch
+/// record of the tab's own.
+fn open_app_tab(
+    st: &ChromeState,
+    kind: AppKind,
+    title: impl Into<String>,
+    placement: Placement,
+) -> (TabId, bool) {
+    let title = title.into();
+    let mut tree = st.tree_mut();
+    if st.hosted_inputs.apps_as_processes()
+        && let Some(id) = tab_binding::open_app_process(&mut tree, &kind, title.clone(), placement)
+    {
+        return (id, false);
+    }
+    (
+        tab_binding::open_hosted_app(&mut tree, kind, title, placement),
+        true,
+    )
 }
 
 /// Why a duplicate could not be made.
@@ -286,12 +307,10 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, Dupli
             }
         }
     };
-    let placement = Placement::TabIn(group);
-    let id = {
-        let mut tree = st.tree_mut();
-        tab_binding::open_hosted_app(&mut tree, kind, title, placement)
-    };
-    st.create_new_tab_record(id);
+    let (id, drawn_here) = open_app_tab(st, kind, title, Placement::TabIn(group));
+    if drawn_here {
+        st.create_new_tab_record(id);
+    }
     st.bump();
     Ok(Some(id))
 }

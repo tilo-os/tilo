@@ -21,11 +21,9 @@
 )]
 
 use std::ops::{Deref, DerefMut};
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 
-use automerge::{AutoCommit, ROOT};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::activation::v1::client::{xdg_activation_token_v1, xdg_activation_v1};
@@ -33,10 +31,9 @@ use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{GroupId, TileContent};
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 /// The largest buffer an app commits; the shared pool holds one of these.
 const MAX_BUFFER: i32 = 256;
@@ -47,7 +44,7 @@ struct Client {
     tokens: Vec<String>,
 }
 
-wayland::test_client!(Client);
+wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
     fn event(
@@ -64,21 +61,11 @@ impl Dispatch<xdg_activation_token_v1::XdgActivationTokenV1, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore wl_keyboard::WlKeyboard);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_activation_v1::XdgActivationV1);
 
 struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-    doc: AutoCommit,
-    focus: Option<taffy::NodeId>,
+    f: wayland::Framed<Client>,
     compositor: wl_compositor::WlCompositor,
     wm: xdg_wm_base::XdgWmBase,
     activation: xdg_activation_v1::XdgActivationV1,
@@ -90,15 +77,15 @@ struct Harness {
 }
 
 impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
+    type Target = wayland::Framed<Client>;
     fn deref(&self) -> &Self::Target {
-        &self.wl
+        &self.f
     }
 }
 
 impl DerefMut for Harness {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
+        &mut self.f
     }
 }
 
@@ -107,42 +94,27 @@ const TERMINAL: &str = "Alacritty";
 impl Harness {
     /// One mapped terminal window, focused.
     fn with_terminal() -> Self {
-        let wl = wayland::Harness::new();
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        let qh = wl.queue.handle();
-        let seat = wl.bind::<wl_seat::WlSeat>("wl_seat", 9);
+        let mut f = wayland::Framed::<Client>::new();
+        let qh = f.queue.handle();
+        let seat = f.bind::<wl_seat::WlSeat>("wl_seat", 9);
         let _keyboard = seat.get_keyboard(&qh, ());
-        let compositor = wl.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
-        let wm = wl.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
-        let activation = wl.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
-        let shm = wl.bind::<wl_shm::WlShm>("wl_shm", 1);
+        let compositor = f.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let wm = f.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+        let activation = f.bind::<xdg_activation_v1::XdgActivationV1>("xdg_activation_v1", 1);
+        let shm = f.bind::<wl_shm::WlShm>("wl_shm", 1);
         let len = MAX_BUFFER.saturating_mul(MAX_BUFFER).saturating_mul(4);
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-maximized-stays".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor.
-        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-        file.set_len(u64::try_from(len).unwrap()).unwrap();
-        let pool = shm.create_pool(file.as_fd(), len, &qh, ());
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id(TERMINAL.into());
+        let (pool, file) = wayland::shm_pool(&shm, &qh, &vec![0; usize::try_from(len).unwrap()]);
+        let Toplevel {
+            surface,
+            xdg: _,
+            toplevel,
+        } = create_toplevel(&compositor, &wm, &qh, TERMINAL);
         toplevel.set_title("Alacritty".into());
         surface.commit();
-        let mut wl = wl;
-        wl.pump();
-        let id = wl.foreign_id(TERMINAL);
+        f.pump();
+        let id = f.foreign_id(TERMINAL);
         let mut h = Self {
-            wl,
-            fb,
-            doc: AutoCommit::new(),
-            focus: None,
+            f,
             compositor,
             wm,
             activation,
@@ -190,14 +162,6 @@ impl Harness {
         surface.damage(0, 0, side, side);
         surface.commit();
         self.pump();
-    }
-
-    /// One frame the way the native loop runs it: clients, apps, layout,
-    /// paint.
-    fn frame(&mut self) {
-        self.wl.pump();
-        self.fb.pump_apps(&mut self.doc, &ROOT);
-        let _ = self.fb.paint_settled();
     }
 
     fn frames(&mut self, n: usize) {
@@ -252,21 +216,7 @@ impl Harness {
     /// Local input in production order: the seat first, the shell with what
     /// it leaves.
     fn input(&mut self, event: &WindowEvent, modifiers: Modifiers) {
-        let to_client = shell::compositor::client_input::route_input(
-            &mut self.wl.state,
-            &mut self.fb,
-            event,
-            &modifiers,
-        );
-        if !to_client {
-            self.fb.dispatch_event(
-                event,
-                &modifiers,
-                &mut ui::widget::Edits::lend(&mut self.doc),
-                &ROOT,
-                &mut self.focus,
-            );
-        }
+        self.route(event, modifiers);
         self.frame();
     }
 
@@ -434,10 +384,11 @@ impl Harness {
     /// A program starts a window and gives up before it ever shows a frame.
     fn a_window_opens_and_never_shows(&mut self) {
         let qh = self.queue.handle();
-        let surface = self.compositor.create_surface(&qh, ());
-        let xdg = self.wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.GaveUp".into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel,
+        } = create_toplevel(&self.compositor, &self.wm, &qh, "org.example.GaveUp");
         surface.commit();
         self.pump();
         self.frames(3);

@@ -6,15 +6,15 @@
 //! advertised with the sizes the tab pill paints at, the icon takes effect on
 //! the surface's commit, and the tab's artwork is then the window's own.
 
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
-
 use shell::shell::state::TileContent;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_shm, wl_shm_pool, wl_surface};
+use wayland_client::protocol::{wl_buffer, wl_compositor};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use wayland_protocols::xdg::toplevel_icon::v1::client::{
     xdg_toplevel_icon_manager_v1, xdg_toplevel_icon_v1,
 };
+
+use crate::support::wayland::{Toplevel, create_toplevel};
 
 #[derive(Default)]
 struct Client {
@@ -22,7 +22,7 @@ struct Client {
     icon_sizes: Vec<i32>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer);
 
 impl Dispatch<xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1, ()> for Client {
     fn event(
@@ -39,12 +39,6 @@ impl Dispatch<xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1, ()> for Cl
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore xdg_toplevel_icon_v1::XdgToplevelIconV1);
 
 type Harness = crate::support::wayland::Harness<Client>;
@@ -74,32 +68,13 @@ impl Harness {
 
 /// A square ARGB buffer of one colour, as a client would draw its icon.
 fn solid_buffer(h: &Harness, edge: i32, argb: [u8; 4]) -> wl_buffer::WlBuffer {
-    let qh = h.queue.handle();
-    let stride = edge.checked_mul(4).unwrap();
-    let len = usize::try_from(stride.checked_mul(edge).unwrap()).unwrap();
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-toplevel-icon-test".as_ptr(), 0) };
-    assert!(
-        raw >= 0,
-        "memfd_create: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.set_len(u64::try_from(len).unwrap()).unwrap();
-    {
-        use std::os::unix::fs::FileExt;
-        // Little-endian ARGB8888 is B, G, R, A in memory.
-        let [alpha, red, green, blue] = argb;
-        let pixels: Vec<u8> = std::iter::repeat_n([blue, green, red, alpha], len / 4)
-            .flatten()
-            .collect();
-        file.write_at(&pixels, 0).unwrap();
-    }
-    let shm = h.bind::<wl_shm::WlShm>("wl_shm", 1);
-    let pool = shm.create_pool(file.as_fd(), i32::try_from(len).unwrap(), &qh, ());
-    pool.create_buffer(0, edge, edge, stride, wl_shm::Format::Argb8888, &qh, ())
+    // Little-endian ARGB8888 is B, G, R, A in memory.
+    let [alpha, red, green, blue] = argb;
+    h.shm_buffer(
+        edge,
+        edge,
+        &crate::support::wayland::solid(edge, edge, [blue, green, red, alpha]),
+    )
 }
 
 #[test]
@@ -119,10 +94,11 @@ fn a_window_icon_set_by_the_client_becomes_its_tab_artwork() {
     );
 
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.UnlistedGame".into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.example.UnlistedGame");
     surface.commit();
     h.pump();
     let TileContent::Foreign { surface_id, .. } = h.window_tile("org.example.UnlistedGame") else {
@@ -184,10 +160,11 @@ fn a_client_that_frees_its_icon_after_set_icon_stays_connected_and_keeps_it() {
     let manager: xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1 =
         h.bind("xdg_toplevel_icon_manager_v1", 1);
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Browser".into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.example.Browser");
     surface.commit();
     h.pump();
 

@@ -1,5 +1,6 @@
 //! Stable pending intent and durable no-launch recovery on the admitted medium.
 //! Mount IDs/dev numbers/read claims are reattested separately on every attempt.
+use super::attempt::{NamespaceFacts, Phase, Route};
 use super::*;
 use std::os::{fd::AsRawFd, unix::fs::FileExt};
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -10,23 +11,6 @@ pub(in crate::setup::home_capture) struct StageBinding {
     pub(in crate::setup::home_capture) uid: u32,
     pub(in crate::setup::home_capture) gid: u32,
 }
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-enum Phase {
-    Prepared,
-    Launching,
-    Exported,
-    Verifying,
-    Verified,
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NamespaceCheckpoint {
-    init_pid: u32,
-    start_ticks: u64,
-    namespace_dev: u64,
-    namespace_ino: u64,
-}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attempt {
@@ -36,7 +20,7 @@ struct Attempt {
     inode: u64,
     phase: Phase,
     #[serde(default)]
-    namespace: Option<NamespaceCheckpoint>,
+    namespace: Option<NamespaceFacts>,
     #[serde(default)]
     expected: Option<crate::setup::portable_home_media::Expectation>,
     #[serde(default)]
@@ -71,6 +55,7 @@ fn load(store: &Store) -> io::Result<Option<Attempt>> {
     let record: Attempt =
         serde_json::from_slice(&bytes).map_err(|_| failure("Original output attempt invalid"))?;
     if !matches!(record.schema, 1 | 2)
+        || !Route::Medium.admits(record.phase)
         || record.inode == 0
         || record.binding.declaration == [0; 32]
         || record.binding.filesystem == [0; 16]
@@ -80,9 +65,11 @@ fn load(store: &Store) -> io::Result<Option<Attempt>> {
         return Err(failure("Original output attempt invalid"));
     }
     if record.schema == 1 {
-        if record.namespace.as_ref().is_some_and(|facts| {
-            facts.init_pid <= 1 || facts.start_ticks == 0 || facts.namespace_ino == 0
-        }) || matches!(record.phase, Phase::Prepared) && record.namespace.is_some()
+        if record
+            .namespace
+            .as_ref()
+            .is_some_and(|facts| !facts.plausible())
+            || matches!(record.phase, Phase::Prepared) && record.namespace.is_some()
             || matches!(record.phase, Phase::Prepared | Phase::Launching)
                 && record.expected.is_some()
             || matches!(record.phase, Phase::Exported | Phase::Verified)
@@ -151,9 +138,10 @@ fn load(store: &Store) -> io::Result<Option<Attempt>> {
 fn validate_applications_attempt(record: &Attempt) -> io::Result<()> {
     if record.schema != 2
         || record.expected.is_some()
-        || record.namespace.as_ref().is_some_and(|facts| {
-            facts.init_pid <= 1 || facts.start_ticks == 0 || facts.namespace_ino == 0
-        })
+        || record
+            .namespace
+            .as_ref()
+            .is_some_and(|facts| !facts.plausible())
         || record.phase == Phase::Prepared && record.namespace.is_some()
         || matches!(record.phase, Phase::Prepared | Phase::Launching)
             && (record.expected_applications.is_some() || record.export_reservation.is_some())
@@ -607,7 +595,7 @@ impl Store {
         record.expected = Some(expected.home.clone());
         record.expected_applications = expected.applications.cloned();
         record.export_reservation = Some(expected.reserve_bytes);
-        record.phase = Phase::Exported;
+        record.phase.advance(Route::Medium, Phase::Exported)?;
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn mark_original_output_verifying(
@@ -647,7 +635,7 @@ impl Store {
         check_pair(&record, expected)?;
         check_stage(self, &record, output)?;
         record.namespace = None;
-        record.phase = Phase::Verifying;
+        record.phase.advance(Route::Medium, Phase::Verifying)?;
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn mark_original_output_verified(
@@ -709,7 +697,7 @@ impl Store {
         }
         check_pair(&record, expected)?;
         check_stage(self, &record, output)?;
-        record.phase = Phase::Verified;
+        record.phase.advance(Route::Medium, Phase::Verified)?;
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn mark_original_applications_exported(
@@ -740,7 +728,7 @@ impl Store {
         check_stage(self, &record, output)?;
         record.expected_applications = Some(expected.clone());
         record.export_reservation = Some(reserve_bytes);
-        record.phase = Phase::Exported;
+        record.phase.advance(Route::Medium, Phase::Exported)?;
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn mark_original_applications_verifying(
@@ -757,7 +745,7 @@ impl Store {
         check_applications(&record, expected, reserve_bytes)?;
         check_stage(self, &record, output)?;
         record.namespace = None;
-        record.phase = Phase::Verifying;
+        record.phase.advance(Route::Medium, Phase::Verifying)?;
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn mark_original_applications_verified(
@@ -782,7 +770,7 @@ impl Store {
         }
         check_applications(&record, expected, reserve_bytes)?;
         check_stage(self, &record, output)?;
-        record.phase = Phase::Verified;
+        record.phase.advance(Route::Medium, Phase::Verified)?;
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn check_verified_original_applications(
@@ -832,7 +820,7 @@ impl Store {
             return Err(failure("Original output namespace checkpoint differs"));
         }
         check_stage(self, &record, output)?;
-        record.namespace = Some(NamespaceCheckpoint {
+        record.namespace = Some(NamespaceFacts {
             init_pid: facts.init_pid,
             start_ticks: facts.start_ticks,
             namespace_dev: facts.namespace_dev,
@@ -989,7 +977,7 @@ impl Store {
             return Err(failure("Original output launch state differs"));
         }
         check_stage(self, &record, output)?;
-        record.phase = Phase::Launching;
+        record.phase.advance(Route::Medium, Phase::Launching)?;
         save(self, &record, PublishMode::Replace)
     }
 }

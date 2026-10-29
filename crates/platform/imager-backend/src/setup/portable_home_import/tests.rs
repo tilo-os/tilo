@@ -42,7 +42,7 @@ fn prepared_setup(root: &std::path::Path) -> PreparedSetupReview {
         )
         .unwrap();
     let mut manifest = Manifest::new(BINDING.into(), identity.public_key(), vec![]).unwrap();
-    manifest.portable_home = Some(PortableHomePlan {
+    manifest.units.plan_home(PortableHomePlan {
         schema: 1,
         selection: PortableHomeSelection::FullHome,
         applications: false,
@@ -650,7 +650,12 @@ fn authenticated_completed_setup_binds_exact_home_before_adoption() {
     let root = f.source.parent().unwrap();
     let staging = root.join("setup-staging");
     let mut manifest = f.setup.manifest().clone();
-    manifest.completed_home = Some(f.expected.clone());
+    manifest
+        .units
+        .carry_home(crate::setup::prepared_setup::HomeCarriage::Sealed(
+            f.expected.clone(),
+        ))
+        .unwrap();
     fs::remove_file(staging.join(crate::setup::prepared_setup::MANIFEST_FILE)).unwrap();
     manifest.write(&staging).unwrap();
     let package = root.join("completed-setup.sealed");
@@ -672,7 +677,7 @@ fn authenticated_completed_setup_binds_exact_home_before_adoption() {
     .unwrap();
     completed.require_completed_export().unwrap();
     assert_eq!(
-        completed.manifest().completed_home.as_ref(),
+        completed.manifest().units.completed_home(),
         Some(&f.expected)
     );
     // The canonical installer authentication helper must carry this exact
@@ -724,11 +729,12 @@ fn authenticated_completed_setup_binds_exact_home_before_adoption() {
         .is_ok()
     );
     let mut other_manifest = manifest;
+    let mut tampered = other_manifest.units.completed_home().unwrap().clone();
+    tampered.ciphertext_sha256[0] ^= 1;
     other_manifest
-        .completed_home
-        .as_mut()
-        .unwrap()
-        .ciphertext_sha256[0] ^= 1;
+        .units
+        .carry_home(crate::setup::prepared_setup::HomeCarriage::Sealed(tampered))
+        .unwrap();
     fs::remove_file(staging.join(crate::setup::prepared_setup::MANIFEST_FILE)).unwrap();
     other_manifest.write(&staging).unwrap();
     let other_package = root.join("different-completed-setup.sealed");

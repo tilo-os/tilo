@@ -345,10 +345,6 @@ fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::p
     std::process::ExitCode::SUCCESS
 }
 
-/// Make the person's and this device's settings records the session's
-/// settings document. Readers and writers in this process go through them;
-/// `settings.json` becomes the copy other processes read and write, which
-/// the session keeps current and takes their writes in from.
 fn dictionary_identity_owner() -> Option<[u8; 32]> {
     let store = identity_provisioning::DiskIdentityStore::from_env().ok()?;
     runtime_identity::load_metadata_from_path(store.path())
@@ -356,94 +352,55 @@ fn dictionary_identity_owner() -> Option<[u8; 32]> {
         .map(|identity| identity.group_public_key)
 }
 
-fn session_host_view(
-    session: std::sync::Arc<settings_store::SessionSettings>,
-    copy_watched: bool,
-) -> std::sync::Arc<dyn settings_store::SettingsSource> {
-    // With the copy watched, its watch takes other processes' writes in and
-    // the view sleeps between reads; without it the view looks on a timer.
-    let view = if copy_watched {
-        session.host_view()
-    } else {
-        session.host_view_polling_copy(settings_store::live::POLL_INTERVAL)
-    };
-    match view {
-        Ok(source) => source,
-        Err(error) => {
-            tracing::warn!(%error, "settings read view unavailable; using synchronous records");
-            session
-        }
-    }
-}
-
+/// Hold the person's and this device's settings for the session: every
+/// reader and writer in this process goes through them, and every other
+/// process reads the same documents, following this one.
 fn install_session_settings() -> std::io::Result<()> {
-    let Some(paths) = settings_store::SessionPaths::configured() else {
+    let Some(root) = settings_store::config_root() else {
         tracing::warn!("no config directory; settings are not kept this session");
         return Ok(());
     };
-    // Bootc accepts /home/<user> as well as /var/home/<user>. Only the
-    // login home is trusted here; copy-directory components stay unresolved
-    // until descriptor-relative traversal rejects any links beneath it.
-    let paths = match std::env::var_os("HOME") {
-        Some(home) => paths.resolve_trusted_root(std::path::Path::new(&home))?,
-        None => paths,
-    };
-    let copy = paths.copy.clone();
-    let session = std::sync::Arc::new(settings_store::SessionSettings::open_checked(paths)?);
-    // Another process writing the copy (Settings, a CLI) is taken in
-    // as it lands, which wakes every app following its settings.
-    let taken_in = std::sync::Arc::downgrade(&session);
-    let copy_watched = match settings_store::watch::watch_settings_at(&copy, move || {
-        if let Some(session) = taken_in.upgrade() {
-            session.refresh();
-        }
-    }) {
-        Ok(watch) => {
-            static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
-                std::sync::OnceLock::new();
-            // Only the first session's watch is kept; a later one
-            // would be dropped here and watch nothing.
-            COPY_WATCH.set(watch).is_ok()
-        }
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "settings copy watch unavailable; other processes' writes reach apps within a second"
-            );
-            false
-        }
-    };
-    let source = session_host_view(session, copy_watched);
-    let dictionary_root = copy.parent().map(|root| root.join("personal-dictionary"));
-    let source = match dictionary_root
-        .and_then(|root| settings_store::personal_dictionary::Service::new(root).ok())
-    {
-        Some(service) => {
-            let host = std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
-                source,
-                std::sync::Arc::new(service),
-                std::sync::Arc::new(dictionary_identity_owner),
-            ));
-            if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
-                && let Some(directory) =
-                    store.path().parent().filter(|directory| directory.is_dir())
-            {
-                let weak = std::sync::Arc::downgrade(&host);
-                if let Ok(watch) = settings_store::watch::watch_identity_at(directory, move || {
-                    if let Some(host) = weak.upgrade() {
-                        settings_store::SettingsSource::dictionary_service(host.as_ref());
+    let session = settings_store::profile(&root);
+    if !session.is_holder() {
+        tracing::warn!(
+            root = %root.display(),
+            "another process holds the person's settings; this session only reads them"
+        );
+    }
+    let source: std::sync::Arc<dyn settings_store::SettingsSource> = session;
+    let source =
+        match settings_store::personal_dictionary::Service::new(root.join("personal-dictionary"))
+            .ok()
+        {
+            Some(service) => {
+                let host =
+                    std::sync::Arc::new(settings_store::personal_dictionary::host::Host::new(
+                        source,
+                        std::sync::Arc::new(service),
+                        std::sync::Arc::new(dictionary_identity_owner),
+                    ));
+                if let Ok(store) = identity_provisioning::DiskIdentityStore::from_env()
+                    && let Some(directory) =
+                        store.path().parent().filter(|directory| directory.is_dir())
+                {
+                    let weak = std::sync::Arc::downgrade(&host);
+                    if let Ok(watch) =
+                        settings_store::watch::watch_identity_at(directory, move || {
+                            if let Some(host) = weak.upgrade() {
+                                settings_store::SettingsSource::dictionary_service(host.as_ref());
+                            }
+                        })
+                    {
+                        static IDENTITY_WATCH: std::sync::OnceLock<
+                            settings_store::watch::SettingsWatch,
+                        > = std::sync::OnceLock::new();
+                        let _ = IDENTITY_WATCH.set(watch);
                     }
-                }) {
-                    static IDENTITY_WATCH: std::sync::OnceLock<
-                        settings_store::watch::SettingsWatch,
-                    > = std::sync::OnceLock::new();
-                    let _ = IDENTITY_WATCH.set(watch);
                 }
+                host as std::sync::Arc<dyn settings_store::SettingsSource>
             }
-            host as std::sync::Arc<dyn settings_store::SettingsSource>
-        }
-        None => source,
-    };
+            None => source,
+        };
     settings_store::install_source(Some(source));
     Ok(())
 }
@@ -725,10 +682,6 @@ fn version_request(mut args: impl Iterator<Item = String>) -> Option<String> {
         format!("tilo-shell {version}")
     })
 }
-
-#[cfg(test)]
-#[path = "../tests/firstboot.rs"]
-mod firstboot_tests;
 
 #[cfg(test)]
 mod tests {

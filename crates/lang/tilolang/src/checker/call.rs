@@ -552,8 +552,9 @@ impl Checker<'_> {
 
     /// `person("Mia")` in a scenario: a principal named for the sample data, whose id is
     /// `scenario:Mia`. Nothing else can make a principal from text.
-    /// `RichText("Ask ", ada, " about ", task)`: text as it is, and a run naming each person
-    /// (`@Ada`) or resource (its title) that refers to it; `RichText()` is empty.
+    /// `RichText("Ask ", ada, " about ", task)`: text as it is, a run naming each person
+    /// (`@Ada`) or resource (its title) that refers to it, and each time as a run every reader
+    /// reads in their own zone and language; `RichText()` is empty.
     fn builtin_rich_text(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let list_ty = Ty::List(Box::new(Ty::Text));
         let tmp = self.fresh(list_ty.clone());
@@ -569,7 +570,11 @@ impl Checker<'_> {
                     "`RichText(...)` takes its parts in order, unnamed: `RichText(\"Ask \", ada)`",
                 );
             }
-            let v = self.expr(&a.value, None);
+            let mut v = self.expr(&a.value, None);
+            // A moment is a run every reader reads in their own zone and language.
+            if v.ty == Ty::Time {
+                v = Ex::host(Imp::RichTime, vec![v], Ty::RichText);
+            }
             let fits = matches!(
                 v.ty,
                 Ty::Text | Ty::RichText | Ty::Principal | Ty::Record(_) | Ty::Error
@@ -580,7 +585,7 @@ impl Checker<'_> {
                     "E023",
                     a.value.span,
                     format!(
-                        "a part of rich text is text, rich text, a person or a resource, not {t}"
+                        "a part of rich text is text, rich text, a time, a person or a resource, not {t}"
                     ),
                 );
                 continue;
@@ -1050,12 +1055,12 @@ impl Checker<'_> {
     /// `items.move(item, after: other)` or `before: other`: a place named by a neighbour, never
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
-        let usage = "write `.move(item, after: other)` or `.move(item, before: other)`";
+        let usage = "write `.move(item, after: other)`, `.move(item, before: other)` or `.move(item, to: index)`";
         let (Some(item), Some(place), 2) = (args.first(), args.get(1), args.len()) else {
             self.err(
                 "E022",
                 span,
-                format!("`.move` takes the item and its new neighbour: {usage}"),
+                format!("`.move` takes the item and where it goes: {usage}"),
             );
             return Ex::error();
         };
@@ -1063,16 +1068,18 @@ impl Checker<'_> {
         let after = match side {
             Some("after") => true,
             Some("before") => false,
+            // An index, as a drag gives one: resolved, when the action runs, to the item it
+            // then comes before, which is what is recorded (convergence.md, "Actions").
+            Some("to") => {
+                let item = self.expr_as(&item.value, t);
+                let index = self.expr_as(&place.value, &Ty::Int);
+                return Ex::host(Imp::CollMoveTo, vec![b, fid, item, index], Ty::Unit);
+            }
             _ => {
-                let what = if place.name.is_none() {
-                    "a position"
-                } else {
-                    "this"
-                };
                 self.err(
-                    "E107",
+                    "E022",
                     place.value.span,
-                    format!("{what} is counted on what this device sees, so a move made at the same time elsewhere puts the item in the wrong place; name its neighbour: {usage}"),
+                    format!("`.move` names where the item goes: {usage}"),
                 );
                 let _ = self.expr(&place.value, None);
                 return Ex::error();
@@ -1403,10 +1410,30 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        // Over a collection, a key the store can order by is asked of it first; the collection
+        // is held in a local for that, which the loop reads too.
+        let native = match &list.ty {
+            Ty::Collection(_) => self.sort_key(elem, &param.name, &body),
+            _ => None,
+        };
+        let (list, held) = match native {
+            Some(_) => {
+                let ty = list.ty.clone();
+                let local = self.fresh(ty.clone());
+                (Ex::local(local, ty), Some((local, list)))
+            }
+            None => (list, None),
+        };
         let mut fl = self.new_for(list, elem);
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
-        let key = self.expr(&body, None);
+        let key = match &native {
+            // A version sorts by its time; none comes first.
+            Some(super::order::SortKey::Version { last }) => {
+                self.version_time(Ex::local(fl.item_local, elem.clone()), *last)
+            }
+            _ => self.expr(&body, None),
+        };
         // A Date or a Time is ISO text, which sorts in time order.
         let key = match key.ty {
             Ty::Date | Ty::Time => key.typed(Ty::Text),
@@ -1445,7 +1472,13 @@ impl Checker<'_> {
         if desc {
             sorted = Ex::host(Imp::ListReverse, vec![sorted], out_ty.clone());
         }
-        Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty)
+        let looped = Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty);
+        match (native, held) {
+            (Some(key), Some((local, held))) => {
+                self.ordered_or_loop(local, held, &key, desc, looped)
+            }
+            _ => looped,
+        }
     }
 
     /// The body of `filter`, `any`, `all`, `find` and `count`: tests the lambda on the item.

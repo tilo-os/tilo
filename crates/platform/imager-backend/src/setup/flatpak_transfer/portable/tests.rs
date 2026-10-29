@@ -269,7 +269,14 @@ fn setup(root: &Path, expected: Expectation) -> PreparedSetupReview {
         .unwrap();
     let mut manifest =
         Manifest::new("prepared-binding".into(), identity.public_key(), vec![]).unwrap();
-    manifest.portable_flatpak = Some(expected);
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::MediumApplications(
+            crate::setup::prepared_setup::ApplicationsCarriage::Sealed {
+                expectation: expected,
+                alone: false,
+            },
+        ));
     manifest.write(&directory).unwrap();
     let path = root.join("setup.sealed");
     ExportReview::review(

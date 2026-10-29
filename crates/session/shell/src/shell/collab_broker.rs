@@ -774,8 +774,17 @@ impl DrainQueues {
                     )
                 },
             );
-            if !delivered {
-                return false;
+            match delivered {
+                tilo_action_broker::collab_inbound::Delivery::Done => {}
+                tilo_action_broker::collab_inbound::Delivery::Halted => return false,
+                tilo_action_broker::collab_inbound::Delivery::SealedBehind => {
+                    // Its writer sealed it before catching up with the
+                    // channel's latest membership change; the room's host
+                    // kept it, and its replay is taken as history.
+                    if let Some(room) = crate::shell::state::RoomId::parse(&cluster_id) {
+                        self.net.request_native_replay(room);
+                    }
+                }
             }
             // After it is admitted: a window that subscribes from now on is
             // told it with the records its room holds

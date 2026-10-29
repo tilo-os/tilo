@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use tilo_user_identity::DeviceCapabilities;
 
-use super::{Device, Person, Wakes, hosted_workspace, scratch, until};
+use super::{Device, Person, Wakes, hosted_workspace, scratch, until, until_caught_up};
 
 #[test]
 #[serial_test::serial]
@@ -108,19 +108,29 @@ fn an_invited_person_joins_the_workspace_on_its_makers_device_and_both_edit_it()
         p.holds_note(room).then_some(())
     });
     p.write_note(room, "Plant the tulips");
-    until(&[&p, &q], "Ada's window and note to reach Grace", || {
-        (q.shows_tab(room, ada_window) && q.note(room).as_deref() == Some("Plant the tulips"))
-            .then_some(())
-    });
+    until_caught_up(
+        &[&p, &q],
+        "Ada's window and note to reach Grace",
+        room,
+        || {
+            (q.shows_tab(room, ada_window) && q.note(room).as_deref() == Some("Plant the tulips"))
+                .then_some(())
+        },
+    );
 
     // Grace edits; Ada sees it.
     q.write_note(room, "Plant the tulips and the crocuses");
     let grace_window = q.open_window(room, "Notes, Grace");
-    until(&[&p, &q], "Grace's edit and window to reach Ada", || {
-        (p.note(room).as_deref() == Some("Plant the tulips and the crocuses")
-            && p.shows_tab(room, grace_window))
-        .then_some(())
-    });
+    until_caught_up(
+        &[&p, &q],
+        "Grace's edit and window to reach Ada",
+        room,
+        || {
+            (p.note(room).as_deref() == Some("Plant the tulips and the crocuses")
+                && p.shows_tab(room, grace_window))
+            .then_some(())
+        },
+    );
 
     // Joining a second time, with the link, is the same workspace.
     q.join(&link).unwrap();

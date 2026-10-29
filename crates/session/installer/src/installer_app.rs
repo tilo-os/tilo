@@ -581,70 +581,10 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
 }
 
 /// Validate either the measured-boot TPM PIN or the independent strong LUKS
-/// passphrase selected when the target cannot prove that policy.
+/// passphrase selected when the target cannot prove that policy: the one
+/// startup-secret rule the unlock path and the host's preparation also apply.
 pub(crate) fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
-    const COMMON_BASES: &[&str] = &[
-        "password",
-        "qwerty",
-        "letmein",
-        "welcome",
-        "administrator",
-        "admin",
-        "tilo",
-        "quickdesk",
-        "tilo",
-    ];
-
-    if secret.trim() != secret {
-        return Err("Do not begin or end the disk passphrase with spaces");
-    }
-    let chars: Vec<char> = secret.chars().collect();
-    if tpm_pin {
-        if chars.len() < 6 {
-            return Err("Use at least 6 digits for the TPM-protected startup PIN");
-        }
-        if !chars.iter().all(char::is_ascii_digit) {
-            return Err("The TPM-protected startup PIN must contain digits only");
-        }
-        if chars
-            .first()
-            .is_some_and(|first| chars.iter().all(|c| c == first))
-            || ["012345", "123456", "234567", "345678", "456789", "987654"]
-                .iter()
-                .any(|bad| secret.contains(bad))
-        {
-            return Err("Choose a less predictable startup PIN");
-        }
-        return Ok(());
-    }
-    if chars.len() < 15 {
-        return Err("Use at least 15 characters for the disk passphrase");
-    }
-    let lower = secret.to_lowercase();
-    if COMMON_BASES.iter().any(|base| {
-        lower
-            .strip_prefix(base)
-            .is_some_and(|tail| tail.chars().all(|c| !c.is_alphabetic()))
-    }) {
-        return Err("That passphrase is too easy to guess; use several unrelated words");
-    }
-    if chars.iter().all(char::is_ascii_digit) && chars.len() < 20 {
-        return Err("Use at least 20 digits for an all-numeric disk passphrase");
-    }
-    let unique: std::collections::HashSet<char> = chars.iter().copied().collect();
-    if unique.len() < 5 {
-        return Err("That passphrase is too repetitive; use several unrelated words");
-    }
-    for period in 1..=4 {
-        if chars.len().is_multiple_of(period)
-            && chars
-                .get(..period)
-                .is_some_and(|prefix| chars.chunks(period).all(|chunk| chunk == prefix))
-        {
-            return Err("That passphrase is a repeated pattern; use several unrelated words");
-        }
-    }
-    Ok(())
+    tilo_unlock_protocol::startup_secret::validate(secret, tpm_pin)
 }
 
 #[cfg(test)]

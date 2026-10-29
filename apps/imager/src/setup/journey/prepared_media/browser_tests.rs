@@ -76,11 +76,11 @@ fn browser_only_preparation_authenticates_identity_and_keeps_only_ciphertext() {
         &AtomicBool::new(false),
     )
     .unwrap();
-    let declaration = setup.manifest().browser.as_ref().unwrap();
+    let declaration = setup.manifest().units.browser().unwrap();
     assert_eq!(declaration.plan.identity_public_key, identity.public_key());
     assert_eq!(declaration.plan.setup_binding, "browser-only-setup");
-    assert!(setup.manifest().portable_home.is_none());
-    assert!(setup.manifest().portable_flatpak.is_none());
+    assert!(setup.manifest().units.portable_home().is_none());
+    assert!(setup.manifest().units.portable_flatpak().is_none());
     declaration
         .payload
         .validate_plan(&declaration.plan)

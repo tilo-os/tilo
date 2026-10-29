@@ -251,7 +251,7 @@ fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
             ui::tilo_actions::remote::InvokeArgument::None
         ));
         let profile = tempfile::tempdir().unwrap();
-        let area = AccountsArea::new(&PaneCx::in_file(profile.path().join("settings.json")))
+        let area = AccountsArea::new(&PaneCx::in_profile(profile.path().to_path_buf()))
             .with_account_root(root.clone());
         let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
         let row = area

@@ -152,7 +152,7 @@ fn the_project_picker_lists_open_save_and_the_recent_projects() {
     let open = PathBuf::from("/home/you/Videos/Open.qvp");
     let other = PathBuf::from("/home/you/Videos/Reel.qvp");
     app.project_path = Some(open.clone());
-    app.recents = vec![open, other];
+    app.recents = [open, other].into_iter().collect();
     let location = app.window_toolbar().location.expect("the project");
     let rows: Vec<(&str, bool)> = location
         .choices

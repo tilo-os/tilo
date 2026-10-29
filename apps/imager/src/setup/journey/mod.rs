@@ -13,6 +13,8 @@ pub(crate) mod browser;
 mod capabilities;
 mod compatibility;
 mod demo;
+mod scenarios;
+pub use scenarios::SCENARIOS;
 mod desktop;
 mod devices;
 mod direct;
@@ -587,25 +589,6 @@ fn identity_color(value: &str) -> Result<[u8; 3], &'static str> {
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("installer-preview-identity-invalid-color")
 }
-pub const SCENARIOS: &[&str] = &[
-    "installer-destination",
-    "installer-migration",
-    "installer-identity",
-    "installer-profile",
-    "installer-password",
-    "installer-connect",
-    "installer-desktop-connect",
-    "installer-devices",
-    "installer-purpose",
-    "installer-belongings",
-    "installer-accounts",
-    "installer-belongings-details",
-    "installer-storage",
-    "installer-usb",
-    "installer-desktop",
-    "installer-review",
-    "installer-ready",
-];
 
 type Commands = Rc<RefCell<Vec<InstallerPreviewEffect>>>;
 
@@ -5415,45 +5398,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         self.journey.destination = Some(Destination::Computer);
         self.journey.migrate = Some(true);
         self.journey.identity = Some(Identity::New);
-        self.journey.page = match scenario {
-            "installer-migration" => Page::Migration,
-            "installer-identity" => Page::Identity,
-            "installer-profile" => Page::Profile,
-            "installer-password" => Page::Password,
-            "installer-connect" => {
-                self.journey.identity = Some(Identity::Existing);
-                Page::Connect
-            }
-            "installer-desktop-connect" => {
-                self.journey.destination = Some(Destination::Desktop);
-                self.journey.migrate = Some(false);
-                self.journey.identity = Some(Identity::Existing);
-                Page::Connect
-            }
-            "installer-devices" => Page::Devices,
-            "installer-purpose" => Page::Purpose,
-            "installer-belongings" => Page::Belongings,
-            "installer-belongings-details" => {
-                self.journey.details = true;
-                Page::Belongings
-            }
-            "installer-accounts" => Page::Accounts,
-            "installer-storage" => Page::Storage,
-            "installer-usb" => {
-                self.journey.destination = Some(Destination::Another);
-                Page::Storage
-            }
-            "installer-desktop" => {
-                self.journey.destination = Some(Destination::Desktop);
-                Page::Storage
-            }
-            "installer-review" => Page::Review,
-            "installer-ready" => Page::Ready,
-            _ => {
-                self.journey.destination = None;
-                Page::Destination
-            }
-        };
+        self.journey.page = scenarios::page(&mut self.journey, scenario);
         if self.journey.destination == Some(Destination::Desktop) {
             self.journey.categories[0] = false;
             self.journey.categories[1] = false;
@@ -10162,8 +10107,8 @@ mod tests {
             assert!(!preview.media_preparation.busy());
         })
         .unwrap();
-        assert!(authenticated.manifest().offline_home.is_none());
-        assert!(authenticated.manifest().original_copy.is_none());
+        assert!(authenticated.manifest().units.offline_home().is_none());
+        assert!(authenticated.manifest().units.original_copy().is_none());
         app.effect(&InstallerPreviewEffect::EditPreview {
             section: "destination".into(),
         })

@@ -153,7 +153,7 @@
 ; hole punching.
 (allow tilo_fs_t self (udp_socket (create bind connect getattr getopt setopt read write)))
 (allow tilo_fs_t self (tcp_socket (create connect getattr getopt setopt read write)))
-(allow tilo_fs_t self (netlink_route_socket (create bind getattr nlmsg_read read write)))
+(allow tilo_fs_t self (netlink_route_socket (create bind getattr setopt nlmsg_read read write)))
 (allow tilo_fs_t self (unix_dgram_socket (create ioctl)))
 (allow tilo_fs_t unreserved_port_t (udp_socket (name_bind)))
 (allow tilo_fs_t node_t (udp_socket (node_bind)))
@@ -171,6 +171,13 @@
 (allow tilo_fs_t NetworkManager_t (dbus (send_msg)))
 (allow tilo_fs_t NetworkManager_var_run_t (dir (getattr search open read)))
 (allow tilo_fs_t NetworkManager_var_run_t (file (getattr open read)))
+
+; The device's copies of public files (crates/system/fs/src/public_content.rs)
+; are fetched over HTTPS, verified against the system trust bundle under
+; /etc/pki: without it the daemon has no client and never fetches a copy.
+(allow tilo_fs_t cert_t (dir (getattr search open read)))
+(allow tilo_fs_t cert_t (file (getattr open read)))
+(allow tilo_fs_t cert_t (lnk_file (read)))
 
 ; The async runtime sizes itself from the unit's cgroup CPU quota, and
 ; statfs of / reports free space for the content store.

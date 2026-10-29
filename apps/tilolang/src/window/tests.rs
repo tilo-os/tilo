@@ -1267,7 +1267,11 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
     let menus: Vec<String> = room
         .items()
         .into_iter()
-        .flat_map(|(_, item)| item.menu.into_iter().map(|entry| entry.label))
+        .flat_map(|(_, item)| {
+            item.menu
+                .into_iter()
+                .filter_map(|entry| entry.label().map(str::to_owned))
+        })
         .collect();
     assert!(
         menus
@@ -1775,7 +1779,7 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     let menu: Vec<&str> = first
         .menu
         .iter()
-        .map(|entry| entry.label.as_str())
+        .filter_map(ui::widget::MenuPart::label)
         .collect();
     assert_eq!(
         menu,

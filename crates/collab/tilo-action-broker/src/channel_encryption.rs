@@ -1456,7 +1456,7 @@ impl ChannelKeyAccess {
 
     /// Wakes whenever any channel's keys or access change; `None` when the
     /// service is unavailable after a poisoned lock.
-    fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+    pub fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         self.inner
             .lock()
             .ok()
@@ -1555,8 +1555,13 @@ impl tilo_identity_host::broker::ChannelKeySource for ChannelKeyProvider {
         use runtime_identity::wire::ChannelAccess as Wire;
         let channels = self.get()?;
         let (access, generation) = channels.access_record(room, route);
+        // A caller holding no keys asks with generation 0, which is also
+        // the generation of a service that has changed nothing since it
+        // started (a channel it restored from disk, after a restart): it is
+        // sent the keys, never told they are unchanged.
+        let held = known_generation != 0 && generation == known_generation;
         Some(match access {
-            ChannelAccess::Ready(keys) if generation != known_generation => keys
+            ChannelAccess::Ready(keys) if !held => keys
                 .to_bytes()
                 .map(|bytes| (Wire::Ready, generation, bytes.to_vec()))
                 .map_err(|error| error.to_string()),

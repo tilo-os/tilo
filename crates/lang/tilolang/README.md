@@ -148,8 +148,10 @@ it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
 
 **Collections.** `items.remove_where(pred)` removes what the predicate holds of and gives how
-many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`; an index is
-refused (E107), since it is counted on what one device sees.
+many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`, or a place,
+`items.move(x, to: i)` (what a drag gives): the place is resolved, when the action runs, to the
+item it then comes before, and the move is recorded beside it, so concurrent moves converge
+where each person meant.
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:

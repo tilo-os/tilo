@@ -1,30 +1,21 @@
 //! Data-source abstraction for Tube.
 //!
-//! Tube has two worlds:
-//!
-//! * **offline** (the default build): the bundled [`crate::sample`] catalogue.
-//!   The `--shots` renderer and every test run here — no network, fully
-//!   hermetic, deterministic screenshots.
-//! * **live** (`--features live`, in the default build): real `YouTube`
-//!   data via the pure-Rust [`rustypipe`](https://docs.rs/rustypipe)
-//!   `InnerTube` client. The shots path and tests never spawn it.
-//!
-//! Both worlds implement the same [`YtBackend`] trait.
+//! Live data comes from real `YouTube` via the pure-Rust
+//! [`rustypipe`](https://docs.rs/rustypipe) `InnerTube` client (`--features
+//! live`, in the default build) behind the [`YtBackend`] trait. Captures and
+//! tests never spawn it.
 //!
 //! ## What lives where
 //!
 //! | Concern            | Type / module                       |
 //! |--------------------|-------------------------------------|
 //! | data-source trait  | [`YtBackend`]                       |
-//! | offline impl       | [`offline::OfflineBackend`]         |
 //! | live impl (gated)  | `live::RustyPipeBackend` (`live`)   |
 //! | request/result DTO | [`Query`], [`BackendResult`]        |
 //!
 //! Recommendations model (Home): the trait exposes the no-auth signals
 //! `NewPipe` / Piped use — [`YtBackend::trending`] and [`YtBackend::related`]
 //! (per-video "up next"). See [`crate::recommend`].
-
-pub mod offline;
 
 #[cfg(feature = "live")]
 pub mod live;
@@ -71,7 +62,7 @@ pub enum BackendResult {
 }
 
 /// Error surfaced by a backend. Stringly-typed on purpose — the UI only ever
-/// shows it in the status log, and the offline backend never errors.
+/// shows it in the status log.
 #[derive(Clone, Debug)]
 pub struct BackendError(pub String);
 
@@ -102,15 +93,13 @@ pub struct PlaybackSource {
     pub quality: String,
 }
 
-/// The data-source seam. One trait, two worlds (offline sample / live
-/// rustypipe). Methods are intentionally coarse-grained — one per screen need
+/// The data-source seam. Methods are intentionally coarse-grained — one per screen need
 /// — so a backend can batch the underlying `InnerTube` calls however it likes.
 ///
 /// Implementations must be `Send + Sync` because the live backend is driven
 /// from the fetch worker thread.
 pub trait YtBackend: Send + Sync {
-    /// Human name for the status log / settings ("offline sample",
-    /// "rustypipe").
+    /// Human name for the status log / settings ("rustypipe").
     fn name(&self) -> &str;
 
     /// Full-text video search.
@@ -161,7 +150,7 @@ pub trait YtBackend: Send + Sync {
 
     /// Top comments for a video. The default returns none — only a backend that
     /// can reach `YouTube`'s `next`/comments continuation (the live rustypipe one)
-    /// produces real comments; the offline sample carries its own. The UI
+    /// produces real comments. The UI
     /// degrades to "no comments" when empty.
     ///
     /// # Errors
@@ -216,39 +205,6 @@ pub trait YtBackend: Send + Sync {
             Query::Channel(id) => self.channel(&id),
             Query::Related(id) => self.related(&id),
             Query::Trending => self.trending(),
-        }
-    }
-}
-
-/// The default backend for the current build: the offline sample unless the
-/// `live` feature selects rustypipe at runtime. Constructed by the worker.
-///
-/// We return a boxed trait object so the worker code is identical across
-/// features; only this one function differs.
-pub fn default_backend() -> Box<dyn YtBackend> {
-    Box::new(offline::OfflineBackend::new())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_offline_backend_searches_and_dispatches_trending() {
-        {
-            let b = default_backend();
-            let out = b.search("rust").expect("offline search never errors");
-            match out {
-                BackendResult::Videos(v) => assert!(!v.is_empty(), "sample has rust videos"),
-                _ => panic!("search returns Videos"),
-            }
-        }
-        {
-            let b = default_backend();
-            assert!(matches!(
-                b.run(Query::Trending),
-                Ok(BackendResult::Videos(_))
-            ));
         }
     }
 }

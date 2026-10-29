@@ -123,10 +123,12 @@ pub fn project_anchor() -> Option<PathBuf> {
 
 /// Where a screenshot's sample media lives in place of the workspace mount;
 /// see [`serve_sample_media`].
+#[cfg(feature = "samples")]
 static SAMPLE_MEDIA: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// The stand-ins for the demo project's sources bundled with the crate
 /// (`sample-media/`).
+#[cfg(feature = "samples")]
 pub fn bundled_sample_media() -> PathBuf {
     Path::new(env!("OUT_DIR")).join("sample-media")
 }
@@ -135,12 +137,14 @@ pub fn bundled_sample_media() -> PathBuf {
 /// demo project serves the bundled stand-ins ([`bundled_sample_media`]), so
 /// its sources resolve to local bytes without a live workspace mount. `None`
 /// stops it.
+#[cfg(feature = "samples")]
 pub fn serve_sample_media(dir: Option<PathBuf>) {
     if let Ok(mut slot) = SAMPLE_MEDIA.lock() {
         *slot = dir;
     }
 }
 
+#[cfg(feature = "samples")]
 fn sample_media() -> Option<PathBuf> {
     SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
 }
@@ -178,7 +182,7 @@ fn content_file(path: &str) -> Option<PathBuf> {
 ///      local file, or a path already under the mount) is used verbatim. This
 ///      is how a portal-imported file outside the workspace reaches the decoder.
 ///   1. **Sample media** — otherwise, if a capture serves sample media
-///      ([`serve_sample_media`]) and `<dir>/<path>` exists, use it, so
+///      (`serve_sample_media`) and `<dir>/<path>` exists, use it, so
 ///      headless captures read real bytes deterministically without a live
 ///      FUSE mount.
 ///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
@@ -224,6 +228,7 @@ pub fn resolve(path: &str) -> MediaSource {
         };
     }
     // 1. A capture's sample media.
+    #[cfg(feature = "samples")]
     if let Some(dir) = sample_media() {
         let candidate = dir.join(path);
         if candidate.exists() {

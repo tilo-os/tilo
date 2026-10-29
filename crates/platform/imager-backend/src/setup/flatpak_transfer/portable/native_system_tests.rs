@@ -558,7 +558,14 @@ fn prepared_setup(root: &Path, expected: Expectation, cancel: &AtomicBool) -> Pr
         vec![],
     )
     .unwrap();
-    manifest.portable_flatpak = Some(expected);
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::MediumApplications(
+            crate::setup::prepared_setup::ApplicationsCarriage::Sealed {
+                expectation: expected,
+                alone: false,
+            },
+        ));
     manifest.write(&setup).unwrap();
     let package = root.join("setup.sealed");
     ExportReview::review(

@@ -6,11 +6,7 @@
 
 #![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 
-use std::ops::{Deref, DerefMut};
-
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, event_created_child};
 use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibit_manager_v1, zwp_keyboard_shortcuts_inhibitor_v1,
@@ -20,7 +16,7 @@ use wayland_protocols::wp::tablet::zv2::client::{
     zwp_tablet_pad_strip_v2, zwp_tablet_pad_v2, zwp_tablet_seat_v2, zwp_tablet_tool_v2,
     zwp_tablet_v2,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -30,9 +26,8 @@ use shell::compositor::backend::{
     TabletPhase, TabletTool, TabletToolKind,
 };
 use shell::compositor::tablet_pad::{DialSteps, dial_events};
-use shell::shell::frame::FrameBuilder;
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 #[derive(Debug, PartialEq)]
 enum Wire {
@@ -74,7 +69,7 @@ struct Client {
     pad_serial: u32,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<zwp_tablet_seat_v2::ZwpTabletSeatV2, ()> for Client {
     fn event(
@@ -293,51 +288,23 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     }
 }
 
-wayland_client::delegate_noop!(Client: ignore wl_shm::WlShm);
-wayland_client::delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-wayland_client::delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-wayland_client::delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-wayland_client::delegate_noop!(Client: ignore wl_surface::WlSurface);
-wayland_client::delegate_noop!(Client: ignore wl_seat::WlSeat);
-wayland_client::delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 wayland_client::delegate_noop!(Client: ignore zwp_tablet_manager_v2::ZwpTabletManagerV2);
 wayland_client::delegate_noop!(Client: ignore zwp_tablet_v2::ZwpTabletV2);
 wayland_client::delegate_noop!(Client: ignore zwp_keyboard_shortcuts_inhibit_manager_v1::ZwpKeyboardShortcutsInhibitManagerV1);
 
-struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-}
-
-impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
-    fn deref(&self) -> &Self::Target {
-        &self.wl
-    }
-}
-
-impl DerefMut for Harness {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
-    }
-}
+type Harness = wayland::Framed<Client>;
 
 impl Harness {
-    fn new() -> Self {
-        let wl = wayland::Harness::new();
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        Self { wl, fb }
-    }
-
     /// Open a toplevel and return its surface and compositor id, laid out.
     fn open(&mut self, app_id: &str) -> (wl_surface::WlSurface, u64) {
         let compositor = self.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
         let wm = self.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
         let qh = self.queue.handle();
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id(app_id.into());
+        let Toplevel {
+            surface,
+            xdg: _,
+            toplevel: _,
+        } = create_toplevel(&compositor, &wm, &qh, app_id);
         self.pump();
         let _ = self.fb.paint_settled();
         // Layout sends the opening xdg configure. Acknowledge it before
@@ -358,31 +325,7 @@ impl Harness {
         surface_id: u64,
         (width, height): (i32, i32),
     ) {
-        use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-        let stride = width.checked_mul(4).expect("ARGB stride");
-        let len = usize::try_from(stride.checked_mul(height).expect("ARGB extent"))
-            .expect("positive ARGB extent");
-        let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-pen-capture".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor.
-        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-        file.set_len(len as u64).expect("size the shm pool");
-        let qh = self.queue.handle();
-        let pool = shm.create_pool(
-            file.as_fd(),
-            i32::try_from(len).expect("pool size"),
-            &qh,
-            (),
-        );
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+        let buffer = self.shm_buffer(width, height, &wayland::solid(width, height, [0; 4]));
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, width, height);
         surface.commit();

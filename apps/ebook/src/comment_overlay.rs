@@ -20,7 +20,7 @@ use ui::text_render::TextRenderer;
 use ui::widget::{Button, ButtonFace, ChipFace, ChipLead, ControlSize};
 
 use crate::input_controls::{InputEventCtx, NoteEditor};
-use crate::model::{AnnoKind, Annotation, HiColor};
+use crate::model::{AnnoKind, Annotation, HighlightColor};
 use crate::reader_theme::ReaderPalette;
 use crate::resource::Ebook;
 
@@ -61,7 +61,7 @@ impl CommentOverlay {
         let Some(group) = self.group else {
             return Vec::new();
         };
-        let (_, excerpt, comments) = gather_content(annotations, group, HiColor::Yellow);
+        let (_, excerpt, comments) = gather_content(annotations, group, HighlightColor::Yellow);
         let mut controls = self
             .hits
             .iter()
@@ -161,8 +161,8 @@ impl CommentOverlay {
 fn gather_content(
     annotations: &[Annotation],
     group: Uuid,
-    default_color: HiColor,
-) -> (HiColor, String, Vec<Annotation>) {
+    default_color: HighlightColor,
+) -> (HighlightColor, String, Vec<Annotation>) {
     let (color, excerpt) = {
         let mut rows: Vec<&Annotation> = annotations
             .iter()
@@ -542,7 +542,7 @@ impl CommentOverlay {
         area: Rect,
         cursor: Point,
         annotations: &[Annotation],
-        default_color: HiColor,
+        default_color: HighlightColor,
     ) {
         self.begin_frame();
         let Some(group) = self.group else { return };
@@ -619,7 +619,7 @@ struct CommentCard<'a> {
     text_w: f32,
     excerpt: &'a str,
     excerpt_h: f64,
-    color: HiColor,
+    color: HighlightColor,
     group: Uuid,
     comments: &'a [Annotation],
     row_heights: &'a [f64],
@@ -673,7 +673,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 800.0, 700.0),
                 Point::ZERO,
                 &annotations,
-                HiColor::Yellow,
+                HighlightColor::Yellow,
             );
 
             let edit = overlay
@@ -703,7 +703,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 600.0, 500.0),
                 Point::ZERO,
                 &annotations,
-                HiColor::Yellow,
+                HighlightColor::Yellow,
             );
             assert!(overlay.hit_test(Point::ZERO).is_some());
             overlay.begin_frame();

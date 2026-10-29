@@ -142,6 +142,7 @@ impl ShellDriver {
                 (user.to_owned(), IndexWeight::Identity),
             ],
             secret: true,
+            references: Vec::new(),
         };
         shell::shell::search::app_content_index::session().apply(
             &shell::shell::search::app_content_index::SlotKey::new(

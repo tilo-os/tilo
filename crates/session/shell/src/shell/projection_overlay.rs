@@ -56,10 +56,6 @@ const SCRIM_ALPHA: f32 = 0.45;
 /// again only when it did. Never asked while painting.
 const DISPLAY_POLL: Duration = Duration::from_millis(250);
 
-/// A settings file modified this recently may be modified again within the
-/// same timestamp tick, so a read taken now is not trusted to stay current.
-const RACY_STAMP: Duration = Duration::from_secs(1);
-
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -313,15 +309,7 @@ impl DisplayLayouts {
         self.transaction = DisplayTransaction::load();
         self.refresh_person();
         self.polled_at = Some(now);
-        // A file stamped just now can change again within the same tick
-        // and keep its stamp; read it once more on the next poll.
-        let racy = matches!(stamp, Some(settings_store::SettingsStamp::Modified(at))
-            if std::time::SystemTime::now().duration_since(at).is_ok_and(|age| age < RACY_STAMP));
-        self.settings_seen = if racy {
-            SettingsSeen::Unread
-        } else {
-            SettingsSeen::At(stamp)
-        };
+        self.settings_seen = SettingsSeen::At(stamp);
     }
 
     /// Everything at once: when the sheet opens.

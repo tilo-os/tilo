@@ -164,6 +164,14 @@ pub enum FormulaError {
     Cycle,
     /// A formula that could not be parsed — `#ERROR!`.
     Error,
+    /// An array result that would overwrite cells holding input — `#SPILL!`.
+    Spill,
+    /// A calculation with no result, such as an empty array — `#CALC!`.
+    Calc,
+    /// The intersection of two ranges that do not meet — `#NULL!`.
+    Null,
+    /// A function the engine knows but does not evaluate — `#N/IMPL!`.
+    NotImplemented,
 }
 
 impl FormulaError {
@@ -178,6 +186,10 @@ impl FormulaError {
             FormulaError::Num => "#NUM!",
             FormulaError::Cycle => "#CYCLE!",
             FormulaError::Error => "#ERROR!",
+            FormulaError::Spill => "#SPILL!",
+            FormulaError::Calc => "#CALC!",
+            FormulaError::Null => "#NULL!",
+            FormulaError::NotImplemented => "#N/IMPL!",
         }
     }
 }

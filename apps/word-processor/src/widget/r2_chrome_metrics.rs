@@ -161,15 +161,15 @@ fn the_commands_are_the_window_bars_and_the_editor_draws_no_toolbar_row() {
             let mut framed = mount_themed(state, wp, width, 900, &theme);
             let (wp, _) = Framed::split(&mut framed);
             let bar = wp.window_bar();
-            let ids: Vec<&str> = bar.actions.iter().map(|a| a.id.as_str()).collect();
+            let names: Vec<String> = bar.actions.iter().map(|a| a.name.clone()).collect();
             assert_eq!(
-                ids,
+                names,
                 [
-                    "format",
-                    "insert",
-                    "toggle-styles",
-                    "file-menu",
-                    "toggle-ruler"
+                    t("toolbar-format"),
+                    t("toolbar-insert"),
+                    t("a11y-styles-panel"),
+                    t("toolbar-file"),
+                    t("toolbar-ruler"),
                 ],
                 "{width}px: the commands are the window bar's slots"
             );

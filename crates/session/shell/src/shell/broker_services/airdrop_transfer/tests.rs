@@ -207,12 +207,9 @@ impl Fixture {
             "DBUS_SESSION_BUS_ADDRESS",
             "unix:path=/nonexistent/airdrop-fixture",
         );
-        let settings = crate::shell::test_support::install_settings(Arc::new(
-            settings_store::SessionSettings::open(settings_store::SessionPaths::beside(
-                home.config().join("settings.json"),
-            ))
-            .unwrap(),
-        ));
+        let settings = crate::shell::test_support::install_settings(
+            settings_store::Store::open(home.config()).unwrap(),
+        );
         settings_store::update_section(
             "continuity",
             serde_json::json!({

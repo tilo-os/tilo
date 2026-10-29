@@ -40,6 +40,8 @@ pub struct Convert<'a> {
     pub cases: &'a dyn Fn(&str) -> Vec<Case>,
     /// The resource and field the event `event` of the node `key` toggles, when it does.
     pub toggles: &'a dyn Fn(&str, &str) -> Toggled,
+    /// The resource and the action the event `event` of the node `key` runs, when it runs one.
+    pub invokes: &'a dyn Fn(&str, &str) -> Toggled,
     /// How a reference in rich text reads for the person reading.
     pub embeds: &'a dyn Fn(&Reference) -> InlineView,
 }
@@ -81,7 +83,9 @@ impl Convert<'_> {
                 .map(|event| {
                     let toggles = (self.toggles)(&node.key, event)
                         .map(|(target, field)| (target.id_string(), field));
-                    (event.clone(), wire::Event { toggles })
+                    let invokes = (self.invokes)(&node.key, event)
+                        .map(|(target, action)| (target.id_string(), action));
+                    (event.clone(), wire::Event { toggles, invokes })
                 })
                 .collect(),
             anchor: node.anchor.clone(),

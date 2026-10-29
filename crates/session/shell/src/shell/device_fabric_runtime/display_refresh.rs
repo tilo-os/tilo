@@ -42,7 +42,7 @@ impl DisplayRefresh {
         });
         let hardware_watch = settings_store::hardware::display_snapshot_path().and_then(|path| {
             let notification = Arc::clone(&observe);
-            match settings_store::watch::watch_settings_at(&path, move || notification()) {
+            match settings_store::watch::watch_file_at(&path, move || notification()) {
                 Ok(watch) => Some(watch),
                 Err(error) => {
                     tracing::warn!(%error, "display observation watch unavailable; using periodic sampling");

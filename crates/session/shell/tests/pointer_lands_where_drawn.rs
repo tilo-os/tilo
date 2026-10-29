@@ -21,21 +21,15 @@
               from overflow"
 )]
 
-use std::ops::{Deref, DerefMut};
-use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
-
 use shell::compositor::state::State;
-use shell::shell::frame::FrameBuilder;
 use vello::kurbo::{Point, Rect};
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-};
+use wayland_client::protocol::{wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 /// The client-drawn shadow around the window, logical pixels. Uneven, as a
 /// frame whose shadow falls downward has it, so a margin taken off the
@@ -67,7 +61,7 @@ struct Client {
     wire: Vec<Wire>,
 }
 
-wayland::test_client!(Client);
+wayland::test_client!(Client: registry, ping, configure, surface, shm, buffer, seat);
 
 impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
     fn event(
@@ -113,12 +107,6 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
 delegate_noop!(Client: ignore wp_viewporter::WpViewporter);
 delegate_noop!(Client: ignore wp_viewport::WpViewport);
 
@@ -188,23 +176,7 @@ fn framed_pixels((width, height): (i32, i32), factor: f64) -> (Vec<u8>, i32, i32
     (rgba, buffer_w, buffer_h)
 }
 
-struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-}
-
-impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
-    fn deref(&self) -> &Self::Target {
-        &self.wl
-    }
-}
-
-impl DerefMut for Harness {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
-    }
-}
+type Harness = wayland::Framed<Client>;
 
 /// A window whose frame and shadow the client draws, mapped and on screen.
 struct Window {
@@ -224,8 +196,7 @@ impl Harness {
             state.scale = scale;
             state
         });
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        Self { wl, fb }
+        Self::from_harness(wl, (1280, 800))
     }
 
     /// Open a window the way a browser drawing its own frame does, at the
@@ -238,10 +209,11 @@ impl Harness {
         let compositor = self.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
         let wm = self.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 2);
         let viewporter = self.bind::<wp_viewporter::WpViewporter>("wp_viewporter", 1);
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.example.FramedBrowser".into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.FramedBrowser");
         surface.commit();
         self.pump();
         let _ = self.fb.paint_settled();
@@ -257,7 +229,7 @@ impl Harness {
             height + SHADOW_TOP + SHADOW_BOTTOM,
         );
         let (rgba, buffer_w, buffer_h) = framed_pixels((width, height), density.factor());
-        let buffer = self.shm_buffer(&rgba, buffer_w, buffer_h);
+        let buffer = self.shm_buffer(buffer_w, buffer_h, &rgba);
 
         let viewport = match density {
             Density::Viewport(_) => {
@@ -312,35 +284,6 @@ impl Harness {
             _viewport: viewport,
             _buffer: buffer,
         }
-    }
-
-    fn shm_buffer(&self, rgba: &[u8], width: i32, height: i32) -> wl_buffer::WlBuffer {
-        use std::os::unix::fs::FileExt as _;
-        let len = rgba.len();
-        let shm = self.bind::<wl_shm::WlShm>("wl_shm", 1);
-        // SAFETY: a null-terminated name and a valid flag word are the whole
-        // contract of `memfd_create`.
-        let raw = unsafe { libc::memfd_create(c"tilo-pointer-lands".as_ptr(), 0) };
-        assert!(
-            raw >= 0,
-            "memfd_create: {}",
-            std::io::Error::last_os_error()
-        );
-        // SAFETY: `memfd_create` just handed us this descriptor.
-        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-        file.set_len(len as u64).unwrap();
-        file.write_all_at(rgba, 0).unwrap();
-        let qh = self.queue.handle();
-        let pool = shm.create_pool(file.as_fd(), i32::try_from(len).unwrap(), &qh, ());
-        pool.create_buffer(
-            0,
-            width,
-            height,
-            width * 4,
-            wl_shm::Format::Argb8888,
-            &qh,
-            (),
-        )
     }
 
     fn tile(&self, surface_id: u64) -> Rect {
