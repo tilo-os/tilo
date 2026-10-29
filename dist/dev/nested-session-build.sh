@@ -7,8 +7,8 @@
 # which nested-session.sh bakes into the tilolang runtime bundle), the shared
 # runtime library they link and
 # its engines, the Rust standard library that runtime was linked against, the
-# env-runtime image Terminal's environments start from, and a dbus-daemon for
-# hosts that have none.
+# env-runtime image Terminal's environments start from, and the build
+# environment's dbus-daemon (nested-session-bus) for hosts that have none.
 #
 # The thin apps and libruntime_dylib.so must come from one Cargo graph (a
 # Rust dylib's symbols carry crate hashes), so one run of this script builds
@@ -94,7 +94,7 @@ profile_args() {
 label() { sed -u "s/^/$1: /"; }
 host_profile=nested
 host_bins=(shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-host)
+           tilo-model-gateway tilo-ush tilo-control tilolang-host nested-session-bus)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -106,7 +106,8 @@ build_host() {
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-model-gateway --bin tilo-model-gateway \
         -p ush --bin tilo-ush \
-        -p tilo-control --bin tilo-control
+        -p tilo-control --bin tilo-control \
+        -p nested-session-bus --bin nested-session-bus
 }
 # The tilolang host, in a build of its own: built with the shell, the features the shell
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
@@ -214,9 +215,11 @@ needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \
 cp -p "$(rustc --print target-libdir)/$needed_std" "$out/thin-app/"
 # The session's private D-Bus: Tilo OS hosts run their user bus on
 # dbus-broker and carry no dbus-daemon, which the nested session starts one
-# of per shell (dist/dev/session-bus.sh). The builder's is the same Fedora
-# release's and links only libraries every Tilo host has.
-if dbus_daemon=$(command -v dbus-daemon); then
-    cp -pL "$dbus_daemon" "$out/bin/dbus-daemon"
-fi
+# of per shell (dist/dev/session-bus.sh). nested-session-bus carries the
+# build environment's (the build image's, the same Fedora release's, linking
+# only libraries every Tilo host has) inside a cargo-built executable, so it
+# comes back with the other programs from a build on another machine. A build
+# environment without one builds it empty, and it refuses to run.
+"$out/bin/nested-session-bus" --version >/dev/null \
+    || { echo "nested-session-bus carries no working dbus-daemon: build where dbus-daemon is installed" >&2; exit 1; }
 printf 'staged the nested session in %s\n' "$out"

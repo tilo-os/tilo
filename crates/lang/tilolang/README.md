@@ -209,8 +209,12 @@ item it then comes before, and the move is recorded beside it, so concurrent mov
 where each person meant. The collection a move is called on is where the item goes, from
 whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
 takes a card from its column to the foot of `done`, the same card, with its history and every
-reference to it. An item cannot go inside itself. How moves, edits and removals made at the same
-time merge is convergence.md, "Storage and sync".
+reference to it. An item cannot go inside itself. A place may count only a run of the
+collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
+t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
+then comes before, or after the run's last. A board lane's drop says both what was dropped and
+where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves, edits and removals made
+at the same time merge is convergence.md, "Storage and sync".
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:

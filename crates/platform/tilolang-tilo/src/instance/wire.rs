@@ -144,6 +144,7 @@ impl Convert<'_> {
             | Value::Node(_)
             | Value::Rec(_)
             | Value::Event
+            | Value::EventPart(_)
             | Value::State { .. }
             | Value::AtEvent { .. } => wire::Value::Unit,
         }
@@ -284,8 +285,11 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         wire::Value::Principal(who) => {
             Value::Principal(crate::runtime::Principal::new(who.id.clone()))
         }
+        // What a drop carries: the card and its place.
+        wire::Value::List(items) => {
+            Value::List(items.iter().map(runtime_value).collect::<Option<_>>()?)
+        }
         wire::Value::Unit
-        | wire::Value::List(_)
         | wire::Value::Opt(_)
         | wire::Value::Rich(_)
         | wire::Value::Error(_)

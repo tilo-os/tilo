@@ -175,7 +175,7 @@ shell-ui = "optional@{shell_ui}"
 runtime = {tilolang}
 bin = {bin}
 type = "gui"
-
+{origins}
 [providers]
 mime = []
 ext = []
@@ -193,6 +193,8 @@ ext = []
         capabilities = capabilities,
         namespaces = namespaces,
         net = net,
+        // The system runs the mail connector for the app, in this sandbox, window or not.
+        origins = if mail { "origins = [\"imap\"]\n" } else { "" },
     )
 }
 
@@ -252,7 +254,7 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
             app: meta.app.clone(),
             title: meta.title.clone(),
             meta: meta.clone(),
-            digest: digest(&text, &bundle),
+            digest: digest(&text, &bundle)?,
             payload,
             manifest: manifest_path,
             tapp,
@@ -262,14 +264,14 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
 }
 
 /// SHA-256 (hex) of a manifest and the bundle staged with it.
-fn digest(manifest: &str, bundle: &Bundle) -> String {
+fn digest(manifest: &str, bundle: &Bundle) -> Result<String, String> {
     use sha2::Digest as _;
     let mut hasher = sha2::Sha256::new();
     for part in [
         manifest.as_bytes(),
         &bundle.wasm,
         bundle.ids.as_bytes(),
-        &bundle.surface(),
+        &bundle.surface().map_err(|error| error.to_string())?,
     ] {
         hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part);
@@ -278,7 +280,7 @@ fn digest(manifest: &str, bundle: &Bundle) -> String {
         hasher.update((import.wasm.len() as u64).to_le_bytes());
         hasher.update(&import.wasm);
     }
-    hex::encode(hasher.finalize())
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub(crate) fn write_tapp(

@@ -1,4 +1,4 @@
-app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, previously: so.tilo.lang.letters, records: .own)
+app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, records: .own)
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in
@@ -179,6 +179,21 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox") {
     t.boxes.add("inbox")
 }
 
+/// Moves the conversation to another mailbox of its account.
+action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
+    require not t.boxes.any(b -> b == to.key) "It is in {to.name} already"
+    for m in t.messages {
+        if m.mailbox != "sent" {
+            m.mailbox = to.key
+        }
+    }
+    t.boxes.remove("inbox")
+    t.boxes.remove("archive")
+    t.boxes.remove("junk")
+    t.boxes.remove("trash")
+    t.boxes.add(to.key)
+}
+
 /// Deletes the conversation: its messages go to the trash.
 destructive action delete(t: Thread) (icon: .trash) {
     require not t.boxes.any(b -> b == "trash") "It is in the trash"
@@ -328,7 +343,13 @@ view thread_row(t: Thread) {
 
 /// One message being written in a list: its subject and who it goes to.
 view draft_row(d: Draft) {
-    row(d.subject, secondary: d.to, mark: if d.sent { .send })
+    row(d.subject, secondary: if let s = delivery(d) { delivery_says(s.state, s.reason) } else { d.to }, mark: if d.sent { .send })
+}
+
+/// How a message on its way out stands, in a sentence: waiting to go online, sending, sent,
+/// not sent and why, or not known.
+fn delivery_says(state: Text, reason: Text) -> Text {
+    if state == "sent" { "Sent" } else if state == "sending" { "Sending" } else if state == "rejected" { "Not sent: {reason}" } else if state == "unknown" { "Not known whether it was sent" } else if reason == "" { "Waiting to send" } else { "Waiting to go online: {reason}" }
 }
 
 /// A conversation's window: its messages in order, each with who wrote it, to whom and when.
@@ -346,6 +367,11 @@ view conversation(t: Thread) {
 /// A message being written: its window.
 view editor(d: Draft) {
     std.document(d) {
+        if let s = delivery(d) {
+            field("Status") {
+                text(delivery_says(s.state, s.reason))
+            }
+        }
         field("To") {
             input(bind: d.to, placeholder: "name@example.org")
         }

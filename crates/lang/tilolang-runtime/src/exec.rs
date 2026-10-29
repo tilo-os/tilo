@@ -294,6 +294,53 @@ impl Core {
         Ok(args)
     }
 
+    /// The parameters `aref` leaves out that have no default, by index: what an invocation of
+    /// it still needs. Empty for anything but an action of a package.
+    pub(crate) fn missing_arguments(&self, aref: &ActionRef) -> Vec<usize> {
+        let Some(pkg) = self.registry.borrow().action_package(&aref.action) else {
+            return Vec::new();
+        };
+        let Some(meta) = pkg.action(&aref.action) else {
+            return Vec::new();
+        };
+        meta.params
+            .iter()
+            .enumerate()
+            .skip(aref.args.len())
+            .filter(|(_, param)| param.default.is_none())
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// The default of the parameter `at` of `action`, over the arguments before it: `None`
+    /// when it has none.
+    pub(crate) fn default_argument(
+        &self,
+        action: &str,
+        at: usize,
+        before: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        let Some(pkg) = self.registry.borrow().action_package(action) else {
+            return Ok(None);
+        };
+        let meta = pkg
+            .action(action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {action}")))?
+            .clone();
+        let Some(param) = meta.params.get(at) else {
+            return Ok(None);
+        };
+        let Some(default) = &param.default else {
+            return Ok(None);
+        };
+        let params = meta.params.get(..at).unwrap_or_default();
+        if params.len() != before.len() {
+            return Ok(None);
+        }
+        self.call_pure(&pkg, &default.export, params, before, &param.ty)
+            .map(Some)
+    }
+
     /// Call the export `export` of `pkg`, a function of the values it is given that changes
     /// nothing (a parameter default, an argument computed at an event), in a frame of its own.
     pub(crate) fn call_pure(
@@ -1092,17 +1139,20 @@ impl Core {
         let Value::List(args) = self.val(args_h)? else {
             return trap("act_ref expects the arguments as a list");
         };
-        // How many arguments it takes, and how many of the last of them have defaults, which
-        // an application may leave out: they are computed when it is invoked.
+        // How many arguments it takes, and how many of the last of them an application may
+        // leave out: those with defaults, computed when it is invoked, and those its form asks
+        // the person for (forms-and-diagrams.md §1).
         let arity = {
             let reg = self.registry.borrow();
-            let as_action = reg.action_package(&action).and_then(|p| {
-                p.action(&action).map(|a| {
+            let as_action = reg.action_package(&action).and_then(|pkg| {
+                pkg.action(&action).map(|a| {
                     let defaulted = a
                         .params
                         .iter()
                         .rev()
-                        .take_while(|p| p.default.is_some())
+                        .take_while(|p| {
+                            p.default.is_some() || crate::platform::form_asks(&pkg.meta, &p.ty)
+                        })
                         .count();
                     (a.params.len(), defaulted)
                 })
@@ -1257,13 +1307,16 @@ impl Core {
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
-                let FrameKind::Action(state) = &frames.top()?.kind else {
-                    return trap("invoker is only available in actions");
+                let who = match &frames.top()?.kind {
+                    FrameKind::Action(state) => state
+                        .acting_as
+                        .last()
+                        .map_or(&state.invoker, |(who, _)| who),
+                    // An action's requirement read where it is presented: the person looking,
+                    // who would invoke it.
+                    FrameKind::View(view) => &view.viewer,
+                    _ => return trap("invoker is only available in actions"),
                 };
-                let who = state
-                    .acting_as
-                    .last()
-                    .map_or(&state.invoker, |(who, _)| who);
                 let who = Value::Principal(who.clone());
                 drop(frames);
                 self.ret_h(who)

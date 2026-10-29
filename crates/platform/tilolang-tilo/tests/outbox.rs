@@ -101,9 +101,45 @@ fn approving_one_suggestion_twice_on_one_replica_queues_it_once() {
     assert!(approve(&ada).is_err());
     ada.commit();
     assert_eq!(ada.host.store().outbox_pending_count(), 1);
+    // Marked as being handed over first, a change of its own; handed over once that is in.
+    ada.host.settle_outbox().unwrap();
+    ada.commit();
+    assert!(sink.delivered().is_empty());
     ada.host.settle_outbox().unwrap();
     ada.commit();
     assert_eq!(sink.delivered().len(), 1);
+}
+
+#[test]
+fn a_letter_another_process_was_handing_over_is_outcome_unknown_and_never_sent_twice() {
+    use tilolang_runtime::store::{ChangeNote, OutboxState, Store as _};
+    let (mut ada, invocation) = suggested_room();
+    let sink = MemorySink::new();
+    ada.host.runtime().set_sink(sink.clone());
+    ada.host
+        .runtime()
+        .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+        .unwrap();
+    ada.commit();
+    // Another process of this device marked it as being handed over, and stopped.
+    let entry = ada.host.runtime().pending_outbox().remove(0);
+    let mut store = ada.host.store().clone();
+    let gone = OutboxState::Sending {
+        by: "a process that stopped".to_owned(),
+    };
+    store
+        .outbox_mark(&entry, &gone, &ChangeNote::default())
+        .unwrap();
+    ada.commit();
+    ada.host.settle_outbox().unwrap();
+    ada.commit();
+    ada.host.settle_outbox().unwrap();
+    ada.commit();
+    assert!(sink.delivered().is_empty(), "never handed over twice");
+    assert_eq!(ada.host.store().outbox_pending_count(), 0);
+    let states = ada.host.store().outbox_states();
+    let (_, state) = states.iter().find(|(doc, _)| *doc == entry.doc).unwrap();
+    assert_eq!(state.state, "unknown");
 }
 
 /// What committing the action queued under `ticket` through the host's resource needs of a

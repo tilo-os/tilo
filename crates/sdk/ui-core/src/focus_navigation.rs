@@ -265,28 +265,16 @@ pub(crate) fn within_keyboard_scope(
 
 /// Whether a component boundary (an app hosted in a tile, as a desktop's
 /// windows host theirs) sits below `widget`. A component's root lays out
-/// nodes that are not its boundary's widget children, so the widget walk
-/// of [`order`] cannot reach its controls: focus order then walks the
-/// admitted layout map ([`mapped_order`]) instead.
+/// nodes that are not its boundary's widget children, so a widget walk
+/// ([`any_trap`]) cannot reach its controls: whether one traps focus is then
+/// asked of the admitted layout map, which focus order walks
+/// ([`mapped_order`]).
 pub(crate) fn hosts_components(widget: &dyn Widget) -> bool {
     let mut found = false;
     widget.for_each_child(&mut |child| {
         found = found || child.callback_binding().is_some() || hosts_components(child);
     });
     found
-}
-
-/// Whether a host orders focus over its admitted layout map
-/// ([`layout_map_order`]) rather than its widget tree ([`order`]): History,
-/// embedded or the host's own, and a component hosted below the root each
-/// lay out nodes the widget walk cannot reach. The native window and the
-/// frame harness both decide here, so they never order focus apart.
-pub(crate) fn walks_layout_map(
-    root: &dyn Widget,
-    history: bool,
-    restrictions: &crate::history_mode::embedded::FocusRestrictions,
-) -> bool {
-    history || restrictions.has_surfaces() || hosts_components(root)
 }
 
 /// What the focus walk asks of one node: whether it takes focus, whether it

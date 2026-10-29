@@ -4294,7 +4294,6 @@ fn confinement_routes_are_mandatory_for_hosted_terminals() {
             location: Location::Relay {
                 relay: "ab".repeat(32),
             },
-            shell: crate::target::Shell::Ush,
         };
         assert_eq!(
             decide_route(&on_relay, true, false, None),

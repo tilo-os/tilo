@@ -513,7 +513,7 @@ mod cases {
             &conv,
             "agent:helper",
             "",
-            &format!("@todo.Project:{}", project.id_string()),
+            &format!("@tasks.Project:{}", project.id_string()),
         );
         let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(view.tree());
@@ -533,7 +533,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        post(&w, &apps, &conv, "agent:helper", "see", "todo.nothing(1)");
+        post(&w, &apps, &conv, "agent:helper", "see", "tasks.nothing(1)");
         post(&w, &apps, &conv, "person:ada", "still here", "");
         let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(view.tree());
@@ -659,6 +659,8 @@ mod cases {
             json!(["bo@example.org", "Plans", "See you at nine."])
         );
         assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+        // Marked as being handed over, then handed over.
+        assert_eq!(w.rt.settle().unwrap().marked, 1);
         assert_eq!(w.rt.settle().unwrap().delivered, 1);
         assert_eq!(
             w.sink.delivered(),
@@ -705,7 +707,7 @@ mod cases {
         let second = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("eggs")]));
         let remove = |item: &ResourceRef| {
             format!(
-                "button(\"Remove\", on: todo.remove(@todo.Tasks:{}, @todo.Task:{}))",
+                "button(\"Remove\", on: tasks.remove(@tasks.Tasks:{}, @tasks.Task:{}))",
                 list.id_string(),
                 item.id_string()
             )
@@ -761,7 +763,7 @@ mod cases {
         let (_, conv) = start_chat(&wa, &apps);
         let list = wa.create("Tasks");
         wa.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.Tasks:{}, \"bread\")", list.id_string());
+        let src = format!("tasks.add(@tasks.Tasks:{}, \"bread\")", list.id_string());
         let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
 
         assert_eq!(
@@ -808,7 +810,7 @@ mod cases {
         let (_, conv) = start_chat(&w, &apps);
         let list = w.create("Tasks");
         w.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.Tasks:{}, \"spam\")", list.id_string());
+        let src = format!("tasks.add(@tasks.Tasks:{}, \"spam\")", list.id_string());
 
         let mallory = Principal::new("person:mallory");
         let message = post(&w, &apps, &conv, "person:mallory", "", &src);
@@ -941,6 +943,7 @@ mod cases {
                     .count();
             assert_eq!(sends, 1);
         }
+        assert_eq!(wa.rt.settle().unwrap().marked, 1);
         assert_eq!(wa.rt.settle().unwrap().delivered, 1);
         assert_eq!(wa.sink.delivered().len(), 1);
 

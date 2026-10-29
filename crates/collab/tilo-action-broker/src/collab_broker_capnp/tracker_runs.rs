@@ -113,13 +113,40 @@ pub(super) fn paused_step(run: &TrackerRun) -> Option<runtime_collab::TaskRunPau
         .question
         .as_ref()
         .filter(|question| question.answer == TrackerAnswer::Waiting)?;
-    let digest = hex::decode(&question.arguments_digest).ok()?;
+    // A record that does not decode resumes the run without its paused
+    // step: the agent asks the question again, which the log explains.
+    let unreadable = |what: &str, error: &dyn std::fmt::Display| {
+        tracing::warn!(
+            run = %run.issue,
+            question = %question.id,
+            %error,
+            "the paused question's recorded {what} does not decode; the run resumes without it"
+        );
+    };
+    let digest = match hex::decode(&question.arguments_digest) {
+        Ok(digest) => digest,
+        Err(error) => {
+            unreadable("arguments digest", &error);
+            return None;
+        }
+    };
+    let Ok(arguments_digest) = <[u8; 32]>::try_from(digest.as_slice()) else {
+        unreadable("arguments digest", &format_args!("{} bytes", digest.len()));
+        return None;
+    };
+    let draft = match serde_json::from_value(question.draft.clone()) {
+        Ok(draft) => draft,
+        Err(error) => {
+            unreadable("draft", &error);
+            return None;
+        }
+    };
     Some(runtime_collab::TaskRunPausedStep {
         app: question.app.clone(),
         resource: question.resource.clone(),
         action: question.action.clone(),
-        draft: serde_json::from_value(question.draft.clone()).ok()?,
-        arguments_digest: digest.try_into().ok()?,
+        draft,
+        arguments_digest,
     })
 }
 

@@ -404,7 +404,30 @@ impl State {
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
     state.serial_counter = state.serial_counter.wrapping_add(1);
+    crate::compositor::input_order::minted(state.serial_counter);
     Serial::from(state.serial_counter)
+}
+
+/// The input event with `serial` went to the client of `surface_id`: what its process's
+/// window bar does next comes after it ([`crate::compositor::input_order`]).
+fn note_input_sent(state: &mut State, serial: Serial, surface_id: u64) {
+    let pid = state
+        .client_input
+        .surfaces
+        .get(&surface_id)
+        .and_then(WlSurface::client)
+        .and_then(|client| {
+            client
+                .get_data::<crate::compositor::state::ClientState>()
+                .and_then(|client| client.pid)
+        });
+    if let Some(pid) = pid {
+        state.input_order.sent(
+            pid,
+            u32::from(serial),
+            crate::compositor::input_order::launch_of,
+        );
+    }
 }
 
 fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
@@ -675,6 +698,7 @@ impl State {
             }
         }
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            note_input_sent(self, serial, surface_id);
             if let Some((delivery_time_ns, observed_surface)) =
                 delivery_time_ns.zip(observed_surface)
             {
@@ -830,6 +854,7 @@ impl State {
         );
         pointer.frame(self);
         if let Some(surface_id) = self.client_input.pointer_focus {
+            note_input_sent(self, serial, surface_id);
             record_activation_serial(self, serial, surface_id);
             if pressed {
                 self.note_app_input(surface_id);
@@ -1049,6 +1074,14 @@ impl State {
         };
         let serial = mint_serial(self);
         let time = event_time(self);
+        if matches!(
+            touch,
+            BackendTouchEvent::Down { .. } | BackendTouchEvent::Up { .. }
+        ) && let Some((surface_id, _)) = target
+            && focus.is_some()
+        {
+            note_input_sent(self, serial, surface_id);
+        }
         // A finger down is a press, as a button or a key is: the same
         // serial an activation token may be minted from, and the person's
         // own when no agent or participant sends it through the seat.

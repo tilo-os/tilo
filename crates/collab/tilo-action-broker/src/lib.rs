@@ -62,18 +62,29 @@ pub fn register_package_surface_and_reads<I>(
     I: IntoIterator<Item = (String, Vec<u8>)>,
 {
     register_package_surface(app_id, surface);
-    let Ok(reader) = collab_types::surface::SurfaceFile::parse(surface) else {
-        return;
+    let reader = match collab_types::surface::SurfaceFile::parse(surface) {
+        Ok(reader) => reader,
+        Err(error) => {
+            // What it reads is then nothing.
+            tracing::warn!(app = app_id, %error, "package surface does not decode; it reads no other app");
+            return;
+        }
     };
     if reader.reads.is_empty() {
         return;
     }
     for (owner, bytes) in installed() {
-        if owner != app_id
-            && collab_types::surface::SurfaceFile::parse(&bytes)
-                .is_ok_and(|surface| reader.reads_any_of(&surface))
-        {
-            register_package_surface(&owner, &bytes);
+        if owner == app_id {
+            continue;
+        }
+        match collab_types::surface::SurfaceFile::parse(&bytes) {
+            Ok(surface) if reader.reads_any_of(&surface) => {
+                register_package_surface(&owner, &bytes);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(app = app_id, owner = %owner, %error, "installed package surface does not decode; its records cannot be read");
+            }
         }
     }
 }

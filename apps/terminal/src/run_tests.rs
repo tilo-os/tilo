@@ -695,3 +695,249 @@ fn a_ush_session_records_the_run_of_a_pipeline() {
     );
     assert!(!run.undoable, "it only looked");
 }
+
+/// What the terminal types reaches ush's shell as keys: no line discipline
+/// between them, the shell's own editor reads each byte.
+struct Raw(Receiver<Vec<u8>>, Vec<u8>);
+
+impl std::io::Read for Raw {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.1.is_empty() {
+            match self.0.recv() {
+                Ok(bytes) => self.1 = bytes,
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buffer.len().min(self.1.len());
+        buffer[..n].copy_from_slice(&self.1[..n]);
+        self.1.drain(..n);
+        Ok(n)
+    }
+}
+
+/// Give the session `app` shows ush's own shell as its process, on `host`,
+/// with its line editor reading the keys the terminal sends.
+fn ush_shell(app: &mut App, host: ush_shell::MemoryHost) {
+    use std::sync::Arc;
+    use ush_shell::{Input, Output, Session, Shell, Stdio};
+
+    let (print, printed) = channel();
+    let (typed_tx, typed) = channel();
+    std::thread::spawn(move || {
+        let io = Stdio {
+            stdin: Input::new(Raw(typed, Vec::new())),
+            stdout: Output::new(Crlf(print.clone())),
+            stderr: Output::new(Crlf(print)),
+        };
+        let env = [("PS1".to_string(), "$ ".to_string())];
+        let mut shell = Shell::new(Arc::new(host), env, "/src/demo".into(), io);
+        shell.interactive(&Session {
+            runs_key: Some(KEY.into()),
+        });
+    });
+    let mut parts = Some((printed, typed_tx));
+    let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        let (printed, typed) = parts.take().expect("one process");
+        let mut backend = crate::inner::TerminalBackend::for_test();
+        backend.reader = Box::new(Printed(printed, Vec::new()));
+        backend.writer = Box::new(Typed(typed));
+        backend.runs = Some(KEY.into());
+        Ok(backend)
+    });
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    settle_until(app, |state| !state.pane_id().is_empty());
+}
+
+fn demo_host() -> ush_shell::MemoryHost {
+    let host = ush_shell::MemoryHost::new().with_terminal(80);
+    host.file("/src/demo/notes.md", "")
+        .file("/src/demo/todo.md", "");
+    host
+}
+
+/// Give the grid the keyboard, as a click on it does.
+fn focus_grid(app: &mut App) {
+    let grid = app
+        .with_surface(|terminal: &mut crate::TerminalView| terminal.grid_rect())
+        .unwrap();
+    let centre = grid.center();
+    app.harness().click_at(centre.x, centre.y);
+    app.settle();
+}
+
+fn press(app: &mut App, modifiers: &[&str], key: &str) {
+    app.harness().set_modifiers(
+        &modifiers
+            .iter()
+            .map(|m| (*m).to_owned())
+            .collect::<Vec<_>>(),
+    );
+    app.harness().key(key);
+    app.harness().set_modifiers(&[]);
+    app.settle();
+}
+
+/// The person types with the editing keys at ush's prompt — Home, End,
+/// Left, Ctrl+W, Backspace — and the line the editor made is the run the
+/// session records.
+#[test]
+fn a_person_edits_at_ushs_prompt_and_the_run_is_recorded() {
+    let mut app = App::new().expect("terminal");
+    ush_shell(&mut app, demo_host());
+    focus_grid(&mut app);
+    app.harness().type_text("ls | wc");
+    press(&mut app, &[], "Home");
+    app.harness().type_text("echo x; ");
+    press(&mut app, &[], "End");
+    app.harness().type_text(" -l oops");
+    press(&mut app, &["ctrl"], "w");
+    press(&mut app, &[], "Backspace");
+    press(&mut app, &[], "Left");
+    press(&mut app, &[], "Left");
+    press(&mut app, &[], "Right");
+    press(&mut app, &[], "Right");
+    press(&mut app, &[], "Enter");
+    settle_until(&mut app, |state| state.runs.len() == 1);
+
+    let state = app.state();
+    let (_, run) = state.runs.iter().next().unwrap();
+    assert_eq!(run.command.0, "echo x; ls | wc -l");
+    assert_eq!(run.exit, 0);
+    assert!(
+        matches!(run.output, Bytes::Blob { len, .. } if len == "x\r\n2\r\n".len() as u64),
+        "{:?}",
+        run.output
+    );
+}
+
+/// Up at ush's prompt recalls the person's last run from their own history
+/// record, which Terminal answers the shell from: a new session, whose
+/// shell ran nothing yet, gets the line the first session ran.
+#[test]
+fn up_recalls_the_last_run_from_the_persons_history() {
+    let mut app = App::new().expect("terminal");
+    ush_shell(&mut app, demo_host());
+    app.call("run", serde_json::json!({ "command": "ls | wc -l" }))
+        .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 1 && state.requests.pending().next().is_none()
+    });
+
+    app.open_here(&[]).expect("a second session");
+    assert!(app.state().runs.is_empty());
+    ush_shell(&mut app, demo_host());
+    focus_grid(&mut app);
+    press(&mut app, &[], "Up");
+    // The answer comes back through the terminal; Enter is pressed at once
+    // and the line waits for it.
+    press(&mut app, &[], "Enter");
+    settle_until(&mut app, |state| state.runs.len() == 1);
+    let state = app.state();
+    let (_, run) = state.runs.iter().next().unwrap();
+    assert_eq!(run.command.0, "ls | wc -l");
+    assert!(matches!(run.output, Bytes::Blob { len, .. } if len == "2\r\n".len() as u64));
+}
+
+/// `sleep 0.3 &` runs as a job beside the shell, with a run of its own,
+/// and `fg` waits for it: three runs, the job's among them, its command its
+/// own.
+#[test]
+fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
+    let mut app = App::new().expect("terminal");
+    ush_shell(&mut app, demo_host().with_real_time());
+    app.call("run", serde_json::json!({ "command": "sleep 0.3 &" }))
+        .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 1 && state.requests.pending().next().is_none()
+    });
+    app.call("run", serde_json::json!({ "command": "fg" }))
+        .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 3 && state.requests.pending().next().is_none()
+    });
+    let state = app.state();
+    let mut commands: Vec<(String, i32)> = state
+        .runs
+        .values()
+        .map(|run| (run.command.0.clone(), run.exit))
+        .collect();
+    commands.sort();
+    assert_eq!(
+        commands,
+        [
+            ("fg".to_owned(), 0),
+            ("sleep 0.3".to_owned(), 0),
+            ("sleep 0.3 &".to_owned(), 0)
+        ]
+    );
+    // The person's history has the lines they ran, not the job.
+    let history = app
+        .person::<crate::history::CommandHistory>()
+        .expect("the person's history")
+        .get();
+    let remembered: Vec<&str> = history
+        .runs
+        .values()
+        .map(|run| run.command.0.as_str())
+        .collect();
+    assert_eq!(remembered, ["sleep 0.3 &", "fg"]);
+}
+
+/// An agent's `run` in a ush session gets the compact agent rendering
+/// without asking for it; the person's run of the same line gets the text.
+#[test]
+fn an_agents_run_gets_the_agent_rendering() {
+    use ui::tilo_resource::Resource as _;
+
+    let mut app = App::new().expect("terminal");
+    let host = demo_host();
+    for i in 0..3 {
+        host.file(&format!("/src/demo/p/f{i}.txt"), "");
+    }
+    ush_shell(&mut app, host);
+    app.call("run", serde_json::json!({ "command": "ls -R p" }))
+        .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 1 && state.requests.pending().next().is_none()
+    });
+    let agent = ActionInvoker::actor("agent:helper")
+        .with_kind(ActorKind::Agent)
+        .acting_for("person:ada");
+    app.call_by(
+        agent,
+        Terminal::KIND,
+        "run",
+        serde_json::json!({ "command": "ls -R p" }),
+    )
+    .expect("the agent's run");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 2 && state.requests.pending().next().is_none()
+    });
+    let state = app.state();
+    let output = |actor: &str| {
+        let run = state
+            .runs
+            .values()
+            .find(|run| (run.actor.0 == "agent:helper") == (actor == "agent"))
+            .unwrap();
+        let Bytes::Blob { hash, .. } = &run.output else {
+            panic!("printed nothing: {run:?}");
+        };
+        let hex = hash.iter().fold(String::new(), |mut hex, b| {
+            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
+            hex
+        });
+        String::from_utf8(app.content().read(&hex).expect("the output")).unwrap()
+    };
+    assert!(
+        output("person").contains("p:\r\nf0.txt\r\nf1.txt\r\nf2.txt"),
+        "{}",
+        output("person")
+    );
+    assert!(
+        output("agent").contains("p/: f0.txt f1.txt f2.txt"),
+        "{}",
+        output("agent")
+    );
+}

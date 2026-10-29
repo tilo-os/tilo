@@ -253,6 +253,10 @@ pub enum EngineRequestKind {
     OAuthAuthorize,
 }
 
+/// The context of an [`EngineEvent::Error`] of a send whose SMTP server could not be reached:
+/// the message never got there, so it may be sent again once the network is back.
+pub const SMTP_UNREACHED: &str = "smtp.unreached";
+
 /// An event from the engine worker back to the UI.
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
@@ -808,10 +812,14 @@ pub mod live {
             })
         }
 
-        fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
-            let creds = resolve_auth(&self.custodian, account)?;
+        fn handle_send(
+            &self,
+            account: &AccountConfig,
+            draft: &Draft,
+        ) -> Result<usize, SmtpFailure> {
+            let creds = resolve_auth(&self.custodian, account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
-            let bytes = build_mime(&self.content, &from, draft)?;
+            let bytes = build_mime(&self.content, &from, draft).map_err(SmtpFailure::Failed)?;
             // A test server's own certificate, when the engine was made to trust it.
             let tls = if self.trusts_test_servers {
                 Some(
@@ -820,12 +828,15 @@ pub mod live {
                     )
                     .dangerous_accept_invalid_certs(true)
                     .build()
-                    .map_err(|e| e.to_string())?,
+                    .map_err(|e| SmtpFailure::Failed(e.to_string()))?,
                 )
             } else {
                 None
             };
-            self.block_on(smtp_send_with_tls(account, draft, &creds, &bytes, tls))?;
+            self.block_on(async {
+                Ok(smtp_send_with_tls(account, draft, &creds, &bytes, tls).await)
+            })
+            .map_err(SmtpFailure::Failed)??;
             Ok(bytes.len())
         }
 
@@ -880,11 +891,15 @@ pub mod live {
                         wire_bytes,
                     });
                 }
-                Err(message) => {
+                Err(failure) => {
+                    let (context, message) = match failure {
+                        SmtpFailure::Unreached(message) => (super::SMTP_UNREACHED, message),
+                        SmtpFailure::Failed(message) => ("smtp", message),
+                    };
                     let _ = out.send(EngineEvent::Error {
                         request_id,
                         kind,
-                        context: "smtp".into(),
+                        context: context.into(),
                         message,
                     });
                 }
@@ -1600,19 +1615,28 @@ pub mod live {
     /// roots. A caller may pass explicit parameters (e.g. a test pinned to a
     /// local server's certificate) so the real submission code is exercised over
     /// a socket without reaching a public server.
+    /// Why a message was not submitted.
+    #[derive(Debug)]
+    pub(crate) enum SmtpFailure {
+        /// The server could not be reached: it never got the message.
+        Unreached(String),
+        /// It failed, or the server refused it.
+        Failed(String),
+    }
+
     async fn smtp_send_with_tls(
         account: &AccountConfig,
         draft: &Draft,
         creds: &AuthCreds,
         mime: &[u8],
         tls_override: Option<lettre::transport::smtp::client::TlsParameters>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SmtpFailure> {
         use lettre::transport::smtp::authentication::{Credentials, Mechanism};
         use lettre::transport::smtp::client::TlsParameters;
 
         let host = account.smtp_host.trim();
         if host.is_empty() {
-            return Err("no SMTP host".into());
+            return Err(SmtpFailure::Failed("no SMTP host".into()));
         }
         let port = if account.smtp_port == 0 {
             465
@@ -1622,7 +1646,7 @@ pub mod live {
         let params = match tls_override {
             Some(p) => p,
             None => TlsParameters::new(host.to_string())
-                .map_err(|e| classify_conn_failure(&e.to_string()))?,
+                .map_err(|e| SmtpFailure::Failed(classify_conn_failure(&e.to_string())))?,
         };
         let (creds_l, mech) = match creds {
             AuthCreds::Password { user, pass } => (
@@ -1634,10 +1658,13 @@ pub mod live {
                 Mechanism::Xoauth2,
             ),
         };
-        let envelope = build_envelope(account, draft)?;
+        let envelope = build_envelope(account, draft).map_err(SmtpFailure::Failed)?;
         // 465 → implicit TLS; anything else (587/25) → a required STARTTLS
         // upgrade. The connection races the host's addresses.
-        let mut connection = crate::connect::smtp(host, port, build_tls_config()?, params).await?;
+        let tls = build_tls_config().map_err(SmtpFailure::Failed)?;
+        let mut connection = crate::connect::smtp(host, port, tls, params)
+            .await
+            .map_err(SmtpFailure::Unreached)?;
         let sent = async {
             connection
                 .auth(&[mech], &creds_l)
@@ -1650,7 +1677,7 @@ pub mod live {
         }
         .await;
         let _ = connection.quit().await;
-        sent.map(drop)
+        sent.map(drop).map_err(SmtpFailure::Failed)
     }
 
     #[test]

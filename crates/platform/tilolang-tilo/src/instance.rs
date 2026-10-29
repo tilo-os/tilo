@@ -21,6 +21,7 @@
 //! resource are what presence reports; a destructive action a person runs offers Undo; a
 //! primary action a person runs shows what it made.
 
+pub mod form;
 #[cfg(feature = "room")]
 pub mod room;
 pub mod rows;
@@ -240,6 +241,10 @@ pub struct Instance {
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
+    /// The space the window last said each lane's view has (`ToApp::Space`): a view opened in
+    /// the lane later starts from it.
+    root_space: Option<crate::runtime::space::Space>,
+    detail_space: Option<crate::runtime::space::Space>,
     transport: Box<dyn Transport>,
     /// What waits to be sent this frame.
     out: Vec<ToUi>,
@@ -259,6 +264,8 @@ pub struct Instance {
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
     open_requests: Rc<RefCell<Vec<String>>>,
+    /// What a person's press of a primary action made, to open as they asked for it.
+    pressed_opens: Vec<String>,
     ask: Option<Suggestion>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -289,6 +296,10 @@ pub struct Instance {
     /// them it told the window it ran (`ToUi::Took`).
     fired: u64,
     fired_told: u64,
+    /// The form open in the window: an action waiting for its arguments.
+    form: Option<form::Pending>,
+    /// How many forms the window was sent: the next one's id.
+    forms: u64,
 }
 
 impl Instance {
@@ -318,6 +329,8 @@ impl Instance {
             publication: None,
             root: None,
             detail: None,
+            root_space: None,
+            detail_space: None,
             transport,
             out: Vec::new(),
             lenses: HashMap::new(),
@@ -329,6 +342,7 @@ impl Instance {
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
             open_requests: Rc::default(),
+            pressed_opens: Vec::new(),
             ask: None,
             settle_due: false,
             sink: Some(
@@ -352,6 +366,8 @@ impl Instance {
             composing: false,
             fired: 0,
             fired_told: 0,
+            form: None,
+            forms: 0,
         }
     }
 
@@ -726,11 +742,11 @@ impl Instance {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
-        self.root = Some(Shown::new(target, view));
+        self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
         self.send_open(Lane::Root, None);
         self.detail = detail.and_then(|(target, with)| {
             let view = host.open_resource(&target, with.as_deref()).ok()?;
-            let mut view = Shown::new(target, view);
+            let mut view = Shown::new(target, self.spaced(Lane::Detail, view));
             view.with = with;
             Some(view)
         });
@@ -775,7 +791,7 @@ impl Instance {
         };
         match host.open_main(&self.app) {
             Ok(view) => {
-                self.root = Some(Shown::new(target, view));
+                self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {
                     self.out.push(ToUi::Close);
                 }
@@ -827,7 +843,7 @@ impl Instance {
         }
         match host.open_resource(target, with) {
             Ok(view) => {
-                let mut view = Shown::new(target.clone(), view);
+                let mut view = Shown::new(target.clone(), self.spaced(Lane::Detail, view));
                 view.with = with.map(str::to_owned);
                 self.detail = Some(view);
                 self.lenses_changed = true;
@@ -1173,6 +1189,13 @@ impl Instance {
         });
     }
 
+    /// The record's changes stay on this device, for `why` (the room refused them for good):
+    /// the window says so.
+    pub fn unshared(&mut self, why: String) {
+        self.notice(Words::Plain(why), ui::NoticeKind::Error);
+        self.flush();
+    }
+
     fn take_door_work(&mut self) -> bool {
         if !self.door_work.take() {
             return false;
@@ -1208,16 +1231,27 @@ impl Instance {
         self.ask = Some(suggestion);
     }
 
-    /// Show what search hits or agents asked the window to show.
+    /// Show what a person's press made, and what search hits or agents asked the window to
+    /// show.
     fn take_open_requests(&mut self) -> bool {
-        let anchors = std::mem::take(&mut *self.open_requests.borrow_mut());
+        // What a press made comes to the front as the person's input does, and takes the
+        // keyboard; a search hit or an agent's `open` moved no hand, and lands at once.
+        let anchors: Vec<(String, ui::Front)> = std::mem::take(&mut self.pressed_opens)
+            .into_iter()
+            .map(|anchor| (anchor, ui::Front::Input))
+            .chain(
+                std::mem::take(&mut *self.open_requests.borrow_mut())
+                    .into_iter()
+                    .map(|anchor| (anchor, ui::Front::Action)),
+            )
+            .collect();
         if anchors.is_empty() {
             return false;
         }
         let Some(host) = self.host() else {
             return false;
         };
-        for anchor in anchors {
+        for (anchor, front) in anchors {
             // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
             let anchor = anchor
                 .strip_prefix("tl:")
@@ -1229,8 +1263,7 @@ impl Instance {
                     if let Some(target) = plan.target
                         && (target.item.is_some() || plan.app != self.app)
                     {
-                        // A search hit or an agent's `open`: no hand moved it, it lands at once.
-                        self.open_detail(&target, None, Some(ui::Front::Action));
+                        self.open_detail(&target, None, Some(front));
                     }
                     self.commit_planned();
                 }
@@ -1364,9 +1397,40 @@ impl Instance {
         changed
     }
 
+    /// The view of `lane` has `width` by `height` rem of the window now: its `space` follows,
+    /// with a class changing only past its boundary by the hysteresis, and the view runs again
+    /// only when something it read of it changed.
+    fn offer_space(&mut self, lane: Lane, width: f64, height: f64) {
+        let slot = match lane {
+            Lane::Root => &mut self.root_space,
+            Lane::Detail => &mut self.detail_space,
+        };
+        let space = slot.map_or_else(
+            || crate::runtime::space::Space::from_rem(width, height),
+            |before| before.followed(width, height),
+        );
+        *slot = Some(space);
+        if let Some(view) = self.view(lane) {
+            view.borrow_mut().set_space("", space);
+        }
+    }
+
+    /// `view`, about to be shown in `lane`, offered the space the lane has.
+    fn spaced(&self, lane: Lane, mut view: ViewInstance) -> ViewInstance {
+        let space = match lane {
+            Lane::Root => self.root_space,
+            Lane::Detail => self.detail_space,
+        };
+        if let Some(space) = space {
+            view.set_space("", space);
+        }
+        view
+    }
+
     fn event(&mut self, message: ToApp) {
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
+        let pressed = matches!(message, ToApp::Fire { .. });
         let outcome = match message {
             ToApp::Back => {
                 self.close_detail();
@@ -1378,35 +1442,10 @@ impl Instance {
                 event,
                 value,
             } => self.fire(lane, &key, &event, value.as_ref(), &mut ran),
-            ToApp::Toggle { lane, key, checked } => self.edit(lane, &key, Value::Bool(checked)),
-            ToApp::Splice {
-                lane,
-                key,
-                seq,
-                at,
-                delete,
-                insert,
-            } => {
-                let edited = self.splice(lane, &key, seq, (at, delete), &insert);
-                if edited.is_ok() {
-                    self.shown_by_window(lane, &key);
-                }
-                edited
-            }
-            ToApp::Edit { lane, key, text } => {
-                let edited = self.edit(lane, &key, Value::Text(text));
-                if edited.is_ok() {
-                    self.shown_by_window(lane, &key);
-                }
-                edited
-            }
-            ToApp::EditRich { lane, key, rich } => {
-                let edited = self.edit(lane, &key, Value::Rich(wire::runtime_rich(&rich)));
-                if edited.is_ok() {
-                    self.shown_by_window(lane, &key);
-                }
-                edited
-            }
+            edit @ (ToApp::Toggle { .. }
+            | ToApp::Splice { .. }
+            | ToApp::Edit { .. }
+            | ToApp::EditRich { .. }) => self.edit_event(edit),
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
@@ -1431,6 +1470,18 @@ impl Instance {
                 self.answer(answer);
                 Ok(())
             }
+            ToApp::FormEdit { form, field, text } => {
+                self.form_edit(form, &field, text);
+                Ok(())
+            }
+            ToApp::FormSubmit { form } => self.form_submit(form, &mut ran),
+            ToApp::FormCancel { form } => {
+                if self.form.as_ref().is_some_and(|open| open.id == form) {
+                    self.form = None;
+                    self.out.push(ToUi::Form(None));
+                }
+                Ok(())
+            }
             ToApp::Undo => {
                 self.undo = true;
                 Ok(())
@@ -1449,6 +1500,14 @@ impl Instance {
                 }
                 Ok(())
             }
+            ToApp::Space {
+                lane,
+                width,
+                height,
+            } => {
+                self.offer_space(lane, f64::from(width), f64::from(height));
+                Ok(())
+            }
         };
         if let Err(words) = outcome {
             self.notice(words, ui::NoticeKind::Error);
@@ -1465,6 +1524,22 @@ impl Instance {
             self.after_action(&aref, &result, tickets.into_iter().filter(|t| *t >= first));
         }
         self.follow_opens();
+        if pressed {
+            // What the press made opens now, and the window hears right after it that the press
+            // ran: what the person typed after it goes to what it opened, never to what a later
+            // press of the same batch opens.
+            self.take_open_requests();
+            self.tell_took();
+        }
+    }
+
+    /// Tell the window how many of its presses ran, when that changed: what they opened was
+    /// sent before.
+    fn tell_took(&mut self) {
+        if self.fired != self.fired_told {
+            self.fired_told = self.fired;
+            self.out.push(ToUi::Took { fired: self.fired });
+        }
     }
 
     /// Render the rows `range` of the list `list` of the view of `lane`, and send them.
@@ -1502,6 +1577,15 @@ impl Instance {
             return Ok(());
         };
         let value = value.and_then(wire::runtime_value);
+        let wanting = view
+            .borrow()
+            .wanting_arguments(key, name, value.as_ref())
+            .map_err(|error| Words::Plain(error.to_string()))?;
+        if let Some(aref) = wanting
+            && self.open_form(lane, key, Rc::clone(&view), aref)
+        {
+            return Ok(());
+        }
         let action = view.borrow().event_action(key, name);
         let fired = view.borrow().fire_with(key, name, value.as_ref());
         match fired {
@@ -1518,34 +1602,222 @@ impl Instance {
         }
     }
 
-    /// Apply a splice of the bound text control `key`: `delete` bytes at `at` replaced by
-    /// `insert`, against the text it shows.
+    /// Show the form of `aref`, which the control `key` of the view of `lane` ran and which
+    /// still needs arguments, instead of running it. Whether it has one: what it needs is
+    /// what a form can ask for.
+    fn open_form(
+        &mut self,
+        lane: Lane,
+        key: &str,
+        view: Rc<RefCell<ViewInstance>>,
+        aref: ActionRef,
+    ) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let Some(meta) = host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta)
+            .find(|meta| meta.actions.iter().any(|action| action.id == aref.action))
+        else {
+            return false;
+        };
+        let Some(pending) = form::Pending::new(
+            self.forms.saturating_add(1),
+            (lane, key.to_owned()),
+            view,
+            aref,
+            meta,
+        ) else {
+            return false;
+        };
+        self.forms = pending.id;
+        self.out.push(ToUi::Form(Some(Box::new(
+            pending.shown(&host, &*self.names),
+        ))));
+        self.form = Some(pending);
+        true
+    }
+
+    /// The field `field` of the form `id` now holds `text`: kept, and the form shown as it
+    /// reads now.
+    fn form_edit(&mut self, id: u64, field: &str, text: String) {
+        let Some(host) = self.host() else {
+            return;
+        };
+        let Some(pending) = self.form.as_mut().filter(|open| open.id == id) else {
+            return;
+        };
+        pending.edit(field, text);
+        self.out.push(ToUi::Form(Some(Box::new(
+            pending.shown(&host, &*self.names),
+        ))));
+    }
+
+    /// The form `id` was submitted: run its action with what it holds, once. A refusal shows in
+    /// the form, which stays open.
+    fn form_submit(&mut self, id: u64, ran: &mut Option<(ActionRef, Value)>) -> Result<(), Words> {
+        let Some(host) = self.host() else {
+            return Ok(());
+        };
+        let Some(pending) = self.form.as_mut().filter(|open| open.id == id) else {
+            return Ok(());
+        };
+        let aref = match pending.completed(&host) {
+            Ok(aref) => aref,
+            Err((_, why)) => {
+                pending.error = Some(why);
+                self.out.push(ToUi::Form(Some(Box::new(
+                    pending.shown(&host, &*self.names),
+                ))));
+                return Ok(());
+            }
+        };
+        let outcome = pending.view.borrow().invoke(&aref);
+        match outcome {
+            Ok(InvokeOutcome::Done(result)) => {
+                pending.forget();
+                self.form = None;
+                self.out.push(ToUi::Form(None));
+                *ran = Some((aref, result));
+                Ok(())
+            }
+            Ok(InvokeOutcome::Suggested(suggestion)) => {
+                pending.forget();
+                self.form = None;
+                self.out.push(ToUi::Form(None));
+                self.ask_for(suggestion);
+                Ok(())
+            }
+            Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
+            Err(error) => {
+                pending.error = Some(refusal(&error));
+                self.out.push(ToUi::Form(Some(Box::new(
+                    pending.shown(&host, &*self.names),
+                ))));
+                Ok(())
+            }
+        }
+    }
+
+    /// What the person typed or toggled in a bound control, applied to the resource they did it
+    /// in.
+    fn edit_event(&mut self, message: ToApp) -> Result<(), Words> {
+        match message {
+            ToApp::Toggle {
+                lane,
+                target,
+                key,
+                checked,
+            } => self.edit(lane, &target, &key, Value::Bool(checked)),
+            ToApp::Splice {
+                lane,
+                target,
+                key,
+                seq,
+                at,
+                delete,
+                insert,
+            } => self.splice(lane, &target, &key, seq, (at, delete), &insert),
+            ToApp::Edit {
+                lane,
+                target,
+                key,
+                text,
+            } => self.edit(lane, &target, &key, Value::Text(text)),
+            ToApp::EditRich {
+                lane,
+                target,
+                key,
+                rich,
+            } => {
+                let rich = Value::Rich(wire::runtime_rich(&rich));
+                self.edit(lane, &target, &key, rich)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The view an edit the window made in the view of `lane` showing `target` applies to, and
+    /// whether the lane still shows it: the lane's own view while it shows `target`; otherwise
+    /// (the lane moved on to another resource before the edit arrived, as a press opening the
+    /// next note does) a view of `target` opened for the edit, so that what was typed into a
+    /// note lands in that note.
+    fn edited(
+        &self,
+        lane: Lane,
+        target: &ui::ResourceRef,
+    ) -> Result<(Rc<RefCell<ViewInstance>>, bool), Words> {
+        if let Some(shown) = self.lane(lane)
+            && wire::resource(&shown.target) == *target
+        {
+            return Ok((Rc::clone(&shown.view), true));
+        }
+        let open_failed = || Words::phrase("tilolang-open-failed");
+        let host = self.host().ok_or_else(open_failed)?;
+        let resource = wire::runtime_resource(target).ok_or_else(open_failed)?;
+        let view = host.open_resource(&resource, None).map_err(|error| {
+            tracing::warn!(%error, "the resource an edit was made in did not open");
+            open_failed()
+        })?;
+        Ok((Rc::new(RefCell::new(view)), false))
+    }
+
+    /// Apply a splice of the bound text control `key` of the view of `target` in `lane`:
+    /// `delete` bytes at `at` replaced by `insert`, against the text it shows.
     fn splice(
         &mut self,
         lane: Lane,
+        target: &ui::ResourceRef,
         key: &str,
         seq: u64,
         (at, delete): (u32, u32),
         insert: &str,
     ) -> Result<(), Words> {
-        let Some(view) = self.lane_mut(lane) else {
-            return Ok(());
-        };
-        let acked = view.acked.entry(key.to_owned()).or_default();
-        *acked = (*acked).max(seq);
-        let current = match view.view.borrow().bound_value(key) {
+        let (view, shown) = self.edited(lane, target)?;
+        if shown && let Some(lane) = self.lane_mut(lane) {
+            let acked = lane.acked.entry(key.to_owned()).or_default();
+            *acked = (*acked).max(seq);
+        }
+        let current = match view.borrow().bound_value(key) {
             Some(Value::Text(text)) => text,
             _ => String::new(),
         };
         let text = spliced(&current, at as usize, delete as usize, insert);
-        self.edit(lane, key, Value::Text(text))
+        self.edit_in(lane, &view, shown, key, Value::Text(text))
     }
 
-    fn edit(&self, lane: Lane, key: &str, value: Value) -> Result<(), Words> {
-        let Some(view) = self.view(lane) else {
-            return Ok(());
-        };
-        let view = view.borrow();
+    /// Apply an edit of the bound control `key` of the view of `target` in `lane`.
+    fn edit(
+        &mut self,
+        lane: Lane,
+        target: &ui::ResourceRef,
+        key: &str,
+        value: Value,
+    ) -> Result<(), Words> {
+        let (view, shown) = self.edited(lane, target)?;
+        self.edit_in(lane, &view, shown, key, value)
+    }
+
+    /// Apply an edit of the bound control `key` of `view`; while `lane` shows it (`shown`),
+    /// the window shows what it sent.
+    fn edit_in(
+        &mut self,
+        lane: Lane,
+        view: &Rc<RefCell<ViewInstance>>,
+        shown: bool,
+        key: &str,
+        value: Value,
+    ) -> Result<(), Words> {
+        Self::edit_view(&view.borrow(), key, value)?;
+        if shown {
+            self.shown_by_window(lane, key);
+        }
+        Ok(())
+    }
+
+    fn edit_view(view: &ViewInstance, key: &str, value: Value) -> Result<(), Words> {
         let value = match (&value, view.bound_value(key)) {
             (Value::Text(text), Some(Value::Int(_))) => Value::Int(
                 text.trim()
@@ -1664,9 +1936,7 @@ impl Instance {
             Some("primary") => {
                 // What a primary action made opens beside the list, as the person asked for it.
                 if let Value::Ref(made) = result {
-                    self.open_requests
-                        .borrow_mut()
-                        .push(made.target.id_string());
+                    self.pressed_opens.push(made.target.id_string());
                 }
             }
             _ => {}
@@ -1755,10 +2025,7 @@ impl Instance {
         }
         // The presses ran and what they opened is sent: what the person typed after them can
         // go to the field focused now.
-        if self.fired != self.fired_told {
-            self.fired_told = self.fired;
-            self.out.push(ToUi::Took { fired: self.fired });
-        }
+        self.tell_took();
         self.flush();
         changed
     }
@@ -1846,6 +2113,16 @@ impl Drop for Instance {
         if let Some(host) = self.host() {
             host.persist_index();
         }
+    }
+}
+
+/// Why an action refused, as its form says it: what its `require` said, else the error.
+fn refusal(error: &crate::runtime::RuntimeError) -> String {
+    match error {
+        crate::runtime::RuntimeError::Trap(why) | crate::runtime::RuntimeError::BadArgs(why) => {
+            why.clone()
+        }
+        other => other.to_string(),
     }
 }
 

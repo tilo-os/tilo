@@ -1052,8 +1052,11 @@ impl Checker<'_> {
                 self.err("E090", r.span, format!("a requirement says whether the action is offered on `{subject}`, before anyone gives `{other}`; it reads only the subject, `{subject}`"));
                 continue;
             }
+            // A requirement may read `invoker`: here, the person looking.
+            self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);
+            self.st.invoker = super::Invoker::None;
             self.push_sink();
             self.prop(node.clone(), "unavailable", reason, r.span);
             let unmet = self.pop_sink();

@@ -65,6 +65,10 @@ pub(super) struct LocalAppConnection {
     pub(super) workspace_id: String,
     pub(super) creation: Option<crate::services::ApplicationCreationEvidence>,
     pub(super) continuation_instance: Option<u64>,
+    /// The ids the launched app had before, as the launcher's catalogue believes them (the same
+    /// publisher signed them): the app keeps using the record of its earliest
+    /// ([`tilo_action_policy::EarlierIds::records_under`]).
+    pub(super) earlier: Vec<String>,
     process: PeerProcess,
     /// What Files hands over on its connection's descriptor lane: the only
     /// app whose selected objects this broker takes. Other apps' descriptors
@@ -213,11 +217,22 @@ impl AsRawFd for PeerProcess {
 }
 
 impl LocalAppConnection {
+    #[cfg(test)]
     pub(super) fn attested(
         app_id: String,
         workspace_id: String,
         process: PeerProcess,
         launch: crate::services::AuthenticatedApplicationLaunch,
+    ) -> Option<Arc<Self>> {
+        Self::attested_keeping(app_id, workspace_id, process, launch, Vec::new())
+    }
+    /// The attested launch of `app_id`, an app that had the ids `earlier` before.
+    pub(super) fn attested_keeping(
+        app_id: String,
+        workspace_id: String,
+        process: PeerProcess,
+        launch: crate::services::AuthenticatedApplicationLaunch,
+        earlier: Vec<String>,
     ) -> Option<Arc<Self>> {
         process.alive().then(|| {
             Arc::new(Self {
@@ -230,6 +245,7 @@ impl LocalAppConnection {
                 workspace_id,
                 creation: launch.creation,
                 continuation_instance: launch.continuation_instance,
+                earlier,
                 process,
                 connected: AtomicBool::new(true),
             })
@@ -239,10 +255,21 @@ impl LocalAppConnection {
         handoff: super::CollabLaunchHandoff,
         process: Option<PeerProcess>,
         launch: crate::services::AuthenticatedApplicationLaunch,
+        earlier: Vec<String>,
     ) -> Option<Arc<Self>> {
         process.and_then(|process| {
-            Self::attested(handoff.app_id, handoff.workspace_id, process, launch)
+            Self::attested_keeping(
+                handoff.app_id,
+                handoff.workspace_id,
+                process,
+                launch,
+                earlier,
+            )
         })
+    }
+    /// Whether `app` is the launched app's id, or one it had before: a route of either is its own.
+    pub(super) fn keeps_records_of(&self, app: &str) -> bool {
+        self.app_id == app || self.earlier.iter().any(|old| old == app)
     }
     pub(super) fn current(&self) -> bool {
         self.connected.load(Ordering::Acquire) && self.process.alive()
@@ -260,12 +287,14 @@ impl LocalAppConnection {
         let pinned = info.ok().and_then(|info| {
             info.lines().find_map(|line| {
                 line.strip_prefix("Pid:")
+                    // optional-decode: a probe of /proc; an unreadable field means not the pinned process, which refuses
                     .and_then(|value| value.trim().parse::<u32>().ok())
             })
         });
         let current_start = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
             .and_then(|stat| stat.rsplit_once(") ").map(|(_, fields)| fields.to_owned()))
+            // optional-decode: a probe of /proc; an unreadable start time means not the pinned process, which refuses
             .and_then(|fields| fields.split_whitespace().nth(19)?.parse::<u64>().ok());
         pinned == Some(pid) && current_start == Some(start) && self.current()
     }

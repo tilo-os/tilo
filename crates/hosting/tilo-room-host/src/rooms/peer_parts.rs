@@ -64,6 +64,7 @@ impl PeerParts {
                     let digest = entry
                         .file_name()
                         .to_str()
+                        // optional-decode: a name not a digest is a temporary file (removed below)
                         .and_then(|name| hex::decode(name).ok())
                         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
                     match digest {

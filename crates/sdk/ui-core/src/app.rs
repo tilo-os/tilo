@@ -2657,19 +2657,24 @@ impl App {
             self.layout.request_rebuild();
             self.bindings.clear();
             self.layout.node_map.clear();
-        } else if self.focused_node.is_none() {
-            // A retained control can keep focus while a modal temporarily owns
-            // input. Rebuilding invalidates its NodeId, not that live focus.
-            // Recover only the unique current focused path inside the current
-            // allowed order; never transfer focus or state to a replacement.
-            // SAFETY: sync retained this exact exclusively owned topology.
-            self.focused_node = unsafe {
-                crate::widget::layout::CompositionFocus::current(
-                    &self.layout.node_map,
-                    &self.bindings,
-                    Some(&self.focusable_order),
-                )
-            };
+        } else {
+            if self.focused_node.is_none() {
+                // A retained control can keep focus while a modal temporarily
+                // owns input. Rebuilding invalidates its NodeId, not that live
+                // focus. Recover only the unique current focused path inside
+                // the current allowed order; never transfer focus or state to
+                // a replacement.
+                // SAFETY: sync retained this exact exclusively owned topology.
+                self.focused_node = unsafe {
+                    crate::widget::layout::CompositionFocus::current(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
+                };
+            }
+            // The tree this rebuild made is the one a control asked focus in.
+            self.apply_focus_request();
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it

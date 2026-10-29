@@ -746,15 +746,18 @@ impl Printer {
             UiKind::On {
                 event,
                 param,
+                at,
                 action,
             } => {
                 let a = self.ex(action);
-                let carried = match param {
-                    Some(crate::ast::EventParam { name, ty: Some(ty) }) => {
-                        format!("({}: {})", name.name, print_type(ty))
-                    }
-                    Some(crate::ast::EventParam { name, ty: None }) => format!("({})", name.name),
-                    None => String::new(),
+                let named = |p: &crate::ast::EventParam| match &p.ty {
+                    Some(ty) => format!("{}: {}", p.name.name, print_type(ty)),
+                    None => p.name.name.clone(),
+                };
+                let carried = match (param, at) {
+                    (Some(p), Some(at)) => format!("({}, {})", named(p), named(at)),
+                    (Some(p), None) => format!("({})", named(p)),
+                    _ => String::new(),
                 };
                 self.line(&format!("on {}{carried}: {a}", event.name));
             }

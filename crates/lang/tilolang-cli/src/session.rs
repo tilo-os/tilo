@@ -11,6 +11,9 @@ use std::process::{Command, Stdio};
 pub(crate) const SESSION_SCRIPT: &str = "dist/dev/nested-session.sh";
 pub(crate) const PAIR_SCRIPT: &str = "dist/dev/nested-pair.sh";
 pub(crate) const BUILD_DIR: &str = "target/nested-session";
+/// The variable naming a nested-session build elsewhere than the checkout's [`BUILD_DIR`]: a
+/// build shared read-only between sessions, as `nested-session.sh` honours it.
+pub(crate) const BUILD_ENV: &str = "TILO_NESTED_SESSION_BUILD";
 /// The thin binary the session bakes into the tilolang runtime bundle.
 pub(crate) const RUNTIME_BINARY: &str = "thin-app/tilolang-app";
 /// The file nested-session.sh writes into a running session's runtime directory: its control
@@ -46,6 +49,37 @@ pub(crate) fn repo_root(explicit: Option<&Path>, dir: &Path) -> Result<PathBuf, 
         .ok_or_else(|| {
             "no Tilo checkout above the package; name one with --repo or $TILO_REPO".to_owned()
         })
+}
+
+/// The nested-session build the session's tools come from: `$TILO_NESTED_SESSION_BUILD` when
+/// set, as `nested-session.sh` reads it, else the checkout `repo`'s [`BUILD_DIR`].
+pub(crate) fn build_dir(repo: &Path) -> PathBuf {
+    build_dir_from(repo, std::env::var_os(BUILD_ENV))
+}
+
+fn build_dir_from(repo: &Path, named: Option<std::ffi::OsString>) -> PathBuf {
+    named
+        .filter(|named| !named.is_empty())
+        .map_or_else(|| repo.join(BUILD_DIR), PathBuf::from)
+}
+
+/// The directory of the session's tools (`tilo-install`, `tilo-control`, ...) in the build
+/// [`build_dir`] names, or why it holds none: which build it looked in and how it chose it.
+pub(crate) fn tools(repo: &Path) -> Result<PathBuf, String> {
+    let bin = build_dir(repo).join("bin");
+    if bin.join("tilo-install").is_file() {
+        return Ok(bin);
+    }
+    let chosen = if std::env::var_os(BUILD_ENV).is_some_and(|named| !named.is_empty()) {
+        format!("${BUILD_ENV}")
+    } else {
+        format!("the checkout's {BUILD_DIR}; ${BUILD_ENV} names another build")
+    };
+    Err(format!(
+        "{} has no session tools (no tilo-install): it is the build {chosen}. Build one with \
+         dist/dev/nested-session-build.sh",
+        bin.display()
+    ))
 }
 
 /// The control socket nested-session.sh gives the session whose state is `state`.
@@ -371,5 +405,22 @@ mod tests {
             {"provider": "applications", "id": "so.tilo.lang.counter"},
         ]});
         assert!(offers(&answer, "so.tilo.lang.counter"));
+    }
+
+    #[test]
+    fn the_build_is_the_one_the_environment_names_else_the_checkouts() {
+        let repo = Path::new("/src/tilo");
+        assert_eq!(
+            build_dir_from(repo, None),
+            Path::new("/src/tilo/target/nested-session")
+        );
+        assert_eq!(
+            build_dir_from(repo, Some("".into())),
+            Path::new("/src/tilo/target/nested-session")
+        );
+        assert_eq!(
+            build_dir_from(repo, Some("/work/shared/current".into())),
+            Path::new("/work/shared/current")
+        );
     }
 }

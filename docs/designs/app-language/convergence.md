@@ -132,6 +132,14 @@ explicitly: **waiting to go online**, **rejected** (with the reason) and **outco
 Views choose how prominent delivery and finality are: chat shows delivery on every message, a
 payment shows finality.
 
+An outside effect (`outside("smtp.send", ...)`) is marked as being handed over, as a change of
+its own, before it is handed to the service, so a device that stops in between shows it as
+outcome unknown and never sends it twice. A service that cannot be reached leaves it waiting to
+go online, with the reason; it is tried again when the network comes back (the platform's
+network status, not a timer). A refusal is final, with the service's reason. Code reads where
+it stands with `delivery(r)`: `.none` until the resource's actions queued one, else its `state`
+(`waiting`, `sending`, `sent`, `rejected`, `unknown`) and `reason`. Mail shows it on the draft.
+
 ## 8. Storage and sync
 
 - **The log is the truth.** Each entry holds what was asked (the action and its arguments),

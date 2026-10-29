@@ -25,8 +25,28 @@ use tilolang::{BlockKind, Compiled, CompiledBlock};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettleReport {
     pub delivered: usize,
-    /// Entries the sink refused, with its message. They stay queued.
+    /// Entries the service refused, with its reason. They are settled as rejected.
     pub failed: Vec<(String, String)>,
+    /// Entries marked as being handed over: handed over on the next settle, once the mark is
+    /// in the record.
+    pub marked: usize,
+    /// Entries whose service could not be reached: they wait to go online.
+    pub waiting: usize,
+    /// Entries another process was handing over when it stopped: outcome unknown.
+    pub unknown: usize,
+}
+
+/// This process's token, which an outbox entry it marks as being handed over carries: an
+/// entry marked by another token was being handed over by a process that stopped (the record
+/// has one writer on a device).
+fn process_token() -> &'static str {
+    static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        format!("{}-{nanos:x}", std::process::id())
+    })
 }
 
 /// What evaluating a block produced.
@@ -54,11 +74,11 @@ impl MemorySink {
 }
 
 impl OutsideSink for MemorySink {
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String> {
+    fn deliver(&mut self, capability: &str, payload: &Json) -> crate::core::Delivery {
         self.delivered
             .borrow_mut()
             .push((capability.to_owned(), payload.clone()));
-        Ok(())
+        crate::core::Delivery::Delivered
     }
 }
 
@@ -390,6 +410,35 @@ impl Runtime {
         self.core.complete_args(action, given)
     }
 
+    /// The default of the parameter `at` of `action`, computed now over the arguments before
+    /// it: what its form starts filled in with. `None` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// A default that traps.
+    pub fn default_argument(
+        &self,
+        action: &str,
+        at: usize,
+        before: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.core.default_argument(action, at, before)
+    }
+
+    /// The workspace's members as the host last gave them ([`Self::set_members`]).
+    #[must_use]
+    pub fn members(&self) -> Vec<crate::members::Member> {
+        self.core.members.borrow().list().to_vec()
+    }
+
+    /// When `text` says something is due ("tomorrow 9"), read now in the person's zone.
+    #[must_use]
+    pub fn dated(&self, text: &str) -> tilolang::natural::Dated {
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
+        let offset = self.core.zone.borrow().as_ref().map_or(0, |zone| zone());
+        tilolang::natural::dated(text, now, offset)
+    }
+
     /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.
     ///
     /// # Errors
@@ -587,36 +636,115 @@ impl Runtime {
         self.core.store.borrow().outbox_pending()
     }
 
-    /// Deliver every queued outside effect to the sink and mark it settled.
+    /// The network came back: entries waiting to go online are tried again on the next settle.
+    pub fn retry_waiting(&self) {
+        self.core.retry_waiting.set(true);
+    }
+
+    /// Carry the queued outside effects out (convergence.md, "What people see"). An entry is
+    /// first marked as being handed over, as a change of its own; the next settle, once that
+    /// mark is in the record, hands it to the sink, so a process that stops in between leaves
+    /// it as outcome unknown rather than sending it twice. What the sink says settles it (sent,
+    /// rejected), keeps it handed over (no answer yet), or has it wait to go online until
+    /// [`Self::retry_waiting`]. An entry another process was handing over is outcome unknown.
     ///
     /// # Errors
     ///
     /// `Package` when no sink is set; a store failure.
     pub fn settle(&self) -> Result<SettleReport, RuntimeError> {
+        use crate::core::Delivery;
+        use crate::store::{OutboxState, Settled};
+        let note = |entry: &OutboxEntry, action: &str| ChangeNote {
+            action: action.into(),
+            args: Json::String(entry.id.clone()),
+            invoker: String::new(),
+            chain: Vec::new(),
+            module: String::new(),
+            approved_by: None,
+            ..ChangeNote::default()
+        };
         let mut report = SettleReport::default();
-        for entry in self.pending_outbox() {
-            let delivered = match self.core.sink.borrow_mut().as_mut() {
-                Some(sink) => sink.deliver(&entry.capability, &entry.payload),
-                None => return Err(RuntimeError::Package("no outside sink is set".into())),
-            };
-            match delivered {
-                Ok(()) => {
-                    let note = ChangeNote {
-                        action: "$settle".into(),
-                        args: Json::String(entry.id.clone()),
-                        invoker: String::new(),
-                        chain: Vec::new(),
-                        module: String::new(),
-                        approved_by: None,
-                        ..ChangeNote::default()
-                    };
-                    self.core.store.borrow_mut().outbox_settle(&entry, &note)?;
-                    report.delivered = report.delivered.saturating_add(1);
+        let retry = self.core.retry_waiting.replace(false);
+        let token = process_token();
+        let pending = self.pending_outbox();
+        if !pending.is_empty() && self.core.sink.borrow().is_none() {
+            return Err(RuntimeError::Package("no outside sink is set".into()));
+        }
+        for entry in pending {
+            match &entry.state {
+                OutboxState::Sending { by } if by != token => {
+                    let settle = note(&entry, "$settle");
+                    self.core.store.borrow_mut().outbox_settle(
+                        &entry,
+                        &Settled::Unknown,
+                        &settle,
+                    )?;
+                    report.unknown = report.unknown.saturating_add(1);
                 }
-                Err(msg) => report.failed.push((entry.id, msg)),
+                // This process's: handed over, or asked again what became of it. The sink
+                // answers for one it already has rather than carrying it out twice.
+                OutboxState::Sending { .. } => {
+                    let delivered = match self.core.sink.borrow_mut().as_mut() {
+                        Some(sink) => sink.deliver(&entry.capability, &entry.payload),
+                        None => return Err(RuntimeError::Package("no outside sink is set".into())),
+                    };
+                    let mut store = self.core.store.borrow_mut();
+                    match delivered {
+                        // Stays handed over: the sink settles it again once answered
+                        // (`Delivery::Pending`).
+                        Delivery::Pending => {}
+                        Delivery::Delivered => {
+                            store.outbox_settle(
+                                &entry,
+                                &Settled::Done,
+                                &note(&entry, "$settle"),
+                            )?;
+                            report.delivered = report.delivered.saturating_add(1);
+                        }
+                        Delivery::Rejected(reason) => {
+                            let outcome = Settled::Rejected(reason.clone());
+                            store.outbox_settle(&entry, &outcome, &note(&entry, "$settle"))?;
+                            report.failed.push((entry.id.clone(), reason));
+                        }
+                        Delivery::Offline(reason) => {
+                            let waiting = OutboxState::Waiting { reason };
+                            store.outbox_mark(&entry, &waiting, &note(&entry, "$wait"))?;
+                            report.waiting = report.waiting.saturating_add(1);
+                        }
+                    }
+                }
+                // Resolved by `retry_waiting`, which the origin calls when its service is
+                // reachable again.
+                OutboxState::Waiting { .. } if !retry => {}
+                OutboxState::Queued | OutboxState::Waiting { .. } => {
+                    let sending = OutboxState::Sending {
+                        by: token.to_owned(),
+                    };
+                    self.core.store.borrow_mut().outbox_mark(
+                        &entry,
+                        &sending,
+                        &note(&entry, "$send"),
+                    )?;
+                    report.marked = report.marked.saturating_add(1);
+                }
             }
         }
+        self.refresh_deliveries();
         Ok(report)
+    }
+
+    /// Bring what `delivery(r)` reads up to date with the outbox: views showing a resource
+    /// whose outside effect moved run again.
+    pub fn refresh_deliveries(&self) {
+        let states = self.core.store.borrow().outbox_states();
+        let mut held = self.core.view_states.borrow_mut();
+        for (doc, state) in states {
+            let key = crate::platform::delivery_key(&doc);
+            let value = Value::Tuple(vec![Value::Text(state.state), Value::Text(state.reason)]);
+            if held.get(&key) != Some(&value) {
+                held.set(key, value);
+            }
+        }
     }
 
     /// The notes of a document's changes, oldest first: who changed it, through which code.

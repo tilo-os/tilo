@@ -563,7 +563,7 @@ impl CapnpChannelHandle {
     }
     /// Who answers this channel's read of its own record.
     fn record_read(&self) -> RecordRead {
-        let route = self.route();
+        let route = self.record_route();
         self.state
             .services
             .committed_documents
@@ -583,7 +583,8 @@ impl CapnpChannelHandle {
     /// starts) reads its sealed record under its channel's admission, as its
     /// own sealed channel does. An agent never reads that way.
     fn read_context(&self, sealed: bool) -> Result<NativeDocumentReadContext, String> {
-        let route = self.route();
+        // The record the channel carries: a renamed app reads the one of the id it had before.
+        let route = self.record_route();
         let admitted = self.verified_identity.clone();
         let certificate = admitted
             .certificate
@@ -629,7 +630,7 @@ impl CapnpChannelHandle {
                 // room opens: the owner's grants decide the rest, below and
                 // in the owner's own authorization.
                 if !local.current()
-                    || (local.app_id != checked_route.app_id
+                    || (!local.keeps_records_of(&checked_route.app_id)
                         && launch_workspace_record(local, &checked_route).is_none())
                     || local.workspace_id != checked_route.cluster_id
                     || admitted.agent_id.is_some()
@@ -655,7 +656,7 @@ impl CapnpChannelHandle {
         Ok(context)
     }
     pub(super) fn native_private_window_instance(&self) -> Result<Option<u64>, String> {
-        let route = self.route();
+        let route = self.record_route();
         if !self
             .state
             .services
@@ -677,13 +678,13 @@ impl CapnpChannelHandle {
         // Another app's workspace record is no record of this window's own:
         // it carries no private binding.
         if local.current()
-            && local.app_id != route.app_id
+            && !local.keeps_records_of(&route.app_id)
             && launch_workspace_record(local, &route).is_some()
         {
             return Ok(None);
         }
         if !local.current()
-            || local.app_id != route.app_id
+            || !local.keeps_records_of(&route.app_id)
             || local.workspace_id != route.cluster_id
         {
             return Err("native private launch custody ended".into());
@@ -716,8 +717,9 @@ impl CapnpChannelHandle {
         self.route()
             .record_id
             .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .ok_or_else(|| "continuation requires a durable shell tab id".into())
+            .ok_or_else(|| "continuation requires a durable shell tab id".to_owned())?
+            .parse::<u64>()
+            .map_err(|error| format!("continuation names no durable shell tab id: {error}"))
     }
 
     /// For an Open of a record another device creates (the host governing
@@ -765,7 +767,8 @@ impl CapnpChannelHandle {
         prepared: Option<PreparedElsewhere>,
     ) -> Result<Reply, String> {
         if matches!(request, Request::ConnectionSnapshot) {
-            let route = self.route();
+            // The connection as its record names it: the channel's own route.
+            let route = self.record_route();
             let current = self
                 .state
                 .revalidate_admission(&route, &self.verified_identity)
@@ -1152,7 +1155,7 @@ impl CapnpChannelHandle {
             generation,
         };
         self.state
-            .follow_committed_writes(&self.route().channel_key(), &wake);
+            .follow_committed_writes(&self.record_route().channel_key(), &wake);
         let watch = {
             let wake = Arc::clone(&wake);
             tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())

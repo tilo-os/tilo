@@ -92,6 +92,7 @@ impl ResourceApp for CodeEditorShell {
                     request: id.clone(),
                     command: request.command.0,
                     requested_by: request.requested_by.0,
+                    agent: request.agent,
                     reply: cx.reply(),
                 });
                 Ok(ui::framework::Effected::Pending)

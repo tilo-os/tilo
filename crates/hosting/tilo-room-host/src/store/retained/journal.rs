@@ -148,6 +148,7 @@ fn entries(path: &Path) -> Result<Vec<Read>, StoreError> {
             .saturating_add((FIXED + CHECK) as u64)
             .saturating_add(u64::from(name_len));
         let end = body.saturating_add(len);
+        // optional-decode: the journal ends at its first entry that does not read (a torn tail)
         let Ok(name) = String::from_utf8(name) else {
             break;
         };

@@ -60,11 +60,13 @@ fn formatted(
 
 /// The calendar day `YYYY-MM-DD`.
 fn day_of(text: &str) -> Option<NaiveDate> {
+    // optional-decode: a value that is not a day is shown as the text it is
     NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
 }
 
 /// The instant `YYYY-MM-DDTHH:MM:SSZ`.
 fn moment_of(text: &str) -> Option<DateTime<Utc>> {
+    // optional-decode: a value that is not an instant is shown as the text it is
     DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|at| at.with_timezone(&Utc))
@@ -90,7 +92,7 @@ impl DateControl {
                 .map(|day| day.format("%Y-%m-%d").to_string())
                 .unwrap_or_default();
             reported.set(text.clone());
-            sink.borrow_mut().push(UiEvent::Edit(edited.clone(), text));
+            sink.push(UiEvent::Edit(edited.clone(), text));
         });
         Self {
             field,
@@ -174,6 +176,6 @@ mod tests {
         value.set("2026-11-02".to_owned());
         assert!(control.follow_value());
         assert_eq!(control.field.value(), NaiveDate::from_ymd_opt(2026, 11, 2));
-        assert!(sink.borrow().is_empty(), "showing a value reports no edit");
+        assert!(sink.is_empty(), "showing a value reports no edit");
     }
 }

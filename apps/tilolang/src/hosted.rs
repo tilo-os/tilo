@@ -8,7 +8,6 @@
 //! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
 
-use std::collections::HashMap;
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,9 +32,19 @@ pub fn is_hosted() -> bool {
 #[must_use]
 pub fn window_instance() -> Option<u64> {
     ui::window_door::requested_instance().or_else(|| {
-        std::env::var("TILO_CONTINUITY_INSTANCE")
-            .ok()
-            .and_then(|value| value.parse().ok())
+        // Unset: the process was not launched for a window of its own.
+        let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
+        match value.parse() {
+            Ok(instance) => Some(instance),
+            Err(error) => {
+                tracing::error!(
+                    value,
+                    %error,
+                    "the session named the window's instance as something that is not one"
+                );
+                None
+            }
+        }
     })
 }
 
@@ -81,6 +90,13 @@ impl Watch {
                         return;
                     }
                 }
+            })
+            .inspect_err(|error| {
+                tracing::error!(
+                    %error,
+                    "no thread watches the window's patch connection: it shows what arrives \
+                     only when something else wakes it"
+                );
             })
             .ok()?;
         Some(Self {
@@ -219,14 +235,14 @@ impl HostedWindow {
         received
     }
 
-    fn content(&self) -> &dyn Widget {
+    fn content(&self) -> &(dyn Widget + 'static) {
         match &self.connected {
             Some(connected) => &connected.view,
             None => self.waiting.as_ref(),
         }
     }
 
-    fn content_mut(&mut self) -> &mut dyn Widget {
+    fn content_mut(&mut self) -> &mut (dyn Widget + 'static) {
         match &mut self.connected {
             Some(connected) => &mut connected.view,
             None => self.waiting.as_mut(),
@@ -240,23 +256,23 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
-impl Widget for HostedWindow {
+/// The window stands for what it shows (the UI host's window, or the loading state before it)
+/// in the layout and in every walk of the widgets: it adds no node of its own.
+impl ui::widget::Decorator for HostedWindow {
+    type Inner = dyn Widget;
+
     ui::provides!(dyn ui::component_lifecycle::WindowActivation);
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content_mut()
+    }
 
     fn name(&self) -> &'static str {
         "TilolangHostedWindow"
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.content()]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![self.content_mut()]
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -289,28 +305,6 @@ impl Widget for HostedWindow {
         if let Some(connected) = &mut self.connected {
             connected.view.flush();
         }
-    }
-
-    fn build_layout(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        self.content_mut().build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(
-        &mut self,
-        tree: &ui::taffy::TaffyTree<()>,
-        node: ui::taffy::NodeId,
-        origin: ui::kurbo::Point,
-    ) {
-        self.content_mut().apply_layout(tree, node, origin);
-    }
-
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        self.content().get_rect()
     }
 
     fn draw(
@@ -351,20 +345,16 @@ impl Widget for HostedWindow {
             .draw(scene, transform, text, theme, presence);
     }
 
-    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
-        self.content().collect_damage(regions);
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         match &mut self.connected {
-            Some(connected) => connected.view.take_structure_dirty(),
+            Some(connected) => Widget::take_structure_dirty(&mut connected.view),
             None => self.waiting.take_structure_dirty(),
         }
     }
 
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         match &mut self.connected {
-            Some(connected) => connected.view.take_structure_change(),
+            Some(connected) => Widget::take_structure_change(&mut connected.view),
             None => self.waiting.take_structure_change(),
         }
     }

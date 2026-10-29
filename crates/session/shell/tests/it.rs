@@ -269,6 +269,8 @@ mod toplevel_icon_protocol;
 mod transient_sheets;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
+#[path = "typing_follows_the_keymap.rs"]
+mod typing_follows_the_keymap;
 #[path = "wayland_test.rs"]
 mod wayland_test;
 #[path = "wheel_scroll_wire.rs"]

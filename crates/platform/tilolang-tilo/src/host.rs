@@ -597,20 +597,31 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
-    /// Carry out the outside effects of this device that wait in the record: each goes to the
-    /// sink, and what settles is queued for the door like any other change. Returns how many
-    /// were delivered.
+    /// Carry out the outside effects of this device that wait in the record
+    /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
+    /// what became of it is queued for the door like any other change. Returns how many
+    /// changes that wrote. What `delivery(r)` reads follows the record either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
     pub fn settle_outbox(&self) -> Result<usize, String> {
         if self.inner.store.outbox_pending_count() == 0 {
+            self.inner.runtime.refresh_deliveries();
             return Ok(0);
         }
         self.inner
             .runtime
             .settle()
-            .map(|report| report.delivered)
+            .map(|report| {
+                [
+                    report.failed.len(),
+                    report.marked,
+                    report.waiting,
+                    report.unknown,
+                ]
+                .into_iter()
+                .fold(report.delivered, usize::saturating_add)
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -998,6 +1009,16 @@ impl Host {
         }
     }
 
+    /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
+    /// `json` gives, read as the door reads an invocation's arguments: a resource by its id, a
+    /// case by its name, a person as the workspace subject they are.
+    ///
+    /// # Errors
+    /// `json` does not read as a value of `ty`, with why.
+    pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
+        value_of(&self.inner, meta, json, ty)
+    }
+
     /// Whether the type `ty` is registered (a package of it was loaded here).
     #[must_use]
     pub fn knows_type(ty: &str) -> bool {
@@ -1008,17 +1029,16 @@ impl Host {
 /// The `surface.toml` bytes of the host with these built-in packages (source and ids lock),
 /// generated from their metadata: what receivers decide the host's changes against.
 ///
-/// A package that does not compile is left out and named in the log.
-#[must_use]
-pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
+/// # Errors
+/// A package does not compile, or the surface cannot be written: never a surface missing a
+/// package receivers would then decide its changes without.
+pub fn builtin_surface(packages: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let doc = tilo_resource::Doc::new();
-    let Ok(host) = Host::new(&doc, Principal::new("surface"), || None) else {
-        return Vec::new();
-    };
+    let host = Host::new(&doc, Principal::new("surface"), || None)
+        .map_err(|error| format!("no runtime to load the built-in packages: {error}"))?;
     for (source, ids) in packages {
-        if let Err(error) = host.load_builtin(source, ids) {
-            eprintln!("a built-in tilolang package did not compile: {error}");
-        }
+        host.load_builtin(source, ids)
+            .map_err(|error| format!("a built-in tilolang package did not compile: {error}"))?;
     }
     let metas: Vec<Meta> = host
         .packages()
@@ -1026,7 +1046,7 @@ pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
         .map(|package| package.meta)
         .collect();
     let refs: Vec<&Meta> = metas.iter().collect();
-    crate::surface::surface_toml(&refs).unwrap_or_default()
+    crate::surface::surface_toml(&refs).map_err(|error| error.to_string())
 }
 
 /// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.

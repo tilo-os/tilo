@@ -2,7 +2,6 @@
 //! changes: held edits go out, held ops are decided again, and what a full
 //! hold let go of is paged back from history.
 
-use collab_types::SignedOp;
 use collab_types::inbound::OpKey;
 use runtime_collab::OpAdmission;
 
@@ -102,7 +101,7 @@ async fn deliver_owed(route: &SdkRoute, inbound_tx: &InboundBridge) -> bool {
         .unwrap_or_default();
     for (artifact, mut before_seq) in pages {
         loop {
-            let Ok(batch) = route
+            let batch = match route
                 .channel
                 .fetch_scrollback_for(
                     artifact.0.as_bytes(),
@@ -110,15 +109,15 @@ async fn deliver_owed(route: &SdkRoute, inbound_tx: &InboundBridge) -> bool {
                     u32::from(crate::HISTORY_PAGE_SIZE),
                 )
                 .await
-            else {
-                // Still owed: paged again after the route's next change.
-                break;
+            {
+                Ok(batch) => batch,
+                Err(error) => {
+                    // Still owed: paged again after the route's next change.
+                    tracing::warn!(artifact = %artifact.0, %error, "collab: owed history page not fetched yet");
+                    break;
+                }
             };
-            let ops: Vec<SignedOp> = batch
-                .ops
-                .iter()
-                .filter_map(|bytes| postcard::from_bytes(bytes).ok())
-                .collect();
+            let ops = super::decode_paged_ops(artifact, &batch.ops);
             let oldest = ops.iter().map(|op| op.seq).min();
             for op in ops {
                 let owed = route.encryption.lock().is_ok_and(|mut keys| {

@@ -72,6 +72,14 @@ pub struct Members {
     reads: Option<Rc<Reads>>,
 }
 
+impl Members {
+    /// The members, in the order the host gave them.
+    #[must_use]
+    pub fn list(&self) -> &[Member] {
+        &self.list
+    }
+}
+
 /// The view state slot the members are kept under: a view that read them runs again when the
 /// host gives new ones.
 fn members_key() -> StateKey {
