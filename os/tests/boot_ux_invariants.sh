@@ -38,6 +38,7 @@ fi
 greeter_module="$root/os/usr/lib/dracut/modules.d/94tilo-greeter/module-setup.sh"
 if ! grep -Fq "instmods =drivers/input/touchscreen virtio_input" "$greeter_module" \
   || ! grep -Fq "=sound/virtio snd-hda-intel snd-seq" "$greeter_module" \
+  || ! grep -Fq 'echo "audio:x:${audio:-63}:" >> "${initdir:?}/etc/group"' "$greeter_module" \
   || ! grep -Fq "find /usr/share/alsa -type f -not -path '/usr/share/alsa/alsa.conf.d/*'" "$greeter_module"; then
   printf 'the boot sign-in must carry touch screen and sound drivers and an ALSA default that opens without PipeWire\n' >&2
   exit 1

@@ -47,7 +47,7 @@ initramfs_bytes() {
 }
 
 install() {
-    local face voice data before xkb
+    local face voice data before xkb audio
     before="$(initramfs_bytes)"
     inst_binary "$GREETER" /usr/libexec/tilo/tilo-greeter
     # Not the image's catalog directory: the catalog's manifest lists faces
@@ -95,7 +95,15 @@ install() {
     hostonly='' instmods =drivers/input/touchscreen virtio_input || :
     # The greeter runs as nobody in the audio group (tilo-boot-signin reads
     # the group's id here), so it may open the sound devices and nothing else.
-    grep -q '^audio:' "${initdir:?}/etc/group" 2>/dev/null \
-        || grep '^audio:' /etc/group >> "${initdir:?}/etc/group"
+    # udev gives them to the group only if the initramfs's /etc/group names
+    # it. The image has no audio group until systemd-sysusers makes one at
+    # boot, so take its id from sysusers.d, or Fedora's 63: it only has to
+    # agree with itself here, the root's udev sets the devices up again.
+    if ! grep -q '^audio:' "${initdir:?}/etc/group" 2>/dev/null; then
+        audio="$(getent group audio | cut -d: -f3)"
+        [ -n "$audio" ] || audio="$(sed -n 's/^g[[:space:]]\{1,\}audio[[:space:]]\{1,\}\([0-9]\{1,\}\).*/\1/p' \
+            /usr/lib/sysusers.d/*.conf 2>/dev/null | head -n 1)"
+        echo "audio:x:${audio:-63}:" >> "${initdir:?}/etc/group"
+    fi
     dinfo "tilo-greeter: the greeter adds $(($(initramfs_bytes) - before)) bytes"
 }
