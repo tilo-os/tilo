@@ -214,3 +214,17 @@ fn a_touch_during_the_settle_catches_the_row_where_it_is_drawn() {
         );
     });
 }
+
+#[test]
+fn an_armed_or_destructive_label_reads_at_body_text_contrast_in_both_shades() {
+    for theme in [Theme::light(), Theme::dark()] {
+        for (destructive, armed) in [(false, true), (true, false), (true, true)] {
+            let (fill, ink) = super::uncovered_colors(&theme, destructive, armed);
+            let ratio = crate::a11y::contrast_ratio(ink, fill);
+            assert!(
+                ratio >= crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+                "destructive {destructive}, armed {armed}: {ratio:.2}"
+            );
+        }
+    }
+}

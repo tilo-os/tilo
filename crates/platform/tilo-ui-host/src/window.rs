@@ -683,6 +683,14 @@ impl AppWindow {
                 }
             }
             UiEvent::Edit(composed, text) => self.edit(&composed, text),
+            UiEvent::EditRich(composed, rich) => {
+                // What the field shows is what the person typed, until the app takes it.
+                self.bound
+                    .borrow_mut()
+                    .insert(composed.clone(), Value::Rich(rich.clone()));
+                let (lane, key) = lane_of(&composed);
+                ToApp::EditRich { lane, key, rich }
+            }
             UiEvent::Toggle(key, checked) => {
                 let (lane, key) = lane_of(&key);
                 ToApp::Toggle { lane, key, checked }
@@ -919,6 +927,7 @@ pub fn show_bound<S: std::hash::BuildHasher>(
             match value {
                 Value::Bool(checked) => reconciler.set_flag(&key, *checked),
                 Value::Int(number) if flag => reconciler.set_flag(&key, *number != 0),
+                Value::Rich(rich) => reconciler.set_rich(&key, rich),
                 other => reconciler.set_text(&key, &crate::reconcile::display(other)),
             }
         }

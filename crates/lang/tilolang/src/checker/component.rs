@@ -199,6 +199,7 @@ impl Checker<'_> {
                 Type::Bool => vec![Ty::Bool],
                 Type::Int => vec![Ty::Int],
                 Type::Float => vec![Ty::Float],
+                Type::RichText => vec![Ty::RichText],
                 _ => Vec::new(),
             };
             if self.bind_typed(&node, value, &want).is_some() {

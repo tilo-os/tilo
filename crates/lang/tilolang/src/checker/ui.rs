@@ -500,7 +500,9 @@ impl Checker<'_> {
             }
             // An input edits its text through the binding the toolkit's `TextInput` calls
             // `value`.
-            if p.name == "input" && a.name.as_ref().is_some_and(|name| name.name == "bind") {
+            if matches!(p.name, "input" | "rich_input")
+                && a.name.as_ref().is_some_and(|name| name.name == "bind")
+            {
                 self.emit(Stmt::Eval(Ex::host(
                     Imp::UiPropH,
                     vec![Ex::local(n, Ty::View), Ex::str("bind"), Ex::str("value")],
@@ -725,6 +727,8 @@ impl Checker<'_> {
         let node = Ex::local(n, Ty::View);
         if let Some(kind) = prims::arg_choice(prim, name) {
             self.choice_arg(node, kind, name, value);
+        } else if name == "bind" && prim == "rich_input" {
+            let _ = self.bind_typed(&node, value, &[Ty::RichText]);
         } else if name == "bind" {
             self.bind_arg(&node, value);
         } else if name == "on" || name.starts_with("on_") {

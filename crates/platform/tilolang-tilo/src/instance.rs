@@ -957,6 +957,22 @@ impl Instance {
         self.out.extend(sent);
     }
 
+    /// The window shows what was typed into its bound control `key` of `lane` (the edit it
+    /// sent just applied): take it as what the window holds, so a later change from elsewhere
+    /// (the draft cleared once it was sent) differs from it and is sent.
+    fn shown_by_window(&mut self, lane: Lane, key: &str) {
+        let Some(value) = self
+            .view(lane)
+            .and_then(|view| view.borrow().bound_value(key))
+        else {
+            return;
+        };
+        let shown = plain(&NoNames).value(&value);
+        if let Some(view) = self.lane_mut(lane) {
+            view.bound.insert(key.to_owned(), shown);
+        }
+    }
+
     /// Bring the lenses the views read up to date with presence: who else is at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
     pub fn set_peers(&mut self, peers: HashMap<String, String>) {
@@ -1272,8 +1288,27 @@ impl Instance {
                 at,
                 delete,
                 insert,
-            } => self.splice(lane, &key, seq, (at, delete), &insert),
-            ToApp::Edit { lane, key, text } => self.edit(lane, &key, Value::Text(text)),
+            } => {
+                let edited = self.splice(lane, &key, seq, (at, delete), &insert);
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
+            ToApp::Edit { lane, key, text } => {
+                let edited = self.edit(lane, &key, Value::Text(text));
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
+            ToApp::EditRich { lane, key, rich } => {
+                let edited = self.edit(lane, &key, Value::Rich(wire::runtime_rich(&rich)));
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
