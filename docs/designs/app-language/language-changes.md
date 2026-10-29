@@ -22,8 +22,9 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 4. **Typing is personal.** Text being composed is lens state in the view (`lens draft: Text`),
    passed to the action as an argument. A shared `draft` field on a conversation or list is a
    bug: two people typing overwrite each other.
-5. **Positions by neighbour only.** Collection moves take `after:` or `before:` another item;
-   the compiler rejects integer positions (convergence.md, "Actions").
+5. **Positions are recorded by neighbour.** A move names a neighbour (`after:`, `before:`) or a
+   place (`to: i`), which is resolved to its neighbour when the action runs (convergence.md,
+   "Actions"); the language has no storage-shaped restriction on positions.
 6. **Roots are named values of any type.** `type Notes = Collection<Note>`, `root notes: Notes`;
    `type Channels = Collection<Category | Channel>`, `root channels: Channels`. No wrapper type
    named after the app. Other code reaches a root by the app's alias and the root's name

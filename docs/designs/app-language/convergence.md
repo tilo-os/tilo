@@ -31,8 +31,11 @@ accepts its changes. Everything else holds a replica or a cache.
   `uses time`), and the compiler enforces it.
 - **What the person saw is an argument.** A default like `done: Bool = not item.done` is
   evaluated when the action is invoked and recorded. Two people ticking the same box both record
-  `done: true`, so they agree instead of cancelling out. Positions are named by neighbours
-  (`move(item, after: other)`), never counted.
+  `done: true`, so they agree instead of cancelling out. Positions are the same: a move
+  may name a neighbour (`move(item, after: other)`) or a place (`move(item, to: 2)`, as a drag
+  gives one), and a place is resolved when the action runs, against the list the person saw,
+  to the item it then comes before. The move is recorded beside that neighbour, so moves made
+  elsewhere at the same time leave each item where its mover meant.
 - The compiler rejects the ambiguous forms (writing a field as `not` itself, or itself plus an
   amount) and suggests a recorded default or a counter.
 
