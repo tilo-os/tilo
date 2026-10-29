@@ -19,6 +19,12 @@ const PROTOCOL: &str = "2025-06-18";
 pub const CLIENT: &str = "tilolang repl";
 pub const AGENT: &str = "tilolang-repl";
 
+/// What the person's remote answer admits the REPL to a nested session's workspace as: the
+/// delegation a person's device gives its agents (reading and undoable changes, reaching outside
+/// asking first). The answers the person gives it (Settings → Agents → Review access) are theirs:
+/// the REPL never writes them, so a `deny` or `ask` there decides its invocations.
+const PRESET: &str = "operator";
+
 /// How long a door call may take.
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -125,28 +131,6 @@ impl Control {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-
-    /// The tilolang apps running in the session: those publishing the tilolang host.
-    fn tilolang_apps(&self) -> Result<Vec<String>, String> {
-        let listed = self.request(&json!({
-            "op": "actions_enumerate", "query": "read", "detail": "compact", "limit": 2000
-        }))?;
-        // An app's action row is named `<app>␟<kind>␟<resource kind>␟…␟<action>`.
-        let mut apps: Vec<String> = listed
-            .get("actions")
-            .and_then(Json::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|row| row["provider"] == "app-actions")
-            .filter_map(|row| row["id"].as_str())
-            .filter(|id| id.ends_with("\u{1f}read-values"))
-            .filter_map(|id| id.split('\u{1f}').next())
-            .map(str::to_owned)
-            .collect();
-        apps.sort();
-        apps.dedup();
-        Ok(apps)
-    }
 }
 
 /// What a tool answered: its text, and whether it is an error.
@@ -166,8 +150,8 @@ pub struct Door {
 
 impl Door {
     /// Connect to the door at `socket` and be admitted: by the person in the session's own
-    /// prompt, or, for a nested session (`control`), by the person's remote answer, which also
-    /// grants the REPL the tilolang apps running there.
+    /// prompt, or, for a nested session (`control`), by the person's remote answer, which admits
+    /// it as [`PRESET`].
     ///
     /// # Errors
     /// The door is not there, the person did not admit the REPL, or the door refused it.
@@ -194,7 +178,7 @@ impl Door {
                 control.request(&json!({
                     "op": "actions_invoke", "provider": "permission-prompts",
                     "id": format!("allow-once@{prompt}"),
-                    "args": {"confirm": true, "agent": AGENT},
+                    "args": {"confirm": true, "agent": AGENT, "preset": PRESET},
                     "wait_ms": 5000
                 }))?;
             }
@@ -208,19 +192,6 @@ impl Door {
             ));
         }
         lines.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))?;
-        if let Some(control) = control {
-            // The answers the person gives an agent per app and kind (Settings → Agents → Review
-            // access): reading and undoable changes, never reaching outside.
-            for app in control.tilolang_apps()? {
-                for kind in ["read", "undoable"] {
-                    control.request(&json!({
-                        "op": "allow", "subject": format!("agent:{AGENT}"),
-                        "node": format!("app:{app}"), "kinds": [kind], "answer": "allow",
-                        "id": format!("agent-answer:{AGENT}:app:{app}:{kind}")
-                    }))?;
-                }
-            }
-        }
         let mut door = Self {
             lines,
             next: 1,
