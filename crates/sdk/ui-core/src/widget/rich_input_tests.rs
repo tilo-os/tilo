@@ -72,7 +72,10 @@ fn a_picked_reference_goes_in_as_a_reference_with_how_it_reads() {
     );
     type_text(&mut input, "now");
     let rich = last_value(&edits).expect("each edit reports the rich text");
-    assert_eq!(rich.plain_text(), "see #release notes now");
+    assert_eq!(
+        crate::widget::rich_doc::plain_text(&rich),
+        "see release notes now"
+    );
     let block = &rich.blocks[0];
     assert_eq!(block.marks.len(), 1, "{:?}", block.marks);
     let mark = &block.marks[0];
@@ -98,7 +101,7 @@ fn a_person_from_the_room_goes_in_as_a_mention_of_their_participant_id() {
         &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
     );
     let rich = last_value(&edits).expect("the pick reported the rich text");
-    assert_eq!(rich.plain_text(), "@Ada Lovelace ");
+    assert_eq!(crate::widget::rich_doc::plain_text(&rich), "@Ada Lovelace ");
     assert_eq!(rich.blocks[0].marks[0].value, Attr::Text("u_ada".into()));
     assert_eq!(
         rich.embeds[0].view,
@@ -115,7 +118,7 @@ fn a_value_cleared_elsewhere_empties_the_field() {
     let edits = crate::Intents::default();
     let mut input = field(&edits);
     type_text(&mut input, "hello");
-    assert_eq!(input.rich().plain_text(), "hello");
+    assert_eq!(crate::widget::rich_doc::plain_text(&input.rich()), "hello");
     input.value.state.set(RichText::default());
     assert!(input.follow(), "the host's empty draft is shown");
     assert_eq!(input.rich(), RichText::default());
