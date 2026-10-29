@@ -206,9 +206,9 @@ Code under `cfg(target_arch = "wasm32")` builds for no other target, so a native
 browser crate passes while the web build breaks. `test/<package>` stays native; the `wasm` check
 lints the page runtime with every web app linked in.
 
-Every check states the cores and memory it must be able to pass with (`requirement`, with a
-default at the top of `t.toml`). A check that needs more fails, so a test that slowly needs more
-shows up instead of being fed. t usually gives checks more when there is room.
+Checks declare no cores, memory or disk: t books each job from what its runs measured (the
+key's peak and parallelism, else its check's, else a default for its kind) and grows a job that
+asks for more. `t.toml` refuses `requirement`, `cost` and a `[defaults]` table.
 
 A check that needs particular hardware says so, and runs only on a node that has it:
 

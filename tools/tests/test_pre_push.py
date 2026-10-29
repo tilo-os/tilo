@@ -53,7 +53,6 @@ class SelectTests(unittest.TestCase):
                     continue
                 check = checks[name]
                 self.assertNotEqual(check.get("isolation"), "vm")
-                self.assertNotIn(check.get("cost"), ("minutes", "heavy"))
                 self.assertTrue(name.startswith("policy/") or name in pre_push.GATES or name in pre_push.ALWAYS)
         # Everything else is left to main and to `t test`.
         self.assertEqual(set(run) | set(chosen["left"]), set(scope["checks"]) | set(pre_push.ALWAYS))
@@ -64,7 +63,6 @@ class SelectTests(unittest.TestCase):
             with self.subTest(check=name):
                 self.assertIn(name, checks)
                 self.assertNotEqual(checks[name].get("isolation"), "vm")
-                self.assertLessEqual(checks[name]["requirement"]["cores"], 8)
         self.assertIs(checks["fmt-changed"].get("default"), False)
 
     def test_policy_tests_run_only_when_the_policy_tools_change(self):
@@ -89,10 +87,7 @@ class SelectTests(unittest.TestCase):
         checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
         for name in sorted(marked):
             with self.subTest(check=name):
-                # A check that needs a Git index of the whole tree, or builds, is main's.
                 self.assertIn(name, checks)
-                check = checks[name]
-                self.assertLessEqual(check["requirement"]["cores"], 8)
 
     def test_a_check_red_on_main_runs_all_the_same(self):
         # t compares its failures with main's: a push that adds one is refused however red main is.

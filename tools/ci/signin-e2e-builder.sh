@@ -47,7 +47,7 @@ esac
 mkdir -p "$target" "$out"
 target=$(realpath "$target")
 out=$(realpath "$out")
-run_checks=(python3 tools/ci/run-checks.py --target "$target" --ref main --jobs "$jobs" --no-limits)
+run_checks=(python3 tools/ci/run-checks.py --target "$target" --ref main --jobs "$jobs")
 
 echo "signin-e2e-builder: $(git log --oneline -1) on $arch"
 "${run_checks[@]}" "os-image-$arch" "$vm_check"

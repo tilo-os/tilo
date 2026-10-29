@@ -18,7 +18,7 @@ What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps")
   * `isolation = "vm"`: root with podman of its own and /dev/kvm (here a privileged container
     with its own /var/lib/containers, /tmp and /var/tmp, but the machine's kernel: no loop
     devices and only the filesystems it has, so os-dev-disk-<arch> does not run here);
-  * its `requirement` as the container's cores and memory, and `timeout_secs`.
+  * its `timeout_secs`.
 
 A check passed before with the same key (its command, image, environment, dispatch inputs, the
 whole tree, and the keys of what it needs) is not run again unless --force. A check's `secrets`
@@ -234,12 +234,6 @@ class Runner:
                      "-e", "CONTAINERS_STORAGE_CONF=/run/run-checks/storage.conf"]
         if "/dev/kvm" in check.get("requires", []):
             argv += ["--device", "/dev/kvm"]
-        requirement = check.get("requirement", self.project.get("defaults", {}).get("requirement", {}))
-        if not self.args.no_limits and requirement:
-            if "cores" in requirement:
-                argv += ["--cpus", str(requirement["cores"])]
-            if "memory" in requirement:
-                argv += ["--memory", requirement["memory"].replace("GiB", "g").replace("MiB", "m")]
         # t gives each check a /target of its own and its cargo builds go there; here they share one, so
         # each check's cargo builds get a directory of their own in it, kept for the next run.
         cargo_target = f"/target/.cargo-target/{name.replace('/', '_')}"
@@ -344,7 +338,6 @@ def main(argv: list[str]) -> int:
     p.add_argument("--jobs", type=int, default=4, help="checks run at once")
     p.add_argument("--force", action="store_true", help="run the named checks and their needs even if passed")
     p.add_argument("--dry-run", action="store_true", help="say what would run")
-    p.add_argument("--no-limits", action="store_true", help="give checks every core and all memory")
     p.add_argument("--secret", action="append", default=[], metavar="NAME",
                    help="give checks that declare the secret NAME its value from this environment")
     p.add_argument("--given", action="append", default=[], metavar="CHECK",
