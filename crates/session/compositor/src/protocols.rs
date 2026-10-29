@@ -16,7 +16,10 @@ use smithay::utils::{Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
-use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::backend::drm::{DrmNode, NodeType};
+use smithay::wayland::dmabuf::{
+    DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier,
+};
 use smithay::wayland::fractional_scale::{FractionalScaleHandler, FractionalScaleManagerState, with_fractional_scale};
 use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
 use smithay::wayland::keyboard_shortcuts_inhibit::{
@@ -91,15 +94,33 @@ impl Protocols {
 impl State {
     /// Offer `linux-dmabuf` with the formats the backend's renderer
     /// imports. Called once by a backend that can import dma-bufs.
-    pub(crate) fn enable_dmabuf(&mut self, formats: Vec<Format>) {
+    ///
+    /// With the GPU the compositor renders on (`device`), clients are told
+    /// to allocate there (default feedback); without it, GL clients find no
+    /// GPU and fall back to software rendering.
+    pub(crate) fn enable_dmabuf(&mut self, formats: Vec<Format>, device: Option<DrmNode>) {
         if self.protocols.dmabuf_global.is_some() {
             return;
         }
         let display = self.display.clone();
-        let global = self
-            .protocols
-            .dmabuf
-            .create_global::<Self>(&display, formats);
+        let feedback = device.and_then(|node| {
+            // Clients allocate on the render node of the same GPU.
+            let render = node
+                .node_with_type(NodeType::Render)
+                .and_then(Result::ok)
+                .unwrap_or(node);
+            DmabufFeedbackBuilder::new(render.dev_id(), formats.iter().copied())
+                .build()
+                .map_err(|error| tracing::warn!(?error, "dmabuf feedback"))
+                .ok()
+        });
+        let global = match feedback {
+            Some(feedback) => self
+                .protocols
+                .dmabuf
+                .create_global_with_default_feedback::<Self>(&display, &feedback),
+            None => self.protocols.dmabuf.create_global::<Self>(&display, formats),
+        };
         self.protocols.dmabuf_global = Some(global);
     }
 

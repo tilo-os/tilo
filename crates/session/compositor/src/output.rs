@@ -24,6 +24,140 @@ pub(crate) fn refresh_interval(refresh_mhz: i32) -> Duration {
         .map_or(FALLBACK_INTERVAL, Duration::from_nanos)
 }
 
+/// A mode a configuration asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeRequest {
+    /// Physical pixels.
+    pub size: (i32, i32),
+    /// Millihertz; `None` takes the fastest at that size.
+    pub refresh_mhz: Option<i32>,
+}
+
+/// How a configuration (a display tool, Settings) changes one output.
+/// Unset fields keep what the output has.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputChange {
+    /// The output's connector name.
+    pub name: String,
+    /// Whether the output stays on.
+    pub enabled: bool,
+    pub mode: Option<ModeRequest>,
+    /// The top-left corner in the logical layout.
+    pub position: Option<(i32, i32)>,
+    pub scale: Option<f64>,
+    pub transform: Option<Transform>,
+}
+
+impl OutputChange {
+    /// Keep `name` on, changing nothing yet.
+    pub fn enable(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            enabled: true,
+            mode: None,
+            position: None,
+            scale: None,
+            transform: None,
+        }
+    }
+
+    /// Turn `name` off.
+    pub fn disable(name: impl Into<String>) -> Self {
+        Self {
+            enabled: false,
+            ..Self::enable(name)
+        }
+    }
+}
+
+/// Why a configuration cannot be applied, before any backend looks at it:
+/// an unknown output, an unusable scale, or every output turned off.
+pub(crate) fn check_changes(
+    changes: &[OutputChange],
+    outputs: &[String],
+) -> Result<(), String> {
+    for change in changes {
+        if !outputs.contains(&change.name) {
+            return Err(format!("{}: no such output", change.name));
+        }
+        if change
+            .scale
+            .is_some_and(|scale| !(scale.is_finite() && scale > 0.0))
+        {
+            return Err(format!("{}: unusable scale", change.name));
+        }
+    }
+    let all_off = outputs.iter().all(|name| {
+        changes
+            .iter()
+            .any(|change| &change.name == name && !change.enabled)
+    });
+    if all_off && !outputs.is_empty() {
+        return Err("every output would be off".into());
+    }
+    Ok(())
+}
+
+/// The mode of `modes` a request names: that size at that refresh (within
+/// half a hertz), or the fastest at that size when it names no refresh.
+pub(crate) fn find_mode(modes: &[Mode], request: ModeRequest) -> Option<Mode> {
+    let at_size = modes
+        .iter()
+        .filter(|mode| (mode.size.w, mode.size.h) == request.size);
+    match request.refresh_mhz {
+        Some(refresh) => at_size
+            .filter(|mode| mode.refresh.abs_diff(refresh) <= 500)
+            .min_by_key(|mode| mode.refresh.abs_diff(refresh))
+            .copied(),
+        None => at_size.max_by_key(|mode| mode.refresh).copied(),
+    }
+}
+
+/// Apply the scale, rotation and place of `change` to `output` (the mode is
+/// the backend's), moving it in the layout. The caller re-arranges windows
+/// once every output is done.
+pub(crate) fn apply_placement(state: &mut State, output: &Output, change: &OutputChange) {
+    let position = change.position.map(Point::<i32, Logical>::from);
+    output.change_current_state(
+        None,
+        change.transform,
+        change.scale.map(Scale::Fractional),
+        position,
+    );
+    if let Some(position) = position {
+        state.space.map_output(output, position);
+    }
+}
+
+/// Where outputs go in the logical layout, in the order given: an output
+/// named in `fixed` at its place, the others packed left to right (top
+/// edge at 0) after every fixed one, so outputs that come and go leave no
+/// holes. `outputs` are `(name, logical width)`.
+pub(crate) fn arrange(
+    outputs: &[(String, i32)],
+    fixed: &std::collections::HashMap<String, (i32, i32)>,
+) -> Vec<(i32, i32)> {
+    let mut next_x = outputs
+        .iter()
+        .filter_map(|(name, width)| {
+            fixed
+                .get(name)
+                .map(|(x, _)| x.saturating_add((*width).max(0)))
+        })
+        .max()
+        .unwrap_or(0);
+    outputs
+        .iter()
+        .map(|(name, width)| {
+            fixed.get(name).copied().unwrap_or_else(|| {
+                let at = (next_x, 0);
+                next_x = next_x.saturating_add((*width).max(0));
+                at
+            })
+        })
+        .collect()
+}
+
 /// One output as a backend describes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputConfig {
@@ -99,6 +233,69 @@ impl OutputConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mode(w: i32, h: i32, refresh: i32) -> Mode {
+        Mode {
+            size: (w, h).into(),
+            refresh,
+        }
+    }
+
+    #[test]
+    fn requested_modes_match_size_and_refresh_or_take_the_fastest() {
+        let modes = [mode(1920, 1080, 60_000), mode(1920, 1080, 143_981), mode(1280, 720, 60_000)];
+        let request = |size, refresh_mhz| ModeRequest { size, refresh_mhz };
+        assert_eq!(find_mode(&modes, request((1920, 1080), None)), Some(modes[1]));
+        assert_eq!(find_mode(&modes, request((1920, 1080), Some(144_000))), Some(modes[1]));
+        assert_eq!(find_mode(&modes, request((1920, 1080), Some(59_940))), Some(modes[0]));
+        assert_eq!(find_mode(&modes, request((1920, 1080), Some(75_000))), None);
+        assert_eq!(find_mode(&modes, request((800, 600), None)), None);
+    }
+
+    #[test]
+    fn configurations_name_real_outputs_keep_one_on_and_use_real_scales() {
+        let outputs = vec!["eDP-1".to_owned(), "DP-1".to_owned()];
+        let scaled = OutputChange {
+            scale: Some(1.5),
+            ..OutputChange::enable("DP-1")
+        };
+        assert_eq!(check_changes(&[scaled, OutputChange::disable("eDP-1")], &outputs), Ok(()));
+        assert!(check_changes(&[OutputChange::enable("HDMI-A-9")], &outputs).is_err());
+        let zero = OutputChange {
+            scale: Some(0.0),
+            ..OutputChange::enable("DP-1")
+        };
+        assert!(check_changes(&[zero], &outputs).is_err());
+        assert!(
+            check_changes(
+                &[OutputChange::disable("eDP-1"), OutputChange::disable("DP-1")],
+                &outputs
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unplaced_outputs_pack_left_to_right_after_placed_ones() {
+        let outputs = |list: &[(&str, i32)]| -> Vec<(String, i32)> {
+            list.iter().map(|(name, w)| ((*name).to_owned(), *w)).collect()
+        };
+        let none = std::collections::HashMap::new();
+        // Pulling the middle display closes the hole it left.
+        assert_eq!(
+            arrange(&outputs(&[("eDP-1", 1280), ("DP-1", 1920), ("DP-2", 2560)]), &none),
+            vec![(0, 0), (1280, 0), (3200, 0)]
+        );
+        assert_eq!(
+            arrange(&outputs(&[("eDP-1", 1280), ("DP-2", 2560)]), &none),
+            vec![(0, 0), (1280, 0)]
+        );
+        let fixed = std::collections::HashMap::from([("DP-1".to_owned(), (0, -1080))]);
+        assert_eq!(
+            arrange(&outputs(&[("eDP-1", 1280), ("DP-1", 1920)]), &fixed),
+            vec![(1920, 0), (0, -1080)]
+        );
+    }
 
     #[test]
     fn refresh_intervals_follow_the_mode_and_fall_back_to_60_hz() {

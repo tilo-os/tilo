@@ -23,10 +23,12 @@
 #![cfg(target_os = "linux")]
 
 pub mod backend;
+mod cursor;
 pub mod host;
 pub mod input;
 mod lock;
 pub mod output;
+mod output_management;
 pub mod policy;
 mod present;
 mod protocols;
@@ -48,7 +50,7 @@ pub use backend::{
 };
 pub use host::{HostLayer, SurfaceHost};
 pub use input::{HostKey, InputEvent, KeyModifiers};
-pub use output::OutputConfig;
+pub use output::{ModeRequest, OutputChange, OutputConfig};
 pub use policy::{Arrangement, StackPolicy, WindowInfo, WindowPolicy};
 pub use state::State;
 
@@ -241,6 +243,36 @@ impl Compositor {
             .map_err(io)?;
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
+        self.configure_from_clients();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Apply (or test) the display configurations clients sent and tell
+    /// them how it went, then show every manager the outputs as they are.
+    fn configure_from_clients(&mut self) {
+        let state = &mut self.data.state;
+        for pending in state.output_management.take_pending() {
+            match self.data.backend.configure_checked(state, &pending.changes, pending.test) {
+                Ok(()) => pending.configuration.succeeded(),
+                Err(error) => {
+                    tracing::info!(%error, "display configuration refused");
+                    pending.configuration.failed();
+                }
+            }
+        }
+        let display = state.display.clone();
+        let outputs: Vec<smithay::output::Output> = state.space.outputs().cloned().collect();
+        state.output_management.publish(&display, outputs.iter());
+    }
+
+    /// Change outputs' modes, scales, rotations and places (as a display
+    /// tool would through `wlr-output-management`). All or nothing.
+    pub fn configure_outputs(&mut self, changes: &[OutputChange]) -> Result<(), Error> {
+        self.data
+            .backend
+            .configure_checked(&mut self.data.state, changes, false)?;
+        self.configure_from_clients();
         self.display.flush_clients()?;
         Ok(())
     }

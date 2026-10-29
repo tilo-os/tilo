@@ -34,16 +34,20 @@ use smithay::backend::session::{Event as SessionEvent, Session as _};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
-use smithay::reexports::drm::control::{Device as _, ModeFlags, ModeTypeFlags, connector, crtc};
+use smithay::reexports::drm::control::{
+    Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags, connector, crtc,
+};
 use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{DeviceFd, Point, Transform};
 
-use super::{Backend, BackendError, failed};
+use super::{Backend, BackendError, failed, refuse_disabling};
 use crate::input::InputEvent;
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
-use crate::output::refresh_interval;
+use crate::output::{
+    ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval,
+};
 use crate::present::{Presentation, Shown};
 use crate::state::State;
 use crate::{Error, LoopData};
@@ -59,6 +63,9 @@ pub struct DisplayConfig {
     pub modes: HashMap<String, RequestedMode>,
     /// A chosen scale per connector; unlisted outputs run at 1.
     pub scales: HashMap<String, f64>,
+    /// A chosen top-left corner in the logical layout per connector;
+    /// unlisted outputs are packed left to right after the listed ones.
+    pub positions: HashMap<String, (i32, i32)>,
 }
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
@@ -74,6 +81,8 @@ struct Lit {
     output: Output,
     global: GlobalId,
     connector: connector::Handle,
+    /// The modes the connector advertised when it was lit.
+    modes: Vec<DrmMode>,
     surface: Surface,
     /// A frame is queued and its vertical blank has not come yet.
     queued: bool,
@@ -136,7 +145,10 @@ impl DrmBackend {
         let udev = UdevBackend::new(&seat).map_err(|error| failed("udev", error))?;
         let gpu_path = primary_gpu(&seat, &udev)?;
         let gpu = open_gpu(handle, &inner, &gpu_path)?;
-        state.enable_dmabuf(gpu.renderer.dmabuf_formats().iter().copied().collect());
+        state.enable_dmabuf(
+            gpu.renderer.dmabuf_formats().iter().copied().collect(),
+            Some(gpu.node),
+        );
         inner.borrow_mut().gpu = Some(gpu);
         scan_connectors(&inner, state);
 
@@ -201,6 +213,60 @@ impl Backend for DrmBackend {
         Ok(())
     }
 
+    fn configure(
+        &mut self,
+        state: &mut State,
+        changes: &[OutputChange],
+        test: bool,
+    ) -> Result<(), BackendError> {
+        refuse_disabling(changes)?;
+        let mut inner = self.inner.borrow_mut();
+        let gpu = inner
+            .gpu
+            .as_mut()
+            .ok_or_else(|| BackendError("no GPU is driven".into()))?;
+        // Every mode is resolved before anything changes: all or nothing.
+        let mut plan = Vec::with_capacity(changes.len());
+        for change in changes {
+            let (crtc, lit) = gpu
+                .outputs
+                .iter()
+                .find(|(_, lit)| lit.output.name() == change.name)
+                .ok_or_else(|| BackendError(format!("{}: not lit", change.name)))?;
+            let mode = match change.mode {
+                Some(request) => Some(drm_mode(&lit.modes, request).ok_or_else(|| {
+                    BackendError(format!("{}: the display has no such mode", change.name))
+                })?),
+                None => None,
+            };
+            plan.push((*crtc, mode, change));
+        }
+        if test {
+            return Ok(());
+        }
+        for (crtc, mode, change) in plan {
+            let Some(lit) = gpu.outputs.get_mut(&crtc) else {
+                continue;
+            };
+            if let Some(mode) = mode {
+                lit.surface
+                    .use_mode::<_, OutputRenderElement<GlesRenderer>>(
+                        mode,
+                        &mut gpu.renderer,
+                        &DrmOutputRenderElements::default(),
+                    )
+                    .map_err(|error| failed(&format!("{}: mode", change.name), error))?;
+                let output_mode = OutputMode::from(mode);
+                lit.output
+                    .change_current_state(Some(output_mode), None, None, None);
+                lit.interval = refresh_interval(output_mode.refresh);
+            }
+            apply_placement(state, &lit.output, change);
+            lit.next_frame = Instant::now();
+        }
+        Ok(())
+    }
+
     fn next_deadline(&self) -> Option<Instant> {
         let inner = self.inner.borrow();
         let gpu = inner.gpu.as_ref()?;
@@ -214,7 +280,7 @@ impl Backend for DrmBackend {
 
 /// Draw every output that is not waiting for a vertical blank and whose
 /// next frame is due.
-fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
+fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let mut inner = inner.borrow_mut();
     if !inner.active {
         return;
@@ -227,8 +293,11 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
         if lit.queued || now < lit.next_frame {
             continue;
         }
-        let elements: Vec<OutputRenderElement<GlesRenderer>> =
-            output_elements(&mut gpu.renderer, state, &lit.output);
+        // The pointer in front, where DrmCompositor can give it the cursor
+        // plane.
+        let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
+            state.cursor_elements(&mut gpu.renderer, &lit.output);
+        elements.extend(output_elements(&mut gpu.renderer, state, &lit.output));
         match lit.surface.render_frame(
             &mut gpu.renderer,
             &elements,
@@ -398,7 +467,7 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, crtc, metadata.as_ref());
-                render_ready(&vblank_inner, &data.state);
+                render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
         })
@@ -481,6 +550,40 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             gpu.outputs.insert(crtc, lit);
         }
     }
+    arrange_outputs(gpu, &config, state);
+}
+
+/// Place every lit output: where the configuration says, the rest packed
+/// left to right in their current order after the configured ones, so an
+/// unplugged display leaves no hole for the pointer to get lost in.
+fn arrange_outputs(gpu: &Gpu, config: &DisplayConfig, state: &mut State) {
+    let mut lit: Vec<&Output> = gpu.outputs.values().map(|lit| &lit.output).collect();
+    lit.sort_by_key(|output| (output.current_location().x, output.name()));
+    let outputs: Vec<(String, i32)> = lit
+        .iter()
+        .map(|output| (output.name(), logical_width(output)))
+        .collect();
+    let positions = crate::output::arrange(&outputs, &config.positions);
+    for (output, position) in lit.into_iter().zip(positions) {
+        if output.current_location() != Point::from(position) {
+            output.change_current_state(None, None, None, Some(position.into()));
+            state.space.map_output(output, position);
+        }
+    }
+    state.rearrange();
+}
+
+/// An output's width in the logical layout: its mode over its scale,
+/// turned.
+fn logical_width(output: &Output) -> i32 {
+    let size = output
+        .current_mode()
+        .map(|mode| output.current_transform().transform_size(mode.size))
+        .unwrap_or_default();
+    size.to_f64()
+        .to_logical(output.current_scale().fractional_scale())
+        .to_i32_round::<i32>()
+        .w
 }
 
 /// Drive `info`'s connector from `crtc` in `mode` and make it an output
@@ -491,7 +594,7 @@ fn light(
     info: &connector::Info,
     name: &str,
     crtc: crtc::Handle,
-    mode: smithay::reexports::drm::control::Mode,
+    mode: DrmMode,
     scale: f64,
 ) -> Option<Lit> {
     let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
@@ -509,6 +612,7 @@ fn light(
         },
     );
     let output_mode = OutputMode::from(mode);
+    // Right of the others until the arrangement places it.
     let location = Point::from((next_x(state), 0));
     output.change_current_state(
         Some(output_mode),
@@ -516,6 +620,9 @@ fn light(
         Some(Scale::Fractional(scale)),
         Some(location),
     );
+    for advertised in info.modes() {
+        output.add_mode(OutputMode::from(*advertised));
+    }
     output.set_preferred(output_mode);
     let surface = gpu
         .manager
@@ -538,11 +645,22 @@ fn light(
         output,
         global,
         connector: info.handle(),
+        modes: info.modes().to_vec(),
         surface,
         queued: false,
         next_frame: Instant::now(),
         interval,
     })
+}
+
+/// The advertised mode a request names (see [`crate::output::find_mode`]).
+fn drm_mode(modes: &[DrmMode], request: ModeRequest) -> Option<DrmMode> {
+    let as_output: Vec<OutputMode> = modes.iter().copied().map(OutputMode::from).collect();
+    let wanted = find_mode(&as_output, request)?;
+    modes
+        .iter()
+        .copied()
+        .find(|mode| OutputMode::from(*mode) == wanted)
 }
 
 fn free_crtc(

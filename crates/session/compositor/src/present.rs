@@ -12,8 +12,10 @@ use std::time::Duration;
 
 use smithay::backend::renderer::element::RenderElementStates;
 use smithay::desktop::utils::{
-    OutputPresentationFeedback, surface_presentation_feedback_flags_from_states,
+    OutputPresentationFeedback, send_frames_surface_tree,
+    surface_presentation_feedback_flags_from_states,
 };
+use smithay::input::pointer::CursorImageStatus;
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
 use smithay::utils::{Clock, Monotonic, Time};
@@ -96,6 +98,11 @@ impl State {
                     })
                 },
             );
+        }
+        if let CursorImageStatus::Surface(surface) = &self.cursor.status {
+            send_frames_surface_tree(surface, output, time, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
         }
         let refresh = output
             .current_mode()

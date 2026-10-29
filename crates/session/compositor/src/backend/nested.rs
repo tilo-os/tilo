@@ -7,7 +7,8 @@
 //! output; resizing the window changes its mode. Frames are composited with
 //! GLES on the GPU the X server renders with and presented when the server
 //! is ready for the next one. Pointer and keyboard input of the window
-//! becomes [`InputEvent`]s; the host's cursor stays visible.
+//! becomes [`InputEvent`]s; the pointer is drawn as on a real screen, in
+//! place of the host's.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -25,9 +26,9 @@ use smithay::output::{Mode, Output};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::utils::{DeviceFd, Logical, Size};
 
-use super::{Backend, BackendError, failed};
+use super::{Backend, BackendError, failed, refuse_disabling};
 use crate::input::InputEvent;
-use crate::output::{OutputConfig, refresh_interval};
+use crate::output::{OutputChange, OutputConfig, apply_placement, refresh_interval};
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
@@ -110,7 +111,7 @@ impl NestedBackend {
     ) -> Result<Self, Error> {
         let backend = X11Backend::new().map_err(|error| failed("X11 connection", error))?;
         let x11 = backend.handle();
-        let (_node, fd) = x11
+        let (node, fd) = x11
             .drm_node()
             .map_err(|error| failed("the X server's GPU (DRI3)", error))?;
         let gbm =
@@ -140,7 +141,10 @@ impl NestedBackend {
         // SAFETY: the context is current only on this thread, the loop's.
         let renderer = unsafe { GlesRenderer::new(context) }
             .map_err(|error| failed("GLES renderer", error))?;
-        state.enable_dmabuf(renderer.dmabuf_formats().iter().copied().collect());
+        state.enable_dmabuf(
+            renderer.dmabuf_formats().iter().copied().collect(),
+            Some(node),
+        );
 
         let size = window.size();
         let mut output_config = OutputConfig::new(
@@ -153,6 +157,8 @@ impl NestedBackend {
         let output = output_config.create(&state.display, "nested");
         state.add_output(&output, output_config.location());
         let damage = OutputDamageTracker::from_output(&output);
+        // The compositor draws the pointer: clients' cursor shapes show.
+        window.set_cursor_visible(false);
         window.map();
 
         let inner = Rc::new(RefCell::new(Inner {
@@ -228,8 +234,9 @@ impl Backend for NestedBackend {
             .surface
             .buffer()
             .map_err(|error| failed("window buffer", error))?;
-        let elements: Vec<OutputRenderElement<GlesRenderer>> =
-            output_elements(&mut inner.renderer, state, &inner.output);
+        let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
+            state.cursor_elements(&mut inner.renderer, &inner.output);
+        elements.extend(output_elements(&mut inner.renderer, state, &inner.output));
         let drawn = {
             let mut framebuffer = inner
                 .renderer
@@ -266,6 +273,36 @@ impl Backend for NestedBackend {
                     .map_or(REFRESH_MHZ, |mode| mode.refresh),
             ))
             .unwrap_or(now);
+        Ok(())
+    }
+
+    fn configure(
+        &mut self,
+        state: &mut State,
+        changes: &[OutputChange],
+        test: bool,
+    ) -> Result<(), BackendError> {
+        refuse_disabling(changes)?;
+        let mut inner = self.inner.borrow_mut();
+        // The window's size is the host's to change.
+        let current = inner.output.current_mode().map(|mode| mode.size);
+        if let Some(change) = changes.iter().find(|change| {
+            change
+                .mode
+                .is_some_and(|mode| Some(mode.size.into()) != current)
+        }) {
+            return Err(BackendError(format!(
+                "{}: resize the window to change its mode",
+                change.name
+            )));
+        }
+        if test {
+            return Ok(());
+        }
+        for change in changes {
+            apply_placement(state, &inner.output, change);
+        }
+        inner.damage = OutputDamageTracker::from_output(&inner.output);
         Ok(())
     }
 
