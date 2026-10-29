@@ -2,7 +2,11 @@
 //! first defined with, kept exact so the Rust ports judge and write them the
 //! same way: what counts as whitespace and as a line break, how `int()` reads
 //! a number, how strictly `base64.b64decode(validate=True)` decodes, what
-//! `bool()` makes of a JSON value, and the text `json.dumps` writes.
+//! `bool()`, `str()`, `repr()` and `==` make of a JSON value, the text
+//! `json.dumps` writes, `hashlib.sha256().hexdigest()`, and the command lines
+//! `argparse` read ([`argparse`]).
+
+pub mod argparse;
 
 use std::fmt::Write as _;
 
@@ -75,7 +79,7 @@ pub fn splitlines(text: &str) -> Vec<&str> {
 /// # Errors
 /// Anything else, worded as Python worded it.
 pub fn int(text: &str) -> Result<i128, String> {
-    let invalid = || format!("invalid literal for int() with base 10: {text:?}");
+    let invalid = || format!("invalid literal for int() with base 10: {}", repr_str(text));
     let trimmed = strip(text);
     let (negative, digits) = match trimmed.as_bytes().first() {
         Some(b'-') => (true, trimmed.get(1..).unwrap_or_default()),
@@ -137,6 +141,162 @@ pub fn truthy(value: &Value) -> bool {
         Value::Array(items) => !items.is_empty(),
         Value::Object(map) => !map.is_empty(),
     }
+}
+
+/// `int(value)` of a parsed JSON value: integers, floats truncated, booleans,
+/// decimal strings.
+///
+/// # Errors
+/// Anything else, worded as Python worded it.
+pub fn int_of(value: &Value) -> Result<i128, String> {
+    match value {
+        Value::Bool(flag) => Ok(i128::from(*flag)),
+        Value::Number(number) => as_int(value).map_or_else(
+            || {
+                let float = number.as_f64().unwrap_or(0.0);
+                if float.is_finite() {
+                    #[allow(clippy::cast_possible_truncation, reason = "int() truncates a float")]
+                    Ok(float.trunc() as i128)
+                } else {
+                    Err("cannot convert float infinity to integer".to_owned())
+                }
+            },
+            Ok,
+        ),
+        Value::String(text) => int(text),
+        other => Err(format!(
+            "int() argument must be a string, a bytes-like object or a real number, not '{}'",
+            match other {
+                Value::Null => "NoneType",
+                Value::Array(_) => "list",
+                _ => "dict",
+            }
+        )),
+    }
+}
+
+/// `type(value) is int`: a JSON integer, never a boolean or a float.
+#[must_use]
+pub fn as_int(value: &Value) -> Option<i128> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| number.as_u64().map(i128::from)),
+        _ => None,
+    }
+}
+
+/// A JSON number or boolean as the number Python's `==` compares.
+fn numeric(value: &Value) -> Option<f64> {
+    match value {
+        Value::Bool(flag) => Some(f64::from(u8::from(*flag))),
+        Value::Number(number) => number.as_f64(),
+        _ => None,
+    }
+}
+
+/// `a == b` between parsed JSON values: `True == 1 == 1.0`, and objects equal
+/// regardless of key order.
+#[must_use]
+pub fn equal(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y))
+            if (x.is_i64() || x.is_u64()) && (y.is_i64() || y.is_u64()) =>
+        {
+            x == y
+        }
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Bool(_) | Value::Number(_), Value::Bool(_) | Value::Number(_)) => {
+            #[allow(clippy::float_cmp, reason = "Python compares the numbers exactly")]
+            let same = numeric(a) == numeric(b);
+            same
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| equal(x, y))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(key, x)| y.get(key).is_some_and(|y| equal(x, y)))
+        }
+        _ => a == b,
+    }
+}
+
+/// `value == number`.
+#[must_use]
+pub fn equals_number(value: &Value, number: i64) -> bool {
+    equal(value, &Value::from(number))
+}
+
+/// `repr()` of a string: single-quoted unless it holds a `'` and no `"`.
+#[must_use]
+pub fn repr_str(text: &str) -> String {
+    let quote = if text.contains('\'') && !text.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(text.len().saturating_add(2));
+    out.push(quote);
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if u32::from(c) < 0x20 || c == '\u{7f}' => {
+                let _ = write!(out, "\\x{:02x}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+/// `repr()` of a parsed JSON value.
+#[must_use]
+pub fn repr(value: &Value) -> String {
+    match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(true) => "True".to_owned(),
+        Value::Bool(false) => "False".to_owned(),
+        Value::Number(number) => number_repr(number),
+        Value::String(text) => repr_str(text),
+        Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(repr).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        Value::Object(map) => {
+            let inner: Vec<String> = map
+                .iter()
+                .map(|(key, value)| format!("{}: {}", repr_str(key), repr(value)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+    }
+}
+
+/// `str()` of a parsed JSON value.
+#[must_use]
+pub fn str_of(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => repr(other),
+    }
+}
+
+/// `hashlib.sha256(bytes).hexdigest()`.
+#[must_use]
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 /// A number as Python's `repr` (and `json.dumps`) writes it.
@@ -340,12 +500,58 @@ mod tests {
 
     #[test]
     fn int_reads_like_python() {
-        for (text, value) in [("17", 17), (" 17\n", 17), ("+1_000", 1000), ("-1", -1)] {
+        for (text, value) in [
+            ("17", 17),
+            (" 17\n", 17),
+            ("+1_000", 1000),
+            ("-1", -1),
+            ("007", 7),
+            ("99999999999999999999999999999999999999999999", i128::MAX),
+        ] {
             assert_eq!(int(text), Ok(value), "{text}");
         }
-        for text in ["", "1.5", "0x1", "1__0", "_1", "x"] {
+        for text in [
+            "", " ", "-", "1_", "1.5", "0x1", "1__0", "_1", "x", "1 0", "١",
+        ] {
             assert!(int(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn values_read_and_compare_like_python() {
+        let value: Value =
+            serde_json::from_str(r#"{"a": [null, true, 1.5, "it's"], "b": "x\ny"}"#).unwrap();
+        assert_eq!(
+            repr(&value),
+            r#"{'a': [None, True, 1.5, "it's"], 'b': 'x\ny'}"#
+        );
+        assert_eq!(str_of(&Value::from("x")), "x");
+        assert_eq!(str_of(&Value::from(12)), "12");
+        assert_eq!(repr_str("a\u{1}'\"\\"), r#"'a\x01\'"\\'"#);
+        assert!(equals_number(&Value::from(1.0), 1));
+        assert!(equals_number(&Value::from(true), 1));
+        assert!(!equals_number(&Value::from("1"), 1));
+        assert_eq!(as_int(&Value::from(true)), None);
+        assert_eq!(as_int(&Value::from(2.0)), None);
+        assert_eq!(as_int(&Value::from(u64::MAX)), Some(i128::from(u64::MAX)));
+        let reordered: Value =
+            serde_json::from_str(r#"{"b": "x\ny", "a": [null, 1, 1.5, "it's"]}"#).unwrap();
+        assert!(equal(&value, &reordered));
+        assert_eq!(int_of(&Value::from(2.9)), Ok(2));
+        assert_eq!(int_of(&Value::from(" 7")), Ok(7));
+        assert_eq!(int_of(&Value::from(true)), Ok(1));
+        assert_eq!(
+            int_of(&Value::Null).unwrap_err(),
+            "int() argument must be a string, a bytes-like object or a real number, not 'NoneType'"
+        );
+        assert_eq!(
+            int("x").unwrap_err(),
+            "invalid literal for int() with base 10: 'x'"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]

@@ -17866,6 +17866,7 @@ version = "0.1.0"
 dependencies = [
  "rustix 1.1.4",
  "tempfile",
+ "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -18899,6 +18900,7 @@ dependencies = [
  "getrandom 0.4.3",
  "rustix 1.1.4",
  "tempfile",
+ "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -19288,6 +19290,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -20376,7 +20379,9 @@ name = "tilo-pycompat"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "hex",
  "serde_json",
+ "sha2 0.11.0",
  "workspace-hack",
 ]
 
@@ -21293,6 +21298,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-advisory-lock",
+ "tilo-pycompat",
  "workspace-hack",
 ]
 

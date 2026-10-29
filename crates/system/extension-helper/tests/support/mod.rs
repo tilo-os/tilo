@@ -22,7 +22,6 @@ use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tilo_extension::{Error, Header, Host, HttpError, Layout, Response, Result, System};
 
 pub const BASE_PACKAGES: [&str; 5] = [
@@ -44,9 +43,7 @@ pub fn catalogue_dir() -> PathBuf {
     repo().join("os/usr/share/tilo/system-extensions/sysext.d")
 }
 
-pub fn sha256_hex(data: &[u8]) -> String {
-    hex::encode(Sha256::digest(data))
-}
+pub use tilo_pycompat::sha256_hex;
 
 pub fn sign(key: &[u8], data: &[u8]) -> Vec<u8> {
     sha256_hex(&[key, data].concat()).into_bytes()

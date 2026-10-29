@@ -14,12 +14,12 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::Path;
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tilo_board_successor::installed_profile;
 use tilo_board_successor::profile::{
     DEFAULT_TARGET_IMGREF, Root, development_origin, install_update_origin, read_profile,
     resolve_profile, validate_definition,
 };
+use tilo_pycompat::sha256_hex as sha256;
 
 const PROFILES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../os/hardware/profiles");
 const DEVELOPMENT_REF: &str = "registry.tilo.so/tilo/tilo-development:aarch64";
@@ -583,10 +583,6 @@ fn a_tilo_vm_origin_needs_the_dev_flavour_and_its_repository_policy() {
 
 type Tamper<'a> = Box<dyn Fn(&Image) + 'a>;
 
-fn sha256(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
 /// A development image bound to `DEVELOPMENT_REF` with every trust input
 /// consistent.
 fn development_image() -> Image {
@@ -766,10 +762,7 @@ fn the_profile_resolves_to_its_pinned_kernel_dtb() {
     );
     image.write(&relative, &dtb);
     image.set_profile("devicetree", json!(format!("/{relative}")));
-    image.set_profile(
-        "devicetree_sha256",
-        json!(hex::encode(Sha256::digest(&dtb))),
-    );
+    image.set_profile("devicetree_sha256", json!(sha256(&dtb)));
     assert_eq!(
         resolve_profile(&image.root, "7.2.7", "aarch64").unwrap(),
         Some(image.path(&relative))

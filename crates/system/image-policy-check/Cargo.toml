@@ -18,6 +18,8 @@ path = "src/main.rs"
 # An ordered, duplicate-refusing JSON tree, read through serde_json's parser.
 serde.workspace = true
 serde_json.workspace = true
+# Values in messages as Python's repr() shows them.
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -396,27 +396,8 @@ fn source_revision(uri: &str) -> Option<&str> {
         .filter(|revision| is_hex(revision, 40))
 }
 
-/// `str(value)` of a JSON value, as far as a decimal check needs it.
-fn python_str(value: &Value) -> String {
-    match value {
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    }
-}
-
 fn is_decimal(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// `type(value) is int`: a JSON integer.
-fn as_int(value: &Value) -> Option<i128> {
-    value
-        .as_i64()
-        .map(i128::from)
-        .or_else(|| value.as_u64().map(i128::from))
 }
 
 /// `dict.get(key, {})` that must be a dict, as `isinstance(…, dict)` checked.
@@ -524,7 +505,8 @@ fn provenance_match(row: &Map<String, Value>, metadata: &Map<String, Value>) -> 
     let dependencies = sub_list(definition, "resolvedDependencies", &no_items)?;
     let byproducts = sub_list(details, "byproducts", &no_items)?;
     let builder = get(details, "builder").as_object()?;
-    let generation = as_int(get(external, "generation")).filter(|generation| *generation >= 1)?;
+    let generation =
+        crate::py::as_int(get(external, "generation")).filter(|generation| *generation >= 1)?;
     let rebuilt = byproducts.iter().any(|item| {
         item.as_object().is_some_and(|item| {
             get(item, "name").as_str() == Some("independent-rebuild")
@@ -554,7 +536,7 @@ fn provenance_match(row: &Map<String, Value>, metadata: &Map<String, Value>) -> 
     let [source] = sources.as_slice() else {
         return None;
     };
-    if !is_decimal(&python_str(&invocation)) {
+    if !is_decimal(&crate::py::str_of(&invocation)) {
         return None;
     }
     let (firmware, firmware_manifest) =

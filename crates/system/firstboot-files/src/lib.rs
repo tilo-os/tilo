@@ -535,7 +535,7 @@ pub fn main<F: Files + ?Sized>(files: &F, args: &[OsString], stdin: &mut dyn Rea
                 .iter()
                 .skip(2)
                 .take(2)
-                .map(|value| py::int(value).map_err(|error| Error::Value(error.0)))
+                .map(|value| tilo_pycompat::int(&value.to_string_lossy()).map_err(Error::Value))
                 .collect::<Result<_>>()?;
             let [uid, gid] = ids.as_slice() else {
                 return Err(Error::value(format!(

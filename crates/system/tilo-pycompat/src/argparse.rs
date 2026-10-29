@@ -1,7 +1,7 @@
-//! The command lines as `argparse` read them: long options in any order, as
+//! Command lines as `argparse` read them: long options in any order, as
 //! `--opt VALUE` or `--opt=VALUE` or a unique prefix of either, `--` ending the
-//! options, `-h`/`--help`, positionals in order, and usage errors (exit
-//! status 2) worded as `argparse` worded them.
+//! options, `-h`/`--help`, positionals in order (optionally limited to a set of
+//! choices), and usage errors (exit status 2) worded as `argparse` worded them.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
@@ -13,6 +13,20 @@ pub enum Arg {
     Option { flag: &'static str, required: bool },
     /// A positional, named in usage errors.
     Positional(&'static str),
+    /// A positional that must be one of `choices`.
+    Choice {
+        name: &'static str,
+        choices: &'static [&'static str],
+    },
+}
+
+impl Arg {
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Option { flag, .. } => flag,
+            Self::Positional(name) | Self::Choice { name, .. } => name,
+        }
+    }
 }
 
 /// A helper's command line.
@@ -48,10 +62,9 @@ impl Values {
     /// # Errors
     /// Never for an argument the parser required; a missing one is a
     /// programming error reported as a refusal rather than a panic.
-    pub fn required(&self, name: &str) -> crate::Result<&OsStr> {
-        self.get(name).ok_or_else(|| {
-            crate::Error::new(format!("the following arguments are required: {name}"))
-        })
+    pub fn required(&self, name: &str) -> Result<&OsStr, String> {
+        self.get(name)
+            .ok_or_else(|| format!("the following arguments are required: {name}"))
     }
 }
 
@@ -93,7 +106,7 @@ fn long_option(command: &Command, word: &str) -> Result<Option<&'static str>, St
         .iter()
         .filter_map(|arg| match arg {
             Arg::Option { flag, .. } => Some(*flag),
-            Arg::Positional(_) => None,
+            Arg::Positional(_) | Arg::Choice { .. } => None,
         })
         .chain(std::iter::once("--help"));
     let flags: Vec<&'static str> = flags.collect();
@@ -136,19 +149,12 @@ struct State<'a> {
 
 impl<'a> State<'a> {
     fn new(command: &'a Command) -> Self {
-        let names: Vec<&'static str> = command
-            .args
-            .iter()
-            .map(|arg| match arg {
-                Arg::Option { flag, .. } => *flag,
-                Arg::Positional(name) => *name,
-            })
-            .collect();
+        let names: Vec<&'static str> = command.args.iter().map(Arg::name).collect();
         let positionals: Vec<usize> = command
             .args
             .iter()
             .enumerate()
-            .filter_map(|(at, arg)| matches!(arg, Arg::Positional(_)).then_some(at))
+            .filter_map(|(at, arg)| (!matches!(arg, Arg::Option { .. })).then_some(at))
             .collect();
         Self {
             command,
@@ -175,6 +181,18 @@ impl<'a> State<'a> {
         if self.options_done || !looks_like_option(&word) {
             if let Some(slot) = self.positionals.get(self.next_positional).copied() {
                 self.next_positional = self.next_positional.saturating_add(1);
+                if let Some(Arg::Choice { name, choices }) = self.command.args.get(slot)
+                    && !choices.contains(&&*word)
+                {
+                    return Err(usage_error(
+                        self.command,
+                        &format!(
+                            "argument {name}: invalid choice: {} (choose from {})",
+                            crate::repr_str(&word),
+                            choices.join(", ")
+                        ),
+                    ));
+                }
                 if let Some(value) = self.values.get_mut(slot) {
                     *value = Some(raw.clone());
                 }
@@ -241,7 +259,7 @@ impl<'a> State<'a> {
                     flag,
                     required: true,
                 } if value.is_none() => Some(*flag),
-                Arg::Positional(name) if value.is_none() => Some(*name),
+                Arg::Positional(name) | Arg::Choice { name, .. } if value.is_none() => Some(*name),
                 _ => None,
             })
             .collect();
@@ -302,9 +320,13 @@ mod tests {
 
     const COMMAND: Command = Command {
         prog: "tool",
-        usage: "usage: tool [-h] --etc ETC [--name NAME] source\n",
+        usage: "usage: tool [-h] --etc ETC [--name NAME] {run} source\n",
         help: "\noptions:\n",
         args: &[
+            Arg::Choice {
+                name: "run",
+                choices: &["run"],
+            },
             Arg::Option {
                 flag: "--etc",
                 required: true,
@@ -334,18 +356,19 @@ mod tests {
     #[test]
     fn options_in_any_order_with_prefixes_and_equals() {
         for words in [
-            &["--etc", "/e", "src"][..],
-            &["src", "--etc=/e"],
-            &["--e", "/e", "src"],
-            &["--etc=/x", "--et=/e", "--", "src"],
+            &["run", "--etc", "/e", "src"][..],
+            &["run", "src", "--etc=/e"],
+            &["--e", "/e", "run", "src"],
+            &["--etc=/x", "--et=/e", "--", "run", "src"],
         ] {
             let parsed = values(words);
             assert_eq!(parsed.get("--etc"), Some(OsStr::new("/e")), "{words:?}");
             assert_eq!(parsed.get("source"), Some(OsStr::new("src")), "{words:?}");
+            assert_eq!(parsed.get("run"), Some(OsStr::new("run")), "{words:?}");
             assert_eq!(parsed.get("--name"), None);
         }
         assert_eq!(
-            values(&["--etc", "-5", "--name", "", "-"]).get("--name"),
+            values(&["--etc", "-5", "--name", "", "run", "-"]).get("--name"),
             Some(OsStr::new(""))
         );
     }
@@ -355,23 +378,27 @@ mod tests {
         let error = |words: &[&str]| run(words).unwrap_err();
         assert_eq!(
             error(&[]),
-            "usage: tool [-h] --etc ETC [--name NAME] source\n\
-             tool: error: the following arguments are required: --etc, source\n"
+            "usage: tool [-h] --etc ETC [--name NAME] {run} source\n\
+             tool: error: the following arguments are required: run, --etc, source\n"
         );
         assert!(
             error(&["--etc"]).ends_with("tool: error: argument --etc: expected one argument\n")
         );
         assert!(
-            error(&["--etc", "--name", "x", "s"])
+            error(&["--etc", "--name", "x", "run", "s"])
                 .ends_with("argument --etc: expected one argument\n")
         );
         assert!(
-            error(&["--etc", "e", "s", "t", "--bogus"])
+            error(&["--etc", "e", "run", "s", "t", "--bogus"])
                 .ends_with("unrecognized arguments: t --bogus\n")
         );
         assert!(
-            error(&["--etc", "e", "--bogus"])
+            error(&["--etc", "e", "run", "--bogus"])
                 .ends_with("the following arguments are required: source\n")
+        );
+        assert!(
+            error(&["walk", "--etc", "e"])
+                .ends_with("argument run: invalid choice: 'walk' (choose from run)\n")
         );
     }
 

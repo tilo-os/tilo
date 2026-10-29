@@ -7,10 +7,9 @@
 //! splits, JSON as `json.dumps(indent=2, sort_keys=True)` writes it, and how a
 //! value reads in a message.
 
-use std::fmt::Write as _;
-
-use serde_json::Value;
-pub use tilo_pycompat::{Dumps, split, splitlines, strip, truthy};
+pub use tilo_pycompat::{
+    Dumps, equals_number, int_of, repr, repr_str, split, splitlines, str_of, strip, truthy,
+};
 
 /// The first `count` characters of `text` (`text[:count]`).
 pub fn truncate(text: &str, count: usize) -> &str {
@@ -208,78 +207,6 @@ fn hex_value(byte: u8) -> Option<u8> {
     char::from(byte)
         .to_digit(16)
         .and_then(|d| u8::try_from(d).ok())
-}
-
-/// `repr()` of a string: single-quoted unless it holds a `'` and no `"`.
-pub fn repr_str(text: &str) -> String {
-    let quote = if text.contains('\'') && !text.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(text.len().saturating_add(2));
-    out.push(quote);
-    for c in text.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 || c == '\u{7f}' => {
-                let _ = write!(out, "\\x{:02x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
-
-/// `str(value)` of a parsed JSON value.
-pub fn str_of(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        other => repr(other),
-    }
-}
-
-/// `repr(value)` of a parsed JSON value.
-pub fn repr(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::Number(number) => tilo_pycompat::number_repr(number),
-        Value::String(text) => repr_str(text),
-        Value::Array(items) => {
-            let inner: Vec<String> = items.iter().map(repr).collect();
-            format!("[{}]", inner.join(", "))
-        }
-        Value::Object(map) => {
-            let inner: Vec<String> = map
-                .iter()
-                .map(|(k, v)| format!("{}: {}", repr_str(k), repr(v)))
-                .collect();
-            format!("{{{}}}", inner.join(", "))
-        }
-    }
-}
-
-/// Whether a parsed JSON value equals 1 as Python's `==` sees it (`True == 1`,
-/// `1.0 == 1`): how the schema numbers were always compared.
-pub fn equals_one(value: &Value) -> bool {
-    match value {
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => {
-            number.as_i64() == Some(1)
-                || (!number.is_i64() && !number.is_u64() && number.to_string() == "1.0")
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]

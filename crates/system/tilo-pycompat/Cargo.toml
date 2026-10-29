@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Python's text, int, base64 and json.dumps behaviours for the system helpers whose checks and files were first defined in Python."
+description = "Python's text, int, repr, ==, base64, sha256, json.dumps and argparse behaviours for the system helpers whose checks and files were first defined in Python."
 
 [lib]
 name = "tilo_pycompat"
@@ -12,7 +12,9 @@ path = "src/lib.rs"
 
 [dependencies]
 base64.workspace = true
+hex.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 workspace-hack = { version = "0.1" }
 
 [lints]
