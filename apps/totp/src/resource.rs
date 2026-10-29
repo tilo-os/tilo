@@ -5,10 +5,7 @@
 
 use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{EffectStatus, Effected, Fixture, LiveRow, Publishes, ResourceApp, ViewCx};
 use ui::icons::Icon;
 use ui::secrets::SecretStore;
 use ui::tilo_actions::ResourcePresentation;
@@ -16,7 +13,7 @@ use ui::tilo_resource::{self, Effect, Id, Invoke, Refusal, SearchEntry, resource
 use ui::tokens::SpacingStep;
 use ui::widget::{ButtonRole, Element, EmptyState, NavShell, Spacer, Stack, When};
 
-use crate::app::{AuthenticatorApp, Notice};
+use crate::app::{AuthenticatorApp, Notice, Store};
 pub use crate::model::Totp;
 use crate::model::{Account, StoredAccount, demo_accounts};
 
@@ -175,7 +172,7 @@ pub const SCENARIOS: &[&str] = &[
     "expiring",
 ];
 
-/// Framework app: the navigation shell around the authenticator surface over
+/// Framework app: the navigation shell around the authenticator window over
 /// [`Totp`]. In a window the desktop's bar hosts, its header is the bar's
 /// location and Add account; the bar's search is the vault's search.
 pub struct TotpShell;
@@ -202,14 +199,37 @@ impl ResourceApp for TotpShell {
         let has_accounts = cx.local(true);
         let count = cx.local(0usize);
         let notice = cx.local(None);
-        let content = cx.surface(
-            AuthenticatorApp::new()
-                .with_account_signal(has_accounts.clone())
-                .with_count_signal(count.clone())
-                .with_notice_signal(notice.clone()),
+        // The seeds a capture shows come from its own store, never this
+        // device's; a view that is not live (a past version, a screenshot)
+        // never writes or forgets one.
+        let secrets = match cx.fixture::<ShotSecrets>() {
+            Some(shot) => shot.0.clone(),
+            None => cx.storage().secrets(),
+        };
+        let store = Store::shared(
+            Some(cx.live().clone()),
+            Some(cx.dispatcher()),
+            crate::secrets::Seeds::new(secrets, cx.mode().is_live()),
+            notice.clone(),
         );
+        let effects = Rc::clone(&store);
+        let statuses = Rc::clone(&store);
+        cx.effects(move |effect: TotpEffect, cx| {
+            let answer = effects.borrow_mut().perform_effect(effect);
+            // What it asked of the sheet or the list happens on the next frame.
+            cx.waker().wake();
+            answer.map(|()| Effected::done())
+        })
+        .status(move || statuses.borrow().effect_statuses());
+        let staged = Rc::clone(&store);
+        cx.on_stage(move |scenario| staged.borrow_mut().stage(scenario));
+        let rows = Rc::clone(&store);
+        let publishes = Publishes::new().live_rows(move || rows.borrow_mut().live_rows());
+        let content = AuthenticatorApp::over(store)
+            .with_account_signal(has_accounts.clone())
+            .with_count_signal(count.clone());
         // With no accounts the list is empty and the empty state over it
-        // asks for the first one; the surface stays mounted under it, since
+        // asks for the first one; the window stays mounted under it, since
         // it hosts the add sheet.
         let empty = EmptyState::new("No accounts yet")
             .with_icon(Icon::Shield)
@@ -220,13 +240,14 @@ impl ResourceApp for TotpShell {
             Some(binding) => empty.on_action(binding),
             None => empty,
         };
-        let content: Element = Box::new(Stack::new().push(content).push(Box::new(
+        let content: Element = Box::new(Stack::new().push(Box::new(content)).push(Box::new(
             When::from_state(&has_accounts, |has| !*has, Box::new(empty)),
         )));
+        let content = cx.publishing(publishes, content);
         let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
                 // The vault's own "Add account" effect, the one the palette
-                // and agents invoke, which the surface answers by opening the
+                // and agents invoke, which the window answers by opening the
                 // add sheet.
                 Box::new(
                     cx.effect_button("Add account", &TotpEffect::AddAccount)
@@ -286,7 +307,7 @@ impl ResourceApp for TotpShell {
 }
 
 /// The navigation shell whose header says how many accounts the vault holds,
-/// and whose toast shows the surface's notices.
+/// and whose toast shows the window's notices.
 struct CountedShell {
     shell: NavShell,
     count: ui::LocalState<usize>,
@@ -320,28 +341,9 @@ impl ui::widget::Decorator for CountedShell {
     }
 }
 
-impl ResourceSurface<Totp, TotpEffect> for AuthenticatorApp {
-    fn present(&mut self, state: &Rc<Totp>) {
-        self.present_accounts(&Rc::new(state.list()));
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Totp>) {
-        let store = match cx.fixture::<ShotSecrets>() {
-            Some(shot) => shot.0.clone(),
-            None => cx.secrets(),
-        };
-        self.attach_framework(cx.dispatcher(), store, cx.mode().is_live());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: TotpEffect, _cx: &mut EffectCx<Totp, Self>) -> EffectAnswer {
-        self.perform_effect(effect).map(|()| Effected::done())
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
+impl Store {
+    /// Whether retrying a save has anything to do.
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.persistence_pending() {
             Vec::new()
         } else {
@@ -353,15 +355,15 @@ impl ResourceSurface<Totp, TotpEffect> for AuthenticatorApp {
         }
     }
 
-    fn live_rows(&self) -> Vec<LiveRow> {
+    /// Each account the document holds, with what this device adds to it.
+    fn live_rows(&mut self) -> Vec<LiveRow> {
+        self.follow_document();
         self.accounts()
             .iter()
             .map(|account| self.account_row(account))
             .collect()
     }
-}
 
-impl AuthenticatorApp {
     /// What this device adds to a published account: opening it, and the
     /// codes and setup only its own secret allows.
     fn account_row(&self, account: &Account) -> LiveRow {
