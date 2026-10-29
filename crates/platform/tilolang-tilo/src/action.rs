@@ -313,6 +313,29 @@ pub fn apply_edits(
     Ok(())
 }
 
+/// The records map `edit` writes in: where its resource was stored, under the app's id or under
+/// an id the app had before (`previously:`); what is new goes under the app's id.
+fn target_map(
+    doc: &mut Doc,
+    records: &automerge::ObjId,
+    app: &str,
+    edit: &DynEdit,
+) -> Result<automerge::ObjId, ActionError> {
+    let held = match edit {
+        DynEdit::Create { .. } | DynEdit::In { .. } => None,
+        DynEdit::Edit { id, .. }
+        | DynEdit::Insert { id, .. }
+        | DynEdit::Place { id, .. }
+        | DynEdit::Remove { id }
+        | DynEdit::OutboxPush { id, .. }
+        | DynEdit::OutboxSettle { id, .. } => stored_map(doc, records, app, id),
+    };
+    match held {
+        Some(map) => Ok(map),
+        None => ensure_map(doc, records, app),
+    }
+}
+
 fn apply_one(
     doc: &mut Doc,
     records: &automerge::ObjId,
@@ -323,21 +346,7 @@ fn apply_one(
     if let DynEdit::In { app, edit } = edit {
         return apply_one(doc, records, app, edit, cx);
     }
-    // A resource stays where it was stored: under the app's id, or under an id the app had
-    // before (`previously:`); what is new goes under the app's id.
-    let held = match edit {
-        DynEdit::Create { .. } | DynEdit::In { .. } => None,
-        DynEdit::Edit { id, .. }
-        | DynEdit::Insert { id, .. }
-        | DynEdit::Place { id, .. }
-        | DynEdit::Remove { id }
-        | DynEdit::OutboxPush { id, .. }
-        | DynEdit::OutboxSettle { id, .. } => stored_map(doc, records, app, id),
-    };
-    let app = match held {
-        Some(map) => map,
-        None => ensure_map(doc, records, app)?,
-    };
+    let app = target_map(doc, records, app, edit)?;
     match edit {
         DynEdit::Create { id, record } => {
             let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
