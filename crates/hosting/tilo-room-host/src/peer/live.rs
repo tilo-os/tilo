@@ -229,6 +229,7 @@ pub(super) async fn handle_live(
         return Ok(None);
     }
     // Only a sealed frame is relayed; its content is never read here.
+    // optional-decode: live traffic is never authority; a malformed frame costs a stale cursor (above)
     let Ok(sealed) = crate::live::SealedLiveFrame::decode(&frame) else {
         return Ok(None);
     };
@@ -392,15 +393,19 @@ fn answer_content(
     });
     let ws = Arc::clone(ws);
     tokio::spawn(async move {
-        let Ok(frames) = tokio::task::spawn_blocking(move || match served {
+        let frames = match tokio::task::spawn_blocking(move || match served {
             Some((rooms, room)) => rooms.content_answer(&room, &body),
             None => crate::rooms::lacks_answer(&host, &body)
                 .into_iter()
                 .collect(),
         })
         .await
-        else {
-            return;
+        {
+            Ok(frames) => frames,
+            Err(error) => {
+                tracing::error!(workspace_id, %error, "answering a member's content request failed");
+                return;
+            }
         };
         if frames.is_empty() {
             return;

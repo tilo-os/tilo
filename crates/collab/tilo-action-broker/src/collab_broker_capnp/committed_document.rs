@@ -717,8 +717,9 @@ impl CapnpChannelHandle {
         self.route()
             .record_id
             .strip_prefix("continuation:")
-            .and_then(|id| id.parse::<u64>().ok())
-            .ok_or_else(|| "continuation requires a durable shell tab id".into())
+            .ok_or_else(|| "continuation requires a durable shell tab id".to_owned())?
+            .parse::<u64>()
+            .map_err(|error| format!("continuation names no durable shell tab id: {error}"))
     }
 
     /// For an Open of a record another device creates (the host governing

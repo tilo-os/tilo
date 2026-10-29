@@ -1437,11 +1437,29 @@ fn route_path(state_root: &Path, room: RoomId, channel: ChannelId) -> PathBuf {
 /// route proves itself, so a damaged or swapped file names no record rather
 /// than a wrong one, and the channel is then decided as one whose record is
 /// unknown, which withholds more, never less.
+/// A missing file is a channel with no route kept; one that cannot be read
+/// or decoded, or proves another channel, is logged.
 fn load_route(path: &Path, room: RoomId, channel: ChannelId) -> Option<ChannelRoute> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| postcard::from_bytes::<ChannelRoute>(&bytes).ok())
-        .filter(|route| route.proves(&room.to_string(), channel))
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "channel route cannot be read");
+            return None;
+        }
+    };
+    let route = match postcard::from_bytes::<ChannelRoute>(&bytes) {
+        Ok(route) => route,
+        Err(error) => {
+            tracing::warn!(path = %path.display(), %error, "channel route does not decode");
+            return None;
+        }
+    };
+    if !route.proves(&room.to_string(), channel) {
+        tracing::warn!(path = %path.display(), "channel route names another channel");
+        return None;
+    }
+    Some(route)
 }
 
 fn save_route(path: &Path, route: &ChannelRoute) {
@@ -1453,10 +1471,16 @@ fn save_route(path: &Path, route: &ChannelRoute) {
     }
 }
 
-/// Channel ids of the `*.{extension}` files in `dir`.
+/// Channel ids of the `*.{extension}` files in `dir`. A missing directory
+/// holds none; a file whose name is no channel id is logged and skipped.
 fn channels_in(dir: &Path, extension: &str) -> Vec<ChannelId> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(dir = %dir.display(), %error, "channel state cannot be listed");
+            return Vec::new();
+        }
     };
     entries
         .filter_map(Result::ok)
@@ -1465,8 +1489,14 @@ fn channels_in(dir: &Path, extension: &str) -> Vec<ChannelId> {
             if path.extension().and_then(|ext| ext.to_str()) != Some(extension) {
                 return None;
             }
-            let stem = path.file_stem()?.to_str()?;
-            uuid::Uuid::parse_str(stem).ok().map(ChannelId)
+            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+            match uuid::Uuid::parse_str(stem) {
+                Ok(channel) => Some(ChannelId(channel)),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "channel state file names no channel");
+                    None
+                }
+            }
         })
         .collect()
 }

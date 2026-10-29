@@ -46,7 +46,9 @@ pub fn author_coloured(
 /// /non-hex input, non-UTF-8, control chars, empty, or too long); a 32-byte
 /// public key almost never survives this filter.
 pub fn actor_handle(actor_hex: &str) -> Option<String> {
+    // optional-decode: a heuristic over actor bytes; anything not a plausible handle is a key, by design
     let bytes = hex::decode(actor_hex).ok()?;
+    // optional-decode: a heuristic over actor bytes; anything not a plausible handle is a key, by design
     let s = String::from_utf8(bytes).ok()?;
     let handle = s.split(DEVICE_SEPARATOR).next().unwrap_or_default();
     if handle.is_empty() || handle.len() > MAX_HANDLE_LEN || handle.chars().any(char::is_control) {
@@ -105,6 +107,7 @@ impl DeviceActors {
 /// The bare handle's actor of a [`device_actor`], hex-encoded.
 #[doc(hidden)]
 pub fn handle_actor_hex(actor_hex: &str) -> Option<String> {
+    // optional-decode: a probe for a device actor; anything else names no bare handle
     let bytes = hex::decode(actor_hex).ok()?;
     let at = bytes.iter().position(|&b| b == DEVICE_SEPARATOR as u8)?;
     Some(hex::encode(bytes.get(..at)?))

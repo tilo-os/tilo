@@ -133,6 +133,7 @@ fn the_people_the_system_gives_are_the_at_drawer_who_spoke_last_first_beside_the
             person("u_bo", "Bo"),
             person("agent:planner", "Planner"),
         ],
+        submit: Event::None,
     };
     assert!(input.set_props(given), "the people change in place");
     let mut presence = PresenceCtx::default();
@@ -230,4 +231,29 @@ fn rich_text_reads_back_as_the_text_and_marks_it_was_shown_with() {
     let (text, marks) = line_of(&rich);
     assert_eq!(text, "ping @Ada\nsecond");
     assert_eq!(marks, [MarkSpan::new(5..9, Mark::Mention("u_ada".into()))]);
+}
+
+#[test]
+fn with_submit_enter_sends_what_was_written_and_breaks_no_line() {
+    let edits = crate::Intents::<Fired>::default();
+    let submits = crate::Intents::<Fired>::default();
+    let props = RichInputProps {
+        value: Bound {
+            edits: Some(Intent::new(&edits, "draft", "value")),
+            ..Bound::default()
+        },
+        placeholder: Some("Message".into()),
+        submit: Event::View(Intent::new(&submits, "draft", "submit")),
+        ..RichInputProps::default()
+    };
+    let mut input = RichInput::from_props("draft", props);
+    Widget::set_focus(&mut input, true);
+    type_text(&mut input, "On all three");
+    dispatch(
+        &mut input,
+        &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+    );
+    assert_eq!(submits.take().len(), 1, "Enter sends");
+    let written = last_value(&edits).expect("what was typed");
+    assert_eq!(line_of(&written).0, "On all three", "no line was broken");
 }

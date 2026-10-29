@@ -125,7 +125,7 @@ mod tests {
         };
         let home = tempfile::tempdir().unwrap();
         let rc = home.path().join("runs.bash");
-        std::fs::write(&rc, crate::shell_start::bash_rc("", true)).unwrap();
+        std::fs::write(&rc, crate::shell_start::bash_rc(true)).unwrap();
         let key = "k3y0fth1ss3ss10n";
         let output = std::process::Command::new(bash)
             .args(["--rcfile", rc.to_str().unwrap(), "-i"])
