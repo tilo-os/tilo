@@ -325,17 +325,23 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
             });
         });
         driver.send(&winit::event::WindowEvent::Focused(true));
-        // A control naming nothing the window has is said over it, never
-        // dropped unseen; Escape dismisses the notice as any palette.
+        // A control naming nothing the window has is said, never dropped
+        // unseen, and never as search over the window.
         assert!(
-            driver.refusal_shown().is_some(),
+            driver.refusal_said().is_some(),
             "the missing control's refusal is shown"
         );
+        assert!(!driver.palette_shown(), "a refusal opens no palette");
         driver.key("Escape");
-        assert_eq!(driver.refusal_shown(), None);
+        assert_eq!(
+            driver.control_notice(),
+            None,
+            "the next key dismisses what stood at the control"
+        );
         // What the app invokes on its own, for nobody's gesture, is refused
         // without a word over the window: the person pressed nothing.
         let failures = driver.control_failures().len();
+        let said = driver.refusal_said().map(str::to_owned);
         QUEUED_CONTROL.with_borrow_mut(|queue| {
             *queue = Some(tilo_actions::ControlInvocation {
                 address: tilo_actions::ActionAddress::new("missing", "on-its-own"),
@@ -345,8 +351,8 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         QUEUED_ORIGIN.with(|origin| origin.set(tilo_ui::widget::controls::Origin::App));
         driver.send(&winit::event::WindowEvent::Focused(true));
         assert_eq!(
-            driver.refusal_shown(),
-            None,
+            driver.refusal_said().map(str::to_owned),
+            said,
             "the app's own refused invocation is not said as the person's"
         );
         assert_eq!(

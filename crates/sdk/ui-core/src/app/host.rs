@@ -287,6 +287,22 @@ fn draw_frame_content_with(
         );
     }
     painted(scene, "the action palette", &mut drawn);
+    if let Some(notice) = &app.actions.control_notice {
+        let viewport = KurboRect::new(
+            0.0,
+            0.0,
+            f64::from(width) / f64::from(scale_factor),
+            f64::from(height) / f64::from(scale_factor),
+        );
+        notice.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            viewport,
+        );
+    }
+    painted(scene, "what a control says about its refusal", &mut drawn);
     // The content zoom's level, in the window's bar after it changed.
     app.accessibility.zoom.publish();
     if tracked {

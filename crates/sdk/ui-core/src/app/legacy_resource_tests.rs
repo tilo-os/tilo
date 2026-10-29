@@ -180,13 +180,11 @@ fn native_legacy_route_old_changed_and_noop_actionhost_edges_have_one_boundary_e
                 "ordinary draining records without writing"
             );
             assert_eq!(f.snapshot().1, before.1 + 1);
-            // The refused press is said over the window, never dropped
-            // unseen; the person dismisses the notice and presses again.
-            assert!(
-                app.action_palette()
-                    .is_some_and(|palette| palette.refusal().is_some())
-            );
-            app.close_action_palette();
+            // The refused invocation is said (with no press or focus to
+            // stand at, in the window's bar), never dropped unseen and never
+            // as search over the window.
+            assert!(app.control_notice().is_none());
+            assert!(app.action_palette().is_none());
             probe.offer();
             assert!(app.controlled_local_idle_for_test());
             assert_eq!(probe.acks.get(), 1);

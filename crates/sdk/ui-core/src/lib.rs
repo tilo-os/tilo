@@ -127,6 +127,7 @@ pub mod author;
 pub mod capability_door;
 pub mod content_zoom;
 pub mod control_hints;
+pub mod control_notice;
 /// What is running: one cancellable job with a body, which the whole system
 /// can see and which outlives the window that started it.
 pub mod jobs;
@@ -299,7 +300,6 @@ pub mod host_operation {
 )]
 pub(crate) mod draw_cull;
 mod host_core;
-pub mod host_palette;
 pub mod mentions;
 pub mod own_paint;
 pub mod published;

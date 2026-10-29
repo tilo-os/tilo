@@ -200,6 +200,9 @@ pub struct ModalSpec<'a> {
     /// Whether a scrim click dismisses. The scrim swallows the click either
     /// way: a surface that lets clicks through is not modal.
     pub dismiss_on_scrim: bool,
+    /// The control the sheet asks about: it stands beside it as a popover,
+    /// the window undimmed. `None` centres it over the window.
+    pub anchor: Option<Rect>,
 }
 
 impl Default for ModalSpec<'_> {
@@ -215,6 +218,7 @@ impl Default for ModalSpec<'_> {
             close_hovered: false,
             close_focused: false,
             dismiss_on_scrim: true,
+            anchor: None,
         }
     }
 }
@@ -297,6 +301,9 @@ pub struct ModalLayout {
     pub primary: Option<usize>,
     /// Mirrors [`ModalSpec::dismiss_on_scrim`].
     pub dismiss_on_scrim: bool,
+    /// The sheet stands beside a control ([`ModalSpec::anchor`]): the
+    /// window behind it is not dimmed.
+    pub anchored: bool,
 }
 
 /// What a point landed on.
@@ -511,8 +518,11 @@ pub fn layout(
 
     let c = window.center();
     let top = (c.y - h / 2.0).max(room.y0);
+    let anchor = spec.anchor.filter(|_| !uses_full_window(window, theme));
     let card = if uses_full_window(window, theme) {
         window
+    } else if let Some(anchor) = anchor {
+        floating_surface::place_sheet_beside(anchor, (w, h), window, room, f64::from(spacing.s2))
     } else {
         Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h)
     };
@@ -568,6 +578,7 @@ pub fn layout(
         body_overflows,
         primary,
         dismiss_on_scrim: spec.dismiss_on_scrim,
+        anchored: anchor.is_some(),
     }
 }
 
@@ -708,7 +719,8 @@ pub fn paint_scrim(
     layout: &ModalLayout,
     drawn_card: Rect,
 ) {
-    if layout.card == layout.scrim {
+    // Neither a full-window page nor a popover by its control dims the window.
+    if layout.card == layout.scrim || layout.anchored {
         return;
     }
     let scale = if layout.card.width() > 0.0 {

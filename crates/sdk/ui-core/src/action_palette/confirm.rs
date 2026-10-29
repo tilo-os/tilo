@@ -26,6 +26,10 @@ use crate::theme::Theme;
 use crate::widget::modal_dialog::{ModalAction, ModalSpec, body_width};
 use crate::widget::{Button, ButtonRole, PromptBody, Row, TextInput, Widget};
 
+/// Widest a confirmation standing beside its control is drawn, in design
+/// pixels: a question and two answers, not a page.
+const POPOVER_WIDTH: f64 = 360.0;
+
 /// What an irreversible action with no description of its own loses.
 const IRREVERSIBLE: &str = "This can't be undone.";
 
@@ -428,9 +432,15 @@ impl ActionPalette {
             submit.enabled(enabled).focused(submit_focused),
             ModalAction::secondary("Cancel").focused(cancel_focused),
         ];
-        let spec = ModalSpec::new(&state.question)
+        // Beside the control that asked, a popover as wide as a question
+        // needs; asked with no control, a sheet over the window.
+        let mut spec = ModalSpec::new(&state.question)
             .actions(&actions)
             .closable(false);
+        spec.anchor = self.confirm_anchor;
+        if self.confirm_anchor.is_some() {
+            spec = spec.max_width(POPOVER_WIDTH);
+        }
         match state.phrase.as_mut() {
             None if state.skippable => {
                 // The detail, then the hint in a quieter caption below it.

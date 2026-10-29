@@ -1072,7 +1072,7 @@ fn a_blank_new_issue_cannot_be_invoked() {
         app.refused()
     );
     assert!(
-        app.harness().refusal_shown().is_none(),
+        app.harness().refusal_said().is_none(),
         "nothing is said over the window"
     );
     assert!(!new_issue_enabled(&mut app), "spaces are still blank");

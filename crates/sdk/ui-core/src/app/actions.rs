@@ -2784,7 +2784,7 @@ impl App {
             Ok(_) => None,
         };
         if let Some(reason) = refused {
-            self.refuse_visibly(&tilo_actions::DoorError::Failed(reason));
+            self.refuse_in_window(&tilo_actions::DoorError::Failed(reason));
         }
         true
     }
@@ -3143,6 +3143,9 @@ impl App {
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
     pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        if self.hand_search_to_session(&request) {
+            return;
+        }
         // On one of the app's actions: the palette asks for its arguments.
         if let Some(address) = request.asked()
             && self.open_action_palette_at(&address)
@@ -3161,6 +3164,36 @@ impl App {
                 palette.select_resource(&anchor.resource);
             }
         }
+    }
+
+    /// Inside a Tilo session there is one search, the shell's: hand it
+    /// `request` and open nothing here. A window the shell hosts in its own
+    /// process asks through its component's host intent; one running as a
+    /// process of its own asks over the session's surface service. Whether
+    /// the request went to the session.
+    pub(super) fn hand_search_to_session(
+        &mut self,
+        request: &crate::search::SearchRequest,
+    ) -> bool {
+        if self.floating.client.is_some() {
+            self.floating.search_requests.push(request.clone());
+            return true;
+        }
+        if !self.actions.search_in_host || self.presents_search() {
+            return false;
+        }
+        let Some(bound) = self
+            .root_widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::BoundAppWidget>())
+        else {
+            return false;
+        };
+        bound
+            .component
+            .callback_binding()
+            .request_search(request.clone());
+        true
     }
 
     /// `/` pressed with nothing focused that types it: open search of this
@@ -3376,11 +3409,15 @@ impl App {
                     crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
                 });
         }
+        // Read before the tree it is found in is discarded.
+        let anchor = self.acting_control_rect();
         self.open_action_palette();
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
         if let Some(palette) = self.actions.action_palette.as_deref_mut() {
+            // The question stands at the control the person used.
+            palette.anchor_confirmation(anchor);
             palette.activate_ordinary(request);
         }
         if self
@@ -3395,35 +3432,88 @@ impl App {
         true
     }
 
-    /// Say over the window that an invocation the person made did not run,
-    /// and why, through the window's palette: a click is never dropped with
-    /// only a log line.
+    /// Say that an invocation the person made did not run, and why, at the
+    /// control they used: a click is never dropped with only a log line, and
+    /// never opens search.
     pub(super) fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+        let anchor = self.acting_control_rect();
+        self.refuse_at(error, anchor);
+    }
+
+    /// [`Self::refuse_visibly`] for a refusal that arrives with no control
+    /// on screen (a host's or a remote's answer, later): said in the
+    /// window's bar.
+    fn refuse_in_window(&mut self, error: &tilo_actions::DoorError) {
+        self.refuse_at(error, None);
+    }
+
+    fn refuse_at(&mut self, error: &tilo_actions::DoorError, anchor: Option<vello::kurbo::Rect>) {
         // Said once the pass ends ([`Self::say_refusals`]): the window's own
         // nodes stay mapped until then, so what the pass still records of
         // them (an edit's history) is kept.
         self.actions
             .refusals
-            .push(crate::bound_dispatch::refusal_reason(error));
+            .push((crate::bound_dispatch::refusal_reason(error), anchor));
         self.layout.layout_dirty = true;
     }
 
-    /// Say over the window why this pass's refused invocations did not run.
+    /// The control the person acted on last, in window coordinates: under
+    /// their last press, else the one holding the keyboard.
+    fn acting_control_rect(&self) -> Option<vello::kurbo::Rect> {
+        crate::control_notice::acting_control(
+            &self.layout.taffy,
+            self.layout.root_node,
+            self.input.pressed_at,
+            self.focused_node,
+            |node| {
+                self.inspect_node(node, |widget| {
+                    Some((widget.get_rect(), widget.is_focusable()))
+                })
+                .ok()
+                .flatten()
+            },
+        )
+    }
+
+    /// Say why this pass's refused invocations did not run: the last one,
+    /// at its control or in the window's bar.
     fn say_refusals(&mut self) {
-        let Some(reason) = self.actions.refusals.pop() else {
+        let Some((reason, anchor)) = self.actions.refusals.pop() else {
             return;
         };
         self.actions.refusals.clear();
-        if self.actions.action_palette.is_none() {
-            self.actions.ordinary_palette_return_focus =
-                self.capture_focus_identity().or_else(|| {
-                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+        match anchor {
+            Some(anchor) => {
+                if let Some(reader) = self.accessibility.screen_reader.as_mut() {
+                    reader.announce(reason.clone(), tts::Priority::Notification, true);
+                }
+                self.actions.control_notice = Some(crate::control_notice::ControlNotice {
+                    text: reason,
+                    anchor,
                 });
+                self.request_redraw_for_notice();
+            }
+            None => crate::control_notice::say_in_window(&reason),
         }
-        self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-            palette.show_refusal("", &reason);
+    }
+
+    /// What stands at the control the person last used: why what they did
+    /// did not run, until their next press or key.
+    #[must_use]
+    pub fn control_notice(&self) -> Option<&crate::control_notice::ControlNotice> {
+        self.actions.control_notice.as_ref()
+    }
+
+    /// The person pressed or typed again: what stood at their last control
+    /// is done with.
+    pub(super) fn dismiss_control_notice(&mut self) {
+        if self.actions.control_notice.take().is_some() {
+            self.request_redraw_for_notice();
         }
+    }
+
+    fn request_redraw_for_notice(&mut self) {
+        self.layout.layout_dirty = true;
     }
 
     fn capture_ordinary_palette_request(&mut self) {
@@ -3466,23 +3556,18 @@ impl App {
         }
     }
 
-    /// Open the palette an app asked for ([`crate::host_palette`]): searching
-    /// for its query, or on one of its actions. Whether one was opened.
-    #[cfg(feature = "native")]
-    pub(crate) fn open_requested_palette(&mut self) -> bool {
-        match crate::host_palette::take() {
-            Some(crate::host_palette::PaletteRequest::Search(query)) => {
-                self.open_action_palette();
-                if let Some(palette) = self.actions.action_palette.as_deref_mut() {
-                    palette.set_query(&query);
-                }
-                true
-            }
-            Some(crate::host_palette::PaletteRequest::Action(address)) => {
-                self.open_action_palette_at(&address)
-            }
-            None => false,
+    /// Open search on the app's action `address`, asking for its
+    /// arguments: the session's search inside a session, the window's own
+    /// outside one. Whether it opened.
+    pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
+        let asked = crate::search::SearchRequest::asking(
+            crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
+            address.action.clone(),
+        );
+        if self.hand_search_to_session(&asked) {
+            return true;
         }
+        self.open_action_palette_at(address)
     }
 
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {

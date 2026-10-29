@@ -2280,7 +2280,7 @@ mod tests {
             None,
             "an effect on one's own device asks nobody"
         );
-        assert_eq!(harness.refusal_shown(), None);
+        assert_eq!(harness.refusal_said(), None);
 
         let harness = click(
             Button::new("go", "Copy").on_own_device_effect(counter()),
@@ -2313,7 +2313,7 @@ mod tests {
             "a Viewer reaches nothing outside"
         );
         assert!(
-            harness.refusal_shown().is_some(),
+            harness.refusal_said().is_some(),
             "a refused click is said over the window: {:?}",
             harness.control_failures()
         );

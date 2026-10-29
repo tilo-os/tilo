@@ -232,7 +232,7 @@ impl CodeApp {
                 cx,
             ),
             Command::GoToLine => {
-                Self::ask_for_line();
+                self.ask_for_line();
                 Ok(Effected::done())
             }
             command => {

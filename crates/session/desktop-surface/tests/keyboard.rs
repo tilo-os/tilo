@@ -741,7 +741,7 @@ fn a_hit_chosen_in_an_apps_search_opens_inside_that_app() {
         "the app opens at the hit chosen"
     );
     assert!(!desk.handle.search_open());
-    assert_eq!(desk.driver.refusal_shown(), None);
+    assert_eq!(desk.driver.refusal_said(), None);
     assert!(
         desk.driver.control_failures().is_empty(),
         "{:?}",
@@ -773,7 +773,7 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
         ["clip"],
         "the action runs in the app that offered it"
     );
-    assert_eq!(desk.driver.refusal_shown(), None);
+    assert_eq!(desk.driver.refusal_said(), None);
     assert!(
         desk.driver.control_failures().is_empty(),
         "{:?}",

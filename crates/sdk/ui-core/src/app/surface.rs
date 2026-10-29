@@ -448,12 +448,14 @@ impl App {
                     is_undo_redo = true;
                     handled = true;
                 }
-                // A second press closes the palette.
+                // Search of this app: the session's one search inside a
+                // session, the window's own outside one, where a second
+                // press closes it.
                 Some(crate::platform::HostShortcut::Search) => {
                     if app.actions.action_palette.is_some() {
                         app.close_action_palette();
                     } else {
-                        app.open_action_palette();
+                        app.open_search(crate::search::SearchRequest::this_app());
                     }
                     handled = true;
                 }
@@ -747,14 +749,14 @@ impl App {
         app.drain_local_input_capture();
 
         if let Some(address) = app.root_widget.take_action_palette_request()
-            && app.open_action_palette_at(&address)
+            && app.open_search_at_action(&address)
         {
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
 
         if app.root_widget.take_search_request() && app.actions.action_palette.is_none() {
-            app.open_action_palette();
+            app.open_search(crate::search::SearchRequest::this_app());
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
