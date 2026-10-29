@@ -405,7 +405,7 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
     }
     // Ctrl+Tab is not focus traversal: it reaches the tab chord above.
     app.input.modifiers = winit::event::Modifiers::from(command);
-    assert!(!app.handle_tab_navigation(&chord("Tab"), None));
+    assert!(!app.handle_tab_navigation(&chord("Tab"), app.keyboard_nav_allowed(None)));
     // The desktop's own spelling never comes from an app.
     app.input.modifiers =
         winit::event::Modifiers::from(ModifiersState::SUPER | ModifiersState::CONTROL);
@@ -498,7 +498,12 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     if let Some(focus) = focus {
         app.set_focused_node(Some(focus));
     }
-    app.handle_unconsumed_directional_key(&left, None, true, &mut handled);
+    app.handle_unconsumed_directional_key(
+        &left,
+        app.keyboard_nav_allowed(None),
+        true,
+        &mut handled,
+    );
     assert_eq!(app.focused_node, Some(editor));
     assert_eq!(
         app.inspect_node(editor, |widget| crate::undo::get_state(widget))
@@ -516,7 +521,12 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     let mut focus = None;
     app.presentation_handle_event(&down, 1.0, &mut handled, &mut focus);
     assert!(!handled, "single-line editor leaves Alt+Down to the host");
-    app.handle_unconsumed_directional_key(&down, None, true, &mut handled);
+    app.handle_unconsumed_directional_key(
+        &down,
+        app.keyboard_nav_allowed(None),
+        true,
+        &mut handled,
+    );
     assert!(handled);
     assert_eq!(app.focused_node, Some(done));
 }

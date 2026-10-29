@@ -1073,31 +1073,6 @@ impl App {
         }
     }
 
-    fn navigate_focus(&mut self, direction: Direction) {
-        let order = self.keyboard_travel_order();
-        let Some(current_id) = self.focused_node else {
-            if let Some(&first) = order.first() {
-                self.set_focused_node(Some(first));
-            }
-            return;
-        };
-        let Ok(current_rect) = self.inspect_node(current_id, |widget| widget.get_rect()) else {
-            return;
-        };
-        let best_candidate = crate::focus_navigation::next(
-            (current_id, current_rect),
-            order.iter().filter_map(|&id| {
-                self.inspect_node(id, |widget| widget.get_rect())
-                    .ok()
-                    .map(|rect| (id, rect))
-            }),
-            direction,
-        );
-        if let Some(new_id) = best_candidate {
-            self.set_focused_node(Some(new_id));
-        }
-    }
-
     /// Gated on the focus-trap signal, not `modal_capture`: that governs only
     /// pointer click-through — gating Tab on it instead either froze focus
     /// inside a dialog or let it escape with no capture.
@@ -1107,71 +1082,6 @@ impl App {
             modal_rect,
             self.accessibility.focus_trap_active,
         )
-    }
-
-    /// Shared native Tab admission, preserving text-input and modal capture.
-    #[cfg(feature = "native")]
-    fn handle_tab_navigation(
-        &mut self,
-        event: &WindowEvent,
-        modal_rect: Option<KurboRect>,
-    ) -> bool {
-        if self.focused_widget_wants_tab_input() || !self.keyboard_nav_allowed(modal_rect) {
-            return false;
-        }
-        // Only Tab and Shift+Tab move focus. Ctrl+Tab and Ctrl+Shift+Tab a
-        // widget leaves unhandled are the desktop's next and previous tab
-        // (`crate::shell_tabs`), and Alt/Super chords are the desktop's too.
-        let modifiers = self.input.modifiers.state();
-        if matches!(event, WindowEvent::KeyboardInput { event, .. }
-            if event.state == winit::event::ElementState::Pressed
-                && event.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab))
-            && !modifiers.control_key()
-            && !modifiers.alt_key()
-            && !modifiers.super_key()
-        {
-            return self.focus_tab(modifiers.shift_key());
-        }
-        false
-    }
-
-    /// Where Tab and directional focus travel: the focus order, kept inside
-    /// the keyboard scope (the focused desktop window's content,
-    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap owns
-    /// the keyboard.
-    fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
-        if self.accessibility.focus_trap_active {
-            return self.focusable_order.clone();
-        }
-        self.tree()
-            .within_keyboard_scope(self.focusable_order.clone())
-    }
-
-    fn focus_tab(&mut self, shift: bool) -> bool {
-        let order = self.keyboard_travel_order();
-        let len = order.len();
-        if len == 0 {
-            return false;
-        }
-        // Shown inside a host whose focus order continues past the app, Tab
-        // from the last control (Shift+Tab from the first) leaves the app.
-        if self.input.tab_order_continues_in_host {
-            let at = self
-                .focused_node
-                .and_then(|id| order.iter().position(|&n| n == id));
-            if at == Some(if shift { 0 } else { len - 1 }) {
-                self.set_focused_node(None);
-                return false;
-            }
-        }
-        let Some(next_idx) = crate::focus_navigation::tab_index(&order, self.focused_node, shift)
-        else {
-            return false;
-        };
-        if let Some(&id) = order.get(next_idx) {
-            self.set_focused_node(Some(id));
-        }
-        true
     }
 
     /// `scale` is the window scale factor so bounds land in physical pixels

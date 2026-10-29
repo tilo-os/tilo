@@ -28,7 +28,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use crate::host_core::{ControlHost as _, HostCore as _, ResourceInvocation};
+use crate::host_core::{ControlHost as _, HostCore as _, KeyHost as _, ResourceInvocation};
 use std::cell::Cell;
 
 #[cfg(feature = "native")]
@@ -1039,8 +1039,8 @@ impl App {
             .or_else(|| self.focusable_order.first().copied())
     }
 
-    /// Apply the native host's fallback for an Enter/Space press that the
-    /// focused widget did not consume during normal event dispatch.
+    /// Where focus starts in a live window: a terminal, else the first
+    /// control.
     fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
         self.focusable_order
             .iter()
@@ -1050,134 +1050,6 @@ impl App {
                     .unwrap_or(false)
             })
             .or_else(|| self.focusable_order.first().copied())
-    }
-
-    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
-        if *handled
-            || self.input.modifiers.state().super_key()
-            || self.input.modifiers.state().shift_key()
-            || !matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(
-                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
-                        ),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-            )
-        {
-            return;
-        }
-        if self.root_widget.name() == "Terminal"
-            && self
-                .history
-                .as_ref()
-                .is_none_or(|history| !history.captures_input())
-            && let Some(root) = self.layout.root_node
-        {
-            let mut focus = None;
-            self.root_widget.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: &mut focus,
-                    node_id: root,
-                    taffy: &self.layout.taffy,
-                },
-            );
-            if *handled {
-                self.needs_sync = true;
-                self.layout.layout_dirty = true;
-                return;
-            }
-        }
-        let Some(focused) = self.focused_node else {
-            return;
-        };
-        let activated = self
-            .perform_node_action(focused, &crate::a11y::Action::Activate)
-            .unwrap_or(false);
-        if activated {
-            *handled = true;
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
-    }
-
-    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS)
-    /// when no widget consumed the press: tabs are the shell's, so every app
-    /// answers them the same way through [`crate::shell_tabs`].
-    #[cfg(feature = "native")]
-    fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
-        if *handled {
-            return;
-        }
-        let WindowEvent::KeyboardInput {
-            event:
-                winit::event::KeyEvent {
-                    logical_key,
-                    state: winit::event::ElementState::Pressed,
-                    repeat: false,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return;
-        };
-        let modifiers = self.input.modifiers.state();
-        let command = self.input.platform.command_modifier_down(modifiers);
-        // Ctrl and Super together are a different chord on every platform.
-        let other = modifiers.alt_key() || (modifiers.control_key() && modifiers.super_key());
-        if let Some(request) =
-            crate::shell_tabs::chord_request(logical_key, command, modifiers.shift_key(), other)
-        {
-            crate::shell_tabs::request(request);
-            *handled = true;
-        }
-    }
-
-    /// Let the focused widget see directional input first. Only an unconsumed
-    /// arrow may move host focus, using the same modal/focus-trap fence as Tab.
-    #[cfg(feature = "native")]
-    fn handle_unconsumed_directional_key(
-        &mut self,
-        event: &WindowEvent,
-        modal_rect: Option<KurboRect>,
-        require_alt: bool,
-        handled: &mut bool,
-    ) {
-        if *handled
-            || (require_alt && !self.input.modifiers.state().alt_key())
-            || !self.keyboard_nav_allowed(modal_rect)
-        {
-            return;
-        }
-        let WindowEvent::KeyboardInput {
-            event:
-                winit::event::KeyEvent {
-                    logical_key: winit::keyboard::Key::Named(named),
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return;
-        };
-        let Some(direction) = Direction::from_key(*named) else {
-            return;
-        };
-        self.navigate_focus(direction);
-        *handled = true;
     }
 
     fn initial_presence_context() -> PresenceCtx {

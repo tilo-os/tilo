@@ -13,8 +13,10 @@ use crate::history_mode::pending_controls::{
 use crate::widget::Widget;
 
 mod controls;
+mod keys;
 
 pub(crate) use controls::{ControlHost, json_argument};
+pub(crate) use keys::{KeyHost, RootEvent};
 
 /// A host's document and laid-out widget tree, borrowed for one read.
 pub(crate) struct HostTree<'a> {

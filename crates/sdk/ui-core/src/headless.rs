@@ -37,7 +37,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::AccessNode;
 use crate::accesskit_bridge::{build_presentation_tree_bound, build_tree_update_bound};
-use crate::host_core::{ControlHost as _, HostCore as _};
+use crate::host_core::{ControlHost as _, HostCore as _, KeyHost as _};
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -1221,35 +1221,6 @@ impl FrameHarness {
             crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
         );
         std::mem::take(&mut self.component_close_reports)
-    }
-
-    /// Mirror the live host's focused-control fallback for Enter and Space.
-    /// Widgets that consume the press keep ownership; releases never activate.
-    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
-        if *handled
-            || !matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: winit::event::KeyEvent {
-                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                }
-            )
-        {
-            return;
-        }
-        let Some(focused) = self.focused else {
-            return;
-        };
-        let activated = self
-            .perform_node_action(focused, &crate::a11y::Action::Activate)
-            .unwrap_or(false);
-        if activated {
-            *handled = true;
-        }
     }
 
     /// Stand the app up and resolve its first observable layout.
@@ -4373,24 +4344,6 @@ impl FrameHarness {
         self.history_app_focus_order(root, &restrictions).0
     }
 
-    /// Where Tab and directional focus travel: [`Self::focus_order`], kept
-    /// inside the keyboard scope (the focused desktop window's content,
-    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
-    /// action palette owns the keyboard.
-    fn keyboard_travel_order(&self) -> Vec<NodeId> {
-        let order = self.focus_order();
-        if self
-            .action_palette
-            .as_deref()
-            .is_some_and(|palette| palette.is_presented())
-            || self.focus_trap_active
-            || self.focus_trap_possible()
-        {
-            return order;
-        }
-        self.tree().within_keyboard_scope(order)
-    }
-
     /// Whether embedded History and a History holding saved focus leave a
     /// node free to take focus, for asking of every node in one pass: each
     /// History's subtrees are walked once, not once per node.
@@ -4965,23 +4918,32 @@ impl FrameHarness {
     pub fn tab(&mut self, back: bool) -> Option<NodeId> {
         self.invalidate_local();
         self.pump_component_wakes();
-        let order = self.keyboard_travel_order();
-        if order.is_empty() {
+        if !self.focus_tab(back) {
             return None;
         }
-        let next = crate::focus_navigation::tab_index(&order, self.focused, back)?;
-        // `next` is constructed above from `0..order.len()` in every branch.
-        let target = *order.get(next)?;
-        let framework =
-            crate::history_mode::embedded::owns_node(self.root.as_ref(), target, &self.taffy)
-                || self
-                    .history
-                    .as_ref()
-                    .is_some_and(|history| history.owns_node(target, &self.taffy));
-        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
-        self.set_focused(Some(target));
-        self.relayout();
+        let target = self.focused?;
+        self.relayout_after_focus_move();
         Some(target)
+    }
+
+    /// Whether `node` is History's: its chrome or an embedded History
+    /// surface.
+    fn history_owns_node(&self, node: NodeId) -> bool {
+        crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy)
+            || self
+                .history
+                .as_ref()
+                .is_some_and(|history| history.owns_node(node, &self.taffy))
+    }
+
+    /// Lay out after keyboard focus moved, as framework input when History
+    /// holds the focused node.
+    fn relayout_after_focus_move(&mut self) {
+        let framework = self
+            .focused
+            .is_some_and(|node| self.history_owns_node(node));
+        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
+        self.relayout();
     }
 
     /// The accessibility node of every keyboard-focusable control, in focus
@@ -6133,12 +6095,8 @@ impl FrameHarness {
             let modal = self.root.modal_capture();
             let navigation =
                 crate::focus_navigation::keyboard_nav_allowed(modal, self.focus_trap_active);
-            if key.logical_key == Key::Named(winit::keyboard::NamedKey::Tab)
-                && navigation
-                && !self.focused_widget_wants_tab_input()
-                && self.tab(self.modifiers.state().shift_key()).is_some()
-            {
-                self.relayout();
+            if self.handle_tab_navigation(event, navigation) {
+                self.relayout_after_focus_move();
                 return;
             }
             if modal.is_none()
@@ -6442,40 +6400,6 @@ impl FrameHarness {
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
-        if host_navigation_allowed
-            && !handled
-            && !history_input
-            && self.modifiers.state().alt_key()
-            && let WindowEvent::KeyboardInput { event: key, .. } = event
-            && key.state == ElementState::Pressed
-            && let Key::Named(named) = key.logical_key
-            && let Some(direction) = crate::focus_navigation::Direction::from_key(named)
-        {
-            let order = self.keyboard_travel_order();
-            let next = match self.focused {
-                Some(current) => self
-                    .inspect_node(current, |widget| widget.get_rect())
-                    .ok()
-                    .and_then(|rect| {
-                        crate::focus_navigation::next(
-                            (current, rect),
-                            order.iter().filter_map(|&id| {
-                                self.inspect_node(id, |widget| widget.get_rect())
-                                    .ok()
-                                    .map(|rect| (id, rect))
-                            }),
-                            direction,
-                        )
-                    }),
-                None => order.first().copied(),
-            };
-            if let Some(next) = next {
-                self.set_focused(Some(next));
-            }
-            // Host directional navigation owns recognized Alt+Arrow input even
-            // when no focus target exists, matching the live App contract.
-            handled = true;
-        }
         // A view-only wheel the host's next frame takes dispatched nothing,
         // focused nothing and queued nothing (the contract of
         // `Widget::view_only_scroll`): its tick would find no bracket, no
@@ -6517,14 +6441,11 @@ impl FrameHarness {
             // frame's sync and publication read.
             self.invalidate_local();
         }
-        if !history_input
-            || self.focused.is_some_and(|node| {
-                crate::history_mode::embedded::owns_node(self.root.as_ref(), node, &self.taffy)
-                    || self
-                        .history
-                        .as_ref()
-                        .is_some_and(|history| history.owns_node(node, &self.taffy))
-            })
+        if !history_input {
+            self.handle_unconsumed_key(event, host_navigation_allowed, true, &mut handled);
+        } else if self
+            .focused
+            .is_some_and(|node| self.history_owns_node(node))
         {
             self.handle_unconsumed_activation_key(event, &mut handled);
         }
@@ -8884,6 +8805,55 @@ impl crate::host_core::HostCore for FrameHarness {
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.invoke_held_control(prepared)
+    }
+}
+
+impl crate::host_core::KeyHost for FrameHarness {
+    fn modifiers(&self) -> &winit::event::Modifiers {
+        &self.modifiers
+    }
+
+    fn platform(&self) -> crate::platform::PlatformConventions {
+        self.platform
+    }
+
+    /// Where Tab and directional focus travel: [`Self::focus_order`], kept
+    /// inside the keyboard scope (the focused desktop window's content,
+    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
+    /// action palette owns the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<NodeId> {
+        let order = self.focus_order();
+        if self
+            .action_palette
+            .as_deref()
+            .is_some_and(|palette| palette.is_presented())
+            || self.focus_trap_active
+            || self.focus_trap_possible()
+        {
+            return order;
+        }
+        self.tree().within_keyboard_scope(order)
+    }
+
+    fn move_focus(&mut self, node: Option<NodeId>) {
+        let framework = node.is_some_and(|node| self.history_owns_node(node));
+        let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
+        self.set_focused(node);
+    }
+
+    fn key_fallback_acted(&mut self) {
+        self.invalidate_local();
+    }
+
+    fn root_event(&mut self) -> Option<crate::host_core::RootEvent<'_>> {
+        Some(crate::host_core::RootEvent {
+            root: self.root.as_mut(),
+            state: &mut self.state,
+            modifiers: &self.modifiers,
+            taffy: &self.taffy,
+            node: self.child_node,
+            scale_factor: self.input_scale,
+        })
     }
 }
 

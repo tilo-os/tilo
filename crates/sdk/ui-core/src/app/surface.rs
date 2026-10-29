@@ -484,36 +484,8 @@ impl App {
             }
         }
 
-        if !handled && app.handle_tab_navigation(&event, modal_rect) {
+        if !handled && app.handle_tab_navigation(&event, app.keyboard_nav_allowed(modal_rect)) {
             handled = true;
-        }
-
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let (Some(d), true, true) = (
-                dir,
-                app.input.modifiers.state().alt_key(),
-                app.keyboard_nav_allowed(modal_rect),
-            ) {
-                app.navigate_focus(d);
-                handled = true;
-            }
         }
 
         // Two-finger swipe, edge pull or mouse side button; delivered via
@@ -662,84 +634,15 @@ impl App {
             window.request_redraw();
         }
 
-        // Alt+Arrow remains host directional navigation when the focused
-        // widget leaves it unhandled. Running this after widget dispatch lets
-        // editors consume platform word/selection shortcuts first, while
-        // keeping Alt navigation ahead of the plain range-control fallback.
-        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
-
-        // If no widget consumed Enter/Space (text inputs do), activate
-        // the focused control the same way a mouse click would.
-        app.handle_unconsumed_activation_key(&event, &mut handled);
-
-        if !handled && app.handle_unconsumed_search_key(&event) {
-            handled = true;
-        }
-
-        // Select and type: a key nothing took, over a selection, asks about it.
-        if !handled && app.handle_unconsumed_typed_key(&event) {
-            handled = true;
-        }
-
-        // Ctrl+T / Ctrl+W / Ctrl+Shift+T / Ctrl+Tab / Ctrl+Shift+Tab nobody
-        // consumed are the desktop's tab chords.
-        if !window.hosts_tab_chords() {
-            app.handle_unconsumed_tab_chord(&event, &mut handled);
-        }
-
-        // A focused range control consumes Left/Right; Up/Down and Tab
-        // still move focus. Modifiers scale the step:
-        //   plain  → one step       Shift → four steps (coarse)
-        //   Ctrl   → jump to min/max (Left = min, Right = max)
-        // Other widgets ignore the action, falling through to
-        // directional navigation below.
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(named),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            use crate::a11y::Action;
-            let ctrl = app
-                .input
-                .platform
-                .command_modifier_down(app.input.modifiers.state());
-            let shift = app.input.modifiers.state().shift_key();
-            // (action to repeat, how many times)
-            let (action, times) = match named {
-                winit::keyboard::NamedKey::ArrowLeft if ctrl => {
-                    (Some(Action::SetValue("0".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowRight if ctrl => {
-                    (Some(Action::SetValue("100".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowLeft => {
-                    (Some(Action::Decrement), if shift { 4 } else { 1 })
-                }
-                winit::keyboard::NamedKey::ArrowRight => {
-                    (Some(Action::Increment), if shift { 4 } else { 1 })
-                }
-                _ => (None, 0),
-            };
-            if let (Some(act), Some(fid)) = (action, app.focused_node) {
-                let mut any = false;
-                for _ in 0..times {
-                    any |= app.perform_node_action(fid, &act).unwrap_or(false);
-                }
-                if any {
-                    handled = true;
-                    app.needs_sync = true;
-                    app.layout.layout_dirty = true;
-                }
-            }
-        }
-
-        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
+        // Arrows, Enter and Space, search and typed keys, the desktop's tab
+        // chords (unless the window answers them) and range steps nobody
+        // consumed.
+        app.handle_unconsumed_key(
+            &event,
+            app.keyboard_nav_allowed(modal_rect),
+            !window.hosts_tab_chords(),
+            &mut handled,
+        );
 
         if app.dispatch_control_invocations() != 0 {
             handled = true;
