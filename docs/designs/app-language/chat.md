@@ -269,7 +269,7 @@ once, and everything below happens in the window as each key is typed.
 | Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??`, lens parameters | language changes, in progress |
 | `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` built, with its drawers (next row) |
 | `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the UI host) | done |
-| `rich_input` with its completion drawers (`@` room people and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
+| `rich_input` with its completion drawers (`@` this conversation's recent speakers then `members(r)`, and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
 | Transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
 | Others' lens state (typing, read position) and delivery facts readable by `std` | to build |
 | `uses call`, `call.participants`, `std.call` over the native call stack | to build |

@@ -13,11 +13,9 @@ use crate::resolve::{Env, ParamInfo, TypeInfo};
 use crate::types::{Ty, TypeKey};
 
 /// The words only a program has.
-pub(crate) const PROGRAM_BUILTINS: &[&str] = &["print", "find", "read"];
+pub(crate) const PROGRAM_BUILTINS: &[&str] = &["print", "find", "read", "grep", "describe"];
 
-/// The host's type of any resource, of whatever app: what `find` answers when its query names
-/// no type. `.of(T)` narrows a list of them to one type.
-pub const RESOURCE_TYPE_NAME: &str = "Resource";
+pub use crate::host::RESOURCE_TYPE_NAME;
 
 /// The type key of [`RESOURCE_TYPE_NAME`].
 #[must_use]
@@ -80,8 +78,8 @@ pub fn check_program(
                 if matches!(ex.ty, Ty::Unit | Ty::Error) {
                     c.emit(Stmt::Eval(ex));
                 } else {
-                    let said = c.tuple_of(vec![ex]);
-                    c.emit(Stmt::Eval(Ex::host(Imp::Print, vec![said], Ty::Unit)));
+                    let said = c.print_values(vec![ex]);
+                    c.emit(Stmt::Eval(said));
                 }
             }
             _ => c.stmt(s),
@@ -136,6 +134,8 @@ impl Checker<'_> {
             "print" => self.builtin_print(args),
             "find" => self.builtin_find(args, span),
             "read" => self.builtin_read(args, span),
+            "grep" => self.builtin_grep(args, span),
+            "describe" => self.builtin_describe(args, span),
             _ => return None,
         })
     }
@@ -170,15 +170,61 @@ impl Checker<'_> {
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(tmp, ty.clone()))), ty)
     }
 
-    /// `print(a, b, ...)`: one line of output, its values separated by spaces.
+    /// Print `values` on one line, separated by spaces, each as its type shows; a list of a
+    /// type's resources alone prints a row per resource with the type's filter fields.
+    fn print_values(&mut self, mut values: Vec<Ex>) -> Ex {
+        if values.len() == 1
+            && let Some(list) = values.pop()
+        {
+            let kept = list.clone();
+            if let Some(rows) = self.print_rows(list, None) {
+                return rows;
+            }
+            values.push(kept);
+        }
+        let types: Vec<String> = values
+            .iter()
+            .map(|v| v.ty.meta_text(&self.env.app))
+            .collect();
+        let said = self.tuple_of(values);
+        Ex::host(
+            Imp::Print,
+            vec![said, Ex::str(&serde_json::json!(types).to_string())],
+            Ty::Unit,
+        )
+    }
+
+    /// `print(a, b, ...)`: one line of output, its values separated by spaces; `print(xs,
+    /// fields: [.a, .b])` a row per item.
     fn builtin_print(&mut self, args: &[ast::Arg]) -> Ex {
+        let fields = args
+            .iter()
+            .find(|a| a.name.as_ref().is_some_and(|n| n.name == "fields"));
+        if let Some(fields) = fields {
+            let listed: Vec<&ast::Arg> = args.iter().filter(|a| a.name.is_none()).collect();
+            let [list] = listed.as_slice() else {
+                self.err(
+                    "E022",
+                    fields.value.span,
+                    "`fields:` prints one list: `print(xs, fields: [.title, .due])`",
+                );
+                return Ex::error();
+            };
+            let list = self.expr(&list.value, None);
+            if list.ty == Ty::Error {
+                return Ex::error();
+            }
+            return self
+                .print_rows(list, Some(fields))
+                .unwrap_or_else(Ex::error);
+        }
         let mut values = Vec::new();
         for a in args {
             if let Some(n) = &a.name {
                 self.err(
                     "E022",
                     n.span,
-                    "`print` takes values, not named arguments: `print(n, n.title)`",
+                    "`print` takes values, and `fields:` for a list's rows: `print(n, n.title)`",
                 );
             }
             let v = self.expr(&a.value, None);
@@ -192,14 +238,20 @@ impl Checker<'_> {
             }
             values.push(v);
         }
-        let said = self.tuple_of(values);
-        Ex::host(Imp::Print, vec![said], Ty::Unit)
+        self.print_values(values)
     }
 
     /// `find("Note launch video")`: the resources the palette's query finds. A query that
     /// starts with a type's name finds resources of that type, a `List<T>`; any other finds
     /// resources of every app, a `List<host.Resource>` that `.of(T)` narrows.
     fn builtin_find(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        // `find(Note, pinned: true)`: typed, its arguments the type's filters, as a query's.
+        if args
+            .first()
+            .is_some_and(|a| a.name.is_none() && !matches!(a.value.kind, ExprKind::Str(_)))
+        {
+            return self.query_named("find", args, span);
+        }
         let [query] = args else {
             self.err(
                 "E022",
@@ -301,7 +353,8 @@ impl Checker<'_> {
 
     /// `read(r)`: the resource as text, each field on a line.
     fn builtin_read(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [what] = args else {
+        let Some((what, options)) = args.split_first().filter(|(what, _)| what.name.is_none())
+        else {
             self.err("E022", span, "`read` takes a resource: `read(n)`");
             return Ex::error();
         };
@@ -319,7 +372,7 @@ impl Checker<'_> {
                 return Ex::error();
             }
         }
-        Ex::host(Imp::ReadText, vec![r], Ty::Text)
+        self.read_with(r, options)
     }
 
     /// `list.of(Note)`: the resources of the list that are of that type, as that type.

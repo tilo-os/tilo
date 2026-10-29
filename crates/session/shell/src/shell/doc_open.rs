@@ -825,7 +825,7 @@ pub fn clear_open_documents() {
 /// reference (and the same hash as its content/reference fingerprint).
 pub fn continuation_file_reference_for_surface(
     surface_id: u64,
-) -> Option<crate::shell::personal_continuity::LaunchIntent> {
+) -> Option<crate::shell::continuation::LaunchIntent> {
     let session = launcher::LaunchSession::current();
     let open = lock_open_documents(&session);
     let path = open
@@ -861,7 +861,7 @@ pub fn continuation_file_reference_for_surface(
         .ok()
         .flatten()
         .map(|bytes| *blake3::hash(&bytes).as_bytes());
-    crate::shell::personal_continuity::LaunchIntent::file_reference(
+    crate::shell::continuation::LaunchIntent::file_reference(
         format!("file-record-{}", hex::encode(record_id)),
         content_hash,
         thumbnail_hash,
@@ -874,7 +874,7 @@ pub fn continuation_file_reference_for_surface(
 /// a source pathname. Opening one byte is deliberate: on a projected FUSE
 /// record it begins normal on-demand hydration, while local files are cheap.
 pub fn open_continuity_file_reference(
-    reference: &crate::shell::personal_continuity::LaunchIntent,
+    reference: &crate::shell::continuation::LaunchIntent,
 ) -> Option<PathBuf> {
     let path = resolve_continuity_file_reference_in_roots(
         reference,
@@ -889,7 +889,7 @@ pub fn open_continuity_file_reference(
 /// A human label for a continuation file card. The record id is deliberately
 /// never user-facing: it is a transport identity, not a filename.
 pub fn continuity_file_reference_label(
-    reference: &crate::shell::personal_continuity::LaunchIntent,
+    reference: &crate::shell::continuation::LaunchIntent,
 ) -> String {
     resolve_continuity_file_reference_in_roots(
         reference,
@@ -901,27 +901,6 @@ pub fn continuity_file_reference_label(
     })
     .filter(|name| !name.trim().is_empty())
     .unwrap_or_else(|| crate::shell::i18n::t("doc-open-unnamed-file"))
-}
-
-/// The desktop's names for continuation placeholder tabs: installed apps as
-/// the launcher last enumerated them, and files by their name in the
-/// workspace's record roots ([`continuity_file_reference_label`]).
-pub(crate) struct DesktopContinuationLabels;
-
-impl crate::shell::state::ContinuationLabels for DesktopContinuationLabels {
-    fn app_name(&self, app_id: &str) -> Option<String> {
-        crate::shell::launcher::installed_apps_without_waiting()
-            .into_iter()
-            .find(|installed| installed.package_id == app_id)
-            .map(|installed| installed.display_name)
-    }
-
-    fn file_reference_label(
-        &self,
-        reference: &crate::shell::personal_continuity::LaunchIntent,
-    ) -> String {
-        continuity_file_reference_label(reference)
-    }
 }
 
 /// Production activation for a synchronized file-reference tab.  Resolution
@@ -944,11 +923,10 @@ pub fn activate_continuity_file_tab(chrome: &Chrome, tab: TabId) -> bool {
 }
 
 fn resolve_continuity_file_reference_in_roots(
-    reference: &crate::shell::personal_continuity::LaunchIntent,
+    reference: &crate::shell::continuation::LaunchIntent,
     roots: &[PathBuf],
 ) -> Option<PathBuf> {
-    let crate::shell::personal_continuity::LaunchIntent::FileReference { record_id, .. } =
-        reference
+    let crate::shell::continuation::LaunchIntent::FileReference { record_id, .. } = reference
     else {
         return None;
     };
@@ -1301,7 +1279,7 @@ mod tests {
                 .expect("the root catalog supplies stable identity without a file xattr");
             assert!(matches!(
                 reference,
-                crate::shell::personal_continuity::LaunchIntent::FileReference {
+                crate::shell::continuation::LaunchIntent::FileReference {
                     record_id: ref id,
                     content_hash: None,
                     ..
@@ -1340,7 +1318,7 @@ mod tests {
                 &serde_json::to_vec(&exact).unwrap(),
             )
             .unwrap();
-            let reference = crate::shell::personal_continuity::LaunchIntent::file_reference(
+            let reference = crate::shell::continuation::LaunchIntent::file_reference(
                 format!("file-record-{}", hex::encode(record)),
                 Some(content),
                 Some(*blake3::hash(thumbnail).as_bytes()),
@@ -1932,15 +1910,16 @@ mod tests {
             let mut harness = mounted_files(tmp.path(), &files);
             let explorer =
                 file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
-            explorer.navigate(files);
+            explorer.state().navigate(files);
             let idx = explorer
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|e| e.name == "agenda.odt")
                 .expect("the explorer lists the document");
             let mut runner = file_explorer::files_app::SystemRunner;
             assert!(
-                explorer.open_entry(idx, &mut runner).unwrap(),
+                explorer.state().open_entry(idx, &mut runner).unwrap(),
                 "activating a file row hands it off"
             );
 
@@ -1994,18 +1973,20 @@ mod tests {
             let mut harness = mounted_files(tmp.path(), &files);
             let explorer =
                 file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
-            explorer.navigate(files);
+            explorer.state().navigate(files);
             let idx = explorer
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|e| e.name == "archive.zzz")
                 .expect("the explorer lists the file");
             let mut runner = file_explorer::files_app::SystemRunner;
-            explorer.open_entry(idx, &mut runner).unwrap();
+            explorer.state().open_entry(idx, &mut runner).unwrap();
 
             // Files says what failed in its notice card (ef59750fad), not
             // the fading status bubble.
             let status = explorer
+                .state()
                 .notice_line()
                 .unwrap_or_else(|| panic!("the refusal must reach the user"));
             assert!(

@@ -6,6 +6,8 @@
 //! when a check refuses or an operation fails (the message on stderr), 2 for a
 //! usage error, as `argparse` reported it.
 //!
+//! * [`account_handoff`]: the online accounts the live installer hands to the
+//!   installed system's first boot, which `tilo-firstboot-home-seeds` imports
 //! * [`handoff_copy`]: `tilo-install-handoff-copy SOURCE DESTINATION`
 //! * [`dev_ssh`]: `tilo-install-dev-ssh --etc ETC --username USERNAME --key KEY`
 //! * [`bootc_copy_cache`]: `tilo-vm-bootc-copy-cache check|record` (VMs only)
@@ -24,6 +26,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::process::ExitCode;
 
+pub mod account_handoff;
 pub mod args;
 pub mod bootc_copy_cache;
 pub mod code_refresh;

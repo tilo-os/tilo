@@ -218,7 +218,6 @@ struct ReplayPendingFrame {
     next_target: usize,
 }
 pub(super) struct ReplayPendingWork {
-    continuity: Option<crate::store::continuity::Receipt>,
     publication: ReplayPendingPublication,
     targets: Vec<ReplayPendingTarget>,
     frame: Option<ReplayPendingFrame>,
@@ -226,13 +225,8 @@ pub(super) struct ReplayPendingWork {
 }
 
 impl ReplayPendingWork {
-    pub(super) fn original(
-        envelope: Arc<Envelope>,
-        targets: Vec<ReplayPendingTarget>,
-        continuity: Option<crate::store::continuity::Receipt>,
-    ) -> Self {
+    pub(super) fn original(envelope: Arc<Envelope>, targets: Vec<ReplayPendingTarget>) -> Self {
         Self {
-            continuity,
             publication: ReplayPendingPublication::Original(Some(envelope)),
             targets,
             frame: None,
@@ -244,7 +238,6 @@ impl ReplayPendingWork {
         targets: Vec<ReplayPendingTarget>,
     ) -> Result<Self, crate::store::StoreError> {
         Ok(Self {
-            continuity: None,
             publication: ReplayPendingPublication::Selected(publication.open()?),
             targets,
             frame: None,
@@ -299,25 +292,16 @@ impl ReplayPendingWork {
             let sequence = if let Some(sequence) = frame.sequence {
                 sequence
             } else {
-                let sequence = match &self.continuity {
-                    Some(receipt) => receipt.sequence,
-                    None => state.next_sequence()?,
-                };
+                let sequence = state.next_sequence()?;
                 frame.sequence = Some(sequence);
                 sequence
             };
-            if let Some(receipt) = &self.continuity {
-                state
-                    .store
-                    .enqueue_continuity_pending(&target.device, &frame.bytes, receipt)?;
-            } else {
-                // Not the device's durable queue: one fsynced file per
-                // catching-up session for each commit made a crowd joining
-                // at once write the room's every change once per newcomer.
-                let holding = crate::timing::start();
-                target.catchup.hold(sequence, &frame.bytes)?;
-                crate::timing::window("state.held_write", holding);
-            }
+            // Not the device's durable queue: one fsynced file per
+            // catching-up session for each commit made a crowd joining at
+            // once write the room's every change once per newcomer.
+            let holding = crate::timing::start();
+            target.catchup.hold(sequence, &frame.bytes)?;
+            crate::timing::window("state.held_write", holding);
             self.written = self.written.saturating_add(frame.bytes.len() as u64);
         }
         test_point!(if self.frame.is_some()

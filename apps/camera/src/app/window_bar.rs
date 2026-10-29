@@ -232,7 +232,7 @@ mod tests {
         const TITLE: &'static str = "Camera";
 
         fn view(cx: &mut ui::framework::ViewCx<crate::record::Record>) -> ui::widget::Element {
-            cx.surface(CameraApp::sample())
+            crate::app::window(cx, CameraApp::sample())
         }
     }
 

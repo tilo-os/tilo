@@ -3100,7 +3100,7 @@ impl App {
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
         palette.open();
-        self.actions.palette_window = self.invoking_window_rect();
+        self.actions.palette_window = self.tree().invoking_window_rect();
         // Discovery reads the still-admitted current tree; clear its pointers
         // immediately before replacing the retained modal instance.
         self.bindings.clear();
@@ -3108,23 +3108,6 @@ impl App {
         self.focused_node = None;
         self.actions.action_palette = Some(Box::new(palette));
         self.rebuild_action_palette_admission();
-    }
-
-    /// The window the palette was asked for from, when this app lays several
-    /// out in its tree (the desktop's strip of app tiles). `None` for a
-    /// standalone app ([`crate::action_palette::invoking_window`]).
-    fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
-        crate::action_palette::invoking_window(
-            &self.layout.taffy,
-            self.layout.root_node,
-            self.input.pressed_at,
-            self.focused_node,
-            |node| {
-                self.inspect_node(node, crate::action_palette::tile_rect)
-                    .ok()
-                    .flatten()
-            },
-        )
     }
 
     /// Open search the way `request` asks: this app, or one part of it, with
@@ -3398,7 +3381,7 @@ impl App {
                 });
         }
         // Read before the tree it is found in is discarded.
-        let anchor = self.acting_control_rect();
+        let anchor = self.tree().acting_control_rect();
         self.open_action_palette();
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3424,7 +3407,7 @@ impl App {
     /// control they used: a click is never dropped with only a log line, and
     /// never opens search.
     pub(super) fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
-        let anchor = self.acting_control_rect();
+        let anchor = self.tree().acting_control_rect();
         self.refuse_at(error, anchor);
     }
 
@@ -3443,24 +3426,6 @@ impl App {
             .refusals
             .push((crate::bound_dispatch::refusal_reason(error), anchor));
         self.layout.layout_dirty = true;
-    }
-
-    /// The control the person acted on last, in window coordinates: under
-    /// their last press, else the one holding the keyboard.
-    fn acting_control_rect(&self) -> Option<vello::kurbo::Rect> {
-        crate::control_notice::acting_control(
-            &self.layout.taffy,
-            self.layout.root_node,
-            self.input.pressed_at,
-            self.focused_node,
-            |node| {
-                self.inspect_node(node, |widget| {
-                    Some((widget.get_rect(), widget.is_focusable()))
-                })
-                .ok()
-                .flatten()
-            },
-        )
     }
 
     /// Say why this pass's refused invocations did not run: the last one,
@@ -4190,6 +4155,8 @@ impl crate::host_core::HostCore for App {
             permissions: &self.permission_ctx,
             focused: self.focused_node,
             history_layout: self.history_layout,
+            root_node: self.layout.root_node,
+            pointer: &self.input.pointer,
         }
     }
 
@@ -4212,6 +4179,8 @@ impl crate::host_core::HostCore for App {
                 permissions: &self.permission_ctx,
                 focused: self.focused_node,
                 history_layout: self.history_layout,
+                root_node: self.layout.root_node,
+                pointer: &self.input.pointer,
             },
         )
     }
@@ -4236,6 +4205,15 @@ impl crate::host_core::HostCore for App {
 
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
+    }
+
+    fn acting_for_mut(
+        &mut self,
+    ) -> &mut std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    > {
+        &mut self.actions.acting_for
     }
 
     fn dispatch_current_history_control(

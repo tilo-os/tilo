@@ -1289,7 +1289,7 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     files.attach_framework(
         cx.dispatcher(),
         cx.settings::<FilesPreferences>(),
-        cx.settings::<crate::recent::RecentFiles>(),
+        cx.person::<crate::recent::RecentRecord>(),
         cx.device().map(str::to_owned),
         ops,
     );

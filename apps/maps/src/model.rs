@@ -479,7 +479,7 @@ impl Panel {
 /// handle to that area — it is what the offline panel lists and what a delete
 /// action targets. Persisted in the CRDT so saved areas survive a restart and
 /// ride undo/redo like the rest of the model.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DownloadedRegion {
     /// Stable id (a monotonic timestamp) so the manage-list can target a row.
     pub id: String,

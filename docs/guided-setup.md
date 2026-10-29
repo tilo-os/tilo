@@ -36,8 +36,8 @@ starting point, subject to release validation.
 ## Existing foundations and changes to the contract
 
 Relevant existing components are `apps/imager` (host setup, release downloads,
-verification, profiles, privileged helpers), `crates/session/installer` and
-`os/usr/libexec/tilo-install` (target installation), and `shell/src/onboarding.rs`
+verification, profiles, privileged helpers, and the live installer as the
+setup's destination side), `os/usr/libexec/tilo-install` (target installation), and `shell/src/onboarding.rs`
 (first-login setup). Existing packaging supplies Linux desktop sessions.
 
 `docs/install-contract.json` and `docs/installer-walkthrough.md` currently describe

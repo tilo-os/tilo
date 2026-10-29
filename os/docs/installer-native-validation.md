@@ -4,8 +4,8 @@ The Linux installer builds and runs natively on AArch64. Validation used the
 locked workspace dependencies and the normal release profile (including LTO):
 
 ```sh
-cargo test -p installer --locked
-cargo build --release -p installer --locked
+cargo test -p imager --features destination --locked
+cargo build --release -p imager --features destination --bin tilo-installer --locked
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json \
   bash os/tests/installer-render-smoke.sh \
   target/release/tilo-installer /path/to/new-render-results

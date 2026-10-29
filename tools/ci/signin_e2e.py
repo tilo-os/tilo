@@ -94,6 +94,13 @@ SECRETS = Secrets()
 LOG: Path | None = None
 
 
+def bootc(args: str, lines: int) -> str:
+    """A guest command running `bootc ARGS` that ends with its last `lines` of output and exits
+    with bootc's status, not tail's."""
+    return (f"bootc {args} > /run/e2e-bootc.log 2>&1; status=$?; "
+            f"tail -n {lines} /run/e2e-bootc.log; exit $status")
+
+
 def say(line: str) -> None:
     line = SECRETS.redact(f"[{time.strftime('%H:%M:%S')}] {line}")
     print(line, flush=True)
@@ -166,7 +173,10 @@ class Cycle:
         path = self.shot(name)
         if not path:
             return None, ""
-        ocr = subprocess.run(["tesseract", str(path), "stdout"], capture_output=True, text=True)
+        # Sparse text: the page layout analysis drops the small labels in the screen's corners,
+        # "Can't sign in" among them.
+        ocr = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11"],
+                             capture_output=True, text=True)
         return path, ocr.stdout if ocr.returncode == 0 else ""
 
     def keep_screen(self, name: str, path: Path | None, text: str) -> None:
@@ -223,9 +233,13 @@ class Shell:
         while time.monotonic() < deadline:
             token = secrets.token_hex(6)
             try:
+                # A port nobody in the guest reads yet fills up: that is waiting, not closed.
+                self.sock.settimeout(max(deadline - time.monotonic(), 0.1))
                 self.sock.sendall(f"echo E2E-READY-{token}\n".encode())
                 if self._read_until(re.compile(rf"E2E-READY-{token}".encode()), 3):
                     return
+            except socket.timeout:
+                break
             except OSError as error:
                 raise Failed(f"the test shell port closed: {error}") from error
         raise Failed("no root shell answered on the test shell port (is the target's test unit running?)")
@@ -320,6 +334,9 @@ class Run:
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
         self.old_image: str | None = args.pre_pam_tilo_image
+        self.old_archive: str | None = args.pre_pam_tilo_archive
+        # The device settings the current boot was started with, and what they replaced.
+        self.boot_devices: dict[str, str | None] = {}
 
     # -- reporting ------------------------------------------------------------------------------
 
@@ -575,16 +592,19 @@ cryptsetup close e2e-target
 
     def boot(self, label: str, **devices: str) -> None:
         """`devices` are vm.sh's device settings for this boot only (TILO_VM_INPUT,
-        TILO_VM_AUDIO_WAV)."""
+        TILO_VM_AUDIO_WAV). They stay set until the next boot: vm.sh's input commands (`tap`)
+        read them too."""
         c = self.cycle
         c.boots += 1
         say(f"--- boot {c.boots}: {label}")
-        saved = dict(c.env)
+        for name, before in self.boot_devices.items():
+            if before is None:
+                c.env.pop(name, None)
+            else:
+                c.env[name] = before
+        self.boot_devices = {name: c.env.get(name) for name in devices}
         c.env.update(devices)
-        try:
-            c.vm("boot-target", "--2d", "--tpm", timeout=600)
-        finally:
-            c.env = saved
+        c.vm("boot-target", "--2d", "--tpm", timeout=600)
         c.hotplug_shell()
 
     def classify(self, text: str) -> str:
@@ -908,6 +928,9 @@ cryptsetup close e2e-target
                 say(f"no guest shell after the greeter wait: {reason}")
             raise Failed("the greeter never accepted input on the second boot") from error
         self.greeter_log(label, state)
+        # The pointer rests in the corner, clear of the card item 12 compares with the boot's.
+        self.cycle.vm("pointer", "4", "4", check=False)
+        time.sleep(0.5)
         path, text = self.cycle.screen()
         self.cycle.keep_screen("greeter-before-sign-in", path, text)
         self.cycle.invoke("greeter", "sign-in@greeter", {"password": self.account})
@@ -1248,15 +1271,20 @@ cryptsetup close e2e-target
         evidence: dict = {"first_screen": kind}
         if kind == "boot-signin":
             self.cycle.keep_screen("recovery-boot-sign-in", path, text)
-            self.cycle.keys("ret")
-            kind, path, text, _ = self.wait_screen(label, {"disk-prompt"}, 180)
+            at = self.words_at(path, "can't", "sign", "in")
+            evidence["cant_sign_in_at"] = at
+            if at is None:
+                kind = "no \"Can't sign in\" on the boot sign-in screen"
+            else:
+                self.cycle.vm("click", *map(str, at))
+                kind, path, text, _ = self.wait_screen(label, {"disk-prompt"}, 180)
             evidence["after_cant_sign_in"] = kind
         if kind != "disk-prompt":
             self.cycle.keep_screen("recovery-no-prompt", path, text)
             self.item("6", "failed", f"no prompt for the recovery key after \"Can't sign in\" ({kind})",
                       **evidence)
-            # Sign in as usual so the boot completes and its initrd journal says what the empty
-            # answer did.
+            # Sign in as usual so the boot completes and its initrd journal says what the click
+            # did.
             self.cycle.type(self.account)
             self.cycle.keys("ret")
             try:
@@ -1340,8 +1368,8 @@ cryptsetup close e2e-target
 
     def first_frame(self, lines: str) -> None:
         """Item 13: the greeter's first frame in the initrd within 300 ms of the moment
-        tilo-boot-signin knows who may sign in, when Plymouth's sign-in screen appeared (the
-        same measure as os/tests/boot_performance_gate.sh)."""
+        tilo-boot-signin knows who may sign in, when Plymouth's own sign-in screen used to
+        appear (the same measure as os/tests/boot_performance_gate.sh)."""
         stamps = {}
         for line in lines.splitlines():
             match = re.match(r"\[\s*([0-9.]+)\]", line)
@@ -1413,6 +1441,28 @@ cryptsetup close e2e-target
         keys["\n"] = (round(centre + 3.5 * pitch), round(top_y + 4 * row_pitch))
         return keys
 
+    @staticmethod
+    def words_at(path: Path, *words: str) -> tuple[int, int] | None:
+        """The centre of `words`, read in a row on a screenshot by tesseract, if they are."""
+        tsv = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11", "tsv"],
+                             capture_output=True, text=True).stdout
+        found = []
+        for line in tsv.splitlines()[1:]:
+            cols = line.split("\t")
+            if len(cols) == 12 and cols[11].strip():
+                left, top, width, height = map(float, cols[6:10])
+                word = cols[11].strip().lower().replace("’", "'")
+                found.append((word, left, top, width, height))
+        for i in range(len(found) - len(words) + 1):
+            run = found[i:i + len(words)]
+            if [w for w, *_ in run] == list(words):
+                left = run[0][1]
+                right = run[-1][1] + run[-1][3]
+                top = min(t for _, _, t, _, _ in run)
+                bottom = max(t + h for _, _, t, _, h in run)
+                return round((left + right) / 2), round((top + bottom) / 2)
+        return None
+
     def card_matches(self, boot: Path, greeter: Path) -> tuple[bool, str]:
         """Whether the boot screen and the greeter after switch-root show the same card: the
         middle of both screens (the card, without the clock and status corners) compared with
@@ -1420,8 +1470,13 @@ cryptsetup close e2e-target
         crops = []
         for source in (boot, greeter):
             crop = self.private / f"card-{source.stem}.png"
-            subprocess.run(["convert", str(source), "-gravity", "center", "-crop", "40%x55%+0+0",
-                            "+repage", str(crop)], check=True)
+            # Below the clock and its date, which tell the two minutes apart: from the avatar
+            # down past the field and what sits under it.
+            height = int(subprocess.run(["identify", "-format", "%h", str(source)],
+                                        capture_output=True, text=True, check=True).stdout)
+            subprocess.run(["convert", str(source), "-gravity", "north", "-crop",
+                            f"40%x40%+0+{round(height * 0.44)}", "+repage", str(crop)],
+                           check=True)
             crops.append(crop)
         diff = self.out / "card-difference.png"
         result = subprocess.run(["compare", "-metric", "RMSE", str(crops[0]), str(crops[1]),
@@ -1454,7 +1509,12 @@ cryptsetup close e2e-target
             raise Failed(f"no boot sign-in screen to sign in at ({kind})")
         self.cycle.type(self.account)
         self.cycle.keys("ret")
-        self.connect(300)
+        try:
+            self.connect(300)
+        except Failed:
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen("comforts-no-shell", path, text)
+            raise
         self.write_comforts()
         self.power_off(label)
 
@@ -1574,14 +1634,21 @@ cryptsetup close e2e-target
         """Item 9: switch to an image from before pam_tilo and back, so it stays the rollback
         deployment; migrate on the new image; roll back and sign in with the old password; roll
         forward and find the hash still kept while the old image can boot."""
-        if not self.old_image:
-            raise Failed("the rollback variant needs --pre-pam-tilo-image")
-        evidence: dict = {"old_image": self.old_image}
+        if not self.old_image and not self.old_archive:
+            raise Failed("the rollback variant needs --pre-pam-tilo-image or --pre-pam-tilo-archive")
+        evidence: dict = {"old_image": self.old_image or self.old_archive}
         label = "rollback-switch"
         self.boot(label)
         self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
         self.connect()
-        code, text = self.guest(f"bootc switch {quote(self.old_image)} 2>&1 | tail -n 20", 1800)
+        switch = f"switch {quote(self.old_image)}" if self.old_image else ""
+        if self.old_archive:
+            archive = "/var/tmp/pre-pam-tilo.ociarchive"
+            code, text = self.guest(f"curl -fsS -o {archive} {quote(self.old_archive)}", 1800)
+            if code:
+                raise Failed(f"could not fetch the old image's archive: {text.strip()[-200:]}")
+            switch = f"switch --transport oci-archive {archive}"
+        code, text = self.guest(bootc(switch, 20), 1800)
         evidence["switch"] = {"exit": code, "output": text.strip()[-400:]}
         if code:
             raise Failed(f"bootc switch to the old image failed: {text.strip()[-200:]}")
@@ -1594,8 +1661,10 @@ cryptsetup close e2e-target
         _, pam = self.guest("test -e /etc/pam.d/tilo-auth && echo pam_tilo || echo before", quiet=True)
         evidence["old_image_pam"] = pam.strip()
         if pam.strip() != "before":
-            raise Failed("the image given as --pre-pam-tilo-image has the tilo-auth PAM service")
-        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+            _, booted = self.guest("bootc status --booted 2>&1 | head -n 8", quiet=True)
+            raise Failed("the booted image has the tilo-auth PAM service, so it is not the one "
+                         f"given as --pre-pam-tilo-image: {' '.join(booted.split())[:300]}")
+        code, text = self.guest(bootc("rollback", 5), 300)
         if code:
             raise Failed(f"bootc rollback to the new image failed: {text.strip()[-200:]}")
         self.power_off(label)
@@ -1611,7 +1680,7 @@ cryptsetup close e2e-target
         evidence["migrated"] = {"session": session, "record_wrappers": record.strip(),
                                 "shadow_locked": self.shadow_locked(),
                                 "kept_for": [l for l in authd.splitlines() if "keeping uid" in l]}
-        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        code, text = self.guest(bootc("rollback", 5), 300)
         if code:
             raise Failed(f"bootc rollback to the old image failed: {text.strip()[-200:]}")
         self.power_off(label)
@@ -1619,7 +1688,7 @@ cryptsetup close e2e-target
         label = "rollback-back-to-old"
         session = self.boot_to_session(label)
         evidence["old_image_sign_in"] = {"session": session}
-        code, text = self.guest("bootc rollback 2>&1 | tail -n 5", 300)
+        code, text = self.guest(bootc("rollback", 5), 300)
         if code:
             raise Failed(f"bootc rollback to the new image failed: {text.strip()[-200:]}")
         self.power_off(label)
@@ -1679,7 +1748,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "10": "The boot sign-in speaks when the comforts token turns the screen reader on",
         "11": "With a touch screen and no keyboard, the secret is tapped on the on-screen keyboard",
         "12": "The boot sign-in and the greeter after switch-root show the same card",
-        "13": "The boot sign-in's first frame comes within 300 ms of when Plymouth's appeared",
+        "13": "The boot sign-in's first frame comes within 300 ms of knowing who may sign in",
     }
     if any(r.variant == "rollback" for r in runs):
         names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"
@@ -1777,6 +1846,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pre-pam-tilo-image",
                         help="for the rollback variant: an image reference from before pam_tilo "
                              "that the guest can pull")
+    parser.add_argument("--pre-pam-tilo-archive", metavar="URL",
+                        help="for the rollback variant, instead of --pre-pam-tilo-image: an OCI "
+                             "archive of such an image the guest fetches over HTTP. The image's "
+                             "policy takes registry.tilo.so/tilo/tilo signed for release only, and "
+                             "a local archive from anywhere")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     args.storage.mkdir(parents=True, exist_ok=True)

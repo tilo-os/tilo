@@ -101,23 +101,21 @@ async function action(tab, name, gesture = false) {
 const snapshot = tab => action(tab, 'call-status');
 const inactive = tab => tab.evaluate('!peer.voice.call.stats().captureActive');
 const resourcesClosed = tab => tab.evaluate('voiceEvidence.contexts.every(c=>c.state === "closed") && voiceEvidence.streams.every(s=>s.getTracks().every(t=>t.readyState === "ended")) && voiceEvidence.workers.every(w=>w.stopped)');
-// The call's microphone is Chat's action in the window bar, wherever the
-// call is shown: found by that action, it is named for what a press does
-// (Unmute while muted, Mute while heard).
-const microphoneControl = `Array.from(document.querySelectorAll('[data-tilo-semantic]')).find(element => {
-  try {return JSON.parse(element.dataset.tiloSemantic).at(-1) === 'window-toolbar-action:call-mute';} catch {return false;}
-})`;
+// The call's microphone is found the way a person or an agent finds it: the
+// one control named for what a press does (Unmute while muted, Mute while
+// heard), wherever Chat shows it.
+const microphoneControls = outcome => `Array.from(document.querySelectorAll('[data-tilo-semantic]')).filter(element => element.getAttribute('aria-label') === ${JSON.stringify(outcome)})`;
 async function activateMicrophone(tab, outcome) {
   try {
-    await tab.waitFor(`(mount.requestSemantics(), ${microphoneControl}?.getAttribute('aria-label') === ${JSON.stringify(outcome)})`, {timeout:10_000});
+    await tab.waitFor(`(mount.requestSemantics(), ${microphoneControls(outcome)}.length === 1)`, {timeout:10_000});
   } catch {
     const controls = await tab.evaluate(`Array.from(document.querySelectorAll('[data-tilo-semantic]')).map(element => [element.dataset.tiloSemantic, element.getAttribute('aria-label')])`);
     process.stderr.write(`semantic controls: ${JSON.stringify(controls)}\n`);
-    throw Error(`actual Chat microphone control saying ${outcome} is missing`);
+    throw Error(`exactly one actual Chat microphone control saying ${outcome} is expected`);
   }
   const response = await tab.send('Runtime.evaluate', {expression:`(() => {
-    const button = ${microphoneControl};
-    if (button?.getAttribute('aria-label') !== ${JSON.stringify(outcome)}) throw Error('actual Chat microphone control is missing');
+    const [button, ...others] = ${microphoneControls(outcome)};
+    if (!button || others.length) throw Error('exactly one actual Chat microphone control is expected');
     button.click(); return true;
   })()`, returnByValue:true, userGesture:true});
   assert.equal(response.result?.exceptionDetails, undefined, 'native semantic microphone control must activate');

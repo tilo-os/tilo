@@ -16,9 +16,10 @@ impl RemoteApp {
     /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
-        let name = |id| self.workspace.get(id).map(|c| c.name.clone());
+        let store = self.store.borrow();
+        let name = |id| store.workspace.get(id).map(|c| c.name.clone());
         let bar = &self.bar;
-        let (label, actions) = match self.content() {
+        let (label, actions) = match store.content() {
             Content::List {
                 destination,
                 has_connections,
@@ -53,7 +54,7 @@ impl RemoteApp {
                 )
             }
             Content::Surface(id) => {
-                let framebuffer = self
+                let framebuffer = store
                     .workspace
                     .get(id)
                     .is_some_and(|c| c.kind.streams_framebuffer());
@@ -102,7 +103,7 @@ impl RemoteApp {
     /// leaves it.
     pub(super) fn take_window_toolbar_events(&mut self) {
         for event in ui::window_toolbar::take_events() {
-            let on_form = matches!(self.content(), Content::Form(_));
+            let on_form = matches!(self.store.borrow().content(), Content::Form(_));
             let action = match &event {
                 ToolbarEvent::Back if on_form => Action::Back,
                 _ if self.shell.window_toolbar_event(&event) => continue,
@@ -112,7 +113,7 @@ impl RemoteApp {
                     None => continue,
                 },
             };
-            self.requests.borrow_mut().push(action);
+            self.store.borrow().requests.borrow_mut().push(action);
         }
     }
 

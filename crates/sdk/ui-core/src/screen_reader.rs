@@ -781,56 +781,81 @@ pub fn is_form_field(node: &AccessNode) -> bool {
     )
 }
 
-/// DFS, collapsing presentational widgets (`accessibility() == None`) and
-/// exporting children ([`crate::a11y_tree::exported_children`]) exactly as
-/// [`crate::accesskit_bridge::build_tree_update`] does. A widget's synthetic
-/// children (a table's rows, a keyboard's keys) follow its widget children,
-/// as in the retained tree, each placed where the widget draws it
-/// ([`crate::a11y::with_synthetic_bounds`]) and followed by the widgets it
-/// hosts.
+/// The accessibility walk ([`crate::a11y_tree::walk`]) the AccessKit bridge
+/// and the retained tree take, flattened. A widget's synthetic children (a
+/// table's rows, a keyboard's keys) follow its widget children, each placed
+/// where the widget draws it ([`crate::a11y::with_synthetic_bounds`]) and
+/// followed by the widgets it hosts.
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
-    use crate::a11y_tree::{HostedIn, HostedWidget, exported_children, hosted_in};
+    use crate::a11y_tree::HostedByIndex;
+    use crate::a11y_tree::walk::{A11yVisitor, Visit, walk, walk_synthetic};
 
-    fn synthetic(mut node: AccessNode, hosted: Vec<HostedWidget<'_>>, out: &mut Vec<AccessNode>) {
-        let children = std::mem::take(&mut node.children);
-        out.push(node);
-        match hosted_in(hosted) {
-            HostedIn::Nested(mut nested) => {
-                for (index, child) in children.into_iter().enumerate() {
-                    synthetic(child, nested.remove(&index).unwrap_or_default(), out);
-                }
+    struct Flatten(Vec<AccessNode>);
+    impl A11yVisitor for Flatten {
+        type Scope = ();
+        type Pending = Vec<AccessNode>;
+        type SyntheticPending = ();
+
+        fn open(
+            &mut self,
+            w: &dyn Widget,
+            _slot: Option<(&dyn Widget, usize)>,
+            (): &mut (),
+        ) -> Visit<Vec<AccessNode>, ()> {
+            let Some(node) = w.accessibility() else {
+                return Visit::Collapse;
+            };
+            let node = crate::a11y::with_synthetic_bounds(node, w);
+            // The node keeps its children for what reads them (the item the
+            // keyboard is on inside it); the order lists them after it.
+            let children = node.children.clone();
+            self.0.push(node);
+            Visit::Node(children, ())
+        }
+
+        fn close<'w>(
+            &mut self,
+            w: &'w dyn Widget,
+            children: Vec<AccessNode>,
+            (): (),
+            mut hosted: HostedByIndex<'w>,
+            _represented: Vec<&'w dyn Widget>,
+            (): &mut (),
+        ) {
+            for (index, child) in children.iter().enumerate() {
+                let hosted = hosted.remove(&index).unwrap_or_default();
+                walk_synthetic::<false, Self>(self, w, &mut vec![index], child, hosted, &mut ());
             }
-            HostedIn::Direct(direct) => {
-                for child in direct {
-                    visit(child, out);
-                }
-            }
+        }
+
+        fn open_synthetic(
+            &mut self,
+            _owner: &dyn Widget,
+            _path: &[usize],
+            node: &AccessNode,
+            (): &mut (),
+        ) -> ((), ()) {
+            self.0.push(AccessNode {
+                children: Vec::new(),
+                ..node.clone()
+            });
+            ((), ())
+        }
+
+        fn close_synthetic(
+            &mut self,
+            _owner: &dyn Widget,
+            _path: &[usize],
+            _node: &AccessNode,
+            (): (),
+            (): (),
+            (): &mut (),
+        ) {
         }
     }
-    fn visit(w: &dyn Widget, out: &mut Vec<AccessNode>) {
-        let Some(mut node) = w.accessibility() else {
-            for child in w.children() {
-                visit(child, out);
-            }
-            return;
-        };
-        node = crate::a11y::with_synthetic_bounds(node, w);
-        // The node keeps its children for what reads them (the item the
-        // keyboard is on inside it); the order lists them after it.
-        let children = node.children.clone();
-        out.push(node);
-        let exported = exported_children(w);
-        let mut hosted = exported.hosted;
-        for (_, child) in exported.direct {
-            visit(child, out);
-        }
-        for (index, child) in children.into_iter().enumerate() {
-            synthetic(child, hosted.remove(&index).unwrap_or_default(), out);
-        }
-    }
-    let mut out = Vec::new();
-    visit(root, &mut out);
-    out
+    let mut flatten = Flatten(Vec::new());
+    walk::<false, _>(&mut flatten, root, None, &mut ());
+    flatten.0
 }
 
 /// [`flatten_reading_order`] as the cursor walks it.

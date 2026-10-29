@@ -97,6 +97,7 @@ pub mod state;
 pub(crate) mod store;
 pub mod sync;
 pub mod transport;
+pub mod trusted_senders;
 pub mod util;
 pub mod validate;
 pub mod window_bar;

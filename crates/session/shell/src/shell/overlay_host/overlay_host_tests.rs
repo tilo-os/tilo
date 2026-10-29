@@ -833,8 +833,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
     fn active_window_controls_report_the_live_painted_geometry() {
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree.clone());
-        let records = chrome.borrow().records().clone();
-        let (content, ptrs) = crate::shell::build_workspace_root(&tree, &records, &chrome);
+        let (content, ptrs) = crate::shell::build_workspace_root(&tree, &chrome);
         let host = ShellOverlayHost::new(content)
             .with_chrome(chrome)
             .with_group_row_ptrs(ptrs);

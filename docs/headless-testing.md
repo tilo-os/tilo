@@ -944,7 +944,7 @@ flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir 
 
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
-the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
+the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs
 the whole installer wizard this way against a recording install backend.
 
 The run persists through the app's real store (`ui::persist`), so pointing

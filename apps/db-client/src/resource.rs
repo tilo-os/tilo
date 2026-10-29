@@ -6,13 +6,9 @@
 //! everything else done on a database server are [`DbEffect`]s; connecting
 //! and running a saved query are offered on the saved connection or query.
 
-use std::rc::Rc;
-
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
@@ -257,11 +253,15 @@ impl ResourceApp for DbClientShell {
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         let app = DbClientApp::new();
+        let (opener, index) = {
+            let state = app.state();
+            (state.opener(), state.search_index())
+        };
         // A search hit, or an agent's `open`, shows the item it names.
-        cx.on_open_item(app.opener());
+        cx.on_open_item(opener);
         // A catalogue hit — a relation, column, result, transaction or query
         // of the open connection — runs what its row offers.
-        let (index, dispatcher) = (app.search_index(), cx.dispatcher());
+        let dispatcher = cx.dispatcher();
         cx.on_open(
             move |anchor: &str| -> Result<(), ui::tilo_resource::Refusal> {
                 let effect = index.opened(anchor).ok_or_else(|| {
@@ -273,7 +273,7 @@ impl ResourceApp for DbClientShell {
                 Ok(())
             },
         );
-        cx.surface(app)
+        crate::app::window(cx, app)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -282,7 +282,7 @@ impl ResourceApp for DbClientShell {
 
     /// `empty` is the first run; every other scenario shows the bundled
     /// sample catalog with a query run against it, on the tab or dialog it
-    /// names (see `DbClientApp::stage_scenario`).
+    /// names (see `Store::stage_scenario` in the app).
     #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         &[
@@ -326,50 +326,6 @@ impl ResourceApp for DbClientShell {
             )])
             .filter_map(Result::ok)
             .collect()
-    }
-}
-
-impl ResourceSurface<Workspace, DbEffect> for DbClientApp {
-    fn present(&mut self, state: &Rc<Workspace>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
-        self.attach_framework(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: DbEffect, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.session_connected() {
-            Vec::new()
-        } else {
-            vec![EffectStatus::unavailable(
-                DbEffect::QUERY,
-                "not_connected",
-                "Open a saved connection before running SQL",
-            )]
-        }
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_row(id)
-    }
-
-    /// The open connection's relations, columns, result, transaction and
-    /// local query history: what the live catalog holds, not the document.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.catalog_search_entries()
     }
 }
 

@@ -216,7 +216,7 @@ impl ContactsApp {
         if let Some(review) = &self.duplicate_review {
             return Some(DialogKey::Duplicate(review.survivor.id, review.source.id));
         }
-        if let Some(conflict) = self.import_conflicts.first() {
+        if let Some(conflict) = self.asked.borrow().import_conflicts.first() {
             return Some(DialogKey::ImportConflict(conflict.token));
         }
         if self.export.is_some() {
@@ -260,9 +260,12 @@ impl ContactsApp {
             }
             DialogKey::ImportConflict(token) => {
                 let conflict = self
+                    .asked
+                    .borrow()
                     .import_conflicts
                     .iter()
-                    .find(|conflict| conflict.token == *token)?;
+                    .find(|conflict| conflict.token == *token)
+                    .cloned()?;
                 let existing = self.name_of(conflict.existing);
                 Box::new(
                     dialog(

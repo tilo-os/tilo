@@ -57,7 +57,6 @@ impl ComponentContextSource for Host {
 fn fixture() -> (
     DesktopTree,
     ApplicationCatalogTileResolver<Host>,
-    RecordStore,
     Vec<RecordStore>,
 ) {
     let cache = ui::portable_storage::PortableStorage::new("profile", "device").unwrap();
@@ -126,14 +125,12 @@ fn fixture() -> (
             cache,
         },
     };
-    let records = RecordStore::in_memory();
-    (tree, resolver, records, retained_records)
+    (tree, resolver, retained_records)
 }
 #[test]
 fn checked_components_keep_exact_records_and_close_owners_inside_groups() {
-    let (mut tree, mut resolver, records, _retained) = fixture();
-    let mut surface =
-        DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let (mut tree, mut resolver, _retained) = fixture();
+    let mut surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
     let failures = surface.take_setup_failures();
     assert!(
         failures.is_empty(),
@@ -152,7 +149,7 @@ fn checked_components_keep_exact_records_and_close_owners_inside_groups() {
         );
     }
     tree.workspaces[0].strips[0].window_groups.clear();
-    surface.reconcile(&tree, &records, &mut resolver);
+    surface.reconcile(&tree, &mut resolver);
     let reports = ui::component_lifecycle::take_component_close_reports(&mut surface);
     assert_eq!(
         reports.len(),
@@ -169,8 +166,8 @@ fn checked_components_keep_exact_records_and_close_owners_inside_groups() {
 
 #[test]
 fn real_checked_writer_input_and_resources_work_inside_shared_groups() {
-    let (tree, mut resolver, records, retained) = fixture();
-    let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let (tree, mut resolver, retained) = fixture();
+    let surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
     frame.poll_frame().unwrap();
@@ -207,10 +204,46 @@ fn real_checked_writer_input_and_resources_work_inside_shared_groups() {
 }
 
 #[test]
+fn a_newly_mounted_writer_focus_is_not_an_admitted_focus_intent() {
+    let (mut tree, mut resolver, _retained) = fixture();
+    let first = &mut tree.workspaces[0].strips[0].window_groups[0];
+    let writer = first.tabs.remove(0);
+    first.active_tab = 11;
+    let mut surface = Box::new(DesktopSurface::build(
+        &tree,
+        &mut resolver,
+        SurfaceChrome::default(),
+    ));
+    let ptr = std::ptr::from_mut(surface.as_mut());
+    let mut frame = ui::headless::FrameHarness::new(ui::state::State::new(), surface, (1280, 720));
+    frame.poll_frame().unwrap();
+    // SAFETY: the frame owns the boxed surface for the whole test, and no
+    // harness call runs while this borrow is live.
+    assert!(unsafe { (&mut *ptr).take_group_focus_intent() }.is_none());
+    tree.workspaces[0].strips[0].window_groups.insert(
+        0,
+        WindowGroup {
+            id: 5,
+            tabs: vec![writer],
+            active_tab: 10,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        },
+    );
+    unsafe { (&mut *ptr).reconcile(&tree, &mut resolver) };
+    frame.relayout();
+    assert!(frame.inspection_json().unwrap().contains("word_processor"));
+    assert!(
+        unsafe { (&mut *ptr).take_group_focus_intent() }.is_none(),
+        "a newly mounted Writer's default focus is not user input"
+    );
+}
+
+#[test]
 fn moving_checked_tabs_between_groups_preserves_record_owner() {
-    let (mut tree, mut resolver, records, _retained) = fixture();
-    let mut surface =
-        DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let (mut tree, mut resolver, _retained) = fixture();
+    let mut surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
     let owner = match surface.row_mut(StripId(2)).unwrap().groups[0]
         .host_for_tab_mut(10)
         .unwrap()
@@ -233,7 +266,7 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
             focus_history: Vec::new(),
         },
     );
-    surface.reconcile(&tree, &records, &mut resolver);
+    surface.reconcile(&tree, &mut resolver);
     let row = surface.row_mut(StripId(2)).unwrap();
     assert_eq!(row.group_ids(), vec![4, 3]);
     assert!(row.groups[0].maximized);
@@ -255,7 +288,7 @@ fn moving_checked_tabs_between_groups_preserves_record_owner() {
 
 #[test]
 fn grouped_component_wakes_schedule_host_until_the_exact_owner_closes() {
-    let (mut tree, mut resolver, records, _retained) = fixture();
+    let (mut tree, mut resolver, _retained) = fixture();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let sink = calls.clone();
     let chrome = SurfaceChrome {
@@ -264,14 +297,14 @@ fn grouped_component_wakes_schedule_host_until_the_exact_owner_closes() {
         })),
         ..SurfaceChrome::default()
     };
-    let mut surface = DesktopSurface::build(&tree, &records, &mut resolver, chrome);
+    let mut surface = DesktopSurface::build(&tree, &mut resolver, chrome);
     surface.take_component_wake();
     let before = calls.load(std::sync::atomic::Ordering::Relaxed);
     resolver.host.wakes[0].wake();
     assert!(surface.take_component_wake());
     assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), before + 1);
     tree.workspaces[0].strips[0].window_groups.clear();
-    surface.reconcile(&tree, &records, &mut resolver);
+    surface.reconcile(&tree, &mut resolver);
     surface.take_component_wake();
     resolver.host.wakes[0].wake();
     assert!(
@@ -282,8 +315,8 @@ fn grouped_component_wakes_schedule_host_until_the_exact_owner_closes() {
 
 #[test]
 fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
-    let (tree, mut resolver, records, retained) = fixture();
-    let surface = DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let (tree, mut resolver, retained) = fixture();
+    let surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
     let mut frame =
         ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(surface), (1280, 720));
     for (instance, resource, action, arguments) in [
@@ -363,9 +396,8 @@ fn inactive_chat_and_notes_actions_reach_their_actual_records_and_settle() {
 
 #[test]
 fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
-    let (mut tree, mut resolver, records, _retained) = fixture();
-    let mut surface =
-        DesktopSurface::build(&tree, &records, &mut resolver, SurfaceChrome::default());
+    let (mut tree, mut resolver, _retained) = fixture();
+    let mut surface = DesktopSurface::build(&tree, &mut resolver, SurfaceChrome::default());
     let before = match surface.row_mut(StripId(2)).unwrap().groups[0]
         .host_for_tab_mut(10)
         .unwrap()
@@ -379,7 +411,7 @@ fn hierarchy_rebuild_retains_checked_component_custody_for_unchanged_tabs() {
         name: "Added".into(),
         window_groups: vec![],
     });
-    surface.rebuild_retaining(&tree, &records, &mut resolver, SurfaceChrome::default());
+    surface.rebuild_retaining(&tree, &mut resolver, SurfaceChrome::default());
     let after = match surface.row_mut(StripId(2)).unwrap().groups[0]
         .host_for_tab_mut(10)
         .unwrap()

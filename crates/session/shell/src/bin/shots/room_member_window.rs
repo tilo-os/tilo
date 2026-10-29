@@ -127,9 +127,6 @@ impl ShellDriver {
             drop(tree);
             st.bump();
         });
-        // The tab's document, as opening a window makes one: binding never
-        // creates it.
-        self.open_tab_records(&[tab]);
         self.step_frames(3);
         let Ok(session) = SharedFlatpakSession::start_with_metrics(
             HOST_PEER,

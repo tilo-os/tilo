@@ -90,21 +90,4 @@ impl App {
         self.hold_answer(wire_id, update);
         true
     }
-
-    /// Keep why an edit the running effect `on_behalf_of` submitted was
-    /// refused: the effect then fails rather than claim what it did not do.
-    pub(super) fn note_continuation(
-        &mut self,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        let Err(error) = result else {
-            return;
-        };
-        if let Some(continuation) = on_behalf_of.and_then(|id| self.actions.acting_for.get_mut(&id))
-            && continuation.refused.is_none()
-        {
-            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
-        }
-    }
 }

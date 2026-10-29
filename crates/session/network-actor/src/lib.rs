@@ -78,7 +78,7 @@ use tilo_relay_session::{Inbound as HostInbound, RelayClient, RelayCoeditSession
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use neighbour_wire::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg, SurfaceId};
+use neighbour_wire::{NeighbourMsg, SurfaceId};
 use neighbour_wire::{Retention, retention};
 use tilo_endpoint_reachability::{Need, Reachability};
 use tilo_lock::MutexRecover as _;
@@ -5376,16 +5376,6 @@ fn publish(
     broadcast_gossip: bool,
     publish_hosts: bool,
 ) {
-    if let NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. } = &msg
-        && snapshot.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES
-    {
-        tracing::warn!(
-            ws,
-            bytes = snapshot.len(),
-            "personal continuity checkpoint exceeds transport limit"
-        );
-        return;
-    }
     let retention = retention(msg, shell_checkpoint);
     // Live traffic (pointers, carets, presence) is for whoever hears it now:
     // in a room with no session up there is no one, and nothing keeps it.

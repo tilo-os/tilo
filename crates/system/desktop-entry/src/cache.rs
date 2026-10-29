@@ -255,6 +255,7 @@ fn unwatched_snapshot(
         scan: scan.clone(),
         generation,
     });
+    drop(last);
     (generation, scan)
 }
 

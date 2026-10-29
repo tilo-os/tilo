@@ -86,11 +86,6 @@ impl ShellPayloads for NeighbourPayloads {
             NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. } => CheckpointKind::Governance,
-            NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key, ..
-            } => CheckpointKind::Continuity {
-                user: *user_public_key,
-            },
             NeighbourMsg::PersonalWorkspaces {
                 user_public_key, ..
             } => CheckpointKind::Directory {

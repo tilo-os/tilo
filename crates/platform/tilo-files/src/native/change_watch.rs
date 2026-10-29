@@ -379,6 +379,7 @@ mod inotify_watch {
             } else {
                 interest.subscribers.push((subscriber, mask));
             }
+            drop(routes);
             Ok(wd)
         }
 
@@ -1104,8 +1105,7 @@ mod tests {
         let dirs: Vec<_> = (0..200)
             .map(|_| tempfile::tempdir().expect("temporary directory"))
             .collect();
-        let counts: Vec<_> = dirs.iter().map(|_| counted()).collect();
-        let (counts, callbacks): (Vec<_>, Vec<_>) = counts.into_iter().unzip();
+        let (counts, callbacks): (Vec<_>, Vec<_>) = dirs.iter().map(|_| counted()).unzip();
         let _watches: Vec<_> = dirs
             .iter()
             .zip(callbacks)
