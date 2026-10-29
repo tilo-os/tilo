@@ -527,6 +527,63 @@ impl<T: SettingsSchema> Settings<T> {
     }
 }
 
+/// Settings `T` as last read, read again only when their document changed
+/// since: a reader that looks at them often (on every frame, on every
+/// publication of an app's rows) without decoding them each time.
+pub struct SettingsCache<T> {
+    settings: Settings<T>,
+    seen: SettingsRevision,
+    value: T,
+}
+
+impl<T: SettingsSchema + PartialEq> SettingsCache<T> {
+    /// `settings`, read now.
+    #[must_use]
+    pub fn new(settings: Settings<T>) -> Self {
+        let seen = settings.revision();
+        let value = settings.get();
+        Self {
+            settings,
+            seen,
+            value,
+        }
+    }
+
+    /// The value as last read.
+    #[must_use]
+    pub fn get(&self) -> &T {
+        &self.value
+    }
+
+    /// Read the value again if the document changed since it was last
+    /// read; whether the value changed.
+    pub fn refresh(&mut self) -> bool {
+        let revision = self.settings.revision();
+        if revision == self.seen {
+            return false;
+        }
+        self.seen = revision;
+        let stored = self.settings.get();
+        if stored == self.value {
+            return false;
+        }
+        self.value = stored;
+        true
+    }
+
+    /// The document version the value was last read at.
+    #[must_use]
+    pub fn revision(&self) -> SettingsRevision {
+        self.seen
+    }
+
+    /// The settings read.
+    #[must_use]
+    pub fn settings(&self) -> &Settings<T> {
+        &self.settings
+    }
+}
+
 /// Store the keys of `value` that differ from `current`, what is read now:
 /// [`Settings::set_by`] once both are JSON. Not generic, so the toolkit
 /// compiles it once rather than every app once per settings type.
