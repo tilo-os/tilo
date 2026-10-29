@@ -32,7 +32,7 @@ use smithay::backend::drm::{
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::ImportDma as _;
-use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::gles::{Capability, GlesRenderer};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session as _};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
@@ -41,6 +41,7 @@ use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay::reexports::drm::control::{
     Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags, connector, crtc,
 };
+use smithay::reexports::drm::Device as _;
 use smithay::reexports::input::Libinput as LibinputContext;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::backend::GlobalId;
@@ -454,9 +455,7 @@ fn open_gpu(
     let display =
         unsafe { EGLDisplay::new(gbm.clone()) }.map_err(|error| failed("EGL display", error))?;
     let context = EGLContext::new(&display).map_err(|error| failed("EGL context", error))?;
-    // SAFETY: the context is current only on this thread, the loop's.
-    let renderer =
-        unsafe { GlesRenderer::new(context) }.map_err(|error| failed("GLES renderer", error))?;
+    let renderer = gles_renderer(context, &device)?;
     let allocator = GbmAllocator::new(
         gbm.clone(),
         GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
@@ -493,6 +492,27 @@ fn open_gpu(
         outputs: HashMap::new(),
         token,
     })
+}
+
+/// The GPU's renderer. On panfrost (Mali) it runs without per-texture
+/// fences: such a fence makes the driver submit every draw as its own
+/// batch, each reloading and writing back the whole framebuffer; KMS waits
+/// for the frame through the scanout buffer's implicit fence instead.
+fn gles_renderer(context: EGLContext, device: &DrmDevice) -> Result<GlesRenderer, BackendError> {
+    let panfrost = device
+        .get_driver()
+        .is_ok_and(|driver| driver.name() == "panfrost");
+    // SAFETY: the context is current only on this thread, the loop's.
+    let renderer = if panfrost {
+        let capabilities = unsafe { GlesRenderer::supported_capabilities(&context) }
+            .map_err(|error| failed("GLES capabilities", error))?
+            .into_iter()
+            .filter(|capability| !matches!(capability, Capability::Fencing | Capability::ExportFence));
+        unsafe { GlesRenderer::with_capabilities(context, capabilities) }
+    } else {
+        unsafe { GlesRenderer::new(context) }
+    };
+    renderer.map_err(|error| failed("GLES renderer", error))
 }
 
 /// Light connectors that became connected, drop those that went away.
