@@ -131,7 +131,7 @@
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
 "crates/session/shell/src/shell/portal_dialog.rs" = 3500
 "crates/session/shell/src/shell/search/mod.rs" = 4000
-"crates/session/shell/src/shell/search/providers/actions.rs" = 8000
+"crates/session/shell/src/shell/search/providers/actions.rs" = 4500
 "crates/session/shell/src/shell/search/providers/files.rs" = 3500
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
 "crates/session/shell/src/shell/state.rs" = 6000

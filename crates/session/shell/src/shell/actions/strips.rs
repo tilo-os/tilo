@@ -5,13 +5,13 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 
-pub(super) const STRIP_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+pub(crate) const STRIP_CREATE_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "name",
     ParamType::Text,
     "1 to 48 characters without control characters. Omit to use the localized default name.",
 )];
 
-pub(super) const STRIP_RENAME_PARAMS: &[ActionParam] = &[
+pub(crate) const STRIP_RENAME_PARAMS: &[ActionParam] = &[
     ActionParam::optional(
         "name",
         ParamType::Text,
@@ -25,7 +25,7 @@ pub(super) const STRIP_RENAME_PARAMS: &[ActionParam] = &[
     ),
 ];
 
-pub(super) const STRIP_MOVE_PARAMS: &[ActionParam] = &[
+pub(crate) const STRIP_MOVE_PARAMS: &[ActionParam] = &[
     ActionParam::required(
         "strip",
         ParamType::Integer,
@@ -39,7 +39,7 @@ pub(super) const STRIP_MOVE_PARAMS: &[ActionParam] = &[
 ];
 
 /// What `strip.remove` may be told: which strip, or the focused one.
-pub(super) const STRIP_REMOVE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+pub(crate) const STRIP_REMOVE_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "strip",
     ParamType::Integer,
     "Which strip of this workspace, counting from 1 at the top. Defaults to the focused strip.",
@@ -49,7 +49,7 @@ pub(super) const STRIP_REMOVE_PARAMS: &[ActionParam] = &[ActionParam::optional(
 // strip switcher on every host.
 pub(crate) use tilo_desktop::strip_switcher::valid_strip_name;
 
-pub(super) fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+pub(crate) fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let default_name = t("search-action-strip-create-default-name");
     let supplied = args.text("name").unwrap_or(&default_name);
     let name = valid_strip_name(supplied)
@@ -61,16 +61,16 @@ pub(super) fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
 }
 
 /// Lay the active workspace's windows out on its canvas.
-pub(super) fn show_canvas(state: &mut ChromeState, _: &ActionArgs) -> Result<(), ActionError> {
+pub(crate) fn show_canvas(state: &mut ChromeState, _: &ActionArgs) -> Result<(), ActionError> {
     state.set_arrangement(true).map_err(ActionError::Refused)
 }
 
 /// Lay the active workspace's windows out in their strips again.
-pub(super) fn show_strips(state: &mut ChromeState, _: &ActionArgs) -> Result<(), ActionError> {
+pub(crate) fn show_strips(state: &mut ChromeState, _: &ActionArgs) -> Result<(), ActionError> {
     state.set_arrangement(false).map_err(ActionError::Refused)
 }
 
-pub(super) fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+pub(crate) fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let Some(supplied) = args.text("name") else {
         if args.integer("strip").is_some() {
             return Err(ActionError::Refused(t("search-action-strip-invalid-name")));
@@ -100,7 +100,7 @@ pub(super) fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
 
 /// Move a strip of the active workspace to another place in its stack: the
 /// overview's Move up and Move down, for an agent or a script.
-pub(super) fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+pub(crate) fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let missing = || ActionError::Refused(t("search-action-strip-rename-missing"));
     let index_of = |key: &str| {
         args.integer(key)
@@ -128,7 +128,7 @@ pub(super) fn move_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(
 
 /// Remove an empty strip of the active workspace. A strip that still holds
 /// windows is refused rather than closing them, and the last strip stays.
-pub(super) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+pub(crate) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let missing = || ActionError::Refused(t("search-action-strip-rename-missing"));
     let strip = match args.integer("strip") {
         None => state.focused_strip_id(),
@@ -172,7 +172,7 @@ pub(super) fn remove_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{chrome_with_room, invoke_shell_action};
+    use crate::shell::search::providers::actions::tests::{chrome_with_room, invoke_shell_action};
 
     #[test]
     fn strip_move_puts_a_strip_where_it_is_told_and_refuses_a_strip_that_is_not_there() {

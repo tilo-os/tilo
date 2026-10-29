@@ -10,7 +10,7 @@ use super::active_workspace_id;
 
 /// What `workspace.delete` may be told: the person's confirmation, which
 /// the palette asks for as one more step.
-pub(super) const WORKSPACE_DELETE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+pub(crate) const WORKSPACE_DELETE_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "confirm",
     ParamType::Boolean,
     "Delete the workspace on screen, here and on the person's other devices. Without it nothing \
@@ -18,7 +18,7 @@ pub(super) const WORKSPACE_DELETE_PARAMS: &[ActionParam] = &[ActionParam::option
 )];
 
 /// [`WORKSPACE_DELETE_PARAMS`], the confirmation reading as what it does.
-pub(super) fn workspace_delete_params() -> Vec<ActionParam> {
+pub(crate) fn workspace_delete_params() -> Vec<ActionParam> {
     WORKSPACE_DELETE_PARAMS
         .iter()
         .cloned()
@@ -30,7 +30,7 @@ pub(super) fn workspace_delete_params() -> Vec<ActionParam> {
 
 /// Delete the workspace on screen, as its settings' Delete workspace does,
 /// once the person has confirmed it. The last workspace stays.
-pub(super) fn delete_workspace(
+pub(crate) fn delete_workspace(
     state: &mut ChromeState,
     args: &ActionArgs,
 ) -> Result<(), ActionError> {
@@ -55,7 +55,7 @@ pub(super) fn delete_workspace(
 
 /// Move the workspace on screen one place earlier (`step < 0`) or later
 /// in the person's list, as its settings' Move up and Move down do.
-pub(super) fn move_workspace(state: &mut ChromeState, step: i32) -> Result<(), ActionError> {
+pub(crate) fn move_workspace(state: &mut ChromeState, step: i32) -> Result<(), ActionError> {
     active_workspace_id(state)?;
     if state.move_active_workspace(step) {
         Ok(())
@@ -70,10 +70,12 @@ pub(super) fn move_workspace(state: &mut ChromeState, step: i32) -> Result<(), A
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{action_results, chrome_with_room, invoke_shell_action};
-    use super::super::{ActionsProvider, shell_action_contract};
     use crate::shell::chrome_state::Chrome;
     use crate::shell::search::action_api::{ActionArgs, ActionError};
+    use crate::shell::search::providers::actions::ActionsProvider;
+    use crate::shell::search::providers::actions::tests::{
+        action_results, chrome_with_room, invoke_shell_action,
+    };
     use crate::shell::state::FreshId as _;
     use automerge::AutoCommit;
 
@@ -218,7 +220,7 @@ mod tests {
             "workspace.move-later",
             "group.close",
         ] {
-            let contract = shell_action_contract(id);
+            let contract = super::super::declared(id).0;
             assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable, "{id}");
             assert!(contract.can_be_undone(), "{id}");
             assert!(contract.validate_declaration().is_empty(), "{id}");

@@ -8,6 +8,7 @@
 //! runs the compositor in a window inside an existing X11/Wayland session.
 
 pub(crate) mod action_authority;
+pub(crate) mod actions;
 pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;

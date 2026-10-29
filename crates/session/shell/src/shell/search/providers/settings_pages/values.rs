@@ -501,7 +501,7 @@ pub(super) fn apply(
             (address("settings.input", "choose-layout"), arguments)
         }
         Kind::AppearanceMode => {
-            super::super::actions::set_mode(
+            crate::shell::actions::set_mode(
                 &mut chrome.borrow_mut(),
                 args.text("mode").unwrap_or_default(),
                 &invoked_by,

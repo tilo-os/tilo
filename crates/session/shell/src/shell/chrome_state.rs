@@ -2777,7 +2777,7 @@ impl ChromeState {
             drop(tree);
             found
         };
-        let name = crate::shell::search::providers::actions::valid_strip_name(label).map_or_else(
+        let name = crate::shell::actions::valid_strip_name(label).map_or_else(
             || crate::shell::i18n::t("search-action-strip-create-default-name"),
             str::to_owned,
         );
@@ -3855,9 +3855,7 @@ impl ChromeState {
                 return false;
             }
             let actor = workspace.actor_for_person(&self.local_user_for_room(&workspace.room()));
-            crate::shell::search::providers::actions::shell_action_authorized_for(
-                workspace, &actor, address,
-            )
+            crate::shell::actions::shell_action_authorized_for(workspace, &actor, address)
         })
     }
 
