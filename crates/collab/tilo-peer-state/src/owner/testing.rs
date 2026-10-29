@@ -227,7 +227,7 @@ pub fn raw_fixture_at(
     collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &governor, &[governor.clone()]).unwrap(),
+            room_changes: seed_room(ROOM, &governor, std::slice::from_ref(&governor)).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),

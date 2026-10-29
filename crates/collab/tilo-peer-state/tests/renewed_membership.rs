@@ -6,6 +6,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::too_many_lines,
+    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 use ed25519_dalek::SigningKey;
