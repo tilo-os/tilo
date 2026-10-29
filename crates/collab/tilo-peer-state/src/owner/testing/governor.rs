@@ -212,48 +212,6 @@ impl TestGovernor {
         Ok(fixture)
     }
 
-    /// Use a separately certified delivery host without making the governor
-    /// take part in sealed channels. Admission uses the ordinary signed delegation.
-    ///
-    /// # Errors
-    /// Rejects a mismatched host key or invalid workspace delegation.
-    pub fn with_delivery_host(
-        mut self,
-        host: DeviceCert,
-        host_key: SigningKey,
-    ) -> Result<Self, String> {
-        if host.device_public_key != host_key.verifying_key().to_bytes() {
-            return Err("delivery host key does not match its certificate".into());
-        }
-        let delegation = join::sign_workspace_delegation(
-            self.room(),
-            self.workspace_id,
-            self.governor(),
-            host.clone(),
-            WorkspaceDelegationPermissions {
-                issue_invitations: true,
-                admit_invited_members: true,
-            },
-            random(),
-            None,
-            &self.governor_key,
-        )?;
-        let now = self.now();
-        self.peer
-            .governance_mut()
-            .admit_certificate_with_workspace_delegation(
-                host.clone(),
-                delegation.clone(),
-                &self.governor_key,
-                now,
-            )?;
-        self.host = host;
-        self.host_key = host_key;
-        self.delegation = Some(delegation);
-        self.refresh_checkpoint()?;
-        Ok(self)
-    }
-
     #[must_use]
     pub fn peer(&self) -> &StatePeer {
         &self.peer
