@@ -21,7 +21,13 @@
 //!   ([`Environment::keep`]) and the action names it by reference.
 //! - **A program** that is none of the shell's own goes to [`Programs`]: the
 //!   place that can run it (a Linux guest for the session, tier 3). This host
-//!   never starts a process itself.
+//!   never starts a process itself. As part of one of the shell's jobs, the
+//!   place stops, continues and ends it with the job; Tab completes the
+//!   names of the programs the place has.
+//! - **At the prompt**, the line editor's terminal (raw keys, its width) and
+//!   Ctrl+Z are the place's ([`Place`]); the person's history is the
+//!   place's when it holds the record, else the line editor asks the app
+//!   showing the session.
 //!
 //! Nothing here assumes Linux. Where the granted files are ([`Files`]), how
 //! actions reach the record ([`Environment`]), where programs run
@@ -43,7 +49,10 @@ use tilo_environment::files::{
     AppendFileOp, FileAction, MAX_TEXT_BYTES, WriteOp, anchored, cli, normalize, permits,
     permits_in, ungranted,
 };
-use ush_shell::{DirEntry, FileCall, Host, Metadata, Output, Program, Run, Stdio, WriteMode};
+use ush_shell::jobs::Job;
+use ush_shell::{
+    DirEntry, FileCall, HistoryQuery, Host, Metadata, Output, Program, Run, Stdio, WriteMode,
+};
 
 pub use native::NativeFiles;
 
@@ -124,6 +133,28 @@ pub trait Programs: Send + Sync {
         io: &Stdio,
         stop: Option<&dyn Fn() -> bool>,
     ) -> Program;
+
+    /// [`Self::run`] as part of the shell's `job`: the place attaches to
+    /// the job what stops, continues and ends the program
+    /// ([`Job::attach`]), and tells the job when the program stopped. A
+    /// place that cannot signal its programs can only end them.
+    fn run_in_job(
+        &self,
+        argv: &[String],
+        env: &[(String, String)],
+        cwd: &Path,
+        io: &Stdio,
+        job: &Arc<Job>,
+    ) -> Program {
+        self.run(argv, env, cwd, io, Some(&|| job.killed()))
+    }
+
+    /// The programs there are to run, by name, looked for along `path`:
+    /// what Tab completes in a command's place.
+    fn names(&self, path: &str) -> Vec<String> {
+        let _ = path;
+        Vec::new()
+    }
 }
 
 /// No place to run programs: each says which tier it would need.
@@ -182,6 +213,33 @@ pub trait Place: Send + Sync {
 
     fn hostname(&self) -> String {
         String::from("localhost")
+    }
+
+    /// Whether the person pressed Ctrl+Z since the last call.
+    fn take_suspend(&self) -> bool {
+        false
+    }
+
+    /// Switch the session's terminal to taking keys one at a time for the
+    /// line editor, or back ([`Host::edit_mode`]). Answers whether there is
+    /// a terminal to edit on.
+    fn edit_mode(&self, on: bool) -> bool {
+        let _ = on;
+        false
+    }
+
+    /// The session's terminal's width in columns.
+    fn columns(&self) -> usize {
+        80
+    }
+
+    /// The person's command history (`terminal.history`), when this place
+    /// holds the record ([`Host::history`]). `None` where the app showing
+    /// the session holds it: the line editor asks it on the session's
+    /// terminal.
+    fn history(&self, query: &HistoryQuery) -> Option<Vec<String>> {
+        let _ = query;
+        None
     }
 }
 
@@ -376,6 +434,21 @@ impl Host for TiloHost {
         self.0.programs.run(argv, env, cwd, io, Some(stop))
     }
 
+    fn program_in_job(
+        &self,
+        argv: &[String],
+        env: &[(String, String)],
+        cwd: &Path,
+        io: &Stdio,
+        job: &Arc<Job>,
+    ) -> Program {
+        self.0.programs.run_in_job(argv, env, cwd, io, job)
+    }
+
+    fn take_suspend(&self) -> bool {
+        self.0.place.take_suspend()
+    }
+
     fn interrupted(&self) -> bool {
         self.0.place.interrupted()
     }
@@ -414,6 +487,22 @@ impl Host for TiloHost {
 
     fn hostname(&self) -> String {
         self.0.place.hostname()
+    }
+
+    fn edit_mode(&self, on: bool) -> bool {
+        self.0.place.edit_mode(on)
+    }
+
+    fn columns(&self) -> usize {
+        self.0.place.columns()
+    }
+
+    fn history(&self, query: &HistoryQuery) -> Option<Vec<String>> {
+        self.0.place.history(query)
+    }
+
+    fn programs(&self, path: &str) -> Vec<String> {
+        self.0.programs.names(path)
     }
 }
 
