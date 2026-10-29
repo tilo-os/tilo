@@ -28,7 +28,7 @@ impl Backend {
         }
         let client = builder
             .build()
-            .map_err(|error| NetError::InvalidRequest(format!("HTTP client: {error}")))?;
+            .map_err(|error| NetError::InvalidRequest(format!("HTTP client: {}", chain(&error))))?;
         Ok(Self { client })
     }
 
