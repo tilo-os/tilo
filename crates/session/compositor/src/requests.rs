@@ -72,6 +72,28 @@ enum Cover {
 struct Restore(std::cell::Cell<Option<Rectangle<i32, Logical>>>);
 
 impl State {
+    /// Whether a fullscreen window covers `output`.
+    pub(crate) fn fullscreen_on(&self, output: &smithay::output::Output) -> bool {
+        let Some(area) = self.space.output_geometry(output) else {
+            return false;
+        };
+        self.space.elements().any(|window| {
+            let fullscreen = window.toplevel().is_some_and(|toplevel| {
+                toplevel
+                    .current_state()
+                    .states
+                    .contains(xdg_toplevel::State::Fullscreen)
+            }) || window
+                .x11_surface()
+                .is_some_and(smithay::xwayland::X11Surface::is_fullscreen);
+            fullscreen
+                && self
+                    .space
+                    .element_geometry(window)
+                    .is_some_and(|geometry| geometry.contains_rect(area))
+        })
+    }
+
     /// A window asked for `request` (`serial`: the press it starts from,
     /// for a move or resize).
     pub(crate) fn window_request(

@@ -31,7 +31,7 @@ use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{
-    DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
+    DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, VrrSupport,
 };
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
@@ -91,9 +91,19 @@ struct Lit {
     wake: Option<Wake>,
     /// When the last frame was queued.
     queued_at: Instant,
+    vrr: Vrr,
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
+}
+
+/// Variable refresh on one output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Vrr {
+    /// The connector cannot switch without a modeset, or the driver refused.
+    Unable,
+    Off,
+    On,
 }
 
 /// One output's wake: its check, and whether it was judged lit and only
@@ -381,7 +391,9 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     if !inner.active {
         return;
     }
-    let Some(gpu) = inner.gpu.as_mut() else {
+    let Inner { gpu, config, .. } = &mut *inner;
+    let variable_refresh = &config.variable_refresh;
+    let Some(gpu) = gpu.as_mut() else {
         return;
     };
     let now = Instant::now();
@@ -401,6 +413,12 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
         if lit.queued || lit.dark || now < lit.next_frame {
             continue;
         }
+        let name = lit.output.name();
+        lit.follow_vrr(vrr_wanted(
+            lit.vrr != Vrr::Unable,
+            variable_refresh.contains(&name),
+            state.fullscreen_on(&lit.output),
+        ));
         // The pointer in front, where DrmCompositor can give it the cursor
         // plane.
         let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
@@ -488,7 +506,40 @@ fn vblank(
     }
 }
 
+/// Variable refresh engages only for a fullscreen window on an output that
+/// allows and supports it. The desktop stays at the fixed rate: uneven UI
+/// frame times make many panels flicker in brightness when the refresh rate
+/// follows them.
+fn vrr_wanted(capable: bool, allowed: bool, fullscreen_here: bool) -> bool {
+    capable && allowed && fullscreen_here
+}
+
 impl Lit {
+    /// Engage or release variable refresh for the next frame. A driver that
+    /// refuses it is not asked again for this output.
+    fn follow_vrr(&mut self, wanted: bool) {
+        if self.vrr == Vrr::Unable || wanted == (self.vrr == Vrr::On) {
+            return;
+        }
+        match self
+            .surface
+            .with_compositor(|compositor| compositor.use_vrr(wanted))
+        {
+            Ok(()) => {
+                self.vrr = if wanted { Vrr::On } else { Vrr::Off };
+                tracing::info!(output = self.output.name(), on = wanted, "variable refresh");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    output = self.output.name(),
+                    "variable refresh refused"
+                );
+                self.vrr = Vrr::Unable;
+            }
+        }
+    }
+
     /// The output is asked to light after being dark (`reason`: `dpms`,
     /// `resume`): its wake is judged once the light-up is known.
     fn begin_wake(&mut self, reason: &'static str) {
@@ -953,6 +1004,14 @@ fn light(
         )
         .map_err(|error| tracing::warn!(?error, output = name, "output not lit"))
         .ok()?;
+    let vrr = if surface
+        .with_compositor(|compositor| compositor.vrr_supported(info.handle()))
+        .is_ok_and(|support| support == VrrSupport::Supported)
+    {
+        Vrr::Off
+    } else {
+        Vrr::Unable
+    };
     crate::output::advertise(&output, &state.display);
     state.add_output(&output, location);
     let interval = refresh_interval(output_mode.refresh);
@@ -972,6 +1031,7 @@ fn light(
         ),
         wake: None,
         queued_at: Instant::now(),
+        vrr,
         next_frame: Instant::now(),
         interval,
     })
@@ -1016,4 +1076,20 @@ fn pointer_extent(state: &State) -> smithay::utils::Size<i32, smithay::utils::Lo
         .output_geometries()
         .first()
         .map_or_else(|| (1, 1).into(), |geometry| geometry.size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variable_refresh_follows_a_fullscreen_window_where_allowed_and_capable() {
+        assert!(vrr_wanted(true, true, true));
+        assert!(
+            !vrr_wanted(true, true, false),
+            "the desktop keeps a fixed rate"
+        );
+        assert!(!vrr_wanted(true, false, true), "the person turned it off");
+        assert!(!vrr_wanted(false, true, true), "the display cannot");
+    }
 }
