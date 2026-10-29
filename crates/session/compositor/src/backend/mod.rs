@@ -42,6 +42,10 @@ pub trait Backend {
     /// ignore them.
     fn set_input_config(&mut self, _state: &mut State, _config: InputConfig) {}
 
+    /// Keep the person's display configuration for outputs that appear
+    /// later (the compositor applies it to the present ones).
+    fn set_display_config(&mut self, _config: &crate::config::DisplayConfig) {}
+
     /// Add an output the backend simulates. Backends with real outputs find
     /// them themselves and refuse.
     fn add_output(

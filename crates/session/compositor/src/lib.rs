@@ -23,6 +23,7 @@
 #![cfg(target_os = "linux")]
 
 pub mod backend;
+pub mod config;
 mod cursor;
 pub mod dim;
 pub mod gestures;
@@ -54,10 +55,12 @@ use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAct
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 
+pub use backend::drm::devices::RequestedMode;
 pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
     NestedConfig, Screenshot, TabletConfig,
 };
+pub use config::{KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use host::{CursorIcon, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
@@ -461,6 +464,50 @@ impl Compositor {
         self.configure_from_clients();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Apply everything the person configured (see [`Settings`]), now and
+    /// for outputs and devices that appear later.
+    pub fn apply_settings(&mut self, settings: &Settings) -> Result<(), Error> {
+        self.set_display_config(&settings.display)?;
+        self.set_input_config(settings.input.clone());
+        self.set_keyboard_layout(&settings.keyboard);
+        self.set_idle_config(settings.idle);
+        Ok(())
+    }
+
+    /// Apply the person's display configuration to the outputs there are
+    /// and keep it for those plugged in later. A configuration the outputs
+    /// cannot take is refused whole.
+    pub fn set_display_config(&mut self, config: &DisplayConfig) -> Result<(), Error> {
+        self.data.backend.set_display_config(config);
+        let changes = config.changes(&self.data.state.output_states());
+        if !changes.is_empty() {
+            self.configure_outputs(&changes)?;
+        }
+        Ok(())
+    }
+
+    /// Type with the person's keyboard layout.
+    pub fn set_keyboard_layout(&mut self, layout: &KeyboardLayout) {
+        let LoopData { state, .. } = &mut self.data;
+        let Some(keyboard) = state.seat.get_keyboard() else {
+            return;
+        };
+        let xkb = smithay::input::keyboard::XkbConfig {
+            rules: "",
+            model: &layout.model,
+            layout: &layout.layout,
+            variant: &layout.variant,
+            options: (!layout.options.is_empty()).then(|| layout.options.clone()),
+        };
+        if let Err(error) = keyboard.set_xkb_config(state, xkb) {
+            tracing::warn!(
+                ?error,
+                layout = layout.layout,
+                "keyboard layout did not compile"
+            );
+        }
     }
 
     /// Apply the person's input preferences (pointer, touchpad, tablets,

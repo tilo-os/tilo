@@ -521,3 +521,40 @@ impl Dispatch<ZwlrOutputPowerV1, ()> for Tool {
 
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputConfigurationHeadV1);
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputPowerManagerV1);
+
+#[test]
+fn the_sessions_settings_turn_an_output_off_rescale_another_and_set_the_layout() {
+    let mut compositor = two_outputs();
+    let mut settings = tilo_compositor::Settings::default();
+    settings.display.disabled.insert("HEADLESS-2".into());
+    settings.display.scales.insert("HEADLESS-1".into(), 2.0);
+    settings.keyboard.layout = "de".into();
+    compositor.apply_settings(&settings).expect("settings");
+    assert!(!compositor.output_lit("HEADLESS-2"));
+    let mut client = Client::connect(&mut compositor, true);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.serial.is_some()
+            && tool.heads.len() == 2
+            && tool.heads.iter().all(|head| head.enabled.is_some())
+    });
+    let first = client
+        .tool
+        .heads
+        .iter()
+        .find(|head| head.name == "HEADLESS-1")
+        .expect("head");
+    assert!((first.scale - 2.0).abs() < f64::EPSILON);
+    let second = client
+        .tool
+        .heads
+        .iter()
+        .find(|head| head.name == "HEADLESS-2")
+        .expect("head");
+    assert_eq!(second.enabled, Some(false));
+
+    // Settings without the entry bring the output back.
+    compositor
+        .apply_settings(&tilo_compositor::Settings::default())
+        .expect("settings");
+    assert!(compositor.output_lit("HEADLESS-2"));
+}
