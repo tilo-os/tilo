@@ -22,6 +22,16 @@ pub trait Backlight {
     fn brightness(&self) -> Option<f32>;
     /// Set the brightness. Returns whether the write took effect.
     fn set_brightness(&self, fraction: f32) -> bool;
+    /// Whether the panel's backlight is powered (`bl_power` 0), as the
+    /// kernel holds it; `None` when it says nothing. A wake that leaves it
+    /// blanked has not lit the panel.
+    fn powered(&self) -> Option<bool> {
+        None
+    }
+    /// The backlight as the kernel holds it, for the record.
+    fn describe(&self) -> Option<String> {
+        None
+    }
 }
 
 /// No controllable backlight: the overlay dims.
@@ -45,6 +55,14 @@ impl Backlight for Box<dyn Backlight> {
 
     fn set_brightness(&self, fraction: f32) -> bool {
         (**self).set_brightness(fraction)
+    }
+
+    fn powered(&self) -> Option<bool> {
+        (**self).powered()
+    }
+
+    fn describe(&self) -> Option<String> {
+        (**self).describe()
     }
 }
 
@@ -120,6 +138,11 @@ impl<B: Backlight> ScreenDimmer<B> {
         if matches!(self.dim, Dim::Backlight(_)) {
             session.keep_dimmed();
         }
+    }
+
+    /// The panel's backlight.
+    pub fn backlight(&self) -> &B {
+        &self.backlight
     }
 
     /// Whether the dim holds the backlight lowered, so nothing else (an
