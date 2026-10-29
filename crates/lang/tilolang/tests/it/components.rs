@@ -263,11 +263,11 @@ fn the_older_reactions_form_still_compiles() {
     validate(&c.wasm);
 }
 
-const REACTED: &str = r#"type Post {
+const REACTED: &str = r"type Post {
     text: Text (title)
     reactions: Map<Set<Principal>>
 }
-"#;
+";
 
 #[test]
 fn a_map_of_sets_takes_and_gives_back_elements_one_by_one() {
