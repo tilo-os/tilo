@@ -783,7 +783,10 @@ fn an_agents_run_gets_the_agent_rendering() {
         let Bytes::Blob { hash, .. } = &run.output else {
             panic!("printed nothing: {run:?}");
         };
-        let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+        let hex = hash.iter().fold(String::new(), |mut hex, b| {
+            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{b:02x}"));
+            hex
+        });
         String::from_utf8(app.content().read(&hex).expect("the output")).unwrap()
     };
     assert!(

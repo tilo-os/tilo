@@ -2644,27 +2644,24 @@ impl TerminalWidget {
         let Some(asked) = self.runs.waiting.pop_front() else {
             return;
         };
-        let line = match self.runs.marks.as_ref().filter(|m| m.reads_input()) {
-            // A shell that reads Terminal's marks takes the line whole, in
-            // place of whatever was typed, and knows who asked.
-            Some(marks) => {
-                use base64::Engine as _;
-                format!(
-                    "\x1b]133;R;k={};cmd={}{}\x07",
-                    marks.key(),
-                    base64::engine::general_purpose::STANDARD.encode(&asked.command),
-                    if asked.agent { ";agent=1" } else { "" }
-                )
-                .into_bytes()
-            }
-            None => {
-                // Ctrl-U first: what was half typed at the prompt does not
-                // become part of the command.
-                let mut line = vec![0x15];
-                line.extend_from_slice(asked.command.as_bytes());
-                line.push(b'\r');
-                line
-            }
+        // A shell that reads Terminal's marks takes the line whole, in place
+        // of whatever was typed, and knows who asked.
+        let line = if let Some(marks) = self.runs.marks.as_ref().filter(|m| m.reads_input()) {
+            use base64::Engine as _;
+            format!(
+                "\x1b]133;R;k={};cmd={}{}\x07",
+                marks.key(),
+                base64::engine::general_purpose::STANDARD.encode(&asked.command),
+                if asked.agent { ";agent=1" } else { "" }
+            )
+            .into_bytes()
+        } else {
+            // Ctrl-U first: what was half typed at the prompt does not
+            // become part of the command.
+            let mut line = vec![0x15];
+            line.extend_from_slice(asked.command.as_bytes());
+            line.push(b'\r');
+            line
         };
         match self.try_write_input(&line) {
             Ok(()) => {
