@@ -20,11 +20,12 @@ What a check gets, as on t (t's README, "Where checks run" and "Micro-VM steps")
     devices and only the filesystems it has, so os-dev-disk-<arch> does not run here);
   * its `requirement` as the container's cores and memory, and `timeout_secs`.
 
-A check passed before with the same key (its command, image, environment, the whole tree, and
-the keys of what it needs) is not run again unless --force. A check's `secrets` come from this environment, named
-with --secret; of t's identity tokens only registry.tilo.so's has a stand-in, REGISTRY_TOKEN (a
-Forgejo token that may push to this repository, lib.sh registry_login). A check that needs
-another (signing) runs on t, or its outputs are made elsewhere and it is named with --given.
+A check passed before with the same key (its command, image, environment, dispatch inputs, the
+whole tree, and the keys of what it needs) is not run again unless --force. A check's `secrets`
+come from this environment, named with --secret; of t's identity tokens only registry.tilo.so's
+has a stand-in, REGISTRY_TOKEN (a Forgejo token that may push to this repository, lib.sh
+registry_login). A check that needs another (signing) runs on t, or its outputs are made
+elsewhere and it is named with --given.
 
 The machine needs python3, git and a local podman (a remote one pulls nothing but registry
 images, and the checks' own images are OCI layouts on disk).
@@ -148,6 +149,8 @@ class Runner:
             "commit": self.tree.commit if check.get("git") else None,
             "needs": {n: self.key(n) for n in needs_of(check, self.project)},
         }
+        if "dispatch_inputs" in check:
+            material["inputs"] = {i: self.inputs.get(i, d) for i, d in check["dispatch_inputs"].items()}
         self.keys[name] = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
         return self.keys[name]
 
