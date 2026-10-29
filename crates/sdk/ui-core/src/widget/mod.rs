@@ -2,8 +2,7 @@ mod action_directory_identity;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
 pub(crate) use disclosing::{
-    BandMotion, Ghosts, KeptBand, content_box, follower_shifts, place_bands,
-    route_to_shifted_children,
+    BandMotion, Ghosts, content_box, follower_shifts, place_bands, route_to_shifted_children,
 };
 pub use disclosing::{Disclosing, Placement, event_offset};
 pub(crate) mod resource_operation;

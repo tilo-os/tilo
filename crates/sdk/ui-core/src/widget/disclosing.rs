@@ -218,8 +218,9 @@ pub(crate) struct KeptBand {
     /// Where it stood in its container, if a container placed it.
     pub placement: Option<Placement>,
     /// Its last paint at its full height (at rest, or on its way and
-    /// clipped as it was drawn), where it was laid out.
-    pub painted: vello::Scene,
+    /// clipped as it was drawn), where it was laid out; `None` when it was
+    /// never drawn. Content that draws nothing still paints.
+    pub painted: Option<vello::Scene>,
     /// It was shown when dropped (or already leaving).
     pub shown: bool,
 }
@@ -264,8 +265,8 @@ pub(crate) struct BandMotion {
     /// arrived, after its first layout.
     pub structure_dirty: bool,
     /// Its last paint at its full height: what its column draws leaving
-    /// when its view stops building it.
-    painted: vello::Scene,
+    /// when its view stops building it; `None` until it is drawn.
+    painted: Option<vello::Scene>,
     /// Where it stands in its column.
     placement: Option<Placement>,
 }
@@ -286,7 +287,7 @@ impl BandMotion {
             carry: Carry::Fresh,
             unplaced: false,
             structure_dirty: false,
-            painted: vello::Scene::new(),
+            painted: None,
             placement: None,
         }
     }
@@ -460,7 +461,7 @@ impl BandMotion {
     /// The scene to paint the band's contents into this frame, at its full
     /// height and where it is laid out or placed.
     pub fn take_painted(&mut self) -> vello::Scene {
-        let mut painted = std::mem::take(&mut self.painted);
+        let mut painted = self.painted.take().unwrap_or_default();
         painted.reset();
         painted
     }
@@ -474,7 +475,7 @@ impl BandMotion {
         transform: vello::kurbo::Affine,
     ) {
         scene.append(&painted, Some(transform));
-        self.painted = painted;
+        self.painted = Some(painted);
     }
 
     /// Show `painted` (from [`Self::take_painted`]) as far as the band is
@@ -500,7 +501,7 @@ impl BandMotion {
             scene.append(&painted, Some(transform));
             scene.pop_layer();
         }
-        self.painted = painted;
+        self.painted = Some(painted);
     }
 
     /// The band is dropped: leave its motion under `key` for the band a
@@ -523,7 +524,7 @@ impl BandMotion {
                 disclosure: self.disclosure,
                 laid_rect: at,
                 placement: self.placement,
-                painted: std::mem::take(&mut self.painted),
+                painted: self.painted.take(),
                 shown: visible,
             },
         );
@@ -559,6 +560,9 @@ impl Ghost {
 
     /// Draw what is left of it, `dy` below its slot.
     fn draw(&self, scene: &mut vello::Scene, transform: vello::kurbo::Affine, dy: f64) {
+        let Some(painted) = &self.kept.painted else {
+            return;
+        };
         let reveal = self.kept.disclosure.reveal(self.rect.height());
         if reveal.height <= 0.0 || reveal.opacity <= 0.0 {
             return;
@@ -578,7 +582,7 @@ impl Ghost {
         );
         let laid = self.kept.laid_rect;
         scene.append(
-            &self.kept.painted,
+            painted,
             Some(
                 place
                     * vello::kurbo::Affine::translate((
@@ -652,7 +656,7 @@ impl Ghosts {
             }
             // Gone by a key's result, or never painted: nothing to draw,
             // and never a blank band.
-            if !kept.disclosure.is_drawn() || kept.painted.encoding().is_empty() {
+            if !kept.disclosure.is_drawn() || kept.painted.is_none() {
                 continue;
             }
             // Its slot: before the widget that followed it, under the one
