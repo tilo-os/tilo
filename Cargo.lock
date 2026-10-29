@@ -22122,12 +22122,12 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-files",
- "tilo-net",
  "tilo-render-protocol",
  "tilo-startup-metrics",
  "tilo-ui-host",
  "tilolang",
  "tilolang-host",
+ "tilolang-mail",
  "tilolang-tilo",
  "tokio",
  "tracing",
@@ -22184,10 +22184,30 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-wake",
  "tilolang",
+ "tilolang-mail",
  "tilolang-tilo",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-mail"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "mail",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tilo-content",
+ "tilo-net",
+ "tilolang-tilo",
+ "tokio",
+ "tracing",
  "uuid",
  "workspace-hack",
 ]

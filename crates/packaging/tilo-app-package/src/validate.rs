@@ -1702,6 +1702,7 @@ mode = "off"
                 splash_segments: Vec::new(),
                 splash_budget_ms: 400,
                 runtime: None,
+                origins: Vec::new(),
             });
             m.continuity.required.clear();
             assert_eq!(

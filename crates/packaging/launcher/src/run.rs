@@ -390,6 +390,12 @@ pub struct RunOptions {
     /// commits none of the app's data; its launch identity stays for its surface and
     /// accessibility.
     pub tilolang_hosted: bool,
+    /// The app is a tilolang app whose types hold an outside service's resources, and this
+    /// process is its connector for that origin (`imap`), not a window: the session's
+    /// instances of the app reach it over the door the launcher hands it
+    /// (`runtime_portal::origin_connector`). It must be one of the manifest's
+    /// `[entrypoint].origins`.
+    pub tilolang_connector: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -425,6 +431,7 @@ impl Default for RunOptions {
             open_uri: None,
             headless_console: None,
             tilolang_hosted: false,
+            tilolang_connector: None,
         }
     }
 }
@@ -3753,10 +3760,23 @@ pub(crate) fn run_with_context(
         if let Some(door) = crate::job_door::open(opts.no_services) {
             resolved.push(door);
         }
+        // An origin connector's door, which the session released it with as a window's: the
+        // instances of the app attach over it.
+        #[cfg(target_os = "linux")]
+        if opts.tilolang_connector.is_some()
+            && let Some(door) = crate::registration_gate::take_window_door()
+        {
+            resolved.push(crate::services::ResolvedService {
+                name: runtime_portal::origin_connector::SERVICE.to_owned(),
+                host: door,
+                child_fd: runtime_portal::origin_connector::CHILD_FD,
+            });
+        }
         // The shell opens the app's later windows in this process through
         // the door it released this launch with (`runtime_portal::windows`).
         #[cfg(target_os = "linux")]
         if matches!(opts.mode, LaunchMode::Gui)
+            && opts.tilolang_connector.is_none()
             && let Some(door) = crate::registration_gate::take_window_door()
         {
             resolved.push(crate::services::ResolvedService {
@@ -3769,7 +3789,8 @@ pub(crate) fn run_with_context(
     };
     // A window whose instance a tilolang host runs holds none of the app's data: it gets no
     // collaboration connection (the host's instance has the app's own), and says so.
-    let resolved: Vec<_> = if opts.tilolang_hosted {
+    // An origin connector holds none of the app's data either: its instances commit it.
+    let resolved: Vec<_> = if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
         resolved
             .into_iter()
             .filter(|service| service.name != crate::services::COLLAB_SERVICE)
@@ -3833,6 +3854,26 @@ pub(crate) fn run_with_context(
         splice_cli_setenv(
             &mut argv,
             Some((runtime_portal::tilolang_host::HOSTED_ENV.into(), "1".into())),
+        )?;
+    }
+    if let Some(origin) = &opts.tilolang_connector {
+        if !manifest
+            .entrypoint
+            .origins
+            .iter()
+            .any(|declared| declared == origin)
+        {
+            return Err(RunError::InvalidServiceLaunch(format!(
+                "{} declares no `{origin}` origin to connect",
+                manifest.package_id
+            )));
+        }
+        splice_cli_setenv(
+            &mut argv,
+            Some((
+                runtime_portal::origin_connector::ORIGIN_ENV.into(),
+                origin.clone(),
+            )),
         )?;
     }
     if let Some((services, _)) = enrolled.as_ref() {

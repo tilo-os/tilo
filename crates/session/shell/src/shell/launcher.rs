@@ -17,6 +17,8 @@ mod embed_launch;
 pub(crate) mod launch_history;
 pub(crate) use embed_launch::queue_embed_launch;
 mod launch_records;
+#[cfg(target_os = "linux")]
+mod origin_connectors;
 mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;

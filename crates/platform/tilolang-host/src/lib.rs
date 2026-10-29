@@ -116,6 +116,9 @@ struct Opening {
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
     identity: Option<OwnedFd>,
+    /// The connection to the app's origin connector, for an app whose types hold an outside
+    /// service's resources.
+    origin: Option<OwnedFd>,
     /// When the host was handed the instance, and the stages it reached since, with how long
     /// after: what an instance's launch spends in the host.
     received: std::time::Instant,
@@ -305,6 +308,7 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: Some(fds.identity),
+            origin: fds.origin,
             received: std::time::Instant::now(),
             reached: Vec::new(),
         });
@@ -331,6 +335,7 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: None,
+            origin: None,
             received: std::time::Instant::now(),
             reached: Vec::new(),
         });
@@ -537,10 +542,27 @@ impl TilolangHost {
             Rc::clone(&self.phrases),
             Arc::clone(&self.wake),
         );
-        let hosted = match opening.identity.take() {
+        let mut hosted = match opening.identity.take() {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
+        // Its types with a mail server as origin are kept in step through the app's connector,
+        // which holds the network and the credentials this process has none of.
+        if let Some(origin) = opening.origin.take() {
+            if tilolang_tilo::origin::uses_origin(&hosted.bundle().meta, "imap") {
+                let origin = tilolang_mail::remote_origin(
+                    std::os::unix::net::UnixStream::from(origin),
+                    Arc::clone(&self.wake),
+                )
+                .map_err(|error| AdmitError::Join(format!("its mail connector: {error}")))?;
+                hosted.add_origin(origin);
+            } else {
+                tracing::warn!(
+                    app = opening.app,
+                    "a connection to a connector the app has no origin for"
+                );
+            }
+        }
         opening.reached("opened");
         let stages: Vec<String> = opening
             .reached
