@@ -132,9 +132,10 @@ pub struct AppWindow {
     took: u64,
     /// What the person typed after presses the app has not run yet, oldest first.
     typed: std::collections::VecDeque<Typed>,
-    /// The person pointed (a click, a touch) since their last press: what they type next was
-    /// typed where they put the keyboard, not where the keyboard was at the press.
-    pointed: bool,
+    /// How many presses the window had sent when the person last pointed (a click, a touch):
+    /// what they type after a press they pointed after was typed where they put the keyboard,
+    /// not where the keyboard was at the press.
+    pointed_after: Option<u64>,
     /// The control to take the keyboard once the window's tree is laid out, by key in the
     /// composed tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
@@ -197,7 +198,7 @@ impl AppWindow {
             fired: 0,
             took: 0,
             typed: std::collections::VecDeque::new(),
-            pointed: false,
+            pointed_after: None,
             focus_request: None,
         }
     }
@@ -742,7 +743,6 @@ impl AppWindow {
         }
         if matches!(event, UiEvent::Press(_) | UiEvent::Fire(..)) {
             self.fired = self.fired.saturating_add(1);
-            self.pointed = false;
         }
         let message = match event {
             UiEvent::Press(key) => {
@@ -844,7 +844,7 @@ impl AppWindow {
                 .back()
                 .is_some_and(|typed| typed.after == fired && same_field(typed))
             {
-                let follows = !self.pointed;
+                let follows = self.pointed_after != Some(self.fired);
                 self.typed.push_back(Typed {
                     after: fired,
                     key: Some(composed.to_owned()),
@@ -898,7 +898,7 @@ impl AppWindow {
                     // and a line break a body's text ends with does not move into a title.
                     let (_, _, insert) = splice_between(&typed.base, &typed.now);
                     typed.base = String::new();
-                    typed.now = insert.trim_end_matches('\n').to_owned();
+                    insert.trim_end_matches('\n').clone_into(&mut typed.now);
                 }
                 typed.moved = true;
                 typed.key = Some(field.clone());
@@ -1361,7 +1361,7 @@ impl ui::widget::Decorator for AppWindow {
             }
         ) || matches!(event, WindowEvent::Touch(touch) if touch.phase == ui::winit::event::TouchPhase::Started)
         {
-            self.pointed = true;
+            self.pointed_after = Some(self.fired);
         }
         if self.hold_typing(event) {
             *ctx.handled = true;
@@ -1620,7 +1620,7 @@ mod tests {
             matches!(&sent(&mut app)[..], [ToApp::Fire { key, .. }] if key == "new"),
             "the press goes at once"
         );
-        window.pointed = true;
+        window.pointed_after = Some(window.fired);
         window.act(UiEvent::Edit(title.clone(), "Alpha!".to_owned()));
         window.flush();
         assert!(sent(&mut app).is_empty(), "the typing waits for the press");

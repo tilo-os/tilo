@@ -422,7 +422,11 @@ fn note_input_sent(state: &mut State, serial: Serial, surface_id: u64) {
                 .and_then(|client| client.pid)
         });
     if let Some(pid) = pid {
-        state.input_order.sent(pid, u32::from(serial));
+        state.input_order.sent(
+            pid,
+            u32::from(serial),
+            crate::compositor::input_order::launch_of,
+        );
     }
 }
 

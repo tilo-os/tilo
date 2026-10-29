@@ -8,7 +8,9 @@
 //! it could run before it.
 //!
 //! So each bar event names the input it came after: the serial of the last input event the
-//! shell had sent the app's process when the person used the bar. Every input event the shell
+//! shell had sent the app's launch when the person used the bar (the launcher connects the
+//! shell-ui and hands it to the app, so the two connections' peers are different processes of
+//! one launch: [`launch_of`]). Every input event the shell
 //! sends a client carries a serial the shell mints (`client_input::mint_serial`), and the app
 //! learns which serials it has handled from its Wayland connection, in order: it runs the bar
 //! event once it has handled that input and before what came after it.
@@ -16,7 +18,7 @@
 //! The bar reports what it did with the input only when the desktop next looks, so the
 //! desktop notes the serials minted when it dispatched the input
 //! ([`crate::shell::frame::FrameBuilder::dispatch_event`]): the bar event's place is the last
-//! input sent the app's process at or before that.
+//! input sent the app at or before the desktop last dispatched its own input.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -54,14 +56,29 @@ struct Sent {
 /// See the [module docs](self).
 #[derive(Debug, Default)]
 pub struct InputOrder {
-    /// The input sent to each process, by its pid.
+    /// The input sent to each launch, by its supervisor's pid.
     sent: HashMap<u32, Sent>,
-    /// The process behind each shell-ui connection.
+    /// The launch behind each shell-ui connection.
     processes: HashMap<u64, u32>,
+    /// The launch of each Wayland client's process, by its pid, as first looked up.
+    launches: HashMap<u32, u32>,
+}
+
+/// The launch the process `pid` is part of, by its supervisor's pid: an app's Wayland client
+/// and its shell-ui connection can be different processes of one launch (the launcher connects
+/// the shell-ui and hands it to the app). A process of no launch is its own.
+#[must_use]
+pub fn launch_of(pid: u32) -> u32 {
+    #[cfg(target_os = "linux")]
+    if let Some((_, custody)) = crate::shell::launcher::verified_launch_custody_for_descendant(pid)
+    {
+        return custody.supervisor_pid;
+    }
+    pid
 }
 
 impl InputOrder {
-    /// The shell-ui `connection` is from the process `pid`.
+    /// The shell-ui `connection` is from the launch `pid` (its supervisor's: [`launch_of`]).
     pub fn connected(&mut self, connection: u64, pid: Option<u32>) {
         if let Some(pid) = pid {
             self.processes.insert(connection, pid);
@@ -76,10 +93,12 @@ impl InputOrder {
         }
     }
 
-    /// The input event with `serial` was sent to a client of the process `pid`.
-    pub fn sent(&mut self, pid: u32, serial: u32) {
-        if self.processes.values().any(|known| *known == pid) {
-            self.sent.entry(pid).or_default().since.push(serial);
+    /// The input event with `serial` was sent to a client of the process `pid`, of the launch
+    /// `launch` finds for it.
+    pub fn sent(&mut self, pid: u32, serial: u32, launch: impl FnOnce(u32) -> u32) {
+        let launch = *self.launches.entry(pid).or_insert_with(|| launch(pid));
+        if self.processes.values().any(|known| *known == launch) {
+            self.sent.entry(launch).or_default().since.push(serial);
         }
     }
 
@@ -117,15 +136,15 @@ mod tests {
         let mut order = InputOrder::default();
         order.connected(7, Some(100));
         assert_eq!(order.after_input(7, 5), None, "nothing sent yet");
-        order.sent(100, 3);
-        order.sent(100, 4);
+        order.sent(100, 3, |pid| pid);
+        order.sent(100, 4, |pid| pid);
         // Another process's input is not this one's.
-        order.sent(200, 5);
-        order.sent(100, 6);
+        order.sent(200, 5, |pid| pid);
+        order.sent(100, 6, |pid| pid);
         assert_eq!(order.after_input(7, 5), Some(4));
         assert_eq!(order.after_input(7, 6), Some(6));
         order.placed();
-        order.sent(100, 9);
+        order.sent(100, 9, |pid| pid);
         assert_eq!(
             order.after_input(7, 8),
             Some(6),
@@ -136,11 +155,22 @@ mod tests {
     }
 
     #[test]
+    fn the_shell_ui_connection_and_the_wayland_client_of_one_launch_are_one_app() {
+        let mut order = InputOrder::default();
+        // The launcher (supervisor 50) connected the shell-ui and handed it to the app (pid 51),
+        // whose Wayland client gets the keys.
+        order.connected(7, Some(50));
+        order.sent(51, 3, |pid| if pid == 51 { 50 } else { pid });
+        order.sent(60, 4, |pid| pid);
+        assert_eq!(order.after_input(7, 9), Some(3));
+    }
+
+    #[test]
     fn serials_compare_across_their_wrap() {
         let mut order = InputOrder::default();
         order.connected(1, Some(100));
-        order.sent(100, u32::MAX);
-        order.sent(100, 1);
+        order.sent(100, u32::MAX, |pid| pid);
+        order.sent(100, 1, |pid| pid);
         assert_eq!(order.after_input(1, 0), Some(u32::MAX));
         assert_eq!(order.after_input(1, 1), Some(1));
     }

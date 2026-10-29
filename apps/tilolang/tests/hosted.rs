@@ -172,7 +172,7 @@ impl Window {
     /// Each carries the next input serial, as the compositor's do: the window has handled the
     /// input before it when it gets it.
     fn live_input(app: &mut ui::App, event: ui::winit::event::WindowEvent) {
-        let before = INPUT.with(|input| input.replace(input.get() + 1));
+        let before = INPUT.with(|input| input.replace(input.get().wrapping_add(1)));
         app.input_handled(before);
         app.surface_input(&Region, event, false);
     }
@@ -777,7 +777,7 @@ impl Bar {
 
 /// The serial the next `count` input events end at.
 fn input_after(count: u32) -> u32 {
-    INPUT.with(std::cell::Cell::get) + count
+    INPUT.with(std::cell::Cell::get).wrapping_add(count)
 }
 
 /// The person types in a note's body, presses "+" in the window's bar and types the new

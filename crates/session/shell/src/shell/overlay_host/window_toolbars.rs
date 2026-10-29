@@ -381,13 +381,17 @@ impl ShellOverlayHost {
     /// What goes back to the apps, each with the input serial minted when the person used
     /// the bar ([`crate::compositor::input_order`]).
     pub fn take_placed_toolbar_outbox(&mut self) -> Vec<(u64, ToolbarEvent, u32)> {
-        self.place_toolbar_events(crate::compositor::input_order::clock());
+        // A bar may report what a press did only on its next frame, after the keys that
+        // followed the press reached the app: it was done with the desktop's last input.
+        self.place_toolbar_events(self.chrome_input_clock);
         std::mem::take(&mut self.placed_toolbar_events)
     }
 
     /// What the person did in the bars since this was last asked was done with the input up to
-    /// the serial `clock`: it takes its place after that input, before what comes later.
+    /// the serial `clock`, the desktop's own input that did it: it takes its place after that
+    /// input, before what comes later.
     pub fn place_toolbar_events(&mut self, clock: u32) {
+        self.chrome_input_clock = clock;
         self.sync_window_toolbars();
         for (connection, event) in self.window_toolbars.take_outbox() {
             self.placed_toolbar_events.push((connection, event, clock));
