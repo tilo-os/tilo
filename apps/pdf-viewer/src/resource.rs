@@ -139,18 +139,28 @@ pub struct ExistingMarkup {
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-/// Bring markup of an earlier version up to this one. Comment threads were
-/// kept in a shape of their own before they were the comment model every
-/// app shares; those are not carried over, the rest of the markup is.
-fn upgrade_markup(doc: &mut tilo_resource::Doc, _from: u32) -> Result<(), ModelError> {
-    tilo_resource::Slot::Key(&ui::automerge::ROOT, "comments").remove(doc)
+/// Bring markup of an earlier version up to this one. Before version 3,
+/// comment threads were kept in a shape of their own, before they were the
+/// comment model every app shares; those are not carried over, the rest of
+/// the markup is. Version 3 stored each mark's value in a comment's
+/// paragraphs flat beside its variant's name; it is stored by its variant
+/// now.
+fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
+    let root = ui::automerge::ROOT;
+    match from {
+        1 | 2 => tilo_resource::Slot::Key(&root, "comments").remove(doc),
+        3 => tilo_document::annotation::store_bodies_by_variant(doc, &root, "comments"),
+        _ => Err(ModelError::invalid(format!(
+            "no PDF markup migration from {from}"
+        ))),
+    }
 }
 
 #[resource(
     kind = "pdf.document",
     label = "PDF",
     search = PdfMarkup::entries,
-    version = 3,
+    version = 4,
     migrate = upgrade_markup
 )]
 impl PdfMarkup {

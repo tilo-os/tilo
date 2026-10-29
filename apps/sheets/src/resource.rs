@@ -416,6 +416,21 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     })
 }
 
+/// Bring a workbook of version 1 up to this one: it stored each mark's
+/// value in a comment's paragraphs flat beside its variant's name; it is
+/// stored by its variant now.
+fn upgrade(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no workbook migration from {from}"
+        )));
+    }
+    tilo_rich_text::annotation::store_bodies_by_variant(doc, &ui::automerge::ROOT, "comments")
+}
+
 #[resource(
     kind = "sheets.workbook",
     label = "Workbook",
@@ -424,6 +439,8 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     read_content = Workbook::read_cells,
     answer = crate::cell_actions::answer,
     params = verbs,
+    version = 2,
+    migrate = upgrade,
 )]
 impl Workbook {
     /// Add a sheet.
