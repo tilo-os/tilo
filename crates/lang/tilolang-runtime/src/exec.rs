@@ -1257,13 +1257,16 @@ impl Core {
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
-                let FrameKind::Action(state) = &frames.top()?.kind else {
-                    return trap("invoker is only available in actions");
+                let who = match &frames.top()?.kind {
+                    FrameKind::Action(state) => state
+                        .acting_as
+                        .last()
+                        .map_or(&state.invoker, |(who, _)| who),
+                    // An action's requirement read where it is presented: the person looking,
+                    // who would invoke it.
+                    FrameKind::View(view) => &view.viewer,
+                    _ => return trap("invoker is only available in actions"),
                 };
-                let who = state
-                    .acting_as
-                    .last()
-                    .map_or(&state.invoker, |(who, _)| who);
                 let who = Value::Principal(who.clone());
                 drop(frames);
                 self.ret_h(who)

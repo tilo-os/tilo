@@ -353,8 +353,14 @@ impl Index {
             Err(redb::DatabaseError::DatabaseAlreadyOpen) => {
                 return Err(IndexError::Io("the index is open elsewhere".into()));
             }
-            Err(_) => {
+            Err(error) => {
                 // Unreadable, or it needed repairing: what it held is not trusted.
+                tracing::warn!(
+                    path = %path.display(),
+                    %error,
+                    "an index could not be opened: it is built anew"
+                );
+                // Absent already is as good as removed; the create below says what is wrong.
                 let _ = std::fs::remove_file(path);
                 Database::builder()
                     .set_cache_size(CACHE_BYTES)
@@ -517,7 +523,9 @@ impl Drop for Index {
     fn drop(&mut self) {
         if self.path.is_some() {
             // What it holds reaches the disk: the next open catches up from here.
-            let _ = self.persist();
+            if let Err(error) = self.persist() {
+                tracing::warn!(%error, "an index did not reach the disk as it closed");
+            }
         }
     }
 }

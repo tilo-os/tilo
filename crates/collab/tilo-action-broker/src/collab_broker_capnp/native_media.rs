@@ -217,6 +217,7 @@ impl AsRawFd for PeerProcess {
 }
 
 impl LocalAppConnection {
+    #[cfg(test)]
     pub(super) fn attested(
         app_id: String,
         workspace_id: String,

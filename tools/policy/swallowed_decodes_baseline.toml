@@ -3,8 +3,6 @@
 # --update records a file that shed some. Report the error, or mark a genuinely
 # optional read with `// optional-decode: <why>`.
 [files]
-"apps/tilolang/src/hosted.rs" = 1
-"apps/tilolang/src/mail/origin.rs" = 1
 "crates/hosting/tilo-room-host/src/compaction/verified.rs" = 1
 "crates/hosting/tilo-room-host/src/host.rs" = 1
 "crates/hosting/tilo-room-host/src/hosted.rs" = 2
@@ -23,33 +21,20 @@
 "crates/hosting/tilo-room-host/src/rooms/voice.rs" = 1
 "crates/hosting/tilo-room-host/src/store/compaction.rs" = 2
 "crates/hosting/tilo-room-host/src/store/record_sync.rs" = 1
-"crates/hosting/tilo-room-host/src/store/replay.rs" = 4
+"crates/hosting/tilo-room-host/src/store/replay.rs" = 2
 "crates/hosting/tilo-room-host/src/store/retained/journal.rs" = 1
 "crates/hosting/tilo-room-host/src/surfaces.rs" = 1
-"crates/platform/tilo-ui-host/src/date.rs" = 2
-"crates/platform/tilolang-host/src/task.rs" = 1
-"crates/platform/tilolang-tilo/src/action.rs" = 1
-"crates/platform/tilolang-tilo/src/bench.rs" = 3
-"crates/platform/tilolang-tilo/src/bench/engines.rs" = 2
-"crates/platform/tilolang-tilo/src/index/columns.rs" = 2
-"crates/platform/tilolang-tilo/src/index/lists.rs" = 1
-"crates/platform/tilolang-tilo/src/index/reflect.rs" = 1
-"crates/platform/tilolang-tilo/src/meta.rs" = 3
-"crates/platform/tilolang-tilo/src/surface.rs" = 4
-"crates/platform/tilolang-tilo/src/task.rs" = 1
-"crates/runtime/runtime-portal/src/jobs.rs" = 3
+"crates/runtime/runtime-portal/src/jobs.rs" = 1
 "crates/runtime/runtime-portal/src/lib.rs" = 1
-"crates/runtime/runtime-portal/src/native.rs" = 3
 "crates/runtime/runtime-portal/src/process_binding/linux.rs" = 2
-"crates/runtime/runtime-portal/src/tilolang_host.rs" = 3
+"crates/runtime/runtime-portal/src/tilolang_host.rs" = 1
 "crates/runtime/runtime-portal/src/tools.rs" = 1
-"crates/runtime/runtime-portal/src/windows.rs" = 2
 "crates/session/shell/src/bin/pressure_fixture.rs" = 2
 "crates/session/shell/src/bin/shots/driver.rs" = 1
 "crates/session/shell/src/bin/shots/driver/desktop_control.rs" = 1
 "crates/session/shell/src/bin/shots/driver/secret_prompt_sim_scene.rs" = 1
 "crates/session/shell/src/compositor/backend/drm/tablet.rs" = 1
-"crates/session/shell/src/compositor/backend/headless.rs" = 6
+"crates/session/shell/src/compositor/backend/headless.rs" = 4
 "crates/session/shell/src/compositor/backend/winit.rs" = 2
 "crates/session/shell/src/compositor/chooser_service.rs" = 1
 "crates/session/shell/src/compositor/descriptor_table.rs" = 1
@@ -96,7 +81,6 @@
 "crates/session/shell/src/shell/device_certification.rs" = 1
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 4
 "crates/session/shell/src/shell/device_fabric_runtime/window_views.rs" = 2
-"crates/session/shell/src/shell/device_pairing.rs" = 1
 "crates/session/shell/src/shell/device_unlock.rs" = 1
 "crates/session/shell/src/shell/device_unlock_runtime.rs" = 2
 "crates/session/shell/src/shell/device_vpn/controller.rs" = 1
@@ -145,7 +129,6 @@
 "crates/session/shell/src/shell/osd.rs" = 1
 "crates/session/shell/src/shell/overlay_host/agent_actions.rs" = 1
 "crates/session/shell/src/shell/overlay_host/bar_popovers.rs" = 1
-"crates/session/shell/src/shell/overlay_host/palette_flow.rs" = 1
 "crates/session/shell/src/shell/overlay_host/palette_routing.rs" = 1
 "crates/session/shell/src/shell/overlay_host/palette_run.rs" = 4
 "crates/session/shell/src/shell/overlay_host/palette_search.rs" = 1
@@ -179,7 +162,7 @@
 "crates/session/shell/src/shell/state/workspace_layout.rs" = 1
 "crates/session/shell/src/shell/system_sounds.rs" = 1
 "crates/session/shell/src/shell/system_update.rs" = 3
-"crates/session/shell/src/shell/test_control.rs" = 3
+"crates/session/shell/src/shell/test_control.rs" = 2
 "crates/session/shell/src/shell/tool_intents.rs" = 1
 "crates/session/shell/src/shell/topbar_chrome.rs" = 1
 "crates/session/shell/src/shell/window_menu.rs" = 4

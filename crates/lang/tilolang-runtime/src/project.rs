@@ -84,6 +84,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         Value::Node(_)
         | Value::Rec(_)
         | Value::Event
+        | Value::EventPart(_)
         | Value::State { .. }
         | Value::AtEvent { .. } => {
             json!({ "kind": v.kind_name() })
