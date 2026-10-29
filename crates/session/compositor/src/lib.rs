@@ -24,6 +24,7 @@
 
 pub mod backend;
 mod cursor;
+pub mod gestures;
 pub mod host;
 pub mod input;
 mod lock;
@@ -34,7 +35,9 @@ mod present;
 mod protocols;
 pub mod render;
 mod state;
+mod tablet;
 mod text_input;
+mod touch;
 mod xwayland;
 
 use std::os::unix::net::UnixStream;
@@ -46,11 +49,13 @@ use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 
 pub use backend::{
-    Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, NestedBackend, NestedConfig,
-    Screenshot,
+    Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
+    NestedConfig, Screenshot, TabletConfig,
 };
 pub use host::{HostLayer, SurfaceHost};
-pub use input::{HostKey, InputEvent, KeyModifiers};
+pub use input::{
+    GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
+};
 pub use output::{ModeRequest, OutputChange, OutputConfig};
 pub use policy::{Arrangement, StackPolicy, WindowInfo, WindowPolicy};
 pub use state::State;
@@ -282,6 +287,14 @@ impl Compositor {
         self.configure_from_clients();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Apply the person's input preferences (pointer, touchpad, tablets,
+    /// accessibility filters) to the backend's devices, now and as they are
+    /// plugged in. Backends without devices of their own ignore them.
+    pub fn set_input_config(&mut self, config: InputConfig) {
+        let LoopData { state, backend } = &mut self.data;
+        backend.set_input_config(state, config);
     }
 
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
