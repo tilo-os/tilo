@@ -63,7 +63,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
     let mut views = host("Views");
     views.push(ExportedAction {
         resource: format!("tl:{VIEWS}:root"),
-        resource_kind: format!("tl.{VIEWS}.Views"),
+        resource_kind: format!("tl.{VIEWS}.Answers"),
         resource_label: "Views".into(),
         ..descriptor(
             "answer",
@@ -78,7 +78,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![],
         )
     });
-    let tracker = |action: &str, param: &str| ExportedAction {
+    let tracker = |action: &'static str, param: &'static str| ExportedAction {
         resource: "tasks.tracker".into(),
         resource_kind: "tasks.tracker".into(),
         resource_label: "Tasks".into(),
@@ -115,7 +115,7 @@ pub(super) fn catalogue() -> Value {
         {"app": BOARD, "name": "Column", "signature": "type Column { title: Text }"},
         {"app": BOARD, "name": "Board", "signature": "root Board"},
         {"app": BOARD, "name": "add_card", "signature": "action add_card(b: Board, col: Column, title: Text) -> Card"},
-        {"app": VIEWS, "name": "View", "signature": "type View { title: Text, source: Text }"},
+        {"app": VIEWS, "name": "Answer", "signature": "type Answer { title: Text, source: Text }"},
     ])
 }
 
@@ -169,18 +169,19 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
     ]}});
     let world = World {
         tilolang: true,
-        blocks: vec![
-            ("cards", cards),
+        // Matched in order: the view (its rows), the program that does not compile, the cards.
+        tl_blocks: vec![
+            (
+                "row(c)",
+                serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"}}),
+            ),
             (
                 "nope",
                 Value::String(
                     "the block does not compile:\n1:7: E0101 `board` has no `nope`".into(),
                 ),
             ),
-            (
-                "column",
-                serde_json::json!({"kind": "view", "tree": {"kind": "column", "key": "0"}}),
-            ),
+            ("cards", cards),
         ],
         ..World::default()
     };
@@ -210,13 +211,19 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
         ],
     );
     f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap();
+    assert_eq!(
+        bodies.len(),
+        3,
+        "a turn per program and the finish; the last one read: {}",
+        said_last(bodies.last().unwrap())
+    );
     assert_eq!(
         terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Succeeded {
             message: "One card is left.".into()
         }
     );
-    let bodies = f.script.bodies.lock().unwrap();
     // The first message says where the task is: its limits and the apps its programs reach.
     let first = bodies[0].to_string();
     assert!(first.contains("Limits: at most"), "{first}");
@@ -269,7 +276,7 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
 fn a_view_that_is_not_a_view_is_refused_and_the_task_goes_on() {
     let world = World {
         tilolang: true,
-        blocks: vec![("42", serde_json::json!({"kind": "data", "value": 42}))],
+        tl_blocks: vec![("42", serde_json::json!({"kind": "data", "value": 42}))],
         ..World::default()
     };
     let mut f = fixture(

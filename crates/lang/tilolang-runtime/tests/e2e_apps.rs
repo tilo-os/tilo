@@ -49,6 +49,8 @@ mod cases {
         letters: App,
         counter: App,
         today: App,
+        board: App,
+        views: App,
     }
 
     fn apps() -> Apps {
@@ -58,6 +60,12 @@ mod cases {
         let letters = build("letters", app_source!("letters"), &[]);
         let counter = build("counter", app_source!("counter"), &[]);
         let today = build("today", app_source!("today"), &[&notes, &todo, &chat]);
+        let board = build("board", app_source!("board"), &[]);
+        let views = build(
+            "views",
+            app_source!("views"),
+            &[&board, &todo, &chat, &notes],
+        );
         Apps {
             notes,
             todo,
@@ -65,6 +73,8 @@ mod cases {
             letters,
             counter,
             today,
+            board,
+            views,
         }
     }
 
@@ -87,6 +97,8 @@ mod cases {
             &apps.letters,
             &apps.counter,
             &apps.today,
+            &apps.board,
+            &apps.views,
         ]
         .iter()
         .map(|a| a.load(&rt))
@@ -1074,6 +1086,109 @@ mod cases {
             text_prop(node_with(tree, "ui.NavItem", "key", "all"), "label"),
             "All letters",
             "the app names the place of every letter"
+        );
+    }
+
+    // ----- views ------------------------------------------------------------------------------
+
+    /// The view the recorded model answers "what's left for the release?" with in the agent's
+    /// end-to-end check.
+    fn release_view() -> String {
+        let script: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../scripts/headless-examples/agent-tilolang/release.json"
+        ))
+        .unwrap();
+        script["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|turn| turn["blocks"].as_array().unwrap())
+            .find_map(|block| block["input"]["view"]["source"].as_str())
+            .expect("the script answers with a view")
+            .to_owned()
+    }
+
+    #[test]
+    fn an_answer_draws_its_view_block_live_over_other_apps_as_its_task_wrote_it() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let board = w.rt.create_root("Board").unwrap();
+        let list = w.rt.create_root("TodoList").unwrap();
+        w.rt.create_root("Conversations").unwrap();
+        let column = |title: &str| {
+            let made = returned_ref(w.call(&apps.board, "new_column", vec![res(&board)]));
+            w.call(
+                &apps.board,
+                "rename_column",
+                vec![res(&made), Value::text(title)],
+            );
+            made
+        };
+        let (todo, done) = (column("To do"), column("Done"));
+        let card = |col: &ResourceRef, title: &str| {
+            w.call(
+                &apps.board,
+                "add_card",
+                vec![res(&board), res(col), Value::text(title), Value::text("")],
+            );
+        };
+        card(&todo, "Write the release notes");
+        card(&done, "Bump the version");
+        w.call(
+            &apps.todo,
+            "add",
+            vec![res(&list), Value::text("Record the demo video")],
+        );
+        let answers = w.rt.create_root("Answers").unwrap();
+        // The agent's task answers; the answer records it as the block's author.
+        let task = Principal::new("agent-task:release");
+        let id = apps.views.action("answer");
+        let answer = returned_ref(
+            w.rt.invoke_action(
+                &task,
+                (
+                    id.as_str(),
+                    vec![
+                        res(&answers),
+                        Value::text("Left for the release"),
+                        Value::text("what's left for the release?"),
+                        Value::text(release_view()),
+                    ],
+                ),
+            )
+            .unwrap(),
+        );
+        assert_eq!(author_of(&w, &answer), "agent-task:release");
+        let mut view = w.view(&apps.views, "answer_page", vec![res(&answer)]);
+        let found = embeds(view.tree());
+        assert_eq!(found.len(), 1, "{}", dump(view.tree()));
+        assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
+        let shown = row_titles(found[0]);
+        assert!(
+            shown.contains(&"Write the release notes".to_owned())
+                && shown.contains(&"Record the demo video".to_owned()),
+            "{shown:?}\n{}",
+            dump(view.tree())
+        );
+        assert!(!shown.contains(&"Bump the version".to_owned()), "{shown:?}");
+        // Live: a card added later is in the answer on its next frame.
+        card(&todo, "Screenshots for the docs");
+        view.poll_patches().unwrap();
+        assert!(
+            row_titles(embeds(view.tree())[0]).contains(&"Screenshots for the docs".to_owned()),
+            "{}",
+            dump(view.tree())
+        );
+        // As a window draws it, with rows built as they are shown: the answer's cards are there.
+        let lazy =
+            w.rt.open_view(&me(), &apps.views.view("answer_page"), vec![res(&answer)])
+                .unwrap();
+        let lazy_rows = of_kind(embeds(lazy.tree())[0], "ui.ListRow").len();
+        assert_eq!(
+            lazy_rows,
+            3,
+            "a card's preview rows are built: {}",
+            dump(lazy.tree())
         );
     }
 

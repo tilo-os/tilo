@@ -511,7 +511,7 @@ struct World {
     /// and the Tasks tracker records the run's steps.
     tilolang: bool,
     /// What each `run-block` answers, by a word its source holds.
-    blocks: Vec<(&'static str, Value)>,
+    tl_blocks: Vec<(&'static str, Value)>,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -797,7 +797,7 @@ impl World {
             "run-block" => {
                 let source = text("source");
                 let answer = self
-                    .blocks
+                    .tl_blocks
                     .iter()
                     .find(|(word, _)| source.contains(word))
                     .map(|(_, answer)| answer.clone());
@@ -815,7 +815,7 @@ impl World {
             ),
             "answer" => (
                 serde_json::json!({"succeeded": {"value": {
-                    "type": "View", "id": "root/items:v1", "label": text("title")
+                    "type": "Answer", "id": "root/items:v1", "label": text("title")
                 }}}),
                 false,
             ),
@@ -1759,6 +1759,7 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
                 "describe_operation",
                 "invoke",
                 "read_result",
+                "tilo",
                 "plan"
             ],
             "only generic tools, never an application-specific one"
@@ -2486,7 +2487,10 @@ fn anthropic_tasks_share_the_cached_catalogue_block() {
     );
     assert!(!catalogue.contains("The request:"), "{catalogue}");
     assert!(first[1].get("cache_control").is_none());
-    assert_eq!(first[1]["text"], "The request:\n\npost hello");
+    // What the task is and where it is come after the catalogue, in the block that changes.
+    let task = first[1]["text"].as_str().unwrap();
+    assert!(task.starts_with("Limits: at most"), "{task}");
+    assert!(task.ends_with("The request:\n\npost hello"), "{task}");
     let task = second[1]["text"].as_str().unwrap();
     assert!(
         task.ends_with("The request:\n\nwhat did you just do?"),

@@ -9,7 +9,7 @@ use so.tilo.lang.notes as notes
 /// whoever wrote it as its code author, so a button in it that runs an action asks the person
 /// first unless they trust its author. An agent's task answers with one; the person keeps it
 /// here or discards it.
-type View {
+type Answer {
     title: Text (title)
     /// What was asked, when an agent answered with it.
     question: Text
@@ -26,61 +26,60 @@ type View {
     }
 }
 
-/// The person's views.
-type Views {
-    items: Collection<View>
+/// The views agents answered with, and those the person kept.
+type Answers {
+    items: Collection<Answer>
 }
 
-root views: Views
+root answers: Answers
 
-default view views_list for Views
+default view answers_list for Answers
 
-default view view_page for View
+default view answer_page for Answer
 
-row view view_row for View
+row view answer_row for Answer
 
 /// Keeps a view an agent answered with, written by the invoker. It opens beside what the person
 /// pointed at; until they keep it, it is the agent's answer.
-action answer(all: Views, title: Text, question: Text, source: Text) -> View {
-    all.items.insert(View(title: title, question: question, source: source, author: invoker))
+action answer(all: Answers, title: Text, question: Text, source: Text) -> Answer {
+    all.items.insert(Answer(title: title, question: question, source: source, author: invoker))
 }
 
 /// Keeps a view among the person's own.
-action keep(v: View) (icon: .bookmark, label: "Keep") {
+action keep(v: Answer) (icon: .bookmark, label: "Keep") {
     require not v.kept "This view is kept already"
     v.kept = true
 }
 
 /// Throws a view away.
-destructive action discard(all: Views, v: View) (icon: .trash, label: "Discard") {
+destructive action discard(all: Answers, v: Answer) (icon: .trash, label: "Discard") {
     all.items.remove(v)
 }
 
 /// The views the person kept, each opening in a window of its own.
-view views_list(all: Views) {
+view answers_list(all: Answers) {
     std.list(all, all.items, place: "is:kept", everything: "All views", empty: "No views yet")
 }
 
 /// One view in a list: its title, and what was asked.
-view view_row(v: View) {
+view answer_row(v: Answer) {
     row(v.title, secondary: v.question, icon: .eye)
 }
 
 /// A view's window: the view itself, live, under its title and its actions.
-view view_page(v: View) {
+view answer_page(v: Answer) {
     std.page(v) {
         embed(v.source, author: v.author, invocation: .none)
     }
 }
 
-/// An answer to "what's left for the release?", over the release board, its todo list and its
-/// chat.
-scenario "a release answer" -> View {
-    let b = root board.Board
-    views.items.insert(View(
+/// An agent's answer to "what's left for the release?", over the release board and the release
+/// conversation.
+scenario "a release answer" -> Answer {
+    answers.items.insert(Answer(
         title: "Left for the release",
         question: "What's left for the release?",
-        source: "column(gap: .section) {\n    section(\"On the board\") {\n        for c in board.cards_of(root board.Board, (root board.Board).columns.first()!) {\n            row(c)\n        }\n    }\n}",
+        source: "grid(min: 22rem) \{\n    card(root board.Board, count: (root board.Board).cards.count(c -> c.column.title != \"Done\")) \{\n        list((root board.Board).cards.filter(c -> c.column.title != \"Done\")) \{ c ->\n            row(c)\n        }\n    }\n    card(chat.conversations, count: 1) \{\n        list(chat.conversations.filter(c -> c.title == \"Release checklist\")) \{ c ->\n            row(c)\n        }\n    }\n}",
         author: invoker
     ))
 }
