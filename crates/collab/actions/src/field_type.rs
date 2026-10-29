@@ -286,16 +286,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_type_reads_from_the_vocabulary_or_old_rust_text() {
+    fn a_type_reads_from_the_vocabulary_or_older_rust_text() {
         #[derive(Deserialize)]
         struct Field {
             #[serde(deserialize_with = "field_type_or_text")]
             ty: FieldType,
         }
-        let read = |text: &str| toml_like(text);
-        fn toml_like(json: &str) -> FieldType {
+        let read = |json: &str| {
             serde_json::from_str::<Field>(json).map_or(FieldType::Any, |field| field.ty)
-        }
+        };
         assert_eq!(read(r#"{"ty": "text"}"#), FieldType::Text);
         assert_eq!(
             read(r#"{"ty": {"option": {"named": "Channel"}}}"#),
