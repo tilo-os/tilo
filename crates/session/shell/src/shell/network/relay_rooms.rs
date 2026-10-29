@@ -406,27 +406,6 @@ impl ShellNetwork {
         )
     }
 
-    /// [`Self::govern`], answered whenever the host answers: while the
-    /// room's sessions last, never on a clock. For a caller whose own wait
-    /// ends with the room's sessions too, on a worker.
-    pub(super) fn govern_held(
-        &self,
-        target: &HeldRoom,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, HostAskError> {
-        let invoke = invocation(
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(&target.room.to_string()),
-            action,
-            arguments,
-        );
-        let answer = self
-            .ask_relay(room_topic_id(target.room), target.host, invoke)
-            .map_err(HostAskError::Unreachable)?;
-        held_answer(&answer)
-    }
-
     /// Have the host governing `room` record `receipt`, the member's own
     /// terminal receipt, answered whenever the host answers: while the
     /// room's sessions last. For a worker.
@@ -655,7 +634,7 @@ impl ShellNetwork {
 
     /// Whether `host`, the host governing `room`, is this device's own: the
     /// room is served here, or its host is this device's endpoint.
-    fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
+    pub(super) fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
         self.hosted_here(room) || host == self.local_peer_id
     }
 
@@ -770,7 +749,7 @@ impl ShellNetwork {
     /// operation of as `caller`, this device's admitted custody of the room:
     /// pinned to the current governor and its authenticated transport hint.
     /// `None` when no host governs the room.
-    fn governing_host(
+    pub(super) fn governing_host(
         &self,
         room: RoomId,
         caller: &tilo_user_identity::DeviceCert,
@@ -1087,8 +1066,7 @@ impl ShellNetwork {
         if let Some(held) = &self.held_personal_rooms_override {
             return held.clone();
         }
-        let (Some(owner), Some(user)) = (self.opened_native_owner(), self.personal_continuity_user)
-        else {
+        let (Some(owner), Some(user)) = (self.opened_native_owner(), self.local_person) else {
             return crate::shell::personal_workspaces::HeldRooms::new();
         };
         owner
@@ -1121,7 +1099,7 @@ impl ShellNetwork {
                 tracing::warn!(%room, %error, "a workspace let go on another device stays");
             }
         }
-        let Some(user) = self.personal_continuity_user else {
+        let Some(user) = self.local_person else {
             return;
         };
         for entry in adoption.enter {

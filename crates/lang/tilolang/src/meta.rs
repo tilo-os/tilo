@@ -24,6 +24,10 @@ pub struct PackageMeta {
     /// platform reads its records, grants and windows under them as the app's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub previously: Vec<String>,
+    /// Each member keeps the app's records in their own record of the workspace
+    /// (`app ... (records: .own)`), which only that person's devices read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_records: bool,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
@@ -38,7 +42,8 @@ pub struct PackageMeta {
     /// lists and opens.
     #[serde(default)]
     pub roots: Vec<String>,
-    /// The packages it uses (`use app.id`), by app id.
+    /// The packages it uses (`use app.id`), by their app ids now (a `use` of an id one had
+    /// before names it by its current one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub uses: Vec<String>,
     /// The named roots (`root notes: Notes`): what other packages reach as `alias.notes`.

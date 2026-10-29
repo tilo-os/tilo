@@ -36,48 +36,13 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return false;
         };
-        let help_open = self.overlay_flags().shortcut_help;
-        if help_open
-            || (!self.shortcut_help_button_is_suppressed()
-                && self.shortcut_help_button_rect().contains(p))
+        if !self.shortcut_help_button_is_suppressed()
+            && self.shortcut_help_button_rect().contains(p)
         {
-            if help_open
-                && let Some(action) = self
-                    .shortcut_binding_rects
-                    .iter()
-                    .find_map(|(action, rect)| rect.contains(p).then_some(*action))
-            {
-                self.shortcut_rebind = Some(action);
-                self.shortcut_rebind_message = None;
-                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
-                self.bump_chrome();
-                *handled = true;
-                return true;
-            }
-            if let Some((first, second)) = self
-                .shortcut_reset_rects
-                .iter()
-                .find_map(|(first, second, rect)| rect.contains(p).then_some((*first, *second)))
-            {
-                self.reset_shortcut_pair(first, second);
-                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
-                self.bump_chrome();
-                *handled = true;
-                return true;
-            }
             if let Some(chrome) = self.chrome.clone() {
                 let mut st = chrome.borrow_mut();
-                // Any click outside the card dismisses it; inside, only the
-                // explicit Done control closes. Both are safely absorbed.
-                if !self.shortcut_help_panel_rect().contains(p)
-                    || self.shortcut_help_done_rect().contains(p)
-                {
-                    st.overlays.shortcut_help = false;
-                    st.bump();
-                    self.shortcut_rebind = None;
-                    self.shortcut_rebind_message = None;
-                    self.shortcut_guide_focus = None;
-                }
+                st.overlays.shortcut_help = true;
+                st.bump();
             }
             *handled = true;
             return true;

@@ -211,22 +211,18 @@ fn set_text_rewrites_title_and_body() {
         &mut deck,
         Deck::SET_TEXT.with(deck::SetText {
             slide: slide.clone(),
-            title: Some("Final".into()),
+            title: Some(NonBlank::parse("Final").unwrap()),
             body: None,
         }),
     )
     .unwrap();
     assert_eq!(words(&deck, &slide), ["Final", "Old body"]);
     assert!(
-        apply(
-            &mut deck,
-            Deck::SET_TEXT.with(deck::SetText {
-                slide,
-                title: None,
-                body: Some("  ".into()),
-            }),
+        serde_json::from_value::<deck::SetText>(
+            serde_json::json!({"slide": slide.to_string(), "body": "  "})
         )
-        .is_err()
+        .is_err(),
+        "blank text is refused where the arguments are read"
     );
 }
 

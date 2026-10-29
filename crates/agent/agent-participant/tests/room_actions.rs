@@ -124,7 +124,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         &mut doc,
         "ada",
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,

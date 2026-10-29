@@ -1,24 +1,26 @@
-//! The person's desk widgets: which ones they keep, when each shows itself
-//! and which edge of the display it waits at.
+//! The person's desk widgets: which ones they keep, when each shows itself,
+//! where on each display it rests and how wide its card is.
 //!
 //! A widget is something the person added (music, the people in this
 //! workspace, a calendar, the system monitor). This is the one place widgets
 //! are chosen: the top bar keeps only the time, and has no widgets of its
 //! own. A widget is never pushed at them: while they type it is away, and
-//! it comes back in a quiet edge form when they pause, when they reach for
-//! its edge, or when they ask (Super). Each widget carries one choice of
-//! when it shows ([`ShowMode`]) and one edge ([`DockEdge`]).
+//! it comes back in its small resting form when they pause, when they reach
+//! for it, or when they ask (Super). Each widget carries one choice of when
+//! it shows ([`ShowMode`]), where it rests on each display it has been on
+//! ([`WidgetPrefs::places`]) and how wide its card is ([`WidgetPrefs::width`]).
 //!
 //! Settings → Appearance edits the choices; the compositor reads them
-//! through [`DeskWidgetPrefs::from_document`], and dragging a widget to
-//! another edge writes [`WidgetPrefs::edge`] back through `PREFS`.
+//! through [`DeskWidgetPrefs::from_document`], and the desk writes back
+//! where a widget was dropped, its width after a resize, and its removal.
 //!
 //! ```json
 //! "desk_widgets": {
-//!   "music": { "enabled": true, "show": "pause", "edge": "bottom_right", "always_on_strips": [] },
-//!   "team":  { "enabled": true, "show": "pause", "edge": "right", "always_on_strips": [] },
-//!   "calendar": { "enabled": false, "show": "pause", "edge": "right", "always_on_strips": [] },
-//!   "system_monitor": { "enabled": false, "show": "ask", "edge": "bottom_left", "always_on_strips": [] }
+//!   "music": {
+//!     "enabled": true, "show": "pause", "always_on_strips": [],
+//!     "places": [{ "display": "edid:Dell|U2720Q|CN0", "x": 1.0, "y": 0.4 }],
+//!     "width": 360.0
+//!   }
 //! }
 //! ```
 
@@ -58,15 +60,17 @@ impl WidgetId {
         }
     }
 
-    /// The edge a widget waits at until the person moves it. None uses the
-    /// top edge: the top bar and a maximized window's revealed bar live
-    /// there.
+    /// Where a widget rests until the person moves it, as a [`Place`]'s
+    /// fractions: music in the bottom-right corner, the people and the date
+    /// down the right edge, the machine's load bottom left. None rests at
+    /// the top: the top bar lives there.
     #[must_use]
-    pub const fn default_edge(self) -> DockEdge {
+    pub const fn default_place(self) -> (f64, f64) {
         match self {
-            Self::Music => DockEdge::BottomRight,
-            Self::Team | Self::Calendar => DockEdge::Right,
-            Self::SystemMonitor => DockEdge::BottomLeft,
+            Self::Music => (1.0, 1.0),
+            Self::Team => (1.0, 0.5),
+            Self::Calendar => (1.0, 0.25),
+            Self::SystemMonitor => (0.0, 1.0),
         }
     }
 
@@ -121,8 +125,8 @@ impl ShowMode {
     }
 }
 
-/// Where a widget waits. Corners and the side and bottom edges; never the
-/// top edge.
+/// Where something kept at the screen's edges waits (the pinned people
+/// overlay). Corners and the side and bottom edges; never the top edge.
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -156,9 +160,32 @@ impl DockEdge {
     }
 }
 
+/// Where a widget rests on one display: its resting form's place in the
+/// display's work area, as fractions of the room it can move in there (0
+/// against the left or top margin, 1 against the right or bottom). A
+/// widget dropped against an edge or into a corner keeps to it when the
+/// display's resolution changes, and one dropped in the open keeps its
+/// proportion.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Place {
+    /// The display, by its monitor's stable identity (the EDID token the
+    /// display partition knows it by, `output:N` without one), so a place
+    /// survives the monitor being unplugged, replugged or moved to
+    /// another port.
+    #[serde(default)]
+    pub display: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "model", model(range = 0.0..=1.0))]
+    pub x: f64,
+    #[serde(default)]
+    #[cfg_attr(feature = "model", model(range = 0.0..=1.0))]
+    pub y: f64,
+}
+
 /// One widget's choices.
 #[cfg_attr(feature = "model", derive(tilo_resource::Model))]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct WidgetPrefs {
     /// Whether the person keeps this widget on their desk.
@@ -167,12 +194,22 @@ pub struct WidgetPrefs {
     /// When the widget shows itself.
     #[serde(default)]
     pub show: ShowMode,
-    /// The edge or corner of the screen it docks at.
-    pub edge: DockEdge,
     /// The strips (by id) [`ShowMode::Always`] applies to; empty is every
     /// strip.
     #[serde(default)]
     pub always_on_strips: Vec<u64>,
+    /// Where it rests on each display it was dropped on, the display it
+    /// was last dropped on first: it lives there while that display is
+    /// connected, and on the next connected one in this list (or the
+    /// primary display, at its own default place) while it is not.
+    #[serde(default)]
+    pub places: Vec<Place>,
+    /// Its open card's width, in logical pixels, after the person resized
+    /// it; unset is the widget's own default. Each widget keeps it within
+    /// its own narrowest and widest, all inside this range.
+    #[serde(default)]
+    #[cfg_attr(feature = "model", model(range = 160.0..=640.0))]
+    pub width: Option<f64>,
 }
 
 crate::read_through_json_value!(WidgetPrefs);
@@ -188,9 +225,34 @@ impl WidgetPrefs {
         Self {
             enabled: id.on_by_default(),
             show: id.default_show(),
-            edge: id.default_edge(),
             always_on_strips: Vec::new(),
+            places: Vec::new(),
+            width: None,
         }
+    }
+
+    /// Where it rests on the first of `connected` displays it has a place
+    /// on, in the order it was dropped there (most recent first): that
+    /// display's identity and the place's fractions.
+    #[must_use]
+    pub fn place_on<'a>(&'a self, connected: &[&str]) -> Option<&'a Place> {
+        self.places
+            .iter()
+            .find(|place| connected.contains(&place.display.as_str()))
+    }
+
+    /// Dropped at `x`, `y` on `display`: that display becomes the one it
+    /// lives on, and its place there is this one.
+    pub fn drop_on(&mut self, display: &str, x: f64, y: f64) {
+        self.places.retain(|place| place.display != display);
+        self.places.insert(
+            0,
+            Place {
+                display: display.to_string(),
+                x: x.clamp(0.0, 1.0),
+                y: y.clamp(0.0, 1.0),
+            },
+        );
     }
 
     /// Whether [`ShowMode::Always`] holds on `strip`.
@@ -259,7 +321,7 @@ pub const fn prefs_key(id: WidgetId) -> &'static Key<WidgetPrefs> {
 }
 
 /// Every widget's choices, as one read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DeskWidgetPrefs {
     pub music: WidgetPrefs,
     pub team: WidgetPrefs,
@@ -319,14 +381,17 @@ mod tests {
     fn unset_and_partial_choices_read_as_their_defaults() {
         let document = serde_json::json!({
             "desk_widgets": {
-                "team": { "show": "ask", "edge": "left" },
+                "team": { "show": "ask", "places": [{ "display": "edid:A|B|1", "x": 0.0, "y": 0.5 }] },
                 "music": { "show": "never-heard-of-it" }
             }
         });
         let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
         assert_eq!(prefs.music, WidgetPrefs::default_for(WidgetId::Music));
         assert_eq!(prefs.team.show, ShowMode::Ask);
-        assert_eq!(prefs.team.edge, DockEdge::Left);
+        assert_eq!(
+            prefs.team.place_on(&["edid:A|B|1"]).map(|p| (p.x, p.y)),
+            Some((0.0, 0.5))
+        );
         assert!(prefs.team.enabled, "kept unless turned off");
         assert_eq!(
             DeskWidgetPrefs::from_document(&serde_json::Map::new()),
@@ -346,16 +411,15 @@ mod tests {
         assert_eq!(prefs.system_monitor.show, ShowMode::Ask);
         let document = serde_json::json!({
             "desk_widgets": {
-                "calendar": { "enabled": true, "show": "always", "edge": "left" },
-                "system_monitor": { "enabled": true, "edge": "bottom" }
+                "calendar": { "enabled": true, "show": "always", "width": 420.0 },
+                "system_monitor": { "enabled": true }
             }
         });
         let prefs = DeskWidgetPrefs::from_document(document.as_object().unwrap());
         assert!(prefs.calendar.enabled);
         assert_eq!(prefs.calendar.show, ShowMode::Always);
-        assert_eq!(prefs.calendar.edge, DockEdge::Left);
+        assert_eq!(prefs.calendar.width, Some(420.0));
         assert!(prefs.system_monitor.enabled);
-        assert_eq!(prefs.system_monitor.edge, DockEdge::Bottom);
         for id in WidgetId::ALL {
             assert_eq!(prefs_key(id).name(), id.key());
         }
@@ -389,19 +453,56 @@ mod tests {
 
     #[test]
     fn the_persisted_shape_round_trips() {
-        let prefs = WidgetPrefs {
+        let mut prefs = WidgetPrefs {
             enabled: false,
             show: ShowMode::Always,
-            edge: DockEdge::BottomLeft,
             always_on_strips: vec![3],
+            places: Vec::new(),
+            width: Some(300.0),
         };
+        prefs.drop_on("edid:A|B|1", 0.25, 1.5);
         let value = serde_json::to_value(&prefs).unwrap();
         assert_eq!(
             value,
             serde_json::json!({
-                "enabled": false, "show": "always", "edge": "bottom_left", "always_on_strips": [3]
+                "enabled": false, "show": "always", "always_on_strips": [3],
+                "places": [{ "display": "edid:A|B|1", "x": 0.25, "y": 1.0 }],
+                "width": 300.0
             })
         );
         assert_eq!(serde_json::from_value::<WidgetPrefs>(value).unwrap(), prefs);
+    }
+}
+
+#[cfg(test)]
+mod place_tests {
+    use super::*;
+
+    /// A widget lives on the display it was last dropped on while that one
+    /// is connected, keeps its place on every other display it was on, and
+    /// goes back to it when it is plugged in again.
+    #[test]
+    fn a_widget_keeps_a_place_per_display_and_goes_home_when_replugged() {
+        let mut prefs = WidgetPrefs::default_for(WidgetId::Music);
+        prefs.drop_on("panel", 0.0, 1.0);
+        prefs.drop_on("monitor", 0.5, 0.5);
+        let at = |prefs: &WidgetPrefs, connected: &[&str]| {
+            prefs
+                .place_on(connected)
+                .map(|p| (p.display.clone(), p.x, p.y))
+        };
+        assert_eq!(
+            at(&prefs, &["panel", "monitor"]),
+            Some(("monitor".into(), 0.5, 0.5))
+        );
+        assert_eq!(
+            at(&prefs, &["panel"]),
+            Some(("panel".into(), 0.0, 1.0)),
+            "monitor unplugged: back where it was on the panel"
+        );
+        assert_eq!(at(&prefs, &["other"]), None, "a stranger: its default");
+        prefs.drop_on("panel", 1.0, 0.0);
+        assert_eq!(prefs.places.len(), 2, "one place per display");
+        assert_eq!(at(&prefs, &["panel", "monitor"]).unwrap().0, "panel");
     }
 }

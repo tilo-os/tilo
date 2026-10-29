@@ -65,6 +65,7 @@ fn destination(fixture: &Fixture) -> LaunchDestination {
         workspace,
         app_id: app().package_id,
         record: Some("record".into()),
+        resource: None,
     }
 }
 

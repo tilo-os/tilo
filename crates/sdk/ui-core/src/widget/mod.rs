@@ -1924,6 +1924,17 @@ pub trait Widget {
         defaults::take_app_activation(self.children_mut())
     }
 
+    /// One-shot (reading MUST clear it): the test id of the control this
+    /// subtree asks to take the keyboard once the runner laid it out, such as
+    /// the first field of a view a person's press just opened, so what they
+    /// type next lands there. The runner focuses it as a press focuses a
+    /// control, blurring any other; a control it does not find (or that takes
+    /// no focus) leaves focus where it is. Default forwards the first request
+    /// found among the children.
+    fn take_focus_request(&mut self) -> Option<String> {
+        defaults::take_focus_request(self.children_mut())
+    }
+
     /// Role, name/description/value, and
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the
@@ -3171,8 +3182,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
-    NavListProps, NavPerson, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavEntry, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
+    NavListProps, NavPerson, NavSearchTerm, NavSection, NavSectionProps,
 };
 mod document_viewport;
 pub use document_viewport::{

@@ -21,6 +21,7 @@
 
 pub mod hosted;
 pub mod phrases;
+pub mod task;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
@@ -42,7 +43,35 @@ use phrases::Phrases;
 use tilolang_tilo::instance::room::RoomRecord;
 
 /// The record kind of an app's room record: every tilolang package keeps its resources in it.
-pub const RECORD_KIND: &str = "tilolang.room";
+pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
+
+/// The route an instance of `meta`'s package for `person` in `room` joins: the person's own
+/// record of the workspace for an app whose records are each member's own (`records: .own`),
+/// which only their devices are admitted to, else the workspace's record of the app.
+#[must_use]
+pub fn route_of(
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+    room: uuid::Uuid,
+    person: &str,
+) -> collaboration::RouteSpec {
+    route_under(meta, &meta.app, room, person)
+}
+
+/// [`route_of`], for the records the app keeps under `records`: its own id, or for an app
+/// renamed the earliest id it had (`InstanceRequest::records_under`), whose record it keeps using
+/// where it is.
+#[must_use]
+pub fn route_under(
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+    records: &str,
+    room: uuid::Uuid,
+    person: &str,
+) -> collaboration::RouteSpec {
+    match tilolang_tilo::own_record(meta, person) {
+        Some(record) => collaboration::RouteSpec::record(records.to_owned(), room, record),
+        None => collaboration::RouteSpec::app(records.to_owned(), room),
+    }
+}
 
 /// Why an instance the session handed over does not run.
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +83,11 @@ pub enum AdmitError {
          instance runs a module only under the id it was launched as"
     )]
     IdMismatch { launched: String, declared: String },
+    #[error(
+        "the session opened the records of `{records}` for `{app}`, an id the module does not \
+         say it had before"
+    )]
+    Records { app: String, records: String },
     #[error("the room `{0}` is no room id")]
     Room(String),
     #[error("the instance's connection could not join its room: {0}")]
@@ -135,6 +169,8 @@ pub struct TilolangHost {
     opening: Vec<Opening>,
     /// The windows whose instances ended since the session was last told.
     ended: Vec<u64>,
+    /// The agent task whose programs this host runs, when its author is a task.
+    task: Option<task::Task>,
 }
 
 impl TilolangHost {
@@ -155,6 +191,33 @@ impl TilolangHost {
             running: Vec::new(),
             opening: Vec::new(),
             ended: Vec::new(),
+            task: None,
+        }
+    }
+
+    /// Run the programs of the task the session handed over, until the door closes it.
+    ///
+    /// # Errors
+    /// The task's modules cannot be read or loaded.
+    pub fn begin_task(
+        &mut self,
+        request: &runtime_portal::tilolang_host::TaskRequest,
+        fds: runtime_portal::tilolang_host::TaskFds,
+    ) -> Result<(), String> {
+        self.task = Some(task::Task::open(request, fds)?);
+        Ok(())
+    }
+
+    /// The task's program connection, to wait on.
+    pub fn task_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.task.as_ref().map(task::Task::fd)
+    }
+
+    /// Answer what the task's door sent; the task ends when the door closed it.
+    pub fn serve_task(&mut self) {
+        if self.task.as_ref().is_some_and(|task| !task.serve()) {
+            tracing::info!("task ended: the door closed it");
+            self.task = None;
         }
     }
 
@@ -189,6 +252,11 @@ impl TilolangHost {
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
+    }
+
+    /// The instances running, to drive one.
+    pub fn instances_mut(&mut self) -> impl Iterator<Item = &mut Hosted> {
+        self.running.iter_mut().map(|running| &mut running.hosted)
     }
 
     /// How many instances are being opened.
@@ -381,6 +449,18 @@ impl TilolangHost {
                 declared: bundle.meta.app,
             });
         }
+        // The record of an id the app had before, as the session names it: one the module says
+        // it had. Whether the same publisher signed both the broker checks as it admits the join.
+        let records = match &request.records_under {
+            Some(records) if !bundle.meta.previously.contains(records) => {
+                return Err(AdmitError::Records {
+                    app: request.app,
+                    records: records.clone(),
+                });
+            }
+            Some(records) => records.clone(),
+            None => request.app.clone(),
+        };
         let room = uuid::Uuid::parse_str(&request.room)
             .map_err(|_| AdmitError::Room(request.room.clone()))?;
         let identity =
@@ -390,7 +470,7 @@ impl TilolangHost {
             &collaboration::record::RecordKind::new(RECORD_KIND),
             broker,
             identity.as_fd(),
-            collaboration::RouteSpec::app(request.app.clone(), room),
+            route_under(&bundle.meta, &records, room, &request.person),
             Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;
@@ -418,8 +498,16 @@ impl TilolangHost {
         // Receivers decide each change against the app's surface: its package's own, as the
         // launcher names it for a launched app.
         collaboration::app_surface::register_package(&bundle.meta.app, &bundle.surface());
+        // The records the route names: the app's own, or those of the id it had before, kept
+        // where that app kept them. The changes made there name the app's surface too.
+        let records = manager
+            .primary_route()
+            .map_or_else(|| spec.app.clone(), |joined| joined.route().app_id.clone());
+        if records != bundle.meta.app {
+            collaboration::app_surface::register_package(&records, &bundle.surface());
+        }
         let kept = self
-            .kept(&spec.app)
+            .kept(&records)
             .map_err(|error| AdmitError::Join(error.to_string()))?;
         let _scope = self.scope.enter();
         let record = RoomRecord::open_read(manager, read, &kept.documents, spec.person.clone())?;
@@ -558,7 +646,7 @@ impl TilolangHost {
     /// Whether the host runs no instance and opens none.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.running.is_empty() && self.opening.is_empty()
+        self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
     }
 }
 

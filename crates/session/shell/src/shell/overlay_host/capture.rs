@@ -257,6 +257,8 @@ impl ShellOverlayHost {
         // included), puts the canvas's caret away and gives the keyboard
         // back.
         self.canvas_press_on_window(p);
+        // A press outside a desk card opened on purpose folds it.
+        self.desk_note_press(p);
         self.with_maximized_group(|group| group.note_maximized_press(p));
         if let Some((display, bar)) = self.top_bar_reveal_geometry() {
             self.top_bar_reveal.on_press(p, display, bar);

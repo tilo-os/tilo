@@ -34,19 +34,23 @@ fn person(first: &str, last: &str) -> Contact {
     }
 }
 
+fn name(text: &str) -> ui::tilo_resource::NonBlank {
+    text.parse().unwrap()
+}
+
 /// A typed name becomes a contact; a whole card is added under its own id,
 /// once; a deleted contact's id never names a contact again.
 #[test]
 fn contacts_are_added_once_and_a_deleted_id_stays_deleted() {
     let mut book = Replica::<Contacts>::new();
-    book.apply(Contacts::NEW_CONTACT.with("Dana Scott"))
+    book.apply(Contacts::NEW_CONTACT.with(name("Dana Scott")))
         .unwrap();
     let state = book.state().unwrap();
     let dana = state.contacts.first().unwrap();
     assert_eq!((dana.first.as_str(), dana.last.as_str()), ("Dana", "Scott"));
     assert!(
-        book.apply(Contacts::NEW_CONTACT.with("  ")).is_err(),
-        "a new contact has a name"
+        serde_json::from_value::<contacts::NewContact>(serde_json::json!({"name": "  "})).is_err(),
+        "a new contact has a name, refused where the arguments are read"
     );
 
     let ada = person("Ada", "Lovelace");
@@ -591,7 +595,7 @@ fn history_says_what_each_change_did() {
         .push(Labeled::new("mobile", "+44 20 7946 0101"));
     app.invoke(Contacts::save(&edited, &saved).unwrap())
         .unwrap();
-    app.invoke(Contacts::NEW_CONTACT.with("Grace Hopper"))
+    app.invoke(Contacts::NEW_CONTACT.with(name("Grace Hopper")))
         .unwrap();
     app.invoke_confirmed(Contacts::delete(ada.id)).unwrap();
 

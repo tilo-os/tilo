@@ -76,8 +76,8 @@ id = "set-text"
 kind = "undoable"
 params = [
   { name = "slide", required = true, schema = { type = "string" } },
-  { name = "title", required = false, schema = { type = ["string", "null"] } },
-  { name = "body", required = false, schema = { type = ["string", "null"] } },
+  { name = "title", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
+  { name = "body", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

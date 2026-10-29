@@ -32,7 +32,7 @@ fields = [
 id = "add-subscription"
 kind = "undoable"
 params = [
-  { name = "url", required = true, schema = { type = "string" } },
+  { name = "url", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "folder", required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -59,7 +59,7 @@ kind = "undoable"
 id = "new-folder"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

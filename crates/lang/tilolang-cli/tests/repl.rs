@@ -150,3 +150,74 @@ history task
         "{out}"
     );
 }
+
+/// Answer a nested session's control socket as the person there: one agent admission waiting,
+/// every request recorded in `seen`, until `stop` is set.
+fn person_at_control(
+    listener: &UnixListener,
+    seen: &std::sync::Mutex<Vec<Value>>,
+    stop: &std::sync::atomic::AtomicBool,
+) {
+    listener.set_nonblocking(true).unwrap();
+    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            Err(error) => panic!("{error}"),
+        };
+        stream.set_nonblocking(false).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        let reply = match request["op"].as_str() {
+            Some("actions_enumerate") => json!({"answer": {"actions": [
+                {"provider": "permission-prompts", "id": "deny@p1"}
+            ]}}),
+            _ => json!({"answer": {}}),
+        };
+        seen.lock().unwrap().push(request);
+        writeln!(writer, "{reply}").unwrap();
+    }
+}
+
+/// The REPL is admitted to a nested session as the person's agent, and writes none of the
+/// answers the person gives that agent: a `deny` or `ask` they set stays theirs.
+#[test]
+fn the_repl_is_admitted_as_the_persons_agent_and_never_writes_their_answers() {
+    let runtime = tempfile::tempdir().unwrap();
+    std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
+    let door = UnixListener::bind(runtime.path().join("tilo-session/agent.sock")).unwrap();
+    let control = UnixListener::bind(runtime.path().join("control.sock")).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let person = std::thread::spawn({
+        let (seen, stop) = (seen.clone(), stop.clone());
+        move || person_at_control(&control, &seen, &stop)
+    });
+    let door = std::thread::spawn(move || old_door(&door));
+    let output = repl(&["--session", runtime.path().to_str().unwrap()], "");
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    person.join().unwrap();
+    door.join().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("has no `tilo` tool"),
+        "it got past admission: {stderr}"
+    );
+    let seen = seen.lock().unwrap();
+    let admitted = seen
+        .iter()
+        .find(|request| request["id"] == "allow-once@p1")
+        .unwrap_or_else(|| panic!("the person admits it: {seen:?}"));
+    assert_eq!(admitted["args"]["agent"], "tilolang-repl");
+    assert_eq!(admitted["args"]["preset"], "operator", "{admitted}");
+    assert!(
+        seen.iter()
+            .all(|request| request["op"] != "allow" && request["op"] != "disallow"),
+        "the REPL gives itself no answers: {seen:?}"
+    );
+}

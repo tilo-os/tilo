@@ -292,6 +292,12 @@ pub(super) fn take_app_activation(
         .find_map(|child| child.take_app_activation())
 }
 
+pub(super) fn take_focus_request(children: ChildrenMut<'_>) -> Option<String> {
+    children
+        .into_iter()
+        .find_map(|child| child.take_focus_request())
+}
+
 pub(super) fn dev_route(children: Vec<&dyn Widget>) -> Option<super::router::RouteSnapshot> {
     children.into_iter().find_map(|child| child.dev_route())
 }

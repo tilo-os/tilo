@@ -39,7 +39,7 @@ use tilo_desktop::window_switcher::{WindowAddress, WindowSwitcher, WindowThumbna
 
 use super::sheet_apps::SheetHost;
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
-use crate::shell::display_confirm::DisplayConfirmPrompt;
+use crate::shell::display_confirm::DisplayQuestion;
 use crate::shell::window_menu::WindowMenuAction;
 
 /// Every shell overlay, topmost first. Declaration order *is* the stacking
@@ -93,6 +93,15 @@ impl LayerId {
         Self::NowPlaying,
         Self::ShortcutHelp,
     ];
+
+    /// Whether the overlay is an app that publishes its own accessibility
+    /// tree, as a child of the host, rather than a node of the host's own.
+    pub(crate) const fn is_app(self) -> bool {
+        matches!(
+            self,
+            Self::PowerMenu | Self::DisplayConfirmation | Self::ShortcutHelp
+        )
+    }
 
     /// Where a stacked layer's input is routed; `None` while the host still
     /// routes the overlay itself. Never decreases down [`Self::ALL`].
@@ -600,7 +609,14 @@ pub(crate) trait ShellLayer {
 /// The overlays that have joined the stack, and the arbitration they share.
 #[derive(Default)]
 pub(crate) struct OverlayStack {
-    pub(crate) display_confirm: DisplayConfirmPrompt,
+    /// The question about a tool's display change, an app
+    /// ([`tilo_sheets::display_confirm`]).
+    pub(crate) display_confirm: SheetHost<tilo_sheets::display_confirm::ConfirmSeat>,
+    /// The transaction that question waits on.
+    pub(crate) display_question: DisplayQuestion,
+    /// The shortcut guide, an app ([`tilo_sheets::shortcut_guide`]). The
+    /// host routes it itself: a chord the guide waits for is the shell's.
+    pub(crate) shortcut_guide: SheetHost<tilo_sheets::shortcut_guide::GuideSeat>,
     pub(crate) window_switcher: WindowSwitcher,
     pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,

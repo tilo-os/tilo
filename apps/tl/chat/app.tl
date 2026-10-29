@@ -90,7 +90,6 @@ action start_thread(c: TextChannel, m: Message, name: Text = m.body.excerpt) -> 
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
-/// TODO(ui): a category's heading over its channels, a section of the navigation list.
 view sidebar(all: Channels) {
     lens shown: Text = ""
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
@@ -99,9 +98,11 @@ view sidebar(all: Channels) {
                 for item in all {
                     match item {
                         c: Category => {
-                            for ch in c.channels {
-                                ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash) {
-                                    on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
+                            ui.NavSection(c.name, collapsible: true) {
+                                for ch in c.channels {
+                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash) {
+                                        on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
+                                    }
                                 }
                             }
                         }
@@ -205,7 +206,8 @@ view message(m: Message) {
     }
 }
 
-/// A team's chat a morning in: categories of channels, a busy channel with replies and a thread.
+/// A team's chat two mornings in: categories of channels, a busy channel with replies and a
+/// thread, its last messages the next day.
 scenario "a team's channels" -> TextChannel {
     let mia = person("Mia")
     let leo = person("Leo")
@@ -240,10 +242,10 @@ scenario "a team's channels" -> TextChannel {
             send(design, RichText("Agreed. I'll update the flow this afternoon."), ask)
         }
     }
-    as ada at 2026-06-29T08:10Z {
+    as ada at 2026-06-30T08:10Z {
         send(design, RichText("Shots of the new sidebar are in the review folder."))
     }
-    as mia at 2026-06-29T08:12Z {
+    as mia at 2026-06-30T08:12Z {
         send(design, RichText("The spacing above the categories looks right now."))
     }
     as leo at 2026-06-29T08:30Z {

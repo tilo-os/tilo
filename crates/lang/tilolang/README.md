@@ -73,14 +73,14 @@ root Counter
 
 default view counter for Counter
 
-action increment(c: Counter) {
+primary action increment(c: Counter) (icon: .plus) {
     c.value += 1
 }
 
 view counter(c: Counter) {
     page {
-        heading("{c.value}")
-        button("+1", on: increment(c), style: .primary) as plus
+        text("{c.value}", role: .numeric)
+        button(increment(c)) as plus
     }
 }
 ```
@@ -255,13 +255,13 @@ view notebook(nb: Notebook) {
     page {
         stack(gap: .section) {
             row(distribute: .between) {
-                heading("Notes")
-                button("New note", on: new_note(nb), style: .primary) as new
+                text("Notes", role: .title)
+                button(new_note(nb)) as new
             }
             button("Sort by title", on: set(order, .title))
             for n in listed(nb, order) {
-                button(n.title, on: open(n), style: .plain)
-                text(n.body, style: .caption, truncate, min: 11rem)
+                button(n.title, on: open(n))
+                text(n.body, role: .caption, truncate, min: 11rem)
             }
         }
     }
@@ -269,12 +269,13 @@ view notebook(nb: Notebook) {
 ```
 
 The options and their values: `gap:`/`padding:` `.tight .related .sibling .section .group`;
-`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`;
-`collapse:` `.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions
-`.top_leading` ... `.bottom_trailing`; `axis:` `.vertical .horizontal`; button `style:`
-`.secondary .primary .destructive .plain`; text `style:` `.body .title .heading .caption .label
-.code`. `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation`
-(`.portrait .landscape .ultrawide`) compare with the same literals.
+`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`; `collapse:`
+`.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
+... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.body .title .caption
+.numeric`. A button takes its look from its action, `primary action` or `destructive action`, and
+its label and icon from the action too unless it names them (`button(n.title, on: open(n))`).
+`space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation` (`.portrait
+.landscape .ultrawide`) compare with the same literals.
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
 `window name: T = default` is the window's and shared, `lens name: T = default` is each

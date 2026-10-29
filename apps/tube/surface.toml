@@ -18,8 +18,8 @@ fields = [
 id = "reply-to-comment"
 kind = "undoable"
 params = [
-  { name = "comment", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "comment", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+  { name = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

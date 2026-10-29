@@ -2734,16 +2734,10 @@ settings-desk-team = People in this workspace
 settings-desk-calendar = Calendar
 settings-desk-system-monitor = System monitor
 settings-desk-when = Shows
-settings-desk-edge = Waits at
 settings-desk-show-pause = When I pause typing
 settings-desk-show-always = Always, on the strips I pin it to
 settings-desk-show-ask = Only when I ask
-settings-desk-edge-left = Left edge
-settings-desk-edge-right = Right edge
-settings-desk-edge-bottom = Bottom edge
-settings-desk-edge-bottom-left = Bottom-left corner
-settings-desk-edge-bottom-right = Bottom-right corner
-settings-desk-note = Widgets step aside while you type and come back when you pause or reach for their edge. Hold or tap Super to see them all. Drag one to move it to another edge; its pin keeps it on the strip you are on.
+settings-desk-note = Widgets step aside while you type and come back when you pause or reach for them. Tap one to open it and tap outside or press Escape to fold it; hold or tap Super to see them all. Drag one anywhere, on any display, to move it; drag its corner to resize it; hover it to remove it. Its pin keeps it on the strip you are on.
 
 settings-drives-title = Remembered drives
 settings-drives-intro = Drives you chose to remember open without asking again. A drive inside this computer opens when you open it in Files; an external one is still asked about each time you connect it.

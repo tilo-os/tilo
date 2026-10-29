@@ -109,7 +109,7 @@ pub async fn run(bundle: &str) {
             &mut doc,
             &author,
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                name: name.into(),
+                name: name.parse().unwrap(),
                 category: None,
                 kind: None,
                 topic: None,

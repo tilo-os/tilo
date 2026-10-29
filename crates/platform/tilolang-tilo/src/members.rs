@@ -124,17 +124,22 @@ pub fn members_of(standing: &Standing, people: &People) -> Vec<Member> {
 }
 
 /// Who of the members reads a resource, as `standing`'s policy answers for each: the node of
-/// the resource under its app and kind, read.
+/// the resource under its app and kind, read. A resource of an app whose records are each
+/// member's own is an item of the record of the person at the window, which only they read.
 #[must_use]
 pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> {
-    let kinds: HashMap<String, (String, String)> = host
+    let kinds: HashMap<String, (String, String, Option<String>)> = host
         .packages()
         .into_iter()
         .flat_map(|package| {
             let meta = package.meta;
+            let own = crate::own_record(&meta, &standing.person);
             meta.types
                 .iter()
-                .map(|ty| (ty.id.clone(), (meta.app.clone(), meta.kind_of(&ty.name))))
+                .map(|ty| {
+                    let at = (meta.app.clone(), meta.kind_of(&ty.name), own.clone());
+                    (ty.id.clone(), at)
+                })
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -143,7 +148,12 @@ pub fn reads_of(standing: &Standing, people: &People, host: &Host) -> Rc<Reads> 
     Rc::new(move |who: &Principal, target: &ResourceRef| {
         let room = TreePath::room(standing.room());
         let node = match kinds.get(&target.ty) {
-            Some((app, kind)) => room.app(app).kind(kind).resource(target.id_string()),
+            Some((app, kind, Some(own))) => room
+                .app(app)
+                .kind(kind)
+                .resource(own)
+                .item(target.id_string()),
+            Some((app, kind, None)) => room.app(app).kind(kind).resource(target.id_string()),
             None => room,
         };
         reads_node(&standing, &people, who, &node)
@@ -158,7 +168,8 @@ fn reads_node(standing: &Standing, people: &People, who: &Principal, node: &Tree
         Some(agent) => policy.party_of(Subject::agent(agent)),
         None => policy.party(people.person_of(standing, &who.0)),
     };
-    let cx = Context::at_time(std::time::SystemTime::now());
+    let earlier = crate::schema::earlier_ids();
+    let cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
     Policy::person(party)
         .decide(node, ActionKind::Read, &cx)
         .answer

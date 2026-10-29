@@ -69,6 +69,13 @@ pub trait PersonRecordKinds: Send + Sync + 'static {
     /// with. A host that runs no package of the app may take it as the
     /// app's surface; by default it is ignored and only a package's counts.
     fn attached(&self, _app_id: &str, _surface: &[u8]) {}
+
+    /// The ids `app_id` had before, as the installed catalogue believes them (the same publisher
+    /// signed them, `tilo_installed_apps::earlier_ids`): the app keeps using the records of
+    /// those ids, so a route of one is its launch's own. None by default.
+    fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// A host that knows no app's person records: nothing is signed in the
@@ -382,6 +389,16 @@ struct Bound<'a> {
 }
 
 impl Bound<'_> {
+    /// Whether `app_id` is the bound app's, or an id it had before whose records it keeps using.
+    fn keeps_records_of(&self, app_id: &str) -> bool {
+        app_id == self.app_id
+            || self
+                .person
+                .earlier_ids(self.app_id)
+                .iter()
+                .any(|old| old == app_id)
+    }
+
     /// Whether `workspace_id` is the own room of the person the bound room's
     /// identity is, and the app keeps records of theirs there.
     fn in_person_room(
@@ -474,7 +491,7 @@ fn sign_collaboration_op(
     // app's, and never a kind it does not declare.
     let workspace_record =
         launch_room && collab_types::workspace_record(app_id, record_id).is_some();
-    if (app_id != bound.app_id && !workspace_record)
+    if (!bound.keeps_records_of(app_id) && !workspace_record)
         || (!launch_room && !bound.keeps_person_record(record_id))
     {
         return Response::Denied(
@@ -595,7 +612,7 @@ fn channel_keys(
     // or a record of the person's the app declares in their own room (its
     // own, or another app's it reads).
     if (launch_room
-        && route.app_id != bound.app_id
+        && !bound.keeps_records_of(route.app_id)
         && collab_types::workspace_record(route.app_id, route.record_id).is_none())
         || (!launch_room && !bound.keeps_person_record(route.record_id))
     {
@@ -811,6 +828,19 @@ mod tests {
             room,
             app_id,
             person: &(),
+        }
+    }
+
+    /// Every app was published as the id this names before, as an installed catalogue believes.
+    struct RenamedFrom(&'static str);
+
+    impl PersonRecordKinds for RenamedFrom {
+        fn person_record_kinds(&self, _app_id: &str) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
+            vec![self.0.to_owned()]
         }
     }
 
@@ -1092,6 +1122,36 @@ mod tests {
                 &bound(&room, app_id),
                 &workspace_id,
                 "so.tilo.calendar",
+                record_id,
+                &unsigned,
+            ),
+            Response::Denied(_)
+        ));
+        // An app renamed from Notes, as the installed catalogue believes it, changes the record
+        // Notes kept, where it is; an app claiming nothing of Notes does not.
+        let renamed = RenamedFrom(app_id);
+        let as_renamed = Bound {
+            room: &room,
+            app_id: "so.tilo.notebook",
+            person: &renamed,
+        };
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &as_renamed,
+                &workspace_id,
+                app_id,
+                record_id,
+                &unsigned
+            ),
+            Response::Signature(_)
+        ));
+        assert!(matches!(
+            sign_collaboration_op(
+                &tree,
+                &bound(&room, "so.tilo.notebook"),
+                &workspace_id,
+                app_id,
                 record_id,
                 &unsigned,
             ),

@@ -16,10 +16,10 @@ impl ResourceApp for TestBrowser {
         let engine = cx
             .take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>()
             .unwrap();
-        cx.surface(crate::BrowserWindow::new(
-            crate::BrowserWidget::with_engine(engine, true),
-            false,
-        ))
+        crate::resource::browser_view(
+            cx,
+            crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
+        )
     }
 }
 fn bundle() -> ImportBundle {

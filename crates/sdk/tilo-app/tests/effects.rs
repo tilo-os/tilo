@@ -1040,6 +1040,117 @@ fn retiring_parent_cancels_and_unpublishes_even_a_retained_child_host() {
     drop(held);
 }
 
+/// A window that keeps what it counted in its own state, not in a store
+/// the view shares.
+#[derive(Default)]
+struct Counter {
+    rect: Rect,
+    counted: u32,
+}
+
+impl Widget for Counter {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        _: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap()
+    }
+
+    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, origin: Point) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+    }
+
+    fn name(&self) -> &'static str {
+        "Counter"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+/// Effects a view answers on its [`Counter`] window.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.counter.effects")]
+pub enum CounterEffect {
+    /// Count.
+    Count {
+        #[param("How much to count")]
+        by: u32,
+    },
+    /// Read what the window counted.
+    #[effect(returns, kind = "read")]
+    Counted,
+}
+
+thread_local! {
+    static COUNTER_OPEN: RefCell<Option<LocalState<bool>>> = const { RefCell::new(None) };
+}
+
+struct CounterApp;
+
+impl ResourceApp for CounterApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-counter";
+    const TITLE: &'static str = "Counter";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        let open = LocalState::new(true);
+        COUNTER_OPEN.with(|saved| *saved.borrow_mut() = Some(open.clone()));
+        cx.window_effects(
+            |counter: &mut Counter, effect: CounterEffect, cx| match effect {
+                CounterEffect::Count { by } => {
+                    counter.counted = counter.counted.saturating_add(by);
+                    Ok(Effected::done())
+                }
+                CounterEffect::Counted => Ok(Effected::value(serde_json::json!({
+                    "counted": counter.counted,
+                    "document": cx.document().is_some(),
+                }))),
+            },
+        );
+        cx.switch(&open, |_, open| {
+            if *open {
+                Box::new(Counter::default())
+            } else {
+                Box::new(Column::new())
+            }
+        })
+    }
+}
+
+#[test]
+fn a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed() {
+    let mut app = TestApp::<CounterApp>::new().unwrap();
+    app.effect(&CounterEffect::Count { by: 3 }).unwrap();
+    app.effect(&CounterEffect::Count { by: 4 }).unwrap();
+    assert_eq!(app.surface_mut::<Counter>().counted, 7);
+    assert_eq!(
+        app.effect(&CounterEffect::Counted).unwrap().value,
+        Some(serde_json::json!({"counted": 7, "document": true})),
+        "the handler reads the window and the document at once"
+    );
+
+    COUNTER_OPEN.with(|saved| saved.borrow().as_ref().unwrap().set(false));
+    app.settle();
+    assert!(
+        effect(&app.agent_surface(), "counted").is_some(),
+        "the view still publishes the vocabulary"
+    );
+    let refused = app.effect(&CounterEffect::Counted).unwrap_err();
+    assert!(format!("{refused:?}").contains("not open"), "{refused:?}");
+}
+
 impl ResourceApp for TallyApp {
     type Resource = Mailbox;
     const ID: &'static str = "so.tilo.test-tally";

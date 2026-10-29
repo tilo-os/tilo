@@ -293,12 +293,25 @@ impl PlayerTable {
                     can_go_next: entry.flag("CanGoNext"),
                     can_go_previous: entry.flag("CanGoPrevious"),
                 };
-                now_playing_from_properties(
+                let (mut player, art) = now_playing_from_properties(
                     bus_name,
                     &properties,
                     &entry.metadata(),
                     entry.observed_at,
-                )
+                )?;
+                // A sandboxed Tilo app's player is named after its package
+                // (`org.mpris.MediaPlayer2.so.tilo.music`).
+                player.app = entry
+                    .package_id
+                    .clone()
+                    .or_else(|| entry.string("DesktopEntry"))
+                    .or_else(|| {
+                        bus_name
+                            .strip_prefix("org.mpris.MediaPlayer2.")
+                            .filter(|rest| rest.contains('.'))
+                            .map(str::to_string)
+                    });
+                Some((player, art))
             })
             .take(MAX_NOW_PLAYING_PLAYERS)
             .collect()

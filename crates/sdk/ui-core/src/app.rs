@@ -65,7 +65,6 @@ mod retirement_lifecycle_tests;
 mod surface_route;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
-mod retained_layout;
 mod runtime;
 mod window_bar;
 use runtime::{
@@ -153,10 +152,10 @@ mod room_record_launch_tests {
     }
 }
 
-const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
-const ACTION_DIRECTORY_MAX_WORK: usize = 512;
-const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
-const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
+const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
+const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
+const ACTION_DIRECTORY_MAX_BYTES: usize = ::collaboration::action_directory::MAX_BYTES;
+const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_DEPTH;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
@@ -2532,76 +2531,6 @@ impl App {
         (self.layout.rebuilds, self.layout.remounts)
     }
 
-    /// Carry out the change the root's widgets make in place
-    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
-    /// admitting what they mounted, and sync them. Returns `false` when it
-    /// could not be carried out in place, and the caller rebuilds the tree.
-    #[cfg(feature = "native")]
-    pub(crate) fn remount_in_place(&mut self) -> bool {
-        self.layout.remount = false;
-        if self.layout.structure_dirty
-            || self.layout.root_node.is_none()
-            || self.history.as_ref().is_some_and(|history| {
-                !history.live_interactive() || history.returning_live() || history.review_is_open()
-            })
-            || self.close_admission.dialog.is_some()
-        {
-            return false;
-        }
-        let _entry = self.enter_wake_scope();
-        // Components a widget replaced report their close here, as before a
-        // rebuild.
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
-        );
-        let mut remount = crate::widget::Remount::new(
-            &mut self.layout.taffy,
-            &self.theme,
-            &mut self.layout.node_map,
-        );
-        let applied = self.root_widget.remount_children(&mut remount);
-        let (mounted, unmounted) = remount.finish();
-        // The rows it mounted are checked against the live tree at once, as
-        // a build's are, so the next structure check finds the maps live.
-        self.admit_layout_maps();
-        // A change no widget carried out, or any other beside it, needs the
-        // whole tree.
-        if !applied
-            || self.root_widget.take_structure_change() != crate::widget::StructureChange::None
-        {
-            return false;
-        }
-        self.bindings.forget(&unmounted);
-        for (parent, child) in mounted {
-            // SAFETY: App exclusively owns this tree, its maps and widgets;
-            // the remount above admitted `child` into both.
-            if !unsafe {
-                self.bindings.admit_mounted(
-                    parent,
-                    child,
-                    &self.layout.taffy,
-                    &self.layout.node_map,
-                )
-            } {
-                return false;
-            }
-        }
-        self.layout.remounts = self.layout.remounts.wrapping_add(1);
-        self.layout.layout_dirty = true;
-        // Fresh controls have not seen where the pointer is.
-        self.input.pointer_replay.mark_unsettled();
-        // The mounted widgets are synced before they are measured, as a
-        // rebuild syncs its fresh ones; a sync that replaces delegates
-        // needs the whole tree after all.
-        self.root_widget.sync(&self.state.doc, &self.state.root);
-        self.needs_sync = false;
-        if self.take_composition_dirty() {
-            return false;
-        }
-        self.invalidate_widget_resource_cache();
-        true
-    }
-
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
     /// focused widget's caret/selection only if focus lands back on the SAME
     /// focusable ordinal after rebuild (never onto a different field);
@@ -2738,19 +2667,24 @@ impl App {
             self.layout.request_rebuild();
             self.bindings.clear();
             self.layout.node_map.clear();
-        } else if self.focused_node.is_none() {
-            // A retained control can keep focus while a modal temporarily owns
-            // input. Rebuilding invalidates its NodeId, not that live focus.
-            // Recover only the unique current focused path inside the current
-            // allowed order; never transfer focus or state to a replacement.
-            // SAFETY: sync retained this exact exclusively owned topology.
-            self.focused_node = unsafe {
-                crate::widget::layout::CompositionFocus::current(
-                    &self.layout.node_map,
-                    &self.bindings,
-                    Some(&self.focusable_order),
-                )
-            };
+        } else {
+            if self.focused_node.is_none() {
+                // A retained control can keep focus while a modal temporarily
+                // owns input. Rebuilding invalidates its NodeId, not that live
+                // focus. Recover only the unique current focused path inside
+                // the current allowed order; never transfer focus or state to
+                // a replacement.
+                // SAFETY: sync retained this exact exclusively owned topology.
+                self.focused_node = unsafe {
+                    crate::widget::layout::CompositionFocus::current(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
+                };
+            }
+            // The tree this rebuild made is the one a control asked focus in.
+            self.apply_focus_request();
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it

@@ -119,7 +119,16 @@ relies on:
   `target/thin-app/runtime-engines`, which packaging signs into the bundle;
 - `tools/ci/rustc-thin-app-wrapper.sh` gives `tilo_*_engine` crates the
   runtime's link flags (`-C prefer-dynamic` is what lets one Rust dylib link
-  another);
+  another) and its linker, `tools/ci/runtime-dylib-lazy-link.py`, which drops
+  the code nothing exported reaches;
+- rustc exports every item of every crate linked into a Rust dylib. An
+  engine that apps or other engines compile against keeps that list, since
+  they may name any of those items. An engine no workspace crate depends on
+  (Settings', which its app binary calls by an unmangled name, and the
+  ad-block compiler, which the toolkit opens with `dlopen`) exports only its
+  unmangled entry points: `build-thin-apps.sh` finds those engines in the
+  workspace, and the link keeps only the code their entry points reach. Its
+  check binary calls it the same way, through `tilo_<name>_engine_check`;
 - the app links the engine under a feature of its own (`runtime-engine` in
   Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
   Contacts, Messages, PDF Viewer, Files, Print Centre, Imager, Browser, Store, Chat and the on-screen keyboard), named in `dist/apps/app-collections.toml`, the
@@ -148,7 +157,10 @@ relies on:
   account custody its sign-in reaches, for one).
 
 Release / apps reports each engine's bytes, relocations and dirtied pages
-beside the runtime's, fails when an app of `apps_without_media` loads one it
+beside the runtime's, holds each engine's file to its budget (`[engines.<arch>]`
+in the budget, by library name, with the runtime's headroom, rounding and
+raise files: a raise adds `"lib<name>.so" = <bytes>` under
+`[engines.<arch>]`, and an engine without a budget fails), fails when an app of `apps_without_media` loads one it
 does not use (`[engine_users]` in the budget names the ones those apps use:
 Clocks the time-zone database), renders Typst Editor through its engine, runs
 Music's Spotify engine (`music --probe-spotify-engine`, librespot's code

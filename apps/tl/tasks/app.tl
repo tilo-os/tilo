@@ -1,4 +1,4 @@
-app so.tilo.lang.todo "Tasks" (icon: .list_checks, category: .office)
+app so.tilo.lang.tasks "Tasks" (icon: .list_checks, category: .office, previously: so.tilo.lang.todo)
 
 /// How much a task matters, most urgent last.
 enum Priority {
@@ -84,11 +84,20 @@ action add(tasks: Tasks, title: Text) -> Task {
     tasks.items.insert(Task(title: title))
 }
 
-/// Adds what was typed in a quick add entry as a task: to the inbox, or to `p`. An empty entry
-/// adds nothing.
-action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none) {
-    if entry != "" {
-        tasks.items.insert(Task(title: entry, project: p))
+/// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
+/// when ("Call the landlord tomorrow 9am"), that is its due day and moment and the rest its
+/// title; without, a task added `today` is due today. An empty entry adds nothing.
+action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
+    let said = dated(entry, now)
+    let due: Option<Date> = if let day = said.day {
+        .some(day)
+    } else if today {
+        dated("today", now).day
+    } else {
+        .none
+    }
+    if said.text != "" {
+        tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p))
     }
 }
 
@@ -229,8 +238,15 @@ view home(t: Tasks) {
             ui.Docked {
                 foot: {
                     stack {
-                        ui.TextInput(value: draft, placeholder: "New task") {
-                            on submit: quick_add(t, draft).then(set(draft, ""))
+                        // On Today, what is added is due today unless it says when.
+                        if place == "is:today" {
+                            ui.TextInput(value: draft, placeholder: "New task for today") {
+                                on submit: quick_add(t, draft, .none, true).then(set(draft, ""))
+                            }
+                        } else {
+                            ui.TextInput(value: draft, placeholder: "New task") {
+                                on submit: quick_add(t, draft).then(set(draft, ""))
+                            }
                         }
                     }
                 }

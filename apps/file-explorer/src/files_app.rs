@@ -5511,10 +5511,13 @@ impl FilesState {
         if added {
             self.refresh_places_search();
             self.status = Some(t("files-added-favourite"));
-            self.submit(
-                crate::resource::FileExplorer::ADD_BOOKMARK
-                    .with(crate::resource::file_explorer::AddBookmark { place, at: None }),
-            );
+            // A place is a path or a stored place's name, never blank.
+            if let Some(place) = ui::tilo_resource::NonBlank::parse(&place) {
+                self.submit(
+                    crate::resource::FileExplorer::ADD_BOOKMARK
+                        .with(crate::resource::file_explorer::AddBookmark { place, at: None }),
+                );
+            }
         }
         true
     }

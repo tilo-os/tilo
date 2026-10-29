@@ -1177,90 +1177,11 @@ impl FrameHarness {
         root > crate::widget::StructureChange::Children || history || seen || stale
     }
 
-    /// Carry out the change the root's widgets make in place
-    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
-    /// admitting what they mounted, and sync them. Returns `false` when it
-    /// could not be carried out in place, and the frame rebuilds the tree.
-    fn remount_in_place(&mut self) -> bool {
-        self.remount = false;
-        // History lays out its own chrome around the app; while it is live,
-        // the app's widgets change only what is theirs.
-        if !self.layout_built
-            || self.history.as_ref().is_some_and(|history| {
-                !history.live_interactive() || history.returning_live() || history.review_is_open()
-            })
-        {
-            return false;
-        }
-        // Components a widget replaced report their close here, as before a
-        // rebuild.
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
-        );
-        let mapped = self.node_map.len();
-        let mut remount =
-            crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
-        let applied = self.root.remount_children(&mut remount);
-        let (mounted, unmounted) = remount.finish();
-        let built = (self.node_map.len() + unmounted.len()).saturating_sub(mapped);
-        self.layout_nodes_built = self
-            .layout_nodes_built
-            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
-        // The rows it mounted are checked against the live tree at once, as
-        // a build's are, so the next structure check finds the maps live.
-        self.admit_layout_maps();
-        let after = self.root.take_structure_change();
-        // A change no widget carried out, or a rebuild beside it, needs the
-        // whole tree. One the remount itself set off in place (an app that
-        // arrived hears what its window presents) is carried out by the
-        // next pass, in place again.
-        if !applied || after > crate::widget::StructureChange::Children {
-            return false;
-        }
-        self.remount |= after == crate::widget::StructureChange::Children;
-        self.bindings.forget(&unmounted);
-        for (parent, child) in mounted {
-            // SAFETY: the runner exclusively owns this tree, its maps and
-            // widgets; the remount above admitted `child` into both.
-            if !unsafe {
-                self.bindings
-                    .admit_mounted(parent, child, &self.taffy, &self.node_map)
-            } {
-                return false;
-            }
-        }
-        // The mounted widgets are synced before they are measured, as a
-        // rebuild syncs its fresh ones; a sync that replaces delegates needs
-        // the whole tree after all.
-        self.root.sync(&self.state.doc, &self.state.root);
-        !self.take_composition_dirty()
-    }
-
     /// Whether a widget replaced children since the maps were admitted. The
     /// change stays pending for the next [`Self::take_composition_dirty`].
     fn composition_changed(&mut self) -> bool {
         self.composition_replaced |= self.take_composition_dirty();
         self.composition_replaced
-    }
-
-    /// Where focus is, as an identity that survives a rebuild. The mapped
-    /// tree is read only while it still is the live composition: once a
-    /// widget replaced children since the maps were admitted, the focused
-    /// control is found in the live tree instead, and the change stays
-    /// pending for the next layout.
-    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
-        if self.composition_changed() || self.node_map.is_empty() {
-            return crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
-        }
-        // SAFETY: no composition change since these maps were admitted, so
-        // they describe this exclusively owned live tree.
-        unsafe {
-            crate::widget::layout::CompositionFocus::capture(
-                self.focused,
-                &self.node_map,
-                &self.bindings,
-            )
-        }
     }
 
     /// Force the next frame to recompose from scratch. Inputs that shape
@@ -3295,8 +3216,30 @@ impl FrameHarness {
         }
         if result.is_ok() {
             self.activate_requested_app();
+            self.apply_focus_request();
         }
         result
+    }
+
+    /// The control a widget asked to take the keyboard in the tree this frame
+    /// laid out ([`Widget::take_focus_request`]) takes it, as a press focuses
+    /// it, as the live App does. A dialog or command holding the keyboard
+    /// keeps it.
+    fn apply_focus_request(&mut self) {
+        if self.pending_app_activation.is_some() || self.check_app_activation().is_err() {
+            return;
+        }
+        let Some(id) = self.root.take_focus_request() else {
+            return;
+        };
+        let target = self.focus_order().into_iter().find(|&node| {
+            self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
+                .unwrap_or(false)
+        });
+        if target.is_some() && target != self.focused {
+            self.set_focused(target);
+            self.relayout();
+        }
     }
 
     /// A window the person brought forward on the desktop this frame laid
@@ -4530,22 +4473,13 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        if crate::focus_navigation::walks_layout_map(
-            self.root.as_ref(),
-            self.history.is_some(),
-            &restrictions,
-        ) {
-            let root = self
-                .history
-                .as_ref()
-                .and_then(|history| history.review_layout_node())
-                .unwrap_or(self.child_node);
-            order = self.history_app_focus_order(root, &restrictions).0;
-        } else {
-            order =
-                crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
-        }
-        order
+        // The laid out tree, as the live App walks it.
+        let root = self
+            .history
+            .as_ref()
+            .and_then(|history| history.review_layout_node())
+            .unwrap_or(self.child_node);
+        self.history_app_focus_order(root, &restrictions).0
     }
 
     /// Where Tab and directional focus travel: [`Self::focus_order`], kept
@@ -4657,20 +4591,12 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let (mut order, trapped) = if crate::focus_navigation::walks_layout_map(
-            self.root.as_ref(),
-            self.history.is_some(),
-            &restrictions,
-        ) {
-            let root = self
-                .history
-                .as_ref()
-                .and_then(|history| history.review_layout_node())
-                .unwrap_or(self.child_node);
-            self.history_app_focus_order(root, &restrictions)
-        } else {
-            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy)
-        };
+        let root = self
+            .history
+            .as_ref()
+            .and_then(|history| history.review_layout_node())
+            .unwrap_or(self.child_node);
+        let (mut order, trapped) = self.history_app_focus_order(root, &restrictions);
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.
@@ -9119,6 +9045,65 @@ impl crate::host_core::HostCore for FrameHarness {
         self.focused = None;
     }
 
+    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+        visit(self.root.as_ref());
+        if let Some(history) = self.history.as_deref() {
+            visit(history);
+        }
+        if let Some(palette) = self.action_palette.as_deref() {
+            visit(palette);
+        }
+        self.document_history.for_each_widget(visit);
+    }
+
+    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
+        &mut self.layout_maps
+    }
+
+    fn layout_mut(&mut self) -> crate::host_core::HostLayout<'_> {
+        crate::host_core::HostLayout {
+            taffy: &mut self.taffy,
+            node_map: &mut self.node_map,
+            bindings: &mut self.bindings,
+            focused: &mut self.focused,
+        }
+    }
+
+    fn discard_layout_maps(&mut self) {
+        self.discard_layout_tree();
+    }
+
+    fn composition_replaced(&mut self) -> bool {
+        self.composition_changed()
+    }
+
+    fn remount_parts(&mut self) -> crate::host_core::HostRemount<'_> {
+        crate::host_core::HostRemount {
+            root: self.root.as_mut(),
+            state: &self.state,
+            theme: &self.theme,
+            taffy: &mut self.taffy,
+            node_map: &mut self.node_map,
+            bindings: &mut self.bindings,
+            close_reports: &mut self.component_close_reports,
+        }
+    }
+
+    fn begin_remount(&mut self) -> bool {
+        self.remount = false;
+        self.layout_built
+    }
+
+    fn remounted(&mut self, built: usize) {
+        self.layout_nodes_built = self
+            .layout_nodes_built
+            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
+    }
+
+    fn composition_dirty(&mut self) -> bool {
+        self.take_composition_dirty()
+    }
+
     fn history_changed_document(&mut self) {
         self.invalidate_layout_tree();
     }
@@ -9344,29 +9329,11 @@ impl crate::host_core::ControlHost for FrameHarness {
         Ok(started)
     }
 
-    fn ask_person(
-        &mut self,
-        target: crate::bound_dispatch::local_target::LocalResourceTarget,
-        address: tilo_actions::ActionAddress,
-        arguments: crate::bound_dispatch::ControlContinuationArguments,
-        confirming: bool,
-    ) -> bool {
-        let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
-            self.root.as_ref(),
-            &self.state.doc,
-            target,
-            &self.control_domain,
-            address,
-            arguments,
-        );
-        let request = match request {
-            Ok(request) if confirming => request.confirming(),
-            Ok(request) => request.asking_first(),
-            Err(error) => {
-                self.refuse_visibly(&error);
-                return false;
-            }
-        };
+    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+        &self.control_domain
+    }
+
+    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool {
         if self.action_palette.is_none() {
             self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
                 crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())

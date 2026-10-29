@@ -458,6 +458,18 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 {
                     return receipt;
                 }
+                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    caller,
+                    command,
+                    ..
+                } = &request.operation
+                    && let Some(receipt) = self::host_membership::commit_at_own_host(
+                        network, &owner, room, &request, caller, command,
+                    )
+                    .await
+                {
+                    return receipt;
+                }
             }
             let key = match network.as_ref() {
                 Some(network) => network.native_signing_key_of(&owner, room)?,
@@ -1098,6 +1110,9 @@ impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        super::launcher::installed_earlier_ids()
+    }
     fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
         launchable_applications_for(
             app_id,
@@ -1712,7 +1727,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         }
         if let Some((network, room)) = governor.filter(|(_, room)| *room == workspace.room()) {
             drop(tree);
-            return govern_at_host(network, room, operation);
+            return write_governance_here(network, room, operation);
         }
         let workspace_id = workspace.id;
         super::workspace_governance::apply_governance_operation(
@@ -1744,15 +1759,15 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
 }
 
-/// Have the governor of `room`, its host, apply a governance `operation`
-/// made at this device, and wait for its answer.
-fn govern_at_host(
+/// Write a governance `operation` made at this device into `room`, and wait
+/// for the room's admission.
+fn write_governance_here(
     network: &super::network::ShellNetwork,
     room: super::state::RoomId,
     operation: tilo_desktop::workspace_settings::GovernanceOperation,
 ) -> Result<(), String> {
     let request = super::workspace_governance::governance_request(room, operation)?;
-    network.ask_governor(room, request)
+    network.write_governance(room, request)
 }
 
 /// Find `id` in `resource`'s subtree.

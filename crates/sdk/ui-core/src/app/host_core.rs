@@ -63,6 +63,80 @@ impl crate::host_core::HostCore for App {
         self.layout.layout_dirty = true;
     }
 
+    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+        visit(self.root_widget.as_ref());
+        if let Some(history) = self.history.as_deref() {
+            visit(history);
+        }
+        if let Some(dialog) = self.close_admission.dialog.as_deref() {
+            visit(dialog);
+        }
+        if let Some(palette) = self.actions.action_palette.as_deref() {
+            visit(palette);
+        }
+        self.document_history.for_each_widget(visit);
+    }
+
+    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
+        &mut self.layout.adopted
+    }
+
+    fn layout_mut(&mut self) -> crate::host_core::HostLayout<'_> {
+        crate::host_core::HostLayout {
+            taffy: &mut self.layout.taffy,
+            node_map: &mut self.layout.node_map,
+            bindings: &mut self.bindings,
+            focused: &mut self.focused_node,
+        }
+    }
+
+    fn discard_layout_maps(&mut self) {
+        self.bindings.clear();
+        self.layout.node_map.clear();
+        self.layout.adopted.clear();
+        self.layout.request_rebuild();
+    }
+
+    fn layout_admitted(&mut self) {
+        self.layout.admissions = self.layout.admissions.wrapping_add(1);
+    }
+
+    fn composition_replaced(&mut self) -> bool {
+        self.forget_replaced_widgets()
+    }
+
+    fn remount_parts(&mut self) -> crate::host_core::HostRemount<'_> {
+        crate::host_core::HostRemount {
+            root: self.root_widget.as_mut(),
+            state: &self.state,
+            theme: &self.theme,
+            taffy: &mut self.layout.taffy,
+            node_map: &mut self.layout.node_map,
+            bindings: &mut self.bindings,
+            close_reports: &mut self.component_close_reports,
+        }
+    }
+
+    fn begin_remount(&mut self) -> bool {
+        self.layout.remount = false;
+        !self.layout.structure_dirty
+            && self.layout.root_node.is_some()
+            && self.close_admission.dialog.is_none()
+    }
+
+    fn remounted(&mut self, _built: usize) {
+        self.layout.remounts = self.layout.remounts.wrapping_add(1);
+        self.layout.layout_dirty = true;
+        // Fresh controls have not seen where the pointer is.
+        self.input.pointer_replay.mark_unsettled();
+        self.needs_sync = false;
+        self.invalidate_widget_resource_cache();
+    }
+
+    fn composition_dirty(&mut self) -> bool {
+        self.take_composition_dirty()
+    }
+
     fn widget_reached(&mut self) {
         self.mark_semantic_tree_stale();
     }

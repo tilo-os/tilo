@@ -884,6 +884,12 @@ pub fn retry_saved_windows(tree: &mut WorkspaceTree) -> bool {
     changed
 }
 
+/// The app a saved window of `app_id` opens: the app itself, or the installed app that took the
+/// place of the id it had before.
+fn launched_as(app_id: &str) -> String {
+    launcher::installed_earlier_ids().current(app_id).to_owned()
+}
+
 /// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
 /// carries the sentence to put on the card — what is actually the case,
 /// never a promise ("not installed", not "coming soon").
@@ -921,7 +927,10 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     if !item.local && tree.room_tab_record(ws.room(), item.tab).is_some() {
         launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
-    let launched = launcher::launch_in_workspace(&item.app_id, ws)
+    // A window saved under an id its app had before opens the app that took its place; the tab
+    // takes the new id when that window lands in it.
+    let launch_id = launched_as(&item.app_id);
+    let launched = launcher::launch_in_workspace(&launch_id, ws)
         .map(|_| ())
         .or_else(|err| {
             if item.local
@@ -950,7 +959,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     match launched {
         Ok(()) => Ok(()),
         Err(err) => {
-            launcher::clear_pending_placement(&item.app_id);
+            launcher::clear_pending_placement(&launch_id);
             Err(match err {
                 launcher::LaunchError::NotInstalled { .. }
                 | launcher::LaunchError::HostAppNotFound { .. } => Refusal::NotInstalled,
@@ -986,7 +995,7 @@ fn stage_continuation_for_tab(tree: &WorkspaceTree, item: &Pending) {
         return;
     }
     // Before the launch, or a note written after races the window's toplevel.
-    launcher::set_pending_placement(&item.app_id, Placement::IntoTab(item.tab));
+    launcher::set_pending_placement(&launched_as(&item.app_id), Placement::IntoTab(item.tab));
     launcher::clear_staged_continuation(ws.room(), item.tab);
     let shared = crate::shell::continuation_registry::global_registry();
     let Ok(mut registry) = shared.lock() else {

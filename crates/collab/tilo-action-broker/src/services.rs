@@ -645,6 +645,12 @@ pub trait LauncherServices: Send + Sync {
     /// neither challenge bytes nor credentials, document or application output.
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
+    /// The ids installed apps were published under before, as the installed catalogue believes
+    /// them (`tilo_installed_apps::earlier_ids`): an application target naming one opens the app
+    /// that took its place. None where no app was renamed.
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        tilo_action_policy::EarlierIds::default()
+    }
     /// The same installed entries as `applications`, narrowed to an exact ID.
     /// Hosts may avoid constructing unrelated entries. This is discovery only;
     /// the broker still decides which rows the caller may see or invoke.

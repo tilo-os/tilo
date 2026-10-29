@@ -8,7 +8,7 @@ fn settings_mail_account_connects_after_an_empty_windows_first_sync() {
     let mut mail = MailApp::new_first_run();
     let (requests, outgoing) = std::sync::mpsc::channel();
     let (_events, incoming) = std::sync::mpsc::channel();
-    mail.engine = Some(EngineHandle {
+    mail.state().engine = Some(EngineHandle {
         tx: requests,
         rx: incoming,
     });
@@ -98,7 +98,7 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
     mail.sync(&doc, &automerge::ROOT);
     assert!(mail.shared.borrow().accounts.is_empty());
     assert!(mail.is_first_run());
-    assert!(mail.engine.is_none());
+    assert!(mail.state().engine.is_none());
 
     let oauth = FakeAuthorizationServer::start();
     let registration = ClientTable::defaults()
@@ -146,7 +146,7 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
     assert!(account.config.password.is_empty());
     drop(shown);
     assert!(!mail.is_first_run());
-    assert!(mail.engine.is_none());
+    assert!(mail.state().engine.is_none());
 }
 /// A folder sync brings what is new, takes what another client changed
 /// or removed, keeps the result on the device, and asks only for what
@@ -159,10 +159,10 @@ fn already_open_mail_adopts_settings_google_consent_on_sync() {
 fn folder_syncs_apply_new_mail_remote_flags_and_removals_and_are_kept() {
     let (mut app, mut doc) = app();
     let kept = tempfile::tempdir().unwrap();
-    app.store = crate::store::Store::at(kept.path().to_path_buf());
+    app.state().store = crate::store::Store::at(kept.path().to_path_buf());
     let (outgoing, requests) = std::sync::mpsc::channel();
     let (incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing,
         rx: incoming_rx,
     });
@@ -170,6 +170,7 @@ fn folder_syncs_apply_new_mail_remote_flags_and_removals_and_are_kept() {
     let sync = |app: &mut MailApp, doc: &mut AutoCommit, synced: crate::sync::Synced| {
         let config = app.shared.borrow().accounts.active_config();
         let request = app
+            .state()
             .post_engine(EngineRequest::fetch(config, Folder::Inbox))
             .unwrap();
         let posted = requests.try_recv().unwrap();
@@ -268,6 +269,7 @@ fn folder_syncs_apply_new_mail_remote_flags_and_removals_and_are_kept() {
     let deadline = tilo_test_env::hang_deadline();
     let kept_uids = loop {
         let mut uids: Vec<u32> = app
+            .state()
             .store
             .load(&account)
             .iter()
@@ -288,7 +290,7 @@ fn a_watched_inbox_that_changed_is_fetched_at_once() {
     let (mut app, mut doc) = app();
     let (outgoing, requests) = std::sync::mpsc::channel();
     let (incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing,
         rx: incoming_rx,
     });
@@ -369,25 +371,37 @@ fn a_search_asks_the_servers_and_keeps_what_they_find() {
     let (mut app, mut doc) = app();
     let (outgoing, requests) = std::sync::mpsc::channel();
     let (incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing,
         rx: incoming_rx,
     });
-    app.search_servers("in");
-    assert!(app.server_search.is_none(), "two letters search only here");
-    assert!(!app.searching_servers(), "nothing for a search to wait on");
-    app.search_servers("invoice");
-    assert!(app.searching_servers(), "a search waits for the servers");
-    app.post_server_search();
+    app.state().search_servers("in");
+    assert!(
+        app.state().server_search.is_none(),
+        "two letters search only here"
+    );
+    assert!(
+        !app.state().searching_servers(),
+        "nothing for a search to wait on"
+    );
+    app.state().search_servers("invoice");
+    assert!(
+        app.state().searching_servers(),
+        "a search waits for the servers"
+    );
+    app.state().post_server_search();
     assert!(
         requests.try_recv().is_err(),
         "not while the text may change"
     );
-    app.server_search = app
-        .server_search
-        .take()
-        .map(|(text, _)| (text, ui::time::now()));
-    app.post_server_search();
+    {
+        let mut room = app.state();
+        room.server_search = room
+            .server_search
+            .take()
+            .map(|(text, _)| (text, ui::time::now()));
+        room.post_server_search();
+    }
     let posted: Vec<EngineRequest> = requests.try_iter().collect();
     assert_eq!(
         posted.len(),
@@ -403,10 +417,10 @@ fn a_search_asks_the_servers_and_keeps_what_they_find() {
         panic!("a search: {posted:?}");
     };
     assert_eq!(text, "invoice");
-    assert!(app.searching_servers(), "the servers are looking");
-    app.search_servers("invoice");
+    assert!(app.state().searching_servers(), "the servers are looking");
+    app.state().search_servers("invoice");
     assert!(
-        app.server_search.is_none(),
+        app.state().server_search.is_none(),
         "the same text is not asked again"
     );
 
@@ -428,7 +442,7 @@ fn a_search_asks_the_servers_and_keeps_what_they_find() {
         .unwrap();
     app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
     assert_eq!(
-        app.searching_servers(),
+        app.state().searching_servers(),
         posted.len() > 1,
         "the other accounts are still looking"
     );
@@ -441,7 +455,7 @@ fn a_search_asks_the_servers_and_keeps_what_they_find() {
             .unwrap();
     }
     app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
-    assert!(!app.searching_servers(), "every server answered");
+    assert!(!app.state().searching_servers(), "every server answered");
     assert!(
             crate::search::message_entries(&app.shared.borrow().mailbox)
                 .iter()
@@ -480,7 +494,7 @@ fn a_sent_message_waits_so_undo_takes_it_back_unsent() {
     let (mut app, mut doc) = app();
     let (outgoing_tx, requests) = std::sync::mpsc::channel();
     let (_incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing_tx,
         rx: incoming_rx,
     });
@@ -721,7 +735,7 @@ fn select_all_reads_the_pages_the_server_still_holds() {
     let (mut app, mut doc) = app();
     let (outgoing, requests) = std::sync::mpsc::channel();
     let (incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing,
         rx: incoming_rx,
     });
@@ -729,6 +743,7 @@ fn select_all_reads_the_pages_the_server_still_holds() {
     let first_page = |app: &mut MailApp, doc: &mut AutoCommit| {
         let config = app.shared.borrow().accounts.active_config();
         let request = app
+            .state()
             .post_engine(EngineRequest::fetch(config, Folder::Inbox))
             .unwrap();
         let _ = requests.try_recv().unwrap();
@@ -788,10 +803,8 @@ fn select_all_reads_the_pages_the_server_still_holds() {
 
     // The last page arrives: the folder is whole, and the selection is
     // every message in it.
-    let config = app.shared.borrow().accounts.active_config();
-    let request = app
-        .post_engine(EngineRequest::fetch(config, Folder::Inbox))
-        .unwrap();
+    let fetch = EngineRequest::fetch(app.shared.borrow().accounts.active_config(), Folder::Inbox);
+    let request = app.state().post_engine(fetch).unwrap();
     let _ = requests.try_recv().unwrap();
     incoming
         .send(EngineEvent::Fetched {
@@ -928,7 +941,7 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
     let (mut app, mut doc) = app();
     let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
     let (incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing,
         rx: incoming_rx,
     });
@@ -937,6 +950,7 @@ fn a_late_engine_error_stays_with_the_account_that_asked() {
         ..Default::default()
     };
     let request = app
+        .state()
         .post_engine(EngineRequest::fetch(asking, Folder::Inbox))
         .expect("the fetch went to the engine");
     assert_eq!(
@@ -996,7 +1010,7 @@ fn server_updates_go_to_the_engine_and_its_acknowledgement_settles_them() {
     let configured_email = app.shared.borrow().accounts.active_config().email;
     let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
     let (incoming, incoming_rx) = std::sync::mpsc::channel();
-    app.engine = Some(EngineHandle {
+    app.state().engine = Some(EngineHandle {
         tx: outgoing,
         rx: incoming_rx,
     });
@@ -1115,24 +1129,27 @@ fn engine_events_settle_only_their_own_request() {
             kind: EngineRequestKind::StoreFlag,
         });
         fixture.drain();
-        assert!(fixture.app.resource_refresh_invocation.is_some());
-        assert!(fixture.app.resource_refresh_result.is_none());
-        assert!(!fixture.app.pending_send.is_empty());
+        assert!(fixture.app.state().resource_refresh_invocation.is_some());
+        assert!(fixture.app.state().resource_refresh_result.is_none());
+        assert!(!fixture.app.state().pending_send.is_empty());
         assert!(
             fixture
                 .app
+                .state()
                 .pending_engine_requests
                 .contains_key(&fixture.refresh_id)
         );
         assert!(
             fixture
                 .app
+                .state()
                 .pending_engine_requests
                 .contains_key(&fixture.send_id)
         );
         assert!(
             !fixture
                 .app
+                .state()
                 .pending_engine_requests
                 .contains_key(&fixture.unrelated_id)
         );
@@ -1155,12 +1172,13 @@ fn engine_events_settle_only_their_own_request() {
         });
         fixture.drain();
         assert!(
-            !fixture.app.pending_send.is_empty(),
+            !fixture.app.state().pending_send.is_empty(),
             "wrong-kind results are inert"
         );
         assert!(
             fixture
                 .app
+                .state()
                 .pending_engine_requests
                 .contains_key(&fixture.send_id)
         );
@@ -1176,17 +1194,17 @@ fn engine_events_settle_only_their_own_request() {
             kind: EngineRequestKind::Fetch,
         });
         fixture.drain();
-        assert!(fixture.app.resource_refresh_invocation.is_some());
+        assert!(fixture.app.state().resource_refresh_invocation.is_some());
         assert!(matches!(
-            fixture.app.resource_refresh_result.as_ref(),
+            fixture.app.state().resource_refresh_result.as_ref(),
             Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if *got == fixture.invocation
         ));
         assert!(matches!(
-            fixture.app.take_effect_result(fixture.invocation),
+            fixture.app.state().take_effect_result(fixture.invocation),
             Some(tilo_actions::InvocationUpdate::Succeeded { invocation: got, .. }) if got == fixture.invocation
         ));
-        assert!(fixture.app.resource_refresh_invocation.is_none());
-        assert!(!fixture.app.pending_send.is_empty());
+        assert!(fixture.app.state().resource_refresh_invocation.is_none());
+        assert!(!fixture.app.state().pending_send.is_empty());
 
         fixture.send(EngineEvent::Sent {
             request_id: fixture.send_id,
@@ -1197,8 +1215,8 @@ fn engine_events_settle_only_their_own_request() {
             kind: EngineRequestKind::Send,
         });
         fixture.drain();
-        assert!(fixture.app.pending_send.is_empty());
-        assert!(!fixture.app.awaiting_engine);
+        assert!(fixture.app.state().pending_send.is_empty());
+        assert!(!fixture.app.state().awaiting_engine);
         assert_eq!(
             fixture.app.next_wake_deadline(),
             fixture.app.nav.next_wake_deadline()
@@ -1209,14 +1227,14 @@ fn engine_events_settle_only_their_own_request() {
         let (mut app, _doc) = app();
         let (outgoing, _outgoing_rx) = std::sync::mpsc::channel();
         let (_incoming_tx, incoming) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
+        app.state().engine = Some(EngineHandle {
             tx: outgoing,
             rx: incoming,
         });
         let request_id = uuid::Uuid::new_v4();
         let owner = tilo_actions::InvocationId::new();
-        app.resource_refresh_invocation = Some((request_id, owner));
-        app.resource_refresh_result = Some(tilo_actions::InvocationUpdate::Succeeded {
+        app.state().resource_refresh_invocation = Some((request_id, owner));
+        app.state().resource_refresh_result = Some(tilo_actions::InvocationUpdate::Succeeded {
             invocation: owner,
             output: tilo_actions::ActionOutput::default(),
         });
@@ -1227,14 +1245,15 @@ fn engine_events_settle_only_their_own_request() {
                 .is_err()
         );
         assert!(
-            app.take_effect_result(tilo_actions::InvocationId::new())
+            app.state()
+                .take_effect_result(tilo_actions::InvocationId::new())
                 .is_none()
         );
         assert!(matches!(
-            app.take_effect_result(owner),
+            app.state().take_effect_result(owner),
             Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. }) if invocation == owner
         ));
-        assert!(app.resource_refresh_invocation.is_none());
+        assert!(app.state().resource_refresh_invocation.is_none());
     }
 }
 /// Sample mode keeps its accounts in a sandbox, never the real store; a

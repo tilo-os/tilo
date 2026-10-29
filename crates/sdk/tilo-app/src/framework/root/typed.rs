@@ -246,6 +246,8 @@ pub(crate) trait TypedRoot {
     fn start_effect(
         &self,
         op: &ResourceOperation<'_>,
+        doc: &tilo_resource::Doc,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String>;
 
     fn poll_effect(
@@ -568,8 +570,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
     fn start_effect(
         &self,
         op: &ResourceOperation<'_>,
+        doc: &tilo_resource::Doc,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        self.effects.start(op)
+        self.effects.start(op, doc, view)
     }
 
     fn poll_effect(
