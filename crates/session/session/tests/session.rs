@@ -8,6 +8,8 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
+    clippy::struct_excessive_bools,
     clippy::arithmetic_side_effects,
     reason = "test fixtures: a failed step is the assertion"
 )]
@@ -16,8 +18,9 @@ use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::time::Duration;
 
+use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, OutputConfig};
-use tilo_desktop_model::TileContent;
+use tilo_desktop::desktop_actions::{CHROME_RESOURCE, WINDOW_KIND};
 use tilo_session::{Options, Session};
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -205,17 +208,27 @@ fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i3
         .map(|(info, rect)| (info.id, rect))
 }
 
-/// The tab of the desk's tree showing window `id`.
-fn tab_of(session: &Session, id: u64) -> Option<tilo_desktop_model::TabId> {
-    session.handle().read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|tab| matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id))
-            .map(|tab| tab.id)
-    })
+/// The resource the desk publishes for the window of `app`, its tab.
+fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
+    fn find(resources: &[ResourceSpec], app: &str) -> Option<ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.kind == WINDOW_KIND && resource.label == app {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, app)
+            }
+        })
+    }
+    find(&session.resources(), app)
+}
+
+/// Invoke `action` of `resource` with no arguments, then let the session
+/// run a frame.
+fn invoke(session: &mut Session, resource: &str, action: &str) {
+    session
+        .invoke(resource, action, &serde_json::Map::new())
+        .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
+    session.step(Duration::from_millis(1)).unwrap();
 }
 
 #[test]
@@ -224,9 +237,11 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
     let mut session = session();
     let _client = mapped(&mut session, "org.example.Terminal");
     let (id, rect) = window(session.compositor(), "org.example.Terminal").unwrap();
+    let tab = window_resource(&session, "org.example.Terminal")
+        .expect("the desk publishes the window's tab");
     assert!(
-        tab_of(&session, id).is_some(),
-        "the window has a tab in the desk's tree"
+        tab.actions.iter().any(|action| action.id == "close"),
+        "a window's tab can be closed by its address"
     );
     let layout = session.desktop().with_policy(|policy| policy.layout());
     let (_, shown) = layout
@@ -245,18 +260,18 @@ fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
         "the window sits where the strip laid its tab out"
     );
     assert!(
-        rect.1 >= tilo_desktop::topbar::TOPBAR_HEIGHT_PX as i32,
+        f64::from(rect.1) >= f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).floor(),
         "under the top bar: {rect:?}"
     );
 }
 
 #[test]
-fn the_top_bar_draws_above_the_desk() {
+fn the_top_bar_draws_above_the_desk_and_opens_the_overview_by_its_action() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     session.step(Duration::from_millis(1)).unwrap();
-    let names = session.chrome_names();
+    let names = session.accessible_labels();
     assert!(!names.is_empty(), "the chrome names what it shows");
     let frame = session.compositor().screenshot("HEADLESS-1").unwrap();
     let band = (0..frame.width)
@@ -264,6 +279,16 @@ fn the_top_bar_draws_above_the_desk() {
         .filter_map(|x| frame.pixel(x, 12))
         .collect::<std::collections::BTreeSet<_>>();
     assert!(band.len() > 2, "the bar draws in its band: {names:?}");
+
+    invoke(&mut session, CHROME_RESOURCE, "toggle-overview");
+    session.step(Duration::from_millis(1)).unwrap();
+    let open = session.accessible_labels();
+    assert_ne!(open, names, "the overview shows over the desk");
+    let shot = session.compositor().screenshot("HEADLESS-1").unwrap();
+    assert_ne!(
+        shot.rgba, frame.rgba,
+        "the overview changes what the screen shows"
+    );
 }
 
 #[test]
@@ -271,15 +296,15 @@ fn closing_a_windows_tab_asks_its_client_to_close() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     let mut client = mapped(&mut session, "org.example.Editor");
-    let (id, _) = window(session.compositor(), "org.example.Editor").unwrap();
-    let tab = tab_of(&session, id).unwrap();
-    // As the window bar's close does: the tab goes from the desk's tree.
-    let mut tree = session.handle().read(Clone::clone);
-    assert!(tree.close_tab(tab).is_some());
-    session.handle().replace_tree(tree);
+    let tab = window_resource(&session, "org.example.Editor").unwrap();
+    invoke(&mut session, tab.id.as_str(), "close");
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].seen.closed
     });
+    assert!(
+        window_resource(&session, "org.example.Editor").is_none(),
+        "the tab is gone from the desk"
+    );
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {
