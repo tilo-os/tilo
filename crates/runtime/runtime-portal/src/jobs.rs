@@ -55,8 +55,9 @@ pub const MAX_LABEL: usize = 48;
 /// The largest message either side sends: a verb and a label, or an answer.
 pub const MAX_MESSAGE: usize = 1024;
 
-/// The most descriptors one message carries.
-const MAX_FDS: usize = 4;
+/// The most descriptors one message carries: a tilolang instance's five
+/// (`crate::tilolang_host::InstanceFds`).
+const MAX_FDS: usize = 5;
 
 /// A job's cgroup, ready for one process to join.
 #[derive(Debug)]

@@ -10,9 +10,9 @@ use mail::model::{AccountConfig, AuthMethod};
 use tilolang_tilo::runtime::{Principal, ResourceRef, Value as RtValue};
 
 use super::Room;
-use crate::mail::connector::EngineConnector;
-use crate::mail::origin::ImapOrigin;
 use crate::window::Window;
+use tilolang_mail::engine::EngineConnector;
+use tilolang_mail::origin::ImapOrigin;
 use ui::framework::RunMode;
 
 const APP: &str = "so.tilo.lang.mail";
@@ -100,10 +100,7 @@ fn room_with(config: AccountConfig) -> Room {
 
 /// A room whose accounts are what `accounts` says each time it is asked, which comes online
 /// again when `reconnected` is set.
-fn room_over(
-    accounts: crate::mail::connector::AccountSource,
-    reconnected: Arc<AtomicBool>,
-) -> Room {
+fn room_over(accounts: tilolang_mail::engine::AccountSource, reconnected: Arc<AtomicBool>) -> Room {
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
     let engine = mail::engine::live::LiveEngine::trusting(
@@ -120,6 +117,11 @@ fn room_over(
     let origin = std::rc::Rc::new(std::cell::RefCell::new(
         ImapOrigin::new(Box::new(connector), woken).reconnecting_on(reconnected),
     ));
+    room_of(origin)
+}
+
+/// A room kept in step with a mail server by `origin`.
+fn room_of(origin: std::rc::Rc<std::cell::RefCell<ImapOrigin>>) -> Room {
     crate::app::builtin::choose("mail");
     let meta = crate::app::builtin::package_named("mail").expect("the mail package");
     let sink = tilolang_tilo::runtime::MemorySink::new();
@@ -452,4 +454,85 @@ fn a_message_waits_to_go_online_and_goes_when_the_network_is_back() {
     assert_eq!(servers.smtp.sent().len(), 1);
     let shown = editor_of(&room, &draft);
     assert!(shown.contains("Sent"), "{shown}");
+}
+
+/// The mail connector process for `config`'s servers, as the system runs it for the app: on a
+/// thread of its own here. What reaches it attaches an instance.
+fn connector_for(config: AccountConfig) -> std::sync::mpsc::Sender<tilolang_mail::serve::Wakeup> {
+    use tilolang_mail::serve::{Connector, Wakeup};
+    let (woken, wakeups) = std::sync::mpsc::channel::<Wakeup>();
+    let looping = woken.clone();
+    std::thread::spawn(move || {
+        let engine = mail::engine::live::LiveEngine::trusting(
+            tilo_content::ContentStore::memory(),
+            Arc::new(|| {}),
+            accepting_client_config(),
+        )
+        .expect("the engine starts");
+        let engine_woken = looping.clone();
+        let (requests, events) = mail::engine::spawn_waking(
+            Box::new(engine),
+            Arc::new(move || {
+                let _ = engine_woken.send(Wakeup::Engine);
+            }),
+        );
+        let connector = Connector::new(
+            Box::new(move || vec![config.clone()]),
+            requests,
+            events,
+            Arc::default(),
+        );
+        connector.run(&wakeups, &looping);
+    });
+    woken
+}
+
+/// A room as an instance in a tilolang host keeps it: its origin reaches the connector over a
+/// socket, holding no network and no credential of its own.
+fn room_attached(connector: &std::sync::mpsc::Sender<tilolang_mail::serve::Wakeup>) -> Room {
+    let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    connector
+        .send(tilolang_mail::serve::Wakeup::Attach(theirs))
+        .unwrap();
+    let origin = tilolang_mail::remote_origin(ours, Arc::new(|| {})).expect("the origin attaches");
+    room_of(origin)
+}
+
+#[test]
+fn an_instance_without_network_syncs_and_sends_through_the_mail_connector() {
+    let servers = servers();
+    let connector = connector_for(account(&servers));
+    let mut room = room_attached(&connector);
+    synced(&mut room);
+    let plan = room.thread("Launch plan");
+    let RtValue::Ref(draft) = room.press("reply", vec![RtValue::resource(&plan)]) else {
+        panic!("a reply is a draft");
+    };
+    let draft = (*draft.target).clone();
+    room.press("send", vec![RtValue::resource(&draft)]);
+    room.until("the message to be sent", |room| {
+        delivery_of(room, &draft).is_some_and(|(state, _)| state == "sent")
+    });
+    assert_eq!(servers.smtp.sent().len(), 1);
+
+    // The window closes; mail arrives meanwhile; the next window has it.
+    drop(room);
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "lease@lettings.example",
+            "Mill Lane Lettings <office@lettings.example>",
+            "Your lease renewal",
+            "The new lease is attached.",
+            None,
+        ),
+        &[],
+    );
+    let mut room = room_attached(&connector);
+    room.until("the mail that came while it was closed", |room| {
+        room.threads()
+            .iter()
+            .any(|t| room.text(t, "subject") == "Your lease renewal")
+    });
+    assert_eq!(servers.smtp.sent().len(), 1, "nothing was sent twice");
 }

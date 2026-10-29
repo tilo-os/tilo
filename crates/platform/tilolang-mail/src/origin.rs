@@ -857,11 +857,6 @@ impl Origin for ImapOrigin {
             self.state = Some(state);
             polled.wrote = true;
         }
-        polled.wrote |= self.add_accounts(cx.host, &cx.now);
-        polled.settle |= self.reconnect(cx.host);
-        for (account, mailbox) in std::mem::take(&mut self.due) {
-            let _ = self.connector.changes(&account, &mailbox);
-        }
         for event in self.connector.events() {
             match event {
                 Event::Changes(changes) => {
@@ -924,6 +919,19 @@ impl Origin for ImapOrigin {
                     }
                     None => {}
                 },
+            }
+        }
+        // The accounts as the connector says them now (one in another process says them
+        // with its first answers), then what to ask of each.
+        polled.wrote |= self.add_accounts(cx.host, &cx.now);
+        polled.settle |= self.reconnect(cx.host);
+        for (account, mailbox) in std::mem::take(&mut self.due) {
+            if self.connector.changes(&account, &mailbox).is_none() {
+                tracing::warn!(
+                    account,
+                    mailbox,
+                    "the mail connector took no request for the account"
+                );
             }
         }
         polled.wrote |= self.push(cx.host, &cx.now);

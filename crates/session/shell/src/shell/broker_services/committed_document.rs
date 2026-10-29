@@ -154,13 +154,8 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 return RecordRead::Own;
             }
         }
-        if self.owner_holds(room, app, record)
-            || self.holds_sealed_writes(&tilo_action_broker::route::CrdtRoute::record(
-                app,
-                room.to_string(),
-                record,
-            ))
-        {
+        let route = tilo_action_broker::route::CrdtRoute::record(app, room.to_string(), record);
+        if self.owner_holds(room, app, record) || self.reads_sealed_writes(room, &route) {
             RecordRead::Sealed
         } else {
             RecordRead::Own
@@ -373,27 +368,50 @@ impl NativeOwnerCommitService {
     /// this device holds: a sealed room's record its owner does not hold.
     /// The owner keeps no replica of a sealed room's records; the room's
     /// host keeps each write once, and this device what it was given.
+    ///
+    /// Writes that build on changes this device does not hold make no record
+    /// it can read back: an app that kept a record's first changes to itself
+    /// (made before it wrote on its channel) left only its later writes on
+    /// the channel. A read of those would wait for the missing changes
+    /// forever, so the record is the app's own to open, from the copy it
+    /// keeps, as a new one is; it then hands its channel what it holds.
     fn reads_sealed_writes(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
     ) -> bool {
-        self.tree.read().seals_records(room)
-            && !self.owner_holds(room, &route.app_id, &route.record_id)
-            && self.holds_sealed_writes(route)
+        if !self.tree.read().seals_records(room)
+            || self.owner_holds(room, &route.app_id, &route.record_id)
+            || !self.holds_sealed_writes(route)
+        {
+            return false;
+        }
+        match self.held_sealed_record(room, route, usize::MAX) {
+            Ok(HeldSealed::Incomplete { missing }) => {
+                tracing::warn!(
+                    app = %route.app_id,
+                    record = %route.record_id,
+                    %room,
+                    missing,
+                    "the sealed writes this device holds of a record build on changes it does \
+                     not hold; the app opens the record from its own copy"
+                );
+                false
+            }
+            // Waiting for the channel's keys, readable, or failing: the read
+            // answers each, and says a failure to the app.
+            Ok(HeldSealed::Waiting | HeldSealed::Readable(_)) | Err(_) => true,
+        }
     }
-    /// `route`'s record in sealed `room`, as the sealed writes this device
-    /// holds of it make it, opened with the keys of the record's channel.
-    /// Asking for them asks the channel's participants, as the app's own channel
-    /// does; until they are here, or while a write it builds on has not
-    /// arrived yet, the read is pending and the reader asks again.
-    fn capture_sealed_writes(
+    /// What the sealed writes this device holds of `route`'s record in
+    /// `room` make, opened with the keys of the record's channel, within
+    /// `maximum` bytes.
+    fn held_sealed_record(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,
-        known_revision: Option<[u8; 32]>,
         maximum: usize,
-    ) -> Result<NativeDocumentRead, String> {
+    ) -> Result<HeldSealed, String> {
         use tilo_action_broker::channel_encryption::{ChannelAccess, ChannelKeyProvider};
         let artifact =
             collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
@@ -405,7 +423,7 @@ impl NativeOwnerCommitService {
             .map_err(|_| "sealed writes unavailable")?
             .sealed_writes(artifact);
         if writes.is_empty() {
-            return Ok(NativeDocumentRead::Pending);
+            return Ok(HeldSealed::Waiting);
         }
         let channels = self
             .history_keys
@@ -419,7 +437,7 @@ impl NativeOwnerCommitService {
             ChannelAccess::Ready(keys) => keys,
             ChannelAccess::Waiting => {
                 self.recheck_when_keys_change(channel, seen);
-                return Ok(NativeDocumentRead::Pending);
+                return Ok(HeldSealed::Waiting);
             }
             refused => {
                 return Err(format!(
@@ -427,9 +445,29 @@ impl NativeOwnerCommitService {
                 ));
             }
         };
-        let document = sealed_document(&writes, &keys, maximum)?;
-        let Some(mut document) = document else {
-            return Ok(NativeDocumentRead::Pending);
+        sealed_document(&writes, &keys, maximum)
+    }
+    /// `route`'s record in sealed `room`, as the sealed writes this device
+    /// holds of it make it, opened with the keys of the record's channel.
+    /// Asking for them asks the channel's participants, as the app's own channel
+    /// does; until they are here, or while a write it builds on has not
+    /// arrived yet, the read is pending and the reader asks again.
+    fn capture_sealed_writes(
+        &self,
+        room: super::super::state::RoomId,
+        route: &tilo_action_broker::route::CrdtRoute,
+        known_revision: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<NativeDocumentRead, String> {
+        let mut document = match self.held_sealed_record(room, route, maximum)? {
+            HeldSealed::Readable(document) => document,
+            HeldSealed::Waiting => return Ok(NativeDocumentRead::Pending),
+            HeldSealed::Incomplete { missing } => {
+                return Err(format!(
+                    "the sealed writes this device holds of the record build on {missing} \
+                     change(s) it does not hold"
+                ));
+            }
         };
         let revision = tilo_peer_state::committed_document_revision(&document.get_heads());
         if known_revision == Some(revision) {
@@ -657,11 +695,22 @@ async fn prepare_at_host(
 /// The document `writes` make, each opened with `keys`: a whole frame, or
 /// a mutation reassembled from its segments. `None` while a write builds on
 /// one that has not arrived. At most `maximum` bytes are opened.
+/// What the sealed writes of one record this device holds make.
+enum HeldSealed {
+    /// Nothing to read yet: no write, or the channel's keys are on their way.
+    Waiting,
+    /// The record, whole.
+    Readable(Box<automerge::AutoCommit>),
+    /// The writes build on `missing` changes, or segments of one, this
+    /// device does not hold.
+    Incomplete { missing: usize },
+}
+
 fn sealed_document(
     writes: &[collab_types::SignedOp],
     keys: &channel_crypto::ChannelContentKeys,
     maximum: usize,
-) -> Result<Option<automerge::AutoCommit>, String> {
+) -> Result<HeldSealed, String> {
     use collab_types::{DocumentFrame, DocumentMutation};
     let mut remaining = maximum;
     let mut reassembler = collab_types::DocumentReassembler::default();
@@ -695,12 +744,13 @@ fn sealed_document(
         tilo_automerge::ApplyIncoming::load_incoming(&mut document, bytes)
             .map_err(|error| error.to_string())?;
     }
-    if reassembler.pending_transfers() > 0
-        || !automerge::ReadDoc::get_missing_deps(&document, &[]).is_empty()
-    {
-        return Ok(None);
+    let missing = reassembler
+        .pending_transfers()
+        .saturating_add(automerge::ReadDoc::get_missing_deps(&document, &[]).len());
+    if missing > 0 {
+        return Ok(HeldSealed::Incomplete { missing });
     }
-    Ok(Some(document))
+    Ok(HeldSealed::Readable(Box::new(document)))
 }
 
 /// Whether `record` reaches a device only once it asks for it
@@ -716,5 +766,79 @@ struct Captured(Vec<u8>);
 impl tilo_action_broker::services::DocumentBytes for Captured {
     fn bytes(&self) -> &[u8] {
         &self.0
+    }
+}
+
+#[cfg(test)]
+mod sealed_tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::panic,
+        reason = "a test: a failure is a panic"
+    )]
+    use super::{HeldSealed, sealed_document};
+    use automerge::transaction::Transactable as _;
+    use collab_types::{
+        ArtifactId, AttestationId, ContentRetention, DocumentMutation, OpKind, SignedOp,
+        generate_keypair,
+    };
+
+    /// A sealed write of `changes`, as a record's channel keeps one.
+    fn sealed(
+        keys: &channel_crypto::ChannelContentKeys,
+        artifact: ArtifactId,
+        seq: u64,
+        changes: Vec<u8>,
+    ) -> SignedOp {
+        let plaintext = DocumentMutation::Incremental(changes)
+            .encode_frames()
+            .unwrap()
+            .remove(0);
+        let (metadata, ciphertext) = keys
+            .seal_content(artifact, ContentRetention::Delta, &plaintext)
+            .unwrap();
+        let (_, author) = generate_keypair();
+        SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            artifact,
+            author,
+            AttestationId::new(),
+            OpKind::Change,
+            std::time::SystemTime::UNIX_EPOCH,
+            seq,
+            metadata,
+        )
+    }
+
+    #[test]
+    fn writes_that_build_on_a_change_the_device_lacks_are_incomplete_not_pending() {
+        let group = channel_crypto::ChannelGroup::create(
+            collab_types::ChannelId::new(),
+            channel_crypto::MemberKey::generate("ada").unwrap(),
+        )
+        .unwrap();
+        let keys = group.content_keys().unwrap();
+        let artifact = ArtifactId::new();
+        // The record's making, kept to its app, then a change on its channel.
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "schema", 1_u64).unwrap();
+        let made = doc.save_incremental();
+        doc.put(automerge::ROOT, "value", 1_u64).unwrap();
+        let changed = doc.save_incremental();
+
+        let only_later = [sealed(&keys, artifact, 1, changed.clone())];
+        assert!(matches!(
+            sealed_document(&only_later, &keys, usize::MAX).unwrap(),
+            HeldSealed::Incomplete { missing: 1 }
+        ));
+        let both = [
+            sealed(&keys, artifact, 1, made),
+            sealed(&keys, artifact, 2, changed),
+        ];
+        let HeldSealed::Readable(mut read) = sealed_document(&both, &keys, usize::MAX).unwrap()
+        else {
+            panic!("the whole history reads back");
+        };
+        assert_eq!(read.get_heads(), doc.get_heads());
     }
 }

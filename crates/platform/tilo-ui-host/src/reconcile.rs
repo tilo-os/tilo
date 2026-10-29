@@ -902,6 +902,11 @@ impl Reconciler {
     /// somebody's message rather than as part of the app.
     fn embed(&mut self, node: &UiNode) -> Element {
         let inner = self.stack(node, Rhythm::Related);
+        if !frames(node) {
+            // A view made of objects (an agent's answer of cards) stands as they do: a card
+            // never stands in another, so the boundary draws nothing of its own.
+            return Box::new(Container::new().with_no_padding().with_child(inner));
+        }
         // A view boundary: the card takes the width its column offers, up to the readable measure,
         // and the embedded view lays itself out in what it was given.
         Box::new(
@@ -1213,7 +1218,7 @@ impl Reconciler {
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
                 (!kept).then(|| self.build(new_node))
             }
-            "embed" if same_shell(old_node, new_node) => {
+            "embed" if same_shell(old_node, new_node) && frames(old_node) == frames(new_node) => {
                 let Some(card) = widget
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<Container>())
@@ -1396,6 +1401,15 @@ fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
 /// native Notes edits a note in.
 fn is_body(node: &UiNode) -> bool {
     node.kind == crate::adapter::kind("TextInput") && token(node, "field_role") == Some("body")
+}
+
+/// Whether the embedded view `node` is framed as one object: unless it is made of objects
+/// itself, its cards standing at its top or in its top layout.
+fn frames(node: &UiNode) -> bool {
+    !node
+        .children
+        .iter()
+        .any(|child| child.kind == "ui.Card" || holds_cards(child))
 }
 
 /// Whether `node` holds cards, directly or through the fragments a `match` or `if` leaves.

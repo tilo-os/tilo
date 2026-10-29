@@ -671,7 +671,6 @@ impl Runtime {
             return Err(RuntimeError::Package("no outside sink is set".into()));
         }
         for entry in pending {
-            let held = (entry.doc.clone(), entry.id.clone());
             match &entry.state {
                 OutboxState::Sending { by } if by != token => {
                     let settle = note(&entry, "$settle");
@@ -682,11 +681,9 @@ impl Runtime {
                     )?;
                     report.unknown = report.unknown.saturating_add(1);
                 }
+                // This process's: handed over, or asked again what became of it. The sink
+                // answers for one it already has rather than carrying it out twice.
                 OutboxState::Sending { .. } => {
-                    // Marked by another runtime of this process: that one carries it on.
-                    if !self.core.in_flight.borrow().contains(&held) {
-                        continue;
-                    }
                     let delivered = match self.core.sink.borrow_mut().as_mut() {
                         Some(sink) => sink.deliver(&entry.capability, &entry.payload),
                         None => return Err(RuntimeError::Package("no outside sink is set".into())),
@@ -702,19 +699,16 @@ impl Runtime {
                                 &Settled::Done,
                                 &note(&entry, "$settle"),
                             )?;
-                            self.core.in_flight.borrow_mut().remove(&held);
                             report.delivered = report.delivered.saturating_add(1);
                         }
                         Delivery::Rejected(reason) => {
                             let outcome = Settled::Rejected(reason.clone());
                             store.outbox_settle(&entry, &outcome, &note(&entry, "$settle"))?;
-                            self.core.in_flight.borrow_mut().remove(&held);
                             report.failed.push((entry.id.clone(), reason));
                         }
                         Delivery::Offline(reason) => {
                             let waiting = OutboxState::Waiting { reason };
                             store.outbox_mark(&entry, &waiting, &note(&entry, "$wait"))?;
-                            self.core.in_flight.borrow_mut().remove(&held);
                             report.waiting = report.waiting.saturating_add(1);
                         }
                     }
@@ -731,7 +725,6 @@ impl Runtime {
                         &sending,
                         &note(&entry, "$send"),
                     )?;
-                    self.core.in_flight.borrow_mut().insert(held);
                     report.marked = report.marked.saturating_add(1);
                 }
             }

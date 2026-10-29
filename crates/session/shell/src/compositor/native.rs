@@ -3120,6 +3120,10 @@ struct TestControlConn {
     pending_listing: Option<HeldListing>,
     /// A `snapshot` answered once its file is complete.
     pending_snapshot: Option<(SnapshotOutcome, test_control::Response)>,
+    /// Typing that waits for a character to reach the field as text
+    /// ([`TestControlCtx::typing_commit_requested`]); nothing after it on
+    /// this connection is read until it is typed.
+    pending_typing: Option<PendingTyping>,
     output: Vec<u8>,
     output_offset: usize,
 }
@@ -3259,6 +3263,7 @@ impl TestControlConn {
             pending_invocation: None,
             pending_listing: None,
             pending_snapshot: None,
+            pending_typing: None,
             output: Vec::new(),
             output_offset: 0,
         })
@@ -4397,6 +4402,10 @@ struct TestControlCtx {
     /// ([`PlannedAction::SeatKey`]); the loop takes them with the backend's
     /// own events on its next iteration.
     seat_events: Vec<BackendEvent>,
+    /// The last key typed a character no key of the seat's keymap types, so
+    /// it went to the focused field as text ([`type_char_key`]); the actions
+    /// after it wait until the field has it.
+    typing_commit_requested: bool,
     /// Touch the chrome or a touch-less client receives as pointer input;
     /// shared by physical and injected touch.
     touch_pointer: crate::compositor::touch_pointer::TouchPointer,
@@ -4456,6 +4465,7 @@ impl TestControlCtx {
             client_routed_actions: 0,
             client_input_only: false,
             seat_events: Vec::new(),
+            typing_commit_requested: false,
             touch_pointer: crate::compositor::touch_pointer::TouchPointer::default(),
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
@@ -4511,6 +4521,10 @@ impl TestControlCtx {
         }
     }
 }
+
+#[path = "native_typing.rs"]
+mod typing;
+use typing::{CharKey, PendingTyping, continue_typing, stroke_events, type_char_key};
 
 /// Translate a [`KeyTag`] from the wire to the `winit::keyboard::Key` the
 /// host matches on: named keys map 1:1 to `NamedKey`; chars wrap in `Key::Character`.
@@ -5306,21 +5320,45 @@ fn execute_planned_action(
             }
         }
         PlannedAction::KeyboardKey { key, pressed } => {
-            let winit_key = keytag_into_winit_key(*key);
-            let event = keyboard_input_event(&winit_key, *pressed);
-            // Keep the running mask in step with the injected key stream — this wire
-            // carries no `ModifiersChanged`, so a held modifier would otherwise be invisible.
-            if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
-                client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
+            let events = match (*key, state.as_deref_mut()) {
+                (KeyTag::Char(ch), Some(st)) => match type_char_key(ch, *pressed, st, fb) {
+                    CharKey::Keys(events) => events,
+                    CharKey::Text => {
+                        if *pressed {
+                            st.request_remote_text_commit(ch.to_string(), Instant::now());
+                            ctx.typing_commit_requested = true;
+                        }
+                        Vec::new()
+                    }
+                },
+                _ => vec![keyboard_input_event(&keytag_into_winit_key(*key), *pressed)],
+            };
+            for event in events {
+                // Keep the running mask in step with the injected key stream — this wire
+                // carries no `ModifiersChanged`, so a held modifier would otherwise be invisible.
+                // AltGr is a shift level, not Alt: the DRM keyboard reports no
+                // modifier for it, so AltGr+Q typing `@` is no Alt chord here either.
+                if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event
+                    && key_ev.logical_key != Key::Named(NamedKey::AltGraph)
+                {
+                    client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
+                }
+                dispatch_synth_event(&event, fb, ctx, &mut state);
             }
-            dispatch_synth_event(&event, fb, ctx, &mut state);
         }
         PlannedAction::SeatKey { key, pressed } => {
+            let events = match (*key, state.as_deref_mut()) {
+                (KeyTag::Char(ch), Some(st)) => match st.seat_stroke(ch) {
+                    Some(stroke) => stroke_events(ch, &stroke, *pressed),
+                    None => vec![keyboard_input_event(
+                        &Key::Character(ch.to_string().into()),
+                        *pressed,
+                    )],
+                },
+                _ => vec![keyboard_input_event(&keytag_into_winit_key(*key), *pressed)],
+            };
             ctx.seat_events
-                .push(BackendEvent::Input(keyboard_input_event(
-                    &keytag_into_winit_key(*key),
-                    *pressed,
-                )));
+                .extend(events.into_iter().map(BackendEvent::Input));
         }
         PlannedAction::ActivateTestId { test_id } => {
             fb.host_mut().queue_test_activation(test_id.clone());
@@ -6506,6 +6544,21 @@ fn pump_test_control_conn(
                 }
             }
         }
+        // Typing that waits for a character to reach its field goes on once
+        // the field has it; nothing after it is read until it is all typed.
+        if let Some(typing) = conn.pending_typing.take() {
+            let Some(response) = continue_typing(typing, conn, frame_builder, ctx, session, state)
+            else {
+                return injected_input;
+            };
+            injected_input = true;
+            match queue_test_control_response(conn, &response) {
+                PendingConnectionProgress::Closed | PendingConnectionProgress::OutputPending => {
+                    return injected_input;
+                }
+                _ => {}
+            }
+        }
         // A held listing runs again, before anything after it on this
         // connection is read, once the action surface moved or its wait ran
         // out.
@@ -6755,7 +6808,8 @@ fn pump_test_control_conn(
                 let mut failed: Option<InvokeFailure> = None;
                 let mut receipt: Option<crate::shell::search::ActionReceipt> = None;
                 let mut pending: Option<crate::shell::search::PendingInvocation> = None;
-                for action in &actions {
+                let mut typing_held: Option<std::collections::VecDeque<PlannedAction>> = None;
+                for (index, action) in actions.iter().enumerate() {
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
                         // — actions go to the password field; `poll_verification` delivers unlock.
@@ -6779,6 +6833,18 @@ fn pump_test_control_conn(
                     }
                     if let Some(scope) = &scope {
                         ctx.agents.record(&scope.agent, action, scope.origin());
+                    }
+                    // A character went to the field as text: what follows it
+                    // waits until the field has it, so the text stays in order.
+                    if std::mem::take(&mut ctx.typing_commit_requested) {
+                        typing_held = Some(
+                            actions
+                                .iter()
+                                .skip(index.saturating_add(1))
+                                .cloned()
+                                .collect(),
+                        );
+                        break;
                     }
                 }
                 // A resolution nothing ran from is stale by the next request.
@@ -6820,6 +6886,16 @@ fn pump_test_control_conn(
                     && failed.is_none()
                 {
                     conn.pending_snapshot = Some((outcome, resp));
+                    return injected_input;
+                }
+                if let Some(held) = typing_held
+                    && failed.is_none()
+                {
+                    conn.pending_typing = Some(PendingTyping {
+                        held,
+                        participant: scope.as_ref().map(|scope| scope.peer),
+                        response: resp,
+                    });
                     return injected_input;
                 }
                 let settle_by = settle_for.and_then(|wait| tilo_clock::now().checked_add(wait));
