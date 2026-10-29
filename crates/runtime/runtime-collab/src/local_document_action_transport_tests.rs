@@ -1,6 +1,38 @@
 use super::*;
 use std::cell::RefCell;
 
+const HOST: [u8; 16] = [2; 16];
+const ID: [u8; 16] = [1; 16];
+const UPDATE: &str = r#"{"state":"accepted","invocation":"01010101-0101-0101-0101-010101010101"}"#;
+
+/// Run `action` against `server` through a real Cap'n Proto connection.
+async fn over_wire<S, F, Fut>(server: S, action: F)
+where
+    S: collab_capnp::channel_handle::Server + 'static,
+    F: FnOnce(ChannelHandle) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (server_io, client_io) = tokio::io::duplex(512);
+            let raw: collab_capnp::channel_handle::Client = capnp_rpc::new_client(server);
+            let task =
+                tokio::task::spawn_local(runtime_portal::serve_connected_io(server_io, raw.client));
+            let connection = runtime_portal::CapnpClient::from_connected_io(
+                client_io,
+                capnp_rpc::rpc_twoparty_capnp::Side::Client,
+            );
+            let channel = ChannelHandle {
+                inner: Rc::new(connection.bootstrap()),
+                descriptors: None,
+            };
+            tilo_test_env::within("the RPC under test", action(channel)).await;
+            task.abort();
+            let _ = task.await;
+        })
+        .await;
+}
+
 fn report() -> LocalDocumentActionReport {
     LocalDocumentActionReport {
         custody: None,
@@ -138,7 +170,7 @@ async fn exact_report_uses_existing_session_and_preserves_private_observation() 
     let received = Rc::new(RefCell::new(Vec::new()));
     let captured = report();
     let expected = captured.encode().unwrap();
-    crate::resolved_invocation_tests::over_wire(
+    over_wire(
         Server {
             received: received.clone(),
             wrong_id: false,
@@ -165,7 +197,7 @@ async fn exact_report_uses_existing_session_and_preserves_private_observation() 
 async fn refusal_or_wrong_invocation_never_retries_or_falls_back() {
     for (wrong_id, refuse) in [(true, false), (false, true), (true, true)] {
         let received = Rc::new(RefCell::new(Vec::new()));
-        crate::resolved_invocation_tests::over_wire(
+        over_wire(
             Server {
                 received: received.clone(),
                 wrong_id,
@@ -186,4 +218,36 @@ async fn refusal_or_wrong_invocation_never_retries_or_falls_back() {
         .await;
         assert_eq!(received.borrow().len(), 1);
     }
+}
+
+#[test]
+fn reliable_invocation_evidence_preserves_existing_outcome_budget_and_redacts_debug() {
+    let mut message = capnp::message::Builder::new_default();
+    let mut outcome = UPDATE.to_owned();
+    outcome.push_str(&" ".repeat(256 * 1024 - outcome.len()));
+    {
+        let mut out =
+            message.init_root::<collab_capnp::published_invocation_observation::Builder<'_>>();
+        out.set_host(&HOST);
+        out.set_invocation(&ID);
+        out.set_found(true);
+        out.set_id(1);
+        out.set_update_json(&outcome);
+        out.set_admission_json("n".repeat(32 * 1024));
+        out.set_terminal_json("t".repeat(32 * 1024));
+    }
+    let observation =
+        reliable_decode_observation(message.get_root_as_reader().unwrap(), &HOST, &ID).unwrap();
+    let result = observation.result.unwrap();
+    assert_eq!(result.update_json.len(), 256 * 1024);
+    assert_eq!(result.admission_json.as_ref().unwrap().len(), 32 * 1024);
+    assert!(!format!("{result:?}").contains("nnnn"));
+    assert!(!format!("{result:?}").contains("tttt"));
+    message
+        .get_root::<collab_capnp::published_invocation_observation::Builder<'_>>()
+        .unwrap()
+        .set_admission_json("n".repeat(32 * 1024 + 1));
+    assert!(
+        reliable_decode_observation(message.get_root_as_reader().unwrap(), &HOST, &ID).is_err()
+    );
 }

@@ -408,7 +408,6 @@ pub fn action_directory_row_wire_bytes(row: &ActionDirectoryRow) -> usize {
 }
 
 #[cfg(feature = "client")]
-pub(crate) use codec::decode_action_directory_row;
 #[cfg(feature = "client")]
 pub use codec::{
     decode_action_directory_page, decode_action_directory_resolution, decode_exported_action,

@@ -169,14 +169,6 @@ struct AuthorizedDocumentRoute {
 /// How long a peer that began its protocol header has to finish it.
 const LAUNCH_MARKER_COMPLETION: Duration = Duration::from_millis(300);
 
-fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
-    if requested == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
-        current_connection
-    } else {
-        requested
-    }
-}
-
 #[cfg(test)]
 mod realtime_service_boundary_tests;
 
@@ -1799,7 +1791,7 @@ impl ContinuingCaller {
                 foreign_restriction: false,
                 direct: None,
             },
-            DurableContext::Local { caller, .. } | DurableContext::Task { caller, .. } => {
+            DurableContext::Task { caller, .. } => {
                 let (room, admitted) = caller.admitted_in();
                 Self::Admitted {
                     room,
@@ -1925,14 +1917,13 @@ impl PendingInvocation {
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
 mod action_host;
-mod invocation_update;
-pub(crate) use action_host::{LEGACY_DOOR_FOREIGN_APP, legacy_door_may_act_as_person};
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
 mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
+mod invocation_update;
 mod launchable;
 mod live_views;
 mod local_action_host;
@@ -6086,7 +6077,6 @@ impl CapnpBrokerState {
             if let Some(context) = durable {
                 context.before_admission(
                     self,
-                    journal.host(),
                     peer_id,
                     &offered,
                     sender
@@ -9726,176 +9716,6 @@ impl channel_handle::Server for CapnpChannelHandle {
         Promise::ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one broker boundary must copy bounded input, enforce current policy, and copy a capability page without retaining it"
-    )]
-    fn query_action_directory(
-        self: Rc<Self>,
-        params: channel_handle::QueryActionDirectoryParams,
-        mut results: channel_handle::QueryActionDirectoryResults,
-    ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let request = match params.get().and_then(
-            runtime_collab::collab_capnp::channel_handle::query_action_directory_params::Reader::get_query,
-        ) {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let peer_id = request.get_peer_id();
-        // A global root is intentionally not synthesised from every app here:
-        // that would force a scan of all live directories for each keystroke.
-        // Callers discover live app ids from the small authenticated catalogue,
-        // then page one source at a time with an opaque source cursor.
-        if peer_id == 0 {
-            return Promise::err(capnp::Error::failed(
-                "a directory page must name one live application peer".into(),
-            ));
-        }
-        let revision = match request.get_revision().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let needle = match request.get_needle().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let parent_resource = match request.get_parent_resource().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let resource_name = match request.get_resource_name().and_then(|value| {
-            value
-                .to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(error),
-        };
-        let cursor = match request.get_cursor() {
-            Ok(cursor) => cursor.to_vec(),
-            Err(error) => return Promise::err(error),
-        };
-        if let Err(error) = validate_directory_query_input(&runtime_collab::ActionDirectoryQuery {
-            peer_id,
-            revision: revision.clone(),
-            cursor: cursor.clone(),
-            needle: needle.clone(),
-            parent_resource: parent_resource.clone(),
-            resource_name: resource_name.clone(),
-            // Input validation is independent of numeric page budgets; these
-            // placeholders avoid delaying it until after a capability lookup.
-            max_results: 1,
-            max_bytes: 1,
-            max_work: 1,
-            max_depth: 0,
-        }) {
-            return Promise::err(error);
-        }
-        let max_results = request
-            .get_max_results()
-            .min(CapnpBrokerState::DIRECTORY_MAX_RESULTS);
-        let max_bytes = request
-            .get_max_bytes()
-            .min(CapnpBrokerState::DIRECTORY_MAX_BYTES);
-        let max_work = request
-            .get_max_work()
-            .min(CapnpBrokerState::DIRECTORY_MAX_WORK);
-        let max_depth = request
-            .get_max_depth()
-            .min(CapnpBrokerState::DIRECTORY_MAX_DEPTH);
-        if max_results == 0 || max_bytes == 0 || max_work == 0 {
-            return Promise::err(capnp::Error::failed(
-                "directory query budgets must be non-zero".into(),
-            ));
-        }
-        let cluster = self.route().cluster_id;
-        let actor = self.verified_identity.broker_actor();
-        let registered = match self.directories.registered(peer_id, &cluster) {
-            Ok(registered) => registered,
-            Err(error) => return Promise::err(error),
-        };
-        let state = self.state.clone();
-        let host_guard =
-            HostWorkerReadGuard::for_channel(&state, self.peer_id, &self.verified_identity);
-        Promise::from_future(async move {
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
-            let cursor = registered.pagination.source_cursor(
-                &actor,
-                &revision,
-                &needle,
-                &parent_resource,
-                &cursor,
-            )?;
-            let mut forward = registered.directory.query_request();
-            {
-                let mut query = forward.get().init_query();
-                query.set_peer_id(peer_id);
-                query.set_revision(&revision);
-                query.set_cursor(&cursor);
-                query.set_needle(&needle);
-                query.set_parent_resource(&parent_resource);
-                query.set_max_results(max_results);
-                query.set_max_bytes(max_bytes);
-                query.set_max_work(max_work);
-                query.set_max_depth(max_depth);
-                query.set_resource_name(&resource_name);
-            }
-            let response = forward.send().promise.await?;
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
-            let page = response.get()?.get_page()?;
-            let bytes = page.total_size()?.word_count.saturating_mul(8);
-            if bytes > u64::from(max_bytes) {
-                return Err(capnp::Error::failed(
-                    "application exceeded directory byte budget".into(),
-                ));
-            }
-            let page = runtime_collab::decode_action_directory_page(page)?;
-            let mut page = filter_directory_page(
-                &state,
-                &cluster,
-                &actor,
-                &registered.app_id,
-                registered.publishing_person.as_deref(),
-                page,
-                max_results,
-            )?;
-            if !resource_name.is_empty() {
-                page.next_cursor.clear();
-            }
-            registered
-                .pagination
-                .shield(&actor, &needle, &parent_resource, &mut page);
-            runtime_collab::write_action_directory_page(results.get().init_page(), &page)?;
-            Ok(())
-        })
-    }
-
-    fn resolve_published_action(
-        self: Rc<Self>,
-        params: channel_handle::ResolvePublishedActionParams,
-        results: channel_handle::ResolvePublishedActionResults,
-    ) -> Promise<(), capnp::Error> {
-        resolved_invocation::resolve(self, &params, results)
-    }
-
     fn subscribe_invocations(
         self: Rc<Self>,
         params: channel_handle::SubscribeInvocationsParams,
@@ -10083,376 +9903,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
     }
 
-    fn invoke_resolved_published_action_durable(
-        self: Rc<Self>,
-        params: channel_handle::InvokeResolvedPublishedActionDurableParams,
-        results: channel_handle::InvokeResolvedPublishedActionDurableResults,
-    ) -> Promise<(), capnp::Error> {
-        durable_local_invocation::invoke(self, &params, results)
-    }
-    fn published_invocation_observation(
-        self: Rc<Self>,
-        params: channel_handle::PublishedInvocationObservationParams,
-        results: channel_handle::PublishedInvocationObservationResults,
-    ) -> Promise<(), capnp::Error> {
-        durable_local_invocation::observe(&self, &params, results)
-    }
-    fn cancel_durable_published_invocation(
-        self: Rc<Self>,
-        params: channel_handle::CancelDurablePublishedInvocationParams,
-        results: channel_handle::CancelDurablePublishedInvocationResults,
-    ) -> Promise<(), capnp::Error> {
-        durable_local_invocation::cancel(&self, &params, results)
-    }
-
     fn admit_local_document_action(
         self: Rc<Self>,
         params: channel_handle::AdmitLocalDocumentActionParams,
         results: channel_handle::AdmitLocalDocumentActionResults,
     ) -> Promise<(), capnp::Error> {
         local_document_action::admit(self, &params, results)
-    }
-
-    fn invoke_resolved_published_action(
-        self: Rc<Self>,
-        params: channel_handle::InvokeResolvedPublishedActionParams,
-        results: channel_handle::InvokeResolvedPublishedActionResults,
-    ) -> Promise<(), capnp::Error> {
-        resolved_invocation::invoke(self, &params, results)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the RPC performs one complete authorized invocation admission transaction"
-    )]
-    fn invoke_published_action(
-        self: Rc<Self>,
-        params: channel_handle::InvokePublishedActionParams,
-        mut results: channel_handle::InvokePublishedActionResults,
-    ) -> Promise<(), capnp::Error> {
-        let original_time = match self.state.registered_policy_time() {
-            Ok(time) => time,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let requested_peer_id = request.get_peer_id();
-        let peer_id = invocation_target_peer(requested_peer_id, self.peer_id);
-        let resource = match request.get_resource().and_then(|s| {
-            s.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let action = match request.get_action().and_then(|s| {
-            s.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok(value) => value.to_owned(),
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let argument = if request.get_has_argument() {
-            match request.get_argument().and_then(|s| {
-                s.to_str()
-                    .map_err(|error| capnp::Error::failed(error.to_string()))
-            }) {
-                Ok(value) => Some(value.to_owned()),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            }
-        } else {
-            None
-        };
-        let confirmation = match request.get_confirmation_json().and_then(|s| {
-            s.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-        }) {
-            Ok("") => serde_json::Value::Object(serde_json::Map::new()),
-            Ok(value) => match serde_json::from_str::<serde_json::Value>(value) {
-                Ok(value) => value,
-                Err(error) => {
-                    return Promise::err(capnp::Error::failed(format!(
-                        "invalid confirmation evidence: {error}"
-                    )));
-                }
-            },
-            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-        };
-        let state = self.state.clone();
-        let origin_route = self.route();
-        let cluster = origin_route.cluster_id.clone();
-        Promise::from_future(async move {
-            let publication = state
-                .surfaces
-                .lock()
-                .ok()
-                .and_then(|surfaces| surfaces.get(&peer_id).cloned())
-                .filter(|surface| surface.route.cluster_id == cluster)
-                .and_then(|surface| surface.action_projection(&resource, &action))
-                .ok_or_else(|| capnp::Error::failed("unknown application action".into()))?;
-            // The target app comes from the same clone the action was taken
-            // from, and is checked before any confirmation is minted.
-            let invoke_access = state.app_action_access(&origin_route.app_id).invoke;
-            if !legacy_door_may_act_as_person(
-                &current,
-                &origin_route,
-                &publication.0.app_id,
-                invoke_access,
-            ) {
-                return Err(capnp::Error::failed(LEGACY_DOOR_FOREIGN_APP.into()));
-            }
-            let offered = &publication.1;
-            let actor = current.broker_actor();
-            let phrase = confirmation
-                .get("confirmation_phrase")
-                .and_then(serde_json::Value::as_str);
-            let job = if requires_store_witness(&publication.0.app_id, &action) {
-                // Never treat caller-supplied booleans, phrases or tokens as
-                // permission to disclose. The host shows the signed audience
-                // and payload, bound to a fresh invocation before it asks.
-                let invocation = tilo_actions::InvocationId::new();
-                let binding = state.native_witness_binding(
-                    actor.id(),
-                    &publication,
-                    argument.as_deref(),
-                    invocation,
-                );
-                let answer = state
-                    .local_store_witness(&current, &publication, argument.as_deref(), &binding)
-                    .await
-                    .map_err(capnp::Error::failed)?;
-                let current = state.revalidate_admission(&origin_route, &current)?;
-                state
-                    .check_native_store_offer(&publication)
-                    .map_err(capnp::Error::failed)?;
-                let current_binding = state.native_witness_binding(
-                    actor.id(),
-                    &publication,
-                    argument.as_deref(),
-                    invocation,
-                );
-                let token = state
-                    .confirmation_token(
-                        peer_id,
-                        &publication.0.app_id,
-                        offered,
-                        argument.as_deref(),
-                        &actor,
-                        Some(&answer),
-                        &current_binding,
-                    )
-                    .map_err(|error| {
-                        capnp::Error::failed(format!("host confirmation refused: {error:?}"))
-                    })?;
-                state.start_invocation_confirmed_for_origin(
-                    peer_id,
-                    &resource,
-                    &action,
-                    InvocationInputs {
-                        original_request: None,
-                        requested: Some(invocation),
-                        caller: None,
-                        execution: None,
-                        argument: argument.as_deref(),
-                        actor: &actor,
-                        confirmation_token: token.as_deref(),
-                        context: None,
-                    },
-                    Some(InvocationCaller::Local {
-                        route: origin_route.clone(),
-                        time: original_time.clone(),
-                        admitted: Box::new(current),
-                    }),
-                )
-            } else {
-                match &offered.contract.confirmation {
-                    tilo_actions::ConfirmationPolicy::None => state
-                        .start_invocation_confirmed_for_origin(
-                            peer_id,
-                            &resource,
-                            &action,
-                            InvocationInputs {
-                                original_request: None,
-                                requested: None,
-                                caller: None,
-                                execution: None,
-                                argument: argument.as_deref(),
-                                actor: &actor,
-                                confirmation_token: None,
-                                context: None,
-                            },
-                            Some(InvocationCaller::Local {
-                                route: origin_route.clone(),
-                                admitted: Box::new(current.clone()),
-                                time: original_time.clone(),
-                            }),
-                        ),
-                    tilo_actions::ConfirmationPolicy::Confirm => {
-                        if confirmation
-                            .get("confirm")
-                            .and_then(serde_json::Value::as_bool)
-                            != Some(true)
-                        {
-                            return Err(capnp::Error::failed(
-                                "explicit confirmation is required".into(),
-                            ));
-                        }
-                        let token = state
-                            .prepare_confirmation(
-                                peer_id,
-                                &resource,
-                                &action,
-                                argument.as_deref(),
-                                &actor.id,
-                                None,
-                            )
-                            .map_err(capnp::Error::failed)?;
-                        state.start_invocation_confirmed_for_origin(
-                            peer_id,
-                            &resource,
-                            &action,
-                            InvocationInputs {
-                                original_request: None,
-                                requested: None,
-                                caller: None,
-                                execution: None,
-                                argument: argument.as_deref(),
-                                actor: &actor,
-                                confirmation_token: Some(&token),
-                                context: None,
-                            },
-                            Some(InvocationCaller::Local {
-                                route: origin_route.clone(),
-                                admitted: Box::new(current.clone()),
-                                time: original_time.clone(),
-                            }),
-                        )
-                    }
-                    tilo_actions::ConfirmationPolicy::Phrase { .. } => {
-                        let token = state
-                            .prepare_confirmation(
-                                peer_id,
-                                &resource,
-                                &action,
-                                argument.as_deref(),
-                                &actor.id,
-                                phrase,
-                            )
-                            .map_err(capnp::Error::failed)?;
-                        state.start_invocation_confirmed_for_origin(
-                            peer_id,
-                            &resource,
-                            &action,
-                            InvocationInputs {
-                                original_request: None,
-                                requested: None,
-                                caller: None,
-                                execution: None,
-                                argument: argument.as_deref(),
-                                actor: &actor,
-                                confirmation_token: Some(&token),
-                                context: None,
-                            },
-                            Some(InvocationCaller::Local {
-                                route: origin_route.clone(),
-                                admitted: Box::new(current.clone()),
-                                time: original_time.clone(),
-                            }),
-                        )
-                    }
-                }
-            }
-            .map_err(capnp::Error::failed)?
-            .start(&state)
-            .await
-            .map_err(capnp::Error::failed)?;
-            let update = state.invocation_status(job.id).ok_or_else(|| {
-                capnp::Error::failed("accepted invocation has no broker state".into())
-            })?;
-            let update_json = serde_json::to_string(&update)
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            results.get().set_id(job.id);
-            results.get().set_update_json(&update_json);
-            drop(job.completion);
-            Ok(())
-        })
-    }
-
-    fn published_invocation_status(
-        self: Rc<Self>,
-        params: channel_handle::PublishedInvocationStatusParams,
-        mut results: channel_handle::PublishedInvocationStatusResults,
-    ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let id = match params.get() {
-            Ok(request) => request.get_id(),
-            Err(error) => return Promise::err(error),
-        };
-        // The legacy wire-id door observes only legacy actor-owned jobs.
-        // Certificate-owned jobs require the host/UUID durable RPC, which
-        // binds both the exact device and the authenticated agent.
-        let owner = InvocationOwner::Local {
-            actor: current.broker_actor().id,
-        };
-        let update = self.state.invocation_status_for_owner(id, &owner);
-        let mut result = results.get();
-        result.set_found(update.is_some());
-        if let Some(update) = update {
-            match serde_json::to_string(&update) {
-                Ok(json) => result.set_update_json(&json),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            }
-        }
-        Promise::ok(())
-    }
-
-    fn cancel_published_invocation(
-        self: Rc<Self>,
-        params: channel_handle::CancelPublishedInvocationParams,
-        mut results: channel_handle::CancelPublishedInvocationResults,
-    ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let id = match params.get() {
-            Ok(request) => request.get_id(),
-            Err(error) => return Promise::err(error),
-        };
-        let owner = InvocationOwner::Local {
-            actor: current.broker_actor().id,
-        };
-        if let Err(error) = self.state.request_cancellation_for_owner(id, &owner) {
-            return Promise::err(capnp::Error::failed(error));
-        }
-        let Some(update) = self.state.invocation_status(id) else {
-            return Promise::err(capnp::Error::failed("unknown invocation id".into()));
-        };
-        match serde_json::to_string(&update) {
-            Ok(json) => {
-                results.get().set_update_json(&json);
-                Promise::ok(())
-            }
-            Err(error) => Promise::err(capnp::Error::failed(error.to_string())),
-        }
     }
 
     fn launch_published_application(
@@ -14258,15 +13714,7 @@ pub mod tests {
     #[cfg(test)]
     include!("resolved_invocation_tests.rs");
     #[cfg(test)]
-    include!("approved_check_rpc_tests.rs");
-    #[cfg(test)]
     include!("external_moderation_rpc_tests.rs");
-    #[cfg(test)]
-    include!("approved_check_progress_fixture.rs");
-    #[cfg(test)]
-    include!("approved_check_progress_rpc_tests.rs");
-    #[cfg(test)]
-    include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("canonical_route_tests.rs");
     #[cfg(all(test, target_os = "linux"))]
@@ -14275,8 +13723,6 @@ pub mod tests {
     include!("workspace_record_custody_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
-    #[cfg(test)]
-    include!("legacy_invoke_door_tests.rs");
     #[cfg(test)]
     include!("record_content_tests.rs");
     #[cfg(test)]
@@ -17886,14 +17332,6 @@ pub mod tests {
         }));
     }
 
-    #[test]
-    fn the_current_connection_sentinel_names_the_callers_own_peer() {
-        assert_eq!(
-            invocation_target_peer(ui::collaboration::CURRENT_CONNECTION_PEER_ID, 41),
-            41
-        );
-        assert_eq!(invocation_target_peer(7, 41), 7);
-    }
     #[cfg(test)]
     mod durable_admission_tests {
         mod peer_integration {

@@ -227,68 +227,6 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    /// Local RPC approval material is not a disclosure witness. Only the host
-    /// may ask the admitted person's device about this exact external payload.
-    pub(super) async fn local_store_witness(
-        &self,
-        admitted: &super::AdmittedJoinIdentity,
-        publication: &(super::PublishedSurface, super::PublishedAction),
-        argument: Option<&str>,
-        binding: &super::WitnessBinding,
-    ) -> Result<Confirmation, String> {
-        let (surface, offered) = publication;
-        if !requires_store_witness(&surface.app_id, &offered.action) {
-            return Err("external disclosure witness requested for another action".into());
-        }
-        let actor = admitted.broker_actor();
-        let argument_value = argument.map_or(tilo_actions::remote::InvokeArgument::None, |text| {
-            tilo_actions::remote::InvokeArgument::Text(text.into())
-        });
-        let moderation = crate::app_actions::ModerationConsentPreview::from_argument(
-            &offered.action,
-            &argument_value,
-            &admitted.verified.user_public_key,
-        )?;
-        let question = Question {
-            request: AppActionConsentRequest {
-                handle: format!("confirm:{}", binding.invocation.0),
-                room: surface.route.cluster_id.clone(),
-                person: super::principal_id_for_root(admitted.verified.user_public_key),
-                app_id: actor.id().into(),
-                target_app: surface.app_id.clone(),
-                resource: offered.resource.clone(),
-                action: offered.action.clone(),
-                resource_label: offered.resource_label.clone(),
-                action_label: offered.action_label.clone(),
-                risk: offered.contract.risk,
-                needs_confirmation: true,
-                confirming: true,
-                moderation: Some(moderation),
-                preview: None,
-                scope: None,
-                draft: None,
-            },
-            actor,
-            binding: binding.clone(),
-            shown: None,
-        };
-        let answer = self
-            .ask_person(&question)
-            .ok_or("host confirmation unavailable")?
-            .await
-            .map_err(|_| "host confirmation ended")?;
-        if !answer.allowed() {
-            return Err("Store disclosure declined".into());
-        }
-        if !answer.edits.is_empty() {
-            // A disclosure is confirmed exactly as it is shown.
-            return Err("a Store disclosure cannot be changed on the sheet".into());
-        }
-        self.witness_confirmation(&question.binding)
-            .map(Confirmation::Witnessed)
-            .ok_or_else(|| "host confirmation unavailable".into())
-    }
-
     /// Native task approval is not a disclosure witness. Ask on the same typed
     /// host sheet as ordinary Store invocations, after any Task Center edits.
     /// Dispatch consumes the returned witness, and revalidates task authority.

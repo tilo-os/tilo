@@ -352,11 +352,6 @@ impl OriginalRoom {
         Self::hosting(capabilities, expires_at_ns, persist_path, None, false)
     }
 
-    /// Native caller using the enrolled identity, rather than a synthetic certificate.
-    pub fn current_native() -> Self {
-        Self::hosting(DeviceCapabilities::primary(), None, None, None, true)
-    }
-
     /// The room on a host that keeps record content through `content`:
     /// `room` when it is the same room another host holds.
     pub fn with_record_content(

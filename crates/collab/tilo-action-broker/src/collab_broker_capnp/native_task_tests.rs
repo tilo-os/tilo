@@ -667,15 +667,6 @@ async fn invoke(
     ))
 }
 
-async fn ordinary_invoke(channel: &channel_handle::Client) -> Result<(), capnp::Error> {
-    let mut request = channel.invoke_published_action_request();
-    let mut p = request.get();
-    p.set_peer_id(200);
-    p.set_resource("notes:release");
-    p.set_action("append");
-    request.send().promise.await.map(|_| ())
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
     use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
@@ -712,9 +703,7 @@ async fn authenticated_native_action_ignores_another_running_tasks_ceiling() {
                 invocation.as_bytes()
             );
             assert_eq!(invoke(&agent, &run, invocation).await.unwrap(), first);
-            let unbound_refused = ordinary_invoke(&agent).await.is_err();
             drop(f);
-            assert!(unbound_refused);
         })
         .await;
 }
@@ -757,13 +746,6 @@ async fn ordinary_native_agent_invocation_cannot_escape_task_resource_scope() {
                 );
             }
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
-            assert!(
-                ordinary_invoke(&agent)
-                    .await
-                    .unwrap_err()
-                    .to_string()
-                    .contains("authenticated task action admission")
-            );
             assert_eq!(
                 crate::collab_broker_capnp::unread_invocations(200),
                 0,
@@ -799,13 +781,6 @@ async fn ordinary_native_agent_invocation_remains_fenced_after_stop() {
             update.send().promise.await.unwrap();
             f.stop();
             assert!(invoke(&agent, &run, uuid::Uuid::new_v4()).await.is_err());
-            assert!(
-                ordinary_invoke(&agent)
-                    .await
-                    .unwrap_err()
-                    .to_string()
-                    .contains("authenticated task action admission")
-            );
             assert_eq!(
                 crate::collab_broker_capnp::unread_invocations(200),
                 0,

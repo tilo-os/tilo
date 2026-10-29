@@ -49,8 +49,15 @@ impl Person {
     }
 }
 
+type Directory<'a> = (
+    &'a Arc<CapnpBrokerState>,
+    &'a Rc<LocalActionDirectoryRegistry>,
+);
+
 struct Connection {
     channel: channel_handle::Client,
+    cluster: String,
+    actor: BrokerActor,
     driver: tokio::task::JoinHandle<Result<(), capnp::Error>>,
 }
 impl Drop for Connection {
@@ -98,6 +105,8 @@ impl Connection {
         let response = join.send().promise.await.unwrap();
         Self {
             channel: response.get().unwrap().get_handle().unwrap(),
+            cluster: route.cluster_id.clone(),
+            actor: BrokerActor::person(person.id()),
             driver,
         }
     }
@@ -109,28 +118,45 @@ impl Connection {
             .set_directory(capnp_rpc::new_client(CachedDirectory(rows)));
         publish.send().promise.await.unwrap();
     }
-    async fn query(&self, peer: u64, needle: &str) -> runtime_collab::ActionDirectoryPage {
-        self.query_page(peer, needle, "", &[]).await.unwrap()
+    async fn query(
+        &self,
+        directory: Directory<'_>,
+        peer: u64,
+        needle: &str,
+    ) -> runtime_collab::ActionDirectoryPage {
+        self.query_page(directory, peer, needle, "", &[])
+            .await
+            .unwrap()
     }
+    /// One page of `peer`'s directory as this connection's person sees it
+    /// through the broker's directory bridge.
     async fn query_page(
         &self,
+        (state, directories): Directory<'_>,
         peer: u64,
         needle: &str,
         revision: &str,
         cursor: &[u8],
-    ) -> Result<runtime_collab::ActionDirectoryPage, capnp::Error> {
-        let mut request = self.channel.query_action_directory_request();
-        let mut query = request.get().init_query();
-        query.set_peer_id(peer);
-        query.set_needle(needle);
-        query.set_revision(revision);
-        query.set_cursor(cursor);
-        query.set_max_results(32);
-        query.set_max_bytes(CapnpBrokerState::DIRECTORY_MAX_BYTES);
-        query.set_max_work(128);
-        query.set_max_depth(4);
-        let reply = request.send().promise.await?;
-        runtime_collab::decode_action_directory_page(reply.get()?.get_page()?)
+    ) -> Result<runtime_collab::ActionDirectoryPage, String> {
+        state
+            .query_action_directory_for_actor(
+                directories,
+                &self.actor,
+                &self.cluster,
+                &runtime_collab::ActionDirectoryQuery {
+                    peer_id: peer,
+                    revision: revision.into(),
+                    cursor: cursor.to_vec(),
+                    needle: needle.into(),
+                    parent_resource: String::new(),
+                    max_results: 32,
+                    max_bytes: CapnpBrokerState::DIRECTORY_MAX_BYTES,
+                    max_work: 128,
+                    max_depth: 4,
+                    resource_name: String::new(),
+                },
+            )
+            .await
     }
 }
 
@@ -426,7 +452,7 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 let client =
                     Connection::join(&state, &directories, &route, person, &owner.id()).await;
                 for needle in ["", "Secret"] {
-                    let page = client.query(peer, needle).await;
+                    let page = client.query((&state, &directories), peer, needle).await;
                     assert_disclosure(&page.rows, private, needle);
                     let page =
                         bridge_query(&state, &directories, &route, person, peer, needle).await;
@@ -456,7 +482,14 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 .find(|(_, entry)| entry.publishing_person == Some(editor.id()))
                 .unwrap()
                 .0;
-            assert_disclosure(&publisher.query(foreign_peer, "").await.rows, false, "");
+            assert_disclosure(
+                &publisher
+                    .query((&state, &directories), foreign_peer, "")
+                    .await
+                    .rows,
+                false,
+                "",
+            );
             // Legacy registrations do not acquire the room owner's identity.
             directories
                 .directories
@@ -464,7 +497,11 @@ async fn cached_private_metadata_is_filtered_on_wire_and_bridge_for_authenticate
                 .get_mut(&peer)
                 .unwrap()
                 .publishing_person = None;
-            assert_disclosure(&publisher.query(peer, "").await.rows, false, "");
+            assert_disclosure(
+                &publisher.query((&state, &directories), peer, "").await.rows,
+                false,
+                "",
+            );
         })
         .await;
 }
@@ -591,7 +628,9 @@ async fn framework_projection_keeps_private_child_metadata_off_signed_wire_and_b
                 &fixture.owner.id(),
             )
             .await;
-            let wire = reader.query(fixture.peer, "").await;
+            let wire = reader
+                .query((&fixture.state, &fixture.directories), fixture.peer, "")
+                .await;
             assert_eq!(
                 wire.rows.len(),
                 4,
@@ -697,7 +736,9 @@ async fn document_read_views_are_disclosed_without_exposing_the_publishers_priva
                         .unwrap()
                         .publishing_person = None;
                 }
-                let page = reader.query(fixture.peer, "").await;
+                let page = reader
+                    .query((&fixture.state, &fixture.directories), fixture.peer, "")
+                    .await;
                 assert_eq!(
                     page.rows
                         .iter()
@@ -752,7 +793,13 @@ async fn private_directory_continuations_hide_source_metadata_and_bind_the_query
                 &fixture.owner.id(),
             )
             .await;
-            let page = editor.query(fixture.peer, "paged").await;
+            let page = editor
+                .query(
+                    (&fixture.state, &fixture.directories),
+                    fixture.peer,
+                    "paged",
+                )
+                .await;
             assert_eq!(
                 page.rows.len(),
                 2,
@@ -770,7 +817,13 @@ async fn private_directory_continuations_hide_source_metadata_and_bind_the_query
             );
             assert!(!page.next_cursor.windows(6).any(|word| word == b"Secret"));
             let tail = editor
-                .query_page(fixture.peer, "paged", &page.revision, &page.next_cursor)
+                .query_page(
+                    (&fixture.state, &fixture.directories),
+                    fixture.peer,
+                    "paged",
+                    &page.revision,
+                    &page.next_cursor,
+                )
                 .await
                 .unwrap();
             assert_eq!(tail.rows.len(), 2);
@@ -783,19 +836,32 @@ async fn private_directory_continuations_hide_source_metadata_and_bind_the_query
             assert!(
                 fixture
                     .publisher
-                    .query_page(fixture.peer, "paged", &page.revision, &page.next_cursor)
-                    .await
-                    .is_err()
-            );
-            assert!(
-                editor
-                    .query_page(fixture.peer, "Secret", &page.revision, &page.next_cursor)
+                    .query_page(
+                        (&fixture.state, &fixture.directories),
+                        fixture.peer,
+                        "paged",
+                        &page.revision,
+                        &page.next_cursor
+                    )
                     .await
                     .is_err()
             );
             assert!(
                 editor
                     .query_page(
+                        (&fixture.state, &fixture.directories),
+                        fixture.peer,
+                        "Secret",
+                        &page.revision,
+                        &page.next_cursor
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                editor
+                    .query_page(
+                        (&fixture.state, &fixture.directories),
                         fixture.peer,
                         "paged",
                         &page.revision,

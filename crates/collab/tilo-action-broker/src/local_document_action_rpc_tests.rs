@@ -129,28 +129,6 @@ async fn local_report_admission(
                 _hold: None,
             });
             let before_stale = receipt_barriers(&rig);
-            assert!(matches!(
-                rig.worker
-                    .handle
-                    .resolve_published_action(903, "original-r1", "workspace:atlas", "open",)
-                    .await
-                    .unwrap(),
-                runtime_collab::ActionDirectoryResolution::StaleRevision
-            ));
-            let mut ordinary = raw.invoke_resolved_published_action_request();
-            {
-                let mut wire = ordinary.get();
-                wire.set_peer_id(903);
-                wire.set_revision("original-r1");
-                wire.set_resource("workspace:atlas");
-                wire.set_action("open");
-                wire.set_confirmation_json("{}");
-            }
-            assert!(
-                ordinary.send().promise.await.is_err(),
-                "a retained pre-event revision must never authorize ordinary invocation"
-            );
-            assert_eq!(receipt_barriers(&rig).writes, before_stale.writes);
             no_delivery(&rig);
             let mut request = crate::local_document_action::Request {
                 custody: Some(runtime_collab::committed_document::ConnectionSnapshot {

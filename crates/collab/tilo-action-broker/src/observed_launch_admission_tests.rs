@@ -196,23 +196,6 @@ async fn installed_launch_requires_signed_admission_and_durable_terminal() {
                             tilo_actions::InvocationUpdate::Failed { .. }
                         ));
                     }
-                    assert!(
-                        caller
-                            .handle
-                            .published_invocation_status(id)
-                            .await
-                            .unwrap()
-                            .is_none()
-                    );
-                    let observed = caller
-                        .handle
-                        .published_invocation_observation(
-                            key.host.as_bytes(),
-                            key.invocation.0.as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    assert_eq!(observed.result.unwrap().update_json, json);
                     let guard = rig.state.journal.lock().unwrap();
                     let record = guard
                         .as_ref()

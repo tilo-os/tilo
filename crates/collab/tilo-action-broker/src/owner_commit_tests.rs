@@ -1334,8 +1334,7 @@ mod owner_commit_tests {
     #[tokio::test(flavor = "current_thread")]
     async fn local_host_worker_private_rpc_requires_descriptor_and_current_authority() {
         use super::signed_worker::{
-            CurrentHost, HeldHostDirectory, empty_directories, presentation, rpc_pair,
-            signed_device,
+            CurrentHost, empty_directories, presentation, rpc_pair, signed_device,
         };
         async fn scenario() {
             let root = SigningKey::from_bytes(&[81; 32]);
@@ -1400,84 +1399,11 @@ mod owner_commit_tests {
                 .join_channel(&route.channel_key(), &bytes)
                 .await
                 .expect("actual descriptor signed host join");
-            assert!(handle.published_invocation_status(999).await.is_ok());
+            assert!(handle.subscribe_action_catalogue().await.is_ok());
             assert!(
                 state.is_current_host_worker(901, &route, &cert).unwrap(),
                 "signed actual host worker establishes live provenance"
             );
-            let (entered, mut callbacks) = mpsc::unbounded_channel();
-            let release = Rc::new(tokio::sync::Notify::new());
-            let row = TestActionDirectory {
-                revision: "directory-r1".into(),
-                resolve_mode: DirectoryResolveMode::Found,
-                result: tilo_actions::ResultSpec::None,
-                confirmation_required: false,
-                params: Vec::new(),
-                query_count: 0,
-                resolve_count: 0,
-            }
-            .row();
-            handle
-                .publish_action_directory(
-                    &route.app_id,
-                    capnp_rpc::new_client(HeldHostDirectory {
-                        entered,
-                        release: release.clone(),
-                        row,
-                    }),
-                )
-                .await
-                .unwrap();
-            for revoke in [false, true] {
-                let query_handle = handle.clone();
-                let query = tokio::task::spawn_local(async move {
-                    query_handle
-                        .query_action_directory(&runtime_collab::ActionDirectoryQuery {
-                            peer_id: 901,
-                            revision: "directory-r1".into(),
-                            cursor: vec![],
-                            needle: String::new(),
-                            parent_resource: String::new(),
-                            max_results: 8,
-                            max_bytes: 65536,
-                            max_work: 64,
-                            max_depth: 4,
-                            resource_name: String::new(),
-                        })
-                        .await
-                });
-                let resolve_handle = handle.clone();
-                let resolve = tokio::task::spawn_local(async move {
-                    resolve_handle
-                        .resolve_published_action(901, "directory-r1", "workspace:atlas", "open")
-                        .await
-                });
-                let mut called = vec![
-                    callbacks.recv().await.unwrap(),
-                    callbacks.recv().await.unwrap(),
-                ];
-                called.sort_unstable();
-                assert_eq!(called, ["query", "resolve"]);
-                if revoke {
-                    *authority.certificate.lock().unwrap() = None;
-                }
-                release.notify_waiters();
-                let query = query.await.unwrap();
-                let resolve = resolve.await.unwrap();
-                if revoke {
-                    assert!(
-                        query.is_err() && resolve.is_err(),
-                        "held directory query/resolve must reject after host revocation: query={query:?}, resolve={resolve:?}"
-                    );
-                } else {
-                    assert_eq!(query.unwrap().rows.len(), 1);
-                    assert!(matches!(
-                        resolve.unwrap(),
-                        runtime_collab::ActionDirectoryResolution::Found { .. }
-                    ));
-                }
-                *authority.certificate.lock().unwrap() = Some(cert.clone());
-            }
             assert!(
                 !state.durable_owner_required,
                 "host checks must not depend on durable mode"
@@ -1640,7 +1566,7 @@ mod owner_commit_tests {
             tilo_user_identity::sign_device_cert(&mut changed, &root).unwrap();
             *authority.certificate.lock().unwrap() = Some(changed.clone());
             assert!(!state.is_current_host_worker(901, &route, &cert).unwrap());
-            assert!(handle.published_invocation_status(999).await.is_err());
+            assert!(handle.subscribe_action_catalogue().await.is_err());
             assert!(
                 rpc.join_channel(
                     &route.channel_key(),
@@ -1658,7 +1584,7 @@ mod owner_commit_tests {
                 pending_read.await.unwrap().is_err(),
                 "a stream must recheck authority after its read wakes"
             );
-            assert!(handle.published_invocation_status(999).await.is_err());
+            assert!(handle.subscribe_action_catalogue().await.is_err());
             assert!(
                 retained_catalogue.read().await.is_err(),
                 "retained stream must recheck host authority before disclosing a buffered snapshot"
@@ -1673,7 +1599,7 @@ mod owner_commit_tests {
             let current_workspaces = membership.read().workspaces.clone();
             membership.write().workspaces.clear();
             assert!(
-                handle.published_invocation_status(999).await.is_err(),
+                handle.subscribe_action_catalogue().await.is_err(),
                 "live membership remains required"
             );
             membership.write().workspaces = current_workspaces;

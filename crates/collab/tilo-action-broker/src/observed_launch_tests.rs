@@ -295,7 +295,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                         Ok(())
                     })
                     .unwrap();
-                let (id, encoded) = pending.await.unwrap().unwrap();
+                let (_, encoded) = pending.await.unwrap().unwrap();
                 let update: tilo_actions::InvocationUpdate =
                     serde_json::from_str(&encoded).unwrap();
                 if matches!(scenario, "ready" | "adopted") {
@@ -312,23 +312,6 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                         update,
                         tilo_actions::InvocationUpdate::Succeeded { .. }
                     ));
-                    assert!(
-                        caller
-                            .handle
-                            .published_invocation_status(id)
-                            .await
-                            .unwrap()
-                            .is_none()
-                    );
-                    let observed = caller
-                        .handle
-                        .published_invocation_observation(
-                            rig.state.invocation_host().unwrap().as_bytes(),
-                            update.invocation().0.as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                    assert_eq!(observed.result.unwrap().update_json, encoded);
                 } else {
                     assert!(
                         matches!(update, tilo_actions::InvocationUpdate::Failed { .. }),
@@ -421,7 +404,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                 });
                 let agent = rig.caller(&env, 905, Some("scribe")).await;
                 let original = id(0xc510);
-                invoke(&agent.handle, &rig.binding, original).await.unwrap();
+                invoke(&agent.handle, original).await.unwrap();
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
                 assert_eq!(delivered.actor, "agent:scribe");
                 // A different certified connection cannot borrow the worker's parent.
@@ -608,7 +591,7 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
             let original = id(0xc5a1);
 
             let before_delivery = rig.state.admit_app_open(&app, &room, original, target);
-            invoke(&agent.handle, &rig.binding, original).await.unwrap();
+            invoke(&agent.handle, original).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.actor, "agent:scribe");
             let another_app = rig
@@ -681,7 +664,7 @@ async fn an_apps_open_for_its_own_invocation_is_not_admitted() {
             let rig = Rig::new(&env).await;
             let room = env.route.cluster_id.clone();
             let own = id(0xc5a2);
-            invoke(&rig.worker.handle, &rig.binding, own).await.unwrap();
+            invoke(&rig.worker.handle, own).await.unwrap();
             rig.delivered_effect(&env, own).await;
 
             let opened =

@@ -1121,23 +1121,6 @@ impl BrokerHandle {
         })
     }
 
-    /// Direct one invocation to the exact application connection that
-    /// published the addressed operation.
-    pub fn invoke_published_action(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<std::sync::mpsc::Receiver<crate::collab_broker_capnp::InvocationCompletion>, String>
-    {
-        self.fanout
-            .capnp_state()
-            .ok_or_else(|| "the application action broker is unavailable".to_string())?
-            .invoke(peer_id, resource, action, argument, actor)
-    }
-
     /// Install a populated [`ChannelState`] for one artifact id.
     pub fn register_channel_state(&self, artifact: ArtifactId, state: ChannelState) {
         if let Ok(mut ch) = self.channels.lock() {

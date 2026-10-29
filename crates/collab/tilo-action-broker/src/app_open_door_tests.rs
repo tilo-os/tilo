@@ -176,7 +176,7 @@ async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
             let room = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
             let own = id(0xa0d1);
-            invoke(&app, &rig.binding, own).await.unwrap();
+            invoke(&app, own).await.unwrap();
             rig.delivered_effect(&env, own).await;
 
             let laundered =
@@ -219,7 +219,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
             let app = rig.worker.handle.clone();
             let agent = rig.caller(&env, 905, Some("scribe")).await;
             let asked = id(0xa0d2);
-            invoke(&agent.handle, &rig.binding, asked).await.unwrap();
+            invoke(&agent.handle, asked).await.unwrap();
             let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
             assert_eq!(delivered.actor, "agent:scribe");
 
