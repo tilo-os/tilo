@@ -752,6 +752,58 @@ fn list_reorder_previews_and_commits_valid_drops_only() {
     }
 }
 
+#[test]
+fn ctrl_arrows_move_the_focused_row_through_the_reorder_commit() {
+    fn send(
+        list: &mut VirtualList<VecListModel<u32, u32>>,
+        key: NamedKey,
+        modifiers: winit::keyboard::ModifiersState,
+        (taffy, node): (&TaffyTree<()>, NodeId),
+    ) -> bool {
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(taffy, node)
+            .send(list, &crate::synthetic_input::named_key(key))
+            .handled
+    }
+    let ctrl = winit::keyboard::ModifiersState::CONTROL;
+    let alt = winit::keyboard::ModifiersState::ALT;
+    let plain = winit::keyboard::ModifiersState::empty();
+
+    let mut list = plain_rows(3).reorderable();
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let laid_out = (&taffy, node);
+    list.set_focus(true);
+    assert!(list.reveal(&0));
+    assert!(send(&mut list, NamedKey::ArrowDown, ctrl, laid_out));
+    assert_eq!(list.model().items(), &[1, 0, 2], "Ctrl+Down moves it down");
+    assert_eq!(list.focused_key(), Some(&0), "the moved row keeps focus");
+    assert!(send(&mut list, NamedKey::ArrowUp, alt, laid_out));
+    assert_eq!(list.model().items(), &[0, 1, 2], "Alt+Up, as a tree's rows");
+    assert!(
+        !send(&mut list, NamedKey::ArrowUp, ctrl, laid_out),
+        "the first row has nowhere up to go"
+    );
+    assert_eq!(list.model().items(), &[0, 1, 2]);
+    assert_eq!(
+        list.focused_key(),
+        Some(&0),
+        "and a refused move is no navigation"
+    );
+    assert!(send(&mut list, NamedKey::ArrowDown, plain, laid_out));
+    assert_eq!(list.focused_key(), Some(&1), "a plain arrow still walks");
+    assert_eq!(list.model().items(), &[0, 1, 2]);
+
+    // A list that does not reorder walks under Ctrl as it always did.
+    let mut fixed = plain_rows(3);
+    let (taffy, node) = lay_out(&mut fixed, 300.0);
+    fixed.set_focus(true);
+    assert!(fixed.reveal(&0));
+    assert!(send(&mut fixed, NamedKey::ArrowDown, ctrl, (&taffy, node)));
+    assert_eq!(fixed.focused_key(), Some(&1));
+    assert_eq!(fixed.model().items(), &[0, 1, 2]);
+}
+
 fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
     VirtualList::from_items(
         (0..count).collect(),
