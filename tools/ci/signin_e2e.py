@@ -173,7 +173,10 @@ class Cycle:
         path = self.shot(name)
         if not path:
             return None, ""
-        ocr = subprocess.run(["tesseract", str(path), "stdout"], capture_output=True, text=True)
+        # Sparse text: the page layout analysis drops the small labels in the screen's corners,
+        # "Can't sign in" among them.
+        ocr = subprocess.run(["tesseract", str(path), "stdout", "--psm", "11"],
+                             capture_output=True, text=True)
         return path, ocr.stdout if ocr.returncode == 0 else ""
 
     def keep_screen(self, name: str, path: Path | None, text: str) -> None:
