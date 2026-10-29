@@ -177,8 +177,13 @@ impl super::CollabTransport for PeerTransportAdapter {
                 let _ = reply.send(installed);
                 Ok(())
             }
+            // A peer that serves no directory still carries the connection's
+            // documents: the directory is an offer, not traffic it lost.
             TransportCommand::PublishActionDirectory { app_id } => {
-                self.peer.publish_action_directory(app_id)
+                return self.peer.publish_action_directory(app_id).map_err(|error| {
+                    tracing::debug!(%error, "collaboration peer serves no action directory");
+                    super::TransportError::Unsupported
+                });
             }
         };
         self.admit(change, result)
@@ -310,5 +315,46 @@ mod tests {
             "a change that goes through answers for the ones before it"
         );
         assert!(adapter.status().is_open());
+    }
+
+    #[test]
+    fn a_peer_that_serves_no_directory_keeps_carrying_the_connection() {
+        /// A peer with no action directory, counting what it is asked.
+        struct NoDirectory(std::rc::Rc<std::cell::Cell<(usize, usize)>>);
+        impl PeerTransport for NoDirectory {
+            fn is_connected(&self) -> bool {
+                true
+            }
+            fn send(&mut self, request: CollabRequest) -> Result<(), String> {
+                if matches!(request, CollabRequest::Document { .. }) {
+                    let (changes, offers) = self.0.get();
+                    self.0.set((changes + 1, offers));
+                }
+                Ok(())
+            }
+            fn poll(&mut self) -> Vec<CollabEvent> {
+                vec![]
+            }
+            fn publish_action_directory(&mut self, _: String) -> Result<(), String> {
+                let (changes, offers) = self.0.get();
+                self.0.set((changes, offers + 1));
+                Err("action directory unavailable".into())
+            }
+        }
+        let asked = std::rc::Rc::default();
+        let mut manager = crate::CollaborationManager::with_peer_transport(NoDirectory(
+            std::rc::Rc::clone(&asked),
+        ));
+        assert!(manager.is_connected());
+        manager.publish_action_directory("so.tilo.example");
+        manager.publish_action_directory("so.tilo.example");
+        assert!(manager.is_connected(), "no directory is no lost connection");
+        assert!(!manager.action_directory_observation().0);
+        assert!(manager.send(CollabRequest::document_incremental(b"change".to_vec())));
+        assert_eq!(
+            asked.get(),
+            (1, 1),
+            "the change went through, and the directory was asked for once on the route"
+        );
     }
 }
