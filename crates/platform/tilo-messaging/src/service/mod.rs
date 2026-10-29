@@ -93,3 +93,29 @@ pub fn decide(proposal: &str, decision: accounts::AccessDecision) -> Result<(), 
         Err(crate::SendError::Unavailable)
     }
 }
+
+/// Call `wake` whenever the messaging service's permission requests change,
+/// until the returned guard is dropped; `None` without a service.
+pub fn observe_proposals(
+    wake: std::sync::Arc<dyn Fn() + Send + Sync>,
+) -> Option<Box<dyn std::any::Any + Send + Sync>> {
+    #[cfg(unix)]
+    {
+        let connection = client::Connection::inherited()?;
+        let seen = std::sync::atomic::AtomicU64::new(connection.proposals_revision());
+        let watched = std::sync::Arc::downgrade(&connection);
+        Some(connection.observe(std::sync::Arc::new(move || {
+            if let Some(connection) = watched.upgrade() {
+                let revision = connection.proposals_revision();
+                if seen.swap(revision, std::sync::atomic::Ordering::AcqRel) != revision {
+                    wake();
+                }
+            }
+        })))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = wake;
+        None
+    }
+}

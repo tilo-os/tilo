@@ -213,6 +213,12 @@ impl PasswordsModel {
             None => Err(CATALOG.t("passwords-request-expired")),
         }
     }
+    /// Read the vault again where another process saved it since.
+    pub fn reload(&mut self) {
+        if let Some(Vault::Local(store)) = &mut self.store {
+            store.refresh();
+        }
+    }
     /// The host's data-free invalidation counter, without blocking native I/O.
     pub fn revision(&self) -> Option<u64> {
         match &self.store {

@@ -198,7 +198,8 @@ impl CredentialOwner {
     /// Refuses unavailable or poisoned custody.
     pub fn read<T>(&self, read: impl FnOnce(&SecretStore) -> T) -> Result<T, BrokerError> {
         let broker = self.broker()?;
-        let current = broker.lock().map_err(|_| BrokerError::Denied)?;
+        let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
+        current.refresh();
         Ok(read(&current.store))
     }
     /// Password-manager edits through the same owner. Apps are not lent this door.
@@ -207,6 +208,7 @@ impl CredentialOwner {
     pub fn edit<T>(&self, edit: impl FnOnce(&mut SecretStore) -> T) -> Result<T, BrokerError> {
         let broker = self.broker()?;
         let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
+        current.refresh();
         let result = edit(&mut current.store);
         let CredentialBroker {
             store,
@@ -231,7 +233,8 @@ impl CredentialOwner {
     /// Refuses unavailable or poisoned custody.
     pub fn grants(&self) -> Result<Vec<CredentialGrant>, BrokerError> {
         let broker = self.broker()?;
-        let current = broker.lock().map_err(|_| BrokerError::Denied)?;
+        let mut current = broker.lock().map_err(|_| BrokerError::Denied)?;
+        current.refresh();
         Ok(current.current_grants())
     }
     /// Revoke through the real broker, including its current session grant.
