@@ -1053,10 +1053,10 @@ impl Checker<'_> {
                 continue;
             }
             // A requirement may read `invoker`: here, the person looking.
-            self.st.presenting = true;
+            self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);
-            self.st.presenting = false;
+            self.st.invoker = super::Invoker::None;
             self.push_sink();
             self.prop(node.clone(), "unavailable", reason, r.span);
             let unmet = self.pop_sink();

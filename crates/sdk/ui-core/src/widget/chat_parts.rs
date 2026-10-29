@@ -316,12 +316,14 @@ struct QuoteLines {
 }
 
 impl QuoteLines {
-    /// The rule's width.
-    const RULE: f64 = 2.0;
+    /// The rule's width: half the tight step.
+    fn rule(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.rhythm.tight) / 2.0
+    }
 
     /// The text's leading edge from the rule's: the rule and the related step.
     fn inset(theme: &Theme) -> f64 {
-        Self::RULE + f64::from(theme.tokens.spacing.rhythm.related)
+        Self::rule(theme) + f64::from(theme.tokens.spacing.rhythm.related)
     }
 
     /// The gap between the author and the excerpt on one line, and between two lines.
@@ -485,8 +487,8 @@ impl Widget for QuoteLines {
         let top = rect.y0 + (rect.height() - height) / 2.0;
         // The rule runs the height of what is quoted, rounded at its ends.
         let rule = vello::kurbo::RoundedRect::from_rect(
-            Rect::new(rect.x0, top, rect.x0 + Self::RULE, top + height),
-            Self::RULE / 2.0,
+            Rect::new(rect.x0, top, rect.x0 + Self::rule(theme), top + height),
+            Self::rule(theme) / 2.0,
         );
         scene.fill(
             vello::peniko::Fill::NonZero,

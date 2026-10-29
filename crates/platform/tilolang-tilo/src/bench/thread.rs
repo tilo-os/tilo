@@ -199,7 +199,7 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
     out.push(keystroke(sized, &mut room, &mut thread)?);
     out.push(post(sized, nested, &mut room, &mut thread)?);
     out.extend(send(sized, &mut room, &mut thread)?);
-    out.push(scroll(sized, &mut room, &mut thread)?);
+    out.push(scroll(sized, &room, &mut thread)?);
     Ok(out)
 }
 
@@ -365,7 +365,7 @@ fn send(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Optio
 }
 
 /// The transcript scrolled back a few rows a frame.
-fn scroll(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Record, String> {
+fn scroll(sized: &Sized<'_>, room: &Room, thread: &mut Thread) -> Result<Record, String> {
     let mut samples = Vec::new();
     let mut work = Work::default();
     for _ in 0..sized.config.samples {

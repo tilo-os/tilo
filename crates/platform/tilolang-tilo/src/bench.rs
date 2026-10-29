@@ -1253,6 +1253,19 @@ impl Sized<'_> {
     }
 }
 
+/// The sizes of the rooms the scenarios run in: each of `sizes`. A root without a collection
+/// holds no items to count: one room, of none. A sidebar of places holds its few places at every
+/// size: one room, of them; what grows is a place's own collection ([`thread`]).
+fn room_sizes(shape: &Shape, sizes: &[usize]) -> Vec<usize> {
+    if shape.list.as_ref().is_some_and(|l| l.places) {
+        vec![PLACES]
+    } else if shape.subject().is_some() {
+        sizes.to_vec()
+    } else {
+        vec![0]
+    }
+}
+
 /// Run every scenario at every size.
 ///
 /// # Errors
@@ -1276,16 +1289,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         .filter(|m| m.app != meta.app)
         .collect();
     let shape = shape_of(&meta, &others)?;
-    // A root without a collection holds no items to count: one room, of none. A sidebar of
-    // places holds its few places at every size: one room, of them; what grows is a place's
-    // own collection, measured below.
-    let counts = if shape.list.as_ref().is_some_and(|l| l.places) {
-        vec![PLACES]
-    } else if shape.subject().is_some() {
-        config.sizes.clone()
-    } else {
-        vec![0]
-    };
+    let counts = room_sizes(&shape, &config.sizes);
     let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
     let mut out = Recorder {
         records: Vec::new(),
