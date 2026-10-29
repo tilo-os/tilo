@@ -911,17 +911,20 @@ impl ContextMenu {
         if self.bounds.is_none() {
             return;
         }
-        if let Some(index) = self.hovered {
-            let top = self.row_top(index);
-            let height = self.item_height(index);
-            let body_height = self.body_rect().height();
-            if top < self.scroll_offset {
-                self.scroll_offset = top;
-            } else if top + height > self.scroll_offset + body_height {
-                self.scroll_offset = top + height.min(body_height) - body_height;
-            }
-        }
-        self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
+        let Some(index) = self.hovered else {
+            self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
+            return;
+        };
+        let top = self.row_top(index);
+        let body_height = self.body_rect().height();
+        // A row taller than the menu shows its top.
+        let bottom = top + self.item_height(index).min(body_height);
+        self.scroll_offset = crate::widget::scroll_region::reveal_offset(
+            self.scroll_offset,
+            body_height,
+            top..bottom,
+            self.max_scroll(),
+        );
     }
 
     /// Mirrors the `build_layout` + `apply_layout` geometry without a taffy
