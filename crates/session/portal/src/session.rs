@@ -33,6 +33,8 @@ pub enum SessionKind {
     RemoteDesktop,
     InputCapture,
     GlobalShortcuts,
+    /// An app watching the session's state through `Inhibit.CreateMonitor`.
+    InhibitMonitor,
 }
 
 /// One live session.

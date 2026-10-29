@@ -104,7 +104,7 @@ mod session_dbus_tests;
 
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use consent::{Consents, WorkspaceGrants};
-pub use inhibit::{Inhibition, Inhibitions};
+pub use inhibit::{Inhibition, Inhibitions, SessionState};
 pub use requester::Requesters;
 pub use remote_desktop::{InputInjector, NoInput, RemoteInput};
 pub use settings::{PortalSetting, Settings};

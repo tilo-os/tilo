@@ -6,8 +6,14 @@
 //! token of the session's [`InhibitRegistry`], which the session's idle
 //! and power handling already consults, and is published so the person
 //! sees who keeps the machine awake and may end it.
+//!
+//! An app may also watch the session (`CreateMonitor`): whether the screen
+//! saver is on and whether the session is running, about to end (asking
+//! its apps to wrap up, `QueryEndResponse`) or ending. The session says so
+//! with [`Portal::set_session_state`]; each monitor hears it as
+//! `StateChanged`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
@@ -17,9 +23,12 @@ use tilo_power_mgmt::{InhibitRegistry, InhibitToken};
 use tilo_resource::Effect;
 use tilo_service::{Started, decode, offer};
 use zbus::interface;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
-use crate::Portal;
+use crate::reply::Ended;
+use crate::session::SessionKind;
+use crate::{OBJECT_PATH, Portal};
 
 /// Logging out.
 pub const LOGOUT: u32 = 1;
@@ -32,6 +41,43 @@ pub const IDLE: u32 = 8;
 const SUPPORTED: u32 = LOGOUT | USER_SWITCH | SUSPEND | IDLE;
 
 const INHIBITION_PREFIX: &str = "portal:inhibit:";
+
+/// What a monitor hears of the session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionState {
+    Running,
+    /// About to end: apps should wrap up and answer `QueryEndResponse`.
+    QueryEnd,
+    Ending,
+}
+
+impl SessionState {
+    /// The portal's number for it.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Running => 1,
+            Self::QueryEnd => 2,
+            Self::Ending => 3,
+        }
+    }
+}
+
+/// The session as monitors see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Watched {
+    screensaver_active: bool,
+    state: SessionState,
+}
+
+impl Default for Watched {
+    fn default() -> Self {
+        Self {
+            screensaver_active: false,
+            state: SessionState::Running,
+        }
+    }
+}
 
 /// What an app's hold offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
@@ -57,6 +103,9 @@ pub struct Inhibition {
 pub struct Inhibitions {
     registry: InhibitRegistry,
     held: Arc<Mutex<BTreeMap<String, Inhibition>>>,
+    watched: Arc<Mutex<Watched>>,
+    /// The monitors that answered since the session last asked to end.
+    answered: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Inhibitions {
@@ -66,6 +115,8 @@ impl Inhibitions {
         Self {
             registry,
             held: Arc::default(),
+            watched: Arc::default(),
+            answered: Arc::default(),
         }
     }
 
@@ -109,6 +160,31 @@ impl Inhibitions {
             },
         );
         true
+    }
+
+    /// Take the session's state; `false` when nothing changed.
+    fn watch(&self, screensaver_active: bool, state: SessionState) -> bool {
+        let next = Watched {
+            screensaver_active,
+            state,
+        };
+        let previous = std::mem::replace(&mut *self.watched.lock_recover(), next);
+        if state == SessionState::QueryEnd && previous.state != SessionState::QueryEnd {
+            self.answered.lock_recover().clear();
+        }
+        previous != next
+    }
+
+    /// The `StateChanged` state a monitor hears.
+    fn state_details(&self) -> HashMap<&'static str, OwnedValue> {
+        let watched = *self.watched.lock_recover();
+        HashMap::from([
+            (
+                "screensaver-active",
+                OwnedValue::from(watched.screensaver_active),
+            ),
+            ("session-state", OwnedValue::from(watched.state.code())),
+        ])
     }
 
     /// End hold `path`; `false` when there is none.
@@ -254,6 +330,112 @@ impl Inhibit {
             ));
         }
         Ok(())
+    }
+
+    /// Watch the session as session `session_handle`; it hears the state
+    /// at once and on every change.
+    async fn create_monitor(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(connection)] connection: &zbus::Connection,
+        handle: ObjectPath<'_>,
+        session_handle: ObjectPath<'_>,
+        app_id: String,
+        window: String,
+    ) -> u32 {
+        let created = async {
+            let auth = self
+                .portal
+                .authenticate(&header, handle.as_str(), &app_id, Some(&window))
+                .await?;
+            self.portal
+                .sessions
+                .create(
+                    connection,
+                    session_handle.as_str(),
+                    auth.owner.as_str(),
+                    auth.caller,
+                    SessionKind::InhibitMonitor,
+                )
+                .await
+        };
+        match created.await {
+            Ok(()) => {
+                if let Ok(emitter) = SignalEmitter::new(connection, OBJECT_PATH) {
+                    let details = self.portal.inhibitions.state_details();
+                    let _ = Self::state_changed(&emitter, session_handle, details).await;
+                }
+                0
+            }
+            Err(Ended::Cancelled) => 1,
+            Err(Ended::Failed) => 2,
+        }
+    }
+
+    /// The monitor's app is ready for the session to end.
+    async fn query_end_response(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        session_handle: ObjectPath<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let path = session_handle.as_str();
+        let (_, session) = self
+            .portal
+            .authenticate_session(&header, path, "")
+            .await
+            .map_err(|_| zbus::fdo::Error::AccessDenied("no such monitor".into()))?;
+        if session.kind != SessionKind::InhibitMonitor {
+            return Err(zbus::fdo::Error::AccessDenied("no such monitor".into()));
+        }
+        if self.portal.inhibitions.watched.lock_recover().state == SessionState::QueryEnd {
+            self.portal
+                .inhibitions
+                .answered
+                .lock_recover()
+                .insert(path.to_owned());
+        }
+        Ok(())
+    }
+
+    #[zbus(signal)]
+    async fn state_changed(
+        emitter: &SignalEmitter<'_>,
+        session_handle: ObjectPath<'_>,
+        state: HashMap<&str, OwnedValue>,
+    ) -> zbus::Result<()>;
+}
+
+impl Portal {
+    /// The session's state changed: tell every monitor.
+    pub async fn set_session_state(
+        &self,
+        connection: &zbus::Connection,
+        screensaver_active: bool,
+        state: SessionState,
+    ) {
+        if !self.inhibitions.watch(screensaver_active, state) {
+            return;
+        }
+        let Ok(emitter) = SignalEmitter::new(connection, OBJECT_PATH) else {
+            return;
+        };
+        for (path, _) in self.sessions.of_kind(SessionKind::InhibitMonitor) {
+            let Ok(path) = ObjectPath::try_from(path.as_str()) else {
+                continue;
+            };
+            let _ = Inhibit::state_changed(&emitter, path, self.inhibitions.state_details()).await;
+        }
+    }
+
+    /// The monitors yet to answer since the session asked to end.
+    #[must_use]
+    pub fn awaiting_query_end(&self) -> usize {
+        let answered = self.inhibitions.answered.lock_recover().clone();
+        self.sessions
+            .of_kind(SessionKind::InhibitMonitor)
+            .into_iter()
+            .filter(|(path, _)| !answered.contains(path))
+            .count()
     }
 }
 

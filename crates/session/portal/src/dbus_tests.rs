@@ -67,7 +67,7 @@ struct Bed {
     portal: Portal,
     frontend: zbus::Connection,
     stranger: zbus::Connection,
-    _backend: zbus::Connection,
+    backend: zbus::Connection,
 }
 
 async fn bed() -> Bed {
@@ -99,7 +99,7 @@ async fn bed() -> Bed {
         portal,
         frontend,
         stranger,
-        _backend: backend,
+        backend,
     }
 }
 
@@ -464,4 +464,76 @@ async fn print_is_served_as_its_interface_declares() {
         malformed.is_err(),
         "a body that does not decode is an error"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_monitor_hears_the_session_end_and_answers_it() {
+    use futures_util::StreamExt as _;
+
+    let bed = bed().await;
+    let session = "/org/freedesktop/portal/desktop/session/1_9/watch";
+    let rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.impl.portal.Inhibit")
+        .expect("interface")
+        .member("StateChanged")
+        .expect("member")
+        .build();
+    let mut heard = zbus::MessageStream::for_match_rule(rule, &bed.frontend, None)
+        .await
+        .expect("stream");
+    let mut next_state = async || -> (String, u32) {
+        let message = tokio::time::timeout(Duration::from_secs(5), heard.next())
+            .await
+            .expect("heard in time")
+            .expect("a signal")
+            .expect("readable");
+        let (path, state): (zbus::zvariant::OwnedObjectPath, HashMap<String, OwnedValue>) =
+            message.body().deserialize().expect("state");
+        let code: u32 = state["session-state"].clone().try_into().expect("state");
+        (path.to_string(), code)
+    };
+    let arguments = (
+        ObjectPath::try_from(REQUEST).expect("request path"),
+        ObjectPath::try_from(session).expect("session path"),
+        "org.example.Editor",
+        "",
+    );
+    let created: u32 = bed
+        .frontend
+        .call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.Inhibit"),
+            "CreateMonitor",
+            &arguments,
+        )
+        .await
+        .expect("replied")
+        .body()
+        .deserialize()
+        .expect("response");
+    assert_eq!(created, 0);
+    assert_eq!(next_state().await, (session.to_owned(), 1));
+    bed.portal
+        .set_session_state(&bed.backend, false, crate::SessionState::QueryEnd)
+        .await;
+    assert_eq!(next_state().await, (session.to_owned(), 2));
+    assert_eq!(bed.portal.awaiting_query_end(), 1);
+    let respond = |from: zbus::Connection| async move {
+        from.call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some("org.freedesktop.impl.portal.Inhibit"),
+            "QueryEndResponse",
+            &(ObjectPath::try_from(session).expect("session path"),),
+        )
+        .await
+    };
+    assert!(
+        respond(bed.stranger.clone()).await.is_err(),
+        "not its frontend"
+    );
+    respond(bed.frontend.clone()).await.expect("answered");
+    assert_eq!(bed.portal.awaiting_query_end(), 0);
 }
