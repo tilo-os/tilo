@@ -25,8 +25,7 @@ use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Row, Slot, Stack};
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Absent, AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavPane, NavShell,
-    Text, Widget,
+    Absent, Button, ButtonRole, DescribedList, Element, NavPane, NavShell, Text, Widget,
 };
 
 use crate::i18n::{t, t_args};
@@ -47,12 +46,13 @@ struct View {
     tree: UiNode,
 }
 
-/// What the person typed into a text field after a press the app has not run yet: held, not
-/// sent, until it did, then sent to the field focused then (the press may have opened another
-/// note into it).
+/// What the person typed after a press the app has not run yet: held, not sent, until it did,
+/// then sent to the field focused then (the press may have opened another note, whose first
+/// field takes the keyboard).
 struct Typed {
-    /// The field, by key in the composed tree.
-    key: String,
+    /// The field, by key in the composed tree: none while no field had the keyboard (the press
+    /// took it).
+    key: Option<String>,
     /// What it showed when the person started typing.
     base: String,
     /// What it shows now, with their typing.
@@ -118,6 +118,9 @@ pub struct AppWindow {
     took: u64,
     /// What the person typed since a press the app has not run yet.
     typed: Option<Typed>,
+    /// The control to take the keyboard once the window's tree is laid out, by key in the
+    /// composed tree ([`Widget::take_focus_request`]).
+    focus_request: Option<String>,
 }
 
 impl AppWindow {
@@ -177,6 +180,7 @@ impl AppWindow {
             fired: 0,
             took: 0,
             typed: None,
+            focus_request: None,
         }
     }
 
@@ -251,6 +255,8 @@ impl AppWindow {
     fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
         let mut content = false;
         let mut front = None;
+        // A view a person's press opened: its first field takes the keyboard.
+        let mut opened_for_input = false;
         for message in messages {
             if self.refuses_while_failed(&message) {
                 continue;
@@ -275,6 +281,7 @@ impl AppWindow {
                     }
                     self.track_rows();
                     content = true;
+                    opened_for_input |= lane == Lane::Detail && brought == Some(wire::Front::Input);
                     front = brought.or(front);
                 }
                 ToUi::Close => {
@@ -335,6 +342,9 @@ impl AppWindow {
         self.check_budget()?;
         if content {
             self.compose();
+        }
+        if opened_for_input {
+            self.focus_opened();
         }
         self.send_typed();
         if let Some(front) = front {
@@ -440,7 +450,11 @@ impl AppWindow {
     fn take_bound(&mut self, lane: Lane, key: &str, value: Value, acked: u64) {
         let key = composed_key(lane, key);
         // The field keeps what the person typed into it while a press was running.
-        if let Some(typed) = self.typed.as_mut().filter(|typed| typed.key == key) {
+        if let Some(typed) = self
+            .typed
+            .as_mut()
+            .filter(|typed| typed.key.as_deref() == Some(key.as_str()))
+        {
             if let Value::Text(text) = &value {
                 typed.sent = Some(text.clone());
             }
@@ -639,11 +653,7 @@ impl AppWindow {
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
             self.out.push(ToApp::Answer(answer));
         }
-        let mut events: Vec<UiEvent> = std::mem::take(&mut *self.events.borrow_mut());
-        events.extend(self.reconciler.borrow().adapter().take_events());
-        for event in events {
-            self.event(event);
-        }
+        self.take_events();
         if self.shell().and_then(NavShell::take_toast_action).is_some() {
             self.out.push(ToApp::Undo);
         }
@@ -675,6 +685,16 @@ impl AppWindow {
                 }
             }
             Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
+        }
+    }
+
+    /// What the person did with the window's controls since it was last taken, for the next
+    /// batch.
+    fn take_events(&mut self) {
+        let mut events: Vec<UiEvent> = std::mem::take(&mut *self.events.borrow_mut());
+        events.extend(self.reconciler.borrow().adapter().take_events());
+        for event in events {
+            self.event(event);
         }
     }
 
@@ -780,12 +800,12 @@ impl AppWindow {
             if self
                 .typed
                 .as_ref()
-                .is_some_and(|typed| typed.key != composed)
+                .is_some_and(|typed| typed.key.as_deref() != Some(composed))
             {
                 self.send_typed_now();
             }
             let typed = self.typed.get_or_insert_with(|| Typed {
-                key: composed.to_owned(),
+                key: Some(composed.to_owned()),
                 base: before,
                 now: String::new(),
                 sent: None,
@@ -800,6 +820,76 @@ impl AppWindow {
         Some(self.splice(composed, &before, text))
     }
 
+    /// The view a person's press opened takes the keyboard in its first text field, and what
+    /// they typed while the press ran goes there, unless they typed it into a field of the root
+    /// view, which the open left in place.
+    fn focus_opened(&mut self) {
+        fn first_field(node: &UiNode) -> Option<&UiNode> {
+            if node.kind == crate::adapter::kind("TextInput") && node.binding.is_some() {
+                return Some(node);
+            }
+            node.children.iter().find_map(first_field)
+        }
+        let Some(field) = self
+            .detail
+            .as_ref()
+            .and_then(|detail| first_field(&detail.tree))
+            .map(|field| composed_key(Lane::Detail, &field.key))
+        else {
+            return;
+        };
+        if let Some(typed) = self.typed.as_mut()
+            && typed
+                .key
+                .as_deref()
+                .is_none_or(|key| key.starts_with(DETAIL) && key != field)
+        {
+            typed.sent = Some(self.texts.get(&field).cloned().unwrap_or_default());
+            typed.key = Some(field.clone());
+        }
+        self.focus_request = Some(field);
+    }
+
+    /// Hold `event` when it types text while a press runs and no field has the keyboard (the
+    /// press took it): it goes to the field the press leaves the keyboard in. Whether it was
+    /// held.
+    fn hold_typing(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
+        fn types_text(widget: &dyn Widget) -> bool {
+            (widget.is_focused() && widget.ime_content().is_some())
+                || widget.children().into_iter().any(types_text)
+        }
+        let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let Some(text) = key
+            .text
+            .as_deref()
+            .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+        else {
+            return false;
+        };
+        // A press the window's controls reported since the last event counts: the key may
+        // follow it in the same frame.
+        self.take_events();
+        if self.fired <= self.took
+            || key.state != ui::winit::event::ElementState::Pressed
+            || self.typed.as_ref().is_some_and(|typed| typed.key.is_some())
+            || types_text(self.body.as_ref())
+        {
+            return false;
+        }
+        self.typed
+            .get_or_insert_with(|| Typed {
+                key: None,
+                base: String::new(),
+                now: String::new(),
+                sent: None,
+            })
+            .now
+            .push_str(text);
+        true
+    }
+
     /// Send what the person typed while a press was running, once the app ran it.
     fn send_typed(&mut self) {
         if self.fired <= self.took && self.typed.is_some() {
@@ -810,8 +900,12 @@ impl AppWindow {
 
     /// Send what the person typed while a press was running into the field it went into,
     /// against what the field shows now: what they typed keeps its place from the field's end.
+    /// Typed while no field had the keyboard, and no field took it since: nowhere to go.
     fn send_typed_now(&mut self) {
         let Some(typed) = self.typed.take() else {
+            return;
+        };
+        let Some(key) = typed.key else {
             return;
         };
         let shown = typed.sent.clone().unwrap_or_else(|| typed.base.clone());
@@ -827,7 +921,7 @@ impl AppWindow {
         }
         let mut text = shown.clone();
         text.replace_range(at..end, &insert);
-        let message = self.splice(&typed.key, &shown, text);
+        let message = self.splice(&key, &shown, text);
         self.out.push(message);
     }
 
@@ -1060,25 +1154,22 @@ pub fn show_bound<S: std::hash::BuildHasher>(
     }
 }
 
-impl Widget for AppWindow {
+/// The window stands for its body in the layout and in every walk of the widgets (it adds no
+/// node of its own, so a walk that pairs widgets with layout nodes meets the body's children
+/// under it), taking the person's input and its own changes on the way.
+impl ui::widget::Decorator for AppWindow {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.body.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.body.as_mut()
+    }
+
     fn name(&self) -> &'static str {
         "TilolangWindow"
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.body.as_ref()]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![self.body.as_mut()]
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.body.sync(state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.body.update(state, path)
     }
 
     fn handle_event(
@@ -1105,45 +1196,17 @@ impl Widget for AppWindow {
                 self.out.push(ToApp::Composing(composing));
             }
         }
+        if self.hold_typing(event) {
+            *ctx.handled = true;
+            return;
+        }
         self.body.handle_event(event, ctx);
     }
 
-    fn build_layout(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        self.body.build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(
-        &mut self,
-        tree: &ui::taffy::TaffyTree<()>,
-        node: ui::taffy::NodeId,
-        origin: ui::kurbo::Point,
-    ) {
-        self.body.apply_layout(tree, node, origin);
-    }
-
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        self.body.get_rect()
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.body.draw(scene, transform, text, theme, presence);
-    }
-
-    /// The window paints nothing of its own: what changed is what its body repaints.
-    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
-        self.body.collect_damage(regions);
+    fn take_focus_request(&mut self) -> Option<String> {
+        self.focus_request
+            .take()
+            .or_else(|| self.body.take_focus_request())
     }
 
     fn take_structure_dirty(&mut self) -> bool {

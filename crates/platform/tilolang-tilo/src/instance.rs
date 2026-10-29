@@ -259,6 +259,8 @@ pub struct Instance {
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
     open_requests: Rc<RefCell<Vec<String>>>,
+    /// What a person's press of a primary action made, to open as they asked for it.
+    pressed_opens: Vec<String>,
     ask: Option<Suggestion>,
     settle_due: bool,
     sink: Option<Box<dyn OutsideSink>>,
@@ -326,6 +328,7 @@ impl Instance {
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
             open_requests: Rc::default(),
+            pressed_opens: Vec::new(),
             ask: None,
             settle_due: false,
             sink: Some(
@@ -1197,16 +1200,27 @@ impl Instance {
         self.ask = Some(suggestion);
     }
 
-    /// Show what search hits or agents asked the window to show.
+    /// Show what a person's press made, and what search hits or agents asked the window to
+    /// show.
     fn take_open_requests(&mut self) -> bool {
-        let anchors = std::mem::take(&mut *self.open_requests.borrow_mut());
+        // What a press made comes to the front as the person's input does, and takes the
+        // keyboard; a search hit or an agent's `open` moved no hand, and lands at once.
+        let anchors: Vec<(String, ui::Front)> = std::mem::take(&mut self.pressed_opens)
+            .into_iter()
+            .map(|anchor| (anchor, ui::Front::Input))
+            .chain(
+                std::mem::take(&mut *self.open_requests.borrow_mut())
+                    .into_iter()
+                    .map(|anchor| (anchor, ui::Front::Action)),
+            )
+            .collect();
         if anchors.is_empty() {
             return false;
         }
         let Some(host) = self.host() else {
             return false;
         };
-        for anchor in anchors {
+        for (anchor, front) in anchors {
             // A hit names the published resource (`tl:<app>:<id>`) or the resource's id.
             let anchor = anchor
                 .strip_prefix("tl:")
@@ -1218,8 +1232,7 @@ impl Instance {
                     if let Some(target) = plan.target
                         && (target.item.is_some() || plan.app != self.app)
                     {
-                        // A search hit or an agent's `open`: no hand moved it, it lands at once.
-                        self.open_detail(&target, None, Some(ui::Front::Action));
+                        self.open_detail(&target, None, Some(front));
                     }
                     self.commit_planned();
                 }
@@ -1653,9 +1666,7 @@ impl Instance {
             Some("primary") => {
                 // What a primary action made opens beside the list, as the person asked for it.
                 if let Value::Ref(made) = result {
-                    self.open_requests
-                        .borrow_mut()
-                        .push(made.target.id_string());
+                    self.pressed_opens.push(made.target.id_string());
                 }
             }
             _ => {}

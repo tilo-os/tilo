@@ -1,6 +1,7 @@
 //! A hosted tilolang app as a person uses it: the window process's own window (the UI host's
 //! half, `HostedWindow`) driven by pointer and key events, over a real patch connection to a
-//! tilolang host running the app's instance on a broker the test plays.
+//! tilolang host running the app's instance on a broker the test plays: in the headless frame
+//! harness, and in the live `App` a window process runs, fed input as its surface feeds it.
 
 #![allow(
     clippy::unwrap_used,
@@ -24,8 +25,10 @@ use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::room::RoomRecord;
-use ui::headless::{FrameHarness, InspectionNode};
+use ui::headless::FrameHarness;
+use ui::widget::Widget;
 
+const NOTES: &str = "so.tilo.lang.notes";
 const VIEWPORT: (u32, u32) = (1280, 800);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
@@ -71,20 +74,152 @@ fn package(dir: &str) -> Bundle {
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
 
-/// A person at a Notes window whose instance a tilolang host runs.
+/// A window-sized region of a host's scene, as a window process's surface is.
+struct Region;
+
+impl ui::app::AppSurface for Region {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> ui::winit::dpi::PhysicalSize<u32> {
+        ui::winit::dpi::PhysicalSize::new(VIEWPORT.0, VIEWPORT.1)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
+}
+
+/// The window the person uses: the headless frame harness, or the live `App` a window process
+/// runs, fed input as its surface feeds it.
+enum Window {
+    Harness(Box<FrameHarness>),
+    Live(Box<ui::App>),
+}
+
+impl Window {
+    /// The live window's frames, as its surface runs them, until it is at rest.
+    fn live_frame(app: &mut ui::App) {
+        for _ in 0..3 {
+            let mut scene = ui::advanced::Scene::new();
+            if !app.surface_frame(&Region, &mut scene) || !app.unsettled() {
+                break;
+            }
+        }
+    }
+
+    /// `event` as the live window's surface delivers it. A quick hand's events (and
+    /// tilo-control's) come faster than the window's frames: none runs between them, only once
+    /// the session settles.
+    fn live_input(app: &mut ui::App, event: ui::winit::event::WindowEvent) {
+        app.surface_input(&Region, event, false);
+    }
+
+    fn frame(&mut self) {
+        match self {
+            Self::Harness(window) => window.relayout(),
+            Self::Live(app) => Self::live_frame(app),
+        }
+    }
+
+    /// A click at `(x, y)`: the move, the press and the release.
+    fn click_at(&mut self, x: f64, y: f64) {
+        match self {
+            Self::Harness(window) => window.click_at(x, y),
+            Self::Live(app) => {
+                Self::live_input(app, ui::synthetic_input::cursor_moved(x, y));
+                Self::live_input(app, ui::synthetic_input::mouse_press());
+                Self::live_input(app, ui::synthetic_input::mouse_release());
+            }
+        }
+    }
+
+    /// `text` typed key by key, each key down and up.
+    fn type_text(&mut self, text: &str) {
+        use ui::winit::event::ElementState;
+        use ui::winit::keyboard::{Key, NamedKey};
+        match self {
+            Self::Harness(window) => window.type_text(text),
+            Self::Live(app) => {
+                for ch in text.chars() {
+                    let typed = ch.to_string();
+                    let key = match ch {
+                        ' ' => Key::Named(NamedKey::Space),
+                        _ => Key::Character(typed.as_str().into()),
+                    };
+                    Self::live_input(
+                        app,
+                        ui::synthetic_input::key_press(key.clone(), Some(&typed)),
+                    );
+                    Self::live_input(
+                        app,
+                        ui::synthetic_input::key_input(&key, ElementState::Released),
+                    );
+                }
+            }
+        }
+    }
+
+    fn root(&mut self) -> &mut dyn Widget {
+        match self {
+            Self::Harness(window) => window.root_widget_mut(),
+            Self::Live(app) => app.root_widget_mut(),
+        }
+    }
+
+    fn harness(&mut self) -> &mut FrameHarness {
+        match self {
+            Self::Harness(window) => window,
+            Self::Live(_) => panic!("the window is the live one"),
+        }
+    }
+}
+
+/// A person at a window whose instance a tilolang host runs.
 struct Session {
     host: TilolangHost,
-    window: FrameHarness,
+    window: Window,
     _inbox: Inbox,
 }
 
 impl Session {
-    /// `person` at a window of the package `app` in `dir`, whose presence `present` sets up.
+    /// A person at a Notes window in the frame harness.
+    fn notes() -> Self {
+        Self::new(NOTES, "../tl/notes", "ada", |_| {})
+    }
+
+    /// A person at a Notes window the live `App` runs.
+    fn live_notes() -> Self {
+        Self::open(NOTES, "../tl/notes", "ada", |hosted| {
+            let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+            app.init_layout();
+            Window::Live(Box::new(app))
+        })
+    }
+
+    /// `person` at a harness window of the package `app` in `dir`, whose presence `present`
+    /// sets up.
     fn new(
         app: &str,
         dir: &str,
         person: &str,
         present: impl FnOnce(&mut ui::presence::PresenceCtx),
+    ) -> Self {
+        Self::open(app, dir, person, |hosted| {
+            let mut window = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
+            window.update_presence(|presence| {
+                present(presence);
+                true
+            });
+            Window::Harness(Box::new(window))
+        })
+    }
+
+    /// `person` at the window `window` makes of the hosted window of the package `app` in
+    /// `dir`.
+    fn open(
+        app: &str,
+        dir: &str,
+        person: &str,
+        window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
@@ -123,18 +258,9 @@ impl Session {
             wake,
         );
         host.add(hosted, Some(watched));
-        let mut window = FrameHarness::new(
-            ui::State::new(),
-            Box::new(HostedWindow::over(theirs)),
-            VIEWPORT,
-        );
-        window.update_presence(|presence| {
-            present(presence);
-            true
-        });
         let mut session = Self {
             host,
-            window,
+            window: window(HostedWindow::over(theirs)),
             _inbox: inbox,
         };
         session.settle();
@@ -146,7 +272,7 @@ impl Session {
         let mut quiet = 0;
         while quiet < 20 {
             let changed = self.host.turn();
-            self.window.relayout();
+            self.window.frame();
             if changed {
                 quiet = 0;
             } else {
@@ -156,16 +282,16 @@ impl Session {
         }
     }
 
-    fn hosted(&self) -> &HostedWindow {
+    fn hosted(&mut self) -> &HostedWindow {
         self.window
-            .root_widget()
+            .root()
             .as_any()
             .and_then(|any| any.downcast_ref::<HostedWindow>())
             .expect("the window is the hosted window")
     }
 
     /// The texts the window's views show.
-    fn shown(&self) -> Vec<String> {
+    fn shown(&mut self) -> Vec<String> {
         fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
             for value in node.props.values() {
                 match value {
@@ -185,6 +311,78 @@ impl Session {
         }
         out
     }
+
+    /// The titles of the notebook's notes, as its list shows them.
+    fn titles(&mut self) -> Vec<String> {
+        let view = self.hosted().view().expect("the window is connected");
+        let mut titles = Vec::new();
+        for list in view.lists() {
+            if list.starts_with(tilo_ui_host::shell::DETAIL) {
+                continue;
+            }
+            let rows = view.rows_of(&list).expect("the list's rows");
+            let rows = rows.borrow();
+            for key in rows.rendered() {
+                let row = rows.row(&key).expect("a rendered row");
+                let title = find(row, &|node| node.kind == "ui.ListRow")
+                    .and_then(|row| match row.props.get("title") {
+                        Some(tilo_ui_host::Value::Text(title)) => Some(title.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("a row shows its note's title: {row:?}"));
+                titles.push(title);
+            }
+        }
+        titles
+    }
+
+    /// The centre of the open note's body.
+    fn body(&mut self) -> (f64, f64) {
+        let rect = widget_by_id(self.window.root(), "block_editor")
+            .expect("the open note's body is laid out")
+            .get_rect();
+        (rect.center().x, rect.center().y)
+    }
+
+    /// The key in the composed tree of the open note's field whose placeholder is
+    /// `placeholder`.
+    fn field_key(&mut self, placeholder: &str) -> String {
+        let detail = self
+            .hosted()
+            .view()
+            .and_then(tilo_ui_host::AppWindow::detail_tree)
+            .expect("a note is open");
+        let key = find(&detail, &|node| {
+            matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
+        })
+        .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
+        .key
+        .clone();
+        format!("{}{key}", tilo_ui_host::shell::DETAIL)
+    }
+
+    /// The centre of the open note's field whose placeholder is `placeholder`.
+    fn field(&mut self, placeholder: &str) -> (f64, f64) {
+        let id = self.field_key(placeholder);
+        let rect = widget_by_id(self.window.root(), &id)
+            .unwrap_or_else(|| panic!("the field {id} is laid out"))
+            .get_rect();
+        (rect.center().x, rect.center().y)
+    }
+
+    /// What the open note's field whose placeholder is `placeholder` shows.
+    fn field_value(&mut self, placeholder: &str) -> Option<tilo_ui_host::Value> {
+        let id = self.field_key(placeholder);
+        self.hosted().view()?.bound_value(&id)
+    }
+
+    /// The centre of the header's New note button.
+    fn new_note_button(&mut self) -> (f64, f64) {
+        let mut found = Vec::new();
+        named(self.window.root(), "New note", &mut found);
+        let rect = *found.last().expect("the window offers New note");
+        (rect.center().x, rect.center().y)
+    }
 }
 
 fn find<'a>(
@@ -197,13 +395,102 @@ fn find<'a>(
     node.children.iter().find_map(|child| find(child, want))
 }
 
-fn find_widget<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
-    if node.test_id.as_deref() == Some(id) {
-        return Some(node);
+fn widget_by_id<'a>(widget: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+    if widget.test_id() == Some(id) {
+        return Some(widget);
     }
-    node.children
-        .iter()
-        .find_map(|child| find_widget(child, id))
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| widget_by_id(child, id))
+}
+
+/// The rects of the laid out widgets whose accessible name is `label`.
+fn named(widget: &dyn Widget, label: &str, out: &mut Vec<ui::kurbo::Rect>) {
+    if widget
+        .accessibility()
+        .is_some_and(|access| access.name.as_deref() == Some(label))
+        && widget.get_rect().width() > 0.0
+    {
+        out.push(widget.get_rect());
+    }
+    for child in widget.children() {
+        named(child, label, out);
+    }
+}
+
+/// After a first note made and titled as a person does, "+" and at once the next title, every
+/// key typed before the host answered, three times over: each new note takes the keyboard in
+/// its title.
+fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    let title = session.field("Title");
+    session.window.click_at(title.0, title.1);
+    session.window.type_text("First ");
+    session.settle();
+    for _ in 0..3 {
+        let plus = session.new_note_button();
+        session.window.click_at(plus.0, plus.1);
+        session.window.type_text("Note title");
+        session.settle();
+    }
+    let mut titles = session.titles();
+    titles.sort();
+    assert_eq!(
+        titles,
+        [
+            // Clicked past its end: typed after it.
+            "UntitledFirst ",
+            "UntitledNote title",
+            "UntitledNote title",
+            "UntitledNote title"
+        ],
+        "every key typed after New note lands in the new note's title, none lost"
+    );
+}
+
+#[test]
+fn keys_typed_right_after_new_note_land_in_the_new_notes_title_whenever_the_host_answers() {
+    new_notes_take_the_keys_typed_right_after_new_note(Session::notes());
+}
+
+#[test]
+fn keys_typed_right_after_new_note_land_in_the_new_notes_title_in_the_live_window() {
+    new_notes_take_the_keys_typed_right_after_new_note(Session::live_notes());
+}
+
+#[test]
+fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() {
+    let mut session = Session::live_notes();
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    for round in 1..=2_u8 {
+        // Each round clicks elsewhere in the fields, past their text: two clicks at one place
+        // count as a double click, which selects a word.
+        let shift = 40.0 * f64::from(round);
+        let body = session.body();
+        session.window.click_at(body.0 + shift, body.1);
+        session.window.type_text("Body");
+        session.settle();
+        let title = session.field("Title");
+        session.window.click_at(title.0 + shift, title.1);
+        session.window.type_text("XY");
+        session.settle();
+        let titles = session.titles();
+        let wanted = "XY".repeat(usize::from(round));
+        assert!(
+            titles.len() == 1 && titles[0].contains(&wanted),
+            "round {round}: the keys went to the title the person clicked: {titles:?}"
+        );
+        let body = format!("{:?}", session.field_value("Write something"));
+        assert!(
+            body.contains(&"Body".repeat(usize::from(round))) && !body.contains("XY"),
+            "round {round}: and none on into the body: {body}"
+        );
+    }
 }
 
 #[test]
@@ -224,15 +511,14 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     .expect("the page has its title field")
     .key
     .clone();
-    let inspection = session.window.inspection();
-    let [x, y, w, h] = find_widget(&inspection.root, &key)
+    let rect = widget_by_id(session.window.root(), &key)
         .expect("the title field is laid out")
-        .rect;
-    session.window.click_at(x + w / 2.0, y + h / 2.0);
+        .get_rect();
+    session.window.click_at(rect.center().x, rect.center().y);
     session.window.type_text("Plan");
     session.settle();
     // The person's name changes, as a roster renames them: the page follows.
-    session.window.update_presence(|presence| {
+    session.window.harness().update_presence(|presence| {
         presence.set_self_participant(ui::permissions::UserId(ada.to_owned()), "Ada Lovelace");
         true
     });
