@@ -135,7 +135,7 @@ mod tests {
     }
 
     fn page(app: &mut TestApp<PrintCentreShell>) -> Page {
-        app.surface_mut::<PrintCentre>().page.clone()
+        crate::surface::tests::centre(app).borrow().page.clone()
     }
 
     /// Wait until the printers show again after the refresh a press
@@ -147,8 +147,9 @@ mod tests {
     ) {
         tilo_test_env::wait_until(asked, || {
             app.settle();
-            let centre = app.surface_mut::<PrintCentre>();
-            centre.refresh.is_none() && centre.page == Page::Dashboard && changed(centre)
+            let shared = crate::surface::tests::centre(app);
+            let centre = shared.borrow();
+            centre.refresh.is_none() && centre.page == Page::Dashboard && changed(&centre)
         });
     }
 
@@ -172,7 +173,8 @@ mod tests {
         assert_eq!(bar().navigation, None, "the printers are where Back leads");
         assert_eq!(bar().location, None);
 
-        app.surface_mut::<PrintCentre>()
+        crate::surface::tests::centre(&mut app)
+            .borrow_mut()
             .tell(super::super::OperationNotice::success("Printer added"));
         press(&mut app, "Refresh");
         refreshed(
