@@ -156,7 +156,7 @@ fn match_complete(
 ) -> io::Result<()> {
     let receiver = record.receiver.as_ref().ok_or_else(denied)?;
     let verified = record.verified.as_ref().ok_or_else(denied)?;
-    if record.phase != Phase::Complete
+    if record.phase != Phase::Verified
         || record.attempt != attempt.attempt
         || record.binding != attempt.binding
         || record.secret != attempt.secret_identity

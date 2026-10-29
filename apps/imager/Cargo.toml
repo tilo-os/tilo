@@ -22,6 +22,19 @@ name = "tilo-prepared-setup"
 path = "src/bin/tilo-prepared-setup.rs"
 required-features = ["installation"]
 
+# The destination side of the guided setup: the installer on the live medium
+# (`/usr/libexec/tilo/tilo-installer`, the `installer` component in
+# os/components.toml) and its first-boot account seeding helper.
+[[bin]]
+name = "tilo-installer"
+path = "src/bin/tilo-installer.rs"
+required-features = ["destination"]
+
+[[bin]]
+name = "tilo-firstboot-home-seeds"
+path = "src/bin/tilo-firstboot-home-seeds.rs"
+required-features = ["destination"]
+
 [[bin]]
 name = "tilo-home-export"
 path = "src/bin/tilo-home-export.rs"
@@ -48,6 +61,24 @@ installation = ["dep:launcher", "imager-backend/installation"]
 # without it (`tilo-app dev`) links them statically, because an engine library
 # links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-fuse-engine/thin"]
+# The destination side of the guided setup, on the live installer medium:
+# keyboard, network, disk, account and the install itself, consuming the
+# profile and staged handoff the host side produced. It does not need the
+# host side (`installation`).
+destination = [
+    "dep:accounts",
+    "dep:account-custody",
+    "dep:calendar",
+    "dep:tilo-dav",
+    "dep:tilo-seal",
+    "dep:ui_core",
+    "dep:os-actions",
+    "dep:tilo-power-mgmt",
+    "dep:console-control",
+    "dep:tracing-subscriber",
+    "dep:url",
+    "dep:tilo-unlock-protocol",
+]
 capture-worker = ["installation", "imager-backend/capture-worker"]
 # Explicit new signed cohort; default capture-worker preserves shipped Home5.
 capture-worker-applications = ["capture-worker", "imager-backend/capture-worker-applications"]
@@ -115,6 +146,22 @@ bounded-command = { path = "../../crates/system/bounded-command" }
 workspace-hack = { version = "0.1" }
 tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" }
 
+# The destination side (`destination`).
+accounts = { path = "../../crates/system/accounts", optional = true }
+account-custody = { path = "../../crates/system/account-custody", optional = true }
+calendar = { path = "../calendar", default-features = false, features = ["live"], optional = true }
+tilo-dav = { path = "../../crates/system/tilo-dav", features = ["oauth"], optional = true }
+tilo-seal = { path = "../../crates/system/tilo-seal", optional = true }
+# The live installer answers the host's raw operation protocol for its
+# console, which the app facade does not expose.
+ui_core = { package = "tilo-ui", path = "../../crates/sdk/ui-core", optional = true }
+os-actions = { path = "../../crates/system/os-actions", optional = true }
+tilo-power-mgmt = { path = "../../crates/system/power", default-features = false, optional = true }
+console-control = { path = "../../crates/session/console-control", optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
+tilo-unlock-protocol = { path = "../../crates/collab/tilo-unlock-protocol", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
@@ -149,11 +196,24 @@ path = "tests/prepared_setup_cli.rs"
 required-features = ["installation"]
 
 [[test]]
+name = "destination_headless_wizard"
+path = "tests/destination_headless_wizard.rs"
+required-features = ["destination"]
+
+[[test]]
+name = "destination_accounts_native"
+path = "tests/destination_accounts_native.rs"
+required-features = ["destination"]
+
+[[test]]
 name = "profile_transport"
 path = "tests/profile_transport.rs"
-required-features = ["installation"]
+required-features = ["installation", "destination"]
 
 [dev-dependencies]
+# The destination's capacity test asks the same compiled rule that
+# `tilo-guided-partition` delegates to.
+tilo-install-helpers = { path = "../../crates/system/install-helpers" }
 accounts = { path = "../../crates/system/accounts" }
 account-custody = { path = "../../crates/system/account-custody" }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

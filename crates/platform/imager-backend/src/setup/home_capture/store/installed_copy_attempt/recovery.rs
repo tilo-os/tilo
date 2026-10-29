@@ -183,7 +183,7 @@ impl InstalledCopyAttempt {
         }
         record.sealing = Some(facts);
         record.verified = None;
-        record.phase = Phase::Sealing;
+        record.phase.advance(Route::InstalledCopy, Phase::Sealing)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         export.journal_facts(self, scratch, cancel)?;
@@ -233,7 +233,7 @@ impl InstalledCopyAttempt {
             receiver.expectations_digest = Some(facts.expectations_digest);
         }
         record.verified = Some(facts);
-        record.phase = Phase::ReceiverPending;
+        record.phase.advance(Route::InstalledCopy, Phase::ReceiverPending)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         verified.journal_facts(self, scratch, cancel)?;
@@ -378,7 +378,7 @@ impl InstalledCopyAttempt {
         if let Some(namespace) = &record.recovery_namespace {
             namespace.custody.require_stopped()?;
         }
-        record.phase = Phase::Cancelled;
+        record.phase.advance(Route::InstalledCopy, Phase::Cancelled)?;
         save(&store, &record, PublishMode::Replace)
     }
     pub fn record_receiver_complete(
@@ -421,7 +421,7 @@ impl InstalledCopyAttempt {
         }
         receiver.custody.require_stopped()?;
         peer_stopped(&peer)?;
-        record.phase = Phase::Complete;
+        record.phase.advance(Route::InstalledCopy, Phase::Verified)?;
         save(&store, &record, PublishMode::Replace)
     }
 }
@@ -742,7 +742,7 @@ impl InstalledCopyAttempt {
         record.target_storage = actual.clone();
         record.scratch = Some(scratch);
         record.read_claim = Some(source.output_read_claim_digest(cancel)?);
-        record.phase = Phase::RecoveryPrepared;
+        record.phase.advance(Route::InstalledCopy, Phase::RecoveryPrepared)?;
         record.verified = None;
         record.receiver = None;
         // Intent precedes any ownership change or rename. Older recovery
@@ -795,7 +795,7 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed recovery verifier intent differs"));
         }
-        record.phase = Phase::RecoveryVerifying;
+        record.phase.advance(Route::InstalledCopy, Phase::RecoveryVerifying)?;
         record.recovery_namespace = None;
         record.read_claim = Some(digest);
         save(&store, &record, PublishMode::Replace)?;
