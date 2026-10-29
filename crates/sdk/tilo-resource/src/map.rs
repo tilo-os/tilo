@@ -191,6 +191,9 @@ impl<T: Model> Model for Map<T> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "object"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Map(Box::new(T::field_type(types)))
+    }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     // Run by the functions of every map of string keys, over `T`'s table.
