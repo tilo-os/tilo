@@ -342,7 +342,7 @@ impl TabletEvent {
 
 /// A touch slot as a plain number: single-touch devices have no slot
 /// concept (libinput reports none), all one finger, so slot 0 is honest.
-fn touch_slot(slot: TouchSlot) -> u32 {
+pub(crate) fn touch_slot(slot: TouchSlot) -> u32 {
     u32::try_from(i32::from(slot)).unwrap_or(0)
 }
 

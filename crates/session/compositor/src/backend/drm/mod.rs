@@ -11,10 +11,12 @@
 pub mod access_keys;
 pub mod devices;
 pub mod input_config;
+mod input_source;
 mod libinput;
 pub mod seat_diag;
 pub mod tablet;
 mod topology;
+mod touch_map;
 mod wake_check;
 
 use std::cell::RefCell;
@@ -32,7 +34,7 @@ use smithay::backend::drm::{
     DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
 };
 use smithay::backend::egl::{EGLContext, EGLDisplay};
-use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::libinput::LibinputSessionInterface;
 use smithay::backend::renderer::ImportDma as _;
 use smithay::backend::renderer::gles::{Capability, GlesRenderer};
 use smithay::backend::session::libseat::LibSeatSession;
@@ -187,10 +189,15 @@ impl DrmBackend {
         let input_handle = handle.clone();
         handle
             .insert_source(
-                LibinputInputBackend::new(libinput),
-                move |event, (), data| {
-                    let extent = pointer_extent(&data.state);
-                    libinput::dispatch(&devices, &input_handle, event, &mut data.state, extent);
+                input_source::Source::new(libinput),
+                move |delivered, (), data| match delivered {
+                    input_source::Delivered::Device(event) => {
+                        let extent = pointer_extent(&data.state);
+                        libinput::dispatch(&devices, &input_handle, event, &mut data.state, extent);
+                    }
+                    input_source::Delivered::Pad { device, event } => {
+                        libinput::dispatch_pad(&devices, &device, &event, &mut data.state);
+                    }
                 },
             )
             .map_err(|error| failed("libinput source", error.error))?;

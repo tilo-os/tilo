@@ -9,6 +9,8 @@
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
+pub use smithay::input::pointer::CursorIcon;
+
 use crate::input::HostKey;
 
 /// One buffer a hosted surface shows, at a position in the logical layout.
@@ -69,4 +71,10 @@ pub trait SurfaceHost {
     /// one is added, removed or moved: a surface covering the desktop
     /// (the top bar, the chrome above the windows) follows them.
     fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {}
+
+    /// The pointer shape while the pointer is over the surface (a text
+    /// beam over a field, a hand over a link).
+    fn cursor(&self) -> CursorIcon {
+        CursorIcon::Default
+    }
 }
