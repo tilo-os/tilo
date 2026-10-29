@@ -454,6 +454,9 @@ pub struct MusicApp {
     /// A no-op stub until [`Self::enable_mpris`] brings it up on the live
     /// binary; inert in `--shots`/tests and without the `audio` feature.
     mpris: MprisHandle,
+    /// The bus name [`Self::mpris`] serves under, which the playback handoff
+    /// record names as its controller.
+    mpris_bus_name: String,
     /// App-native playback identity advertised privately to the shell. Music
     /// hands over a stable track resource, never its signed decoder URL.
     handoff: media::handoff::AppPlaybackHandle,
@@ -912,6 +915,7 @@ impl MusicApp {
             search_error: None,
             playback_error: None,
             mpris: MprisHandle::disabled(),
+            mpris_bus_name: crate::mpris::config().bus_name,
             handoff: media::handoff::AppPlaybackHandle::new(),
             pending_media_handoff: None,
             local_file: device_profile.local_file,
@@ -1678,7 +1682,9 @@ impl MusicApp {
     /// inert stub, so no code path branches on whether MPRIS is present.
     pub fn enable_mpris(&mut self) {
         let snap = self.mpris_snapshot();
-        self.mpris = MprisHandle::spawn(crate::mpris::config(), snap);
+        let config = crate::mpris::config();
+        self.mpris_bus_name.clone_from(&config.bus_name);
+        self.mpris = MprisHandle::spawn(config, snap);
     }
 
     /// Build the MPRIS snapshot from the current playback + library state.
@@ -1763,7 +1769,7 @@ impl MusicApp {
                 && self.audio.has_stream()
                 && self.audio.frames_rendered() > 0
                 && !self.audio.needs_poll(),
-            controller_bus_name: Some(crate::mpris::BUS_NAME),
+            controller_bus_name: Some(&self.mpris_bus_name),
         });
     }
 

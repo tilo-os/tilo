@@ -8646,6 +8646,7 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-paths",
+ "tilo-process",
  "tilo-render-protocol",
  "tilo-rt",
  "tilo-sandbox-core",
