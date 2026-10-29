@@ -24,6 +24,10 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-web-search = { path = "../../crates/platform/tilo-web-search" }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
+# A fetched file that is not text is kept in the workspace's content store
+# (the device store the launcher hands the service) and answered by address.
+tilo-content = { path = "../../crates/system/content" }
+tilo-content-device = { path = "../../crates/system/content-device" }
 # Searches and fetches are network waits, run on one bounded runtime.
 tilo-rt = { path = "../../crates/platform/tilo-rt" }
 # The instance lock, in the service's own state directory.
@@ -40,6 +44,10 @@ clap.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-web-search = { path = "../../crates/platform/tilo-web-search", features = ["fixture-servers"] }
+tokio = { workspace = true, features = ["rt", "macros", "time", "net", "io-util"] }
 
 [lints]
 workspace = true
