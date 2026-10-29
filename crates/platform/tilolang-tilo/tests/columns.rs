@@ -93,7 +93,9 @@ action remove(b: Board, t: Task) {
 }
 
 action move_first(b: Board, t: Task) {
-    b.tasks.move(t, 0)
+    if let first = b.tasks.first() {
+        b.tasks.move(t, before: first)
+    }
 }
 
 view main(b: Board) {

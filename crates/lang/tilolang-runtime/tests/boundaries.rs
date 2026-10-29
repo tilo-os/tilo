@@ -38,8 +38,8 @@ action retitle(item: Item, title: Text) {
     item.title = title
 }
 
-action move_to(bag: Bag, item: Item, index: Int) {
-    bag.items.move(item, index)
+action move_before(bag: Bag, item: Item, other: Item) {
+    bag.items.move(item, before: other)
 }
 
 action remove(bag: Bag, item: Item) {
@@ -304,11 +304,11 @@ view count(bag: Bag) {
         let mut view = rows.view("eager");
         let opened = view.stats();
         rows.call(
-            "move_to",
+            "move_before",
             vec![
                 Value::resource(&rows.bag),
                 Value::resource(&rows.items[4]),
-                Value::Int(1),
+                Value::resource(&rows.items[1]),
             ],
         );
         let patches = view.poll_patches().unwrap();
@@ -450,11 +450,11 @@ view count(bag: Bag) {
         // A move in the middle changes none of them.
         let shuffle = |rows: &Rows| {
             rows.call(
-                "move_to",
+                "move_before",
                 vec![
                     Value::resource(&rows.bag),
                     Value::resource(&rows.items[500]),
-                    Value::Int(200),
+                    Value::resource(&rows.items[200]),
                 ],
             );
         };
@@ -480,11 +480,11 @@ view count(bag: Bag) {
         let opened = view.stats().renders;
         // A move far below the shown rows re-runs nothing that is shown.
         rows.call(
-            "move_to",
+            "move_before",
             vec![
                 Value::resource(&rows.bag),
                 Value::resource(&rows.items[900]),
-                Value::Int(800),
+                Value::resource(&rows.items[800]),
             ],
         );
         view.poll_patches().unwrap();
@@ -508,11 +508,11 @@ view count(bag: Bag) {
 
         // An item moved to the top: one patch, and the shown rows below it move down.
         rows.call(
-            "move_to",
+            "move_before",
             vec![
                 Value::resource(&rows.bag),
                 Value::resource(&rows.items[700]),
-                Value::Int(0),
+                Value::resource(&rows.items[0]),
             ],
         );
         let moved = view.poll_patches().unwrap();
@@ -654,19 +654,19 @@ view count(bag: Bag) {
 
         // A shown row moved down, and one moved into the rows shown.
         rows.call(
-            "move_to",
+            "move_before",
             vec![
                 Value::resource(&rows.bag),
                 Value::resource(&rows.items[2]),
-                Value::Int(20),
+                Value::resource(&rows.items[21]),
             ],
         );
         rows.call(
-            "move_to",
+            "move_before",
             vec![
                 Value::resource(&rows.bag),
                 Value::resource(&rows.items[25]),
-                Value::Int(4),
+                Value::resource(&rows.items[5]),
             ],
         );
         let moved = view.poll_patches().unwrap();

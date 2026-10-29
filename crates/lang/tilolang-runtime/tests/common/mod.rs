@@ -446,7 +446,9 @@ pub fn list_wasm() -> Vec<u8> {
         )
         .func(
             r#"(func (export "a_move_first") (param $l i32) (param $it i32)
-  (call $tl_coll_move (local.get $l) (call $L_fi) (local.get $it) (i64.const 0)))"#,
+  (call $tl_coll_move (local.get $l) (call $L_fi) (local.get $it)
+    (call $tl_list_get_h (call $tl_res_get_h (local.get $l) (call $L_fi)) (i64.const 0))
+    (i32.const 0)))"#,
         )
         .func(
             r#"(func (export "a_drop") (param $l i32) (param $it i32)
