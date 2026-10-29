@@ -25,6 +25,8 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_x11",
 ] }
 tracing.workspace = true
+# Named pointer shapes from the XCursor theme.
+xcursor = "0.3"
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
@@ -33,6 +35,7 @@ tempfile.workspace = true
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 
 [lints]
 workspace = true

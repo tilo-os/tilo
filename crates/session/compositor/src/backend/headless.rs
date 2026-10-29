@@ -14,8 +14,8 @@ use smithay::output::Output;
 use smithay::reexports::pixman::Image;
 use smithay::utils::{Buffer, Rectangle, Size};
 
-use super::{Backend, BackendError, Screenshot, failed};
-use crate::output::OutputConfig;
+use super::{Backend, BackendError, Screenshot, failed, refuse_disabling};
+use crate::output::{OutputChange, OutputConfig, apply_placement};
 use crate::render::{BACKGROUND, output_elements};
 use crate::state::State;
 
@@ -39,7 +39,7 @@ impl HeadlessBackend {
     pub fn new(state: &mut State) -> Result<Self, BackendError> {
         let renderer = PixmanRenderer::new().map_err(|error| failed("pixman renderer", error))?;
         // Clients' dma-bufs are read through a mapping.
-        state.enable_dmabuf(renderer.dmabuf_formats().iter().copied().collect());
+        state.enable_dmabuf(renderer.dmabuf_formats().iter().copied().collect(), None);
         Ok(Self {
             renderer,
             outputs: Vec::new(),
@@ -63,6 +63,44 @@ impl Backend for HeadlessBackend {
             target,
             drawn: false,
         });
+        Ok(())
+    }
+
+    fn configure(
+        &mut self,
+        state: &mut State,
+        changes: &[OutputChange],
+        test: bool,
+    ) -> Result<(), BackendError> {
+        refuse_disabling(changes)?;
+        if test {
+            return Ok(());
+        }
+        // A headless output takes any mode: a new image of that size.
+        for change in changes {
+            let Some(output) = self
+                .outputs
+                .iter_mut()
+                .find(|output| output.output.name() == change.name)
+            else {
+                continue;
+            };
+            if let Some(request) = change.mode {
+                let mode = smithay::output::Mode {
+                    size: request.size.into(),
+                    refresh: request.refresh_mhz.unwrap_or(60_000),
+                };
+                output.target = self
+                    .renderer
+                    .create_buffer(Fourcc::Argb8888, Size::<i32, Buffer>::from(request.size))
+                    .map_err(|error| failed("output image", error))?;
+                output.output.change_current_state(Some(mode), None, None, None);
+                output.output.add_mode(mode);
+                output.drawn = false;
+            }
+            apply_placement(state, &output.output, change);
+            output.damage = OutputDamageTracker::from_output(&output.output);
+        }
         Ok(())
     }
 

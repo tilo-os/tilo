@@ -10,7 +10,7 @@ pub mod drm;
 pub mod headless;
 pub mod nested;
 
-use crate::output::OutputConfig;
+use crate::output::{OutputChange, OutputConfig};
 use crate::state::State;
 
 pub use drm::{DisplayConfig, DrmBackend};
@@ -48,11 +48,44 @@ pub trait Backend {
         )))
     }
 
+    /// Apply a display configuration (already checked to name real
+    /// outputs, with usable scales and one output left on), or with `test`
+    /// only say whether it could be applied. All or nothing.
+    fn configure(
+        &mut self,
+        _state: &mut State,
+        _changes: &[OutputChange],
+        _test: bool,
+    ) -> Result<(), BackendError> {
+        Err(BackendError(
+            "this backend's outputs cannot be reconfigured".into(),
+        ))
+    }
+
     /// The last frame drawn on the output named `name`.
     fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(
             "{name}: this backend does not read frames back"
         )))
+    }
+}
+
+impl dyn Backend {
+    /// [`Backend::configure`] after the checks every backend shares, then
+    /// the windows laid out on the new arrangement.
+    pub(crate) fn configure_checked(
+        &mut self,
+        state: &mut State,
+        changes: &[OutputChange],
+        test: bool,
+    ) -> Result<(), BackendError> {
+        let names: Vec<String> = state.space.outputs().map(smithay::output::Output::name).collect();
+        crate::output::check_changes(changes, &names).map_err(BackendError)?;
+        self.configure(state, changes, test)?;
+        if !test {
+            state.rearrange();
+        }
+        Ok(())
     }
 }
 
@@ -93,6 +126,17 @@ impl std::fmt::Display for BackendError {
 }
 
 impl std::error::Error for BackendError {}
+
+/// Refuse turning an output off: no backend can light it again yet.
+pub(crate) fn refuse_disabling(changes: &[OutputChange]) -> Result<(), BackendError> {
+    match changes.iter().find(|change| !change.enabled) {
+        Some(change) => Err(BackendError(format!(
+            "{}: outputs cannot be turned off yet",
+            change.name
+        ))),
+        None => Ok(()),
+    }
+}
 
 /// A [`BackendError`] for `what`, with the underlying error's description.
 pub fn failed(what: &str, error: impl std::fmt::Debug) -> BackendError {

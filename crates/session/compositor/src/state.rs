@@ -17,7 +17,7 @@ use smithay::backend::input::{Axis, ButtonState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
 use smithay::desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, XkbConfig};
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::backend::{
@@ -103,6 +103,8 @@ pub struct State {
     pub(crate) protocols: crate::protocols::Protocols,
     pub(crate) lock: crate::lock::Lock,
     pub(crate) text_input: crate::text_input::TextInput,
+    pub(crate) cursor: crate::cursor::Cursor,
+    pub(crate) output_management: crate::output_management::OutputManagement,
 }
 
 impl State {
@@ -140,6 +142,8 @@ impl State {
             protocols: crate::protocols::Protocols::new(display),
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
+            cursor: crate::cursor::Cursor::new(),
+            output_management: crate::output_management::OutputManagement::new(display),
         }
     }
 
@@ -166,6 +170,11 @@ impl State {
         self.space.refresh();
         self.display.remove_global::<Self>(global);
         self.rearrange();
+    }
+
+    /// Whether a hosted surface has the pointer (not a client).
+    pub(crate) fn pointer_over_host(&self) -> bool {
+        matches!(self.pointer_target, PointerTarget::Host(_))
     }
 
     /// The logical rectangles of every output.
@@ -641,6 +650,10 @@ impl SeatHandler for State {
 
     fn seat_state(&mut self) -> &mut SeatState<Self> {
         &mut self.seat_state
+    }
+
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor.status = image;
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
