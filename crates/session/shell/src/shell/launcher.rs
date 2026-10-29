@@ -4296,19 +4296,16 @@ pub(crate) fn queue_native_authoring_launch(
     let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
-    let owner = native_owner
-        .as_ref()
-        .ok_or_else(|| LaunchError::IdentityUnavailable {
-            detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
-        })?;
     // Who the person asked as: the device the room is held under now. A room
     // whose enrollment has not committed yet (placed on this device's own
-    // host, or joined, as the session starts) has none so far; the opening
-    // takes the one its commit installs.
-    let asked_as = owner
-        .rooms()
-        .contains(&room)
-        .then(|| owner.with_current(room, |view| Ok(view.device().clone())))
+    // host, or joined, as the session starts) has none so far, and neither
+    // has a session whose native owner is not installed yet (an app opened
+    // in its first moments): the opening takes the device the room's commit
+    // installs, once launches run.
+    let asked_as = native_owner
+        .as_ref()
+        .filter(|owner| owner.rooms().contains(&room))
+        .map(|owner| owner.with_current(room, |view| Ok(view.device().clone())))
         .transpose()
         .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;
     queue_prepared_launch(
