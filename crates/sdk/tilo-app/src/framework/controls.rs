@@ -507,7 +507,7 @@ impl<R: Resource> Actions<R> {
     /// row offers ([`LiveRow::operation`](super::LiveRow::operation)),
     /// carried out on that record as its person (*this* app's notification
     /// rule on the app's row). `None` for the app's own resource, whose row
-    /// edits are [`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations),
+    /// edits are [`Publishes::row_edits`](super::Publishes::row_edits),
     /// and where the record is read only here.
     #[must_use]
     pub fn operation(

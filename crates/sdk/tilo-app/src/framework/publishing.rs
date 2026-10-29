@@ -19,7 +19,7 @@ use ui_core::widget::{AppHostIntent, AppModel, Decorator, Element, ModelPath, Wi
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;
-use super::surface::{SearchQueries, SurfacePublication};
+use super::surface::SurfacePublication;
 
 type Rows = Rc<dyn Fn() -> Vec<LiveRow>>;
 type Row = Rc<dyn Fn(&str) -> Option<LiveRow>>;
@@ -285,8 +285,8 @@ impl Decorator for Publishing {
         "Publishing"
     }
 
-    // The latest query reaches the view before it syncs, as a surface's
-    // does; what it says of its answer is read after.
+    // The latest query reaches the view before it syncs; what it says of
+    // its answer is read after.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(query) = self.queries.take()
             && let Some(on_query) = &self.sources.query
@@ -307,7 +307,6 @@ impl SurfacePublication for Publishing {
     fn resource(&self) -> std::any::TypeId {
         self.resource
     }
-    fn bound_declarations(&self, _into: &mut dyn std::any::Any) {}
     fn availability(&self) -> Vec<EffectStatus> {
         self.sources
             .availability
@@ -360,20 +359,8 @@ impl SurfacePublication for Publishing {
     fn kept_in_search_index(&self) -> bool {
         !self.sources.transient
     }
-    fn supports_device_shell(&self) -> bool {
-        false
-    }
-    fn device_shell_operation(
-        &mut self,
-        _operation: &ui_core::floating_surface::DeviceShellOperation,
-    ) -> Result<serde_json::Value, String> {
-        Err("this view has no device shell".into())
-    }
-    fn request_device_shell(&mut self) -> bool {
-        false
-    }
-    fn search_queries(&self) -> SearchQueries {
-        self.queries.clone()
+    fn search_queries(&self) -> Option<SearchQueries> {
+        Some(self.queries.clone())
     }
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
         self.sources
@@ -381,7 +368,75 @@ impl SurfacePublication for Publishing {
             .as_ref()
             .and_then(|intents| (intents.borrow_mut())())
     }
-    fn take_save_retry(&mut self) -> bool {
-        false
+}
+
+/// Coalesced delivery of the platform search's queries to a view that
+/// looks them up.
+#[derive(Clone)]
+pub(crate) struct SearchQueries(Rc<RefCell<QueryDelivery>>);
+
+#[derive(Default)]
+struct QueryDelivery {
+    last: Option<SearchQuery>,
+    pending: Option<SearchQuery>,
+    /// The view said its results for `last` are still coming.
+    awaiting: bool,
+    /// Wakes the window, so a query asked between frames reaches the
+    /// view without waiting for input. `None` where no query is ever
+    /// delivered (History).
+    wake: Option<ui_core::WakeHandle>,
+}
+
+impl SearchQueries {
+    pub(crate) fn waking(wake: Option<ui_core::WakeHandle>) -> Self {
+        Self(Rc::new(RefCell::new(QueryDelivery {
+            wake,
+            ..QueryDelivery::default()
+        })))
+    }
+
+    /// Whether the view has yet to answer the latest query: it has not
+    /// been given it, or said its results are still coming.
+    pub(crate) fn answering(&self) -> bool {
+        let delivery = self.0.borrow();
+        delivery.wake.is_some() && (delivery.pending.is_some() || delivery.awaiting)
+    }
+
+    /// The latest query asked.
+    pub(crate) fn last(&self) -> Option<SearchQuery> {
+        self.0.borrow().last.clone()
+    }
+
+    /// What the view says of its results for the latest query.
+    pub(crate) fn settle(&self, awaiting: bool) {
+        self.0.borrow_mut().awaiting = awaiting;
+    }
+
+    pub(crate) fn submit(&self, query: &SearchQuery) {
+        if query
+            .text()
+            .chars()
+            .nth(ui_core::search::MAX_SEARCH_QUERY_SCALARS)
+            .is_some()
+        {
+            return;
+        }
+        let wake = {
+            let mut delivery = self.0.borrow_mut();
+            if delivery.last.as_ref() == Some(query) {
+                return;
+            }
+            delivery.last = Some(query.clone());
+            delivery.pending = Some(query.clone());
+            delivery.awaiting = false;
+            delivery.wake.clone()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+    }
+
+    pub(crate) fn take(&self) -> Option<SearchQuery> {
+        self.0.borrow_mut().pending.take()
     }
 }

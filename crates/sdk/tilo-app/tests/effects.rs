@@ -1662,47 +1662,6 @@ fn erase_risk(effect: &DiskEffect) -> tilo_app::tilo_actions::RiskLevel {
     }
 }
 
-/// A surface recording right now, so sending is not available.
-#[derive(Default)]
-struct Recorder {
-    tally: Tally,
-}
-
-impl Widget for Recorder {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.tally.build_layout(taffy, theme, nodes)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.tally.apply_layout(taffy, node, origin);
-    }
-
-    fn name(&self) -> &'static str {
-        "Recorder"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.tally.get_rect()
-    }
-}
-
-impl ResourceSurface<Mailbox> for Recorder {
-    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
-
-    fn availability(&self) -> Vec<EffectStatus> {
-        vec![EffectStatus::unavailable(
-            Mailbox::SEND,
-            "recording",
-            "Nothing is sent while recording",
-        )]
-    }
-}
-
 struct DiskApp;
 
 impl ResourceApp for DiskApp {
@@ -1716,12 +1675,22 @@ impl ResourceApp for DiskApp {
             cx.submit(Mailbox::FETCHED.with(format!("erased {disk}")));
             Ok(Effected::done())
         });
-        cx.surface(Recorder::default())
+        // Recording right now, so sending is not available.
+        cx.publishing(
+            tilo_app::framework::Publishes::new().availability(|| {
+                vec![EffectStatus::unavailable(
+                    Mailbox::SEND,
+                    "recording",
+                    "Nothing is sent while recording",
+                )]
+            }),
+            Box::new(Tally::default()),
+        )
     }
 }
 
 #[test]
-fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
+fn confirmation_follows_the_arguments_and_a_view_withholds_an_action() {
     let mut app = TestApp::<DiskApp>::new().unwrap();
     app.effect(&DiskEffect::Erase { disk: "usb".into() })
         .expect("erasing a stick needs no confirmation");

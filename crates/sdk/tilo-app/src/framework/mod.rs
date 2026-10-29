@@ -221,9 +221,9 @@
 //!   included.
 //!   An effect whose harm depends on its arguments (formatting the system
 //!   disk) classifies each invocation (`#[effect(risk = "…")]`), and asks
-//!   for confirmation only when it is destructive. A surface withholds one
+//!   for confirmation only when it is destructive. A view withholds one
 //!   of the resource's own actions while its live state forbids it
-//!   ([`ResourceSurface::availability`]). Effects never run in History mode. A variant
+//!   ([`Publishes::availability`]). Effects never run in History mode. A variant
 //!   that only changes what its caller sees (open, reveal, show) is
 //!   `#[effect(view)]`, published as a View operation and answered by the
 //!   same handler.
@@ -270,7 +270,7 @@
 //!   (an effect bound to the row with `LiveRow::effect`) and may say how
 //!   its entity stands right now (`LiveRow::presentation`). An edit of the
 //!   resource bound to a row (rename *this* file) is one of
-//!   [`ResourceSurface::row_declarations`], published on the row.
+//!   [`Publishes::row_edits`], published on the row.
 //!   Neither rows nor children need to be published whole: a bounded page is
 //!   published and the rest resolve by id (`ResourceSurface::live_row`,
 //!   `Resource::child`).

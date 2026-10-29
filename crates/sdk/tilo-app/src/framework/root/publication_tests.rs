@@ -4,8 +4,8 @@
 //! `publication.golden.json` was recorded from the build that walked the
 //! whole view once per row. The app below exercises everything that build
 //! decorated: document children, live rows (one joining a child, one of its
-//! own), edits two surfaces bind to rows (one offered by both, where the
-//! first surface's stays), edits bound to the view and to the viewer, and
+//! own), edits two views bind to rows (one offered by both, where the
+//! first view's stays), edits bound to the view and to the viewer, and
 //! the framework's own operations. The fixture also records the subsequently
 //! added reviewed-restore operations and their exact public contracts.
 #![cfg(all(test, not(target_arch = "wasm32")))]
@@ -113,21 +113,19 @@ impl Resource for Shelf {
     }
 }
 
-/// Which side of the shelf a surface stands on.
+/// Which side of the shelf a view stands on.
 #[derive(Clone, Copy, PartialEq)]
 enum Side {
     Left,
     Right,
 }
 
-/// A surface offering edits on rows. The left one also binds an edit to
-/// the viewer and shows live rows.
-struct Rows {
-    side: Side,
+/// A surface binding an edit to the viewer.
+struct Wave {
     rect: Rect,
 }
 
-impl Widget for Rows {
+impl Widget for Wave {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -144,7 +142,7 @@ impl Widget for Rows {
     }
 
     fn name(&self) -> &'static str {
-        "Rows"
+        "Wave"
     }
 
     fn get_rect(&self) -> Rect {
@@ -159,55 +157,49 @@ fn even(row: &str) -> bool {
         .is_some_and(|item| item % 2 == 0)
 }
 
-impl ResourceSurface<Shelf> for Rows {
+impl ResourceSurface<Shelf> for Wave {
     fn present(&mut self, _: &Rc<i64>) {}
 
     fn bound_declarations(&self) -> Vec<ActionDecl<Shelf>> {
-        if self.side == Side::Right {
-            return Vec::new();
-        }
         let viewer = ui_core::invocation_scope::current_viewer();
         let viewer = viewer
             .as_ref()
             .map_or("nobody", tilo_actions::ParticipantId::as_str);
         vec![add("wave", &format!("Wave at {viewer}"), 1)]
     }
+}
 
-    fn live_rows(&self) -> Vec<LiveRow> {
-        if self.side == Side::Right {
-            return Vec::new();
-        }
-        vec![
-            LiveRow::new("shelf/item:1", "test.shelf.live", "Live item").presentation(
-                tilo_actions::ResourcePresentation {
-                    detail: Some("being looked at".into()),
-                    badge: None,
-                    preview: None,
-                },
-            ),
-            // A row nesting one of its own: the nested row is bound too.
-            LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor").row(LiveRow::new(
-                "shelf/visitor/guest",
-                "test.shelf.guest",
-                "Guest",
-            )),
-        ]
-    }
+/// The live rows the left side shows.
+fn live_rows() -> Vec<LiveRow> {
+    vec![
+        LiveRow::new("shelf/item:1", "test.shelf.live", "Live item").presentation(
+            tilo_actions::ResourcePresentation {
+                detail: Some("being looked at".into()),
+                badge: None,
+                preview: None,
+            },
+        ),
+        // A row nesting one of its own: the nested row is bound too.
+        LiveRow::new("shelf/visitor", "test.shelf.visitor", "Visitor").row(LiveRow::new(
+            "shelf/visitor/guest",
+            "test.shelf.guest",
+            "Guest",
+        )),
+    ]
+}
 
-    const ROW_DECLARATIONS: bool = true;
-
-    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<Shelf>> {
-        match self.side {
-            Side::Left if even(row) => vec![
-                add("label", "Label from the left", 2),
-                add("mark-left", "Mark left", 3),
-            ],
-            Side::Left => vec![add("mark-left", "Mark left", 3)],
-            Side::Right => vec![
-                add("mark-right", "Mark right", 4),
-                add("label", "Label from the right", 5),
-            ],
-        }
+/// The edits `side` binds on `row`.
+fn row_edits(side: Side, row: &str) -> Vec<ActionDecl<Shelf>> {
+    match side {
+        Side::Left if even(row) => vec![
+            add("label", "Label from the left", 2),
+            add("mark-left", "Mark left", 3),
+        ],
+        Side::Left => vec![add("mark-left", "Mark left", 3)],
+        Side::Right => vec![
+            add("mark-right", "Mark right", 4),
+            add("label", "Label from the right", 5),
+        ],
     }
 }
 
@@ -244,15 +236,20 @@ impl ResourceApp for ShelfApp {
         cx.bind_declarations(|count| vec![add("step", "Step", count.saturating_add(1))]);
         Box::new(
             Column::new()
-                .push(cx.surface(Rows {
-                    side: Side::Left,
-                    rect: Rect::ZERO,
-                }))
+                .push(
+                    cx.publishing(
+                        crate::framework::Publishes::new()
+                            .live_rows(live_rows)
+                            .row_edits(|row| row_edits(Side::Left, row)),
+                        Box::new(ui_core::widget::Text::new("left")),
+                    ),
+                )
+                .push(cx.surface(Wave { rect: Rect::ZERO }))
                 .push(Box::new(Probe(ui_core::widget::Text::new("probe"))))
-                .push(cx.surface(Rows {
-                    side: Side::Right,
-                    rect: Rect::ZERO,
-                })),
+                .push(cx.publishing(
+                    crate::framework::Publishes::new().row_edits(|row| row_edits(Side::Right, row)),
+                    Box::new(ui_core::widget::Text::new("right")),
+                )),
         )
     }
 }
@@ -317,7 +314,7 @@ fn the_published_tree_is_the_one_recorded_before_rows_were_indexed() {
 }
 
 #[test]
-fn rows_bind_the_edits_surfaces_offer_in_surface_order() {
+fn rows_bind_the_edits_views_offer_in_view_order() {
     let mut app = shelf(3).expect("the shelf opens");
     let resources = app.harness().resources();
     let root = resources
@@ -398,7 +395,7 @@ fn one_publication_walks_the_view_twice_whatever_the_rows() {
             .expect("the root is the shelf's");
         assert_eq!(
             walks, 2,
-            "{items} rows: one walk for what surfaces add, one for the edits they bind to rows"
+            "{items} rows: one walk for what views add, one for the edits they bind to rows"
         );
     }
 }
@@ -448,7 +445,7 @@ fn the_shared_publication_with_live_rows_is_the_whole_one() {
     let whole = outline(&root.publication());
     let shared = root
         .shared_resources(None, &doc)
-        .expect("surfaces with live rows and row edits publish a shared forest");
+        .expect("views with live rows and row edits publish a shared forest");
     let published = shared.first().expect("the shelf").to_resource();
     assert_eq!(
         outline(&published),

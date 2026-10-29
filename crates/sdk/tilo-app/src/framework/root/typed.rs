@@ -156,7 +156,7 @@ pub(crate) trait TypedRoot {
     /// The ids of `declarations` (from [`Self::declarations`]).
     fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str>;
 
-    /// No edits yet, which surfaces add theirs to
+    /// No edits yet, which views add theirs to
     /// ([`SurfacePublication::row_declarations`](super::super::surface::SurfacePublication::row_declarations)).
     fn no_declarations(&self) -> Box<dyn Any>;
 

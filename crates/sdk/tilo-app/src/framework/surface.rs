@@ -10,12 +10,12 @@ use std::sync::{
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{ActionDecl, Effect, NoEffect, Resource, SearchEntry};
+use ui_core::PresencePayload;
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, Widget};
-use ui_core::{PresencePayload, WakeHandle};
 
 use super::controls::Actions;
 use super::dispatch::Dispatcher;
@@ -213,32 +213,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         false
     }
 
-    /// The latest bounded query from the platform's canonical search source.
-    /// Runs on the UI thread before sync, coalescing queries between frames.
-    /// A surface may refresh remote results through its attached jobs; expose
-    /// their entries through `search_entries`, rather than another provider.
-    /// Never called for a History view and lends no document.
-    fn search_query(&mut self, query: &ui_core::search::SearchQuery) {
-        let _ = query;
-    }
-
-    /// Whether results for the latest [`search_query`](Self::search_query)
-    /// are still coming (a server is still looking). A search already
-    /// showing waits for them and shows them, with what `search_entries`
-    /// gives once this turns false, without anyone typing again. Read after
-    /// every sync.
-    fn search_pending(&self) -> bool {
-        false
-    }
-
-    /// Consume a request to retry this window's failed record save, once.
-    /// The framework's record owner performs the retry after releasing its
-    /// document loan; the surface never writes or flushes storage itself.
-    /// History surfaces cannot request a retry.
-    fn take_save_retry(&mut self) -> bool {
-        false
-    }
-
     /// A pending device-local request for the hosting shell, consumed once.
     /// The host answers it through its permission flow; this callback lends no document.
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
@@ -328,15 +302,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         Vec::new()
     }
 
-    /// The resource's own actions that differ from their declaration right
-    /// now, as the surface's live state says (`Camera::SET_MODE` unavailable
-    /// while recording, with why). Read whenever the resource is published,
-    /// so the palette, agents and the door follow the surface: an action
-    /// unavailable here is refused with its reason.
-    fn availability(&self) -> Vec<EffectStatus> {
-        Vec::new()
-    }
-
     /// Edits bound to the surface's view state — the selection, the caret,
     /// the playhead, the folder or page shown — as typed builders of the
     /// resource's action, published on the resource beside its declared
@@ -360,38 +325,10 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 
     /// The live row `id`, when [`live_rows`](Self::live_rows) leaves it out,
     /// so an action addressed to any entity the surface knows still reaches
-    /// it. Never reads what the surface reads off the UI thread: a row it
-    /// has not read yet is [`live_row_pending`](Self::live_row_pending).
+    /// it.
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let _ = id;
         None
-    }
-
-    /// Whether the live row `id`, which [`live_row`](Self::live_row) does
-    /// not know now, may be known once what the surface is reading lands:
-    /// an agent addressing it is answered then. Start that read here if it
-    /// has not started; the window must be woken when it lands.
-    fn live_row_pending(&self, id: &str) -> bool {
-        let _ = id;
-        false
-    }
-
-    /// Whether [`row_declarations`](Self::row_declarations) binds edits on
-    /// any row. A surface that implements it says so here; every other
-    /// surface's rows are published without asking it about each one, and
-    /// a row it hands out again is published as it was.
-    const ROW_DECLARATIONS: bool = false;
-
-    /// Edits of the resource bound to the live row `row` (rename *this*
-    /// file): typed builders of the resource's action, published on that row
-    /// and applied through the same permission check, confirmation and undo
-    /// as the resource's own declarations. A row itself carries only view
-    /// and effect operations; this is how it offers a document change.
-    /// Asked only of a surface that sets
-    /// [`ROW_DECLARATIONS`](Self::ROW_DECLARATIONS).
-    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>> {
-        let _ = row;
-        Vec::new()
     }
 
     /// Search entries for what the surface shows that the resource does not
@@ -401,28 +338,6 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// the surface already has at hand.
     fn search_entries(&self) -> Vec<SearchEntry> {
         Vec::new()
-    }
-
-    /// Whether the secrets behind this surface's secret-bearing search
-    /// entries ([`SearchEntry::secret_bearing`]) are unlocked now: a vault
-    /// that opened and found its key. The system's search index finds those
-    /// entries only while the app last said `Some(true)`, and keeps them
-    /// after the app closes. `None` says nothing: a surface without secrets,
-    /// or one that opens none (a past version).
-    fn secrets_unlocked(&self) -> Option<bool> {
-        None
-    }
-
-    /// Whether the system's search index keeps this surface's
-    /// [`search_entries`](Self::search_entries) after the app closes, so
-    /// they are found whether or not it runs. A surface whose entries are
-    /// the machine's state of the moment (the processes running) or a
-    /// catalogue the system searches by itself (the Store's apps, which
-    /// desktop search reads from the shared catalogue) says `false`: its
-    /// entries are found only while the app runs, and a closed app leaves
-    /// none behind to open into something that is gone.
-    fn kept_in_search_index(&self) -> bool {
-        true
     }
 }
 
@@ -460,114 +375,61 @@ fn refuse_raw_writes(doc: &AutoCommit, before: usize, pass: &str) {
     );
 }
 
-/// What a hosted surface adds to its resource's publication, as the root
-/// collects it.
+/// What a hosted surface or a view's [`Publishes`](super::Publishes) adds
+/// to its resource's publication, as the root collects it. What only one of
+/// them says has a default saying nothing.
 pub(crate) trait SurfacePublication {
     /// The resource type the surface is hosted on; a root collects only its
     /// own type's surfaces.
     fn resource(&self) -> std::any::TypeId;
     /// Add the edits the surface binds to where the user is to `into`, a
     /// `Vec<ActionDecl<R>>` of its resource type `R`.
-    fn bound_declarations(&self, into: &mut dyn std::any::Any);
-    fn availability(&self) -> Vec<EffectStatus>;
+    fn bound_declarations(&self, _into: &mut dyn std::any::Any) {}
+    fn availability(&self) -> Vec<EffectStatus> {
+        Vec::new()
+    }
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
-    fn live_row_pending(&self, id: &str) -> bool;
-    /// Whether the surface binds edits on rows at all
-    /// ([`ResourceSurface::ROW_DECLARATIONS`]).
-    fn binds_rows(&self) -> bool;
-    /// Whether the surface binds any edit on the row `row`.
-    fn offers_on_row(&self, row: &str) -> bool;
-    /// Add the edits the surface binds on the row `row` to `into`, a
+    fn live_row_pending(&self, _id: &str) -> bool {
+        false
+    }
+    /// Whether it binds edits on rows at all.
+    fn binds_rows(&self) -> bool {
+        false
+    }
+    /// Whether it binds any edit on the row `row`.
+    fn offers_on_row(&self, _row: &str) -> bool {
+        false
+    }
+    /// Add the edits it binds on the row `row` to `into`, a
     /// `Vec<ActionDecl<R>>` of its resource type `R`; whether it bound any.
-    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool;
+    fn row_declarations(&self, _row: &str, _into: &mut dyn std::any::Any) -> bool {
+        false
+    }
     fn search_entries(&self) -> Vec<SearchEntry>;
-    fn secrets_unlocked(&self) -> Option<bool>;
-    fn kept_in_search_index(&self) -> bool;
-    fn supports_device_shell(&self) -> bool;
+    fn secrets_unlocked(&self) -> Option<bool> {
+        None
+    }
+    fn kept_in_search_index(&self) -> bool {
+        true
+    }
+    fn supports_device_shell(&self) -> bool {
+        false
+    }
     fn device_shell_operation(
         &mut self,
-        operation: &ui_core::floating_surface::DeviceShellOperation,
-    ) -> Result<serde_json::Value, String>;
-    fn request_device_shell(&mut self) -> bool;
-    fn search_queries(&self) -> SearchQueries;
+        _operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        Err("this view has no device shell".into())
+    }
+    fn request_device_shell(&mut self) -> bool {
+        false
+    }
+    /// Where the platform search's queries reach it, if it looks them up.
+    fn search_queries(&self) -> Option<super::publishing::SearchQueries> {
+        None
+    }
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
-    fn take_save_retry(&mut self) -> bool;
-}
-
-/// Coalesced query delivery owned by the canonical provider and surface host.
-#[derive(Clone, Default)]
-pub(crate) struct SearchQueries(Rc<RefCell<QueryDelivery>>);
-
-#[derive(Default)]
-struct QueryDelivery {
-    last: Option<ui_core::search::SearchQuery>,
-    pending: Option<ui_core::search::SearchQuery>,
-    /// The surface said its results for `last` are still coming.
-    awaiting: bool,
-    /// Wakes the window, so a query asked between frames reaches the
-    /// surface without waiting for input. `None` where no query is ever
-    /// delivered (History).
-    wake: Option<WakeHandle>,
-}
-
-impl SearchQueries {
-    pub(crate) fn waking(wake: Option<WakeHandle>) -> Self {
-        Self(Rc::new(RefCell::new(QueryDelivery {
-            wake,
-            ..QueryDelivery::default()
-        })))
-    }
-
-    /// Whether the surface has yet to answer the latest query: it has not
-    /// been given it, or said its results are still coming.
-    pub(crate) fn answering(&self) -> bool {
-        let delivery = self.0.borrow();
-        delivery.wake.is_some() && (delivery.pending.is_some() || delivery.awaiting)
-    }
-
-    /// The latest query asked.
-    pub(crate) fn last(&self) -> Option<ui_core::search::SearchQuery> {
-        self.0.borrow().last.clone()
-    }
-
-    /// What the surface says of its results for the latest query.
-    pub(crate) fn settle(&self, awaiting: bool) {
-        self.0.borrow_mut().awaiting = awaiting;
-    }
-
-    /// Whether a query waits to be delivered.
-    pub(crate) fn has_pending(&self) -> bool {
-        self.0.borrow().pending.is_some()
-    }
-
-    pub(crate) fn submit(&self, query: &ui_core::search::SearchQuery) {
-        if query
-            .text()
-            .chars()
-            .nth(ui_core::search::MAX_SEARCH_QUERY_SCALARS)
-            .is_some()
-        {
-            return;
-        }
-        let wake = {
-            let mut delivery = self.0.borrow_mut();
-            if delivery.last.as_ref() == Some(query) {
-                return;
-            }
-            delivery.last = Some(query.clone());
-            delivery.pending = Some(query.clone());
-            delivery.awaiting = false;
-            delivery.wake.clone()
-        };
-        if let Some(wake) = wake {
-            wake.wake();
-        }
-    }
-
-    pub(crate) fn take(&self) -> Option<ui_core::search::SearchQuery> {
-        self.0.borrow_mut().pending.take()
-    }
 }
 
 /// What a surface receives when attached.
@@ -753,7 +615,6 @@ impl From<tilo_resource::Place> for ResourceSelection {
 #[repr(C)]
 pub(crate) struct SurfaceHost<R: Resource, S, E> {
     surface: S,
-    search_queries: SearchQueries,
     live: Live<R>,
     /// The live revision and loads ([`Live::loads`]) of the state last
     /// presented.
@@ -803,7 +664,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         let runner = effects
             .env()
             .map(|env| EffectRunner::new(env.scoped(&scope)));
-        let search_queries = SearchQueries::waking(effects.env().map(|env| env.wake.clone()));
         // Captures and History describe their controls too. Publication is
         // inert metadata; only the runner below can execute an effect.
         if !E::declarations().is_empty() {
@@ -830,7 +690,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
             statuses,
             jobs: OwnedJobs::new(jobs),
             surface,
-            search_queries,
             scope,
         }
     }
@@ -894,7 +753,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         (self.live.revision(), self.live.loads()) == self.presented
             && self.staging.borrow().is_none()
-            && !self.search_queries.has_pending()
             && self.dispatch.read_only() == self.read_only
             && self.surface.view_only_scroll(event)
     }
@@ -930,15 +788,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         if let Some(scenario) = staged {
             self.surface.stage(scenario.as_deref());
         }
-        if let Some(query) = self.search_queries.take()
-            && self.effects.is_some()
-        {
-            self.surface.search_query(&query);
-        }
         self.jobs.poll(&mut self.surface);
         self.surface.sync(state, path);
-        self.search_queries
-            .settle(self.effects.is_some() && self.surface.search_pending());
         if self.effects.is_some() {
             note_statuses(&self.statuses, self.surface.effects());
         }
@@ -1189,35 +1040,14 @@ impl SurfacePublication for HostedSurface {
     fn bound_declarations(&self, into: &mut dyn std::any::Any) {
         self.host.bound_declarations(into);
     }
-    fn availability(&self) -> Vec<EffectStatus> {
-        self.host.availability()
-    }
     fn live_rows(&self) -> Vec<LiveRow> {
         self.host.live_rows()
     }
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.host.live_row(id)
     }
-    fn live_row_pending(&self, id: &str) -> bool {
-        self.host.live_row_pending(id)
-    }
-    fn binds_rows(&self) -> bool {
-        self.host.binds_rows()
-    }
-    fn offers_on_row(&self, row: &str) -> bool {
-        self.host.offers_on_row(row)
-    }
-    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool {
-        self.host.row_declarations(row, into)
-    }
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.host.search_entries()
-    }
-    fn secrets_unlocked(&self) -> Option<bool> {
-        self.host.secrets_unlocked()
-    }
-    fn kept_in_search_index(&self) -> bool {
-        self.host.kept_in_search_index()
     }
     fn supports_device_shell(&self) -> bool {
         self.host.supports_device_shell()
@@ -1231,14 +1061,8 @@ impl SurfacePublication for HostedSurface {
     fn request_device_shell(&mut self) -> bool {
         self.host.request_device_shell()
     }
-    fn search_queries(&self) -> SearchQueries {
-        self.host.search_queries()
-    }
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
         self.host.take_host_intent()
-    }
-    fn take_save_retry(&mut self) -> bool {
-        self.host.take_save_retry()
     }
 }
 
@@ -1262,10 +1086,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
         self.surface.request_device_shell()
     }
 
-    fn take_save_retry(&mut self) -> bool {
-        self.effects.is_some() && self.surface.take_save_retry()
-    }
-
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
         self.surface.take_host_intent()
     }
@@ -1276,10 +1096,6 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
         }
     }
 
-    fn availability(&self) -> Vec<EffectStatus> {
-        self.surface.availability()
-    }
-
     fn live_rows(&self) -> Vec<LiveRow> {
         self.surface.live_rows()
     }
@@ -1288,50 +1104,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
         self.surface.live_row(id)
     }
 
-    fn live_row_pending(&self, id: &str) -> bool {
-        self.surface.live_row_pending(id)
-    }
-
-    fn binds_rows(&self) -> bool {
-        S::ROW_DECLARATIONS
-    }
-
-    fn offers_on_row(&self, row: &str) -> bool {
-        self.binds_rows() && !self.surface.row_declarations(row).is_empty()
-    }
-
-    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool {
-        if !self.binds_rows() {
-            debug_assert!(
-                self.surface.row_declarations(row).is_empty(),
-                "a surface binding edits on rows sets `ResourceSurface::ROW_DECLARATIONS`"
-            );
-            return false;
-        }
-        let offered = self.surface.row_declarations(row);
-        match into.downcast_mut::<Vec<ActionDecl<R>>>() {
-            Some(into) if !offered.is_empty() => {
-                into.extend(offered);
-                true
-            }
-            _ => false,
-        }
-    }
-
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.surface.search_entries()
-    }
-
-    fn secrets_unlocked(&self) -> Option<bool> {
-        self.surface.secrets_unlocked()
-    }
-
-    fn kept_in_search_index(&self) -> bool {
-        self.surface.kept_in_search_index()
-    }
-
-    fn search_queries(&self) -> SearchQueries {
-        self.search_queries.clone()
     }
 }
 

@@ -705,8 +705,8 @@ impl ResourceRoot {
         walk(self.content.as_ref(), self.resource.id, visit);
     }
 
-    /// Bind the edits surfaces offer on the rows `rows` name
-    /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
+    /// Bind the edits views offer on the rows `rows` name
+    /// ([`Publishes::row_edits`](super::Publishes::row_edits)).
     ///
     /// One walk of the view asks every surface about every row, so binding
     /// costs the view plus surfaces × rows, never the view once per row. Each
@@ -1849,12 +1849,12 @@ impl ResourceRoot {
     /// What the resource's search entries are of now, and the surfaces'
     /// query sinks. What the surfaces show (a page's text, live rows)
     /// changes on its own, beside the resource's revision.
-    fn search_state(&self) -> (SearchState, Vec<super::surface::SearchQueries>) {
+    fn search_state(&self) -> (SearchState, Vec<super::publishing::SearchQueries>) {
         let mut shown = Vec::new();
         let mut queries = Vec::new();
         self.surfaces(&mut |surface| {
             shown.extend(surface.search_entries());
-            queries.push(surface.search_queries());
+            queries.extend(surface.search_queries());
         });
         let state = SearchState {
             revision: self.version(),
@@ -1916,7 +1916,11 @@ impl ResourceRoot {
             return;
         }
         let mut answering = false;
-        self.surfaces(&mut |surface| answering |= surface.search_queries().answering());
+        self.surfaces(&mut |surface| {
+            answering |= surface
+                .search_queries()
+                .is_some_and(|queries| queries.answering());
+        });
         if answering {
             return;
         }
@@ -2085,11 +2089,10 @@ impl RootSearch for ResourceRoot {
     }
 
     /// Every entry a hit can open, as the session's persistent index keeps
-    /// it: short metadata only, never a prose body. A surface that keeps its
-    /// entries out of the index ([`ResourceSurface::kept_in_search_index`])
+    /// it: short metadata only, never a prose body. A view that keeps its
+    /// entries out of the index
+    /// ([`Publishes::search_entries_while_running`](super::Publishes::search_entries_while_running))
     /// contributes none.
-    ///
-    /// [`ResourceSurface::kept_in_search_index`]: super::surface::ResourceSurface::kept_in_search_index
     fn search_index_entries(&self) -> Vec<ui_core::search::index_publication::IndexEntry> {
         let mut entries = self.typed.search(&*self.typed.state());
         self.surfaces(&mut |surface| {
@@ -2482,17 +2485,7 @@ impl RootApp for ResourceRoot {
     }
 
     fn take_save_retry(&mut self) -> bool {
-        fn take(widget: &mut dyn Widget, resource: std::any::TypeId) -> bool {
-            let own =
-                surface_mut(widget, resource).is_some_and(SurfacePublication::take_save_retry);
-            // Consume every surface's one-shot even when another requested it.
-            widget
-                .children_mut()
-                .into_iter()
-                .fold(own, |retry, child| take(child, resource) || retry)
-        }
-        let asked = self.save.take_record_retry();
-        take(self.content.as_mut(), self.resource.id) || asked
+        self.save.take_record_retry()
     }
 
     fn record_save_status(&mut self, status: RecordSaveStatus) {
