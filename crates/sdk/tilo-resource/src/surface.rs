@@ -13,7 +13,7 @@ use crate::resource::Resource;
 use crate::shape::Shape;
 use crate::vocabulary::{Declaration, vocabulary};
 
-fn verb_of(decl: &Declaration) -> VerbSurface {
+fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: decl.id.to_owned(),
         label: decl.label.clone(),
@@ -27,14 +27,26 @@ fn verb_of(decl: &Declaration) -> VerbSurface {
         params: decl
             .params
             .iter()
-            .map(|param| ParamSurface {
-                name: param.name.to_string(),
-                required: param.required,
-                schema: param
+            .map(|param| {
+                let schema = param
                     .schema
                     .as_deref()
                     .cloned()
-                    .unwrap_or(serde_json::Value::Null),
+                    .unwrap_or(serde_json::Value::Null);
+                let declared = decl
+                    .param_types
+                    .iter()
+                    .find(|(name, _)| *name == param.name.as_ref());
+                let ty = match declared {
+                    Some((_, ty)) => ty(types),
+                    None => FieldType::from_schema(&schema),
+                };
+                ParamSurface {
+                    name: param.name.to_string(),
+                    required: param.required,
+                    schema,
+                    ty,
+                }
             })
             .collect(),
         writes: decl.writes.clone(),
@@ -99,7 +111,7 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
     }
     let mut verbs = Vec::new();
     for decl in vocabulary.declarations().iter() {
-        verbs.push(verb_of(decl));
+        verbs.push(verb_of(decl, &mut types));
     }
     Surface {
         kind: vocabulary.kind.to_owned(),
@@ -139,14 +151,40 @@ pub fn record_type(
     })
 }
 
+/// How a value's [`FieldType`] is worked out, declaring the records and
+/// enums it names: a type's `field_type`.
+pub type FieldTypeOf = fn(&mut TypeSet) -> FieldType;
+
+/// The type of a record named `name` (the Rust type `identity`) with the
+/// fields `fields`, their names and types: what `#[derive(JsonSchema)]`
+/// publishes for a struct.
+#[doc(hidden)]
+pub fn record_of(
+    types: &mut TypeSet,
+    identity: &str,
+    name: &str,
+    doc: &str,
+    fields: &[(&str, FieldTypeOf)],
+) -> FieldType {
+    types.named(identity, name, |types| NamedType {
+        name: name.to_owned(),
+        doc: doc.to_owned(),
+        fields: fields
+            .iter()
+            .map(|(field, ty)| TypeField {
+                name: (*field).to_owned(),
+                ty: ty(types),
+                title: String::new(),
+            })
+            .collect(),
+        cases: Vec::new(),
+    })
+}
+
 /// One case of an enum as a derive lists it: its stored name, how it reads
 /// (empty: its name in words), and its fields' keys with their types.
 #[doc(hidden)]
-pub type CaseOf<'a> = (
-    &'a str,
-    &'a str,
-    &'a [(&'a str, fn(&mut TypeSet) -> FieldType)],
-);
+pub type CaseOf<'a> = (&'a str, &'a str, &'a [(&'a str, FieldTypeOf)]);
 
 /// The type of an enum named `name` (the Rust type `identity`) with the
 /// cases `cases`: what `#[derive(Model)]` and `#[derive(JsonSchema)]`

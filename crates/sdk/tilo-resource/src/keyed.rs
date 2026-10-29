@@ -597,6 +597,9 @@ impl<T: crate::JsonSchema, S> crate::JsonSchema for Items<T, S> {
     fn json_schema() -> serde_json::Value {
         crate::schema::array(T::json_schema())
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Collection(Box::new(T::field_type(types)))
+    }
 }
 
 impl<T: Identified, S> Items<T, S> {
