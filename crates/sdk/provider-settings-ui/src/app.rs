@@ -113,6 +113,10 @@ impl ProviderSurface {
         *self.rows.borrow_mut() = self.panel.rows();
     }
     fn effect(&mut self, effect: ProviderEffect, cx: &mut EffectCx<Providers>) -> EffectAnswer {
+        if matches!(effect, ProviderEffect::ListPresets) {
+            // Sign-ins run where a host offers them; this window offers keys.
+            return Ok(Effected::value(crate::presets_listing(false)));
+        }
         if let ProviderEffect::InspectModelRequestLimits { provider, model } = effect {
             return self
                 .panel

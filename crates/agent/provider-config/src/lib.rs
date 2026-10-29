@@ -13,6 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// What a model can do: read from a provider's list, or known by family.
+pub mod capabilities;
 /// Whole model turns in either provider dialect, for clients without the gateway.
 pub mod local;
 pub mod management;
@@ -324,10 +326,47 @@ pub struct ModelDescriptor {
     /// from generic vision: image descriptions must never enable biometrics.
     #[serde(default)]
     pub face_recognition: bool,
+    /// Whether the model calls tools. An agent plans by calling actions, so
+    /// a model without it cannot be chosen for one
+    /// ([`ProviderConfig::set_agent_model`]). Unknown reads as `true`: a
+    /// model nothing says anything about is offered, and the provider's
+    /// own refusal names it.
     pub tool_calling: bool,
+    /// Who said what `vision` and `tool_calling` hold: the provider's model
+    /// list, Tilo's table of model families, or the person. A person's
+    /// answer is never replaced by a later list.
+    #[serde(skip_serializing_if = "CapabilitySource::is_unknown")]
+    pub capabilities_from: CapabilitySource,
 }
 
 settings_store::read_through_json_value!(ModelDescriptor);
+
+/// Where a model's `vision` and `tool_calling` came from
+/// ([`ModelDescriptor::capabilities_from`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", rename_all = "snake_case")]
+pub enum CapabilitySource {
+    /// The provider's model list said so.
+    Provider,
+    /// Tilo's table of known model families ([`capabilities::family`]).
+    Family,
+    /// The person set them.
+    Person,
+    /// Nothing said: `vision` off, `tool_calling` on. Also what a source
+    /// this build does not know reads as, so a newer writer's settings
+    /// still read.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+settings_store::read_through_json_value!(CapabilitySource);
+
+impl CapabilitySource {
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+}
 
 impl Default for ModelDescriptor {
     fn default() -> Self {
@@ -340,6 +379,7 @@ impl Default for ModelDescriptor {
             vision: false,
             face_recognition: false,
             tool_calling: true,
+            capabilities_from: CapabilitySource::Unknown,
         }
     }
 }
@@ -394,6 +434,19 @@ impl ModelDescriptor {
             id,
             ..Self::default()
         }
+    }
+
+    /// A hosted model named by hand: what its family is known to do
+    /// ([`capabilities::family`]), else nothing known.
+    pub fn named(id: impl Into<String>) -> Self {
+        let mut model = Self::new(id);
+        capabilities::apply_family(&mut model);
+        model
+    }
+
+    /// Whether the person set this model's capabilities.
+    pub const fn capabilities_set_by_person(&self) -> bool {
+        matches!(self.capabilities_from, CapabilitySource::Person)
     }
 
     pub fn display_label(&self) -> &str {
@@ -452,9 +505,57 @@ pub struct ProviderProfile {
     /// Responses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub openai_api: Option<OpenAiApi>,
+    /// The header carrying the API key, when it is not the protocol's own
+    /// (`Authorization: Bearer` for OpenAI-compatible, `x-api-key` for
+    /// Anthropic): Azure's `api-key`, or a bearer token at an
+    /// Anthropic-compatible endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_header: Option<KeyHeader>,
+    /// Where the provider lists its models, when it is not the protocol's
+    /// own ([`transform::models_url`]): relative to the endpoint, or from
+    /// its origin when it starts with `/`. An empty path says the provider
+    /// lists none: its models are typed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_path: Option<String>,
 }
 
 settings_store::read_through_json_value!(ProviderProfile);
+
+/// The request header an API key travels in ([`ProviderProfile::key_header`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(remote = "Self")]
+pub enum KeyHeader {
+    /// `Authorization: Bearer <key>`.
+    #[serde(rename = "authorization")]
+    Bearer,
+    /// `x-api-key: <key>`, Anthropic's.
+    #[serde(rename = "x-api-key")]
+    XApiKey,
+    /// `api-key: <key>`, Azure `OpenAI`'s.
+    #[serde(rename = "api-key")]
+    ApiKey,
+}
+
+settings_store::read_through_json_value!(KeyHeader);
+
+impl KeyHeader {
+    /// The header a `protocol` sends its key in unless told otherwise.
+    pub const fn of(protocol: ProviderProtocol) -> Self {
+        match protocol {
+            ProviderProtocol::OpenAiCompatible => Self::Bearer,
+            ProviderProtocol::Anthropic => Self::XApiKey,
+        }
+    }
+
+    /// The header's name, as sent.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bearer => "authorization",
+            Self::XApiKey => "x-api-key",
+            Self::ApiKey => "api-key",
+        }
+    }
+}
 
 /// Request fields a profile may not strip: without them there is no request.
 pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
@@ -546,6 +647,8 @@ impl Default for ProviderProfile {
             reasoning: None,
             omit_params: Vec::new(),
             openai_api: None,
+            key_header: None,
+            models_path: None,
         }
     }
 }
@@ -579,6 +682,8 @@ impl ProviderProfile {
             reasoning: None,
             omit_params: Vec::new(),
             openai_api: None,
+            key_header: None,
+            models_path: None,
         }
     }
 
@@ -603,6 +708,8 @@ impl ProviderProfile {
             reasoning: None,
             omit_params: Vec::new(),
             openai_api: None,
+            key_header: None,
+            models_path: None,
         }
     }
 
@@ -632,6 +739,8 @@ impl ProviderProfile {
             reasoning: None,
             omit_params: Vec::new(),
             openai_api: None,
+            key_header: None,
+            models_path: None,
         }
     }
 
@@ -640,7 +749,7 @@ impl ProviderProfile {
         Self {
             sign_in: Some(SignInCredential::google(project)),
             credential: None,
-            ..presets::Preset::Gemini.profile()
+            ..presets::Preset::GEMINI.profile()
         }
     }
 
@@ -1018,12 +1127,8 @@ impl ProviderConfig {
             }
             if profile.endpoint.trim().is_empty() {
                 issues.push(ProfileIssue::new(&profile.id, "Profile needs an endpoint."));
-            } else if !is_safe_endpoint(&profile.endpoint, profile.location) {
-                issues.push(ProfileIssue::new(
-                    &profile.id,
-                    "Endpoint must be HTTPS unless it is a local or private endpoint.",
-                ));
             }
+            endpoint_issues(profile, &mut issues);
             if profile
                 .credential
                 .as_ref()
@@ -1127,7 +1232,8 @@ impl ProviderConfig {
     /// the default again.
     ///
     /// # Errors
-    /// When `agent` is empty or `profile` does not offer `model`.
+    /// When `agent` is empty, `profile` does not offer `model`, or the model
+    /// does not call tools ([`NO_TOOL_CALLING`]).
     pub fn set_agent_model(
         &mut self,
         agent: &str,
@@ -1140,10 +1246,14 @@ impl ProviderConfig {
         if agent.trim().is_empty() {
             return Err("Name the agent.");
         }
-        if !self.profiles.iter().any(|profile| {
-            profile.id == chosen.profile && profile.models.iter().any(|m| m.id == chosen.model)
-        }) {
-            return Err("That provider does not offer this model.");
+        let model = self
+            .profiles
+            .iter()
+            .filter(|profile| profile.id == chosen.profile)
+            .find_map(|profile| profile.models.iter().find(|m| m.id == chosen.model))
+            .ok_or("That provider does not offer this model.")?;
+        if !model.tool_calling {
+            return Err(NO_TOOL_CALLING);
         }
         self.agent_models.insert(agent.to_owned(), chosen);
         Ok(())
@@ -1164,6 +1274,21 @@ impl ProviderConfig {
                 issues.push(ProfileIssue::new(
                     &chosen.profile,
                     "A default model for a kind of interaction is not offered here.",
+                ));
+            }
+        }
+        for (agent, chosen) in &self.agent_models {
+            let calls_tools = self
+                .profiles
+                .iter()
+                .filter(|profile| profile.id == chosen.profile)
+                .flat_map(|profile| &profile.models)
+                .find(|model| model.id == chosen.model)
+                .is_none_or(|model| model.tool_calling);
+            if !calls_tools {
+                issues.push(ProfileIssue::new(
+                    &chosen.profile,
+                    &format!("The model chosen for {agent} does not call tools."),
                 ));
             }
         }
@@ -1230,6 +1355,30 @@ impl ProviderConfig {
         self
     }
 }
+
+/// What is wrong with `profile`'s endpoint beyond its absence: no TLS to a
+/// hosted provider, or an account's part still to fill in.
+fn endpoint_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
+    if profile.endpoint.trim().is_empty() {
+        return;
+    }
+    if !is_safe_endpoint(&profile.endpoint, profile.location) {
+        issues.push(ProfileIssue::new(
+            &profile.id,
+            "Endpoint must be HTTPS unless it is a local or private endpoint.",
+        ));
+    }
+    if let Some(part) = presets::unfilled_part(&profile.endpoint) {
+        issues.push(ProfileIssue::new(
+            &profile.id,
+            &format!("Fill in {part} in the endpoint."),
+        ));
+    }
+}
+
+/// Why a model cannot plan for an agent: an agent acts by calling tools.
+pub const NO_TOOL_CALLING: &str =
+    "This model does not call tools, so an agent cannot plan with it.";
 
 /// A profile validation diagnosis fit for an inline Settings status line.
 #[derive(Clone, Debug, PartialEq, Eq)]
