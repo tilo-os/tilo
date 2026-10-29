@@ -101,11 +101,6 @@ const REPORT_PROBLEM: &str = "report-problem";
 /// Chat, which holds person-to-person conversations.
 const CHAT_APP: &str = "so.tilo.chat";
 
-/// Workspace menu keys: a workspace of this page's desktop, by id, and one
-/// of the person's others the page opens, by its host action.
-const WORKSPACE_KEY: &str = "workspace:";
-const HOST_KEY: &str = "host:";
-
 /// The popovers the bar opens, one at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarPopover {
@@ -1839,6 +1834,33 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
         && own_name.is_some_and(|name| !name.trim().is_empty())
 }
 
+/// The card of someone not here now, known by their root key `key` and the
+/// name they were shown by: no status or place, nothing to follow, and
+/// Message where Chat holds person-only conversations.
+fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
+    let key = key.to_ascii_lowercase();
+    if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let (r, g, b) = ui::presence::user_color(&key);
+    Some(ProfileModel {
+        name: name.to_owned(),
+        identity: key.clone(),
+        colour: Some(ui::vello::peniko::Color::from_rgb8(r, g, b)),
+        other: Some(tilo_desktop::profile_card::OtherPerson {
+            id: key.clone(),
+            status: None,
+            place: None,
+            following: false,
+            can_follow: false,
+            can_message: crate::desktop::known_application(CHAT_APP).is_some(),
+            linked: Vec::new(),
+        }),
+        key: Some(key),
+        ..ProfileModel::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2030,31 +2052,4 @@ mod tests {
             assert_eq!(edits, OfferedEdits::default(), "{role:?}");
         }
     }
-}
-
-/// The card of someone not here now, known by their root key `key` and the
-/// name they were shown by: no status or place, nothing to follow, and
-/// Message where Chat holds person-only conversations.
-fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
-    let key = key.to_ascii_lowercase();
-    if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let (r, g, b) = ui::presence::user_color(&key);
-    Some(ProfileModel {
-        name: name.to_owned(),
-        identity: key.clone(),
-        colour: Some(ui::vello::peniko::Color::from_rgb8(r, g, b)),
-        other: Some(tilo_desktop::profile_card::OtherPerson {
-            id: key.clone(),
-            status: None,
-            place: None,
-            following: false,
-            can_follow: false,
-            can_message: crate::desktop::known_application(CHAT_APP).is_some(),
-            linked: Vec::new(),
-        }),
-        key: Some(key),
-        ..ProfileModel::default()
-    })
 }
