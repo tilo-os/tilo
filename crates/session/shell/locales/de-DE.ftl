@@ -1248,6 +1248,7 @@ canvas-ask-nothing-typed = Tippe, was du fragen willst, und drücke Enter.
 canvas-ask-no-agent = In diesem Workspace arbeitet noch kein Agent. Füge einen hinzu, um hier zu fragen.
 canvas-ask-agent-unreachable = Der Agent des Workspace ist noch nicht erreichbar. Drücke Enter, um es noch einmal zu versuchen.
 canvas-ask-not-handed = Die Frage hat den Agenten nicht erreicht. Drücke Enter, um es noch einmal zu versuchen.
+canvas-ask-asking = Der Agent wird gefragt …
 search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
 search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
