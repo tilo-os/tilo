@@ -13,7 +13,7 @@ mod cases {
         AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
-    const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
+    const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 
     struct World {
@@ -35,7 +35,7 @@ mod cases {
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         todo.load(&rt);
         notes_app.load(&rt);
-        let list = rt.create("TodoList").unwrap();
+        let list = rt.create("Tasks").unwrap();
         let nb = rt.create("Notes").unwrap();
         let mut notes = Vec::new();
         let mut titled = Vec::new();
@@ -85,7 +85,7 @@ mod cases {
 
     impl World {
         fn list_literal(&self) -> String {
-            format!("@todo.TodoList:{}", self.list.id_string())
+            format!("@todo.Tasks:{}", self.list.id_string())
         }
 
         fn todo_titles(&self) -> Vec<String> {
@@ -247,7 +247,10 @@ mod cases {
         let reply = session.run(
             &w.rt,
             &agent(),
-            &format!("let l = {}\nl.name = \"Mine\"", w.list_literal()),
+            &format!(
+                "let l = {}\nfor t in l.items {{\n    t.title = \"Mine\"\n}}",
+                w.list_literal()
+            ),
         );
         let lines = rejected(&reply);
         assert!(lines.contains("only an action"), "{lines}");

@@ -1113,8 +1113,20 @@ impl Checker<'_> {
                 let Some(a) = args.first() else {
                     return Ex::error();
                 };
-                let v = self.expr_as(&a.value, t);
-                Ex::host(Imp::CollInsert, vec![b, fid, v], (**t).clone())
+                // Into a collection of a union, an item of one of its types is inserted as
+                // that type: `channels.insert(Category(...))` gives the Category.
+                let v = self.expr(&a.value, Some(t));
+                let case = (matches!(**t, Ty::Union(_))
+                    && !v.ty.is_error()
+                    && !v.ty.same(t)
+                    && v.ty.fits(t))
+                .then(|| v.ty.clone());
+                let v = self.coerce(v, t, a.value.span);
+                Ex::host(
+                    Imp::CollInsert,
+                    vec![b, fid, v],
+                    case.unwrap_or_else(|| (**t).clone()),
+                )
             }
             (Ty::Collection(t), "remove") => {
                 if !self.arity(name, args, 1, span) {

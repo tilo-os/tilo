@@ -1105,7 +1105,9 @@ fn coerces(found: &Ty, want: &Ty) -> bool {
     }
 }
 
-/// The block of a template call taken apart: its named slots, and the rest.
+/// The block of a template call taken apart: its named slots, and the rest. An item block
+/// names slots too: `std.transcript(c, c.messages) { m -> message(m) composer: { ... } }` is the
+/// row of each item and, beside it, the composer, which does not see the item.
 struct Content {
     item: Option<(ast::Ident, ())>,
     body: Vec<UiStmt>,
@@ -1118,7 +1120,7 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
         match &s.kind {
             UiKind::Slot {
                 name, body: inner, ..
-            } if c.item.is_none() => slots.push((name, inner)),
+            } => slots.push((name, inner)),
             _ => body.push(s.clone()),
         }
     }
