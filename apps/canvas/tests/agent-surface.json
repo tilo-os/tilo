@@ -3921,6 +3921,418 @@
     ]
   },
   {
+    "resource": "person:canvas.recent-artworks",
+    "action": "apply",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Apply Recent artworks edit",
+    "description": "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "action",
+        "ty": "object",
+        "required": true,
+        "description": "A Recent artworks action, as JSON",
+        "schema": {
+          "type": "object",
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "action",
+                    "args"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "const": "field-edit"
+                    },
+                    "args": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A field edit, as the field-edit action takes it"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "action",
+                    "args"
+                  ],
+                  "properties": {
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "remember",
+                        "forget"
+                      ]
+                    },
+                    "args": {
+                      "type": "object"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A named action: `action` is its id, `args` its parameters"
+                }
+              ]
+            },
+            "at": {
+              "type": "integer",
+              "description": "When the action was authored, in milliseconds since the Unix epoch"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
+    "action": "field-edit",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Edit a Recent artworks field",
+    "description": "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \"upsert-item\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \"end\" | {after: id} | {before: id}.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "edit",
+        "ty": "object",
+        "required": true,
+        "description": "The path of the field from the record's root, and the operation",
+        "schema": {
+          "type": "object",
+          "description": "A field edit: `path` from the record (fields by name, items by id, map entries by key) and `op` with its arguments. Editable paths:\n- `devices`: set, remove-key — Devices\n- `devices.*`: set, splice, replace, add, insert, remove — Devices; an entry, by its key, and what is inside it",
+          "properties": {
+            "path": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "op": {
+              "type": "string",
+              "enum": [
+                "set",
+                "splice",
+                "replace",
+                "add",
+                "insert",
+                "remove",
+                "insert-item",
+                "upsert-item",
+                "remove-item",
+                "move-to",
+                "remove-key",
+                "set-cell",
+                "insert-row",
+                "insert-column",
+                "remove-row",
+                "remove-column",
+                "settle",
+                "react",
+                "unreact",
+                "rich"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "op"
+          ],
+          "examples": [
+            {
+              "path": [
+                {
+                  "field": "devices"
+                }
+              ],
+              "op": "set"
+            },
+            {
+              "path": [
+                {
+                  "field": "devices"
+                },
+                {
+                  "key": "<key>"
+                }
+              ],
+              "op": "set"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
+    "action": "forget",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "The artwork at `path` on `device` moved or was removed",
+    "description": null,
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "device",
+        "ty": "text",
+        "required": true,
+        "description": "Device",
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "path",
+        "ty": "text",
+        "required": true,
+        "description": "Path",
+        "schema": {
+          "type": "string",
+          "description": "An absolute path on this device"
+        }
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
+    "action": "group",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Apply several Recent artworks edits as one",
+    "description": "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}].",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "actions",
+        "ty": "array",
+        "required": true,
+        "description": "Recent artworks actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+        "schema": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "remember",
+                      "forget"
+                    ]
+                  },
+                  "args": {
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A named action, args as it takes them"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "field-edit"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "edit"
+                    ],
+                    "properties": {
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "op": {
+                            "type": "string",
+                            "enum": [
+                              "set",
+                              "splice",
+                              "replace",
+                              "add",
+                              "insert",
+                              "remove",
+                              "insert-item",
+                              "upsert-item",
+                              "remove-item",
+                              "move-to",
+                              "remove-key",
+                              "set-cell",
+                              "insert-row",
+                              "insert-column",
+                              "remove-row",
+                              "remove-column",
+                              "settle",
+                              "react",
+                              "unreact",
+                              "rich"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "op"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A field edit"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "apply"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "action"
+                    ],
+                    "properties": {
+                      "action": {
+                        "type": "object",
+                        "description": "One action value, as the `apply` action's `apply` parameter describes it"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
+    "action": "redo",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Redo",
+    "description": "Make again the change to your Recent artworks you last took back.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "steps",
+        "ty": "number",
+        "description": "How many of your steps (default 1, at most 50)",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
+    "action": "remember",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "`recent` was opened or saved on `device`: it moves to the front",
+    "description": null,
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "device",
+        "ty": "text",
+        "required": true,
+        "description": "Device",
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "name": "recent",
+        "ty": "object",
+        "required": true,
+        "description": "Recent",
+        "schema": {
+          "type": "object",
+          "required": [
+            "path",
+            "title",
+            "width",
+            "height",
+            "at_ms"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Where the file is."
+            },
+            "title": {
+              "type": "string"
+            },
+            "width": {
+              "type": "number"
+            },
+            "height": {
+              "type": "number"
+            },
+            "at_ms": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "When it was last opened or saved, in milliseconds since the epoch."
+            },
+            "thumbnail": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A small picture of it, by content address, when one was kept."
+            }
+          },
+          "additionalProperties": false,
+          "description": "An artwork opened or saved lately."
+        }
+      }
+    ]
+  },
+  {
+    "resource": "person:canvas.recent-artworks",
+    "action": "undo",
+    "resource_kind": "canvas.recent-artworks",
+    "label": "Undo",
+    "description": "Take back your last change to your Recent artworks.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "steps",
+        "ty": "number",
+        "description": "How many of your steps (default 1, at most 50)",
+        "nullable": true
+      }
+    ]
+  },
+  {
     "resource": "tilo.control:Tool",
     "action": "select",
     "resource_kind": "tilo.control.segmented",
