@@ -55,17 +55,30 @@ pub fn validate_document(
     }
 }
 
+/// What [`deliver`] did with a peer's document op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Admitted and fanned out, or refused and audited.
+    Done,
+    /// Nothing was decided: the channel state is poisoned.
+    Halted,
+    /// Refused live because it is sealed under content keys older than the
+    /// channel's latest membership change: its writer had not caught up
+    /// with that change yet. The room's host, which admits only the room's
+    /// members, kept it; replayed as history it is taken, so the caller asks
+    /// the host to replay.
+    SealedBehind,
+}
+
 /// Validate `document` and, when admitted, record it and fan it to the local
 /// apps on its route as said by `from_user_id`, the participant the host
 /// names for its author. A refused op is audited, never fanned.
-///
-/// Returns `false` only when the channel state is poisoned.
 pub fn deliver(
     channels: &Arc<Mutex<BrokerChannels>>,
     fanout: &FanoutState,
     document: RemoteDocument,
     from_user_id: impl FnOnce(&CrdtRoute) -> String,
-) -> bool {
+) -> Delivery {
     let RemoteDocument {
         app_id,
         cluster_id,
@@ -77,10 +90,11 @@ pub fn deliver(
     let artifact = envelope.artifact;
     let route = CrdtRoute::record(&app_id, &cluster_id, &record_id);
     let payload = validate_route(&route, &envelope);
+    let mut sealed_behind = false;
     let validation = match &payload {
         Ok(payload) => {
             let Ok(mut ch) = channels.lock() else {
-                return false;
+                return Delivery::Halted;
             };
             let channel = match payload {
                 collab_types::RoutedDocumentPayload::Cleartext(_)
@@ -94,6 +108,10 @@ pub fn deliver(
             } else {
                 ch.document_encryption_allowed(channel, envelope.encryption.as_ref())
             };
+            sealed_behind = !allowed
+                && !replayed
+                && envelope.encryption.is_some()
+                && ch.document_history_allowed(channel, envelope.encryption.as_ref());
             if allowed {
                 let state = ch.state_for(artifact);
                 state.room.clone_from(&cluster_id);
@@ -116,11 +134,11 @@ pub fn deliver(
     match (payload, validation) {
         (Ok(_), Ok(())) => {
             accept(channels, fanout, envelope, &route, from_user_id);
-            true
+            Delivery::Done
         }
         (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
             record_already_redacted(channels, envelope, target);
-            true
+            Delivery::Done
         }
         (Ok(_), Err(ValidationError::ReplaySeq { .. }))
             if replayed && validated_before(channels, &envelope) =>
@@ -129,7 +147,7 @@ pub fn deliver(
             // local app that joined after it arrived: deliver it again, byte
             // for byte; the app's CRDT drops what it holds.
             fan_out(fanout, envelope, &route, from_user_id);
-            true
+            Delivery::Done
         }
         (_, Err(reason)) => {
             tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
@@ -143,9 +161,13 @@ pub fn deliver(
                     },
                 );
             }
-            true
+            if sealed_behind {
+                Delivery::SealedBehind
+            } else {
+                Delivery::Done
+            }
         }
-        (Err(_), Ok(())) => false,
+        (Err(_), Ok(())) => Delivery::Halted,
     }
 }
 
@@ -348,30 +370,32 @@ mod tests {
         );
         let count = || delivered.load(std::sync::atomic::Ordering::SeqCst);
         let first = op("first");
-        assert!(deliver(
-            &channels,
-            &fanout,
-            document(first.clone(), false),
-            |_| "peer".into()
-        ));
+        assert_eq!(
+            deliver(&channels, &fanout, document(first.clone(), false), |_| {
+                "peer".into()
+            }),
+            Delivery::Done
+        );
         assert_eq!(count(), 1);
-        assert!(deliver(
-            &channels,
-            &fanout,
-            document(first.clone(), false),
-            |_| "peer".into()
-        ));
+        assert_eq!(
+            deliver(&channels, &fanout, document(first.clone(), false), |_| {
+                "peer".into()
+            }),
+            Delivery::Done
+        );
         assert_eq!(count(), 1, "a live repeat is not delivered again");
-        assert!(deliver(&channels, &fanout, document(first, true), |_| {
-            "peer".into()
-        }));
+        assert_eq!(
+            deliver(&channels, &fanout, document(first, true), |_| {
+                "peer".into()
+            }),
+            Delivery::Done
+        );
         assert_eq!(count(), 2, "the host's replay reaches the late app");
-        assert!(deliver(
-            &channels,
-            &fanout,
-            document(op("second"), true),
-            |_| "peer".into()
-        ));
+        assert_eq!(
+            deliver(&channels, &fanout, document(op("second"), true), |_| "peer"
+                .into()),
+            Delivery::Done
+        );
         drop(fanout);
         assert_eq!(count(), 2, "another op under a used sequence is refused");
     }
