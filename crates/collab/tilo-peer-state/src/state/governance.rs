@@ -172,13 +172,15 @@ impl PeerGovernance<'_> {
         );
         let mut withheld = std::collections::HashMap::new();
         for (app, record) in records {
-            // Only a grant below the room can decide a record otherwise than
-            // the room: a record none covers is read by every member.
+            // Only a grant below the room, or a member's own record (read by
+            // that person alone), can decide a record otherwise than the
+            // room: a record neither covers is read by every member.
             let node = collab_types::document_node(room, app, record);
-            let covered = policy
-                .grants
-                .iter()
-                .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
+            let covered = collab_types::member_record(record).is_some()
+                || policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.node.len() > 1 && grant.node.covers(&node));
             let devices = if covered {
                 denied(app, record)
             } else {
