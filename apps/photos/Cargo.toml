@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["photos-samples"]
+
 [lib]
 name = "photos"
 path = "src/lib.rs"
@@ -48,7 +52,10 @@ tilo-ocr = { path = "../../crates/media/ocr" }
 kamadak-exif = "0.6.1"
 
 [dev-dependencies]
-photos = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `photos` claims `--features photos/thin` in the
+# collection build, and the app then links the whole runtime statically.
+photos-samples = { package = "photos", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 vello_encoding.workspace = true

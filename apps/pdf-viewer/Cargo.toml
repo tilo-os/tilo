@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["pdf-viewer-samples"]
+
 [lib]
 name = "pdf_viewer"
 path = "src/lib.rs"
@@ -63,7 +67,10 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 # UI thread and return through `ui::portal`.
 
 [dev-dependencies]
-pdf-viewer = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `pdf-viewer` claims `--features pdf-viewer/thin` in the
+# collection build, and the app then links the whole runtime statically.
+pdf-viewer-samples = { package = "pdf-viewer", path = ".", features = ["samples"] }
 # Serialise tests that touch the shared system clipboard.
 serial_test.workspace = true
 # Two distinct files for the multi-document test.

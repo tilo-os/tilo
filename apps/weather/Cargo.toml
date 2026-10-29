@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["weather-samples"]
+
 [lib]
 name = "weather"
 path = "src/lib.rs"
@@ -39,7 +43,10 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 chrono = { workspace = true, features = ["std", "clock"] }
 
 [dev-dependencies]
-weather = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `weather` claims `--features weather/thin` in the
+# collection build, and the app then links the whole runtime statically.
+weather-samples = { package = "weather", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 tilo-history = { path = "../../crates/sdk/tilo-history" }

@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["mail-samples"]
+
 [lib]
 name = "mail"
 path = "src/lib.rs"
@@ -107,7 +111,10 @@ default = ["live"]
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 
 [dev-dependencies]
-mail = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `mail` claims `--features mail/thin` in the
+# collection build, and the app then links the whole runtime statically.
+mail-samples = { package = "mail", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Test-only self-signed certificates for local IMAP/SMTP TLS servers.
 rcgen.workspace = true

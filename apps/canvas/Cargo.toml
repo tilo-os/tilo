@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["canvas-samples"]
+
 [lib]
 name = "canvas"
 path = "src/lib.rs"
@@ -68,7 +72,10 @@ zip.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-canvas = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `canvas` claims `--features canvas/thin` in the
+# collection build, and the app then links the whole runtime statically.
+canvas-samples = { package = "canvas", path = ".", features = ["samples"] }
 # Saving to and opening from a file in Files, in a directory of the test's.
 tempfile.workspace = true
 # A fresh content store, for opening a saved artwork where its pictures

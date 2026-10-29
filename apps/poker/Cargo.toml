@@ -5,6 +5,10 @@ edition = "2024"
 publish = false
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["poker-samples"]
+
 [lib]
 name = "poker"
 path = "src/lib.rs"
@@ -24,7 +28,10 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]
-poker = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `poker` claims `--features poker/thin` in the
+# collection build, and the app then links the whole runtime statically.
+poker-samples = { package = "poker", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
