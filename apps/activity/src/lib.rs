@@ -25,6 +25,7 @@ pub const APP_ID: &str = wire::APP_ID;
 pub const APP_TITLE: &str = "Activity";
 
 mod detail;
+mod effects;
 mod filter;
 mod history;
 pub mod locales;
@@ -42,6 +43,7 @@ use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{NavItem, NavSection};
 
+pub use effects::ActivityEffect;
 pub use filter::Filter;
 
 /// What the window shows.
@@ -262,6 +264,13 @@ impl ResourceApp for App {
         // What the person asked to be shown from outside the app (the
         // glance in the top bar, a file's own history) lands here once.
         let provider = Provider::of(cx);
+        {
+            let (nav, provider) = (nav.clone(), provider.clone());
+            cx.effects(move |effect: ActivityEffect, _| {
+                effects::answer(effect, &nav, &provider);
+                Ok(ui::framework::Effected::done())
+            });
+        }
         let focus = provider.follow::<Option<wire::Focus>>(wire::FOCUS, None::<&()>);
         let shown = nav;
         cx.switch(&focus.answer().state(), move |cx, answer| {
