@@ -113,7 +113,8 @@ pub use tilo_relay_session::rooms::{
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
     IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
     PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, RemoveMemberRequest,
-    RoomListing, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, member_resource,
+    RoomListing, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, ask_host,
+    member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -863,9 +864,6 @@ pub(crate) struct RoomServices {
     /// What the join answers say the host is: a certified host, or the
     /// governing device serving its own rooms.
     pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
-    /// The device's own sessions with its person's other hosts, when a
-    /// network runs beside this host ([`crate::host::PersonsHostSessions`]).
-    pub(crate) persons_hosts: Option<Arc<dyn crate::host::PersonsHostSessions>>,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::federation::Arrivals,

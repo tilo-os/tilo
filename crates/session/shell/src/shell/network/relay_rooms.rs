@@ -26,8 +26,7 @@
 //!   an app this device opens there first, on the room's session.
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
-    personal_continuity_topic_id, registered_home_peer_addrs, relay_topics_for_home_peers,
-    room_topic_id,
+    registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
 };
 use crate::network::invite::InviteRole;
 use crate::network::invite::enrollment_driver;
@@ -44,7 +43,7 @@ use tilo_actions::remote::{
     room_governance_resource,
 };
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-use tilo_network_actor::room_governance::{Addressee, Request};
+use tilo_network_actor::room_governance::Request;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
@@ -54,8 +53,7 @@ use tilo_relay_session::rooms::{
 
 /// How long one invocation on a room's own session may take.
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long one host operation may take: the host's session of the
-/// continuity workspace may still have to come up.
+/// How long one host operation may take, dialling the host included.
 const HOST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The room governance action that issues an invitation.
 const INVITE: &str = tilo_action_policy::roles::governance::INVITE;
@@ -113,12 +111,11 @@ pub(super) enum PersonsHost {
         addr: iroh::EndpointAddr,
         device: [u8; 32],
     },
-    /// A home relay the person paired, on its session of their continuity
-    /// workspace.
+    /// A home relay the person paired.
     Relay(RegisteredHomePeer),
     /// A workspace host this session is configured with (a company node),
-    /// on the session it keeps with it.
-    Configured(iroh::EndpointId),
+    /// pinned by its endpoint.
+    Configured(iroh::EndpointAddr),
 }
 
 /// The device of `room`'s governor, when it is also the host `view`'s
@@ -356,7 +353,7 @@ impl ShellNetwork {
     fn ask_relay(
         &self,
         ws: u64,
-        to: Addressee,
+        to: iroh::EndpointId,
         invoke: InvokeRequest,
     ) -> Result<std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>, String> {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
@@ -376,7 +373,7 @@ impl ShellNetwork {
     fn invoke_relay(
         &self,
         ws: u64,
-        to: Addressee,
+        to: iroh::EndpointId,
         invoke: InvokeRequest,
         timeout: Duration,
     ) -> Result<serde_json::Value, String> {
@@ -403,7 +400,7 @@ impl ShellNetwork {
         );
         self.invoke_relay(
             room_topic_id(target.room),
-            Addressee::Device(target.host),
+            target.host,
             invoke,
             ADMIN_TIMEOUT,
         )
@@ -425,11 +422,7 @@ impl ShellNetwork {
             arguments,
         );
         let answer = self
-            .ask_relay(
-                room_topic_id(target.room),
-                Addressee::Device(target.host),
-                invoke,
-            )
+            .ask_relay(room_topic_id(target.room), target.host, invoke)
             .map_err(HostAskError::Unreachable)?;
         held_answer(&answer)
     }
@@ -453,100 +446,48 @@ impl ShellNetwork {
         held_answer(&answer).map(drop)
     }
 
-    /// Invoke the host operation `action` with `arguments` at the host at
-    /// `relay`, as this device of `user`, on the host's session of the
-    /// person's continuity workspace.
-    fn host_action(
+    /// Invoke the host operation `action` with `arguments` at `host`, as
+    /// this device, asking the host directly.
+    pub(super) fn ask_host(
         &self,
-        relay: iroh::EndpointId,
-        user: [u8; 32],
+        host: &PersonsHost,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        let ws = personal_continuity_topic_id(&user);
+        let (addr, device) = match host {
+            PersonsHost::Here => return self.local_host_action(action, arguments),
+            PersonsHost::Relay(home) => {
+                (home.addr.clone(), Some(home.expectation.device_public_key))
+            }
+            PersonsHost::Configured(addr) => (addr.clone(), None),
+            PersonsHost::Device { addr, device } => (addr.clone(), Some(*device)),
+        };
         // This device's own host answers in process: an endpoint cannot
         // dial itself.
-        if relay == self.local_peer_id {
-            return self.local_host_action(ws, action, arguments);
+        if addr.id == self.local_peer_id {
+            return self.local_host_action(action, arguments);
         }
-        // Every host is dialled with each topic this device joined.
-        if !self.join_topic(ws) {
-            return Err("the network queue is unavailable".into());
-        }
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
         let invoke = invocation(
             HOST_ACTIONS_PROVIDER,
             HOST_ROOMS_RESOURCE.to_owned(),
             action,
             arguments,
         );
-        self.invoke_relay(ws, Addressee::Host(relay), invoke, HOST_TIMEOUT)
-    }
-
-    /// Invoke the host operation `action` with `arguments` at `host`, as
-    /// this device of `user`, on the person's continuity workspace.
-    pub(super) fn ask_host(
-        &self,
-        host: &PersonsHost,
-        user: [u8; 32],
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
-        let ws = personal_continuity_topic_id(&user);
-        match host {
-            PersonsHost::Here => self.local_host_action(ws, action, arguments),
-            PersonsHost::Relay(home) => {
-                self.connect_home(home);
-                self.host_action(home.addr.id, user, action, arguments)
-            }
-            PersonsHost::Configured(host) => self.host_action(*host, user, action, arguments),
-            PersonsHost::Device { addr, device } => {
-                let (reply, answer) = std::sync::mpsc::sync_channel(1);
-                let invoke = invocation(
-                    HOST_ACTIONS_PROVIDER,
-                    HOST_ROOMS_RESOURCE.to_owned(),
-                    action,
-                    arguments,
-                );
-                self.cmd_tx
-                    .try_send(NetCmd::OwnDeviceHost(Box::new(
-                        tilo_network_actor::own_device_host::Request {
-                            addr: addr.clone(),
-                            device: *device,
-                            governance: Request {
-                                ws,
-                                to: Addressee::Host(addr.id),
-                                invoke,
-                                reply,
-                            },
-                        },
-                    )))
-                    .map_err(|_| "the network queue is unavailable")?;
-                let status = answer
-                    .recv_timeout(HOST_TIMEOUT)
-                    .map_err(|_| "your other device did not answer in time")??;
-                receipt_value(status)
-            }
-        }
-    }
-
-    /// Dial `home` as a workspace host if this session does not already.
-    fn connect_home(&self, home: &RegisteredHomePeer) {
-        let Ok(mut hosts) = self.host_addrs.lock() else {
-            return;
-        };
-        if hosts.iter().any(|known| known.id == home.addr.id) {
-            return;
-        }
-        if self
-            .cmd_tx
-            .try_send(NetCmd::ConnectHost {
-                addr: home.addr.clone(),
-                expectation: Some(home.expectation.clone()),
-            })
-            .is_ok()
-        {
-            hosts.push(home.addr.clone());
-        }
+        self.cmd_tx
+            .try_send(NetCmd::AskHost(Box::new(
+                tilo_network_actor::host_ask::Request {
+                    addr,
+                    device,
+                    invoke,
+                    reply,
+                },
+            )))
+            .map_err(|_| "the network queue is unavailable")?;
+        let status = answer
+            .recv_timeout(HOST_TIMEOUT)
+            .map_err(|_| "the host did not answer in time")??;
+        receipt_value(status)
     }
 
     /// The device of the room's admitted governor when a host governs
@@ -583,7 +524,7 @@ impl ShellNetwork {
             action,
             arguments,
         );
-        self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)
+        self.ask_relay(room_topic_id(room), host, invoke)
     }
 
     /// Ask the host governing `room` the member action `action` (one of
@@ -743,20 +684,16 @@ impl ShellNetwork {
         // in-process session with it ended.
         if self.local_host_governs(room, host) {
             return Some(
-                self.local_host_action_awaited(
-                    room_topic_id(room),
-                    GRANT_APP_AUTHORSHIP,
-                    arguments,
-                )
-                .await
-                .and_then(|answer| {
-                    answer
-                        .get("generation")
-                        .and_then(serde_json::Value::as_u64)
-                        .ok_or_else(|| {
-                            "the host answered the app authorship with something else".into()
-                        })
-                }),
+                self.local_host_action_awaited(GRANT_APP_AUTHORSHIP, arguments)
+                    .await
+                    .and_then(|answer| {
+                        answer
+                            .get("generation")
+                            .and_then(serde_json::Value::as_u64)
+                            .ok_or_else(|| {
+                                "the host answered the app authorship with something else".into()
+                            })
+                    }),
             );
         }
         let invoke = invocation(
@@ -767,8 +704,7 @@ impl ShellNetwork {
         );
         Some(
             async {
-                let answer =
-                    self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)?;
+                let answer = self.ask_relay(room_topic_id(room), host, invoke)?;
                 let status =
                     tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
                         .await
@@ -815,8 +751,7 @@ impl ShellNetwork {
         );
         Some(
             async {
-                let answer =
-                    self.ask_relay(room_topic_id(room), Addressee::Device(host), invoke)?;
+                let answer = self.ask_relay(room_topic_id(room), host, invoke)?;
                 let status =
                     tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
                         .await
@@ -916,31 +851,25 @@ impl ShellNetwork {
         Ok(true)
     }
 
-    /// Enter `room` at `host` as this device of `user`, and answer the text
-    /// of the invitation this device redeems to hold it.
-    fn enter_host_room(
-        &self,
-        host: &PersonsHost,
-        user: [u8; 32],
-        room: &str,
-    ) -> Result<String, String> {
+    /// Enter `room` at `host` as this device, and answer the text of the
+    /// invitation this device redeems to hold it.
+    fn enter_host_room(&self, host: &PersonsHost, room: &str) -> Result<String, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.into());
         arguments.insert("expires_in_seconds".into(), OWN_INVITATION_SECONDS.into());
-        let entered: EnteredRoom = answer_of(self.ask_host(host, user, ENTER_ROOM, arguments)?)?;
+        let entered: EnteredRoom = answer_of(self.ask_host(host, ENTER_ROOM, arguments)?)?;
         let own = entered.invitation.decode()?;
         Ok(join::encode_invitation_text(&own.signed_invitation))
     }
 
-    /// Enter `room`, called `name`, at the host at `host` as this device of
-    /// `user` and join it as a workspace of its own, the room, shown at once
+    /// Enter `room`, called `name`, at the host at `host` as this device
+    /// and join it as a workspace of its own, the room, shown at once
     /// when it is the first room this session holds that way: what one of
     /// the person's devices does when their workspace list names a room it
     /// does not hold yet. Nothing when the room is held or being joined.
     pub(super) fn enter_listed_room(
         &self,
         host: &PersonsHost,
-        user: [u8; 32],
         room: RoomId,
         name: &str,
     ) -> Result<(), String> {
@@ -992,7 +921,7 @@ impl ShellNetwork {
         let (local, own) = if let Some(retained) = self.retained_join(room)? {
             retained
         } else {
-            let own = self.enter_host_room(host, user, &room.to_string())?;
+            let own = self.enter_host_room(host, &room.to_string())?;
             let local = tree
                 .write()
                 .join_native_room(name, room)
@@ -1200,7 +1129,7 @@ impl ShellNetwork {
                 tracing::debug!(room = %entry.room, "the list names a host this device cannot reach");
                 continue;
             };
-            if let Err(error) = self.enter_listed_room(&host, user, entry.room, &entry.name) {
+            if let Err(error) = self.enter_listed_room(&host, entry.room, &entry.name) {
                 tracing::warn!(room = %entry.room, %error, "a room of this person's list was not entered");
             }
         }
@@ -1215,20 +1144,17 @@ impl ShellNetwork {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
-        let user = match identity.current_native_material(0) {
-            Ok((certificate, _)) => certificate.user_public_key,
-            Err(error) => {
-                tracing::debug!(%error, "host rooms: no device certificate");
-                return;
-            }
-        };
-        for host in super::configured_host_addrs()
+        if let Err(error) = identity.current_person_material() {
+            tracing::debug!(%error, "host rooms: no device certificate");
+            return;
+        }
+        for addr in super::configured_host_addrs()
             .into_iter()
-            .map(|addr| addr.id)
-            .filter(|host| only.is_none_or(|only| only == *host))
+            .filter(|addr| only.is_none_or(|only| only == addr.id))
         {
+            let host = PersonsHost::Configured(addr);
             let listed = self
-                .host_action(host, user, LIST_ROOMS, serde_json::Map::new())
+                .ask_host(&host, LIST_ROOMS, serde_json::Map::new())
                 .and_then(answer_of::<Vec<RoomListing>>);
             let rooms = match listed {
                 Ok(rooms) => rooms,
@@ -1241,12 +1167,7 @@ impl ShellNetwork {
                 let Some(room) = RoomId::parse(&listing.room) else {
                     continue;
                 };
-                if let Err(error) = self.enter_listed_room(
-                    &PersonsHost::Configured(host),
-                    user,
-                    room,
-                    &listing.name,
-                ) {
+                if let Err(error) = self.enter_listed_room(&host, room, &listing.name) {
                     tracing::warn!(%room, %error, "a room of this person's host was not entered");
                 }
             }
@@ -1352,12 +1273,7 @@ impl ShellNetwork {
                 arguments,
             );
             return self
-                .invoke_relay(
-                    room_topic_id(room),
-                    Addressee::Device(host),
-                    invoke,
-                    ADMIN_TIMEOUT,
-                )
+                .invoke_relay(room_topic_id(room), host, invoke, ADMIN_TIMEOUT)
                 .map(drop);
         }
         let owner = self.native_owner()?;
