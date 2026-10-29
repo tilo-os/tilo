@@ -44,6 +44,8 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilolang = { path = "../../lang/tilolang" }
 automerge.workspace = true
 tempfile.workspace = true
+# The replies the test's broker awaits from the instance's action directory.
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true
