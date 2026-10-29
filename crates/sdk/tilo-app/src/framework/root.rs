@@ -1802,7 +1802,11 @@ impl RootModel for ResourceRoot {
         if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
-        if let Some(started) = self.typed.start_effect(op, doc.doc())? {
+        let view: &mut dyn Widget = match &mut self.unreadable {
+            Some((_, shown)) => shown.as_mut(),
+            None => self.content.as_mut(),
+        };
+        if let Some(started) = self.typed.start_effect(op, doc.doc(), view)? {
             return Ok(Some(started));
         }
         if let Some(started) =
