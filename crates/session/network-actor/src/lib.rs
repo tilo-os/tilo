@@ -691,13 +691,14 @@ impl NetEvent {
             Self::NativeInput(_) => "NativeInput",
             Self::Sibling { .. } => "Sibling",
             Self::SiblingLeft { .. } => "SiblingLeft",
-            Self::SiblingMsg { msg, .. } => msg.kind(),
             Self::PeerLeft { .. } => "PeerLeft",
             Self::NotAdmitted { .. } => "NotAdmitted",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
             Self::RecordOpened { .. } => "RecordOpened",
-            Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } => msg.kind(),
+            Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } | Self::SiblingMsg { msg, .. } => {
+                msg.kind()
+            }
             Self::PersonalFabric { .. } => "PersonalFabric",
             Self::NearbyTransferProgress { .. } => "NearbyTransferProgress",
         }
@@ -2273,7 +2274,7 @@ impl ActorState {
     /// certificate of `user_public_key` on its session, or to
     /// `exact_target` alone, on the session's connection ([`fabric_link`]).
     fn publish_personal_fabric_to(
-        &mut self,
+        &self,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
         exact_target: Option<EndpointId>,
@@ -2914,7 +2915,7 @@ impl ActorState {
                 addr,
                 result,
             }) => {
-                self.handle_host_connected(ws, peer, &addr, result).await;
+                self.handle_host_connected(ws, peer, &addr, result);
             }
             Some(InternalEvent::NativeHostConnected {
                 ws,
@@ -3135,7 +3136,7 @@ impl ActorState {
     /// of membership `epoch`, taken while that session lasts. `ShellNetwork`
     /// still binds the frame to the certificate the device proved there.
     async fn handle_personal_fabric(
-        &mut self,
+        &self,
         peer: EndpointId,
         epoch: MembershipEpoch,
         user_public_key: [u8; 32],
@@ -3194,7 +3195,7 @@ impl ActorState {
     /// [`InternalEvent::HostConnected`] arm of [`Self::handle_internal`],
     /// split out to keep that dispatcher short. `peer` is a host of the
     /// person's.
-    async fn handle_host_connected(
+    fn handle_host_connected(
         &mut self,
         ws: WorkspaceId,
         peer: EndpointId,
