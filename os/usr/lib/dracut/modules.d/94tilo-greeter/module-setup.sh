@@ -85,7 +85,10 @@ install() {
     inst_multiple -o $(find /usr/share/alsa -type f -not -path '/usr/share/alsa/alsa.conf.d/*')
     # HDA, USB and virtio sound; a machine whose sound needs firmware too
     # large for the initramfs signs in without speech.
-    hostonly='' instmods =sound/pci/hda =sound/usb =sound/virtio snd-hda-intel || :
+    # snd-seq too: Fedora's modprobe.d/dist-alsa.conf loads snd-pcm through
+    # an install command that loads snd-seq after it; where snd-seq is
+    # missing that command fails, and with it every sound driver on snd-pcm.
+    hostonly='' instmods =sound/pci/hda =sound/usb =sound/virtio snd-hda-intel snd-seq || :
     # Touch screens: HID ones come with the kernel-modules module's
     # drivers/hid, the rest are input drivers of their own, and a virtual
     # machine's is a virtio input device.
