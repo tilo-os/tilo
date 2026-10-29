@@ -337,7 +337,7 @@ pub struct FrameHarness {
     bound_publication: crate::bound_dispatch::BoundPublication,
     /// Pen samples on their way to the pointer events they describe.
     pen: crate::pen::PenInput,
-    caller_palette: caller_palette::CallerPalette,
+    caller_palette: Box<caller_palette::CallerPalette>,
     component_wake: Option<ComponentRunnerWakeState>,
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
@@ -354,13 +354,13 @@ pub struct FrameHarness {
     /// remounts their children in the retained tree, unless it rebuilds.
     remount: bool,
     layout_requested: bool,
-    state: State,
+    state: Box<State>,
     root: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
     /// A History registered before its code was in, installed once it is.
     pending_history: Option<crate::history_mode::HistoryRegistration>,
     action_palette: Option<crate::action_palette::ActionPaletteBox>,
-    palette_waiting: lazy_palette::Waiting,
+    palette_waiting: Box<lazy_palette::Waiting>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
     /// several out (the desktop's strip of app tiles): the palette stands
@@ -395,7 +395,7 @@ pub struct FrameHarness {
     window_bar: bool,
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
-    window_search: crate::widget::WindowSearch,
+    window_search: Box<crate::widget::WindowSearch>,
     /// The app's window-bar slots in a row of the frame's own, as a window
     /// of its own hosts them ([`Self::host_window_slots`]).
     slot_row: Option<Box<slot_row::HostedSlots>>,
@@ -1739,7 +1739,7 @@ impl FrameHarness {
             composition_replaced: false,
             remount: false,
             layout_requested: false,
-            state,
+            state: Box::new(state),
             root,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -1748,7 +1748,7 @@ impl FrameHarness {
             history: None,
             pending_history: None,
             action_palette: None,
-            palette_waiting: lazy_palette::Waiting::default(),
+            palette_waiting: Box::default(),
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer_at: None,
@@ -1763,7 +1763,7 @@ impl FrameHarness {
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             window_bar: false,
-            window_search: crate::widget::WindowSearch::new(),
+            window_search: Box::new(crate::widget::WindowSearch::new()),
             slot_row: None,
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),

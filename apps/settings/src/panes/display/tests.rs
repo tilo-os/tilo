@@ -506,7 +506,7 @@ fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes
 
 fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
     let profile = tempfile::tempdir().unwrap().keep();
-    DisplayModel::detached(PaneCx::in_profile(profile.to_path_buf())).with_outputs(outputs)
+    DisplayModel::detached(PaneCx::in_profile(profile)).with_outputs(outputs)
 }
 
 /// An output named after the DRM connector `conn` (`card0-eDP-1`, with the
@@ -1708,7 +1708,7 @@ fn the_pending_display_change_is_read_through_the_settings_document() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let profile = tempfile::tempdir().unwrap().keep();
     let file = settings_store::profile(&profile);
-    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile.clone()))
+    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile))
         .with_outputs(laptop_with_monitor().outputs);
     pane.of_device = true;
     assert!(pane.transaction().is_none());
@@ -1750,7 +1750,7 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let profile = tempfile::tempdir().unwrap().keep();
     let file = settings_store::profile(&profile);
-    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile.clone()))
+    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile))
         .with_outputs(laptop_with_monitor().outputs);
     pane.of_device = true;
     let diagnostic = "Rejected unsupported display plan: UnsupportedMode(\"DP-1\")";

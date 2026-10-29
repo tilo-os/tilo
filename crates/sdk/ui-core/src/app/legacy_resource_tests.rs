@@ -569,6 +569,9 @@ fn component_bare_address(lazy: bool, duplicate: bool) {
     let before = sibling.snapshot();
     let actor = app.collaboration.local_author.0.clone();
     let result = app.invoke_resource_action(ResourceInvocation::new(&address(), &actor));
+    // Only the component's root speaks for its document: a widget below it
+    // offering the same action claims nothing, so the root's runs alone.
+    let duplicate = duplicate && !lazy;
     if duplicate {
         assert!(
             matches!(result, Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "ambiguous_action_target")
@@ -612,6 +615,6 @@ fn native_actual_component_duplicate_eager_bare_address_refuses() {
     component_bare_address(false, true);
 }
 #[test]
-fn native_actual_component_duplicate_lazy_bare_address_refuses() {
+fn native_component_child_never_claims_the_roots_lazy_document_action() {
     component_bare_address(true, true);
 }

@@ -194,13 +194,14 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
     ) -> Vec<Ex> {
-        self.bind_args_or_default(name, params, args, span, sig)
+        self.bind_args_or_default(name, params, args, span, sig, false)
             .into_iter()
             .map(|s| s.unwrap_or_else(Ex::error))
             .collect()
     }
 
-    /// As [`Self::bind_args`]; a parameter with a default may be left out, as `None`.
+    /// As [`Self::bind_args`]; a parameter with a default may be left out, as `None`. With
+    /// `at_press`, the arguments are those of an action a view applies ([`Self::arg_at_press`]).
     pub(super) fn bind_args_or_default(
         &mut self,
         name: &str,
@@ -208,6 +209,7 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
         sig: &str,
+        at_press: bool,
     ) -> Vec<Option<Ex>> {
         let mut slots: Vec<Option<Ex>> = vec![None; params.len()];
         let mut pos = 0usize;
@@ -258,7 +260,11 @@ impl Checker<'_> {
                 let _ = self.expr(&a.value, None);
                 continue;
             };
-            let v = self.expr_as(&a.value, &p.ty);
+            let v = if at_press {
+                self.arg_at_press(&a.value, &p.ty)
+            } else {
+                self.expr_as(&a.value, &p.ty)
+            };
             match slots.get_mut(i) {
                 Some(slot @ None) => *slot = Some(v),
                 _ => self.err(
@@ -291,6 +297,45 @@ impl Checker<'_> {
             .collect()
     }
 
+    /// An argument of an action a view applies, of type `want`: view state given as itself is
+    /// read when the event fires, so a press right after a keystroke sends the keystroke too.
+    /// An argument that reads view state any other way would be read when the view drew, a
+    /// value the press may have outrun, so it is refused.
+    pub(super) fn arg_at_press(&mut self, e: &ast::Expr, want: &Ty) -> Ex {
+        if let ExprKind::Ident(name) = &e.kind
+            && let Some(state) = self.state_named(name)
+        {
+            if state.ty == *want || want.is_error() {
+                return Self::state_at(&state);
+            }
+            let (have, want) = (self.show(&state.ty), self.show(want));
+            self.err("E111", e.span, format!("`{name}` is {have} and the parameter is {want}: an action takes view state as it is, read when it is pressed. Declare `{name}` as {want}"));
+            return Ex::error();
+        }
+        let mut names = std::collections::BTreeSet::new();
+        super::boundary::names_in(e, &mut names);
+        if let Some(name) = names.iter().find(|n| self.state_named(n).is_some()) {
+            self.err("E111", e.span, format!("an action applied here runs when it is pressed, and reads the view state it takes then; this argument reads `{name}` when the view draws, which a quick press outruns. Give `{name}` itself and compute from it in the action"));
+            let _ = self.expr(e, None);
+            return Ex::error();
+        }
+        self.expr_as(e, want)
+    }
+
+    /// The view state `state` as an action's argument, read when the event fires: a handle
+    /// until then, a scalar's boxed as its slot holds it.
+    pub(super) fn state_at(state: &super::StateRef) -> Ex {
+        let scalar = state.ty.is_scalar();
+        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
+        let boxed = Ex::new(Ek::I32(i32::from(scalar)), Ty::Bool);
+        let ty = if scalar {
+            Ty::Option(Box::new(state.ty.clone()))
+        } else {
+            state.ty.clone()
+        };
+        Ex::host(Imp::StateAt, vec![layer, Ex::str(&state.id), boxed], ty)
+    }
+
     fn action_ref(c: &Callable) -> ActionRef {
         ActionRef {
             app: c.app.clone(),
@@ -304,7 +349,10 @@ impl Checker<'_> {
 
     fn call_callable(&mut self, c: &Callable, args: &[ast::Arg], span: Span) -> Ex {
         let sig = c.signature(&self.env.app);
-        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig);
+        // An action a view applies runs when its event fires: the view state it takes is read
+        // then, not when the view drew.
+        let at_press = matches!(c.kind, CKind::Action | CKind::Flow) && self.st.ctx == Ctx::View;
+        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         let ctx = self.st.ctx;
         match (c.kind, ctx) {
             (CKind::Fn, _) => {
@@ -700,7 +748,7 @@ impl Checker<'_> {
             let _ = self.expr(&value.value, None);
             return Ex::error();
         };
-        let v = self.expr_as(&value.value, &state.ty);
+        let v = self.arg_at_press(&value.value, &state.ty);
         Self::set_action(&state, v)
     }
 
@@ -1007,12 +1055,12 @@ impl Checker<'_> {
     /// `items.move(item, after: other)` or `before: other`: a place named by a neighbour, never
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
-        let usage = "write `.move(item, after: other)` or `.move(item, before: other)`";
+        let usage = "write `.move(item, after: other)`, `.move(item, before: other)` or `.move(item, to: index)`";
         let (Some(item), Some(place), 2) = (args.first(), args.get(1), args.len()) else {
             self.err(
                 "E022",
                 span,
-                format!("`.move` takes the item and its new neighbour: {usage}"),
+                format!("`.move` takes the item and where it goes: {usage}"),
             );
             return Ex::error();
         };
@@ -1020,16 +1068,18 @@ impl Checker<'_> {
         let after = match side {
             Some("after") => true,
             Some("before") => false,
+            // An index, as a drag gives one: resolved, when the action runs, to the item it
+            // then comes before, which is what is recorded (convergence.md, "Actions").
+            Some("to") => {
+                let item = self.expr_as(&item.value, t);
+                let index = self.expr_as(&place.value, &Ty::Int);
+                return Ex::host(Imp::CollMoveTo, vec![b, fid, item, index], Ty::Unit);
+            }
             _ => {
-                let what = if place.name.is_none() {
-                    "a position"
-                } else {
-                    "this"
-                };
                 self.err(
-                    "E107",
+                    "E022",
                     place.value.span,
-                    format!("{what} is counted on what this device sees, so a move made at the same time elsewhere puts the item in the wrong place; name its neighbour: {usage}"),
+                    format!("`.move` names where the item goes: {usage}"),
                 );
                 let _ = self.expr(&place.value, None);
                 return Ex::error();
@@ -1360,10 +1410,30 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        // Over a collection, a key the store can order by is asked of it first; the collection
+        // is held in a local for that, which the loop reads too.
+        let native = match &list.ty {
+            Ty::Collection(_) => self.sort_key(elem, &param.name, &body),
+            _ => None,
+        };
+        let (list, held) = match native {
+            Some(_) => {
+                let ty = list.ty.clone();
+                let local = self.fresh(ty.clone());
+                (Ex::local(local, ty), Some((local, list)))
+            }
+            None => (list, None),
+        };
         let mut fl = self.new_for(list, elem);
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
-        let key = self.expr(&body, None);
+        let key = match &native {
+            // A version sorts by its time; none comes first.
+            Some(super::order::SortKey::Version { last }) => {
+                self.version_time(Ex::local(fl.item_local, elem.clone()), *last)
+            }
+            _ => self.expr(&body, None),
+        };
         // A Date or a Time is ISO text, which sorts in time order.
         let key = match key.ty {
             Ty::Date | Ty::Time => key.typed(Ty::Text),
@@ -1402,7 +1472,13 @@ impl Checker<'_> {
         if desc {
             sorted = Ex::host(Imp::ListReverse, vec![sorted], out_ty.clone());
         }
-        Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty)
+        let looped = Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty);
+        match (native, held) {
+            (Some(key), Some((local, held))) => {
+                self.ordered_or_loop(local, held, &key, desc, looped)
+            }
+            _ => looped,
+        }
     }
 
     /// The body of `filter`, `any`, `all`, `find` and `count`: tests the lambda on the item.

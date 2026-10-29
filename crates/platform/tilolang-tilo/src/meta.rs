@@ -179,6 +179,22 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             cases,
         });
     }
+    // Every resource's first and last versions, by their time: what a list sorts or filters
+    // by when it reads `created(r)` or `updated(r)`.
+    for reflected in [
+        crate::index::reflect::CREATED,
+        crate::index::reflect::UPDATED,
+    ] {
+        out.push(ColumnSchema {
+            name: reflected.to_owned(),
+            field: Some(reflected.to_owned()),
+            kind: ColumnKind::Time,
+            many: false,
+            pred: None,
+            filter: false,
+            cases: Vec::new(),
+        });
+    }
     out
 }
 

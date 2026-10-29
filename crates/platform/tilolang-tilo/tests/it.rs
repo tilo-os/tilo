@@ -18,6 +18,7 @@ mod engines;
 mod fixtures;
 mod incremental;
 mod index;
+mod lanes;
 mod outbox;
 mod outcomes;
 mod policy;

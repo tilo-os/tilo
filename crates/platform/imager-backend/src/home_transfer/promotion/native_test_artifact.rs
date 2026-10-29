@@ -30,7 +30,7 @@ pub(super) fn install(name: &str, destination: &Path) {
         [target.join("debug").join(name), target.join(triple).join("debug").join(name)]
             .into_iter()
             .find(|path| path.is_file())
-            .unwrap_or_else(|| panic!("missing compiled {name}; run cargo build --locked -p imager --features destination --bin tilo-firstboot-home-seeds -p tilo-firstboot-files --bin tilo-firstboot-files, or supply {key} and {key}_SHA256 for the qualified immutable SDK helper"))
+            .unwrap_or_else(|| panic!("missing compiled {name}; run cargo build --locked -p installer --bin tilo-firstboot-home-seeds -p tilo-firstboot-files --bin tilo-firstboot-files, or supply {key} and {key}_SHA256 for the qualified immutable SDK helper"))
     };
     // Read the admitted inode, not a later path lookup, and copy exactly the
     // bytes whose hash was checked. Refuse symlinks and special files.

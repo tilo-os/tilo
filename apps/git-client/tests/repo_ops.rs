@@ -28,6 +28,10 @@ use git_client::model::ChangeArea;
 use git_client::panels::BranchAction;
 use git_client::repo;
 
+fn abs(path: &Path) -> ui::tilo_resource::AbsolutePath {
+    ui::tilo_resource::AbsolutePath::new(path).unwrap()
+}
+
 /// 40 lines of `"line N\n"`, used as fixture content across several
 /// hunk-boundary tests.
 fn numbered_lines() -> String {
@@ -959,7 +963,13 @@ fn linked_worktrees_use_selected_revision_and_preserve_existing_work() {
     repo::commit(&path, "second revision").unwrap();
     fs::write(path.join("file.txt"), "uncommitted work\n").unwrap();
     let destination = dir.path().join("agent-checkout");
-    repo::create_worktree(&path, &destination, "codex/tile", &initial.to_string()).unwrap();
+    repo::create_worktree(
+        &path,
+        &abs(&destination),
+        "codex/tile",
+        &initial.to_string(),
+    )
+    .unwrap();
     let linked = open(&destination);
     assert_eq!(linked.head().unwrap().shorthand().unwrap(), "codex/tile");
     assert_eq!(linked.head().unwrap().target(), Some(initial));
@@ -983,21 +993,20 @@ fn linked_worktrees_use_selected_revision_and_preserve_existing_work() {
             .any(|row| row.current && row.head == "codex/tile")
     );
     let second = dir.path().join("second-checkout");
-    repo::create_worktree(&destination, &second, "codex/verify", "HEAD").unwrap();
+    repo::create_worktree(&destination, &abs(&second), "codex/verify", "HEAD").unwrap();
     // HEAD is resolved in the initiating checkout, not the main checkout.
     assert_eq!(open(&second).head().unwrap().target(), Some(initial));
     assert_eq!(repo::list_worktrees(&path).unwrap().len(), 3);
 }
 
-/// Existing paths and branches, invalid revisions and relative destinations
-/// fail without replacing files, creating branches, or silently succeeding.
+/// Existing paths and branches and invalid revisions fail without replacing files, creating branches, or silently succeeding.
 #[test]
 fn linked_worktrees_refuse_unsafe_destinations_and_invalid_inputs() {
     let (dir, path) = init_repo();
     let destination = dir.path().join("occupied");
     fs::create_dir(&destination).unwrap();
     fs::write(destination.join("keep.txt"), "keep").unwrap();
-    assert!(repo::create_worktree(&path, &destination, "codex/new", "HEAD").is_err());
+    assert!(repo::create_worktree(&path, &abs(&destination), "codex/new", "HEAD").is_err());
     assert_eq!(
         fs::read_to_string(destination.join("keep.txt")).unwrap(),
         "keep"
@@ -1010,9 +1019,8 @@ fn linked_worktrees_refuse_unsafe_destinations_and_invalid_inputs() {
     );
     let fresh = dir.path().join("fresh");
     let branch = repository.head().unwrap().shorthand().unwrap().to_owned();
-    assert!(repo::create_worktree(&path, &fresh, &branch, "HEAD").is_err());
-    assert!(repo::create_worktree(&path, &fresh, "codex/new", "missing-revision").is_err());
-    assert!(repo::create_worktree(&path, Path::new("relative"), "codex/new", "HEAD").is_err());
+    assert!(repo::create_worktree(&path, &abs(&fresh), &branch, "HEAD").is_err());
+    assert!(repo::create_worktree(&path, &abs(&fresh), "codex/new", "missing-revision").is_err());
     assert!(!fresh.exists());
     assert!(
         repository
@@ -1034,7 +1042,7 @@ fn linked_worktree_enumeration_errors_preserve_the_repository() {
 
     let (dir, path) = init_repo();
     let linked = dir.path().join("missing-checkout");
-    repo::create_worktree(&path, &linked, "codex/missing", "HEAD").unwrap();
+    repo::create_worktree(&path, &abs(&linked), "codex/missing", "HEAD").unwrap();
     fs::remove_dir_all(&linked).unwrap();
     fs::write(path.join("file.txt"), "current edit\n").unwrap();
     assert!(repo::list_worktrees(&path).is_err());

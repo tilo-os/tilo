@@ -9,7 +9,7 @@ use crate::shell::state::{FreshId as _, WorkspaceTree};
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
-use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -285,38 +285,14 @@ pub(super) fn lay_out_host_with_theme(
     vh: f64,
     theme: &Theme,
 ) -> (TaffyTree<()>, NodeId) {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
-    let child = host.build_layout(&mut taffy, theme, &mut node_map);
-    let viewport = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            viewport,
-            Size {
-                width: AvailableSpace::Definite(ui::num::f32_of_f64(vw)),
-                height: AvailableSpace::Definite(ui::num::f32_of_f64(vh)),
-            },
-            |known, avail, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, avail, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
-    (taffy, child)
+    let crate::shell::test_support::LaidOut { taffy, node, .. } =
+        crate::shell::test_support::lay_out_in_viewport(
+            host,
+            ui::num::f32_of_f64(vw),
+            ui::num::f32_of_f64(vh),
+            theme,
+        );
+    (taffy, node)
 }
 
 /// The harness at an explicit viewport, for the geometry that only

@@ -5,9 +5,8 @@
 //! itself (a layout key, an emoji pick) and the ones a palette, agent or
 //! script asks for through an [`OskEffect`], and publishes the preferences
 //! as live rows beside the resource. What typing teaches the
-//! keyboard is kept in the person's own [`Learned`] record, which follows
-//! them to their other devices and never reaches a collaborator. In the
-//! keyboard's own
+//! keyboard is kept in the keyboard's [`Learned`] record, synced with the
+//! workspace it is open in. In the keyboard's own
 //! process ([`crate::service::serve`]) a live surface also connects to the
 //! session: it follows the focused field over the input method and types
 //! into it.

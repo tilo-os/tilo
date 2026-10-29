@@ -17,14 +17,29 @@
 //! run on their own. The shell reads the device into [`QuickSettingsState`]
 //! and lands the panel's actions.
 
+// The derives below name the resource crate by its own name.
+use ui::tilo_resource;
+
 pub mod actions;
 mod device_status;
+pub mod effect;
+mod faces;
+pub mod host;
 pub mod hosted;
 mod i18n;
+mod prepare;
+pub mod resource;
 pub mod root;
+pub mod scenarios;
 pub mod sections;
 mod state;
 pub mod status;
+mod view;
+
+pub use effect::QsEffect;
+pub use faces::subline;
+pub use prepare::prepare;
+pub use resource::{Page, QuickSettings, QuickSettingsApp};
 
 pub use state::{DisplayBrightness, PasteOrigin, QuickSettingsState, focused_display_first};
 pub use status::SystemStatus;
@@ -43,6 +58,74 @@ pub struct ClipboardView {
     pub rows: Vec<hosted::HostedRow>,
 }
 
+/// What was pressed on a row of the Devices section.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum RowPart {
+    /// The row itself.
+    Row,
+    /// The one action the row names (stop, cancel, try again).
+    Action,
+    /// Allow, on a request.
+    Allow,
+    /// Decline, on a request.
+    Decline,
+    /// Drive the device with this machine's pointer.
+    Control,
+}
+
+/// The notifications kept since they arrived, as the panel lists them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NotificationsView {
+    /// Newest first.
+    pub rows: Vec<NotificationRow>,
+    /// Why fresh notifications are being held (Do Not Disturb, presenting,
+    /// a focus schedule); `None` while they show.
+    pub quiet: Option<String>,
+    /// The last Clear all can still be undone.
+    pub can_undo: bool,
+}
+
+/// One kept notification.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NotificationRow {
+    pub id: u64,
+    /// The app group it is listed under, by its stable key.
+    pub group: String,
+    /// The app, as the group is named.
+    pub app: String,
+    pub title: String,
+    pub body: String,
+    /// How long ago it arrived.
+    pub age: String,
+    /// The sender's choices, as `(key, label)`.
+    pub actions: Vec<(String, String)>,
+    /// The agent it can be handed to, where one is live.
+    pub agent: Option<String>,
+    /// Choosing it opens something (its sender, or its app); otherwise it
+    /// is read in full in the panel.
+    pub opens: bool,
+}
+
+/// One of the person's devices a Bluetooth accessory can move to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffTarget {
+    pub id: String,
+    pub label: String,
+    pub online: bool,
+    /// This device.
+    pub local: bool,
+}
+
 /// A single frame in the `QuickSettings` navigation stack. Everything else
 /// opens in place on the root page ([`QsSection`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,9 +140,23 @@ pub enum QsLevel {
 /// A part of Quick Settings that opens in place on the root page, below
 /// the control it belongs to, with the standard disclosure motion. One is
 /// open at a time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    ui::tilo_resource::Model,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum QsSection {
     /// The networks in range, the one in use first.
+    #[default]
     Wifi,
     /// Paired accessories.
     Bluetooth,
@@ -178,9 +275,21 @@ pub struct BtDevice {
 }
 
 /// The three canonical profiles `powerprofilesctl` exposes on Linux.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    ui::tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
 pub enum PowerProfile {
     Saver,
+    #[default]
     Balanced,
     Performance,
 }

@@ -2541,7 +2541,7 @@ mod tests {
     #[test]
     fn unreadable_levels_are_shown_as_errors() {
         let profile = tempfile::tempdir().unwrap().keep();
-        let mut model = AudioModel::detached(PaneCx::in_profile(profile.to_path_buf()));
+        let mut model = AudioModel::detached(PaneCx::in_profile(profile));
         model.volume_error = Some("wpctl: Could not connect to PipeWire".into());
         let text = crate::widgets::announced_text(model.compose().as_ref());
         let volume = "Can't read the output volume: wpctl: Could not connect to PipeWire";
@@ -2694,7 +2694,7 @@ Video
 
     fn model() -> AudioModel {
         let profile = tempfile::tempdir().unwrap().keep();
-        AudioModel::detached(PaneCx::in_profile(profile.to_path_buf()))
+        AudioModel::detached(PaneCx::in_profile(profile))
     }
 
     fn recording(rec: &Arc<RecordingDispatcher>) -> AudioModel {

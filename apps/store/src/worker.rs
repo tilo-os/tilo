@@ -35,8 +35,6 @@ const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
 /// effect's job) carries a [`Done`] it is answered on.
 #[derive(Clone, Debug)]
 pub enum Request {
-    ReviewRuntime(crate::runtime_recovery::RuntimeTarget),
-    AcquireRuntime(Box<app_host::runtime_transaction::RuntimeReview>),
     /// Refresh every source; `force` refetches Flathub's catalogue even
     /// when the kept one is recent (the person asked for it).
     Refresh,
@@ -93,7 +91,6 @@ pub type Done = mpsc::Sender<Outcome>;
 #[derive(Clone, Debug, Default)]
 pub struct Finished {
     pub status: String,
-    pub runtime_review: Option<app_host::runtime_transaction::RuntimeReview>,
     pub case: Option<ui::registry::ModerationCase>,
     pub launch: Option<crate::actions::ApplicationLaunch>,
 }
@@ -102,7 +99,6 @@ impl Finished {
     fn status(status: impl Into<String>) -> Self {
         Self {
             status: status.into(),
-            runtime_review: None,
             case: None,
             launch: None,
         }
@@ -738,77 +734,6 @@ fn handle(
     staging: &std::path::Path,
 ) -> (bool, Option<Outcome>) {
     match request {
-        Request::ReviewRuntime(target) => {
-            let result =
-                crate::runtime_recovery::inspect(state.host.as_ref(), &target).map(|review| {
-                    Finished {
-                        runtime_review: Some(review),
-                        ..Finished::default()
-                    }
-                });
-            (
-                send(
-                    snapshots,
-                    state,
-                    state.base_items.clone(),
-                    &ui::i18n!("store-runtime-repair-reviewed"),
-                    None,
-                    None,
-                ),
-                Some(result),
-            )
-        }
-        Request::AcquireRuntime(review) => {
-            let progress_snapshots = snapshots.clone();
-            let mut progress_snapshot = Snapshot {
-                items: state.base_items.clone(),
-                status_line: String::new(),
-                query: None,
-                detail: None,
-                remotes: state.remotes.clone(),
-                flatpak_available: state.flatpak_available,
-                flatpak_error: state.flatpak_error.clone(),
-                operation_error: None,
-                unanswered_repositories: state.unanswered_repositories.clone(),
-                expired_repositories: state.expired_repositories.clone(),
-                blocks: state.blocks.clone(),
-                updating: None,
-            };
-            let mut last_report = None::<std::time::Instant>;
-            let result = state
-                .host
-                .as_ref()
-                .ok_or_else(|| ui::i18n!("store-runtime-repair-unavailable"))
-                .and_then(|host| host.acquire_optional_runtime_reporting(&review, move |progress| {
-                    // The host coalesces notifications; the UI additionally limits
-                    // expensive catalogue snapshots to four per second.
-                    if last_report.is_some_and(|last| last.elapsed() < Duration::from_millis(250))
-                        && !progress.installing
-                        && progress.total != Some(progress.received)
-                    { return; }
-                    last_report = Some(std::time::Instant::now());
-                    progress_snapshot.status_line = if progress.installing {
-                        ui::i18n!("store-runtime-installing")
-                    } else if let Some(total) = progress.total {
-                        ui::i18n!("store-runtime-downloaded", "received" => progress.received.to_string(), "total" => total.to_string())
-                    } else {
-                        ui::i18n!("store-runtime-downloaded-unknown", "received" => progress.received.to_string())
-                    };
-                    let _ = progress_snapshots.progress(progress_snapshot.clone());
-                }))
-                .map(|()| Finished::status(ui::i18n!("store-runtime-complete")));
-            (
-                send(
-                    snapshots,
-                    state,
-                    state.base_items.clone(),
-                    &ui::i18n!("store-runtime-settled"),
-                    None,
-                    None,
-                ),
-                Some(result),
-            )
-        }
         Request::Refresh => {
             let error = ui::i18n!("store-refresh-in-progress");
             let alive = send_tracked(
@@ -1028,7 +953,6 @@ fn handle(
             let finished = if outcome.ok {
                 Ok(Finished {
                     status: outcome.status_line,
-                    runtime_review: None,
                     case: None,
                     launch: outcome.launch,
                 })
@@ -1058,8 +982,7 @@ fn handle(
                         case.case_id,
                         crate::app::moderation_status_label(case.status)
                     ),
-                    runtime_review: None,
-                    case: Some(case),
+                            case: Some(case),
                     launch: None,
                 })
                 .map_err(|error| {

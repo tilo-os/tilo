@@ -272,10 +272,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The app as `person` (the hex of a root public key) opens it on a
-    /// fresh profile: one of that person's devices, whose person records
-    /// ([`RecordEnv::person`](super::RecordEnv::person)) are theirs.
+    /// fresh profile: one of that person's devices, whose shared records
+    /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)) are
+    /// theirs.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
         Self::fresh(TEST_ROOM, Role::Owner, person)
+    }
+
+    /// [`Self::for_person`], with the app open in the workspace `room`
+    /// (a room id), whose records sync on their routes.
+    pub fn for_person_in(person: &str, room: &str) -> Result<Self, LaunchError> {
+        Self::fresh(room, Role::Owner, person)
     }
 
     /// Open a fresh person profile with a service lent by its mounting host.

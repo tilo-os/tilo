@@ -2347,14 +2347,14 @@ impl AppHandler {
         // Continue one bounded provider page per frame. Re-querying resets the
         // palette generation/cursors, so stale work cannot leak into a newer
         // query. A follow-up redraw is requested only while more pages exist.
-        let (search_pending, search_announcement) =
-            app.actions
-                .action_palette
-                .as_mut()
-                .map_or((false, None), |palette| {
-                    let progress = palette.advance_search_page();
-                    (progress.pending, palette.take_search_announcement())
-                });
+        let (search_pending, search_announcement) = app
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .map_or((false, None), |palette| {
+                let progress = palette.advance_search_page();
+                (progress.pending, palette.take_search_announcement())
+            });
         needs_followup_redraw |= search_pending;
         if let (Some(reader), Some(announcement)) = (
             app.accessibility.screen_reader.as_mut(),
@@ -3434,7 +3434,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 if self
                     .app
                     .invoke_host_shortcut(crate::platform::HostShortcut::Search)
-                    && let Some(palette) = self.app.actions.action_palette.as_mut()
+                    && let Some(palette) = self.app.actions.action_palette.as_deref_mut()
                 {
                     palette.set_query(&query);
                 }

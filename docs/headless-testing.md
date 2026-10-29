@@ -18,7 +18,7 @@ cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::cert
 The Browser and Store fixtures provision a disposable identity and run the actual
 identity service, collaboration broker, original application factory and directory
 RPC. Browser retains its primary document, browsing history and address book. All
-three use the certified person's own room, so publication must wait for their
+three are records of Browser in the launch room, so publication must wait for their
 initial joins to become ready. Store must publish `inspect-catalogue` through the
 same authorized context. No application action is invoked.
 
@@ -34,21 +34,21 @@ Best for: regression captures, golden-image diffs, video walkthroughs of known U
 
 ```bash
 # Inventory the catalogue (currently ~22 scenarios — palette typing, workspace switch, etc.):
-cargo run -p shell --features hosted-test-control --bin shots --quiet -- --list-scenarios
+cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --list-scenarios
 
 # Capture every scenario in offscreen mode (default). Produces one PNG per scene
 # under `target/<dir>/`. Pixel-identical to a live run.
-cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode offscreen --out target/snapshots
+cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode offscreen --out target/snapshots
 
 # A single scenario, with explicit viewport:
-cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
+cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
 
 # H.264 video of a scenario (30 fps default; one second per scenario step).
 # Output is raw Annex-B NALU stream — playable by mpv / ffplay / vlc.
-cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
+cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
 
 # Interactive window mode (real winit window — useful for eyeballing while developing):
-cargo run -p shell --features hosted-test-control --bin shots --quiet -- --mode window --scenario palette_typing
+cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
 Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
@@ -944,7 +944,7 @@ flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir 
 
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
-the live host does. `apps/imager/tests/destination_headless_wizard.rs` runs
+the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
 the whole installer wizard this way against a recording install backend.
 
 The run persists through the app's real store (`ui::persist`), so pointing

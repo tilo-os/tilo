@@ -1,24 +1,15 @@
-//! An app asking the host for a runtime it declared.
+//! Settings asking the host for the person's languages.
 //!
-//! An app lists the runtime builds it mounts when present in its manifest's
-//! `[package].optional-runtimes` (the Browser's Chromium engine). Everything
-//! that installs the app brings them, but one can still be missing later: the
-//! per-user copy was evicted, or the app was swapped in beside an older image.
-//! The app then asks the host to fetch it, over the `app-host` service the
-//! launcher hands it, and shows the progress itself.
+//! Settings may ask which language packs the device's repositories offer
+//! and to install one of them, which is all the host answers it
+//! ([`Request::LanguagePacks`], [`Request::InstallLanguagePack`]). The pack,
+//! its signature and where it lands are the host's decision; Settings
+//! supplies no URL, key or path. The launcher stamped the connection with
+//! the calling app's id before the app held it, and the host answers no
+//! other app.
 //!
-//! The service is deliberately not the Store's package-management interface:
-//! the one request names a runtime, and the host answers only for a runtime
-//! the *calling* app's installed manifest declares (the launcher stamped the
-//! connection with that app's id before the app held it). Where it comes
-//! from, whom it is verified against and where it lands stay the host's
-//! decision; the app supplies no URL, key or path.
-//!
-//! Settings is the one other caller, for the person's languages: it may ask
-//! which language packs the device's repositories offer and to install one
-//! of them, which is all the host answers it ([`Request::LanguagePacks`],
-//! [`Request::InstallLanguagePack`]). The pack, its signature and where it
-//! lands are the host's decision as for a runtime.
+//! An app's runtimes are never asked for here: they install and update with
+//! the app, in the same step or not at all.
 //!
 //! Wire format: a big-endian `u32` length, then JSON, per message; one
 //! [`Response`] per [`Request`], on a connection the app keeps.
@@ -34,21 +25,13 @@ pub const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "request", rename_all = "snake_case")]
 pub enum Request {
-    /// Make `runtime` (`tilo-runtime/<version>`) installed, starting the
-    /// install when none runs, and report where it stands. Asking again is
-    /// how the app follows the install; it never starts a second one.
-    Ensure { runtime: String },
-    /// Start a fresh instance of the calling app, optionally on `uri` (an
-    /// http(s) address). A runtime is mounted into an app's sandbox when it
-    /// starts, so an app whose runtime has just been installed reopens to
-    /// have it. The host launches only the caller's own package.
-    Relaunch { uri: Option<String> },
     /// Which language packs the repositories offer, by locale, and whether
     /// each is installed. Settings only.
     LanguagePacks,
     /// Make the language pack of `locale` (`de-DE`) installed, starting the
-    /// install when none runs, and report where it stands, as
-    /// [`Request::Ensure`] does for a runtime. Settings only.
+    /// install when none runs, and report where it stands. Asking again is
+    /// how Settings follows the install; it never starts a second one.
+    /// Settings only.
     InstallLanguagePack { locale: String },
 }
 
@@ -68,7 +51,7 @@ pub enum Phase {
     Preparing,
     /// Fetching and checking the signed package.
     Downloading,
-    /// Putting the verified runtime in place.
+    /// Putting the verified pack in place.
     Installing,
 }
 
@@ -76,7 +59,7 @@ pub enum Phase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Response {
-    /// The runtime is installed.
+    /// The pack is installed.
     Installed,
     /// An install is running.
     Installing {
@@ -85,13 +68,11 @@ pub enum Response {
         /// Bytes expected, once known.
         total: Option<u64>,
     },
-    /// The fresh instance was started.
-    Relaunched,
     /// The language packs the repositories offer.
     LanguagePacks { offered: Vec<OfferedLanguage> },
     /// The install stopped; asking again retries it.
     Failed { message: String },
-    /// The host will not answer for this runtime (the app does not declare it).
+    /// The host will not answer this app or this request.
     Refused { message: String },
 }
 
@@ -172,18 +153,11 @@ impl Client {
         Self(stream)
     }
 
-    /// Ask the host to ensure `runtime`.
-    pub fn ensure(&mut self, runtime: &str) -> io::Result<Response> {
-        self.exchange(&Request::Ensure {
-            runtime: runtime.to_owned(),
-        })
-    }
-
     /// Ask the host which language packs the repositories offer.
     ///
     /// # Errors
     ///
-    /// As [`Self::ensure`].
+    /// Returns a transport error, or the host hanging up before it answered.
     pub fn language_packs(&mut self) -> io::Result<Response> {
         self.exchange(&Request::LanguagePacks)
     }
@@ -193,21 +167,10 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// As [`Self::ensure`].
+    /// As [`Self::language_packs`].
     pub fn install_language_pack(&mut self, locale: &str) -> io::Result<Response> {
         self.exchange(&Request::InstallLanguagePack {
             locale: locale.to_owned(),
-        })
-    }
-
-    /// Ask the host to start a fresh instance of this app, on `uri` if given.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::ensure`].
-    pub fn relaunch(&mut self, uri: Option<&str>) -> io::Result<Response> {
-        self.exchange(&Request::Relaunch {
-            uri: uri.map(str::to_owned),
         })
     }
 

@@ -164,7 +164,7 @@ pub struct Relay {
     compute_ready: Arc<AtomicBool>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
-    /// Sealing what the rooms it stewards hold in the clear, started when
+    /// Sealing what the rooms whose channels it takes part in hold in the clear, started when
     /// its operator decided it ([`crate::reseal`]).
     #[cfg(feature = "agents")]
     resealing: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -572,7 +572,7 @@ impl Relay {
         });
         #[cfg(feature = "agents")]
         let mut resealing = None;
-        // What the rooms it stewards hold in the clear is sealed only once
+        // What the rooms whose channels it takes part in hold in the clear is sealed only once
         // its operator decided it, recorded in its state.
         #[cfg(feature = "agents")]
         if let Some(rooms) = &rooms
@@ -582,7 +582,7 @@ impl Relay {
             rooms.reseal_existing();
             compactor.reseal_existing();
             resealing = Some(tokio::spawn(async move {
-                rooms.reseal_stewarded(&compactor).await;
+                rooms.reseal_own_channels(&compactor).await;
             }));
         }
         let mut router = Router::builder(endpoint.clone())
@@ -744,7 +744,7 @@ impl Relay {
         self.endpoint.addr()
     }
 
-    /// Wait until the relay has sealed what the rooms it stewards held in
+    /// Wait until the relay has sealed what the rooms whose channels it takes part in held in
     /// the clear when it started, if its operator decided it
     /// ([`crate::reseal`]).
     #[cfg(feature = "agents")]

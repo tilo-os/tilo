@@ -51,6 +51,22 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # machine an agent drives (no local person, no lock screen). Non-default and
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
+# Draw the packaged first-party apps (Terminal, Files, Notes, Editor, Word,
+# Browser, Messages, Passwords, Activity) inside this process, from their
+# crates: what the macOS runner, the `shots` captures and the tests that
+# drive those apps through the shell need. The Wayland session runs them as
+# their own processes, so its compositor is built without them.
+in-process-apps = [
+    "dep:terminal",
+    "dep:messages",
+    "dep:passwords",
+    "dep:browser",
+    "dep:notes",
+    "dep:activity",
+    "dep:code-editor",
+    "dep:word-processor",
+    "dep:osk",
+]
 
 # Binaries the integration tests start, with no tests of their own: without
 # `test = false` every shell change also compiled and linked an empty test
@@ -62,11 +78,11 @@ test = false
 bench = false
 
 # The deterministic screenshot renderer drives the shell through its test
-# seams.
+# seams, and draws the apps the shell shows inside its own process.
 [[bin]]
 name = "shots"
 path = "src/bin/shots/main.rs"
-required-features = ["hosted-test-control"]
+required-features = ["hosted-test-control", "in-process-apps", "test-support"]
 
 [[bin]]
 name = "tilo-runtime-mcp"
@@ -208,19 +224,19 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
-terminal = { path = "../../../apps/terminal" }
-messages = { path = "../../../apps/messages" }
-passwords = { path = "../../../apps/passwords" }
+terminal = { path = "../../../apps/terminal", optional = true }
+messages = { path = "../../../apps/messages", optional = true }
+passwords = { path = "../../../apps/passwords", optional = true }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 accounts = { path = "../../system/accounts" }
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
 tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"] }
 file-explorer = { path = "../../../apps/file-explorer" }
-browser = { path = "../../../apps/browser" }
-notes = { path = "../../../apps/notes" }
-activity = { path = "../../../apps/activity" }
-code-editor = { path = "../../../apps/code-editor" }
-word-processor = { path = "../../../apps/word-processor" }
+browser = { path = "../../../apps/browser", optional = true }
+notes = { path = "../../../apps/notes", optional = true }
+activity = { path = "../../../apps/activity", optional = true }
+code-editor = { path = "../../../apps/code-editor", optional = true }
+word-processor = { path = "../../../apps/word-processor", optional = true }
 # The tracker's record, read for the runs of issues assigned to agents.
 tasks = { path = "../../../apps/tasks" }
 # The document-format registry. The shell asks it whether a path is an
@@ -333,7 +349,7 @@ tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-
 # The on-screen keyboard's widget, which the `shots` capture draws in place of
 # the keyboard client's surface (it has no clients) and which reads the input
 # method's content type the way the keyboard app does.
-osk = { path = "../../../apps/osk" }
+osk = { path = "../../../apps/osk", optional = true }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
@@ -449,6 +465,8 @@ app-fleet = { path = "../../packaging/app-fleet" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Tests, examples and benches drive the apps the shell can draw itself.
+shell = { path = ".", features = ["in-process-apps"] }
 # The hooks the network tests reach the actor through.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # The calibrated test panels the presenter tests render through.

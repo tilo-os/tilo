@@ -40,7 +40,7 @@ async fn readable(rooms: &Rooms, room: &str) -> Option<String> {
 }
 
 /// A node governing a room, the room's record of [`APP`] it holds, and a
-/// member device that writes it sealed under the keys the node stewards.
+/// member device that writes it sealed under the keys the node takes part in.
 struct Lounge {
     _dir: tempfile::TempDir,
     relay: crate::rooms::fixtures::TestHost,
@@ -75,7 +75,7 @@ async fn lounge() -> Lounge {
 }
 
 /// A node governs a room whose record its members write sealed. It reads
-/// the record through the channel keys it holds as steward and resets it
+/// the record through the channel keys it holds as a member and resets it
 /// with a write of its own, sealed like theirs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_reads_and_resets_a_record_its_members_seal() {
@@ -183,7 +183,7 @@ async fn retained_writes(
 }
 
 /// A record its members wrote sealed for a long time is folded by the node
-/// that stewards its channel: a newcomer is sent one sealed snapshot and the
+/// that takes part in its channel: a newcomer is sent one sealed snapshot and the
 /// writes since, not every write ever made, and they open to the record as
 /// its members wrote it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -499,7 +499,7 @@ async fn writes_held_for_a_late_surface_are_all_taken_in_once_it_arrives() {
 }
 
 /// A chat kept as a chain of parts starts each part with a member's sealed
-/// write, under keys the node stewards. The node takes in every part as it
+/// write, under keys the node takes part in. The node takes in every part as it
 /// starts, however many there are, and reads each.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_follows_every_part_its_members_start_sealed() {
@@ -529,7 +529,7 @@ async fn a_node_follows_every_part_its_members_start_sealed() {
 }
 
 /// Members of a hosted room seal every Chat write, so the node reads the
-/// voice channel a member opens through the keys it stewards: a member's
+/// voice channel a member opens through the keys it holds: a member's
 /// sealed write never leaves a room's voice channels without calls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -627,11 +627,11 @@ async fn retained_once(
     .await
 }
 
-/// A node that stewards its room's channels opens a record's channel
+/// A node that takes part in its room's channels opens a record's channel
 /// before the record's first write: nothing of the record is ever retained
 /// in the clear, and the room reads it through the channel's keys.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_record_of_a_stewarded_room_is_sealed_from_its_first_write() {
+async fn a_record_of_a_sealed_room_is_sealed_from_its_first_write() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -651,7 +651,7 @@ async fn a_record_of_a_stewarded_room_is_sealed_from_its_first_write() {
     relay.shutdown().await;
 }
 
-/// A record its room wrote in the clear before the node stewarded its
+/// A record its room wrote in the clear before the node took part in its
 /// channel is sealed once its operator decided it: its channel is opened, the
 /// relay retains one sealed snapshot in place of the writes in the clear,
 /// and a member with the channel's keys reads every change of that history
@@ -671,7 +671,7 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     let (room, workspace_id) = (created.room, created.workspace_id);
     let (member_key, _) = member_device(&rooms, &room, (&key, &cert), 3).await;
     // Two authors' writes, as the room's host kept them in the clear before
-    // it stewarded the record's channel.
+    // it took part in the record's channel.
     let mut written = automerge::AutoCommit::new();
     written.put(ROOT, "title", "before").unwrap();
     written.commit_edit("fixture", "title");
@@ -706,11 +706,11 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     // The host's operator decided to seal what its rooms hold in the clear.
     rooms.reseal_existing();
     relay.compactor().reseal_existing();
-    rooms.reseal_stewarded(relay.compactor()).await;
+    rooms.reseal_own_channels(relay.compactor()).await;
 
     let held = retained_writes(&relay, workspace_id, LEGACY).await;
     assert!(held.iter().all(|op| op.encryption.is_some()));
-    rooms.reseal_stewarded(relay.compactor()).await;
+    rooms.reseal_own_channels(relay.compactor()).await;
     assert_eq!(retained_writes(&relay, workspace_id, LEGACY).await, held);
     let member = SealingMember::join(&rooms, &room, (APP, LEGACY), member_key).await;
     let mut read = automerge::AutoCommit::new();

@@ -64,7 +64,7 @@ history.
   a member seals the adder's whole keyring (including the new epoch's key)
   into a `KeyHistory` under a transport key exported from the joiner's first
   epoch. It travels next to the Welcome in the signed governance frame
-  (`MlsGovernanceAction::AddWithKeyHistory`). Its size grows with the number of
+  (`MlsGovernanceAction::Commit`, its `JoinMaterial`). Its size grows with the number of
   membership epochs, about 40 bytes each, never with the amount of content.
   The joiner can then decrypt everything locally, with no other member online.
 - **Current state first, history on demand.** A joiner loads the latest
@@ -98,8 +98,8 @@ history.
 - **No sender authentication inside the envelope.** Any key holder can seal
   for that epoch. Authorship comes from the outer `SignedOp` signature and
   the broker's live role check.
-- **Stale epochs are refused.** Once a membership change is journaled, the
-  broker (`GovernanceJournal::accepts_document_encryption`) refuses new
+- **Stale epochs are refused.** Once a membership change is applied, the
+  broker (`ChannelGate::accepts`) refuses new
   content sealed under an older epoch. A removed member therefore cannot
   inject content under keys it still holds. A lagging member must also catch
   up first; until then, what it seals remains readable by the removed member.
@@ -114,39 +114,43 @@ history.
   epoch. Tag `2` is the content-key scheme.
 - Sealed member state is a `tilo-seal` envelope that also carries the
   keyring; any other state file is refused.
-- `AddWithKeyHistory` is a new trailing variant, so journals written before
-  it still decode.
 
-## Stewards, members and endpoints
+## Participants and endpoints
 
-Each channel has exactly one **steward**: the device that created its MLS
-group. Only the steward issues governance frames, so frames form one hash
-chain with no forks to reconcile.
+A channel's MLS group holds exactly the participant devices its membership
+lets read it: a projection the caller computes from the room's membership
+and access policy, never a second record of who belongs. Every participant
+keeps a [`ChannelPeer`]:
 
-- [`ChannelSteward`] owns the group, the governance journal and a small
-  ledger. `reconcile(allowed, requests)` moves the group to the device set
-  the caller's access policy allows. It removes devices that lost access
-  first, then admits allowed devices that sent an access request. A member
-  that sends a newer request because it lost its state is removed and
-  admitted again. `outbox()` lists, for each device with an unacknowledged
-  delivery, the frames after the last one it acknowledged, and
-  `acknowledge` applies a device's cumulative acknowledgement. Each change
-  stages the commit, writes the group, signs the frame, writes the ledger,
-  appends the frame, then merges; a crash at any point is finished or rolled
-  back on the next open. Its records live in a [`StewardStore`]: files on a
-  native device (`FileStewardStore`), or memory a browser exports to
-  `IndexedDB` (`MemoryStewardStore`). It signs through a [`StewardSigner`],
-  which may answer later, as a browser's `WebCrypto` key does.
-- [`ChannelMember`] is every other device's view. It starts `Waiting` and
-  signs `MlsAccessRequestV1`s that carry fresh key packages. Its MLS
-  credential is the device's certified key, and the steward refuses a
-  package whose credential names another device. It applies frames once and
-  in chain order, whatever order and however often the transport delivers
-  them: out-of-order frames are held back, duplicates are ignored, and a
-  frame replayed after a crash is recognised by its epoch. It keeps a mirror
-  of the journal that carries the plaintext gate and the head epoch for the
-  device's broker. A frame its MLS state cannot apply makes it `Waiting`
-  again instead of failing.
+- **Any participant commits.** `reconcile(allowed)` writes the one commit
+  that moves the group to `allowed`: it removes every member the projection
+  no longer names and adds every allowed device that asked
+  (`learn_request`), with a Welcome and the bundle of every past content
+  key. A member asking with a key package whose signature key is not the one
+  it joined with lost its state, and is removed and added again in the same
+  commit. The frame (`MlsGovernanceAction::Commit`) names who it removes and
+  adds.
+- **Every commit is checked.** `receive(frame, allowed)` refuses a commit
+  that adds a device the projection does not name, removes one it does
+  (unless it adds it again), is not signed by an allowed member, or whose MLS
+  proposals differ from what its frame declares. Commits travel as MLS public
+  messages, so a receiver can look at a commit, refuse it, and apply it once
+  its own membership caught up.
+- **One commit per epoch.** Of two frames following the same one, every
+  device keeps the one with the lower digest; a device that applied the other
+  goes back to the group it held before (kept beside the head) and applies
+  the winner, and commits again if the group still differs. The device that
+  wrote the winner publishes it again when it sees the loser, so a host that
+  keeps only a channel's newest frame keeps the winner. Two geneses compete
+  the same way.
+- **Falling behind starts over.** A member that finds a frame it can never
+  reach (it missed one, or its branch lost) waits again with a fresh member
+  key and asks anew; any participant admits it, history included.
+- The peer's state is one sealed record: written to a file on a native
+  device, or exported (`export_sealed`) for a browser's `IndexedDB`. A frame
+  reaches `outbox()` only once the state holding it is durable. It signs
+  through a [`DeviceSigner`], which may answer later, as a browser's
+  `WebCrypto` key does.
 - [`ChannelContentKeys`] is what an application process receives: the
   current epoch and the content keyring. It has no MLS signer, HPKE or
   ratchet secrets, so an app can seal and open content but cannot change
@@ -178,10 +182,12 @@ plaintext path.
 
 ### How a channel is provisioned
 
-- **Creation.** The device that governs a route's room stewards the
-  route's channel (`shell/channel_encryption.rs`). It creates the MLS group
-  and its `Genesis` frame the first time an allowed endpoint opens the
-  route. `Genesis` closes the plaintext gate for good.
+- **Creation.** The device that governs a route's room creates the route's
+  MLS group and its `Genesis` frame (`tilo_action_broker::channel_encryption`)
+  the first time an allowed endpoint opens the route or an allowed device
+  asks for it. Only the governor creates, so no device that missed a genesis
+  starts a second group beside one that holds content. `Genesis` closes the
+  plaintext gate for good.
 - **Migration.** A channel that carried plaintext before migrates the same
   way on its next open. New content is encrypted from then on. Old
   plaintext stays in the replicas of the members that hold it, and the local
@@ -197,25 +203,26 @@ plaintext path.
   - live service members (below).
 
   Always-on host certificates are never a person's reading device. The
-  steward reconciles the group with this set about once a second and on
-  every new request. Invites, removals, role changes that end reading, and
+  room's governor is a participant of every channel of the room. Every
+  participant reconciles the group with this set on every policy change
+  and every new request. Invites, removals, role changes that end reading, and
   device enrolment or revocation all become commits.
-- **Governance transport.** Frames, access requests and acknowledgements
-  travel on the room's topic (`NeighbourMsg::MlsGovernance`,
-  `MlsAccessRequest`, `MlsGovernanceAck`). Workspace hosts retain them, so a
-  device that is offline still gets its Welcome. The steward redelivers each
-  device's unacknowledged frames with exponential backoff (1 s up to 60 s)
-  until that device's cumulative acknowledgement covers them. Redelivery is
-  idempotent and ordered on the receiving side, so transport failures delay
-  delivery and never lose or reorder it.
+- **Governance transport.** Frames and access requests travel on the room's
+  topic (`NeighbourMsg::MlsGovernance`, `MlsAccessRequest`,
+  `MlsRoutedAccessRequest`) to every member. Workspace hosts retain each
+  channel's geneses, its newest frame (and the copy with join material for
+  the devices it adds) and each device's newest request, so a device that is
+  offline still gets its Welcome. A frame the transport did not take is
+  published again; a member that missed a commit the host no longer holds
+  starts over.
 - **Endpoints.** An app asks the workspace identity service for its route's
   keys (`Request::ChannelKeys`) and gets `ChannelContentKeys`: content
   keys, and no MLS secret. It does not ask again on a timer: each route
   keeps one `channelKeysChanged` call pending at the broker, which resolves
   the moment the channel service records a change to that channel (a commit
-  the steward made, or a frame that reached this member), and the endpoint
-  asks for keys then. Every policy change above becomes such a commit
-  within the steward's reconcile interval, so a removed or revoked device's
+  this device made, or a frame that reached it), and the endpoint asks for
+  keys then. Every policy change above becomes such a commit within a
+  participant's reconcile interval, so a removed or revoked device's
   apps stop holding the channel's keys within about a second plus the
   commit's delivery to that device; the broker's epoch gate and the identity
   service's per-signature trust check stop it publishing at once. A route
@@ -239,8 +246,8 @@ plaintext path.
   through its host. Committed routes take encryption once their owner runs
   as a service member.
 - **Rooms a node governs** have no committed routes. A node is a relay whose
-  certificate lets it host and own workspaces; it stewards the channels of
-  the rooms it governs. A desktop session enrolled in such a room serves
+  certificate lets it host and own workspaces; it takes part in the channels
+  of the rooms it governs. A desktop session enrolled in such a room serves
   each route as a channel: its apps ask for keys, seal and open, and its
   sealed writes go to the relay as the device's own, never through the
   governor. A company node's own session is such a member: a device of the
@@ -262,8 +269,8 @@ content only as a **service member** (`shell/service_members.rs`):
   capability on the agent principal `service:<device key hex>`.
 - It is listed in the Agents pane as a service row, with its purpose and
   when access ends.
-- When the deadline passes, or `revoke_service_member` ends the job, the
-  steward removes it. The removal is a commit, so content keys rotate: the
+- When the deadline passes, or `revoke_service_member` ends the job, a
+  participant removes it. The removal is a commit, so content keys rotate: the
   service keeps what it read and cannot open anything written afterwards.
 
 The relay and the action broker need no change: they route and retain
@@ -285,15 +292,20 @@ ciphertext and MLS control material without decoding either.
 - **Apps never hold MLS secrets.** They receive content keys for routes of
   their own launch only, gated on the device being trusted and the person
   holding a reading role.
-- **One issuer per channel.** Only the steward signs frames, and members
-  refuse frames from anyone else, so governance cannot fork.
+- **Commits follow the membership.** Any participant may sign a commit,
+  and every participant refuses one the membership does not back, so no
+  participant can admit an outsider; of two commits on one epoch every
+  device keeps the same one.
 - **Forward secrecy applies to membership, not to history**, as described
   above.
-- **Known limits.** Stewardship follows room governance: if the governing
-  machine is lost, the room's channels keep working for their current
-  members, but membership cannot change until governance is re-established,
-  exactly like the room itself. Only Welcome-based joins exist; there are no
-  external commits.
+- **Known limits.** Only the governing device creates a channel's group:
+  if it is lost, existing channels go on and any participant admits and
+  removes devices, but a channel nobody opened before stays closed until
+  governance is re-established. Content a device sealed under a commit that
+  lost a same-epoch race is readable only by devices that applied that
+  commit. A browser follows and checks commits but writes none, since it
+  does not hold the record-level Read grants. Only Welcome-based joins
+  exist; there are no external commits.
 
 ### Key loss and identity backups
 
@@ -306,19 +318,19 @@ through the normal paths:
 
 1. The new device announces its root-signed certificate. Once the room's
    governor has admitted it, the policy allows it.
-2. The steward admits it, and its key history opens every earlier content
+2. A participant admits it, and its key history opens every earlier content
    key, so the whole channel history reads again
    (`a_restored_identity_regains_the_whole_channel_on_its_new_device`).
 3. Revoking the lost device (fleet revocation) makes the next reconcile
    remove it, so it cannot read anything written afterwards.
 
-If the lost machine was the room's governor, see the known limit above.
+If the lost machine was the room's governor, see the known limits above.
 
 ## Remaining work
 
 - **External commit / external join.** Only Welcome-based joins are
   supported.
-- **Below-record reads.** Admission is per record: a steward learns which
+- **Below-record reads.** Admission is per record: a participant learns which
   record a channel carries from a grant naming it or from the route a device
   proves with its access request (`NeighbourMsg::MlsRoutedAccessRequest`), and
   admits a device, or a service member, only while the same read decision

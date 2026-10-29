@@ -82,6 +82,12 @@ impl<'a> Reader<'a> {
         self.take(1)?.first().copied().ok_or(Corrupt)
     }
 
+    /// What is left to read.
+    #[must_use]
+    pub const fn rest(&self) -> &'a [u8] {
+        self.0
+    }
+
     /// The next u32, little-endian.
     ///
     /// # Errors

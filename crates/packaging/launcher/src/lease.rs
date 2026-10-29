@@ -176,7 +176,7 @@ fn per_user_bundles() -> Option<BundleRoot> {
 
 /// The runtime versions a launch of `manifest` may mount from `root`: an
 /// explicit runtime directory there, else the manifest's runtime, and its
-/// optional runtimes. Malformed references are left to the lookup to
+/// required runtimes. Malformed references are left to the lookup to
 /// refuse.
 fn runtime_versions(manifest: &ManifestView, opts: &RunOptions, root: &Path) -> Vec<String> {
     let version_of = |raw: &str| {
@@ -201,7 +201,7 @@ fn runtime_versions(manifest: &ManifestView, opts: &RunOptions, root: &Path) -> 
     };
     versions.extend(
         manifest
-            .optional_runtimes
+            .required_runtimes
             .iter()
             .filter_map(|raw| version_of(raw)),
     );

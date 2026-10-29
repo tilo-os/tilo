@@ -292,7 +292,7 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         let invocation = tilo_actions::InvocationId::new();
         app.answer_effect(
             PhotosEffect::Import {
-                path: Some(path.to_string_lossy().into()),
+                path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
             },
             invocation,
             &crate::test_doc::library(&doc),
@@ -380,7 +380,9 @@ fn late_opens_imports_and_restores_settle_against_current_content() {
         let tmp = tempfile::tempdir().unwrap();
         app.answer_effect(
             PhotosEffect::Import {
-                path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
+                path: Some(
+                    ui::tilo_resource::AbsolutePath::new(tmp.path().join("absent.png")).unwrap(),
+                ),
             },
             invocation,
             &crate::test_doc::library(&doc),

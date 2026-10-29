@@ -58,7 +58,10 @@ pub enum RegistryError {
     Decode(String),
     #[error("empty response")]
     Empty,
-    #[error("registry snapshot proof failed: {0}")]
+    /// The snapshot did not verify. A snapshot at another package format
+    /// says so in its own words: it is a version skew to act on, not a
+    /// forged catalogue.
+    #[error("{}", proof_message(.0))]
     Proof(#[from] registry_types::SnapshotError),
     /// The registry's owner-signed catalogue is authentic but past its
     /// expiry: the registry has not renewed it. Nothing in it is offered.
@@ -91,6 +94,13 @@ pub enum RegistryError {
     VersionIndex(#[from] registry_types::VersionIndexError),
     #[error("bot program does not match its listing: {0}")]
     ProgramMismatch(String),
+}
+
+fn proof_message(error: &registry_types::SnapshotError) -> String {
+    match error {
+        registry_types::SnapshotError::Protocol { .. } => error.to_string(),
+        other => format!("registry snapshot proof failed: {other}"),
+    }
 }
 
 impl RegistryError {
@@ -773,6 +783,42 @@ mod tests {
             classified(&snapshot(&stranger), 250),
             Err(RegistryError::Proof(_))
         ));
+    }
+
+    #[test]
+    fn a_catalogue_at_another_package_format_is_a_version_skew_not_a_failed_proof() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let mut skewed = signed_snapshot(&owner, 1);
+        skewed.protocol = registry_types::PACKAGE_FORMAT_VERSION + 1;
+        let refused = classify_snapshot(&CatalogueSnapshot::Full(skewed), &owner_hex, 150)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(
+                refused,
+                RegistryError::Proof(registry_types::SnapshotError::Protocol { served })
+                    if served == registry_types::PACKAGE_FORMAT_VERSION + 1
+            ),
+            "{refused:?}"
+        );
+        let message = refused.to_string();
+        assert!(!message.contains("proof failed"), "{message}");
+        assert!(message.contains("package format"), "{message}");
+        // Any other failure still reads as the failed proof it is.
+        let stranger = SigningKey::from_bytes(&[9; 32]);
+        let forged = classify_snapshot(
+            &CatalogueSnapshot::Full(signed_snapshot(&stranger, 1)),
+            &owner_hex,
+            150,
+        )
+        .map(|_| ())
+        .unwrap_err();
+        assert!(
+            forged
+                .to_string()
+                .starts_with("registry snapshot proof failed")
+        );
     }
 
     #[test]

@@ -55,7 +55,7 @@
  * spectator person (`POST <admission>spectate`), then connects through the
  * ordinary `connectPeer` path with that certificate, watching only (it
  * writes nothing, and takes the keys of what members seal from the room's
- * steward). Nothing is stored and
+ * node). Nothing is stored and
  * no person is created, so a visitor who only scrolls past leaves no member
  * behind.
  */

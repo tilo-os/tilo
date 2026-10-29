@@ -213,7 +213,7 @@ impl TestGovernor {
     }
 
     /// Use a separately certified delivery host without making the governor
-    /// a sealed-channel steward. Admission uses the ordinary signed delegation.
+    /// take part in sealed channels. Admission uses the ordinary signed delegation.
     ///
     /// # Errors
     /// Rejects a mismatched host key or invalid workspace delegation.

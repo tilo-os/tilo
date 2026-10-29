@@ -171,7 +171,7 @@ fn click_back(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) {
 }
 
 fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> tube::model::Route {
-    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test().clone())
+    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test())
         .expect("the window shows Tube")
 }
 

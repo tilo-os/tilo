@@ -711,7 +711,7 @@ impl Rooms {
 
     /// Add an agent to `room`, remove one, or give and take back a grant,
     /// as `device`: the room's own membership changes, which its governance
-    /// decides. A room whose host stewards its channels commits these
+    /// decides. A room whose host takes part in its channels commits these
     /// here, because the host is the one party that may; the same typed
     /// command is what a room a device governs applies itself.
     ///

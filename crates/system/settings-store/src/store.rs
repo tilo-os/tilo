@@ -35,15 +35,16 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue};
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 
+use tilo_settings_records::{Door, Hold, Holding, Records, Stamp, Watch};
+
 use crate::continuity::{SettingScope, classify};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
 
-/// The directory below a profile's root holding its documents.
-pub const RECORDS_DIR: &str = "records";
+pub use tilo_settings_records::RECORDS_DIR;
+
 const PERSON_FILE: &str = "person.automerge";
 const DEVICE_FILE: &str = "device.automerge";
-const LOCK_FILE: &str = "settings.lock";
-const SOCKET_FILE: &str = "settings.sock";
+const DOCUMENTS: &[&str] = &[PERSON_FILE, DEVICE_FILE];
 
 /// What a write makes of the section it found: the leaves to merge, or
 /// `None` when the writer's intent was superseded.
@@ -69,21 +70,13 @@ fn holder_of(section: &str, leaf: &str) -> Holder {
     }
 }
 
-/// What tells two saves of a document file apart without reading it.
-type FileIdentity = Option<(u64, std::time::SystemTime)>;
-
-fn file_identity(path: &Path) -> FileIdentity {
-    let meta = std::fs::metadata(path).ok()?;
-    Some((meta.len(), meta.modified().ok()?))
-}
-
 struct Docs {
     person: AutoCommit,
     device: AutoCommit,
     /// The sections changed since the documents were last saved.
     unsaved: std::collections::BTreeSet<String>,
     /// What a follower last loaded, to notice the holder's next save.
-    seen: (FileIdentity, FileIdentity),
+    seen: (Stamp, Stamp),
 }
 
 impl Docs {
@@ -113,12 +106,13 @@ struct Snapshot {
 pub struct Store {
     me: Weak<Store>,
     root: PathBuf,
+    records: Records,
     /// Another process holds the profile: this one follows its saves.
     follower: std::sync::atomic::AtomicBool,
     /// Opened to hold the profile: takes it over when its holder is gone.
     may_hold: bool,
     /// The holder's lock; `None` for a follower.
-    lock: Mutex<Option<tilo_files::Lock>>,
+    lock: Mutex<Option<Holding>>,
     /// Why this process may not write (a follower, an unisolated test).
     refused: Mutex<Option<String>>,
     docs: Mutex<Docs>,
@@ -126,11 +120,10 @@ pub struct Store {
     revision: AtomicU64,
     changes: crate::ChangeSignal,
     failures: Mutex<Vec<crate::DeferredFailure>>,
-    #[cfg(feature = "watch")]
-    watch: Mutex<Option<tilo_files::native::ChangeWatch>>,
-    /// The holder takes other processes' writes on this socket.
-    #[cfg(unix)]
-    serving: Mutex<Option<PathBuf>>,
+    /// A follower's watch on the holder's saves.
+    watch: Mutex<Option<Watch>>,
+    /// The holder's door for other processes' writes.
+    door: Mutex<Option<Door>>,
 }
 
 impl std::fmt::Debug for Store {
@@ -142,17 +135,26 @@ impl std::fmt::Debug for Store {
     }
 }
 
-fn load_doc(path: &Path) -> std::io::Result<AutoCommit> {
-    match std::fs::read(path) {
-        Ok(bytes) => AutoCommit::load(&bytes).map_err(|error| {
+fn load_doc(records: &Records, name: &str) -> std::io::Result<AutoCommit> {
+    match records.read(name)? {
+        Some(bytes) => AutoCommit::load(&bytes).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}: {error}", path.display()),
+                format!("{}: {error}", records.dir().join(name).display()),
             )
         }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(AutoCommit::new()),
-        Err(error) => Err(error),
+        None => Ok(AutoCommit::new()),
     }
+}
+
+/// Both documents as saved now, with what tells this save from the next.
+fn load_docs(records: &Records) -> std::io::Result<(AutoCommit, AutoCommit, (Stamp, Stamp))> {
+    let seen = (records.stamp(PERSON_FILE), records.stamp(DEVICE_FILE));
+    Ok((
+        load_doc(records, PERSON_FILE)?,
+        load_doc(records, DEVICE_FILE)?,
+        seen,
+    ))
 }
 
 impl Store {
@@ -176,74 +178,32 @@ impl Store {
     }
 
     fn open_as(root: &Path, hold: bool) -> std::io::Result<Arc<Self>> {
-        let records = root.join(RECORDS_DIR);
-        let lock_path = records.join(LOCK_FILE);
-        let lock = if hold {
-            Self::try_hold(&lock_path)
-        } else {
-            Locked::Busy
-        };
-        Self::finish_open(root, &records, lock, hold)
-    }
-
-    /// The lock, once the process holding it lets it go: for a holder whose
-    /// door closed, which it does only as it ends.
-    fn wait_to_hold(lock_path: &Path) -> Locked {
-        match tilo_files::file_at(lock_path).and_then(|(dir, name)| {
-            tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive)
-        }) {
-            Ok(lock) => Locked::Held(lock),
-            Err(_) => Locked::Busy,
-        }
-    }
-
-    fn try_hold(lock_path: &Path) -> Locked {
-        match tilo_files::native::lock::prepare_parent(lock_path)
-            .ok()
-            .and_then(|()| tilo_files::file_at(lock_path).ok())
-        {
-            Some((dir, name)) => {
-                match tilo_files::blocking::try_lock(&dir, &name, tilo_files::LockMode::Exclusive) {
-                    Ok(Some(lock)) => Locked::Held(lock),
-                    Ok(None) => Locked::Busy,
-                    // No locks here (the web): nobody else can hold it.
-                    Err(_) => Locked::Unlockable,
-                }
-            }
-            // No directory to keep it in: in memory, held.
-            None => Locked::Unlockable,
-        }
-    }
-
-    fn finish_open(
-        root: &Path,
-        records: &Path,
-        lock: Locked,
-        may_hold: bool,
-    ) -> std::io::Result<Arc<Self>> {
-        let person_path = records.join(PERSON_FILE);
-        let device_path = records.join(DEVICE_FILE);
+        let records = Records::of(root);
+        let taken = if hold { records.try_hold() } else { Hold::Busy };
+        let (person, device, seen) = load_docs(&records)?;
         let docs = Docs {
-            person: load_doc(&person_path)?,
-            device: load_doc(&device_path)?,
+            person,
+            device,
             unsaved: std::collections::BTreeSet::new(),
-            seen: (file_identity(&person_path), file_identity(&device_path)),
+            seen,
         };
         let document = Arc::new(docs.projection());
-        let (lock, refused) = match lock {
-            Locked::Held(lock) => (Some(lock), None),
-            Locked::Unlockable => (None, None),
-            Locked::Busy => (
+        let (lock, refused) = match taken {
+            Hold::Held(lock) => (Some(lock), None),
+            Hold::Unlockable => (None, None),
+            Hold::Busy => (
                 None,
                 Some("these settings are held by the session".to_owned()),
             ),
         };
         let follower = refused.is_some();
+        let holds = lock.is_some();
         let store = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             root: root.to_path_buf(),
+            records,
             follower: std::sync::atomic::AtomicBool::new(follower),
-            may_hold,
+            may_hold: hold,
             lock: Mutex::new(lock),
             refused: Mutex::new(refused),
             docs: Mutex::new(docs),
@@ -251,34 +211,33 @@ impl Store {
             revision: AtomicU64::new(1),
             changes: crate::ChangeSignal::default(),
             failures: Mutex::new(Vec::new()),
-            #[cfg(feature = "watch")]
             watch: Mutex::new(None),
-            #[cfg(unix)]
-            serving: Mutex::new(None),
+            door: Mutex::new(None),
         });
-        #[cfg(unix)]
-        if store.lock.lock_recover().is_some() {
-            serve::start(&store, &records.join(SOCKET_FILE));
+        if holds {
+            store.open_door();
         }
-        #[cfg(feature = "watch")]
         if follower {
             let weak = Arc::downgrade(&store);
-            if let Ok(watch) = tilo_files::native::watch_changes(
-                records,
-                |path| {
-                    path.file_name()
-                        .is_some_and(|name| name == PERSON_FILE || name == DEVICE_FILE)
-                },
-                move || {
-                    if let Some(store) = weak.upgrade() {
-                        store.take_in_saves();
-                    }
-                },
-            ) {
-                *store.watch.lock_recover() = Some(watch);
-            }
+            *store.watch.lock_recover() = store.records.watch(DOCUMENTS, move || {
+                if let Some(store) = weak.upgrade() {
+                    store.take_in_saves();
+                }
+            });
         }
         Ok(store)
+    }
+
+    /// Take other processes' writes from now on.
+    fn open_door(&self) {
+        let weak = self.me.clone();
+        *self.door.lock_recover() = self.records.open_door(move |request| {
+            let answer = match weak.upgrade() {
+                Some(store) => door::answer(&store, request),
+                None => door::Answer::Refused("the settings were closed".to_owned()),
+            };
+            serde_json::to_vec(&answer).unwrap_or_default()
+        });
     }
 
     fn is_follower(&self) -> bool {
@@ -292,34 +251,29 @@ impl Store {
         if !self.may_hold || !self.is_follower() {
             return false;
         }
-        let records = self.records();
-        let lock_path = records.join(LOCK_FILE);
         let held = if wait {
-            Self::wait_to_hold(&lock_path)
+            self.records.wait_to_hold()
         } else {
-            Self::try_hold(&lock_path)
+            self.records.try_hold()
         };
-        let Locked::Held(lock) = held else {
+        let Hold::Held(lock) = held else {
             return false;
         };
-        let (person_path, device_path) = (records.join(PERSON_FILE), records.join(DEVICE_FILE));
-        let (Ok(person), Ok(device)) = (load_doc(&person_path), load_doc(&device_path)) else {
+        let Ok((person, device, seen)) = load_docs(&self.records) else {
             return false;
         };
         let mut docs = self.docs.lock_recover();
         docs.person = person;
         docs.device = device;
-        docs.seen = (file_identity(&person_path), file_identity(&device_path));
+        docs.seen = seen;
         let document = Arc::new(docs.projection());
         drop(docs);
         *self.lock.lock_recover() = Some(lock);
         self.follower.store(false, Ordering::Release);
         *self.refused.lock_recover() = None;
+        *self.watch.lock_recover() = None;
         self.publish(document);
-        #[cfg(unix)]
-        if let Some(me) = self.me.upgrade() {
-            serve::start(&me, &records.join(SOCKET_FILE));
-        }
+        self.open_door();
         true
     }
 
@@ -340,10 +294,6 @@ impl Store {
         *self.refused.lock_recover() = Some(why.to_owned());
     }
 
-    fn records(&self) -> PathBuf {
-        self.root.join(RECORDS_DIR)
-    }
-
     /// The whole document as readers see it.
     #[must_use]
     pub fn document(&self) -> Arc<Map<String, Value>> {
@@ -356,14 +306,18 @@ impl Store {
         if !self.is_follower() {
             return;
         }
-        let records = self.records();
-        let (person_path, device_path) = (records.join(PERSON_FILE), records.join(DEVICE_FILE));
-        let now = (file_identity(&person_path), file_identity(&device_path));
+        let now = (
+            self.records.stamp(PERSON_FILE),
+            self.records.stamp(DEVICE_FILE),
+        );
         let mut docs = self.docs.lock_recover();
         if docs.seen == now {
             return;
         }
-        let (Ok(person), Ok(device)) = (load_doc(&person_path), load_doc(&device_path)) else {
+        let (Ok(person), Ok(device)) = (
+            load_doc(&self.records, PERSON_FILE),
+            load_doc(&self.records, DEVICE_FILE),
+        ) else {
             // A save half seen: the holder's rename lands whole on the next look.
             return;
         };
@@ -417,7 +371,6 @@ impl Store {
         if let Some(why) = refused
             && !self.take_over(false)
         {
-            #[cfg(unix)]
             if self.is_follower() {
                 return self.forward(origin, decide, &why);
             }
@@ -478,9 +431,10 @@ impl Store {
         let person = docs.person.save();
         let device = docs.device.save();
         drop(docs);
-        let records = self.records();
-        let saved = tilo_files::native::atomic::write(&records.join(PERSON_FILE), &person)
-            .and_then(|()| tilo_files::native::atomic::write(&records.join(DEVICE_FILE), &device));
+        let saved = self
+            .records
+            .write(PERSON_FILE, &person)
+            .and_then(|()| self.records.write(DEVICE_FILE, &device));
         if let Err(error) = saved {
             tracing::warn!(root = %self.root.display(), %error, "settings not saved");
             self.docs
@@ -536,7 +490,6 @@ impl Store {
     }
 }
 
-#[cfg(unix)]
 impl Store {
     /// A follower's write: decided over what it reads now, made by the
     /// holder, and read back from the holder's save.
@@ -554,19 +507,19 @@ impl Store {
             .iter()
             .map(|(name, _)| (name.clone(), document.get(name).cloned()))
             .collect();
-        let request = serve::Request {
+        let request = door::Request {
             origin: origin.clone(),
             expected,
             sections,
         };
-        let answer = match serve::send(&self.records().join(SOCKET_FILE), &request) {
+        let answer = match door::send(&self.records, &request) {
             Ok(answer) => answer,
             // The holder's door closes only as the holder ends: once it has
             // let the settings go, this process holds them and makes the
             // change itself.
             // A holder with no door at all (`NotFound`) is not waited for.
             Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.take_over(true) => {
-                let serve::Request {
+                let door::Request {
                     expected, sections, ..
                 } = request;
                 let mut sections = Some(sections);
@@ -589,34 +542,14 @@ impl Store {
     }
 }
 
-impl Drop for Store {
-    fn drop(&mut self) {
-        #[cfg(unix)]
-        let serving = self.serving.lock_recover().take();
-        if let Some(socket) = serving {
-            // Wakes the serving thread, which finds the store gone and ends.
-            drop(std::os::unix::net::UnixStream::connect(&socket));
-            let _ = std::fs::remove_file(socket);
-        }
-    }
-}
-
-/// The holder's door for other processes' writes.
-#[cfg(unix)]
-mod serve {
-    use std::io::{BufRead as _, BufReader, Write as _};
-    use std::os::unix::net::{UnixListener, UnixStream};
-    use std::path::Path;
-    use std::sync::{Arc, Weak};
-
+/// What crosses the holder's door: another process's write and the
+/// holder's answer.
+mod door {
     use serde_json::{Map, Value};
-    use tilo_lock::MutexRecover as _;
+    use tilo_settings_records::Records;
 
     use super::Store;
     use crate::{ChangeOrigin, ConditionalUpdate};
-
-    /// The largest request a holder reads: settings are small.
-    const MAX_REQUEST: u64 = 4 * 1024 * 1024;
 
     /// One write: merge `sections`, provided each section still reads as
     /// `expected` (what the writer decided over).
@@ -628,60 +561,21 @@ mod serve {
     }
 
     #[derive(serde::Serialize, serde::Deserialize)]
-    enum Answer {
+    pub(super) enum Answer {
         Stored,
         Superseded,
         Refused(String),
     }
 
-    pub(super) fn start(store: &Arc<Store>, socket: &Path) {
-        let _ = std::fs::remove_file(socket);
-        let Ok(listener) = UnixListener::bind(socket) else {
-            tracing::warn!(socket = %socket.display(), "settings take no writes from other processes");
-            return;
-        };
-        let weak = Arc::downgrade(store);
-        let started = std::thread::Builder::new()
-            .name("tilo-settings-door".into())
-            .spawn(move || accept(&listener, &weak));
-        if started.is_ok() {
-            *store.serving.lock_recover() = Some(socket.to_path_buf());
-        }
-    }
-
-    fn accept(listener: &UnixListener, store: &Weak<Store>) {
-        for stream in listener.incoming() {
-            let Some(store) = store.upgrade() else {
-                return;
-            };
-            if let Ok(stream) = stream {
-                answer(&store, &stream);
-            }
-        }
-    }
-
-    fn answer(store: &Store, stream: &UnixStream) {
-        let mut line = String::new();
-        let mut reader = BufReader::new(std::io::Read::take(stream, MAX_REQUEST));
-        if reader.read_line(&mut line).is_err() {
-            return;
-        }
-        let answer = match serde_json::from_str::<Request>(&line) {
-            Ok(request) => apply(store, request),
-            Err(error) => Answer::Refused(error.to_string()),
-        };
-        if let Ok(mut body) = serde_json::to_vec(&answer) {
-            body.push(b'\n');
-            let _ = (&*stream).write_all(&body);
-        }
-    }
-
-    fn apply(store: &Store, request: Request) -> Answer {
+    pub(super) fn answer(store: &Store, request: &[u8]) -> Answer {
         let Request {
             origin,
             expected,
             sections,
-        } = request;
+        } = match serde_json::from_slice(request) {
+            Ok(request) => request,
+            Err(error) => return Answer::Refused(error.to_string()),
+        };
         let mut sections = Some(sections);
         let stored = store.write_sections(&origin, &mut |document| {
             expected
@@ -698,25 +592,15 @@ mod serve {
         }
     }
 
-    pub(super) fn send(socket: &Path, request: &Request) -> std::io::Result<ConditionalUpdate> {
-        let stream = UnixStream::connect(socket)?;
-        let mut body = serde_json::to_vec(request).map_err(std::io::Error::other)?;
-        body.push(b'\n');
-        (&stream).write_all(&body)?;
-        let mut line = String::new();
-        BufReader::new(std::io::Read::take(&stream, MAX_REQUEST)).read_line(&mut line)?;
-        match serde_json::from_str::<Answer>(&line).map_err(std::io::Error::other)? {
+    pub(super) fn send(records: &Records, request: &Request) -> std::io::Result<ConditionalUpdate> {
+        let body = serde_json::to_vec(request).map_err(std::io::Error::other)?;
+        let line = records.knock(&body)?;
+        match serde_json::from_slice::<Answer>(&line).map_err(std::io::Error::other)? {
             Answer::Stored => Ok(ConditionalUpdate::Stored),
             Answer::Superseded => Ok(ConditionalUpdate::Superseded),
             Answer::Refused(why) => Err(std::io::Error::other(why)),
         }
     }
-}
-
-enum Locked {
-    Held(tilo_files::Lock),
-    Busy,
-    Unlockable,
 }
 
 /// What a change records of itself: the leaves it set, their new values and
@@ -864,9 +748,7 @@ impl Writer {
             queue.scheduled.push(store.clone());
         }
         if !queue.running {
-            let started = std::thread::Builder::new()
-                .name("tilo-settings-writer".into())
-                .spawn(move || self.run());
+            let started = tilo_rt::spawn_thread("tilo-settings-writer", move || self.run());
             if started.is_err() {
                 queue.scheduled.retain(|known| !known.ptr_eq(store));
                 drop(queue);
@@ -949,6 +831,7 @@ fn empty(root: &Path) -> Arc<Store> {
     Arc::new_cyclic(|me| Store {
         me: me.clone(),
         root: root.to_path_buf(),
+        records: Records::of(root),
         follower: std::sync::atomic::AtomicBool::new(false),
         may_hold: false,
         lock: Mutex::new(None),
@@ -957,7 +840,7 @@ fn empty(root: &Path) -> Arc<Store> {
             person: AutoCommit::new(),
             device: AutoCommit::new(),
             unsaved: std::collections::BTreeSet::new(),
-            seen: (None, None),
+            seen: (Stamp::default(), Stamp::default()),
         }),
         snapshot: Mutex::new(Snapshot {
             document: Arc::new(Map::new()),
@@ -965,10 +848,8 @@ fn empty(root: &Path) -> Arc<Store> {
         revision: AtomicU64::new(1),
         changes: crate::ChangeSignal::default(),
         failures: Mutex::new(Vec::new()),
-        #[cfg(feature = "watch")]
         watch: Mutex::new(None),
-        #[cfg(unix)]
-        serving: Mutex::new(None),
+        door: Mutex::new(None),
     })
 }
 

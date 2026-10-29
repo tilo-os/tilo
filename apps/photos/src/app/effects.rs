@@ -149,7 +149,7 @@ impl PhotosApp {
                 retain_exif_location,
             } => {
                 self.begin_directory_import(
-                    std::path::PathBuf::from(path),
+                    path.into_path_buf(),
                     None,
                     DirectoryImportMode::Import,
                     retain_exif_location.unwrap_or(true),
@@ -165,7 +165,7 @@ impl PhotosApp {
                 retain_exif_location,
             } => {
                 self.begin_directory_import(
-                    std::path::PathBuf::from(path),
+                    path.into_path_buf(),
                     None,
                     DirectoryImportMode::Reindex,
                     retain_exif_location.unwrap_or(true),
@@ -728,7 +728,7 @@ impl PhotosApp {
                 self.import_content = Some(LiveContent {
                     library: library.clone(),
                 });
-                self.pending_resource_open = Some((invocation, file));
+                self.pending_resource_open = Some((invocation, file.to_string_lossy()));
                 return Ok(None);
             }
             PhotosEffect::Save { path } => {
@@ -741,9 +741,6 @@ impl PhotosApp {
                     }
                     return Ok(None);
                 };
-                if !std::path::Path::new(&path).is_absolute() {
-                    return Err(format!("the path to save to must be absolute: {path}"));
-                }
                 if !self.save_to(&path) {
                     return Err(tr("photos-save-failed"));
                 }

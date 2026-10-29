@@ -44,7 +44,7 @@ use crate::widget::SETTLE_FRAMES;
 
 /// An app a host shows in a region of its own scene.
 pub struct EmbeddedApp {
-    app: App,
+    app: Box<App>,
     /// Its actions are offered to this device's automation only.
     device_local: bool,
     rect: KurboRect,
@@ -141,7 +141,7 @@ impl EmbeddedApp {
             crate::permissions::wake_on_outside_change(crate::wake::WakeHandle::new());
         }
         Ok(Self {
-            app,
+            app: Box::new(app),
             rect: KurboRect::ZERO,
             region: Region {
                 size: winit::dpi::PhysicalSize::new(0, 0),

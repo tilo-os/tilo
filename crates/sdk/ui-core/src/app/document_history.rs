@@ -61,7 +61,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(|palette| palette.is_presented())
         {
             let root = FrameworkPresentation {
@@ -503,7 +503,7 @@ impl App {
         let palette_node = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .filter(|palette| palette.is_presented())
             .map(|palette| {
                 palette.build_layout(
@@ -523,7 +523,7 @@ impl App {
             self.layout.root_node = Some(root);
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(history.as_ref(), root)];
             if let (Some(node), Some(palette)) =
-                (palette_node, self.actions.action_palette.as_ref())
+                (palette_node, self.actions.action_palette.as_deref())
             {
                 roots.push((palette, node));
             }
@@ -553,7 +553,7 @@ impl App {
             let mut roots: Vec<(&dyn Widget, taffy::NodeId)> =
                 vec![(self.root_widget.as_ref(), app)];
             if let (Some(node), Some(palette)) =
-                (palette_node, self.actions.action_palette.as_ref())
+                (palette_node, self.actions.action_palette.as_deref())
             {
                 roots.push((palette, node));
             }
@@ -602,7 +602,8 @@ impl App {
                     .chain(layout.preview),
             ),
         );
-        if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_ref()) {
+        if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_deref())
+        {
             roots.push((palette, node));
         }
         // SAFETY: every root and node belongs to this same freshly built arena;

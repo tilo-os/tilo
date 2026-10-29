@@ -4453,7 +4453,11 @@ fn deleting_lines_on_screen_leaves_the_scrollback_alone() {
     let (mut w, _rx) = build_test_widget();
     let doc = AutoCommit::new();
     w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
-    let history: String = (0..60).map(|n| format!("H{n:03}\r\n")).collect();
+    let history: String = (0..60).fold(String::new(), |mut history, n| {
+        use std::fmt::Write as _;
+        let _ = write!(history, "H{n:03}\r\n");
+        history
+    });
     w.feed(history.as_bytes());
     w.sync(&doc, &ROOT);
     let before = w.grid_text();

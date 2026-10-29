@@ -501,7 +501,8 @@ impl ShellOverlayHost {
     /// Focus the strip the deck went to on its own (a tab or content drag
     /// resting at its edge), as the person choosing it would.
     pub(super) fn harvest_strip_deck_request(&mut self) {
-        let Some(index) = self
+        // The drag rests on the display the pointer, and so focus, is on.
+        let Some((_, index)) = self
             .desktop_surface_mut()
             .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
             .and_then(ui::widget::StripDeck::take_requested_strip)

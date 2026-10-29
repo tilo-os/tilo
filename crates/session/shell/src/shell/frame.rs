@@ -484,7 +484,7 @@ impl FramePaint {
             (Some(newer), Some(earlier)) if chained => {
                 let mut union = earlier.clone();
                 union.extend_from_slice(newer);
-                Some(without_contained_regions(&union))
+                Some(ui::damage::without_contained(union))
             }
             _ => None,
         };
@@ -826,7 +826,7 @@ pub struct FrameBuilder {
     osk_overlay: Option<ForeignSurfaceWidget>,
     /// The keyboard an offscreen capture draws, as no client surface exists
     /// to mirror; laid out where [`Self::layout_osk_overlay`] docks it.
-    shots_keyboard: Option<osk::widget::OskWidget>,
+    shots_keyboard: Option<Box<dyn Widget>>,
     /// Authenticated app-owned call/navigation toplevels. Like the OSK these
     /// are client buffers outside the workspace tree, but each carries
     /// its own desktop placement and native input target.
@@ -2194,7 +2194,7 @@ impl FrameBuilder {
             keyboard.place_floating(panel);
         }
         if let Some(keyboard) = self.shots_keyboard.as_mut() {
-            crate::shell::shots_keyboard::lay_out(keyboard, panel, &self.theme);
+            crate::shell::shots_keyboard::lay_out(keyboard.as_mut(), panel, &self.theme);
         }
     }
 
@@ -2328,6 +2328,19 @@ impl FrameBuilder {
         // launch per app per pass, so several windows at once need more than
         // one look. The tabs are walked again only once the tree may have
         // changed; while a window is owed a look, every round walks.
+        // A session that runs its apps as processes opens a tab that asks
+        // for one drawn here (saved so, or a peer's) as the app's own
+        // window, before the pending windows are counted.
+        {
+            let chrome = self.chrome.borrow();
+            if chrome.hosted_inputs.apps_as_processes() {
+                let moved = self.peer_windows_quiet_at
+                    != Some(TreeRevisions::read(&chrome, &chrome.tree()));
+                if moved {
+                    crate::shell::tab_binding::reopen_app_tabs_as_processes(&mut chrome.tree_mut());
+                }
+            }
+        }
         let (revisions, pending) = {
             let chrome = self.chrome.borrow();
             let tree = chrome.tree();
@@ -2939,7 +2952,7 @@ impl FrameBuilder {
         };
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
-            .map(|regions| without_contained_regions(&regions));
+            .map(ui::damage::without_contained);
         phases.mark("scene/damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
@@ -3287,7 +3300,7 @@ impl FrameBuilder {
             Some(changed),
             Some(ScrollCopies {
                 copies: presented.copies,
-                raster: without_contained_regions(&raster),
+                raster: ui::damage::without_contained(raster),
             }),
         )
     }
@@ -4640,7 +4653,7 @@ impl FrameBuilder {
     ///
     /// # Errors
     /// No Terminal window is active.
-    #[cfg(feature = "hosted-test-control")]
+    #[cfg(all(feature = "hosted-test-control", feature = "in-process-apps"))]
     pub fn feed_active_terminal_for_shots(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.relayout();
         let id = self
@@ -4697,9 +4710,11 @@ impl FrameBuilder {
     /// Stand a capture in for a keyboard client: `content` is what the
     /// focused field asks an input method for, so the shot gets that
     /// purpose's layout. `None` puts the keyboard away.
-    #[cfg(feature = "hosted-test-control")]
+    #[cfg(all(feature = "hosted-test-control", feature = "in-process-apps"))]
     pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
-        self.shots_keyboard = content.map(crate::shell::shots_keyboard::keyboard_for);
+        self.shots_keyboard = content.map(|content| {
+            Box::new(crate::shell::shots_keyboard::keyboard_for(content)) as Box<dyn Widget>
+        });
         self.layout_osk_overlay();
     }
 
@@ -6533,7 +6548,10 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 }
 
 /// The terminal a hosted Terminal tab shows, inside its app.
-#[cfg(any(test, feature = "hosted-test-control"))]
+#[cfg(all(
+    feature = "in-process-apps",
+    any(test, feature = "hosted-test-control")
+))]
 fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
     let embedded = widget
         .as_any_mut()?
@@ -10726,33 +10744,6 @@ pub(super) use native_tab_scenarios::rect_named;
 )]
 #[path = "frame_transition_tests.rs"]
 mod transition_tests;
-
-/// `regions` without any region another one contains (the first of two
-/// equal ones stays): the same pixels, rasterised once. A changed card's
-/// old and new bounds and the blurred surface on it often nest.
-fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
-    let rect = |region: &FineDamageRect| {
-        Rect::new(
-            f64::from(region.x),
-            f64::from(region.y),
-            f64::from(region.x) + f64::from(region.width),
-            f64::from(region.y) + f64::from(region.height),
-        )
-    };
-    let contains = |outer: &FineDamageRect, inner: &FineDamageRect| {
-        rect(outer).union(rect(inner)) == rect(outer)
-    };
-    regions
-        .iter()
-        .enumerate()
-        .filter(|&(index, region)| {
-            !regions.iter().enumerate().any(|(other, outer)| {
-                other != index && contains(outer, region) && (outer != region || other < index)
-            })
-        })
-        .map(|(_, region)| *region)
-        .collect()
-}
 
 /// `scene`, drawn in logical coordinates, magnified by `to_scene` into
 /// scene pixels without clipping it to the display: a strip's canvas runs

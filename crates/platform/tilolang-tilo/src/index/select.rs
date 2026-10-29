@@ -336,10 +336,16 @@ impl View<'_> {
         schema: &TypeSchema,
         order: &Order,
     ) -> Result<Vec<T>, StoreError> {
-        let field = schema.field(&order.field);
+        let field = schema
+            .field(&order.field)
+            .or_else(|| super::reflect::field(&order.field));
         let mut keyed = Vec::new();
         for (item, path) in items {
             let value = match field {
+                Some(f) if super::reflect::is_reflected(&f.id) => self
+                    .field(&path, &f.id)
+                    .map_err(index_error)?
+                    .map_or(Lit::Absent, |held| super::reflect::at_lit(&held)),
                 Some(f) => {
                     let held = self.field(&path, &f.id).map_err(index_error)?;
                     lit_of(

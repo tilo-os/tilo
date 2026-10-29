@@ -1,0 +1,7 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "launcher.search"
+label = "Search"
+version = 1
+

@@ -2927,19 +2927,20 @@ impl ImagerApp {
                 ssh_keys_file,
                 home_files,
             } => {
-                let mut args = vec!["imager".into(), "--customize-image".into(), image];
+                let path = |path: ui::tilo_resource::AbsolutePath| path.to_string_lossy();
+                let mut args = vec!["imager".into(), "--customize-image".into(), path(image)];
                 for (flag, value) in [
                     ("--hostname", hostname),
                     ("--wifi-ssid", wifi_ssid),
-                    ("--wifi-psk-file", wifi_psk_file),
-                    ("--ssh-keys-file", ssh_keys_file),
+                    ("--wifi-psk-file", wifi_psk_file.map(path)),
+                    ("--ssh-keys-file", ssh_keys_file.map(path)),
                 ] {
                     if let Some(value) = value {
                         args.extend([flag.into(), value]);
                     }
                 }
-                for path in home_files {
-                    args.extend(["--home-file".into(), path]);
+                for file in home_files {
+                    args.extend(["--home-file".into(), path(file)]);
                 }
                 Ok(cx.thread(
                     move |_| {

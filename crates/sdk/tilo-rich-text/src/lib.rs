@@ -59,7 +59,7 @@ pub use source::{Hosted, PersonField, RichTextField, RichTextSource};
 pub use surface::{FieldOutcome, RichTextSurface, SubmitKey};
 /// The rich text resource and its one action vocabulary, as an app names
 /// them: a field or a document of this type, edited by these actions.
-pub use tilo_document::{RichText, RichTextAction};
+pub use tilo_document::{RichText, RichTextAction, annotation};
 pub use view::RichTextView;
 
 /// A block editor for short rich text: a composer, a reply, a message row.

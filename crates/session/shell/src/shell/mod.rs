@@ -178,7 +178,6 @@ pub mod render;
 pub mod room_activity;
 pub(crate) mod room_app_versions;
 pub mod room_records;
-pub(crate) mod room_task_import;
 pub mod scanout_candidate;
 pub mod screenshot_send;
 pub mod search;
@@ -538,6 +537,7 @@ fn try_to_ui_tile_for_tab(
                     "in-process apps",
                 ));
             }
+            #[cfg(feature = "in-process-apps")]
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
                 UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
             }
@@ -886,6 +886,7 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
 /// Mount Terminal in `tab`, lent the window it is shown in: where it says
 /// where its shell runs (the bar's location) and closes its tab when the
 /// shell exits.
+#[cfg(feature = "in-process-apps")]
 fn mount_terminal(
     apps: &mut in_process::InProcessApps,
     room: &str,
@@ -926,12 +927,8 @@ fn mount_private_feedback(
     )
 }
 
-/// The tab as the framework app's own component, when the host mounts that
-/// app in its own process: the terminal on its tab's record, opening
-/// sessions through the session's process supervisor; Files on the room's
-/// record of places, starting where the shell says and opening documents
-/// through the shell; the browser on the room's record of its bookmarks and
-/// settings.
+/// The tab as a component this process draws: the shell's own feedback, or
+/// a packaged app where the host draws its apps itself ([`mount_app`]).
 pub fn mount_in_process(
     request: &tilo_desktop::resolver::TileRequest<'_>,
     inputs: &hosted_inputs::HostedTileInputs,
@@ -941,12 +938,48 @@ pub fn mount_in_process(
     let ShellTile::AppPlaceholder { kind, .. } = &request.tab.tile else {
         return None;
     };
+    // The app runs as its own process here: the tab becomes its window
+    // (`tab_binding::reopen_app_tabs_as_processes`) and holds the place
+    // until then.
+    if inputs.apps_as_processes() && tab_binding::own_process_package(kind).is_some() {
+        return Some(TileResolution::Opening);
+    }
     let room = request.room.to_string();
     let tab = request.tab.id;
     let mounted = match kind {
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
+        _ => mount_app(apps, kind, &room, tab, inputs)?,
+    };
+    Some(match mounted {
+        Ok(component) => {
+            let collaboration = apps.borrow().collaboration(&component, &room);
+            TileResolution::App(component, collaboration)
+        }
+        // The loop never waits on the disk for an app's record: the store's
+        // thread opens it, and its wake has the tab resolved again.
+        Err(error) if error.is_opening() => TileResolution::Opening,
+        Err(error) => TileResolution::Failed(error),
+    })
+}
+
+/// The tab as the packaged app's own component, drawn in this process: the
+/// terminal on its tab's record, opening sessions through the session's
+/// process supervisor; Files on the room's record of places, starting where
+/// the shell says and opening documents through the shell; the browser on
+/// the room's record of its bookmarks and settings. `None` for a kind no
+/// such app answers to.
+#[cfg(feature = "in-process-apps")]
+fn mount_app(
+    apps: &in_process::SharedInProcessApps,
+    kind: &ShellKind,
+    room: &str,
+    tab: u64,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+    let room = room.to_owned();
+    Some(match kind {
         ShellKind::Terminal => mount_terminal(&mut apps.borrow_mut(), &room, tab, inputs),
         ShellKind::FileExplorer => {
             let startup = inputs.files_for_tab(tab).or_else(|| inputs.files.clone());
@@ -1022,17 +1055,19 @@ pub fn mount_in_process(
                 })
         }
         _ => return None,
-    };
-    Some(match mounted {
-        Ok(component) => {
-            let collaboration = apps.borrow().collaboration(&component, &room);
-            TileResolution::App(component, collaboration)
-        }
-        // The loop never waits on the disk for an app's record: the store's
-        // thread opens it, and its wake has the tab resolved again.
-        Err(error) if error.is_opening() => TileResolution::Opening,
-        Err(error) => TileResolution::Failed(error),
     })
+}
+
+/// Built without the apps it could draw itself, the shell draws none.
+#[cfg(not(feature = "in-process-apps"))]
+fn mount_app(
+    _apps: &in_process::SharedInProcessApps,
+    _kind: &ShellKind,
+    _room: &str,
+    _tab: u64,
+    _inputs: &hosted_inputs::HostedTileInputs,
+) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
+    None
 }
 
 /// Spacing of the strip column under the top bar: a small step between the
@@ -1208,12 +1243,13 @@ pub fn build_tilo_overlay_host_with_records(
     #[cfg(not(test))]
     let inputs = {
         let mut inputs = hosted_inputs::HostedTileInputs::default();
-        // The session mounts the apps it hosts itself as their own
-        // components, on records it keeps beside its scratch tabs'.
+        // The session's apps run as their own processes, each window bound
+        // into its tab; the session serves only feedback and the messaging
+        // accounts itself.
         match in_process::InProcessApps::native(&state::local_user_id()) {
-            Ok(apps) => inputs.mount_apps_in_process(apps),
+            Ok(services) => inputs.run_apps_as_processes(services),
             Err(error) => {
-                tracing::warn!(%error, "apps hosted in the session keep no records");
+                tracing::warn!(%error, "the session's own services keep no records");
             }
         }
         inputs

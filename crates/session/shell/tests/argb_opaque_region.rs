@@ -14,7 +14,7 @@
 //! captures — read back, as this test process has no presenting GPU — shows
 //! which verdict each commit got.
 
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::time::Instant;
 
 use shell::shell::foreign::store;
@@ -22,11 +22,13 @@ use smithay::backend::allocator::{Format, Fourcc, Modifier};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use vello::kurbo::Rect;
 use wayland_client::delegate_noop;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_region, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_region, wl_surface};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
+
+use crate::support::wayland::{Toplevel, create_toplevel, memfd};
 
 const WIDTH: i32 = 64;
 const HEIGHT: i32 = 48;
@@ -41,13 +43,9 @@ struct Client {
     configured: bool,
 }
 
-crate::support::wayland::test_client!(Client: registry, ping, configured);
+crate::support::wayland::test_client!(Client: registry, ping, configured, surface, toplevel, buffer);
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_region::WlRegion);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
 delegate_noop!(Client: ignore zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
 
@@ -64,24 +62,6 @@ enum Opaque {
     Keep,
 }
 
-/// A linear single-plane buffer holding `TEXEL` everywhere, as a memfd the
-/// compositor's CPU importer reads like a linear PRIME buffer.
-fn texel_memfd() -> OwnedFd {
-    use std::io::Write as _;
-    // SAFETY: memfd_create with a static nul-terminated name and MFD_CLOEXEC.
-    let raw = unsafe { libc::memfd_create(c"argb-opaque-region".as_ptr(), libc::MFD_CLOEXEC) };
-    assert!(
-        raw >= 0,
-        "memfd_create failed: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: memfd_create returned a new descriptor that nothing else owns.
-    let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.write_all(&TEXEL.repeat((BUFFER_LEN / 4) as usize))
-        .expect("fill memfd");
-    OwnedFd::from(file)
-}
-
 /// The compositor with a `zwp_linux_dmabuf_v1` global and a configured,
 /// adopted toplevel. A machine without a render node advertises no dmabuf
 /// global; one is created here for the client, as the commit path under test
@@ -92,7 +72,9 @@ struct Fixture {
     compositor: wl_compositor::WlCompositor,
     surface: wl_surface::WlSurface,
     surface_id: u64,
-    memfd: OwnedFd,
+    /// A linear single-plane buffer holding `TEXEL` everywhere, which the
+    /// compositor's CPU importer reads like a linear PRIME buffer.
+    memfd: std::fs::File,
 }
 
 impl Fixture {
@@ -122,10 +104,16 @@ impl Fixture {
         h.pump();
 
         let qh = h.queue.handle();
-        let surface = compositor.create_surface(&qh, ());
-        let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg_surface.get_toplevel(&qh, ());
-        toplevel.set_app_id("org.tilo.test.argb-opaque-region".into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel,
+        } = create_toplevel(
+            &compositor,
+            &wm_base,
+            &qh,
+            "org.tilo.test.argb-opaque-region",
+        );
         surface.commit();
         h.pump();
         let toplevels = h.state.xdg_shell_state.toplevel_surfaces().to_vec();
@@ -138,14 +126,14 @@ impl Fixture {
             h.client.configured,
             "the toplevel was never configured, so a buffer commit would be a protocol error rather than the path under test"
         );
-        std::mem::forget((xdg_surface, toplevel, wm_base));
+        std::mem::forget((xdg, toplevel, wm_base));
         Self {
             h,
             dmabuf,
             compositor,
             surface,
             surface_id,
-            memfd: texel_memfd(),
+            memfd: memfd(&TEXEL.repeat((BUFFER_LEN / 4) as usize)),
         }
     }
 

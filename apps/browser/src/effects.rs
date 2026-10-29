@@ -136,12 +136,6 @@ pub enum BrowserEffect {
         #[param("Open behind this tab instead of in front of it")]
         background: Option<bool>,
     },
-    /// Install the browser engine
-    ///
-    /// Offers the engine runtime's install through the Store, while this
-    /// device has none.
-    #[effect(row, returns)]
-    InstallEngine,
     /// Open page
     ///
     /// Opens a page of the history or a bookmark in this window.
@@ -882,7 +876,6 @@ impl BrowserEffect {
                 url,
                 background: background.unwrap_or(false),
             },
-            Self::InstallEngine => BrowserOperation::InstallEngine,
             Self::ShowPage => BrowserOperation::ShowPage,
             Self::ShowHistory => BrowserOperation::ShowLibrary {
                 section: LibrarySection::History,
@@ -1194,8 +1187,6 @@ pub enum BrowserOperation {
     Navigate {
         url: String,
     },
-    /// Offer the engine runtime's install through the Store.
-    InstallEngine,
     /// Another Browser in a desktop tab right after this one.
     OpenInNewTab {
         url: String,

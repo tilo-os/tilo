@@ -65,7 +65,6 @@ pub mod package_import;
 pub mod registry_client;
 pub mod reports;
 pub mod resource;
-pub mod runtime_recovery;
 pub mod search;
 pub mod sources;
 pub mod widgets;

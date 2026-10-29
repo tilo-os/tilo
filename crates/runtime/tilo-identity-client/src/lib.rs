@@ -235,13 +235,13 @@ pub mod wire {
     pub enum ChannelAccess {
         /// Admitted; the response carries the channel's content keys.
         Ready,
-        /// Asked the channel's steward for access and not admitted yet.
+        /// Asked the channel's participants for access and not admitted yet.
         Waiting,
         Removed,
         /// The channel cannot be provisioned on this device right now.
         Unavailable,
         /// This device has no secret store open, and only rooms its own
-        /// room host stewards have keys without one. Appended so earlier
+        /// room host takes part in have keys without one. Appended so earlier
         /// answers keep their encoding.
         NoSecretStore,
     }

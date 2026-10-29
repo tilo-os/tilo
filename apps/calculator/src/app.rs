@@ -3,6 +3,7 @@
 //! routes all keyboard / pointer input. Durable rows (history, graphs) are
 //! presented from the resource and changed only through its actions.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::rc::Rc;
@@ -20,11 +21,12 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
-use ui::framework::Dispatcher;
+use ui::framework::{Dispatcher, Effected, Live, Publishes, ViewCx};
 use ui::interaction::InteractionEnvironment;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::{AppModel, Element};
 
 use crate::actions::{self, GraphKind};
 use crate::convert_page::ConvertPage;
@@ -89,14 +91,17 @@ pub struct CalculatorApp {
     /// The peers' carets last painted into a plot's formula. They follow
     /// peer pointers, which the window does not damage for its widgets.
     drawn_remote_carets: Vec<(Point, Color)>,
-    /// An effect taken on the next sync, where the document is.
-    pending_effect: Option<actions::CalculatorEffect>,
+    /// What the view asks of the window, shared with its effect handler.
+    asks: Rc<RefCell<Asks>>,
     node: Option<NodeId>,
 
     /// The resource's door: every on-screen affordance submits its field
-    /// edit or verb here. `None` until the framework attaches the surface,
-    /// and for a bare widget in a layout test.
+    /// edit or verb here. `None` for a bare widget in a layout test.
     dispatch: Option<Dispatcher<Calculator>>,
+    /// The document whose rows the window shows; `None` for a bare widget.
+    document: Option<Live<Calculator>>,
+    /// The document's revision and loads last shown.
+    followed: Option<(u64, u64)>,
     /// How this calculator's changes read in the window's History: one
     /// presenter for the instance's life, so the timeline keeps its faces.
     entries: Rc<crate::history_face::CalculatorEntries>,
@@ -109,9 +114,76 @@ pub struct CalculatorApp {
     angle_units: ui::framework::BarCommands<bool>,
 }
 
+/// What the view asks of the window: taken on its next sync and settle,
+/// where its layout and the document are.
+#[derive(Default)]
+struct Asks {
+    /// An effect taken on the next settle, where the document is.
+    effect: Option<actions::CalculatorEffect>,
+    /// A screenshot scenario to stage.
+    stage: Option<Staged>,
+}
+
+/// A screenshot scenario the view staged: `None` for a plain capture.
+struct Staged(Option<String>);
+
+impl Asks {
+    /// Take `effect` on the next settle, if what it names is in `rows`:
+    /// showing a graph for the first time adds its starter row.
+    fn queue_effect(
+        &mut self,
+        rows: &Calculator,
+        effect: actions::CalculatorEffect,
+    ) -> Result<(), String> {
+        if let actions::CalculatorEffect::Open { entry } = &effect
+            && rows.history.get(&Id::from_raw(entry.as_str())).is_none()
+        {
+            return Err("Calculation no longer exists".into());
+        }
+        self.effect = Some(effect);
+        Ok(())
+    }
+}
+
+/// The calculator window as the view of [`Calculator`]: it follows the
+/// document's rows, takes the effects the view answers and publishes each
+/// history entry as a live row.
+pub(crate) fn window(cx: &ViewCx<Calculator>) -> Element {
+    let mut window = CalculatorApp::new();
+    window.dispatch = Some(cx.dispatcher());
+    window.document = Some(cx.live().clone());
+    window.follow_document();
+    {
+        let (asks, live) = (Rc::clone(&window.asks), cx.live().clone());
+        cx.effects(move |effect: actions::CalculatorEffect, _| {
+            live.with(|rows| asks.borrow_mut().queue_effect(rows, effect))?;
+            Ok(Effected::done())
+        });
+    }
+    {
+        let asks = Rc::clone(&window.asks);
+        cx.on_stage(move |scenario| {
+            asks.borrow_mut().stage = Some(Staged(scenario.map(str::to_owned)));
+        });
+    }
+    let live = cx.live().clone();
+    cx.publishing(
+        // Each history entry's recall, merged into its item.
+        Publishes::new().live_rows(move || {
+            live.with(|rows| {
+                rows.history
+                    .iter()
+                    .map(|(id, entry)| crate::resource::history_row(id, entry))
+                    .collect()
+            })
+        }),
+        Box::new(window),
+    )
+}
+
 impl CalculatorApp {
     /// The live app: boots empty in Calculator mode. The resource's rows
-    /// arrive with the first [`ResourceSurface::present`](ui::framework::ResourceSurface::present).
+    /// arrive once the view shows the document.
     pub fn new() -> Self {
         Self::with_model(CalcModel::default())
     }
@@ -146,13 +218,37 @@ impl CalculatorApp {
             model_dirty: false,
             dirty: true,
             drawn_remote_carets: Vec::new(),
-            pending_effect: None,
+            asks: Rc::default(),
             node: None,
             dispatch: None,
+            document: None,
+            followed: None,
             entries: Rc::default(),
             rows: Rc::default(),
             select: None,
             angle_units: ui::framework::BarCommands::new(),
+        }
+    }
+
+    /// Show the rows the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(document) = &self.document else {
+            return;
+        };
+        let held = (document.revision(), document.loads());
+        if self.followed == Some(held) {
+            return;
+        }
+        self.followed = Some(held);
+        let rows = document.get();
+        self.adopt_resource_state(&rows);
+    }
+
+    /// Stage the screenshot scenario the view asked for.
+    fn stage_asked(&mut self) {
+        let stage = self.asks.borrow_mut().stage.take();
+        if let Some(Staged(scenario)) = stage {
+            self.stage_scenario(scenario.as_deref());
         }
     }
 
@@ -181,11 +277,6 @@ impl CalculatorApp {
             .min(self.model.surfaces.len().saturating_sub(1));
         self.model_dirty = true;
         self.dirty = true;
-    }
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`](ui::framework::ResourceSurface).
-    pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Calculator>) {
-        self.dispatch = Some(dispatcher);
     }
 
     /// Stage the view a screenshot scenario shows over the rows its actions
@@ -1136,28 +1227,10 @@ fn key_accessible_name(key: &model::Key) -> String {
 }
 
 impl CalculatorApp {
-    /// Each presented history entry as its live row: recalling it.
-    pub(crate) fn history_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.rows
-            .history
-            .iter()
-            .map(|(id, entry)| crate::resource::history_row(id, entry))
-            .collect()
-    }
-
-    /// Take `effect` on the next sync, where the document is: showing a graph
-    /// for the first time adds its starter row.
+    /// Take `effect` on the next settle, where the document is: showing a
+    /// graph for the first time adds its starter row.
     pub(crate) fn queue_effect(&mut self, effect: actions::CalculatorEffect) -> Result<(), String> {
-        if let actions::CalculatorEffect::Open { entry } = &effect
-            && self
-                .rows
-                .history
-                .get(&Id::from_raw(entry.as_str()))
-                .is_none()
-        {
-            return Err("Calculation no longer exists".into());
-        }
-        self.pending_effect = Some(effect);
+        self.asks.borrow_mut().queue_effect(&self.rows, effect)?;
         self.dirty = true;
         Ok(())
     }
@@ -1283,8 +1356,21 @@ impl Widget for CalculatorApp {
         self.host_focused.then_some(content)
     }
 
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.follow_document();
+        self.stage_asked();
+    }
+
+    /// An effect the view took waits for the next settle.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        let asked = self.asks.borrow().effect.is_some() || self.asks.borrow().stage.is_some();
+        self.dirty |= asked;
+        asked
+    }
+
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
-        if let Some(effect) = self.pending_effect.take() {
+        let effect = self.asks.borrow_mut().effect.take();
+        if let Some(effect) = effect {
             self.perform_effect(effect, edits);
         }
         self.apply_window_toolbar(edits, path);
@@ -1494,6 +1580,14 @@ impl Widget for CalculatorApp {
 
     fn name(&self) -> &'static str {
         "CalculatorApp"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn needs_redraw(&self) -> bool {

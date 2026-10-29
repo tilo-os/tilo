@@ -1326,6 +1326,7 @@ impl TextInput {
             span.baseline.hash(&mut hash);
             span.kind.hash(&mut hash);
             span.workspace_emoji.hash(&mut hash);
+            span.pill.hash(&mut hash);
         }
         hash.finish()
     }

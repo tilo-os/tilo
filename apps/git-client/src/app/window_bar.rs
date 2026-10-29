@@ -163,12 +163,14 @@ impl GitClientApp {
                 }
             }
             ToolbarEvent::Commit { text } if self.mode != RunMode::Past => {
-                self.dispatch_or(
-                    &GitClientEffect::OpenRepository { path: text.clone() },
-                    |app| {
-                        let _ = app.open_repository_at(text);
-                    },
-                );
+                if let Ok(path) = self.typed_repository(text) {
+                    self.dispatch_or(
+                        &GitClientEffect::OpenRepository { path: path.clone() },
+                        |app| {
+                            let _ = app.open_repository_at(&path);
+                        },
+                    );
+                }
             }
             _ => {}
         }

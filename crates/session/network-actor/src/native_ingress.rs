@@ -713,7 +713,7 @@ impl ActorState {
             !local,
         );
         // What this device said while the session was down: its channel
-        // governance (the steward redelivers its own), and every sealed
+        // governance (its writer publishes it again), and every sealed
         // write no host has kept yet, sent before or meanwhile.
         for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
             if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {

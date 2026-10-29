@@ -91,7 +91,6 @@ params = [
 kind = "terminal.history"
 label = "Command history"
 version = 1
-person = true
 fields = [
   { path = "runs", type = "Collection<Remembered>", readonly = true, stored = "collection" },
   { path = "runs.*.command", type = "Atom", label = true },

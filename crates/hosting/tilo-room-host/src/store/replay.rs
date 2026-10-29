@@ -55,14 +55,6 @@ pub(crate) struct CaptureLeases {
     /// The store's owner, woken when the last lease ends so what waited is
     /// collected without waiting for its next job.
     wake: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
-    /// This host governs the store's room, and so stewards its channels:
-    /// captures leave out what only the steward reads
-    /// ([`WorkspaceStore::replay_without_steward_only`]).
-    steward_here: std::sync::atomic::AtomicBool,
-    /// Whether each retained lineage a capture looked at holds what only a
-    /// channel's steward reads. A lineage's route names its kind of message
-    /// for good, so the answer never changes: each is read once.
-    steward_only: std::sync::Mutex<std::collections::HashMap<std::ffi::OsString, bool>>,
     /// The governor of a room whose layout is personal, which this store
     /// holds: captures leave out every other author's lineages of the room's
     /// layout ([`WorkspaceStore::replay_member_layout`]).
@@ -106,27 +98,6 @@ impl Drop for CaptureLease {
         }
     }
 }
-/// What classifying a retained lineage read of its current generation
-/// ([`WorkspaceStore::leaves_out`]), for a capture to list without opening
-/// the lineage's CURRENT again.
-enum CurrentRead {
-    /// Classifying the lineage read nothing: it was known already.
-    Unread,
-    /// The lineage's current generation, `None` while its first checkpoint
-    /// is staged but not committed.
-    Read(Option<PathBuf>),
-}
-
-impl CurrentRead {
-    /// The current generation of `lineage`, read now unless classifying it
-    /// did.
-    fn or_read(self, lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
-        match self {
-            Self::Read(read) => Ok(read),
-            Self::Unread => Ok(retained::current(lineage)?),
-        }
-    }
-}
 
 impl WorkspaceStore {
     /// Wake `owner` when the last capture lease ends with collections
@@ -134,18 +105,6 @@ impl WorkspaceStore {
     pub(crate) fn wake_on_capture_release(&self, owner: Arc<tokio::sync::Notify>) {
         *self.capture_leases.wake.lock_recover() = Some(owner);
     }
-    /// From now on, leave the lineages of what only a channel's steward
-    /// reads (access requests, acknowledgements:
-    /// [`crate::payloads::ShellPayloads::steward_only`]) out of every
-    /// capture: this host governs the room, so it stewards the room's
-    /// channels itself, and no member replaying needs them. They stay
-    /// retained.
-    pub(crate) fn replay_without_steward_only(&self) {
-        self.capture_leases
-            .steward_here
-            .store(true, Ordering::SeqCst);
-    }
-
     /// From now on, with `Some(governor)`, leave out of every capture what
     /// members other than `governor` wrote of the room's layout: their
     /// changes to the room document (its topology and windows) and to its
@@ -169,85 +128,27 @@ impl WorkspaceStore {
     /// lineages it leaves out: a room keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
     /// ones included), and stepping over one is not a step of work.
-    /// With it, the lineage's current generation when classifying it read
-    /// that ([`Self::leaves_out`]), for the capture to list.
     fn next_listed(
         &self,
         outer: &mut Option<fs::ReadDir>,
         phase: u8,
         every_record: bool,
-    ) -> Result<Option<(fs::DirEntry, CurrentRead)>, StoreError> {
+    ) -> Result<Option<fs::DirEntry>, StoreError> {
         loop {
             let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
                 return Ok(None);
             };
             let entry = entry?;
-            let mut current = CurrentRead::Unread;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
                 if self.leaves_out_member_layout(&name)
-                    || self.leaves_out(&name, &entry.path(), &mut current)?
                     || (!every_record && self.leaves_out_on_demand(&name)?)
                 {
                     continue;
                 }
             }
-            return Ok(Some((entry, current)));
+            return Ok(Some(entry));
         }
-    }
-
-    /// Whether a capture leaves the retained lineage `name` at `lineage`
-    /// out. A lineage is classified by its checkpoint once, then from
-    /// memory: no capture reads it again. The lineage's current generation,
-    /// when this read it, goes to `current`, for the capture to list.
-    fn leaves_out(
-        &self,
-        name: &std::ffi::OsStr,
-        lineage: &Path,
-        current: &mut CurrentRead,
-    ) -> Result<bool, StoreError> {
-        /// A larger checkpoint is no access request or acknowledgement.
-        const MAX_CLASSIFIED_BYTES: u64 = 1024 * 1024;
-        if !self.capture_leases.steward_here.load(Ordering::SeqCst) {
-            return Ok(false);
-        }
-        let known = self
-            .capture_leases
-            .steward_only
-            .lock_recover()
-            .get(name)
-            .copied();
-        if let Some(known) = known {
-            return Ok(known);
-        }
-        // A lineage with no generation yet is not classified: its first
-        // frame is still being retained.
-        let read = retained::current(lineage)?;
-        *current = CurrentRead::Read(read.clone());
-        let Some(active) = read else {
-            return Ok(false);
-        };
-        let checkpoint = active.join("checkpoint.delta");
-        let steward_only = match fs::symlink_metadata(&checkpoint) {
-            Ok(meta) if meta.is_file() && meta.len() <= MAX_CLASSIFIED_BYTES => {
-                let bytes = fs::read(&checkpoint)?;
-                matches!(
-                    retained::payload(&bytes, self.workspace_id),
-                    Some((_, crate::coedit::CoeditPayload::Checkpoint { body, .. }))
-                        if self.payloads.steward_only(&body)
-                )
-            }
-            // What only a steward reads is a checkpoint that stands alone:
-            // a lineage of deltas never holds it.
-            Ok(_) => false,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => return Err(error.into()),
-        };
-        self.capture_leases
-            .steward_only
-            .lock_recover()
-            .insert(name.to_owned(), steward_only);
-        Ok(steward_only)
     }
 
     fn listed_lineages(&self) -> std::sync::MutexGuard<'_, ListedLineages> {
@@ -1316,7 +1217,7 @@ impl WorkspaceStore {
                         }
                     }
                 }
-            } else if let Some((entry, current)) =
+            } else if let Some(entry) =
                 self.next_listed(&mut build.outer, build.phase, build.every_record)?
             {
                 let name = entry.file_name();
@@ -1335,7 +1236,7 @@ impl WorkspaceStore {
                                 generation,
                                 frames: frames.into_iter(),
                             })
-                        } else if let Some(active) = current.or_read(&lineage)? {
+                        } else if let Some(active) = retained::current(&lineage)? {
                             crate::timing::window("capture.lineage_read", crate::timing::start());
                             Some(Lineage::Reading {
                                 channel: name,

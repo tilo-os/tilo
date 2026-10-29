@@ -2946,6 +2946,7 @@ impl ShellDriver {
             st.quick_settings.personal_devices = Some(2);
             st.quick_settings.device_rows = vec![
                 HostedRow {
+                    key: "Microphone".into(),
                     title: "Microphone".into(),
                     detail: "In use, level 40%".into(),
                     icon: ui::icons::Icon::Mic,
@@ -2954,6 +2955,7 @@ impl ShellDriver {
                     actions: HostedActions::None,
                 },
                 HostedRow {
+                    key: "Studio desktop".into(),
                     title: "Studio desktop".into(),
                     detail: "Online, to the right".into(),
                     icon: ui::icons::Icon::Monitor,
@@ -2966,6 +2968,7 @@ impl ShellDriver {
                     },
                 },
                 HostedRow {
+                    key: "Phone".into(),
                     title: "Phone".into(),
                     detail: "Online".into(),
                     icon: ui::icons::Icon::Phone,
@@ -2984,6 +2987,7 @@ impl ShellDriver {
     fn scene_qs_clipboard(&mut self, paste: bool) {
         use tilo_quick_settings::hosted::{HostedActions, HostedRow};
         let copy = |title: &str, detail: &str, pinned: bool, selected: bool| HostedRow {
+            key: title.into(),
             title: title.into(),
             detail: detail.into(),
             icon: ui::icons::Icon::FileText,

@@ -724,13 +724,16 @@ mod tests {
         app.settle();
         assert!(
             app.effect(&GitClientEffect::OpenRepository {
-                path: "/no/such/repository".into(),
+                path: "/no/such/repository".parse().unwrap(),
             })
             .is_err(),
             "no repository there"
         );
+        // A relative path is refused before the client sees it.
+        let relative = app.call("open-repository", serde_json::json!({"path": "repository"}));
+        assert!(relative.unwrap_err().to_string().contains("absolute"));
         app.effect(&GitClientEffect::OpenRepository {
-            path: path.to_string_lossy().into_owned(),
+            path: ui::tilo_resource::AbsolutePath::new(&path).unwrap(),
         })
         .unwrap();
         app.settle();
@@ -859,7 +862,7 @@ mod tests {
                 .any(|row| row["action"] == "create-worktree")
         );
         app.effect(&GitClientEffect::CreateWorktree {
-            path: destination.to_str().unwrap().into(),
+            path: ui::tilo_resource::AbsolutePath::new(&destination).unwrap(),
             branch: "codex/experiment".into(),
             start: "HEAD".into(),
         })
@@ -895,7 +898,7 @@ mod tests {
         );
         assert!(
             app.effect(&GitClientEffect::CreateWorktree {
-                path: destination.to_str().unwrap().into(),
+                path: ui::tilo_resource::AbsolutePath::new(&destination).unwrap(),
                 branch: "codex/another".into(),
                 start: "HEAD".into(),
             })

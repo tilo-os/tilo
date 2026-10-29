@@ -244,7 +244,7 @@ tilo-fs = { path = "../../system/fs" }
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The workspace-join exchange every governor answers, over this relay's rooms.
 collab-types = { path = "../../collab/collab-types" }
-# A node stewards the encrypted channels of the rooms it governs.
+# A node takes part in the encrypted channels of the rooms it governs.
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The seam the core asks about opaque co-edit bodies, the desktop's adapter

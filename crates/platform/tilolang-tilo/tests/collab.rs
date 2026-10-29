@@ -183,6 +183,65 @@ fn concurrent_inserts_and_moves_of_a_collection_converge() {
 }
 
 #[test]
+fn concurrent_moves_to_a_place_converge_where_each_person_meant() {
+    let (mut ada, mut grace, meta, root) = todo_room();
+    for text in ["a", "b", "c", "d"] {
+        plan(&mut ada, &meta, &root, "add", json!({ "text": text }));
+    }
+    ada.sync_with(&mut grace);
+    let ids = item_ids(&ada, &meta, &root);
+    let items_field = field_id(&meta, "TodoList", "items");
+    let item = |n: usize| format!("{root}/{items_field}:{}", ids[n]);
+    // Ada drags d to the top; Grace, at the same time, drags a to the third place, before d
+    // as she sees the list.
+    plan(
+        &mut ada,
+        &meta,
+        &root,
+        "place",
+        json!({"i": item(3), "at": 0}),
+    );
+    plan(
+        &mut grace,
+        &meta,
+        &root,
+        "place",
+        json!({"i": item(0), "at": 2}),
+    );
+    assert_eq!(
+        item_ids(&ada, &meta, &root),
+        [
+            ids[3].clone(),
+            ids[0].clone(),
+            ids[1].clone(),
+            ids[2].clone()
+        ]
+    );
+    assert_eq!(
+        item_ids(&grace, &meta, &root),
+        [
+            ids[1].clone(),
+            ids[2].clone(),
+            ids[0].clone(),
+            ids[3].clone()
+        ]
+    );
+    ada.sync_with(&mut grace);
+    // d is first, as Ada put it; a is after b and c, as Grace put it.
+    let merged = item_ids(&ada, &meta, &root);
+    assert_eq!(
+        merged,
+        [
+            ids[3].clone(),
+            ids[1].clone(),
+            ids[2].clone(),
+            ids[0].clone()
+        ]
+    );
+    assert_eq!(merged, item_ids(&grace, &meta, &root));
+}
+
+#[test]
 fn a_set_and_text_edited_concurrently_merge() {
     let (mut ada, mut grace, meta, root) = todo_room();
     plan(&mut ada, &meta, &root, "tag", json!({"t": "home"}));

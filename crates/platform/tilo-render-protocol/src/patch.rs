@@ -45,6 +45,14 @@ pub mod validate;
 /// The version both ends name. A newer end must still read this one's messages.
 pub const VERSION: u16 = 1;
 
+/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList`, whose rows the
+/// app sends apart from the tree ([`ToUi::Rows`]) as the list shows them. A `list` in a view's
+/// content is drawn whole (a card's is its preview), so its rows travel in the tree.
+#[must_use]
+pub fn is_virtual_list(kind: &str) -> bool {
+    kind == "ui.VirtualList"
+}
+
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a
 /// row) went to, shown after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -659,5 +667,56 @@ mod tests {
         let mut other = bytes;
         other[0] = 9;
         assert!(decode_batch::<ToUi>(&other).is_err(), "another version");
+    }
+
+    #[test]
+    fn rich_text_reads_back_as_it_was_sent_with_or_without_its_parts() {
+        let reference = r#"{"app":"a.b","id":"t1","kind":"a.task"}"#;
+        let rich = |marks: Vec<rich::Mark>, embeds: Vec<rich::Embed>| rich::RichText {
+            blocks: vec![rich::Block {
+                kind: "paragraph".to_owned(),
+                text: "see Fix it".to_owned(),
+                marks,
+                attrs: std::collections::BTreeMap::new(),
+            }],
+            embeds,
+        };
+        let batch: Vec<ToUi> = [
+            rich(Vec::new(), Vec::new()),
+            rich(
+                vec![rich::Mark {
+                    start: 4,
+                    end: 10,
+                    name: "mention".to_owned(),
+                    value: rich::Attr::Text(reference.to_owned()),
+                }],
+                vec![
+                    rich::Embed {
+                        reference: reference.to_owned(),
+                        view: rich::InlineView::Resource {
+                            title: "Fix the build".to_owned(),
+                            icon: None,
+                            detail: None,
+                        },
+                    },
+                    rich::Embed {
+                        reference: "u-ada".to_owned(),
+                        view: rich::InlineView::Unreadable,
+                    },
+                ],
+            ),
+        ]
+        .into_iter()
+        .map(|value| ToUi::Patch {
+            lane: Lane::Root,
+            patches: vec![Patch::SetProp {
+                path: Vec::new(),
+                name: "value".to_owned(),
+                value: Some(Value::Rich(value)),
+            }],
+        })
+        .collect();
+        let bytes = encode_batch(&batch).expect("encodes");
+        assert_eq!(decode_batch::<ToUi>(&bytes).expect("decodes"), batch);
     }
 }

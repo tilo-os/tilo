@@ -8,7 +8,7 @@ glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
 glyph-icon 2 apps/settings/src/panes/updates.rs
 glyph-icon 1 apps/video-editor/src/app.rs
-glyph-icon 1 apps/imager/src/setup/destination/installer_app.rs
+glyph-icon 1 crates/session/installer/src/installer_app.rs
 glyph-icon 1 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 apps/agent/src/session/agent_loop.rs
 glyph-join 1 apps/agent/src/surface.rs
@@ -54,7 +54,6 @@ glyph-join 1 apps/photos/src/app/accessibility.rs
 glyph-join 4 apps/settings/src/input_sources.rs
 glyph-join 2 apps/slides/src/model.rs
 glyph-join 2 apps/store/src/app.rs
-glyph-join 1 apps/store/src/app/runtime.rs
 glyph-join 5 apps/terminal/src/main_body.rs
 glyph-join 1 apps/terminal/src/scenarios.rs
 glyph-join 1 apps/totp/src/model.rs
@@ -67,7 +66,7 @@ glyph-join 1 apps/typst-editor/src/app.rs
 glyph-join 2 apps/typst-editor/src/samples.rs
 glyph-join 18 apps/video-editor/src/app.rs
 glyph-join 1 apps/video-editor/src/app/paint.rs
-glyph-join 6 apps/video-editor/src/app/project_workflow.rs
+glyph-join 2 apps/video-editor/src/app/project_workflow.rs
 glyph-join 3 apps/video-editor/src/export.rs
 glyph-join 1 apps/video-editor/src/presence.rs
 glyph-join 1 apps/video-player/src/actions.rs
@@ -80,13 +79,13 @@ glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs
 glyph-join 1 crates/session/desktop/src/here.rs
 glyph-join 1 crates/session/desktop/src/workspace_settings.rs
 glyph-join 2 crates/session/desktop/src/workspace_settings/agent_access.rs
-glyph-join 1 apps/imager/src/setup/destination/disk_row.rs
-glyph-join 2 apps/imager/src/setup/destination/disks.rs
-glyph-join 12 apps/imager/src/setup/destination/installer_app.rs
-glyph-join 2 apps/imager/src/setup/destination/installer_app/surface.rs
-glyph-join 1 apps/imager/src/setup/destination/installer_network.rs
-glyph-join 1 apps/imager/src/setup/destination/online_accounts/mod.rs
-glyph-join 1 apps/imager/src/setup/destination/step_indicator.rs
+glyph-join 1 crates/session/installer/src/disk_row.rs
+glyph-join 2 crates/session/installer/src/disks.rs
+glyph-join 12 crates/session/installer/src/installer_app.rs
+glyph-join 2 crates/session/installer/src/installer_app/surface.rs
+glyph-join 1 crates/session/installer/src/installer_network.rs
+glyph-join 1 crates/session/installer/src/online_accounts/mod.rs
+glyph-join 1 crates/session/installer/src/step_indicator.rs
 glyph-join 2 crates/session/shell/src/bin/shots/main.rs
 glyph-join 6 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 crates/session/shell/src/compositor/backend/drm/seat_diag.rs

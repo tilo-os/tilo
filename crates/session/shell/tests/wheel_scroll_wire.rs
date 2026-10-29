@@ -7,10 +7,12 @@
 //! fling release and ignores, so a wheel scrolled nothing in Tilo's apps.
 #![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 
-use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use winit::event::{MouseScrollDelta, TouchPhase};
+
+use crate::support::wayland::create_toplevel;
 
 #[derive(Debug, PartialEq)]
 enum Wire {
@@ -27,7 +29,7 @@ struct Client {
     wire: Vec<Wire>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, seat);
 
 fn axis(axis: WEnum<wl_pointer::Axis>) -> wl_pointer::Axis {
     axis.into_result().expect("a known axis")
@@ -58,11 +60,6 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
-
 type Harness = crate::support::wayland::Harness<Client>;
 
 impl Harness {
@@ -83,10 +80,7 @@ fn a_wheel_notch_scrolls_and_a_finger_scroll_stops_once() {
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let qh = h.queue.handle();
     let _pointer = seat.get_pointer(&qh, ());
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.List".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.List");
     h.pump();
     let list = h.foreign_id("org.example.List");
     h.state.set_client_keyboard_focus(Some(list));

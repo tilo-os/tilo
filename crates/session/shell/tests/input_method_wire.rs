@@ -16,22 +16,16 @@
     reason = "event counters, a 5 s deadline and a 300x40 buffer size, all far from overflow"
 )]
 
-use std::os::fd::{FromRawFd as _, OwnedFd};
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
-
 use shell::compositor::input_method::TrustedInputMethod;
-use shell::compositor::state::{ClientState, State};
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
+
 use wayland_client::protocol::{
-    wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_shm_pool, wl_surface,
+    wl_callback, wl_compositor, wl_keyboard, wl_seat, wl_shm, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2, zwp_input_method_manager_v2, zwp_input_method_v2,
     zwp_input_popup_surface_v2,
@@ -40,7 +34,7 @@ use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
     zwp_virtual_keyboard_manager_v1, zwp_virtual_keyboard_v1,
 };
 
-use crate::support::wayland::{Globals as _, foreign_id};
+use crate::support::wayland::{self, Toplevel, create_toplevel, foreign_id};
 
 /// Everything either connection observed.
 #[derive(Default)]
@@ -62,7 +56,7 @@ struct Peer {
     popup_rectangles: Vec<(i32, i32, i32, i32)>,
 }
 
-crate::support::wayland::test_client!(Peer);
+crate::support::wayland::test_client!(Peer: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Peer {
     fn event(
@@ -174,152 +168,26 @@ impl Dispatch<zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2, ()> for Peer {
     }
 }
 
-delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
-delegate_noop!(Peer: ignore wl_surface::WlSurface);
-delegate_noop!(Peer: ignore wl_seat::WlSeat);
-delegate_noop!(Peer: ignore wl_shm::WlShm);
-delegate_noop!(Peer: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Peer: ignore wl_buffer::WlBuffer);
 delegate_noop!(Peer: ignore wl_callback::WlCallback);
-delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Peer: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
 delegate_noop!(Peer: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
 delegate_noop!(Peer: ignore zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1);
 delegate_noop!(Peer: ignore zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1);
 
-struct Connected {
-    /// The compositor's handle for this connection.
-    server: smithay::reexports::wayland_server::Client,
-    conn: Connection,
-    queue: EventQueue<Peer>,
-    peer: Peer,
-}
-
-impl Connected {
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
-    where
-        Peer: Dispatch<I, ()>,
-    {
-        let (name, version) = self.peer.global(interface, version)?;
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind(name, version, &self.queue.handle(), ()))
-    }
-
-    fn sees(&self, interface: &str) -> bool {
-        self.peer
-            .globals
-            .iter()
-            .any(|(_, name, _)| name == interface)
-    }
-}
-
-struct Harness {
-    display: Display<State>,
-    state: State,
-    clients: Vec<Connected>,
-    _event_loop: EventLoop<'static, State>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = State::new(event_loop.handle(), display.handle());
-        Self {
-            display,
-            state,
-            clients: Vec::new(),
-            _event_loop: event_loop,
-        }
-    }
-
-    /// Connect a client with `credential`, as the matching socket acceptor
-    /// would, and read its registry. Returns its index.
-    fn connect(&mut self, credential: Option<TrustedInputMethod>) -> usize {
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        let data = credential.map_or_else(
-            || Arc::new(ClientState::default()),
-            ClientState::input_method_arc,
-        );
-        let inserted = self
-            .display
-            .handle()
-            .insert_client(server, data)
-            .expect("client insert");
-        if let Some(kind) = credential {
-            self.state
-                .register_trusted_input_method_client(&inserted, kind);
-        }
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Peer>();
-        let _registry = conn.display().get_registry(&queue.handle(), ());
-        self.clients.push(Connected {
-            server: inserted,
-            conn,
-            queue,
-            peer: Peer::default(),
-        });
-        self.pump();
-        self.clients.len() - 1
-    }
-
-    /// Pump until `done` holds, failing with `what` after a generous bound:
-    /// buffer and role requests can take more than one exchange to land.
-    fn pump_until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-        let deadline = tilo_test_env::hang_deadline();
-        while !done(self) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}"
-            );
-            self.pump();
-            std::thread::yield_now();
-        }
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..8 {
-            for client in &mut self.clients {
-                let _ = client.queue.flush();
-            }
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            for client in &mut self.clients {
-                if let Some(guard) = client.conn.prepare_read() {
-                    let _ = guard.read();
-                }
-                let _ = client.queue.dispatch_pending(&mut client.peer);
-            }
-        }
-    }
-}
+type Harness = wayland::Clients<Peer>;
 
 /// Attach an opaque `width`×`height` shm buffer to `surface` and commit.
-fn attach_buffer(client: &Connected, surface: &wl_surface::WlSurface, width: i32, height: i32) {
-    use std::os::fd::AsFd as _;
-    let shm = client.bind::<wl_shm::WlShm>("wl_shm", 1).expect("wl_shm");
-    let stride = width * 4;
-    let len = usize::try_from(stride * height).expect("buffer size");
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-input-method-wire".as_ptr(), 0) };
-    assert!(
-        raw >= 0,
-        "memfd_create: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.set_len(len as u64).expect("size the shm pool");
-    let qh = client.queue.handle();
-    let pool = shm.create_pool(
-        file.as_fd(),
-        i32::try_from(len).expect("pool size"),
-        &qh,
-        (),
-    );
-    let buffer = pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
+fn attach_buffer(
+    client: &wayland::Connected<Peer>,
+    surface: &wl_surface::WlSurface,
+    width: i32,
+    height: i32,
+) {
+    let shm = client
+        .try_bind::<wl_shm::WlShm>("wl_shm", 1)
+        .expect("wl_shm");
+    let pixels = wayland::solid(width, height, [0; 4]);
+    let buffer = wayland::shm_buffer(&shm, &client.queue.handle(), width, height, &pixels);
     surface.attach(Some(&buffer), 0, 0);
     surface.damage(0, 0, width, height);
     surface.commit();
@@ -378,24 +246,27 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         let client = &h.clients[app];
         let qh = client.queue.handle();
         let compositor = client
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+            .try_bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
             .expect("compositor");
         let wm = client
-            .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
+            .try_bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
             .expect("xdg shell");
-        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let seat = client
+            .try_bind::<wl_seat::WlSeat>("wl_seat", 9)
+            .expect("seat");
         let keyboard = seat.get_keyboard(&qh, ());
         let manager = client
-            .bind::<zwp_text_input_manager_v3::ZwpTextInputManagerV3>(
+            .try_bind::<zwp_text_input_manager_v3::ZwpTextInputManagerV3>(
                 "zwp_text_input_manager_v3",
                 1,
             )
             .expect("text-input-v3 is public");
         let text_input = manager.get_text_input(&seat, &qh, ());
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let top = xdg.get_toplevel(&qh, ());
-        top.set_app_id("org.example.Editor".into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel: top,
+        } = create_toplevel(&compositor, &wm, &qh, "org.example.Editor");
         (surface, text_input, xdg, top, keyboard)
     };
     h.pump();
@@ -408,14 +279,19 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
     let (input_method, _grab, im_compositor) = {
         let client = &h.clients[im_client];
         let qh = client.queue.handle();
-        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+        let seat = client
+            .try_bind::<wl_seat::WlSeat>("wl_seat", 9)
+            .expect("seat");
         let manager = client
-            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .try_bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                INPUT_METHOD_MANAGER,
+                1,
+            )
             .expect("the composer may bind the input method");
         let input_method = manager.get_input_method(&seat, &qh, ());
         let grab = input_method.grab_keyboard(&qh, ());
         let compositor = client
-            .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
+            .try_bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
             .expect("compositor");
         (input_method, grab, compositor)
     };
@@ -545,9 +421,14 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
     let input_method = {
         let client = &h.clients[keyboard];
         let qh = client.queue.handle();
-        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+        let seat = client
+            .try_bind::<wl_seat::WlSeat>("wl_seat", 1)
+            .expect("seat");
         client
-            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .try_bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                INPUT_METHOD_MANAGER,
+                1,
+            )
             .expect("trusted keyboard may bind")
             .get_input_method(&seat, &qh, ())
     };
@@ -606,13 +487,18 @@ fn a_virtual_keyboard_chord_reaches_a_chrome_terminal_with_its_modifiers() {
     let (_input_method, virtual_keyboard) = {
         let client = &h.clients[keyboard];
         let qh = client.queue.handle();
-        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+        let seat = client
+            .try_bind::<wl_seat::WlSeat>("wl_seat", 1)
+            .expect("seat");
         let input_method = client
-            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .try_bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                INPUT_METHOD_MANAGER,
+                1,
+            )
             .expect("trusted keyboard may bind")
             .get_input_method(&seat, &qh, ());
         let virtual_keyboard = client
-            .bind::<zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1>(
+            .try_bind::<zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1>(
                 VIRTUAL_KEYBOARD_MANAGER,
                 1,
             )
@@ -695,17 +581,7 @@ fn upload_keymap(
     let (keymap, codes) = osk::inject::build_keymap(symbols);
     let mut bytes = keymap.into_bytes();
     bytes.push(0);
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-osk-keymap".as_ptr(), 0) };
-    assert!(
-        raw >= 0,
-        "memfd_create: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    std::io::Write::write_all(&mut &file, &bytes).expect("write the keymap");
+    let file = wayland::memfd(&bytes);
     virtual_keyboard.keymap(
         1,
         file.as_fd(),
@@ -768,9 +644,11 @@ fn an_email_field_reaches_the_on_screen_keyboard_as_an_email_field() {
         let _input_method = {
             let client = &h.clients[keyboard];
             let qh = client.queue.handle();
-            let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+            let seat = client
+                .try_bind::<wl_seat::WlSeat>("wl_seat", 1)
+                .expect("seat");
             client
-                .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                .try_bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
                     INPUT_METHOD_MANAGER,
                     1,
                 )
@@ -840,9 +718,14 @@ fn a_late_keyboard_activates_an_already_enabled_chrome_field() {
     let input_method = {
         let client = &h.clients[keyboard];
         let qh = client.queue.handle();
-        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+        let seat = client
+            .try_bind::<wl_seat::WlSeat>("wl_seat", 1)
+            .expect("seat");
         client
-            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .try_bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(
+                INPUT_METHOD_MANAGER,
+                1,
+            )
             .expect("trusted keyboard may bind")
             .get_input_method(&seat, &qh, ())
     };

@@ -6,6 +6,9 @@
 //! to (`tilo_reference::embed`); beside the paragraphs, [`RichText::embeds`] says how each
 //! reference reads for this reader: their own inline view of it, resolved where the text was
 //! read, under their permissions. The component draws only what it is given.
+//!
+//! A window's patches are encoded without field names (postcard), so every field is always
+//! written: none is skipped when empty.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -17,7 +20,7 @@ pub struct RichText {
     pub blocks: Vec<Block>,
     /// How each reference in the text reads, by the `mention` mark's value. A reference with
     /// no entry reads as its run.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub embeds: Vec<Embed>,
 }
 
@@ -28,9 +31,9 @@ pub struct RichText {
 pub struct Block {
     pub kind: String,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub marks: Vec<Mark>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(default)]
     pub attrs: BTreeMap<String, Attr>,
 }
 
@@ -73,9 +76,9 @@ pub enum InlineView {
     /// type, and what its type shows beside the title (a task's state and number).
     Resource {
         title: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         icon: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
         detail: Option<String>,
     },
     /// A resource kept where the text was read cannot say how it reads (another app's): it

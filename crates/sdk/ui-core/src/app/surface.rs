@@ -1114,7 +1114,7 @@ impl App {
         let search_pending = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .is_some_and(|palette| palette.advance_search_page().pending);
         // What a window of its own repaints whole: a rebuilt tree, moved
         // geometry, another record, and what paints over the widgets.
@@ -1353,7 +1353,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(crate::action_palette::ActionPalette::is_moving)
             // History's panel moves outside the app's root (it slides in).
             || self
@@ -2296,7 +2296,7 @@ mod tests {
             assert!(
                 app.actions
                     .action_palette
-                    .as_ref()
+                    .as_deref()
                     .is_some_and(crate::action_palette::ActionPalette::is_moving),
                 "a palette a click opened arrives"
             );

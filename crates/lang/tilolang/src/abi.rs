@@ -148,10 +148,15 @@ imports! {
     ActThen = "act_then" ([H, H] -> [H]);
     ActOpen = "act_open" ([H, H, I32] -> [H]);
     EventValue = "event_value" ([] -> [H]);
+    StateAt = "state_at" ([I32, H, I32] -> [H]);
     Actions = "actions" ([H] -> [H]);
     Lenses = "lenses" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
+    VersionEnd = "version_end" ([H, I32] -> [H]);
+    CollOrdered = "coll_ordered" ([H, H] -> [H]);
+    CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);
+    CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);

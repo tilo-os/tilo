@@ -760,14 +760,14 @@ pub struct WorkspaceTree {
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
-    /// Enrolled rooms whose governor stewards their channels: every hosted
+    /// Enrolled rooms whose governor takes part in their channels: every hosted
     /// room, whether a person's device or a relay hosts it. Their records
     /// are sealed channels every member opens itself, never documents the
     /// governor commits.
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
-    pub stewarded_rooms: BTreeSet<RoomId>,
-    /// Enrolled rooms whose host stewards no channels (a host that may not
+    pub sealed_rooms: BTreeSet<RoomId>,
+    /// Enrolled rooms whose host takes part in no channels (a host that may not
     /// own workspaces): their records are documents the native owner
     /// commits. A held room is in neither set until its replica is
     /// projected, and then in exactly one. Projected, so not persisted.
@@ -961,7 +961,7 @@ impl Default for WorkspaceTree {
             desktop: DesktopTree::default(),
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
-            stewarded_rooms: BTreeSet::new(),
+            sealed_rooms: BTreeSet::new(),
             committed_record_rooms: BTreeSet::new(),
             room_rosters: BTreeMap::new(),
             policy_revision: 0,
@@ -1239,7 +1239,7 @@ impl WorkspaceTree {
     }
 
     /// Whether `room`'s app records are documents its native owner commits:
-    /// only a held room whose host stewards no channels. A room still
+    /// only a held room whose host takes part in no channels. A room still
     /// joining or being placed has no records here yet, and a hosted room's
     /// records are sealed ([`Self::seals_records`]).
     pub(crate) fn commits_native_documents(&self, room: RoomId) -> bool {
@@ -1247,9 +1247,9 @@ impl WorkspaceTree {
     }
 
     /// Whether `room`'s app records are sealed channels each app opens
-    /// itself: a held room its host stewards.
+    /// itself: a held room whose channels its host takes part in.
     pub(crate) fn seals_records(&self, room: RoomId) -> bool {
-        self.stewarded_rooms.contains(&room)
+        self.sealed_rooms.contains(&room)
     }
 
     /// Whether `room`'s replica is projected here, its records committed
@@ -1290,13 +1290,14 @@ impl WorkspaceTree {
             return;
         };
         // Whoever hosts the room, a person's device or a relay, its host
-        // stewards the channels of the rooms it governs exactly as the host
-        // decides it (`tilo_room_host`'s stewardship): the room is sealed.
-        if peer.authority().capabilities.stewards_room_channels() {
-            self.stewarded_rooms.insert(room);
+        // takes part in the channels of the rooms it governs exactly as the
+        // host decides it (`tilo_room_host`'s participation): the room is
+        // sealed.
+        if peer.authority().capabilities.takes_part_in_room_channels() {
+            self.sealed_rooms.insert(room);
             self.committed_record_rooms.remove(&room);
         } else {
-            self.stewarded_rooms.remove(&room);
+            self.sealed_rooms.remove(&room);
             self.committed_record_rooms.insert(room);
         }
         // The room's replica is here: its join, or its placement on its

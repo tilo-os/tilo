@@ -355,6 +355,92 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// The package a first-party app tab of `kind` is, when the session runs its
+/// apps as their own processes: every packaged built-in but feedback, which
+/// is the shell's own surface.
+pub(crate) fn own_process_package(kind: &AppKind) -> Option<String> {
+    if matches!(kind, AppKind::Other(label) if label.eq_ignore_ascii_case(tilo_desktop::feedback::KIND))
+    {
+        return None;
+    }
+    let package = kind.app_id();
+    tilo_desktop_model::first_party::is_first_party_app_id(&package).then_some(package)
+}
+
+/// Open the app `kind` names at `placement` as its own process: a tab that
+/// waits for the app's window, which the session's restore path launches
+/// and binds into it (`peer_windows::examine`), exactly as it reopens a
+/// saved window. `None` when `kind` is no packaged app.
+pub fn open_app_process(
+    tree: &mut WorkspaceTree,
+    kind: &AppKind,
+    title: impl Into<String>,
+    placement: Placement,
+) -> Option<TabId> {
+    let app_id = own_process_package(kind)?;
+    let title = title.into();
+    let new_tab = Tab {
+        id: tree.mint_id(),
+        title: title.clone(),
+        tile: TileContent::LocalApp {
+            app_id,
+            label: title,
+            note: String::new(),
+        },
+        app_title: None,
+    };
+    let tab_id = place_tab(tree, new_tab, placement);
+    tree.seed_doc_from_cache();
+    tree.queue_save();
+    Some(tab_id)
+}
+
+/// Turn every tab of a packaged first-party app that asks to be drawn by
+/// the session (a tree saved while the session drew those apps itself, or a
+/// tab a peer that draws its apps itself opened) into the app's own window
+/// to open here: this device's own tabs reopen as saved windows do, a
+/// peer's as its other windows do (`peer_windows::examine` launches both and
+/// binds the window into the tab). Whether anything changed.
+pub fn reopen_app_tabs_as_processes(tree: &mut WorkspaceTree) -> bool {
+    let local = tree.local_salt();
+    let mut changed = false;
+    for workspace in &mut tree.desktop.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    let TileContent::AppPlaceholder { kind, label } = &tab.tile else {
+                        continue;
+                    };
+                    let Some(app_id) = own_process_package(kind) else {
+                        continue;
+                    };
+                    let label = label.clone();
+                    tab.tile = if crate::shell::state::peer_salt_of(tab.id) == local {
+                        TileContent::LocalApp {
+                            app_id,
+                            label,
+                            note: String::new(),
+                        }
+                    } else {
+                        TileContent::PeerWindow {
+                            app_id,
+                            label,
+                            note: String::new(),
+                            missing: None,
+                        }
+                    };
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        tree.seed_doc_from_cache();
+        tree.queue_save();
+    }
+    changed
+}
+
 /// Hold the place a launch will open in from the moment it is asked for: a
 /// tab at `placement` where the app's window arrives
 /// (`pending_window::PendingWindow`), which the window then binds into
@@ -3368,3 +3454,7 @@ mod location_tests {
 #[cfg(test)]
 #[path = "tab_binding_name_tests.rs"]
 mod host_tab_name_tests;
+
+#[cfg(test)]
+#[path = "tab_binding_app_process_tests.rs"]
+mod app_process_tests;

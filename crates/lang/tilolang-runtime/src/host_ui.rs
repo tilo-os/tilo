@@ -84,6 +84,14 @@ impl Core {
         self.ret_h(value)
     }
 
+    /// The view state slot itself, as an argument of an action reference: it is read when the
+    /// event fires ([`Value::State`]).
+    fn state_at(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let key = self.state_key(a.h(0)?, a.h(1)?)?;
+        let scalar = a.h(2)? != 0;
+        self.ret_h(Value::State { key, scalar })
+    }
+
     fn bind_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let node = self.node_index(a.h(0)?)?;
         let key = self.state_key(a.h(1)?, a.h(2)?)?;
@@ -274,6 +282,7 @@ impl Core {
             }
             Imp::SpaceI | Imp::SpaceF => self.space_import(imp, a),
             Imp::StateGet => self.state_get(a),
+            Imp::StateAt => self.state_at(a),
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),

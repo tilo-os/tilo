@@ -154,38 +154,14 @@ fn press(
     key: winit::keyboard::Key,
     modifiers: winit::keyboard::ModifiersState,
 ) -> bool {
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-    use ui::widget::Widget as _;
-
-    let theme = ui::theme::Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn ui::widget::Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(1280.0, 800.0),
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut text = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1280.0),
-                height: AvailableSpace::Definite(800.0),
-            },
-            |known, available, node_id, _, _| match node_map.get(&node_id) {
-                Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
-                None => Size::ZERO,
-            },
-        )
-        .unwrap();
-    host.apply_layout(&taffy, child, vello::kurbo::Point::ORIGIN);
+    let crate::shell::test_support::LaidOut {
+        taffy, node: child, ..
+    } = crate::shell::test_support::lay_out_in_viewport(
+        host,
+        1280.0,
+        800.0,
+        &ui::theme::Theme::dark(),
+    );
 
     let event = ui::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
     let event = ui::synthetic_input::keyboard_input(event);

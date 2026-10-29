@@ -21,9 +21,8 @@ import sys
 NATIVE_TEST_FEATURES = {
     "tilo-model-gateway": ("local-models", "host-backend", "runtime-client"),
     # The Imager's default build is the Tilo app (the image writer); its tests
-    # and lints cover the guided installation as the host downloads ship it,
-    # and its destination side as the live installer medium ships it.
-    "imager": ("installation", "destination"),
+    # and lints cover the guided installation as the host downloads ship it.
+    "imager": ("installation",),
     # Its Discord session reader (LevelDB, C++) is the installation's alone, so
     # the Tilo app does not link libstdc++; its tests and lints cover it.
     "imager-backend": ("installation",),

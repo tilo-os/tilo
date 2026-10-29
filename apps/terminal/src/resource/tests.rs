@@ -272,6 +272,19 @@ fn scenarios_stage_their_output_and_view_state() {
     assert_eq!(target, Some(crate::target::SessionTarget::Host));
 }
 
+/// A folder granted to an environment is named by an absolute path: a
+/// relative one would mean wherever Terminal happens to run.
+#[test]
+fn granting_a_relative_folder_is_refused() {
+    use ui::tilo_resource::Effect as _;
+    let arguments = serde_json::Map::from_iter([
+        ("record".to_owned(), serde_json::json!("environment")),
+        ("path".to_owned(), serde_json::json!("projects")),
+    ]);
+    let refused = TerminalEffect::decode("grant-folder", &arguments).unwrap_err();
+    assert!(refused.contains("absolute"), "{refused}");
+}
+
 #[test]
 fn native_replacement_preserves_private_effect_contract() {
     use ui::tilo_resource::Effect as _;

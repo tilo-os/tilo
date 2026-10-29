@@ -87,9 +87,9 @@ step's own line rather than the link's.
 
 The focused native repro verifies the same reference succeeds before restart
 and after it. Previously the cold read failed with `source channel keys
-unavailable`: discovery checked only already-open stewards before a document
+unavailable`: discovery checked only already-open channels before a document
 subscription could reopen one. Resource reads now recover the existing sealed
-channel through the normal steward crash-recovery path, under the existing
+channel through the normal channel-state recovery path, under the existing
 current-caller read guard. Missing groups are refused without initialization;
 wrong vaults/devices and corrupt state are refused. No membership is added by
 this recovery, and native plaintext replay still requires the exact governor.

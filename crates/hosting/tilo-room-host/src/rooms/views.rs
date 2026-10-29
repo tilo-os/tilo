@@ -117,16 +117,21 @@ impl Rooms {
             .ok_or("resource read not permitted")?;
         let channel =
             collab_types::document_channel_id(&source.app_id, &source.cluster_id, &source.record);
-        let keys = match room.stewardship.clone() {
-            Some(steward) => steward.channels.lock().await.existing_keys(channel).ok(),
+        let keys = match room.participation.clone() {
+            Some(participant) => participant
+                .channels
+                .lock()
+                .await
+                .existing_keys(channel)
+                .ok(),
             None => None,
         };
         let primary_governor = (source.record.is_empty()
             && room.peer().holds_document(&source.app_id, ""))
         .then_some(room.peer().authority().device_public_key);
         if keys.is_none() && primary_governor.is_none() {
-            return Err(if room.stewardship.is_none() {
-                "source stewardship unavailable".into()
+            return Err(if room.participation.is_none() {
+                "this relay takes part in no channel of the source's room".into()
             } else {
                 "source channel keys unavailable".into()
             });

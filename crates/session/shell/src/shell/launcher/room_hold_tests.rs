@@ -257,14 +257,11 @@ fn an_opening_asked_for_before_the_enrollment_commits_goes_on_once_it_does() {
     assert!(!owner.rooms().contains(&room), "nothing is committed yet");
     let session = LaunchSession::current();
     let (opened, opened_now) = std::sync::mpsc::channel();
-    let waiting = {
-        let tree = tree.clone();
-        std::thread::spawn(move || {
-            opened
-                .send(room_hold::committed_device(&session, &tree, room))
-                .expect("the test waits for it");
-        })
-    };
+    let waiting = std::thread::spawn(move || {
+        opened
+            .send(room_hold::committed_device(&session, &tree, room))
+            .expect("the test waits for it");
+    });
     assert!(
         opened_now
             .recv_timeout(std::time::Duration::from_millis(200))

@@ -40,28 +40,7 @@ fn the_ready_screen_keyboard_stops_are_named() {
     );
 
     let theme = Theme::dark();
-    let mut text = ui::text_render::TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(1280.0),
-                height: taffy::AvailableSpace::Definite(800.0),
-            },
-            |known, available, node_id, _, _| {
-                measure_map
-                    .get(&node_id)
-                    .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                        (*ptr).measure(known, available, &mut text)
-                    })
-            },
-        )
-        .expect("ready layout");
-    view.apply_layout(&taffy, node, Point::ZERO);
+    lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
 
     let mut stops = Vec::new();
     keyboard_stops(&view, &mut stops);
@@ -81,28 +60,9 @@ fn the_ready_screen_keyboard_stops_are_named() {
 /// Lay `view` out in a `width`×`height` window, as the shell does.
 fn lay_out(view: &mut OnboardingView, width: f32, height: f32) -> Vec<*mut dyn Widget> {
     let theme = Theme::dark();
-    let mut text = ui::text_render::TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(width),
-                height: taffy::AvailableSpace::Definite(height),
-            },
-            |known, available, node_id, _, _| {
-                measure_map
-                    .get(&node_id)
-                    .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                        (*ptr).measure(known, available, &mut text)
-                    })
-            },
-        )
-        .expect("onboarding layout");
-    view.apply_layout(&taffy, node, Point::ZERO);
+    let LaidOut {
+        nodes: node_map, ..
+    } = lay_out_as_root(view, width, height, &theme);
     node_map.into_values().collect()
 }
 

@@ -57,7 +57,7 @@ pub mod pixels;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::damage::{Region, coalesce_regions};
+use crate::damage::{area, coalesce_regions, pixel_rect};
 use crate::gpu::RenderContext;
 use pollster::FutureExt;
 use vello::kurbo::Rect;
@@ -1706,20 +1706,14 @@ impl OffscreenRenderer {
         timing: &mut Option<OffscreenRenderTiming>,
     ) -> u64 {
         let full_pixels = u64::from(self.width).saturating_mul(u64::from(self.height));
-        let mut damage_pixels = 0u64;
-        let mut damage_region_count = 0usize;
-        for rect in damage {
-            let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
-            let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
-            let x1 = rect.x1.ceil().max(0.0).min(f64::from(self.width)) as u32;
-            let y1 = rect.y1.ceil().max(0.0).min(f64::from(self.height)) as u32;
-            let width = x1.saturating_sub(x0);
-            let height = y1.saturating_sub(y0);
-            damage_pixels =
-                damage_pixels.saturating_add(u64::from(width).saturating_mul(u64::from(height)));
-            damage_region_count =
-                damage_region_count.saturating_add(usize::from(width != 0 && height != 0));
-        }
+        let pixel_rects: Vec<FineDamageRect> = damage
+            .iter()
+            .filter_map(|rect| pixel_rect(*rect, self.width, self.height))
+            .collect();
+        let damage_pixels = pixel_rects
+            .iter()
+            .fold(0u64, |sum, rect| sum.saturating_add(area(*rect)));
+        let damage_region_count = pixel_rects.len();
         if !self.target_valid
             || damage_pixels == 0
             || damage_pixels >= full_pixels.saturating_div(2)
@@ -1730,25 +1724,7 @@ impl OffscreenRenderer {
         let (device, queue) = self.device_queue();
         let setup_start = timing.is_some().then(crate::time::now);
         let texture_limit = device.limits().max_texture_dimension_2d;
-        let regions = coalesce_regions(
-            damage
-                .iter()
-                .filter_map(|rect| {
-                    let x0 = rect.x0.floor().max(0.0).min(f64::from(self.width)) as u32;
-                    let y0 = rect.y0.floor().max(0.0).min(f64::from(self.height)) as u32;
-                    let x1 = rect.x1.ceil().max(0.0).min(f64::from(self.width)) as u32;
-                    let y1 = rect.y1.ceil().max(0.0).min(f64::from(self.height)) as u32;
-                    let width = x1.saturating_sub(x0);
-                    let height = y1.saturating_sub(y0);
-                    (width != 0 && height != 0).then_some(Region {
-                        x: x0,
-                        y: y0,
-                        width,
-                        height,
-                    })
-                })
-                .collect(),
-        );
+        let regions = coalesce_regions(pixel_rects);
         let prefix_width = regions
             .iter()
             .map(|r| r.x.saturating_add(r.width))
@@ -1767,15 +1743,6 @@ impl OffscreenRenderer {
                 self.renderer.trim_pooled_buffers();
                 self.coarse_pool_high_water_pixels = 0;
             }
-            let fine_damage: Vec<FineDamageRect> = regions
-                .iter()
-                .map(|region| FineDamageRect {
-                    x: region.x,
-                    y: region.y,
-                    width: region.width,
-                    height: region.height,
-                })
-                .collect();
             let sparse_setup_us = setup_start.map(|start| start.elapsed().as_micros());
             let sparse_start = timing.is_some().then(crate::time::now);
             if let Some(stats) = self
@@ -1791,7 +1758,7 @@ impl OffscreenRenderer {
                         height: prefix_height,
                         antialiasing_method: AaConfig::Area,
                     },
-                    &fine_damage,
+                    &regions,
                 )
                 .expect("render_to_texture_with_damage")
             {

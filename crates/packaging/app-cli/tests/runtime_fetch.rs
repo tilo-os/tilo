@@ -150,17 +150,17 @@ fn tapp(manifest: &str, payload: &Path) -> Vec<u8> {
     tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
 }
 
-fn app_tapp(root: &Path, runtime: &str, optional: &[&str]) -> Vec<u8> {
-    app_tapp_with_optional(root, APP_ID, runtime, optional)
+fn app_tapp(root: &Path, runtime: &str, required: &[&str]) -> Vec<u8> {
+    app_tapp_with_runtimes(root, APP_ID, runtime, required)
 }
 
-/// An app on `runtime` that also pins `optional` (an engine) by exact version.
-fn app_tapp_pinning(root: &Path, id: &str, runtime: &str, optional: Option<&str>) -> Vec<u8> {
-    let optional: Vec<&str> = optional.into_iter().collect();
-    app_tapp_with_optional(root, id, runtime, &optional)
+/// An app on `runtime` that also requires `engine` by exact version.
+fn app_tapp_pinning(root: &Path, id: &str, runtime: &str, engine: Option<&str>) -> Vec<u8> {
+    let required: Vec<&str> = engine.into_iter().collect();
+    app_tapp_with_runtimes(root, id, runtime, &required)
 }
 
-fn app_tapp_with_optional(root: &Path, id: &str, runtime: &str, optional: &[&str]) -> Vec<u8> {
+fn app_tapp_with_runtimes(root: &Path, id: &str, runtime: &str, required: &[&str]) -> Vec<u8> {
     let payload = root.join(format!("payload-{id}"));
     std::fs::create_dir_all(payload.join("bin")).unwrap();
     std::fs::write(payload.join("bin/app"), b"#!/bin/true\n").unwrap();
@@ -173,7 +173,7 @@ version = "2.0.0"
 kind = "app"
 name = "Linked"
 runtime = "{runtime}"
-optional-runtimes = {optional:?}
+optional-runtimes = {required:?}
 
 [package.isa]
 {isa}
@@ -721,9 +721,9 @@ fn a_registry_build_for_another_runtime_fetches_that_runtime_or_is_refused() {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "one device and registry exercise automatic acquisition, verification failure and retry together"
+    reason = "one device and registry exercise the engine's install with the app, its verification failures and the kept working app together"
 )]
-fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
+fn the_engine_installs_with_the_app_and_a_failed_fetch_keeps_the_working_app() {
     let root = tempfile::tempdir().unwrap();
     let owner = SigningKey::from_bytes(&[22_u8; 32]);
     let identity = runtime_bundle::Identity::generate();
@@ -733,10 +733,10 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
     std::fs::write(&trust, format!("{}\n", identity.public_key_hex())).unwrap();
     let (device_version, device_bundle) =
         runtime_bundle(root.path(), "device", b"base toolkit", &identity_path);
-    let (optional_version, optional_bundle) =
-        runtime_bundle(root.path(), "optional", b"optional toolkit", &identity_path);
+    let (engine_version, engine_bundle) =
+        runtime_bundle(root.path(), "engine", b"engine toolkit", &identity_path);
     let device_ref = format!("tilo-runtime/{device_version}");
-    let optional_ref = format!("tilo-runtime/{optional_version}");
+    let engine_ref = format!("tilo-runtime/{engine_version}");
     let runtimes = root.path().join("runtimes");
     std::fs::create_dir(&runtimes).unwrap();
     std::fs::rename(device_bundle, runtimes.join(&device_version)).unwrap();
@@ -747,10 +747,10 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
     let served = Served::default();
     let base = format!("http://127.0.0.1:{}", served.start());
     let baseline = app_tapp(root.path(), &device_ref, &[]);
-    let app = app_tapp(root.path(), &device_ref, &[&optional_ref]);
-    let runtime = runtime_tapp(&optional_bundle, &optional_ref, "0.1.7");
+    let app = app_tapp(root.path(), &device_ref, &[&engine_ref]);
+    let runtime = runtime_tapp(&engine_bundle, &engine_ref, "0.1.7");
     served.put("/app.tapp", app.clone());
-    served.put("/optional.tapp", runtime.clone());
+    served.put("/engine.tapp", runtime.clone());
     let entries = vec![
         entry(
             APP_ID,
@@ -762,9 +762,9 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
         entry(
             registry_types::NATIVE_RUNTIME_PACKAGE_ID,
             "0.1.7",
-            &format!("{base}/optional.tapp"),
+            &format!("{base}/engine.tapp"),
             &runtime,
-            &optional_ref,
+            &engine_ref,
         ),
     ];
     served.put("/baseline.tapp", baseline.clone());
@@ -863,25 +863,9 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
     let with_engine = snapshot(entries, &owner, Some(&without_engine));
     served.put("/entries", serde_json::to_vec(&with_engine).unwrap());
 
-    let missing = app_cli::install::acquire_optional_runtime_reporting(
-        &offer,
-        "tilo-runtime/not-offered",
-        &mut |_| {},
-    )
-    .expect_err("a missing offer is an actionable error");
-    assert!(matches!(
-        missing,
-        app_cli::install::InstallError::OptionalRuntimeUnavailable { .. }
-    ));
-    assert!(missing.user_message().contains("tilo-runtime/not-offered"));
-
     // A signed offer is not enough: corrupt artifact bytes must still fail.
-    served.put("/optional.tapp", b"corrupt archive".to_vec());
-    assert!(
-        app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |_| {},)
-            .is_err()
-    );
-    assert!(!app_cli::runtime_installed(&optional_ref));
+    served.put("/engine.tapp", b"corrupt archive".to_vec());
+    assert!(!app_cli::runtime_installed(&engine_ref));
     assert!(app_cli::install::update_app_reporting(&offer, &mut |_| {}).is_err());
     assert!(app_cli::install::rollback_app_reporting(&offer, &mut |_| {}).is_err());
     assert_working();
@@ -895,12 +879,7 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
         ),
     )
     .unwrap();
-    served.put("/optional.tapp", runtime);
-    assert!(
-        app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |_| {},)
-            .is_err()
-    );
-    assert!(!app_cli::runtime_installed(&optional_ref));
+    served.put("/engine.tapp", runtime);
     assert!(app_cli::install::update_app_reporting(&offer, &mut |_| {}).is_err());
     assert!(app_cli::install::rollback_app_reporting(&offer, &mut |_| {}).is_err());
     assert_working();
@@ -911,7 +890,7 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
         // Progress is delivered before each installer invocation. Observing
         // the verified engine while the old app is intact proves ordering,
         // rather than only checking that both exist after the operation.
-        if !app_cli::runtime_installed(&optional_ref) {
+        if !app_cli::runtime_installed(&engine_ref) {
             assert_working();
         } else if matches!(
             event.phase,
@@ -939,14 +918,6 @@ fn pinned_engine_is_automatic_and_failures_preserve_the_working_app() {
         !progress.is_empty(),
         "automatic engine acquisition reports real progress"
     );
-    assert!(app_cli::runtime_installed(&optional_ref));
+    assert!(app_cli::runtime_installed(&engine_ref));
     assert!(app_cli::runtime_installed(&device_ref));
-    let requested = served.1.lock().unwrap().len();
-    app_cli::install::acquire_optional_runtime_reporting(&offer, &optional_ref, &mut |_| {})
-        .unwrap();
-    assert_eq!(
-        served.1.lock().unwrap().len(),
-        requested,
-        "retry reuses verified installation"
-    );
 }

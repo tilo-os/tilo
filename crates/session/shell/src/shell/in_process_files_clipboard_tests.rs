@@ -410,6 +410,50 @@ mod files_clipboard_tests {
             result.unwrap()
         }
 
+        /// The window's catalogue page for `query`, asked through `ask`. A
+        /// window still applying a newer committed version of its record
+        /// (the room host's copy moved on, as after a restart or another
+        /// device's edit) has no current revision to answer from: it says
+        /// so with a page that has no revision, which is not an answer that
+        /// the window offers nothing. Ask again once it applied that version,
+        /// as any caller of the catalogue does.
+        fn answered_catalogue(
+            &mut self,
+            query: &tilo_actions::remote::CatalogueQuery,
+            mut ask: impl FnMut(
+                &mut Self,
+                &tilo_actions::remote::CatalogueQuery,
+            ) -> tilo_actions::remote::CataloguePage,
+        ) -> tilo_actions::remote::CataloguePage {
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                let page = ask(self, query);
+                if !page.revision.is_empty() {
+                    return page;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "actual Files window never answered its catalogue for {:?}: {page:?}",
+                    query.needle
+                );
+                let [first, second] = &mut self.shown;
+                first.frame();
+                second.frame();
+            }
+        }
+
+        /// The window's answered catalogue page for `query`, asked as the
+        /// desktop does.
+        fn catalogue(
+            &mut self,
+            query: &tilo_actions::remote::CatalogueQuery,
+        ) -> tilo_actions::remote::CataloguePage {
+            self.answered_catalogue(query, |fixture, query| {
+                let page = fixture.host.query(query.clone());
+                fixture.wait(page).unwrap()
+            })
+        }
+
         fn invoke(&mut self, index: usize, action: &str) -> tilo_actions::InvocationUpdate {
             self.invoke_with(index, action, serde_json::Map::default())
         }
@@ -441,12 +485,11 @@ mod files_clipboard_tests {
             arguments: serde_json::Map<String, serde_json::Value>,
             entry_label: Option<&str>,
         ) -> (u64, tilo_actions::InvocationId) {
-            let page = self.host.query(tilo_actions::remote::CatalogueQuery {
+            let page = self.catalogue(&tilo_actions::remote::CatalogueQuery {
                 provider: Some(self.providers[index].clone()),
                 needle: action.into(),
                 ..Default::default()
             });
-            let page = self.wait(page).unwrap();
             let listed = format!("{:?}", page.rows);
             let address = page
                 .rows
@@ -532,19 +575,25 @@ mod files_clipboard_tests {
             use tilo_actions::remote::{
                 InvokeArgument, InvokeRequest, RemoteActionMessage as Message, RemoteActionTarget,
             };
-            let pending = agent.request(Message::CatalogueRequest {
-                correlation: 1,
-                query: tilo_actions::remote::CatalogueQuery {
+            let page = self.answered_catalogue(
+                &tilo_actions::remote::CatalogueQuery {
                     provider: Some(self.providers[index].clone()),
                     needle: action.into(),
                     ..Default::default()
                 },
-            });
-            let Message::CatalogueResponse { result, .. } = self.wait(pending).unwrap() else {
-                panic!("the actual agent must receive a catalogue response");
-            };
-            let address = result
-                .unwrap()
+                |fixture, query| {
+                    let pending = agent.request(Message::CatalogueRequest {
+                        correlation: 1,
+                        query: query.clone(),
+                    });
+                    let Message::CatalogueResponse { result, .. } = fixture.wait(pending).unwrap()
+                    else {
+                        panic!("the actual agent must receive a catalogue response");
+                    };
+                    result.unwrap()
+                },
+            );
+            let address = page
                 .rows
                 .into_iter()
                 .filter_map(|row| row.action)
@@ -2191,12 +2240,13 @@ mod files_clipboard_tests {
         grant_native_trash(&fixture);
         let before = fixture.succeeds(1, "clipboard-status");
         fixture.succeeds(1, "open-trash");
-        let page = fixture.host.query(tilo_actions::remote::CatalogueQuery {
+        // An unanswered page would hold no purge either: only an answered
+        // one shows the window does not offer it.
+        let page = fixture.catalogue(&tilo_actions::remote::CatalogueQuery {
             provider: Some(fixture.providers[1].clone()),
             needle: "delete-permanently".into(),
             ..Default::default()
         });
-        let page = fixture.wait(page).unwrap();
         assert!(
             !page.rows.iter().any(|row| {
                 row.resource.kind == "files.entry"

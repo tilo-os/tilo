@@ -512,7 +512,7 @@ struct QueryDelivery {
 }
 
 impl SearchQueries {
-    fn waking(wake: Option<WakeHandle>) -> Self {
+    pub(crate) fn waking(wake: Option<WakeHandle>) -> Self {
         Self(Rc::new(RefCell::new(QueryDelivery {
             wake,
             ..QueryDelivery::default()
@@ -532,8 +532,13 @@ impl SearchQueries {
     }
 
     /// What the surface says of its results for the latest query.
-    fn settle(&self, awaiting: bool) {
+    pub(crate) fn settle(&self, awaiting: bool) {
         self.0.borrow_mut().awaiting = awaiting;
+    }
+
+    /// Whether a query waits to be delivered.
+    pub(crate) fn has_pending(&self) -> bool {
+        self.0.borrow().pending.is_some()
     }
 
     pub(crate) fn submit(&self, query: &ui_core::search::SearchQuery) {
@@ -560,7 +565,7 @@ impl SearchQueries {
         }
     }
 
-    fn take(&self) -> Option<ui_core::search::SearchQuery> {
+    pub(crate) fn take(&self) -> Option<ui_core::search::SearchQuery> {
         self.0.borrow_mut().pending.take()
     }
 }
@@ -637,20 +642,6 @@ impl<R: Resource> SurfaceCx<R> {
         stage_hosted(&self.stages, scope, host.staging());
         HostedSurface::element(Box::new(host))
     }
-    /// The host-owned identity of the record this surface shows. A durable
-    /// activation link can name it without relying on the last-open window.
-    /// Absent in a historical view that cannot launch live work.
-    pub fn record(&self) -> Option<&ui_core::record::RecordId> {
-        self.run.launched.record.as_ref()
-    }
-
-    /// What [`RecordEnv::open_here`](super::env::RecordEnv::open_here) does, kept for later: the input that asks
-    /// for another record arrives after attaching (a file chosen in a
-    /// picker). `None` in a past version and a capture.
-    pub fn opener(&self) -> Option<super::OpenHere> {
-        self.run.opener.clone()
-    }
-
     /// Jobs the surface starts on its own, with nobody invoking an effect;
     /// their completions get `&mut` the surface (`jobs.start::<Self>(…)`).
     /// Keep the handle. See [`Jobs`].
@@ -915,7 +906,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         (self.live.revision(), self.live.loads()) == self.presented
             && self.staging.borrow().is_none()
-            && self.search_queries.0.borrow().pending.is_none()
+            && !self.search_queries.has_pending()
             && self.dispatch.read_only() == self.read_only
             && self.surface.view_only_scroll(event)
     }

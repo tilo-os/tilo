@@ -1009,7 +1009,7 @@ pub(crate) fn resolve_component_resource(
                      widget: &mut dyn crate::widget::AppWidget,
                      _: &tilo_actions::ActionRegistry| {
         result = Some(current.read_document(doc, |doc, _| {
-            resolve_unbound_resource(widget, doc, resource)
+            resolve_published(widget, doc, Walk::Component, resource)
                 .or_else(|| {
                     provider_resource(
                         widget,
@@ -1723,6 +1723,7 @@ fn discover_bound_resources_with_filter(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<&CallbackBinding>,
+        root: bool,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
         filtered: bool,
@@ -1757,6 +1758,12 @@ fn discover_bound_resources_with_filter(
                     let participant = crate::invocation_scope::current_participant();
                     let mut resources =
                         crate::resources::resources_for(widget, participant.as_ref(), doc);
+                    if !root {
+                        resources = resources
+                            .into_iter()
+                            .map(crate::resources::outside_document)
+                            .collect();
+                    }
                     if let Some(address) = address
                         && tilo_actions::door::resolve(&resources, address).is_none()
                         && let Some(resource) = crate::resources::resource_for(
@@ -1766,6 +1773,7 @@ fn discover_bound_resources_with_filter(
                             &address.resource,
                         )
                         .or_else(|| provider_resource(widget, binding, address))
+                        .map(|resource| below_root(root, resource))
                     {
                         resources.push(resource);
                     }
@@ -1786,15 +1794,24 @@ fn discover_bound_resources_with_filter(
             }
         }
         let mut result = Ok(());
+        let below = boundary.is_some();
         widget.for_each_child(&mut |child| {
             if result.is_ok() {
-                result = visit(child, doc, binding, address, snapshots, filtered);
+                result = visit(child, doc, binding, below, address, snapshots, filtered);
             }
         });
         result
     }
     let mut snapshots = Vec::new();
-    visit(widget, doc, None, lazy_address, &mut snapshots, filtered)?;
+    visit(
+        widget,
+        doc,
+        None,
+        true,
+        lazy_address,
+        &mut snapshots,
+        filtered,
+    )?;
     Ok(snapshots)
 }
 
@@ -2813,18 +2830,20 @@ pub(crate) fn invoke_resource_action(
                         let mut resources = Vec::new();
                         // The loan's root belongs to this component. Nested boundaries are
                         // independent destinations and cannot donate declarations here.
-                        match &participant {
-                            Some(participant) => collect_participant_resources(
+                        collect_published(
+                            widget,
+                            doc,
+                            Walk::Component,
+                            participant.as_ref(),
+                            &mut resources,
+                        );
+                        if tilo_actions::door::resolve(&resources, &target.address.address).is_none()
+                            && let Some(resource) = resolve_published(
                                 widget,
                                 doc,
-                                participant,
-                                &mut resources,
-                            ),
-                            None => collect_component_resources(widget, doc, &mut resources),
-                        }
-                        if tilo_actions::door::resolve(&resources, &target.address.address).is_none()
-                            && let Some(resource) =
-                                resolve_unbound_resource(widget, doc, &target.address.address.resource)
+                                Walk::Component,
+                                &target.address.address.resource,
+                            )
                                     .or_else(|| {
                                         provider_resource(widget, binding, &target.address.address)
                                     })
@@ -3034,12 +3053,12 @@ fn resolve_document_action(
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
 ) -> Option<ResourceSpec> {
+    /// Only the component's root publishes document actions.
     fn collect(widget: &dyn Widget, doc: &AutoCommit, forest: &mut Vec<SharedResource>) {
         if widget.has_separate_document_owner() {
             return;
         }
         forest.extend(crate::resources::shared_resources(widget, doc));
-        widget.for_each_child(&mut |child| collect(child, doc, forest));
     }
     /// [`tilo_actions::door::resolve`] in the unfiltered tree.
     fn resolves(node: &SharedResource, address: &tilo_actions::ActionAddress) -> bool {
@@ -3098,24 +3117,94 @@ fn resolve_document_action(
         .then_some(resource)
 }
 
-fn collect_component_resources(
-    widget: &dyn Widget,
-    doc: &AutoCommit,
-    resources: &mut Vec<ResourceSpec>,
-) {
-    if widget.has_separate_document_owner() {
-        return;
+/// `resource` as a widget at this place in its component may publish it:
+/// whole at the component's root, which speaks for the resource; without
+/// document actions anywhere below it.
+fn below_root(root: bool, resource: ResourceSpec) -> ResourceSpec {
+    if root {
+        resource
+    } else {
+        crate::resources::resolved_outside_document(resource)
     }
-    resources.extend(crate::resources::resources(widget, doc));
-    widget.for_each_child(&mut |child| collect_component_resources(child, doc, resources));
 }
 
+/// Where the widgets a walk visits publish from.
+#[derive(Clone, Copy)]
+enum Walk {
+    /// A component's tree: only its root (where the walk starts) speaks for
+    /// the resource; the rest of the tree publishes no document action.
+    Component,
+    /// A tree no component owns (the outer host's): every widget publishes
+    /// what it says.
+    Unbound,
+}
+
+/// Every widget of the tree rooted at `widget`, each with whether it may
+/// publish document actions, stopping at a nested document owner.
+fn for_each_published(widget: &dyn Widget, walk: Walk, visit: &mut dyn FnMut(&dyn Widget, bool)) {
+    fn descend(
+        widget: &dyn Widget,
+        root: bool,
+        walk: Walk,
+        visit: &mut dyn FnMut(&dyn Widget, bool),
+    ) {
+        if widget.has_separate_document_owner() {
+            return;
+        }
+        visit(widget, root);
+        let whole = matches!(walk, Walk::Unbound);
+        widget.for_each_child(&mut |child| descend(child, whole, walk, visit));
+    }
+    descend(widget, true, walk, visit);
+}
+
+/// What the tree rooted at `widget` publishes, `participant`'s own view of
+/// it when one is named.
+fn collect_published(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    walk: Walk,
+    participant: Option<&tilo_actions::ParticipantId>,
+    resources: &mut Vec<ResourceSpec>,
+) {
+    for_each_published(widget, walk, &mut |widget, root| {
+        let found = match participant {
+            Some(participant) => crate::resources::resources_for(widget, Some(participant), doc),
+            None => crate::resources::resources(widget, doc),
+        };
+        if root {
+            resources.extend(found);
+        } else {
+            resources.extend(found.into_iter().map(crate::resources::outside_document));
+        }
+    });
+}
+
+/// Resource `id` resolved in the tree rooted at `widget`.
+fn resolve_published(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    walk: Walk,
+    id: &str,
+) -> Option<ResourceSpec> {
+    let participant = crate::invocation_scope::current_participant();
+    let mut found = None;
+    for_each_published(widget, walk, &mut |widget, root| {
+        if found.is_none() {
+            found = crate::resources::resource_for(widget, participant.as_ref(), doc, id)
+                .map(|resource| below_root(root, resource));
+        }
+    });
+    found
+}
+
+/// What the outer tree rooted at `widget` publishes.
 pub(crate) fn collect_unbound_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    collect_component_resources(widget, doc, resources);
+    collect_published(widget, doc, Walk::Unbound, None, resources);
 }
 
 /// [`collect_unbound_resources`] rebuilt for one participant's own view.
@@ -3126,17 +3215,16 @@ pub(crate) fn collect_participant_resources(
     participant: &tilo_actions::ParticipantId,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    if widget.has_separate_document_owner() {
-        return;
-    }
-    resources.extend(crate::resources::resources_for(
-        widget,
-        Some(participant),
-        doc,
-    ));
-    widget.for_each_child(&mut |child| {
-        collect_participant_resources(child, doc, participant, resources);
-    });
+    collect_published(widget, doc, Walk::Unbound, Some(participant), resources);
+}
+
+/// Resource `id` resolved in the outer tree rooted at `widget`.
+pub(crate) fn resolve_unbound_resource(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    id: &str,
+) -> Option<ResourceSpec> {
+    resolve_published(widget, doc, Walk::Unbound, id)
 }
 
 /// Whether resource `id`, which `widget`'s subtree resolves to nothing now,
@@ -3151,24 +3239,6 @@ pub(crate) fn unbound_resource_pending(widget: &dyn Widget, id: &str) -> bool {
         pending = pending || unbound_resource_pending(child, id);
     });
     pending
-}
-
-pub(crate) fn resolve_unbound_resource(
-    widget: &dyn Widget,
-    doc: &AutoCommit,
-    id: &str,
-) -> Option<ResourceSpec> {
-    if widget.has_separate_document_owner() {
-        return None;
-    }
-    let participant = crate::invocation_scope::current_participant();
-    let mut found = crate::resources::resource_for(widget, participant.as_ref(), doc, id);
-    widget.for_each_child(&mut |child| {
-        if found.is_none() {
-            found = resolve_unbound_resource(child, doc, id);
-        }
-    });
-    found
 }
 
 /// Runtime metadata; does not own the component's widget or mount lifetime.

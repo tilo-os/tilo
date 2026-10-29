@@ -68,7 +68,8 @@ fn load(store: &Store) -> io::Result<Option<Attempt>> {
         if record
             .namespace
             .as_ref()
-            .is_some_and(|facts| !facts.plausible()) || matches!(record.phase, Phase::Prepared) && record.namespace.is_some()
+            .is_some_and(|facts| !facts.plausible())
+            || matches!(record.phase, Phase::Prepared) && record.namespace.is_some()
             || matches!(record.phase, Phase::Prepared | Phase::Launching)
                 && record.expected.is_some()
             || matches!(record.phase, Phase::Exported | Phase::Verified)

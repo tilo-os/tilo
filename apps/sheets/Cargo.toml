@@ -42,7 +42,7 @@ anyhow.workspace = true
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 # The comment-thread model the document apps share.
-tilo-document = { path = "../../crates/doc/tilo-document" }
+tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # A Notion export arrives as an archive; it is read through the same bounded
 # zip reader as every other untrusted archive.
 uuid.workspace = true

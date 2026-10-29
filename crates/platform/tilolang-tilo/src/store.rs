@@ -55,7 +55,7 @@ use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::overlay::{Overlay, OverlaySink};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads, Opened};
-use crate::reads::{changed_by, default_value, locate_ref, read_field, type_at};
+use crate::reads::{Changed, changed_by, default_value, locate_ref, read_field, type_at};
 use crate::record::DynRecord;
 use crate::schema::{MergeKind, TYPE_KEY, lookup};
 
@@ -95,36 +95,24 @@ fn note_versions<'c>(
     changes: impl IntoIterator<Item = &'c automerge::Change>,
 ) {
     for change in changes {
-        let Some(context) = change
-            .message()
-            .and_then(tilo_actions::ActionContext::from_change_message)
-        else {
+        let Some((stamp, resources)) = idx::reflect::stamp_of(change) else {
             continue;
         };
-        let Some(encoded) = context.action.as_ref() else {
-            continue;
-        };
-        if encoded.type_id != crate::action::ACTION_TYPE {
-            continue;
-        }
-        let Ok(action) = serde_json::from_slice::<DynAction>(&encoded.payload) else {
-            continue;
-        };
-        let at = action
-            .authorship
-            .at
-            .clone()
-            .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
-        let version = Version {
-            who: action.authorship.invoker.clone(),
-            at,
-            action: action.action_id.clone(),
-        };
-        for resource in action.changed() {
-            index.entry(resource).or_default().push(version.clone());
+        for resource in resources {
+            index
+                .entry(resource)
+                .or_default()
+                .push(stamp.version.clone());
         }
     }
 }
+
+/// What the record moved on from, when known: its heads before, and the versions its new
+/// changes made.
+type Since<'a> = Option<(&'a [ChangeHash], &'a Ends)>;
+
+/// The first and last versions changes made, per resource they changed.
+type Ends = BTreeMap<String, (idx::reflect::Stamp, idx::reflect::Stamp)>;
 
 /// Items of collections a change touched: per collection, the ids of the items added, removed
 /// or moved. Each is moved in the collection's listing, which is not read again.
@@ -263,10 +251,10 @@ impl ListedOnce {
                     .pred
                     .as_ref()
                     .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
-                || self
-                    .order
-                    .as_ref()
-                    .is_some_and(|order| order.field == field)
+                || self.order.as_ref().is_some_and(|order| {
+                    // Any change of an item is its last version.
+                    order.field == field || order.field == idx::reflect::UPDATED
+                })
         };
         (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))
             || (item && filtered_on(&key.field))
@@ -580,9 +568,10 @@ fn build(
     app: &str,
     heads: &[ChangeHash],
 ) -> Result<DocReads, IndexError> {
+    let ends = idx::reflect::ends_of(&doc.committed_document().get_changes(&[]));
     index.write(|writer| {
         let mut derive = Derive::new(doc, docs);
-        derive.all(writer, app)?;
+        derive.all_with_versions(writer, app, &ends)?;
         writer.set_heads(heads)?;
         Ok(derive.reads)
     })
@@ -873,27 +862,8 @@ impl TiloStore {
         let mut items = inner.drop_local_from(0);
         inner.rollback();
         let before = inner.index.clone();
-        let caught_up = inner
-            .mirror
-            .as_ref()
-            .is_some_and(|mirror| mirror.committed_document().get_heads() == inner.seen);
-        let changed = if caught_up {
-            let changes = record.committed_document().get_changes(&inner.seen);
-            if let Some(versions) = inner.versions.as_mut() {
-                note_versions(versions, &changes);
-            }
-            let applied = inner.mirror_mut().map(|mirror| {
-                let applied = mirror.apply_incoming(changes.iter().cloned());
-                write_as_a_known_actor(mirror);
-                applied
-            });
-            match (applied, inner.mirror.as_deref()) {
-                (Some(Ok(())), Some(mirror)) => Some(changed_by(&changes, mirror, &before)),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        let from = inner.seen.clone();
+        let (changed, ends) = inner.apply_new_changes(record, &before);
         inner.seen = heads;
         let Some(mut changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
@@ -902,7 +872,7 @@ impl TiloStore {
             inner.mirror = Some(Arc::new(mirror_of(record)));
             inner.index = scan_of(inner.mirror.as_deref());
             let reached = everything(&before, &inner.index);
-            inner.derive_all(&reached);
+            inner.derive_all(&reached, None);
             inner.changed();
             inner.notify_all();
             return true;
@@ -926,7 +896,7 @@ impl TiloStore {
                 items: changed.items.clone(),
             }
         };
-        inner.derive_all(&reached);
+        inner.derive_all(&reached, Some((&from, &ends)));
         if changed.unplaced || changed.layout {
             inner.changed();
         } else {
@@ -1587,6 +1557,7 @@ impl Inner {
             before.insert(doc, (app.to_owned(), ty));
         }
         let since = mirror.committed_document().get_changes(&held.heads);
+        let ends = idx::reflect::ends_of(&since);
         let changed = changed_by(&since, &mirror, &before);
         let reached = if changed.unplaced || changed.layout {
             everything(&before, &self.index)
@@ -1601,6 +1572,7 @@ impl Inner {
         let written = index.write(|writer| {
             let mut derive = Derive::new(&mirror, &docs);
             derive.changes(writer, app, &reached)?;
+            derive.versions(writer, app, &ends)?;
             writer.set_heads(&now)?;
             Ok(derive.reads)
         });
@@ -1619,9 +1591,45 @@ impl Inner {
         }
     }
 
+    /// Apply the record's changes since the mirror's heads to the mirror, when it holds no
+    /// change of its own: what they changed, and the versions they made of each resource they
+    /// changed ([`idx::reflect::ends_of`]). `None` when the mirror must be copied anew.
+    fn apply_new_changes(
+        &mut self,
+        record: &Doc,
+        before: &BTreeMap<DocId, (AppId, TypeId)>,
+    ) -> (Option<Changed>, Ends) {
+        let caught_up = self
+            .mirror
+            .as_ref()
+            .is_some_and(|mirror| mirror.committed_document().get_heads() == self.seen);
+        if !caught_up {
+            return (None, Ends::new());
+        }
+        let changes = record.committed_document().get_changes(&self.seen);
+        if let Some(versions) = self.versions.as_mut() {
+            note_versions(versions, &changes);
+        }
+        let ends = idx::reflect::ends_of(&changes);
+        let applied = self.mirror_mut().map(|mirror| {
+            let applied = mirror.apply_incoming(changes.iter().cloned());
+            write_as_a_known_actor(mirror);
+            applied
+        });
+        let what = match (applied, self.mirror.as_deref()) {
+            (Some(Ok(())), Some(mirror)) => Some(changed_by(&changes, mirror, before)),
+            _ => None,
+        };
+        (what, ends)
+    }
+
     /// Derive what the record's last changes reached into every index read from, stamped
     /// with the heads the store saw. An index that fails is built anew.
-    fn derive_all(&mut self, reached: &Reached) {
+    ///
+    /// `since` is, when known, the heads the record moved on from and the versions its new
+    /// changes made ([`idx::reflect::ends_of`]): what an index stamped with those heads takes
+    /// in. Another one reads its versions from the changes since its own heads.
+    fn derive_all(&mut self, reached: &Reached, since: Since<'_>) {
         let Some(mirror) = self.mirror.clone() else {
             return;
         };
@@ -1637,9 +1645,25 @@ impl Inner {
             };
             let index = Arc::clone(&held.index);
             let seen = self.seen.clone();
+            let own;
+            let ends = match since {
+                Some((from, ends)) if held.heads == *from => ends,
+                _ => {
+                    if !holds_heads(&mirror, &held.heads) {
+                        self.rebuild(&app);
+                        continue;
+                    }
+                    // The versions of what changed since the index's heads.
+                    own = idx::reflect::ends_of(
+                        &mirror.committed_document().get_changes(&held.heads),
+                    );
+                    &own
+                }
+            };
             let written = index.write(|writer| {
                 let mut derive = Derive::new(&mirror, &self.index);
                 derive.changes(writer, &app, reached)?;
+                derive.versions(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
                 Ok(derive.reads)
             });
@@ -1900,6 +1924,31 @@ impl Inner {
 
     /// The listing of the collection `field` of `at` (of items of the type `item`), filtered
     /// by `pred` and in `order`, read once in this state of the store.
+    /// The first or last version the index keeps of the resource `at`; `None` when no index
+    /// of its package is read from yet.
+    fn version_end(
+        &self,
+        at: &ResourceRef,
+        last: bool,
+    ) -> Option<Result<Option<Version>, StoreError>> {
+        let (app, _) = self.index.get(&at.doc)?;
+        let view = self.view(app)?;
+        let field = if last {
+            idx::reflect::UPDATED
+        } else {
+            idx::reflect::CREATED
+        };
+        Some(
+            view.field(&at.id_string(), field)
+                .map_err(backend)
+                .map(|held| {
+                    held.as_ref()
+                        .and_then(idx::reflect::Stamp::of_value)
+                        .map(|stamp| stamp.version)
+                }),
+        )
+    }
+
     fn listed_in(
         &self,
         at: &ResourceRef,
@@ -2423,6 +2472,20 @@ impl Store for TiloStore {
             .and_then(|versions| versions.get(&at.id_string()))
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {
+        let answered = self.inner.borrow().version_end(at, last);
+        if let Some(end) = answered {
+            return end;
+        }
+        // No index answers yet: the log does.
+        let mut versions = self.versions(at)?;
+        Ok(if last {
+            versions.pop()
+        } else {
+            versions.into_iter().next()
+        })
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {

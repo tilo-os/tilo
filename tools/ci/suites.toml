@@ -922,6 +922,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
+  "crates/platform/tilolang-tilo/tests/reflection.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
 ]
 
@@ -1107,8 +1108,8 @@ inputs = [
   "os/tests/test_firstboot_transaction.py",
   "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_prepared_first_use_binding.py",
-  "apps/imager/src/bin/tilo-firstboot-home-seeds.rs",
-  "apps/imager/src/setup/destination/account_handoff.rs",
+  "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
+  "crates/session/installer/src/account_handoff.rs",
   "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
   "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
@@ -1348,15 +1349,25 @@ inputs = ["os/legacy-guest-snapshot.env"]
 readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
+package = "installer"
+inputs = [
+  "crates/system/block-devices/tests/fixtures/installer.json",
+  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
+]
+readers = [
+  "crates/session/installer/src/disks.rs",
+  "crates/session/installer/src/online_accounts/browser.rs",
+]
+
+[[cargo]]
 package = "imager"
 inputs = [
   "crates/system/block-devices/tests/fixtures/imager.json",
-  "crates/system/block-devices/tests/fixtures/installer.json",
-  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
   "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
+  "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
   "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
@@ -1364,8 +1375,6 @@ readers = [
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
   "apps/imager/tests/profile_transport.rs",
   "apps/imager/tests/prepared_extract_cli.rs",
-  "apps/imager/src/setup/destination/disks.rs",
-  "apps/imager/src/setup/destination/online_accounts/browser.rs",
 ]
 
 [[cargo]]

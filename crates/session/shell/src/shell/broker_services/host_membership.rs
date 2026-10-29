@@ -1,4 +1,4 @@
-//! Committing a membership change in a room a host stewards.
+//! Committing a membership change in a room whose channels a host takes part in.
 //!
 //! A room whose channels its host governs is sealed to that host: a change
 //! one of its members makes reaches the others through the host, so the

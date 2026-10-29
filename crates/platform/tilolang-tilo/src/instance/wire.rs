@@ -11,7 +11,6 @@ use std::collections::HashSet;
 use tilo_render_protocol::patch as wire;
 
 use crate::runtime::rich::{Reference, RichValue};
-use crate::runtime::view::is_virtual;
 use crate::runtime::{Binding, NameHost, ResourceRef, UiNode, Value};
 use tilo_render_protocol::patch::rich::{self as rich_wire, InlineView};
 
@@ -52,7 +51,7 @@ impl Convert<'_> {
     /// as the list shows them.
     #[must_use]
     pub fn node(&self, node: &UiNode) -> wire::Node {
-        let virtual_list = is_virtual(&node.kind);
+        let virtual_list = wire::is_virtual_list(&node.kind);
         let mut props: std::collections::BTreeMap<String, wire::Value> = node
             .props
             .iter()
@@ -137,7 +136,8 @@ impl Convert<'_> {
             | Value::Action(_)
             | Value::Node(_)
             | Value::Rec(_)
-            | Value::Event => wire::Value::Unit,
+            | Value::Event
+            | Value::State { .. } => wire::Value::Unit,
         }
     }
 }

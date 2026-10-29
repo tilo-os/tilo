@@ -22,7 +22,7 @@ use shell::compositor::state::State;
 use shell::compositor::surface_outputs::Memberships;
 use shell::shell::frame::FrameBuilder;
 use shell::shell::state::{GroupId, StripId, TileContent};
-use wayland_client::protocol::{wl_compositor, wl_surface};
+use wayland_client::protocol::wl_compositor;
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -49,7 +49,7 @@ struct Client {
     wire: Vec<Wire>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface);
 
 impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
     fn event(
@@ -81,8 +81,6 @@ impl Dispatch<WpFractionalScaleV1, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore WpFractionalScaleManagerV1);
 
 /// The VM acceptance arrangement: a 1.0 display beside a 1.25 one.

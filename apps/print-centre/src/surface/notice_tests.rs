@@ -7,7 +7,7 @@
 
 use super::stand_in;
 use crate::resource::{PrintCentreEffect, PrintCentreShell};
-use crate::surface::{Page, PrintCentre};
+use crate::surface::Page;
 use ui::prelude::TestApp;
 
 type Window = TestApp<PrintCentreShell>;
@@ -35,8 +35,8 @@ fn opened() -> (Window, stand_in::Shared) {
     (app, devices)
 }
 
-fn centre(app: &mut Window) -> &mut PrintCentre {
-    app.surface_mut::<PrintCentre>()
+fn centre(app: &mut Window) -> crate::surface::Shared {
+    crate::surface::tests::centre(app)
 }
 
 /// The row this test's work raised, waiting with Try again.
@@ -57,7 +57,7 @@ fn until_waiting(app: &mut Window, what: &str) -> ui::attention::Item {
         assert!(
             ui::time::now() < deadline,
             "gave up waiting for {what}: on {:?}, ledger {:?}",
-            centre(app).page,
+            centre(app).borrow().page,
             ui::attention::entries()
                 .last()
                 .map(|entry| entry.what().to_owned()),
@@ -102,6 +102,7 @@ fn asked(devices: &stand_in::Shared) -> Vec<String> {
 /// Press the waiting row's one action, as the stack does.
 fn try_again(app: &mut Window, item: &ui::attention::Item) {
     centre(app)
+        .borrow()
         .needs
         .pressed(ui::attention::Press::Act(item.id()));
     app.settle();
@@ -133,7 +134,7 @@ fn fail_then_try_again(
 fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
     let _serial = crate::surface::serial();
     let (mut app, devices) = opened();
-    centre(&mut app).discovered = Some(Ok(super::super::demo_discovered_printers()));
+    centre(&mut app).borrow_mut().discovered = Some(Ok(super::super::demo_discovered_printers()));
     let printer = || "Studio_printer".to_owned();
     let effects = [
         PrintCentreEffect::PausePrinter { printer: printer() },
@@ -152,7 +153,8 @@ fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
     for effect in &effects {
         // The search for nearby printers is periodic: an answered failure
         // must still find what it asked about.
-        centre(&mut app).discovered = Some(Ok(super::super::demo_discovered_printers()));
+        centre(&mut app).borrow_mut().discovered =
+            Some(Ok(super::super::demo_discovered_printers()));
         let before = asked(&devices).len();
         set_failing(&devices, true);
         let _ = app.effect(effect);
@@ -184,8 +186,8 @@ fn a_failed_printer_or_document_operations_try_again_runs_it_again() {
 fn a_failed_prints_try_again_prints_it_again() {
     let _serial = crate::surface::serial();
     let (mut app, devices) = opened();
-    centre(&mut app).stage_scenario(Some("print"));
-    centre(&mut app).print_copies.set(3.0);
+    centre(&mut app).borrow_mut().stage_scenario(Some("print"));
+    centre(&mut app).borrow().print_copies.set(3.0);
     app.settle();
     let before = asked(&devices).len();
     set_failing(&devices, true);
@@ -216,16 +218,16 @@ fn a_failed_prints_try_again_prints_it_again() {
 fn a_failed_scans_try_again_scans_again() {
     let _serial = crate::surface::serial();
     let (mut app, devices) = opened();
-    centre(&mut app).stage_scenario(Some("scan"));
+    centre(&mut app).borrow_mut().stage_scenario(Some("scan"));
     app.settle();
-    let pages = centre(&mut app).scan.pages.len();
+    let pages = centre(&mut app).borrow().scan.pages.len();
     let before = asked(&devices).len();
     set_failing(&devices, true);
     let _ = app.effect(&PrintCentreEffect::ScanPage);
     fail_then_try_again(&mut app, Some(&devices));
     tilo_test_env::wait_until("the page to be scanned again", || {
         app.settle();
-        centre(&mut app).scan.pages.len() == pages.saturating_add(1)
+        centre(&mut app).borrow().scan.pages.len() == pages.saturating_add(1)
     });
     assert_eq!(
         asked(&devices)[before..],
@@ -238,7 +240,9 @@ fn a_failed_scans_try_again_scans_again() {
 fn a_failed_recognitions_try_again_recognizes_the_page_again() {
     let _serial = crate::surface::serial();
     let (mut app, devices) = opened();
-    centre(&mut app).stage_scenario(Some("scan-result"));
+    centre(&mut app)
+        .borrow_mut()
+        .stage_scenario(Some("scan-result"));
     app.settle();
     let before = asked(&devices).len();
     set_failing(&devices, true);
@@ -247,6 +251,7 @@ fn a_failed_recognitions_try_again_recognizes_the_page_again() {
     tilo_test_env::wait_until("the text to be recognized again", || {
         app.settle();
         centre(&mut app)
+            .borrow()
             .scan
             .result
             .as_ref()
@@ -276,5 +281,5 @@ fn a_success_is_recorded_and_nobody_is_called() {
             .any(|item| item.title().contains("Printer paused")),
         "a success asks nothing of anyone"
     );
-    assert_eq!(centre(&mut app).page, Page::Dashboard);
+    assert_eq!(centre(&mut app).borrow().page, Page::Dashboard);
 }

@@ -89,8 +89,8 @@ def prepare(output, feature, env, build_only=False):
                TILO_CAPTURE_SIDECAR=str(output / 'sidecar'), TILO_REQUIRE_CAPTURE='1')
     run([recorder, 'build', '--locked', '--release', '-p', 'imager', '--bin', 'imager',
          '--bin', 'tilo-prepared-setup', '--bin', 'tilo-installer-prepared-setup-extract',
-         '--bin', 'tilo-installer', '--bin', 'tilo-firstboot-home-seeds',
-         '--features', 'imager/' + feature + ',imager/destination'], env)
+         '-p', 'installer', '--bin', 'tilo-installer', '--bin', 'tilo-firstboot-home-seeds',
+         '--features', 'imager/' + feature], env)
     run([recorder, 'test', '--locked', '--release', '-p', 'imager', '-p', 'imager-backend', '--lib', '--no-run',
          '--features', feature + ',native-capture-qualification'], env)
     browser = qualifier.fixed_module(HERE / 'prepare-capture-browser.py', 'capture_browser')

@@ -13,8 +13,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/steward.rs"]
-mod steward;
+#[path = "support/participant.rs"]
+mod participant;
 mod support;
 
 use std::time::{Duration, Instant};
@@ -41,7 +41,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let page = |device: &support::Device| {
         start_peer(
             Host::Https(host.https()),

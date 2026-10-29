@@ -38,6 +38,10 @@ pub struct InProcessApps {
     feedback_subject: Option<tilo_desktop::feedback::Subject>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
+    /// Where the apps' records beside their own are kept: apart from the
+    /// records the apps show, so an app edits one while its own is being
+    /// changed.
+    person_owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
     device_id: String,
     author: UserId,
@@ -137,6 +141,7 @@ impl InProcessApps {
             feedback_destination: None,
             feedback_subject: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
+            person_owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
             device_id: device_id.to_owned(),
@@ -173,6 +178,7 @@ impl InProcessApps {
 
     /// The window tab `tab` is shown in, to lend its app: the same one for
     /// every mount of the tab, until the tab is gone.
+    #[cfg(feature = "in-process-apps")]
     pub(crate) fn hosted_window(&mut self, tab: u64) -> ui::hosted_window::HostedWindow {
         let window = self.windows.entry(tab).or_default().clone();
         // An app asking from its own thread (a shell that exited) wakes the
@@ -621,7 +627,7 @@ impl InProcessApps {
             .person_records()
             .map_err(LaunchError::Operation)?;
         if let Ok(person) = ui::record::person::PersonRecords::open(
-            &mut self.owners,
+            &mut self.person_owners,
             definition.app_id(),
             self.author.clone(),
         ) {

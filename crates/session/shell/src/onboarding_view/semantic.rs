@@ -51,6 +51,10 @@ impl CodecCompletion {
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a snapshot of independent facts about the onboarding view, compared field by field"
+)]
 pub(super) struct Snapshot {
     pub(super) revision: u64,
     pub(super) phase: &'static str,

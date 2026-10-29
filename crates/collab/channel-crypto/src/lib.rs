@@ -44,36 +44,36 @@
 //! Option<EncryptionMetadata>` — `None` is plaintext, `Some` names the
 //! channel, epoch and versioned [`collab_types::EncryptionScheme`]: version 1
 //! MLS application messages (still readable by members at that epoch) or
-//! version 2 content-key envelopes. [`collab_types::MlsGovernanceFrameV1`]
+//! version 2 content-key envelopes. [`collab_types::MlsGovernanceFrame`]
 //! carries versioned, signed clear routing metadata around opaque
-//! Welcome/commit/key-history bytes; [`GovernanceJournal`] persists its
-//! targeted delivery outbox.
+//! Welcome/commit/key-history bytes.
+//!
+//! ## Keys follow membership
+//!
+//! A channel's group holds exactly the participant devices its membership
+//! lets read it, and every participant keeps a [`ChannelPeer`]: any of them
+//! writes the commit that brings the group in line, and every one refuses a
+//! commit the membership does not back ([`peer`]).
 
 pub mod content;
 pub mod crypto;
 pub mod endpoint;
 pub mod errors;
-pub mod governance;
+pub mod gate;
 pub mod group;
-pub mod member;
+pub mod peer;
 pub mod persistence;
 pub mod signer;
-pub mod steward;
-pub mod store;
 
 pub use content::{ContentKeyring, KeyHistory};
 pub use crypto::{CIPHERSUITE, MemberKey};
 pub use endpoint::ChannelContentKeys;
 pub use errors::{Error, Result};
-pub use governance::{
-    ChannelGate, DeliveryKind, GovernanceDelivery, GovernanceJournal, MirrorAppend, admission,
-};
+pub use gate::{ChannelGate, admission};
 pub use group::{ChannelGroup, MemberAddition};
-pub use member::{Access, ChannelMember, MemberEvent};
+pub use peer::{Access, ChannelPeer, PeerEvent, Reconciled};
 pub use persistence::VaultKey;
 pub use signer::{DeviceSigner, SignFuture};
-pub use steward::{ChannelSteward, Outgoing, Reconciled};
-pub use store::{FileStewardStore, MemoryStewardStore, StewardRecord, StewardStore};
 // Re-exported so callers can take/return KeyPackage values without
 // pulling openmls into their own Cargo.toml — a version-pinning
 // hazard if openmls reshapes `KeyPackage`, flagged in the README.

@@ -1,16 +1,20 @@
 //! What a part of a view publishes beside its resource that no binding
-//! covers: the live entities it shows ([`LiveRow`]s), search entries for
-//! what the resource does not hold, and whether the secrets behind them are
-//! unlocked. A view says it with
+//! covers: the live entities it shows ([`LiveRow`]s) and the resource's
+//! edits bound to them, which of the resource's actions its live state
+//! makes unavailable, search entries for what the resource does not hold,
+//! whether the secrets behind them are unlocked, and what it looks up for
+//! the platform search's queries. A view says it with
 //! [`ViewCx::publishing`](super::ViewCx::publishing); the root collects it as
 //! it collects a hosted surface's, so a view never needs a widget of its own
 //! to publish what it shows.
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use tilo_resource::{Resource, SearchEntry};
-use ui_core::widget::{Decorator, Element, Widget};
+use tilo_resource::{ActionDecl, Resource, SearchEntry};
+use ui_core::search::SearchQuery;
+use ui_core::widget::{AppModel, Decorator, Element, ModelPath, Widget};
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;
@@ -18,8 +22,15 @@ use super::surface::{SearchQueries, SurfacePublication};
 
 type Rows = Rc<dyn Fn() -> Vec<LiveRow>>;
 type Row = Rc<dyn Fn(&str) -> Option<LiveRow>>;
+type Pending = Rc<dyn Fn(&str) -> bool>;
+/// The edits bound to a row, put into the `Vec<ActionDecl<R>>` it is
+/// handed (and nothing else); whether the row has any.
+type RowEdits = Rc<dyn Fn(&str, &mut dyn std::any::Any) -> bool>;
+type Statuses = Rc<dyn Fn() -> Vec<EffectStatus>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
+type OnQuery = Rc<RefCell<dyn FnMut(&SearchQuery)>>;
+type Answering = Rc<dyn Fn() -> bool>;
 
 /// What a part of a view publishes beside the resource. Each source is read
 /// whenever the resource is published or searched, so it reads the view's
@@ -35,8 +46,16 @@ pub struct Publishes<R: Resource> {
 struct Sources {
     rows: Option<Rows>,
     row: Option<Row>,
+    pending: Option<Pending>,
+    row_edits: Option<RowEdits>,
+    availability: Option<Statuses>,
     entries: Option<Entries>,
+    /// Whether the system's search index forgets the entries once the app
+    /// closes.
+    transient: bool,
     unlocked: Option<Unlocked>,
+    query: Option<OnQuery>,
+    answering: Option<Answering>,
 }
 
 impl<R: Resource> Default for Publishes<R> {
@@ -72,6 +91,48 @@ impl<R: Resource> Publishes<R> {
         self
     }
 
+    /// Whether the live row `id`, which [`Self::live_row`] does not know
+    /// now, may be known once what the view is reading lands: an agent
+    /// addressing it is answered then. Start that read here if it has not
+    /// started; the window must be woken when it lands.
+    #[must_use]
+    pub fn live_row_pending(mut self, pending: impl Fn(&str) -> bool + 'static) -> Self {
+        self.sources.pending = Some(Rc::new(pending));
+        self
+    }
+
+    /// Edits of the resource bound to the live row `row` (rename *this*
+    /// file, invite *this* person): typed builders of the resource's
+    /// actions, published on that row and applied through the same
+    /// permission check, confirmation and undo as the resource's own
+    /// declarations. A row itself carries only view and effect operations;
+    /// this is how it offers a document change.
+    #[must_use]
+    pub fn row_edits(mut self, edits: impl Fn(&str) -> Vec<ActionDecl<R>> + 'static) -> Self {
+        self.sources.row_edits = Some(Rc::new(move |row, into| {
+            let offered = edits(row);
+            if offered.is_empty() {
+                return false;
+            }
+            if let Some(into) = into.downcast_mut::<Vec<ActionDecl<R>>>() {
+                into.extend(offered);
+            }
+            true
+        }));
+        self
+    }
+
+    /// The resource's own actions that differ from their declaration right
+    /// now, as the view's live state says (a mode switch unavailable while
+    /// recording, with why). Read whenever the resource is published, so
+    /// the palette, agents and the door follow the view: an action
+    /// unavailable here is refused with its reason.
+    #[must_use]
+    pub fn availability(mut self, statuses: impl Fn() -> Vec<EffectStatus> + 'static) -> Self {
+        self.sources.availability = Some(Rc::new(statuses));
+        self
+    }
+
     /// Search entries for what the view shows that the resource does not
     /// hold (a vault's items, a page's text), indexed with the resource's
     /// own as the app's one search source. Read whenever someone searches,
@@ -79,6 +140,17 @@ impl<R: Resource> Publishes<R> {
     #[must_use]
     pub fn search_entries(mut self, entries: impl Fn() -> Vec<SearchEntry> + 'static) -> Self {
         self.sources.entries = Some(Rc::new(entries));
+        self
+    }
+
+    /// Say that the system's search index forgets [`Self::search_entries`]
+    /// once the app closes: entries that are the machine's state of the
+    /// moment (the processes running) or a catalogue the system searches by
+    /// itself. They are found only while the app runs, and a closed app
+    /// leaves none behind to open into something that is gone.
+    #[must_use]
+    pub fn search_entries_while_running(mut self) -> Self {
+        self.sources.transient = true;
         self
     }
 
@@ -92,19 +164,58 @@ impl<R: Resource> Publishes<R> {
         self.sources.unlocked = Some(Rc::new(unlocked));
         self
     }
+
+    /// Look up what the platform search asks for beyond what the view holds
+    /// (a server's catalogue, a mailbox not yet fetched), and offer what
+    /// comes back through [`Self::search_entries`]. `query` gets the latest
+    /// query on the UI thread before the view syncs; queries asked between
+    /// frames are coalesced. Never asked of a past version.
+    #[must_use]
+    pub fn search_query(mut self, query: impl FnMut(&SearchQuery) + 'static) -> Self {
+        self.sources.query = Some(Rc::new(RefCell::new(query)));
+        self
+    }
+
+    /// Whether the results for the latest [`Self::search_query`] are still
+    /// coming (a server is still looking). A search already showing waits
+    /// for them and shows them once this turns false, without anyone typing
+    /// again. Read after every sync.
+    #[must_use]
+    pub fn search_pending(mut self, pending: impl Fn() -> bool + 'static) -> Self {
+        self.sources.answering = Some(Rc::new(pending));
+        self
+    }
 }
 
-/// `content`, publishing what `publishes` says on the resource `R`.
-pub(crate) fn publishing<R: Resource>(publishes: Publishes<R>, content: Element) -> Element {
-    element(std::any::TypeId::of::<R>(), publishes.sources, content)
+/// `content`, publishing what `publishes` says on the resource `R`. `wake`
+/// is the live window's, `None` in a past version, which is asked nothing.
+pub(crate) fn publishing<R: Resource>(
+    publishes: Publishes<R>,
+    content: Element,
+    wake: Option<ui_core::WakeHandle>,
+) -> Element {
+    element(
+        std::any::TypeId::of::<R>(),
+        publishes.sources,
+        content,
+        wake,
+    )
 }
 
 #[inline(never)]
-fn element(resource: std::any::TypeId, sources: Sources, content: Element) -> Element {
+fn element(
+    resource: std::any::TypeId,
+    sources: Sources,
+    content: Element,
+    wake: Option<ui_core::WakeHandle>,
+) -> Element {
+    // Only a view that looks queries up is asked them.
+    let queries = SearchQueries::waking(wake.filter(|_| sources.query.is_some()));
     Box::new(Publishing {
         resource,
         sources,
         content,
+        queries,
     })
 }
 
@@ -112,6 +223,7 @@ struct Publishing {
     resource: std::any::TypeId,
     sources: Sources,
     content: Element,
+    queries: SearchQueries,
 }
 
 impl Decorator for Publishing {
@@ -157,6 +269,23 @@ impl Decorator for Publishing {
     fn name(&self) -> &'static str {
         "Publishing"
     }
+
+    // The latest query reaches the view before it syncs, as a surface's
+    // does; what it says of its answer is read after.
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if let Some(query) = self.queries.take()
+            && let Some(on_query) = &self.sources.query
+        {
+            (on_query.borrow_mut())(&query);
+        }
+        self.content.sync(state, path);
+        self.queries.settle(
+            self.sources
+                .answering
+                .as_ref()
+                .is_some_and(|answering| answering()),
+        );
+    }
 }
 
 impl SurfacePublication for Publishing {
@@ -165,7 +294,10 @@ impl SurfacePublication for Publishing {
     }
     fn bound_declarations(&self, _into: &mut dyn std::any::Any) {}
     fn availability(&self) -> Vec<EffectStatus> {
-        Vec::new()
+        self.sources
+            .availability
+            .as_ref()
+            .map_or_else(Vec::new, |statuses| statuses())
     }
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sources
@@ -176,17 +308,27 @@ impl SurfacePublication for Publishing {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.sources.row.as_ref().and_then(|row| row(id))
     }
-    fn live_row_pending(&self, _id: &str) -> bool {
-        false
+    fn live_row_pending(&self, id: &str) -> bool {
+        self.sources
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending(id))
     }
     fn binds_rows(&self) -> bool {
-        false
+        self.sources.row_edits.is_some()
     }
-    fn offers_on_row(&self, _row: &str) -> bool {
-        false
+    fn offers_on_row(&self, row: &str) -> bool {
+        // Asked with nothing to fill: whether the row has any edit at all.
+        self.sources
+            .row_edits
+            .as_ref()
+            .is_some_and(|edits| edits(row, &mut ()))
     }
-    fn row_declarations(&self, _row: &str, _into: &mut dyn std::any::Any) -> bool {
-        false
+    fn row_declarations(&self, row: &str, into: &mut dyn std::any::Any) -> bool {
+        self.sources
+            .row_edits
+            .as_ref()
+            .is_some_and(|edits| edits(row, into))
     }
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.sources
@@ -201,7 +343,7 @@ impl SurfacePublication for Publishing {
             .and_then(|unlocked| unlocked())
     }
     fn kept_in_search_index(&self) -> bool {
-        true
+        !self.sources.transient
     }
     fn supports_device_shell(&self) -> bool {
         false
@@ -216,7 +358,7 @@ impl SurfacePublication for Publishing {
         false
     }
     fn search_queries(&self) -> SearchQueries {
-        SearchQueries::default()
+        self.queries.clone()
     }
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
         None

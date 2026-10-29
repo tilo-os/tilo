@@ -162,7 +162,7 @@ pub mod component;
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
-mod damage;
+pub mod damage;
 pub mod date;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
