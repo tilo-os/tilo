@@ -40,6 +40,7 @@ thin = [
     "dep:tilo-zone-globe",
     "dep:settings-sections",
     "dep:settings",
+    "dep:ui",
     "tilo-accounts-engine/thin",
     "dep:workspace-hack",
 ]
@@ -62,6 +63,8 @@ settings-sections = { path = "../../../system/settings-sections", optional = tru
 # app's package stays far below the package size limit; Settings' code ships
 # in the runtime bundle and changes with it.
 settings = { path = "../../../../apps/settings", optional = true }
+# The SDK entry the app's binary calls (`ui::engine_main!`).
+ui = { package = "tilo-app", path = "../../../sdk/tilo-app", optional = true }
 # Account custody and the IMAP client, which Settings uses, come from
 # their own engine library: one copy of each in the app's process.
 tilo-accounts-engine = { path = "../accounts", optional = true }
