@@ -21382,6 +21382,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-topbar"
+version = "0.1.0"
+dependencies = [
+ "durable-store",
+ "tilo-app",
+ "tilo-desktop",
+ "tilo-desktop-model",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-tray-host"
 version = "0.1.0"
 dependencies = [
@@ -27601,6 +27614,7 @@ dependencies = [
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-topbar",
  "tilo-tray-host",
  "tilo-tts",
  "tilo-typst-fonts",
