@@ -300,6 +300,7 @@ fn prepare(
     to_sign_manifest.publisher.signature.clear();
     let manifest_bytes = to_sign_manifest.to_toml_string()?.into_bytes();
     let root = SignedRoot {
+        format: crate::TAPP_FORMAT_VERSION,
         manifest_hash: BlobHash::of(&manifest_bytes),
         payload_root_hash: BlobHash::of(&collection_bytes),
         publisher_identity,
