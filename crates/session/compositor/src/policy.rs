@@ -1,0 +1,112 @@
+//! Window management policy, asked by the compositor and decided elsewhere.
+//!
+//! The compositor knows windows as Wayland toplevels; where they go, which
+//! one has focus and how big they start is a policy's answer. The desktop's
+//! strips, workspaces and tabs implement [`WindowPolicy`] on the desktop
+//! model; [`StackPolicy`] is the plain floating stack the compositor runs
+//! with on its own (tests, screenshots, a bare session).
+
+use smithay::utils::{Logical, Point, Rectangle};
+
+/// What a policy learns about a window.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowInfo {
+    /// The window's identity, never reused while the compositor runs.
+    pub id: u64,
+    /// `xdg_toplevel.set_app_id`, when the client set one.
+    pub app_id: Option<String>,
+    /// `xdg_toplevel.set_title`, when the client set one.
+    pub title: Option<String>,
+}
+
+/// Decides placement, initial size and focus for windows.
+pub trait WindowPolicy {
+    /// The size a new toplevel is configured to before its first buffer, or
+    /// `None` to let the client choose.
+    fn initial_size(
+        &mut self,
+        window: &WindowInfo,
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)>;
+
+    /// Where a toplevel of `size` goes in the logical layout when it first
+    /// shows a buffer.
+    fn place(
+        &mut self,
+        window: &WindowInfo,
+        size: (i32, i32),
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical>;
+
+    /// Whether a window takes keyboard focus when it first shows.
+    fn focus_on_map(&mut self, _window: &WindowInfo) -> bool {
+        true
+    }
+
+    /// Whether pressing a pointer button on a window focuses and raises it.
+    fn focus_on_click(&mut self, _window: &WindowInfo) -> bool {
+        true
+    }
+}
+
+/// Floating windows centred on the first output, each focused as it maps
+/// and on click.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StackPolicy;
+
+impl WindowPolicy for StackPolicy {
+    fn initial_size(
+        &mut self,
+        _window: &WindowInfo,
+        _outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<(i32, i32)> {
+        None
+    }
+
+    fn place(
+        &mut self,
+        _window: &WindowInfo,
+        size: (i32, i32),
+        outputs: &[Rectangle<i32, Logical>],
+    ) -> Point<i32, Logical> {
+        let Some(output) = outputs.first() else {
+            return Point::from((0, 0));
+        };
+        let x = output
+            .loc
+            .x
+            .saturating_add(output.size.w.saturating_sub(size.0).max(0) / 2);
+        let y = output
+            .loc
+            .y
+            .saturating_add(output.size.h.saturating_sub(size.1).max(0) / 2);
+        Point::from((x, y))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::utils::Size;
+
+    #[test]
+    fn stack_policy_centres_on_the_first_output_and_clamps_oversized_windows() {
+        let outputs = [
+            Rectangle::new(Point::from((100, 0)), Size::from((800, 600))),
+            Rectangle::new(Point::from((900, 0)), Size::from((800, 600))),
+        ];
+        let window = WindowInfo::default();
+        assert_eq!(
+            StackPolicy.place(&window, (200, 100), &outputs),
+            Point::from((400, 250))
+        );
+        assert_eq!(
+            StackPolicy.place(&window, (2000, 2000), &outputs),
+            Point::from((100, 0))
+        );
+        assert_eq!(
+            StackPolicy.place(&window, (10, 10), &[]),
+            Point::from((0, 0))
+        );
+    }
+}
