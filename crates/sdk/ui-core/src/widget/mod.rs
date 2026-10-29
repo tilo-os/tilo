@@ -3315,6 +3315,15 @@ pub use primitives::{
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry};
+pub mod attached;
+mod hover_toolbar;
+pub use hover_toolbar::HoverToolbar;
+mod swipe_row;
+pub use attached::{
+    Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,
+    SwipeProps,
+};
+pub use swipe_row::SwipeRow;
 mod pacer;
 pub use pacer::Pacer;
 pub(crate) mod block_editor_table;

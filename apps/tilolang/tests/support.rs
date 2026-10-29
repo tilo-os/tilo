@@ -13,9 +13,14 @@ use ui::application::ApplicationDefinition;
 pub fn installed(name: &str) -> &'static ApplicationDefinition {
     static INSTALLED: OnceLock<String> = OnceLock::new();
     let installed = INSTALLED.get_or_init(|| {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../tl")
-            .join(name);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        // An app package, or a package only the tests use.
+        let shipped = root.join("../tl").join(name);
+        let dir = if shipped.is_dir() {
+            shipped
+        } else {
+            root.join("tests").join(name)
+        };
         let dirs = tilolang::source::dependency_order(&dir, &[]).expect("the packages resolve");
         let built = tilolang::source::compile_dirs(&dirs, &[], &mut tilolang::OsEntropy::default())
             .expect("the packages compile");
