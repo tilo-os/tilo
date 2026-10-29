@@ -260,7 +260,7 @@ impl Document {
         }
         let anchor = TextAnchor::new(&self.body, &block, start, end).map_err(Refusal::new)?;
         self.comments
-            .push(cx.id(), Comment::new(anchor, author(cx), date(cx), text));
+            .push(cx.id(), Comment::written(cx, anchor, text));
         Ok(())
     }
 
@@ -280,21 +280,15 @@ impl Document {
             return Err(Refusal::new("a reply says something"));
         }
         let id = cx.id();
-        let author = author(cx);
-        let date = date(cx);
+        let reply = Reply {
+            body: body.unwrap_or_default(),
+            ..Reply::written(cx, text)
+        };
         let thread = self
             .comments
             .get_mut(comment)
             .ok_or_else(|| Refusal::new("there is no such comment; it may have been resolved"))?;
-        thread.replies.push(
-            id,
-            Reply {
-                author,
-                date,
-                text,
-                body: body.unwrap_or_default(),
-            },
-        );
+        thread.replies.push(id, reply);
         Ok(())
     }
 
@@ -715,45 +709,6 @@ fn clip_block(block: &tilo_doc::snapshot::BlockView) -> ClipBlock {
         align: block.str_attr("align").map(str::to_owned),
         attrs: std::collections::BTreeMap::default(),
     }
-}
-
-/// Who a comment or reply is by: whoever invoked the action.
-fn author(cx: &ActionCx) -> String {
-    cx.author().unwrap_or_default().to_owned()
-}
-
-/// When a comment or reply was written, as the ISO-8601 time tilo-doc stores.
-fn date(cx: &ActionCx) -> String {
-    iso_time(cx.now_ms())
-}
-
-/// `ms` after the Unix epoch as an ISO-8601 UTC time.
-fn iso_time(ms: i64) -> String {
-    let seconds = ms.div_euclid(1000);
-    let days = seconds.div_euclid(86_400);
-    let second_of_day = seconds.rem_euclid(86_400);
-    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_index = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    // format: machine (an RFC 3339 timestamp the document stores)
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        second_of_day / 3600,
-        second_of_day % 3600 / 60,
-        second_of_day % 60
-    )
 }
 
 /// The action that edits the body with `op`: what the editor, a control or
@@ -1270,14 +1225,6 @@ mod tests {
         // The text it came in no longer holds comments of its own.
         let snapshot = tilo_doc::model::materialize(reopened.doc(), &open(reopened.doc()).unwrap());
         assert!(snapshot.comments.is_empty());
-    }
-
-    #[test]
-    fn a_comment_is_dated_in_iso_utc() {
-        use super::iso_time;
-        assert_eq!(iso_time(0), "1970-01-01T00:00:00Z");
-        assert_eq!(iso_time(1_791_551_281_000), "2026-10-09T13:08:01Z");
-        assert_eq!(iso_time(951_868_799_000), "2000-02-29T23:59:59Z");
     }
 }
 

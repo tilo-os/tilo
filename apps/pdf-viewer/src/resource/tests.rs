@@ -137,67 +137,39 @@ fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
     );
 }
 
-/// Markup from before a comment's and a reply's formatted paragraphs were
-/// lists: each was one JSON string. Opened now, both read with their
-/// paragraphs, formatting included.
+/// Markup from before comment threads were the shared comment model opens
+/// with its annotations; the threads in their old shape are left behind.
 #[test]
-fn comments_kept_as_json_strings_migrate_to_their_paragraphs() {
+fn older_markup_keeps_its_annotations_and_leaves_old_threads_behind() {
     use ui::tilo_resource::evolution;
-    let paragraph = tilo_document::ClipBlock {
-        kind: "paragraph".into(),
-        text: "Check the totals".into(),
-        marks: Vec::new(),
-        level: None,
-        ordered: None,
-        align: None,
-        attrs: std::collections::BTreeMap::new(),
-    };
-    let rich = ui::serde_json::to_string(&vec![paragraph.clone()]).unwrap();
     let mut replica = ui::tilo_resource::Replica::<PdfMarkup>::new();
     let doc = replica.doc_mut();
     let root = ui::automerge::ROOT;
-    ui::tilo_resource::Slot::Key(&root, evolution::VERSION_KEY)
-        .remove(doc)
-        .unwrap();
+    evolution::write_version(doc, 2).unwrap();
     evolution::fixture(
         doc,
         &root,
         &ui::serde_json::json!({
-            "comments": {
-                "c1": {
-                    "id": "c1",
-                    "anno": "",
+            "annotations": {
+                "a1": {
+                    "id": "a1",
                     "page_id": "p1",
-                    "author": "ada",
-                    "text": "Check the totals",
-                    "rich": rich,
-                    "created": 1,
-                    "resolved": false,
-                    "replies": {
-                        "r1": {
-                            "k": "a",
-                            "v": { "author": "bo", "text": "Done", "rich": rich },
-                        },
-                    },
+                    "mark": { "kind": "note", "x": 1.0, "y": 2.0 },
                 },
+            },
+            "comments": {
+                "c1": { "id": "c1", "page_id": "p1", "text": "Old", "created": 1 },
             },
         }),
     )
     .unwrap();
     doc.commit();
     let mut old = doc.fork();
-    assert!(
-        evolution::read_checked::<PdfMarkup>(&old).is_err(),
-        "unmigrated"
-    );
     assert!(evolution::migrate::<PdfMarkup>(&mut old).unwrap());
     let markup = evolution::read_checked::<PdfMarkup>(&old).unwrap();
-    let comment = markup.comments.iter().next().unwrap();
-    assert_eq!(comment.rich, vec![paragraph.clone()]);
-    assert_eq!(
-        comment.replies.values().next().unwrap().rich,
-        vec![paragraph]
-    );
+    assert!(markup.comments.is_empty());
+    let note = markup.annotations.iter().next().expect("the annotation");
+    assert_eq!(note.kind, crate::model::AnnoKind::Note { x: 1.0, y: 2.0 });
 }
 
 #[test]

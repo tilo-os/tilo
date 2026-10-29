@@ -22,8 +22,7 @@ use crate::actions::{
     set_annotation_position_user_action, set_comment_resolved_action, set_comment_text_action,
 };
 use crate::model::{
-    AnnoKind, Annotation, Comment, GeomSpace, HighlightColor, PtRect, Reply, Signature,
-    SignatureInk,
+    AnnoKind, Annotation, GeomSpace, HighlightColor, PtRect, Signature, SignatureInk, new_id,
 };
 
 /// A replica of a record whose plan lays out `pages` source pages.
@@ -36,16 +35,7 @@ fn markup(replica: &Replica<PdfMarkup>) -> PdfMarkup {
 }
 
 fn anno(page: usize, kind: AnnoKind, color: HighlightColor, author: &str) -> Annotation {
-    Annotation {
-        id: Annotation::new_id(),
-        page,
-        kind,
-        color,
-        author: author.into(),
-        chars: None,
-        created_ms: 0,
-        space: GeomSpace::Page,
-    }
+    Annotation::new(page, kind, color, author)
 }
 
 fn hl(page: usize) -> Annotation {
@@ -104,9 +94,9 @@ fn a_comment_written_rich_keeps_its_marks_and_plain_text() {
         .apply(set_comment_text_action("c", clips))
         .expect("rewrite");
     let got = &markup(&replica).list_comments()[0];
-    assert_eq!(got.body, "plain bold");
-    assert_eq!(got.blocks.len(), 1);
-    assert_eq!(got.blocks[0].marks.len(), 1);
+    assert_eq!(got.comment.text, "plain bold");
+    assert_eq!(got.blocks().len(), 1);
+    assert_eq!(got.blocks()[0].marks.len(), 1);
 }
 
 #[test]
@@ -132,7 +122,10 @@ fn deleting_a_comment_preserves_its_highlight_and_other_threads() {
     let comments = state.list_comments();
     assert_eq!(comments.len(), 1);
     assert_eq!(comments[0].id, "kept");
-    assert_eq!(comments[0].replies[0].body, "Keep this reply");
+    assert_eq!(
+        comments[0].comment.replies.at(0).unwrap().1.text,
+        "Keep this reply"
+    );
 
     replica
         .apply(delete_comment_action("kept"))
@@ -168,7 +161,10 @@ fn deleting_a_note_thread_removes_only_an_orphaned_note_marker() {
         .apply(delete_comment_action("opening"))
         .expect("delete opening thread");
     assert_eq!(markup(&replica).list_annotations()[0].id, "note");
-    assert_eq!(markup(&replica).list_comments()[0].body, "Other thread");
+    assert_eq!(
+        markup(&replica).list_comments()[0].comment.text,
+        "Other thread"
+    );
     replica
         .apply(delete_comment_action("other"))
         .expect("delete last thread");
@@ -243,7 +239,7 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
         .find(|a| a.id == note.id)
         .cloned()
         .expect("the note");
-    match stored.mark {
+    match stored.kind {
         AnnoKind::Note { x, y } => {
             assert!((x - 120.5).abs() < 1e-6, "note x moved");
             assert!((y - 210.25).abs() < 1e-6, "note y moved");
@@ -272,7 +268,7 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
     let paths = PdfMarkup::paths().annotations.item(&Id::from_raw(note.id));
     assert!(
         replica
-            .apply(paths.mark.set(AnnoKind::Note {
+            .apply(paths.kind.set(AnnoKind::Note {
                 x: f64::NAN,
                 y: 1.0
             }))
@@ -288,7 +284,7 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
     replica
         .apply(add_annotation_on(&a, "source-1"))
         .expect("highlight");
-    let id = Comment::new_id();
+    let id = new_id();
     replica
         .apply(add_comment_action(
             &id,
@@ -297,7 +293,7 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
             "Is this still accurate?",
         ))
         .expect("comment");
-    let first_reply = Reply::new_id();
+    let first_reply = new_id();
     let mut bob = replica.fork().as_author("Bob");
     bob.apply(add_reply_action_with_id(
         &id,
@@ -307,15 +303,18 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
     .expect("reply");
     let got = markup(&bob).list_comments();
     assert_eq!(got.len(), 1);
-    assert_eq!(got[0].anno_id.as_deref(), Some(a.id.as_str()));
+    assert_eq!(got[0].pinned(), Some(a.id.as_str()));
     assert_eq!(
-        got[0].author, "Alice",
+        got[0].comment.author, "Alice",
         "a comment is signed by whoever wrote it"
     );
     assert_eq!(got[0].page, 1, "a comment on an annotation is on its page");
-    assert_eq!(got[0].replies.len(), 1);
-    assert_eq!(got[0].replies[0].author, "Bob");
-    assert_eq!(got[0].replies[0].id, first_reply);
+    assert_eq!(got[0].comment.replies.len(), 1);
+    assert_eq!(got[0].comment.replies.at(0).unwrap().1.author, "Bob");
+    assert_eq!(
+        got[0].comment.replies.at(0).unwrap().0.as_str(),
+        first_reply
+    );
     bob.apply(crate::actions::add_reply_text_action(
         &id,
         tilo_rich_text::plain_clips("Agreed."),
@@ -329,11 +328,11 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
     ))
     .expect("edit");
     let got = markup(&bob).list_comments();
-    assert_eq!(got[0].replies.len(), 2);
-    assert!(got[0].resolved);
-    assert_eq!(got[0].body, "Edited: confirmed accurate.");
+    assert_eq!(got[0].comment.replies.len(), 2);
+    assert!(got[0].comment.resolved);
+    assert_eq!(got[0].comment.text, "Edited: confirmed accurate.");
 
-    // Comments list in creation order.
+    // Comments list in the order they were written, each dated.
     let mut replica = planned_replica(1);
     for (id, created) in [("a", 30), ("b", 10), ("c", 20)] {
         replica.set_now_ms(created);
@@ -341,12 +340,17 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
             .apply(add_comment_action(id, None, Some("source-1"), "y"))
             .expect("comment");
     }
-    let order: Vec<i64> = markup(&replica)
+    let order: Vec<(String, String)> = markup(&replica)
         .list_comments()
-        .iter()
-        .map(|c| c.created)
+        .into_iter()
+        .map(|c| (c.id, c.comment.date))
         .collect();
-    assert_eq!(order, vec![10, 20, 30]);
+    assert_eq!(
+        order,
+        [("a", 30), ("b", 10), ("c", 20)]
+            .map(|(id, ms)| (id.to_owned(), tilo_document::annotation::iso_time(ms))),
+        "in the order they were written, a clock running behind notwithstanding"
+    );
 
     // Reply ids survive reload, retries and concurrent merges.
     let mut base = planned_replica(1);
@@ -383,17 +387,18 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
         ))
         .expect("right reply");
     left.sync_with(&mut right).expect("sync");
-    let replies = &markup(&left).list_comments()[0].replies;
+    let replies = &markup(&left).list_comments()[0].comment.replies;
     assert_eq!(replies.len(), 2);
-    assert!(replies.iter().any(|reply| reply.id == "reply-left"));
-    assert!(replies.iter().any(|reply| reply.id == "reply-right"));
+    assert!(replies.contains(&Id::from_raw("reply-left")));
+    assert!(replies.contains(&Id::from_raw("reply-right")));
     assert_eq!(markup(&left), markup(&right), "both replicas converge");
     let reloaded = Replica::<PdfMarkup>::load(&left.save()).unwrap();
     let reloaded_comments = markup(&reloaded).list_comments();
     let ids: Vec<&str> = reloaded_comments[0]
+        .comment
         .replies
-        .iter()
-        .map(|reply| reply.id.as_str())
+        .ids()
+        .map(Id::as_str)
         .collect();
     assert!(ids.contains(&"reply-left") && ids.contains(&"reply-right"));
 }
@@ -402,7 +407,7 @@ fn comment_threads_round_trip_sort_and_keep_reply_ids_through_merges() {
 fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
     let mut replica = planned_replica(5);
     let typed = signature(
-        &Signature::new_id(),
+        &new_id(),
         5,
         PtRect::new(360.0, 640.0, 180.0, 56.0),
         "Alice Example",
@@ -426,7 +431,7 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         vec![(0.6, 0.4), (0.9, 0.5)],
     ];
     let drawn = signature(
-        &Signature::new_id(),
+        &new_id(),
         2,
         PtRect::new(100.0, 100.0, 200.0, 70.0),
         "Grace",
@@ -449,7 +454,7 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
 
     // Deleting a free comment removes it.
     let mut replica = planned_replica(1);
-    let free = Comment::new_id();
+    let free = new_id();
     replica
         .apply(add_comment_action(&free, None, Some("source-1"), "x"))
         .expect("comment");
@@ -465,17 +470,12 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         .apply(add_annotation_on(&a, "source-1"))
         .expect("highlight");
     replica
-        .apply(add_comment_action(
-            &Comment::new_id(),
-            Some(&a.id),
-            None,
-            "pinned",
-        ))
+        .apply(add_comment_action(&new_id(), Some(&a.id), None, "pinned"))
         .expect("pinned");
     replica.set_now_ms(1_700_000_000_001);
     replica
         .apply(add_comment_action(
-            &Comment::new_id(),
+            &new_id(),
             None,
             Some("source-1"),
             "free",
@@ -492,7 +492,7 @@ fn signatures_round_trip_and_deletes_cascade_only_to_anchored_comments() {
         1,
         "anchored comment should be deleted with its annotation"
     );
-    assert_eq!(left[0].body, "free");
+    assert_eq!(left[0].comment.text, "free");
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -867,15 +867,18 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
     let note = state
         .list_comments()
         .into_iter()
-        .find(|comment| comment.body == "Check the figures")
+        .find(|comment| comment.comment.text == "Check the figures")
         .expect("the note's comment");
     assert_eq!(note.page, 3);
-    assert_eq!(note.author, own.signer, "both are signed by the invoker");
+    assert_eq!(
+        note.comment.author, own.signer,
+        "both are signed by the invoker"
+    );
     assert!(
         state
             .list_annotations()
             .iter()
-            .any(|a| Some(a.id.as_str()) == note.anno_id.as_deref()),
+            .any(|a| Some(a.id.as_str()) == note.pinned()),
         "the note's marker is on the page"
     );
 
@@ -892,7 +895,7 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
             before
                 .list_comments()
                 .iter()
-                .any(|c| c.anno_id.as_deref() == Some(a.id.as_str()))
+                .any(|c| c.pinned() == Some(a.id.as_str()))
         })
         .expect("a seeded annotation with a pinned comment");
     replica
@@ -907,7 +910,7 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
         after
             .list_comments()
             .iter()
-            .all(|c| c.anno_id.as_deref() != Some(target.id.as_str())),
+            .all(|c| c.pinned() != Some(target.id.as_str())),
         "and every comment pinned to it went with it"
     );
 
@@ -1106,10 +1109,11 @@ fn history_entries_render_as_the_readers_sentences() {
     let thread = app
         .state()
         .comments
-        .first()
+        .ids()
+        .next()
         .expect("the note's thread")
-        .id
-        .clone();
+        .as_str()
+        .to_owned();
     let resolved = PdfMarkup::paths()
         .comments
         .item(&Id::from_raw(thread.clone()))
