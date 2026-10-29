@@ -458,6 +458,18 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 {
                     return receipt;
                 }
+                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    caller,
+                    command,
+                    ..
+                } = &request.operation
+                    && let Some(receipt) = self::host_membership::commit_at_own_host(
+                        network, &owner, room, &request, caller, command,
+                    )
+                    .await
+                {
+                    return receipt;
+                }
             }
             let key = match network.as_ref() {
                 Some(network) => network.native_signing_key_of(&owner, room)?,

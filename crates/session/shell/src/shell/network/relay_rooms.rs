@@ -714,7 +714,7 @@ impl ShellNetwork {
 
     /// Whether `host`, the host governing `room`, is this device's own: the
     /// room is served here, or its host is this device's endpoint.
-    fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
+    pub(super) fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
         self.hosted_here(room) || host == self.local_peer_id
     }
 
@@ -835,7 +835,7 @@ impl ShellNetwork {
     /// operation of as `caller`, this device's admitted custody of the room:
     /// pinned to the current governor and its authenticated transport hint.
     /// `None` when no host governs the room.
-    fn governing_host(
+    pub(super) fn governing_host(
         &self,
         room: RoomId,
         caller: &tilo_user_identity::DeviceCert,
