@@ -1,0 +1,33 @@
+[package]
+name = "tilo-session"
+description = "The native Tilo session: the compositor hosting the desktop every host shows (the desk under the windows, the top bar, overview and menus above them), the window policy of its strips, and the desktop's surface apps."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-session"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-compositor = { path = "../compositor" }
+tilo-surface-host = { path = "../surface-host" }
+tilo-desktop = { path = "../desktop" }
+tilo-desktop-model = { path = "../desktop-model" }
+tilo-desktop-surface = { path = "../desktop-surface" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-quick-settings = { path = "../quick-settings" }
+tilo-notification-banners = { path = "../notification-banners" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["fs"] }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+wayland-client.workspace = true
+wayland-protocols = { version = "0.32.12", features = ["client"] }
+
+[lints]
+workspace = true

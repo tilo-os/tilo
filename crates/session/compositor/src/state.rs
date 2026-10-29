@@ -95,6 +95,8 @@ pub struct State {
     pub(crate) popups: PopupManager,
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
+    /// The outputs the hosted surfaces were last told of.
+    told_outputs: Vec<(i32, i32, i32, i32)>,
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
     pub(crate) protocols: crate::protocols::Protocols,
@@ -150,6 +152,7 @@ impl State {
             popups: PopupManager::default(),
             policy,
             hosts: Vec::new(),
+            told_outputs: Vec::new(),
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
@@ -200,6 +203,29 @@ impl State {
     /// Whether a hosted surface has the pointer (not a client).
     pub(crate) fn pointer_over_host(&self) -> bool {
         matches!(self.pointer_target, PointerTarget::Host(_))
+    }
+
+    /// The outputs' rectangles `(x, y, w, h)`, as hosted surfaces are
+    /// told them.
+    pub(crate) fn hosted_outputs(&self) -> Vec<(i32, i32, i32, i32)> {
+        self.output_geometries()
+            .iter()
+            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+            .collect()
+    }
+
+    /// Tell every hosted surface where the outputs are, when that changed
+    /// since they were last told (an output came or went, changed mode,
+    /// scale or place).
+    fn outputs_changed(&mut self) {
+        let outputs = self.hosted_outputs();
+        if outputs == self.told_outputs {
+            return;
+        }
+        for host in &mut self.hosts {
+            host.outputs_changed(&outputs);
+        }
+        self.told_outputs = outputs;
     }
 
     /// The logical rectangles of every output.
@@ -514,6 +540,7 @@ impl State {
     /// Ask the policy to lay the windows out again and apply its answer,
     /// keeping the stacking order.
     pub(crate) fn rearrange(&mut self) {
+        self.outputs_changed();
         let windows = self.windows();
         let outputs = self.output_geometries();
         let Some(arrangements) = self.policy.arrange(&windows, &outputs) else {

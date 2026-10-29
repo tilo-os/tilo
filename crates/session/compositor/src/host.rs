@@ -64,4 +64,9 @@ pub trait SurfaceHost {
 
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}
+
+    /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
+    /// one is added, removed or moved: a surface covering the desktop
+    /// (the top bar, the chrome above the windows) follows them.
+    fn outputs_changed(&mut self, _outputs: &[(i32, i32, i32, i32)]) {}
 }

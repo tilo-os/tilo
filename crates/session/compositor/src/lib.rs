@@ -201,7 +201,8 @@ impl Compositor {
 
     /// Host a surface app above the windows (and above earlier hosts), or
     /// under them when it says so ([`SurfaceHost::below_windows`]).
-    pub fn add_host(&mut self, host: Box<dyn SurfaceHost>) {
+    pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
+        host.outputs_changed(&self.data.state.hosted_outputs());
         self.data.state.hosts.push(host);
     }
 

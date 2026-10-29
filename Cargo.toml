@@ -401,6 +401,7 @@ members = [
     "crates/session/color-pipeline",
     "crates/session/compositor",
     "crates/session/surface-host",
+    "crates/session/session",
     "crates/session/console-control",
     "crates/session/onboarding-walk",
     "crates/session/control-cli",

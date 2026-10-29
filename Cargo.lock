@@ -21293,6 +21293,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-session"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "tilo-action-policy",
+ "tilo-compositor",
+ "tilo-desktop",
+ "tilo-desktop-model",
+ "tilo-desktop-surface",
+ "tilo-notification-banners",
+ "tilo-quick-settings",
+ "tilo-surface-host",
+ "tilo-ui",
+ "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-session-record"
 version = "0.1.0"
 dependencies = [
@@ -21481,6 +21501,7 @@ dependencies = [
  "tilo-compositor",
  "tilo-cpu-raster",
  "tilo-desktop-policy",
+ "tilo-desktop-surface",
  "tilo-topbar",
  "tilo-ui",
  "tilo-vello",

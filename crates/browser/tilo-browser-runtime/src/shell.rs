@@ -28,7 +28,7 @@ mod control_hints;
 pub(crate) mod people;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -835,7 +835,7 @@ impl BrowserShell {
             CollaboratorsHit::OpenChange(index, _) | CollaboratorsHit::OpenChanges(index) => {
                 let author = self.people.changes_author(index).map(str::to_owned);
                 self.people_open = false;
-                self.activity_by(author);
+                self.top.activity_by(author);
             }
             CollaboratorsHit::ToggleDetails(index) => {
                 let id = self.people.details_target(index).map(str::to_owned);
@@ -1842,6 +1842,7 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use tilo_action_policy::Role;
     use tilo_desktop_model::IdMinter;
     use tilo_desktop_model::commands::Standing;
