@@ -30,10 +30,14 @@ pub mod desktop_install;
 pub mod desktop_probe;
 #[cfg(feature = "installation")]
 pub mod desktop_worker;
+#[cfg(feature = "destination")]
+pub mod destination;
 #[cfg(all(test, windows, feature = "installation"))]
 mod destination_security_windows_tests;
 #[cfg(feature = "installation")]
 pub mod folders;
+#[cfg(any(feature = "installation", feature = "destination"))]
+pub(crate) mod hardware_text;
 #[cfg(all(test, target_os = "linux", feature = "installation"))]
 mod home_transfer_promotion_tests;
 #[cfg(feature = "installation")]

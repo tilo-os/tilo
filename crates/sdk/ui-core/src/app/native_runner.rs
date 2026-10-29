@@ -1829,6 +1829,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
@@ -2129,7 +2130,7 @@ impl AppHandler {
         let mut handled = false;
         let mut focus_target = None;
         app.mark_semantic_tree_stale();
-        app.track_pointer_buttons(&event);
+        app.input.pointer.track_buttons(&event);
         app.refresh_controls_before_input(&event);
         let resources_before = app.resource_input_mark(&event);
         let capture = app.begin_local_input_event(&event);

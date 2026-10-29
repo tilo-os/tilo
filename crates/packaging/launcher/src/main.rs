@@ -153,6 +153,11 @@ enum Cmd {
         /// resource is handed into the sandbox.
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
+        /// A tilolang app whose instance a tilolang host runs: the process
+        /// is its window alone, with no collaboration connection
+        /// (`RunOptions::tilolang_hosted`).
+        #[arg(long, conflicts_with = "service")]
+        tilolang_hosted: bool,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -547,6 +552,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_uri,
         headless_console,
         service,
+        tilolang_hosted,
         rest,
     } = command
     else {
@@ -576,6 +582,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         open_uri,
         headless_console,
         service,
+        tilolang_hosted,
         rest,
     })
 }
@@ -848,6 +855,7 @@ struct RunCliArgs {
     open_uri: Option<String>,
     headless_console: Option<u64>,
     service: bool,
+    tilolang_hosted: bool,
     rest: Vec<String>,
 }
 
@@ -894,6 +902,7 @@ fn run_gui_command(
         open_document: args.open,
         open_uri: args.open_uri,
         headless_console: args.headless_console,
+        tilolang_hosted: args.tilolang_hosted,
     };
     // Held from before the package is verified until the app exits, so an
     // update meanwhile leaves the build this launch runs alone
@@ -1560,6 +1569,7 @@ fn run_installed(
         open_document: None,
         open_uri: None,
         headless_console: None,
+        tilolang_hosted: false,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {

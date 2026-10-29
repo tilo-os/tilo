@@ -283,6 +283,9 @@ impl Widget for ShellOverlayHost {
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
+        // The rows take the workspace's arrangement before they lay out:
+        // a window opened this frame stands on the canvas this frame.
+        let canvas_dirty = self.sync_canvas() | self.fire_canvas_long_press(Instant::now());
         // The top bar steps aside for a window maximized this frame (and
         // comes back with its restore) in the same pass: the bar and the
         // windows' insets are laid out and painted from it below.
@@ -333,6 +336,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_maximize_changes();
         self.harvest_pending_width_changes();
         self.harvest_pending_group_reorder();
+        self.harvest_pending_canvas_moves();
         self.harvest_pending_tab_reorder();
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
@@ -396,6 +400,12 @@ impl Widget for ShellOverlayHost {
         steps.mark("prompts");
         let launch_dirty = self.drain_launch_events() | self.settle_launches_of_opened_windows();
         self.run_requested_session_actions();
+        // The power menu's actions are published once it is mounted, so an
+        // agent reaches them before the menu was ever opened.
+        if !self.layers.power_menu.is_mounted() {
+            self.mount_power_menu();
+        }
+        let power_menu_dirty = self.pump_power_menu(doc, path);
         let session_action_dirty = self.drain_session_action_results();
         steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
@@ -442,8 +452,10 @@ impl Widget for ShellOverlayHost {
             || switcher_dirty
             || notifications_dropped
             || launch_dirty
+            || power_menu_dirty
             || session_action_dirty
             || chrome_dirty
+            || canvas_dirty
             || portal_dirty
             || picker_dirty
             || dialog_dirty
@@ -560,6 +572,13 @@ impl Widget for ShellOverlayHost {
         if app_sheet_window.is_none() {
             self.app_sheet_nodes = None;
         }
+        let power_menu_window = self.layers.power_menu.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overlay_area(),
+            self.rect.origin(),
+        );
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
         self.place_on_focused_display(taffy, capture_node);
         self.capture_node = Some(capture_node);
@@ -659,6 +678,7 @@ impl Widget for ShellOverlayHost {
         }
         children.extend(self.peer_sync_node);
         children.extend(app_sheet_window);
+        children.extend(power_menu_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -792,6 +812,9 @@ impl Widget for ShellOverlayHost {
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
         self.apply_app_sheet_layout(taffy);
+        self.layers
+            .power_menu
+            .apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -1083,6 +1106,7 @@ impl Widget for ShellOverlayHost {
         if let (Some(sheet), Some(_)) = (&self.app_sheet, self.app_sheet_nodes) {
             out.push(sheet.dialog());
         }
+        out.extend(self.layers.power_menu.widget());
         out
     }
 
@@ -1128,6 +1152,7 @@ impl Widget for ShellOverlayHost {
         if let (Some(sheet), Some(_)) = (&mut self.app_sheet, self.app_sheet_nodes) {
             out.push(sheet.dialog_mut());
         }
+        out.extend(self.layers.power_menu.widget_mut());
         out
     }
 
@@ -1155,7 +1180,10 @@ impl Widget for ShellOverlayHost {
     /// A finger on a Quick Settings slider holds it, as the pointer does;
     /// it never turns into a scroll of the page.
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.qs_slider_face_at(point)
+        // A finger on empty canvas is read raw too: a drag draws a band
+        // and a still hold opens its menu, which pointer emulation cannot
+        // tell apart from a scroll.
+        self.qs_slider_face_at(point) || self.canvas_on_empty_space(point)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1211,6 +1239,7 @@ impl Widget for ShellOverlayHost {
             | (self.peer_sync_overlay.visible() != self.peer_sync_node.is_some())
             | self.peer_sync_overlay.take_structure_dirty()
             | self.take_app_sheet_changed()
+            | self.layers.power_menu.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
@@ -1236,6 +1265,7 @@ impl Widget for ShellOverlayHost {
             .chain(self.person_quick_composer.next_wake_deadline())
             .chain(self.person_quick_composer.deadline())
             .chain(self.bar_tooltip.reveal_at())
+            .chain(self.canvas_deadline())
             .min()
     }
 }
@@ -1544,7 +1574,8 @@ impl ShellOverlayHost {
                             claimed = true;
                         }
                     }
-                    _ => {}
+                    // Two fingers on a canvas pan and zoom it.
+                    other => claimed |= self.canvas_touch_gesture(&other),
                 }
             }
             // A swipe down from a display's top edge reveals what hides

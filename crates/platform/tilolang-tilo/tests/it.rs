@@ -10,6 +10,7 @@
     reason = "test assertions"
 )]
 
+mod agent_queries;
 mod bundle;
 mod chat;
 mod collab;
@@ -19,10 +20,13 @@ mod engines;
 mod fixtures;
 mod incremental;
 mod index;
+mod items;
 mod lanes;
+mod legacy;
 mod outbox;
 mod outcomes;
 mod policy;
+mod programs;
 mod publication;
 mod records;
 mod reflection;

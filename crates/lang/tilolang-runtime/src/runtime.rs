@@ -145,6 +145,11 @@ impl Runtime {
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
             .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
+            .chain(
+                meta.at_event
+                    .iter()
+                    .map(|f| tilolang::ir::at_event_export(&f.id)),
+            )
             .chain(meta.actions.iter().flat_map(|a| {
                 a.params
                     .iter()
@@ -552,6 +557,18 @@ impl Runtime {
         if states.get(&key) != Some(&value) {
             states.set(key, value);
         }
+    }
+
+    /// The workspace's members now, from its membership, and how its grants decide who of
+    /// them reads a resource (`None`: everyone reads everything the workspace holds). What
+    /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
+    /// again whenever membership or grants change, and every view that read them runs again.
+    pub fn set_members(
+        &self,
+        members: Vec<crate::members::Member>,
+        reads: Option<Rc<crate::members::Reads>>,
+    ) {
+        self.core.set_members(members, reads);
     }
 
     /// Where settled outside effects go.

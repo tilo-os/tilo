@@ -10,12 +10,15 @@ use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
-use runtime_portal::tilolang_host::{STORAGE_ENV, receive_instance, take_door};
+use runtime_portal::tilolang_host::{STORAGE_ENV, receive_instance, send_ended, take_door};
 use tilolang_host::TilolangHost;
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        // RUST_LOG, with the launch timing lines kept, as the session's own log keeps them.
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+        ))
         .with_writer(std::io::stderr)
         .init();
     let Some(door) = take_door() else {
@@ -50,6 +53,14 @@ fn main() -> std::process::ExitCode {
         // What a frame changed may ask for another (a view that read what it changed), until
         // nothing changes: every change is a message taken in or a step made, so it settles.
         while host.turn() {}
+        // The session stops the host once its last instance ended.
+        for instance in host.take_ended() {
+            if let Some(open) = door.as_ref()
+                && let Err(error) = send_ended(open, instance)
+            {
+                tracing::warn!(%error, instance, "the session was not told an instance ended");
+            }
+        }
         if door.is_none() && host.is_empty() {
             return std::process::ExitCode::SUCCESS;
         }
@@ -67,9 +78,10 @@ fn main() -> std::process::ExitCode {
         {
             match receive_instance(open) {
                 Ok(Some((request, fds))) => {
-                    let app = request.app.clone();
+                    let (app, instance) = (request.app.clone(), request.instance);
                     if let Err(error) = host.admit(request, fds) {
                         tracing::error!(app, %error, "an instance did not start");
+                        let _ = send_ended(open, instance);
                     }
                 }
                 Ok(None) => door = None,

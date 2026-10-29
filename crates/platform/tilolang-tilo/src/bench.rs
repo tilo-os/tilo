@@ -1700,11 +1700,8 @@ fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, Stri
         && has_default_view(sized.packages, &list.item_ty)
     {
         let target = sized.target(main);
-        let item = ResourceRef::root(root_id(root), root.root_ty.clone()).item(
-            &list.field,
-            &item_id(target),
-            list.item_ty.clone(),
-        );
+        let item = ResourceRef::root(root_id(root), root.root_ty.clone())
+            .item(&item_id(target), list.item_ty.clone());
         let editor = host.open_resource(&item, None).map_err(|e| e.to_string())?;
         // A person types into the item's title where its window edits it (a note), else into
         // the window's first text input (a conversation's draft).
@@ -1810,7 +1807,6 @@ fn peer_change<'a>(
         let title = list.texts.first().cloned().unwrap_or_default();
         let edit = Edit::new(
             vec![
-                Segment::Field(list.field.clone()),
                 Segment::Item(Id::from_raw(item_id(sized.target(room.list.tree())))),
                 Segment::Field(title),
             ],
@@ -1879,32 +1875,33 @@ fn peer_post(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, Strin
     let first = sized.target(room.list.tree());
     for sample in 0..sized.config.samples {
         let item = first.saturating_add(sample).min(sized.n.saturating_sub(1));
+        let id = format!("post-{sample:06}");
         let message = thread::filled(
-            &nested.item_ty,
+            (&id, &nested.item_ty),
             &format!("Peer post {sample}"),
             1,
             &principals,
         )?;
+        // The seeded items' own collections hold nothing: the post is their first.
+        let at = tilolang_runtime::place::Placement::At {
+            place: tilolang_runtime::place::Place {
+                parent: Some(item_id(item)),
+                field: nested.field.clone(),
+                key: crate::action::keys_in_order(1).pop().unwrap_or_default(),
+            },
+            was: None,
+        };
         let action = DynAction {
             app: subject.app.clone(),
             kind: format!("tl.{}.edit", subject.app),
             action_id: "$edit".into(),
             args: Json::Null,
             authorship: Authorship::default(),
-            edits: vec![DynEdit::Edit {
+            edits: vec![DynEdit::Insert {
                 id: root_id(subject),
-                edit: Edit::new(
-                    vec![
-                        Segment::Field(list.field.clone()),
-                        Segment::Item(Id::from_raw(item_id(item))),
-                        Segment::Field(nested.field.clone()),
-                    ],
-                    EditOp::InsertItem {
-                        id: Some(Id::from_raw(format!("post-{sample:06}"))),
-                        at: tilo_resource::At::End,
-                        value: tilo_resource::Model::to_json(&message),
-                    },
-                ),
+                item: id,
+                record: tilo_resource::Model::to_json(&message),
+                at: at.encode(),
             }],
         };
         execute(&mut peer, &action, "peer")?;

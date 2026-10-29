@@ -90,15 +90,6 @@ impl Note {
         }
     }
 
-    /// The class the Plymouth theme keys its drawn fallback on.
-    pub fn class(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Wrong { .. } | Self::Repeated { .. } => "wrong",
-            Self::Wait { .. } => "wait",
-        }
-    }
-
     pub fn text(self) -> String {
         match self {
             Self::None => String::new(),

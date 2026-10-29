@@ -79,28 +79,17 @@ fn freeze_bench_times_first_sync_and_group_rematerialization() {
 
     // Phase `rematerialize_group_cost`.
     {
-        // Records stay in memory: this measures widget construction, not what a
-        // session writes to disk.
-        let records = ui::record::RecordStore::in_memory();
         let inputs = shell::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
         // Warm the OS caches once so we measure steady-state, not first-touch.
-        let _ = to_ui_window_group_with_inputs(
-            &placeholder_group(UiKind::Files, "Files"),
-            &records,
-            &inputs,
-        );
+        let _ = to_ui_window_group_with_inputs(&placeholder_group(UiKind::Files, "Files"), &inputs);
 
         let files = ms(|| {
-            let _ = to_ui_window_group_with_inputs(
-                &placeholder_group(UiKind::Files, "Files"),
-                &records,
-                &inputs,
-            );
+            let _ =
+                to_ui_window_group_with_inputs(&placeholder_group(UiKind::Files, "Files"), &inputs);
         });
         let terminal = ms(|| {
             let _ = to_ui_window_group_with_inputs(
                 &placeholder_group(UiKind::Terminal, "Terminal"),
-                &records,
                 &inputs,
             );
         });
@@ -110,7 +99,6 @@ fn freeze_bench_times_first_sync_and_group_rematerialization() {
                     UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
                     "Notes",
                 ),
-                &records,
                 &inputs,
             );
         });

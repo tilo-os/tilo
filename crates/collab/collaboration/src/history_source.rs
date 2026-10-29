@@ -10,6 +10,7 @@ pub mod authors;
 pub mod revert;
 pub mod steps;
 pub mod typing;
+pub mod verbs;
 pub mod words;
 
 use automerge::{PatchAction, Prop};

@@ -193,13 +193,9 @@ fn the_surface_lists_verbs_kinds_and_fields() {
         .unwrap();
     assert!(given.label);
     assert_eq!(given.title, "Given name");
-    assert_eq!(given.ty, "String");
-    assert!(
-        surface
-            .fields
-            .iter()
-            .any(|field| field.path == "outbox" && field.ty == "Outbox<String>")
-    );
+    assert_eq!(given.ty, tilo_resource::FieldType::Text);
+    assert!(surface.fields.iter().any(|field| field.path == "outbox"
+        && field.ty == tilo_resource::FieldType::Outbox(Box::new(tilo_resource::FieldType::Text))));
     // It is data: it survives its own serialization.
     let json = serde_json::to_string(&surface).unwrap();
     assert_eq!(

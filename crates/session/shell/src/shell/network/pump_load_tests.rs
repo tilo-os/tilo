@@ -29,11 +29,10 @@ fn desktop(root: &ed25519_dalek::SigningKey) -> WorkspaceTree {
     tree
 }
 
-async fn session(root: &ed25519_dalek::SigningKey, tag: u8, state: &Path) -> Session {
+async fn session(root: &ed25519_dalek::SigningKey, tag: u8) -> Session {
     let mut session = Box::pin(Session::new(root, tag, desktop(root))).await;
     let device = session.cert.device_public_key;
     let network = session.network_mut();
-    network.personal_continuity_path = Some(state.join(format!("continuity-{tag}.postcard")));
     network.personal_workspaces = Some(Mutex::new(
         crate::shell::personal_workspaces::PersonalWorkspaces::new(
             root.verifying_key().to_bytes(),
@@ -104,14 +103,11 @@ async fn network_pump_under_load() {
     );
     let paths = home.config().to_path_buf();
     let _settings = crate::shell::test_support::install_settings(settings_store::profile(&paths));
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target");
-    std::fs::create_dir_all(&target).unwrap();
-    let state = tempfile::tempdir_in(&target).unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
     let mut sessions = vec![
-        session(&root, 0x62, state.path()).await,
-        session(&root, 0x63, state.path()).await,
-        session(&root, 0x64, state.path()).await,
+        session(&root, 0x62).await,
+        session(&root, 0x63).await,
+        session(&root, 0x64).await,
     ];
     pair(&sessions[0], &sessions[1]).await;
     pair(&sessions[0], &sessions[2]).await;
@@ -136,7 +132,7 @@ async fn network_pump_under_load() {
             drop(fabrics.pop());
             let mut gone = sessions.pop().unwrap();
             gone.close().await;
-            sessions.push(session(&root, 0x64, state.path()).await);
+            sessions.push(session(&root, 0x64).await);
             pair(&sessions[0], &sessions[2]).await;
             pair(&sessions[1], &sessions[2]).await;
             fabrics.push(

@@ -384,18 +384,12 @@ pub(crate) fn run_door_control(
     intent: &tilo_actions::ControlInvocation,
 ) -> Result<(), tilo_actions::DoorError> {
     let resources = [history.door_resource()];
-    let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+    let encoded = crate::bound_dispatch::encode_resource_invocation(
         &resources,
         &intent.address,
         None,
         Some(&intent.arguments),
         false,
-    )?;
-    let encoded = crate::bound_dispatch::encode_resource_action(
-        &resources,
-        &intent.address,
-        arguments.as_ref(),
-        None,
     )?;
     history
         .invoke_door(&encoded)

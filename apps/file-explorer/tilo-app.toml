@@ -34,7 +34,7 @@ required = ["files.paths"]
 optional = ["clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri"]
 
 [resources]
-kinds = ["files.folder", "tilo.accounts"]
+kinds = ["files.folder", "tilo.accounts", "files.recent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -70,7 +70,7 @@ open-uri = "via-host"
 collab = "optional@11"
 tilo-fs = "optional@11"
 tools = "optional@11"
-shell-ui = "optional@17"
+shell-ui = "optional@18"
 
 [entrypoint]
 bin             = "bin/file-explorer"

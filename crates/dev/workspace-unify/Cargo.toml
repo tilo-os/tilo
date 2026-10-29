@@ -514,7 +514,7 @@ doc = false
 "igd-next-0_17_1" = { package = "igd-next", version = "^0.17.1", default-features = false, features = ["aio_tokio", "bytes", "default", "futures", "http", "http-body-util", "hyper", "hyper-util", "tokio"] }
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
-"imager" = { path = "../../../apps/imager", default-features = false, features = ["installation"] }
+"imager" = { path = "../../../apps/imager", default-features = false, features = ["destination", "installation"] }
 "imager-backend" = { path = "../../../crates/platform/imager-backend", default-features = false, features = ["installation", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
@@ -531,7 +531,6 @@ doc = false
 "insta-1_49_0" = { package = "insta", version = "^1.49.0", default-features = false, features = ["colors", "console", "default", "pest", "pest_derive", "redactions", "serde"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
-"installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -1272,6 +1271,7 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
+"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }
@@ -2932,7 +2932,7 @@ doc = false
 "igd-next-0_17_1" = { package = "igd-next", version = "^0.17.1", default-features = false, features = ["aio_tokio", "bytes", "default", "futures", "http", "http-body-util", "hyper", "hyper-util", "tokio"] }
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
-"imager" = { path = "../../../apps/imager", default-features = false, features = ["installation"] }
+"imager" = { path = "../../../apps/imager", default-features = false, features = ["destination", "installation"] }
 "imager-backend" = { path = "../../../crates/platform/imager-backend", default-features = false, features = ["installation", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
@@ -2947,7 +2947,6 @@ doc = false
 "input-sys-1_18_0" = { package = "input-sys", version = "^1.18.0", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
-"installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -3667,6 +3666,7 @@ doc = false
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
+"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }

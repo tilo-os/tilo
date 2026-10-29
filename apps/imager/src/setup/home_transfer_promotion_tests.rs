@@ -29,16 +29,7 @@ fn fixture() -> tempfile::TempDir {
 }
 #[test]
 fn cross_process_partial_adoption_renews_completed_copy_and_move_witnesses() {
-    use imager_backend::setup::{
-        flatpak_transfer::Runner,
-        user_transfer::{self, TransferEvent, TransferRequest},
-    };
-    struct NoApps;
-    impl Runner for NoApps {
-        fn run(&self, _: &Path, _: &[String]) -> Result<String, String> {
-            panic!("Home-only adoption must not run applications")
-        }
-    }
+    use imager_backend::setup::user_transfer::{self, TransferEvent, TransferRequest};
     let root = fixture();
     let source = root.path().join("original");
     let quarantine = root.path().join("quarantine-parent/home");
@@ -61,7 +52,7 @@ fn cross_process_partial_adoption_renews_completed_copy_and_move_witnesses() {
         copy_flatpak: false,
         system_refs: Vec::new(),
     };
-    let transfer = user_transfer::review(&NoApps, request.clone()).unwrap();
+    let transfer = user_transfer::review(request.clone(), None).unwrap();
     let mut worker = transfer.start(false).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {

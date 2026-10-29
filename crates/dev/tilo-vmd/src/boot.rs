@@ -49,7 +49,7 @@ pub const IMAGE_DRACUT_ARGS: &[&str] = &[
     "--add-drivers",
     "ext4",
     "--add",
-    "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter tilo-boot-face",
+    "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock tilo-greeter",
 ];
 
 /// Loaded in the initramfs of every kernel tilo-vmd installs: systemd-sysext

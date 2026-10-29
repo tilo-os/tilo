@@ -411,7 +411,6 @@ members = [
     "crates/session/greeter",
     "crates/platform/imager-backend",
     "crates/session/install-profile-model",
-    "crates/session/installer",
     "crates/session/liveness",
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
@@ -419,6 +418,7 @@ members = [
     "crates/session/polkit-agent",
     "crates/session/quick-settings",
     "crates/session/session-record",
+    "crates/session/sheets",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
@@ -1235,6 +1235,27 @@ codegen-units = 16
 [profile.thin-app.package.imager-backend]
 codegen-units = 16
 
+# The thin graph of a developer session (PROFILE=thin-dev to
+# os/scripts/build-thin-apps.sh, from dist/dev/nested-session-build.sh and
+# dist/dev/tilolang-runtime-build.sh together): built for build speed alone,
+# since it is never published. Incremental, in rustc's incremental unit count, without
+# debug information, and the app crates at these settings too rather than
+# size-optimised in one unit (build-thin-apps.sh). Its apps are larger than
+# the distribution limit allows; the session installs them, signed with its
+# own key, under the local-build ceiling (package_store::size_limit).
+[profile.thin-dev]
+inherits = "thin-app"
+opt-level = 1
+codegen-units = 256
+incremental = true
+debug = false
+
+[profile.thin-dev.package.tilo-ui]
+codegen-units = 256
+
+[profile.thin-dev.package.imager-backend]
+codegen-units = 256
+
 # The greeter's initramfs build (os/image/compile.sh, phase rust-boot-greeter):
 # release code without its symbol table, since every boot unpacks the
 # initramfs and nothing there reads symbols. The initramfs holds it to a size
@@ -1242,7 +1263,7 @@ codegen-units = 16
 # LTO and one codegen unit: with the image compile's thin LTO and 8 units its
 # binary is 66.2 MB on x86_64, with these 54.2 MB. A panic aborts, which leaves
 # out the unwind tables and landing pads: 48.2 MB. A greeter that exits ends
-# its link, and tilo-boot-signin asks through Plymouth or the console instead.
+# its link, and tilo-boot-signin asks on the console instead.
 [profile.initrd]
 inherits = "release"
 lto = "fat"

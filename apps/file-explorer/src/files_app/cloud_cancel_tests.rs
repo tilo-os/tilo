@@ -71,9 +71,9 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
     });
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
-    files.cloud_fixture_consent = true;
-    files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    files.state().cloud_fixture_consent = true;
+    files.state().startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
         id: "account".into(),
         kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
         label: "Drive".into(),
@@ -83,47 +83,54 @@ fn cancel_action_closes_preparing_export_and_retry_records_only_failed_copy() {
         files_mode: accounts::cloud_types::FilesMode::Import,
     }]);
     files
+        .state()
         .run_effect(FilesEffect::OpenAccount {
             account: "account".into(),
         })
         .unwrap();
     tilo_test_env::wait_until("the cloud listing to settle", || {
-        files.poll_cloud();
-        files.cloud.pending.is_none()
+        files.state().poll_cloud();
+        files.state().cloud.pending.is_none()
     });
     files
+        .state()
         .run_effect(FilesEffect::SelectCloud { entry: entry.id })
         .unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
     files
+        .state()
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
-    files.poll_cloud();
+    files.state().poll_cloud();
     tilo_test_env::recv("the transfer to start", &ready_rx);
-    files.run_effect(FilesEffect::CancelCloud).unwrap();
+    files.state().run_effect(FilesEffect::CancelCloud).unwrap();
     tilo_test_env::wait_until("the cloud transfer to settle", || {
-        files.poll_cloud();
-        files.cloud.transfer.is_none()
+        files.state().poll_cloud();
+        files.state().cloud.transfer.is_none()
     });
     assert!(!destination.join("Copy.docx").exists());
-    assert!(files.cloud.retry.is_some());
-    assert_eq!(files.cloud.progress.phase, "cancelled");
-    let progress = files.run_effect(FilesEffect::CloudProgress).unwrap();
+    assert!(files.state().cloud.retry.is_some());
+    assert_eq!(files.state().cloud.progress.phase, "cancelled");
+    let progress = files
+        .state()
+        .run_effect(FilesEffect::CloudProgress)
+        .unwrap();
     assert!(matches!(progress,Ran::Done(Some(value)) if value["phase"] == "cancelled"));
-    files.run_effect(FilesEffect::RetryCloud).unwrap();
+    files.state().run_effect(FilesEffect::RetryCloud).unwrap();
     tilo_test_env::wait_until("the cloud transfer to settle", || {
-        files.poll_cloud();
-        files.cloud.transfer.is_none()
+        files.state().poll_cloud();
+        files.state().cloud.transfer.is_none()
     });
     assert_eq!(server.join().unwrap(), 2);
     assert_eq!(
         std::fs::read(destination.join("Copy.docx")).unwrap(),
         b"bytes"
     );
-    assert!(files.cloud.retry.is_none());
-    assert_eq!(files.local_outcomes.len(), 2);
+    assert!(files.state().cloud.retry.is_none());
+    assert_eq!(files.state().local_outcomes.len(), 2);
     assert_eq!(
         files
+            .state()
             .local_outcomes
             .values()
             .filter(|outcome| outcome.is_done())

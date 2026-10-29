@@ -8,7 +8,7 @@
 #   ./os/dev/vm.sh boot-installer --gl      # boot it against a blank /dev/vdb
 #
 # Pipeline (mirrors build-image.sh):
-#   1. cargo build --release -p installer (inside the build distrobox), then
+#   1. cargo build --release -p imager --features destination --bin tilo-installer (inside the build distrobox), then
 #      stage target/release/tilo-installer -> os/tilo-installer.
 #      (--stub-ui skips cargo and writes a placeholder tilo-installer so you can
 #      test the OS plumbing — session-select, sudoers, units — without the UI.)
@@ -113,8 +113,8 @@ exec sleep infinity
 STUB
   chmod 755 "$TILO_OS_DIR/tilo-installer"
 elif [ "$DO_CARGO" = 1 ]; then
-  msg "1/3 cargo build --release -p installer in ${TILO_DISTROBOX:-host}"
-  inenv "cd '$TILO_REPO' && cargo build --release -p installer"
+  msg "1/3 cargo build --release -p imager --features destination --bin tilo-installer in ${TILO_DISTROBOX:-host}"
+  inenv "cd '$TILO_REPO' && cargo build --release -p imager --features destination --bin tilo-installer"
   REL="$TILO_REPO/target/release"
   [ -f "$REL/tilo-installer" ] || die "missing built binary: $REL/tilo-installer"
   cp -f "$REL/tilo-installer" "$TILO_OS_DIR/tilo-installer"

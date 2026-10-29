@@ -6,11 +6,8 @@ use std::time::Instant;
 
 use automerge::{AutoCommit, ROOT};
 use shell::shell::chrome_state::ChromeState;
-use shell::shell::continuity_suggestion::{ContinuityFeed, FocusRecency};
-use shell::shell::personal_continuity::{
-    AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceFocus,
-    LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
-};
+use shell::shell::continuation::AppInstanceId;
+use shell::shell::continuity_suggestion::{ContinuityFeed, DeviceFocus, FocusRecency};
 use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree};
 use shell::shell::topbar_chrome::TopBarChrome;
 use tilo_network_actor::fabric::DeviceId;
@@ -64,40 +61,22 @@ fn desktop() -> WorkspaceTree {
     tree
 }
 
-/// The laptop's published snapshot, focused on Notes.
-fn laptop_focused_on_notes(tree: &WorkspaceTree, laptop: &DeviceId) -> PersonalContinuity {
-    let room = tree.desktop.workspaces[0].room();
-    let stamp = ContinuityStamp {
-        counter: 12,
+/// What the laptop noted in the workspace's layout record: it is on Notes.
+fn laptop_focused_on_notes(tree: &WorkspaceTree, laptop: &DeviceId) -> Vec<DeviceFocus> {
+    vec![DeviceFocus {
         device: laptop.clone(),
-    };
-    let notes = AppInstanceState::new(
-        AppInstanceId(NOTES),
-        TabPlacement {
-            strip: 0,
-            group: 1,
-            tab: 0,
-        },
-        LaunchIntent::app("so.tilo.notes").unwrap(),
-        None,
-        stamp,
-    );
-    let snapshot = DeviceContinuationSnapshot::new(
-        laptop.clone(),
-        12,
-        Some(DeviceFocus {
-            room,
-            app: Some(AppInstanceId(NOTES)),
-        }),
-        vec![WorkspaceContinuation {
-            room,
-            apps: vec![notes],
-        }],
-    )
-    .unwrap();
-    let mut continuity = PersonalContinuity::default();
-    continuity.upsert(snapshot).unwrap();
-    continuity
+        room: tree.desktop.workspaces[0].room(),
+        app: AppInstanceId(NOTES),
+        withdrawn: false,
+    }]
+}
+
+/// A recency that saw the laptop move to Notes after it first looked.
+fn recency_of(focus: &[DeviceFocus]) -> FocusRecency {
+    let mut recency = FocusRecency::default();
+    recency.observe(&[], Instant::now());
+    recency.observe(focus, Instant::now());
+    recency
 }
 
 fn continuity_control(bar: &TopBarChrome) -> Option<String> {
@@ -127,8 +106,7 @@ fn focused_tab(chrome: &ChromeState) -> u64 {
 fn peer_focus_offers_a_chip_and_accepting_it_moves_focus_here() {
     let tree = desktop();
     let laptop = DeviceId::new("laptop-device").unwrap();
-    let mut recency = FocusRecency::default();
-    recency.observe(&laptop_focused_on_notes(&tree, &laptop), Instant::now());
+    let recency = recency_of(&laptop_focused_on_notes(&tree, &laptop));
 
     let chrome = ChromeState::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree.desktop)
@@ -174,8 +152,7 @@ fn peer_focus_offers_a_chip_and_accepting_it_moves_focus_here() {
 fn dismissing_the_chip_leaves_focus_alone() {
     let tree = desktop();
     let laptop = DeviceId::new("laptop-device").unwrap();
-    let mut recency = FocusRecency::default();
-    recency.observe(&laptop_focused_on_notes(&tree, &laptop), Instant::now());
+    let recency = recency_of(&laptop_focused_on_notes(&tree, &laptop));
     let chrome = ChromeState::new(tree.clone());
     let mut bar = TopBarChrome::from_tree(&tree.desktop)
         .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));

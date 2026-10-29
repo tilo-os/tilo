@@ -812,7 +812,7 @@ mod tests {
         let _held = super::Holder::of(&crate::shell::state::local_user_id()).unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let mut workspace = Workspace::new(WorkspaceId(7), "Settings");
         workspace.set_owner("owner");
         workspace.admit_agent("scribe", KindSet::READ);
@@ -1022,7 +1022,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let palette = settings_store::InvokingAction::action("power.lock");
         let before = settings_store::power::LOCK_MINUTES.get();
         let sooner = if before == 1 { 2 } else { 1 };
@@ -1056,7 +1056,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let palette = settings_store::InvokingAction::action("shortcuts.vim");
         super::change(
             &super::address("settings.desktop-controls", "field-edit"),
@@ -1104,7 +1104,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         let zoom = || MagnifierState::from_section(&settings_store::load_section(SECTION)).zoom;
         let shortcut = settings_store::InvokingAction::action("magnifier.zoom-in");
         let mut step = serde_json::Map::new();
@@ -1131,7 +1131,7 @@ mod tests {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let paths = settings_store::config_root().unwrap();
         let session = settings_store::profile(&paths);
-        let settings = crate::shell::test_support::install_settings(session.clone());
+        let settings = crate::shell::test_support::install_settings(session);
         crate::shell::device_vpn::choose("desk", true).unwrap();
         crate::shell::device_vpn::set_exit(true).unwrap();
         let section = settings_store::load_section(SECTION);

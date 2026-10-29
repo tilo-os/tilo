@@ -11,6 +11,7 @@
 //! laid out under the bar, and every capture paints the bar above it with
 //! the shell's own [`TabBar`] and [`WindowSearch`].
 
+use crate::host_core::HostCore as _;
 use taffy::NodeId;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

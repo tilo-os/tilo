@@ -148,32 +148,6 @@ impl Harness {
         tabs: Vec<[u64; 2]>,
     ) -> Self {
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
-        // This fixture minted the tabs, so it explicitly creates their
-        // documents before presentation attempts existing-only admission.
-        let (records, rendered_tabs) = {
-            let chrome = chrome.borrow();
-            let rendered = chrome.tree();
-            let tabs = rendered
-                .desktop
-                .workspaces
-                .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .map(|tab| tab.id)
-                .collect::<Vec<_>>();
-            (chrome.records().clone(), tabs)
-        };
-        for tab in rendered_tabs {
-            let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
-            shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
-                .expect("the fixture must create each rendered tab's document");
-            assert_eq!(
-                records.read(&checkout.id, ui::record::identity),
-                Some(Some(checkout)),
-                "the rendered tab must have its own existing document before input"
-            );
-        }
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
         let mut h = Harness {
@@ -1797,15 +1771,12 @@ fn super_f_asks_the_compositor_to_toggle_full_screen() {
 #[test]
 fn ctrl_alt_delete_opens_the_power_menu() {
     let mut h = Harness::new();
-    assert!(h.host.power_menu_semantic_rects().is_empty());
+    assert!(!h.host.power_menu_open());
     h.key(
         Key::Named(NamedKey::Delete),
         ModifiersState::CONTROL | ModifiersState::ALT,
     );
-    assert!(
-        !h.host.power_menu_semantic_rects().is_empty(),
-        "the session action sheet is open"
-    );
+    assert!(h.host.power_menu_open(), "the session action sheet is open");
 }
 
 #[test]
@@ -2160,10 +2131,6 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
     let mut h = Harness::new();
     let tab = h.tabs[0][0];
     let room = h.chrome.borrow().tree().desktop.workspaces[0].room();
-    let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
-    let records = h.chrome.borrow().records().clone();
-    let before = records.read(&checkout.id, ui::record::identity);
-    assert_eq!(before, Some(Some(checkout.clone())));
     let binding = shell::shell::state::LocalAppRecord {
         room,
         app_id: "so.tilo.terminal".into(),
@@ -2177,11 +2144,6 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
             .window_groups
             .iter()
             .any(|group| group.id == h.groups[0])
-    );
-    assert_eq!(
-        records.read(&checkout.id, ui::record::identity),
-        before,
-        "closing a window keeps its old record handle alive"
     );
     h.lay_out();
     if other_workspace {
@@ -2236,11 +2198,6 @@ fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
         matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.terminal")
     );
     assert_eq!(tree.local_app_records.get(&tab), Some(&binding));
-    assert_eq!(
-        records.read(&checkout.id, ui::record::identity),
-        before,
-        "restore reuses the existing record rather than creating a default"
-    );
 }
 
 /// Motion follows the input. A chord or an action is a known result asked

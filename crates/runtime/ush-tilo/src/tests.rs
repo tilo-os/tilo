@@ -11,10 +11,12 @@ use ush_shell::{Input, Shell};
 
 use super::*;
 
-/// An environment that grants `dir` and records every action asked of it.
+/// An environment that grants `dir`, records every action asked of it, and
+/// keeps content in memory.
 struct Granting {
     grants: Vec<CapOverride>,
     acted: Mutex<Vec<(FileAction, Option<Run>)>>,
+    kept: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
 impl Granting {
@@ -22,7 +24,12 @@ impl Granting {
         Arc::new(Self {
             grants: vec![dir_grant(dir, true).unwrap()],
             acted: Mutex::new(Vec::new()),
+            kept: Arc::default(),
         })
+    }
+
+    fn kept(&self, hash: &str) -> Option<Vec<u8>> {
+        self.kept.lock().unwrap().get(hash).cloned()
     }
 
     fn acted(&self) -> Vec<(FileAction, Option<Run>)> {
@@ -42,6 +49,37 @@ impl Environment for Granting {
             entry: Some("entry".into()),
             operations: 1,
         })
+    }
+
+    fn keep(&self) -> io::Result<Box<dyn Keeping>> {
+        Ok(Box::new(Keeper {
+            bytes: Vec::new(),
+            kept: Arc::clone(&self.kept),
+        }))
+    }
+}
+
+struct Keeper {
+    bytes: Vec<u8>,
+    kept: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+}
+
+impl Write for Keeper {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Keeping for Keeper {
+    fn finish(self: Box<Self>) -> io::Result<Kept> {
+        let hash = blake3::hash(&self.bytes).to_hex().to_string();
+        self.kept.lock().unwrap().insert(hash.clone(), self.bytes);
+        Ok(Kept { hash, hold: None })
     }
 }
 
@@ -178,6 +216,7 @@ fn a_redirect_is_the_environments_write_in_the_command_lines_run() {
                 FileAction::Append(AppendFileOp {
                     files: vec![granted.join("a.txt")],
                     text: "more\n".into(),
+                    content: None,
                 }),
                 Some(line),
             ),
@@ -205,6 +244,65 @@ fn a_redirect_is_the_environments_write_in_the_command_lines_run() {
         environment.acted().last(),
         Some((FileAction::Write(op), None)) if op.no_clobber
     ));
+}
+
+/// Past what an action carries inside it, a redirect, `tee` and `sort -o`
+/// stream what they write into the content store, and are still one action
+/// each, naming it by reference.
+#[test]
+fn a_write_of_any_size_is_one_action_naming_its_content() {
+    let (_tmp, granted, _) = fixture();
+    let line = "0123456789abcdef".repeat(8);
+    let lines = 2 * MAX_TEXT_BYTES / line.len();
+    let big = format!("{line}\n").repeat(lines);
+    std::fs::write(granted.join("big.txt"), &big).unwrap();
+    let environment = Granting::new(&granted);
+    let (mut sh, out, err) = shell(Arc::clone(&environment), &granted);
+    let ran = run(
+        &mut sh,
+        &out,
+        &err,
+        "cat big.txt > copy.txt; cat big.txt >> log.txt; cat big.txt | tee teed.txt > /dev/null; \
+         sort -o sorted.txt big.txt; printf '\\377\\376' >> bin.dat",
+    );
+    assert_eq!(ran.status, 0, "{}", ran.err);
+    let acted = environment.acted();
+    let named = |name: &str| {
+        acted
+            .iter()
+            .filter(|(action, _)| action.writes() == [granted.join(name)])
+            .map(|(action, _)| action.clone())
+            .collect::<Vec<_>>()
+    };
+    for (name, want) in [
+        ("copy.txt", big.clone()),
+        ("teed.txt", big.clone()),
+        ("sorted.txt", big.clone()),
+    ] {
+        let actions = named(name);
+        assert_eq!(actions.len(), 1, "{name}: one action, {actions:?}");
+        let FileAction::Write(op) = &actions[0] else {
+            panic!("{name}: {:?}", actions[0]);
+        };
+        assert!(op.text.is_empty(), "{name}: nothing inline");
+        let hash = op.content.as_deref().expect("by reference");
+        assert_eq!(environment.kept(hash).unwrap(), want.as_bytes(), "{name}");
+        actions[0].admit(&environment.grants, None).unwrap();
+    }
+    let appended = named("log.txt");
+    assert!(matches!(
+        appended.as_slice(),
+        [FileAction::Append(op)] if op.text.is_empty()
+            && environment.kept(op.content.as_deref().unwrap()).unwrap() == big.as_bytes()
+    ));
+    let binary = named("bin.dat");
+    assert!(
+        matches!(
+            binary.as_slice(),
+            [FileAction::Append(op)] if environment.kept(op.content.as_deref().unwrap()).unwrap() == [0xff, 0xfe]
+        ),
+        "bytes that are not text are appended by reference: {binary:?}"
+    );
 }
 
 #[test]

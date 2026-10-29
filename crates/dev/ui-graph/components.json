@@ -1,5 +1,5 @@
 {
-  "format": 2,
+  "format": 3,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -164,6 +164,13 @@
               }
             }
           }
+        },
+        {
+          "name": "actions",
+          "doc": "Actions offered on something (`actions(r)`), each a command after `items`.",
+          "type": {
+            "list": "action"
+          }
         }
       ],
       "slots": [
@@ -282,6 +289,163 @@
       "semantics": {
         "role": "TextInput",
         "label": "placeholder"
+      }
+    },
+    {
+      "name": "RichInput",
+      "doc": "A field to type rich text into, bound to the rich text it edits: each reference a completion picks is written as a reference, which every reader sees as their own inline view of what it names.",
+      "props": [
+        {
+          "name": "placeholder",
+          "doc": "What to type, shown while it is empty.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "enabled",
+          "doc": "Whether it can be typed into now.",
+          "type": "bool"
+        },
+        {
+          "name": "speakers",
+          "doc": "Who spoke last in what it writes into, newest first: whom its `@` drawer offers first, under \"In this conversation\". The system gives it to every rich input.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "people",
+          "doc": "Who can read what it writes into: whom its `@` drawer offers, under \"Members\". The system gives it to every rich input; given no one, the drawer offers the room's roster.",
+          "type": {
+            "list": "principal"
+          }
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The rich text it edits.",
+          "type": "rich_text",
+          "merge": "rich"
+        }
+      ],
+      "semantics": {
+        "role": "TextInput",
+        "label": "placeholder"
+      }
+    },
+    {
+      "name": "Reactions",
+      "doc": "The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one adds or takes back your reaction, and the add button opens the emoji picker for another. Each reports the emoji (`on toggle(e)`).",
+      "props": [
+        {
+          "name": "reactions",
+          "doc": "Who reacted, by emoji: the reactions as the message holds them (`Map<Text, Set<Principal>>`).",
+          "type": {
+            "map": {
+              "key": "text",
+              "value": {
+                "set": "principal"
+              }
+            }
+          }
+        },
+        {
+          "name": "emoji",
+          "doc": "The emoji reacted with, in the order they were first used: the older form, with `by`, read while `reactions` is not given.",
+          "type": {
+            "list": "text"
+          },
+          "positional": true
+        },
+        {
+          "name": "by",
+          "doc": "Who reacted with each of `emoji`, in the same order.",
+          "type": {
+            "list": {
+              "list": "principal"
+            }
+          }
+        },
+        {
+          "name": "can_react",
+          "doc": "Whether the person may react; they may unless it says not.",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "toggle",
+          "doc": "An emoji was pressed or picked: carries it. Your reaction with it is added, or taken back when you had reacted with it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar"
+      }
+    },
+    {
+      "name": "EmojiPicker",
+      "doc": "A button that opens the emoji picker beside it; the emoji picked is reported (`on pick(e)`).",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the button is called; \"Add reaction\" unless it says.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "pick",
+          "doc": "An emoji was picked: carries it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "Quote",
+      "doc": "A message quoted where another answers it, or in the reply banner over the composer: a rule at its leading edge, who wrote it and the start of what it says. With `dismiss` it has a close button (the banner: \"stop replying\").",
+      "props": [
+        {
+          "name": "excerpt",
+          "doc": "The start of what the quoted message says.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "author",
+          "doc": "Who wrote it.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "caption",
+          "doc": "What the quote is to the message (`Replying to`), shown before the author.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "dismiss",
+          "doc": "The close button was pressed. Without it there is no close button."
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "excerpt"
       }
     },
     {
@@ -1204,7 +1368,7 @@
     },
     {
       "name": "ContextMenu",
-      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. Its commands come first, as the view placed them; the system adds what the item offers that the view did not place, a typing field to filter them, and asks before a destructive one.",
+      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. Its commands come first, as the view placed them; the system adds what the item offers that the view did not place and a typing field to filter them. A destructive command runs at once and is undone afterwards, never confirmed first.",
       "slots": [
         {
           "name": "items",

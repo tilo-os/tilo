@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 # The greeter as the boot's sign-in screen (docs/security/sign-in.md §3.4).
 # tilo-boot-signin starts it in boot mode on the display and input devices it
-# opens for it; without it, the sign-in asks through Plymouth or the console
-# as before. This module carries the greeter's boot build and what it needs
+# opens for it; without it, the sign-in asks on the console through systemd's
+# password agents. This module carries the greeter's boot build and what it needs
 # to draw, read keyboards and touch, and speak: its faces, the keymaps,
 # libinput's device quirks, espeak-ng with the voices the screen reader
 # offers, and ALSA with the sound drivers that need no large firmware.

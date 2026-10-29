@@ -4,7 +4,7 @@
 //! It is drawn on media: it reads the letterbox's colours, never a window
 //! surface, so it looks the same in every theme.
 
-use super::{Affine, Icon, PlayerApp, Rect, Scene, TextRenderer, Theme, fill_rect};
+use super::{Affine, Icon, PlayerState, Rect, Scene, TextRenderer, Theme, fill_rect};
 use ui::paint::PaintCtx;
 use ui::vello::kurbo::Point;
 use ui::widget::{EmptyState, EmptyStateContent};
@@ -26,7 +26,7 @@ enum MediaStatus<'a> {
     Failed(&'a str),
 }
 
-impl PlayerApp {
+impl PlayerState {
     fn media_status(&self) -> Option<MediaStatus<'_>> {
         if (!self.shot_loading && self.player.latest_frame().is_some())
             || self.rect.height() < 180.0

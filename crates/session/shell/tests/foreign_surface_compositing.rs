@@ -316,7 +316,6 @@ fn foreign_buffers_are_composited_once_into_visible_tabs_only() {
                 "the tab it was adopted beside is now in the background"
             );
         }
-        create_fixture_tab_records(&fb);
         fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
         settle(&mut fb);
 
@@ -370,7 +369,6 @@ fn last_window_close_keeps_every_produced_frame_nonblack() {
     );
     let workspace = tree.desktop.active;
     let mut fb = FrameBuilder::with_tree(tree, (W, H));
-    create_fixture_tab_records(&fb);
     settle(&mut fb);
     let rect = tile_rect(&mut fb, surface_id);
     let pixels = solid(
@@ -537,36 +535,6 @@ fn solid(width: u32, height: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
     out
 }
 
-/// These tests mint the rendered tabs directly, so they also own creating
-/// their documents. Presentation only opens existing records; it must never
-/// infer permission to create one from an absent document.
-fn create_fixture_tab_records(fb: &FrameBuilder) {
-    let (records, tabs) = {
-        let chrome = fb.chrome();
-        let rendered = chrome.tree();
-        let tabs = rendered
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect::<Vec<_>>();
-        (chrome.records().clone(), tabs)
-    };
-    for tab in tabs {
-        let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
-        shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
-            .expect("the fixture must create each rendered tab's document");
-        assert_eq!(
-            records.read(&checkout.id, ui::record::identity),
-            Some(Some(checkout)),
-            "the rendered tab must have its own existing document before painting"
-        );
-    }
-}
-
 /// A `FrameBuilder` whose tree carries the foreign tab, adopted the way the
 /// compositor adopts a new toplevel.
 fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> FrameBuilder {
@@ -600,7 +568,6 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> FrameBuilder {
         let (strip_id, group_id) = focus.expect("the tree must hold the adopted client's group");
         rendered.desktop.set_active_group(strip_id, group_id);
     }
-    create_fixture_tab_records(&fb);
     fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     fb
 }

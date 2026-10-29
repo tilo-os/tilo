@@ -575,13 +575,16 @@ impl ShellOverlayHost {
     /// Whether the input method serves an overlay's own field — the
     /// palette's, or a password prompt's — rather than the focused node's.
     pub fn overlay_owns_ime(&self) -> bool {
-        self.palette_visible || self.shell_prompt_up()
+        self.palette_visible || self.shell_prompt_up() || self.canvas_takes_keys()
     }
 
     /// The overlay field the input method serves ([`Self::overlay_owns_ime`]).
     pub fn overlay_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
         if self.palette_visible {
             return self.palette_ime_field();
+        }
+        if !self.shell_prompt_up() && self.canvas_takes_keys() {
+            return self.canvas_ime_field();
         }
         self.shell_prompt()
             .and_then(|prompt| ui::ime::ImeWindowState::from_widget(prompt))
@@ -590,6 +593,9 @@ impl ShellOverlayHost {
     pub(crate) fn overlay_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         if self.palette_visible {
             return self.palette_ime_edit_fingerprint(key);
+        }
+        if !self.shell_prompt_up() && self.canvas_takes_keys() {
+            return self.canvas_ime_edit_fingerprint(key);
         }
         self.shell_prompt()?.ime_edit_fingerprint(key)
     }

@@ -131,8 +131,16 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
-        self.track_pointer_buttons(&event);
-        self.track_acting_place(&event, window.scale_factor());
+        self.input.pointer.track_buttons(&event);
+        if self
+            .input
+            .pointer
+            .track_place(&event, window.scale_factor())
+        {
+            // The person acts again: what stood at their last control is
+            // done with.
+            self.dismiss_control_notice();
+        }
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
@@ -174,11 +182,17 @@ impl App {
             WindowEvent::KeyboardLayoutChanged(layout) => {
                 self.input.keyboard_layout.clone_from(layout)
             }
-            WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            WindowEvent::Focused(false) => {
+                self.input.keyboard_layout = None;
+                self.input.window_focused = false;
+            }
             // A window that takes the keyboard hands it to the app's entry
             // when nothing in it holds it: what is typed after it opens, or
             // is brought forward, reaches the app.
-            WindowEvent::Focused(true) => self.hand_keyboard_to_app(),
+            WindowEvent::Focused(true) => {
+                self.input.window_focused = true;
+                self.hand_keyboard_to_app();
+            }
             _ => {}
         }
         self.restore_physical_configuration();
@@ -717,16 +731,7 @@ impl App {
             if let (Some(act), Some(fid)) = (action, app.focused_node) {
                 let mut any = false;
                 for _ in 0..times {
-                    any |= app
-                        .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(
-                                &act,
-                                &[],
-                                &mut crate::widget::Edits::lend(doc),
-                                root,
-                            )
-                        })
-                        .unwrap_or(false);
+                    any |= app.perform_node_action(fid, &act).unwrap_or(false);
                 }
                 if any {
                     handled = true;
@@ -2573,7 +2578,7 @@ mod tests {
         );
         app.close_action_palette();
 
-        app.input.pressed_at = None;
+        app.input.pointer.pressed_at = None;
         let _ = app.surface_frame(&region, &mut Scene::new());
         app.open_action_palette();
         assert_ne!(

@@ -74,9 +74,9 @@ use ui::record::transfer::{self, Origin, Retirement, TransferError};
 use ui::record::{RecordCheckout, RecordId};
 
 use crate::shell::chrome_state::ChromeState;
+use crate::shell::continuation::{AppInstanceId, LaunchIntent};
 use crate::shell::document_import::HostedRooms;
 use crate::shell::i18n::{t, t_args};
-use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
 use crate::shell::portal_dialog::{
     PortalDialogQueue, WindowTransferChoice, WindowTransferDecision, WindowTransferRequest,
 };
@@ -534,7 +534,7 @@ fn instance_of(
 ) -> Option<u64> {
     tree.local_app_record(tab, room, tile_app).or_else(|| {
         let launch = LaunchIntent::app(app_id.to_owned()).ok()?;
-        crate::shell::personal_continuity_registry::global_registry()
+        crate::shell::continuation_registry::global_registry()
             .lock()
             .ok()?
             .record_instance_for_tab(room, AppInstanceId(tab), &launch)
@@ -734,7 +734,7 @@ fn plan(
     let inputs = data_home.and_then(|home| {
         let instance = instance_of(tree, tab, source.room, &tile_app, &app_id)?;
         let launch = LaunchIntent::app(app_id.clone()).ok()?;
-        let resume = crate::shell::personal_continuity_registry::global_registry()
+        let resume = crate::shell::continuation_registry::global_registry()
             .lock()
             .ok()?
             .continuation_for_tab(source.room, AppInstanceId(tab), &launch)
@@ -2266,7 +2266,7 @@ fn close_source(
 ) -> Option<Phase> {
     // The old tab's continuity binding names the same instance the new tab
     // now runs as; closing it must not take the new instance's reports with it.
-    if let Ok(mut registry) = crate::shell::personal_continuity_registry::global_registry().lock() {
+    if let Ok(mut registry) = crate::shell::continuation_registry::global_registry().lock() {
         registry.forget_local_binding(AppInstanceId(plan.tab));
     }
     match plan.surface {
@@ -2535,7 +2535,7 @@ fn redeliver(
             let resume = LaunchIntent::app(plan.app_id.clone())
                 .ok()
                 .and_then(|launch| {
-                    crate::shell::personal_continuity_registry::global_registry()
+                    crate::shell::continuation_registry::global_registry()
                         .lock()
                         .ok()?
                         .continuation_for_tab(plan.destination.room, AppInstanceId(tab), &launch)

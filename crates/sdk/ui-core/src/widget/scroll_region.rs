@@ -23,6 +23,23 @@ use super::scrollbar::{BarFade, PAGE_FRACTION, PressOutcome, ScrollMetrics, Scro
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 
+/// The offset along one axis that moves the least from `offset` to show
+/// `band` (content coordinates) in a viewport `view` long, kept in
+/// `0..=max`. Every painted list that reveals its armed row (a menu, a
+/// picker, a rail) scrolls by this, as [`ScrollRegion::scroll_into_view`]
+/// does.
+#[must_use]
+pub(crate) fn reveal_offset(offset: f64, view: f64, band: std::ops::Range<f64>, max: f64) -> f64 {
+    let target = if band.start < offset {
+        band.start
+    } else if band.end > offset + view {
+        band.end - view
+    } else {
+        offset
+    };
+    target.clamp(0.0, max.max(0.0))
+}
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct ScrollRegion {
@@ -368,18 +385,22 @@ impl ScrollRegion {
 
     /// Scroll the least that shows `rect` (in content coordinates).
     pub fn scroll_into_view(&mut self, rect: Rect) {
+        // Left to `scroll_by`'s clamp, which waits for both sizes.
         let shown = self.content_rect();
-        let mut target = self.offset;
-        if rect.y0 < target.y {
-            target.y = rect.y0;
-        } else if rect.y1 > target.y + shown.height() {
-            target.y = rect.y1 - shown.height();
-        }
-        if rect.x0 < target.x {
-            target.x = rect.x0;
-        } else if rect.x1 > target.x + shown.width() {
-            target.x = rect.x1 - shown.width();
-        }
+        let target = Vec2::new(
+            reveal_offset(
+                self.offset.x,
+                shown.width(),
+                rect.x0..rect.x1,
+                f64::INFINITY,
+            ),
+            reveal_offset(
+                self.offset.y,
+                shown.height(),
+                rect.y0..rect.y1,
+                f64::INFINITY,
+            ),
+        );
         self.scroll_by(target - self.offset);
     }
 

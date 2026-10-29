@@ -7,8 +7,10 @@
 //! switch that turns per-host egress filtering off. They are read through
 //! [`package_store::dev_env::dev_override`], which a shipped build closes.
 
-/// Names the runtime trusted-publisher list instead of the image's.
-pub const TRUSTED_PUBLISHERS_FILE_ENV: &str = "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE";
+/// Names the runtime trusted-publisher list instead of the image's: the
+/// developer session's publisher list, which the store also reads.
+pub const TRUSTED_PUBLISHERS_FILE_ENV: &str =
+    package_store::size_limit::DEVELOPER_PUBLISHERS_FILE_ENV;
 /// `off` downgrades a host-scoped network grant to unrestricted egress.
 pub const NET_GATE_ENV: &str = "TILO_LAUNCHER_NET_GATE";
 /// Names the `xdg-dbus-proxy` binary that filters an app's session bus.

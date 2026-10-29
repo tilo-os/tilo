@@ -34,18 +34,26 @@ pub const RECORDS_ENV: &str = "TILO_USH_RECORDS";
 /// member's own file area; unset, grants bind the machine's own paths.
 pub const GRANT_ROOT_ENV: &str = "TILO_USH_GRANT_ROOT";
 
+/// The workspace's folder, which every environment's `~` is: where the
+/// supervisor found it, handed to the sessions it starts. Unset, a store at
+/// its default place takes the workspace this device mounts
+/// ([`crate::images::synced_files`]), and a moved store (a test's) has none.
+pub const WORKSPACE_ENV: &str = "TILO_USH_WORKSPACE";
+
 /// The runtime's store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Store {
     root: PathBuf,
     records: PathBuf,
     grant_root: Option<PathBuf>,
+    workspace: Option<PathBuf>,
 }
 
 impl Store {
     /// The store at its default location, or wherever [`STORE_ENV`] and
     /// [`RECORDS_ENV`] point.
     pub fn discover() -> Self {
+        let moved = std::env::var_os(STORE_ENV).is_some();
         let mut store = if let Some(raw) = std::env::var_os(STORE_ENV) {
             Self::at(PathBuf::from(raw))
         } else {
@@ -57,6 +65,7 @@ impl Store {
                 root: data.join("ush"),
                 records: crate::records::terminal_data_home(&data),
                 grant_root: None,
+                workspace: None,
             }
         };
         if let Some(raw) = std::env::var_os(RECORDS_ENV) {
@@ -65,6 +74,11 @@ impl Store {
         store.grant_root = std::env::var_os(GRANT_ROOT_ENV)
             .map(PathBuf::from)
             .filter(|root| root.is_absolute());
+        store.workspace = match std::env::var_os(WORKSPACE_ENV) {
+            Some(raw) => Some(PathBuf::from(raw)).filter(|dir| dir.is_absolute()),
+            None if !moved => crate::images::synced_files(),
+            None => None,
+        };
         store
     }
 
@@ -75,7 +89,21 @@ impl Store {
             records: root.join("records"),
             root,
             grant_root: None,
+            workspace: None,
         }
+    }
+
+    /// This store, with `workspace` as the workspace's folder.
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: impl Into<PathBuf>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
+    }
+
+    /// The workspace's folder, which every environment's `~` is, when this
+    /// device has the workspace.
+    pub fn workspace(&self) -> Option<&Path> {
+        self.workspace.as_deref()
     }
 
     /// Where granted directories' contents are, when not at their own paths.
@@ -101,7 +129,9 @@ impl Store {
         self.environments_dir().join(record)
     }
 
-    /// An environment's persistent home.
+    /// Where an environment's home was kept before `~` was the workspace's
+    /// folder, and still is where a device has no workspace. What an older
+    /// environment keeps there stays, readable at this path.
     pub fn environment_home(&self, record: &str) -> PathBuf {
         self.environment_dir(record).join("home")
     }

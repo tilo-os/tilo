@@ -6,15 +6,16 @@
 //! into the context menu, the shared app-chooser palette, the resource
 //! catalogue and the listing.
 
-use super::{FileExplorerWidget, FileServices, layout_menu_widget};
+use super::{FileServices, FilesState, MenuChange, layout_menu_widget};
 use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
 use crate::open_with::{OpenWithCandidates, SharedOpenWithRoute};
-use crate::recent::RecentUse;
+use crate::recent::{RecentRecord, RecentUse};
 use std::path::{Path, PathBuf};
 use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
 use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::{AbsolutePath, Invoke};
 use ui::widget::command_palette::CommandEntry;
 use ui::widget::context_menu::MenuItem;
 use vello::kurbo::Point;
@@ -39,7 +40,7 @@ fn type_key(path: &Path) -> String {
     format!("{mime}|{ext}")
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     fn open_with_route(&self) -> Option<SharedOpenWithRoute> {
         match &self.services {
             FileServices::Legacy => crate::open_with::installed_route(),
@@ -205,8 +206,7 @@ impl FileExplorerWidget {
     /// "Other application…" for the full, searchable list.
     pub(super) fn open_open_with_submenu(&mut self, at: Point) {
         let Some(path) = self.open_with_subject() else {
-            self.submenu.close();
-            self.submenu_commands.clear();
+            self.menus.push(MenuChange::CloseSub);
             return;
         };
         let candidates = self.open_with_candidates(&path);
@@ -236,9 +236,8 @@ impl FileExplorerWidget {
             commands.push(Some(FileCommand::OpenWithOther));
         }
         menu.open_at([at.x as f32, at.y as f32]);
-        self.submenu = menu;
-        self.submenu_commands = commands;
-        layout_menu_widget(&mut self.submenu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Sub(menu, commands));
     }
 
     /// "Other application…": the shared searchable palette, listing every
@@ -573,7 +572,7 @@ fn append_open_with_chooser_actions(
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     fn retained_open_target_access(
         &self,
         path: &Path,
@@ -644,19 +643,40 @@ impl FileExplorerWidget {
             return;
         }
         let at = ui::time::unix_now_ms();
-        self.edit_recent(|recent| recent.note(path, last_use, at));
+        let shown = AbsolutePath::new(path).ok();
+        self.edit_recent(
+            |device| shown.map(|path| RecentRecord::NOTE.with((device, path, last_use, at))),
+            |recent| recent.note(path, last_use, at),
+        );
     }
 
     pub(super) fn recent_moved(&mut self, from: &Path, to: &Path) {
-        self.edit_recent(|recent| recent.moved(from, to));
+        let shown = AbsolutePath::new(from).ok().zip(AbsolutePath::new(to).ok());
+        self.edit_recent(
+            |device| shown.map(|(from, to)| RecentRecord::MOVED.with((device, from, to))),
+            |recent| recent.moved(from, to),
+        );
     }
 
-    /// Change the Recent list: this device's setting, where every window
-    /// sees it; a window no framework hosts keeps its own.
-    fn edit_recent(&mut self, change: impl FnOnce(&mut crate::recent::RecentFiles)) {
-        match &self.recent_setting {
-            Some(setting) => {
-                if let Err(error) = setting.update(change) {
+    /// The Recent lists record, where every window sees this device's list,
+    /// and this device's id.
+    fn recent_record(&self) -> Option<(&ui::framework::PersonRecord<RecentRecord>, &str)> {
+        self.recent_record.as_ref().zip(self.device.as_deref())
+    }
+
+    /// Change the Recent list: this device's in the record through
+    /// the action `edit` makes for the device, none for a relative path; a
+    /// window no framework hosts keeps its own and changes it with `change`.
+    fn edit_recent(
+        &mut self,
+        edit: impl FnOnce(String) -> Option<Invoke<RecentRecord>>,
+        change: impl FnOnce(&mut crate::recent::RecentFiles),
+    ) {
+        match self.recent_record() {
+            Some((record, device)) => {
+                if let Some(edit) = edit(device.to_owned())
+                    && let Err(error) = record.invoke(&edit)
+                {
                     tracing::warn!(%error, "could not save recent files");
                 }
             }
@@ -666,9 +686,10 @@ impl FileExplorerWidget {
 
     /// The Recent list as stored.
     pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
-        self.recent_setting
-            .as_ref()
-            .map_or_else(|| self.recent.clone(), ui::framework::Setting::get)
+        self.recent_record().map_or_else(
+            || self.recent.clone(),
+            |(record, device)| record.with(|recent| recent.on(device)),
+        )
     }
 
     /// The Recent listing: every remembered path that still exists, in
@@ -701,9 +722,13 @@ impl FileExplorerWidget {
     /// `FileCommand::ForgetRecent` — drop the item from Recent (the file is
     /// untouched).
     pub(super) fn apply_forget_recent(&mut self, path: &Path) -> bool {
-        self.edit_recent(|recent| {
-            recent.forget(path);
-        });
+        let shown = AbsolutePath::new(path).ok();
+        self.edit_recent(
+            |device| shown.map(|path| RecentRecord::FORGET.with((device, path))),
+            |recent| {
+                recent.forget(path);
+            },
+        );
         if self.is_recent_view() {
             self.refresh();
         }

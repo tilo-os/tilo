@@ -2,7 +2,7 @@
 //! Descriptors remain owned until Capture answers. Invocation ids are inert:
 //! the broker matches them to its exact retained peer/caller before each command.
 
-use super::FileExplorerWidget;
+use super::FilesState;
 use crate::i18n::t;
 use host_fs::RetainedObject;
 use std::cell::RefCell;
@@ -676,7 +676,7 @@ fn selected(path: &Path, retained: &RetainedObject) -> Result<SelectedDescriptor
     })
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     /// Where native Undo and Redo of recorded transfers wait for the host.
     pub(crate) fn native_undo_queue(&self) -> Rc<RefCell<Vec<UndoRequest>>> {
         Rc::clone(&self.local_clipboard.undo_queue)
@@ -1011,12 +1011,12 @@ impl FileExplorerWidget {
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod tests {
-    use super::super::{HostedFileServices, Ran, StartupInputs};
+    use super::super::{FileExplorerWidget, HostedFileServices, Ran, StartupInputs};
     use super::*;
     use crate::effects::FilesEffect;
 
     fn files(path: &Path) -> FileExplorerWidget {
-        let mut files = FileExplorerWidget::with_startup_inputs_and_services(
+        let files = FileExplorerWidget::with_startup_inputs_and_services(
             StartupInputs {
                 initial_dir: path.into(),
                 workspace_roots: vec![path.into()],
@@ -1026,16 +1026,17 @@ mod tests {
             },
             HostedFileServices::deferred_document_open(),
         );
-        files.navigate(path.into());
+        files.state().navigate(path.into());
         files
     }
 
-    fn request(files: &mut FileExplorerWidget, invocation: InvocationId) -> (u64, Command) {
+    fn request(files: &FileExplorerWidget, invocation: InvocationId) -> (u64, Command) {
         let CollabRequest::LocalFileClipboard {
             request_id,
             command,
             on_behalf_of,
         } = files
+            .state()
             .local_clipboard
             .take_request()
             .expect("pending native command")
@@ -1048,11 +1049,12 @@ mod tests {
     }
 
     fn reply(
-        files: &mut FileExplorerWidget,
+        files: &FileExplorerWidget,
         id: u64,
         result: Result<Reply, String>,
     ) -> Option<Result<Completion, String>> {
         files
+            .state()
             .local_clipboard
             .event(&CollabEvent::LocalFileClipboardResult {
                 request_id: id,
@@ -1072,37 +1074,42 @@ mod tests {
             std::process::id().to_string(),
         );
         env.set("TILO_USER_HOME", home.home());
-        let mut files = FileExplorerWidget::new();
-        assert!(matches!(files.services, super::super::FileServices::Legacy));
-        assert!(files.hosted_clipboard());
+        let files = FileExplorerWidget::new();
+        assert!(matches!(
+            files.state().services,
+            super::super::FileServices::Legacy
+        ));
+        assert!(files.state().hosted_clipboard());
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(matches!(
             files
+                .state()
                 .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
                 .unwrap(),
             Ran::Pending
         ));
-        let (id, command) = request(&mut files, invocation);
+        let (id, command) = request(&files, invocation);
         assert!(matches!(command, Command::Snapshot));
         assert!(matches!(
-            reply(&mut files, id, Ok(Reply::Snapshot { offer: None })),
+            reply(&files, id, Ok(Reply::Snapshot { offer: None })),
             Some(Ok(Completion::Snapshot(None)))
         ));
         drop(service);
         assert!(runtime_portal::service_fd("collab").is_none());
         assert!(
-            files.hosted_clipboard(),
+            files.state().hosted_clipboard(),
             "service loss must never select pathname fallback"
         );
         assert!(matches!(
             files
+                .state()
                 .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
                 .unwrap(),
             Ran::Pending
         ));
-        let (_, command) = request(&mut files, invocation);
+        let (_, command) = request(&files, invocation);
         assert!(matches!(command, Command::Snapshot));
-        assert!(files.clipboard.is_empty());
+        assert!(files.state().clipboard.is_empty());
     }
 
     #[test]
@@ -1112,30 +1119,33 @@ mod tests {
         let other = root.path().join("selected");
         std::fs::write(&target, b"row").unwrap();
         std::fs::write(&other, b"selection").unwrap();
-        let mut files = files(root.path());
-        files.select_entry(&other).unwrap();
+        let files = files(root.path());
+        files.state().select_entry(&other).unwrap();
         let entry = files
+            .state()
             .entries
             .iter()
             .find(|entry| entry.path == target)
-            .unwrap();
-        let row = FileExplorerWidget::entry_resource_id(entry);
+            .unwrap()
+            .clone();
+        let row = FilesState::entry_resource_id(&entry);
         let observed = entry.observed.unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(matches!(
             files
+                .state()
                 .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
                 .unwrap(),
             Ran::Pending
         ));
-        assert_eq!(files.selected_paths(), vec![other]);
+        assert_eq!(files.state().selected_paths(), vec![other]);
         let (
             _,
             Command::Capture {
                 sources,
                 destination,
             },
-        ) = request(&mut files, invocation)
+        ) = request(&files, invocation)
         else {
             panic!("row Copy must retain before publishing");
         };
@@ -1156,24 +1166,27 @@ mod tests {
         let other = root.path().join("selected");
         std::fs::write(&target, b"shown").unwrap();
         std::fs::write(&other, b"selection").unwrap();
-        let mut files = files(root.path());
-        files.select_entry(&other).unwrap();
+        let files = files(root.path());
+        files.state().select_entry(&other).unwrap();
         let entry = files
+            .state()
             .entries
             .iter()
             .find(|entry| entry.path == target)
-            .unwrap();
-        let row = FileExplorerWidget::entry_resource_id(entry);
+            .unwrap()
+            .clone();
+        let row = FilesState::entry_resource_id(&entry);
         std::fs::rename(&target, root.path().join("old")).unwrap();
         std::fs::write(&target, b"replacement").unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(
             files
+                .state()
                 .run_effect_for(FilesEffect::Copy { entry: row }, Some(invocation))
                 .is_err()
         );
-        assert_eq!(files.selected_paths(), vec![other]);
-        assert!(files.local_clipboard.take_request().is_none());
+        assert_eq!(files.state().selected_paths(), vec![other]);
+        assert!(files.state().local_clipboard.take_request().is_none());
         assert_eq!(std::fs::read(target).unwrap(), b"replacement");
     }
 
@@ -1189,11 +1202,12 @@ mod tests {
         for name in &names {
             std::fs::write(root.path().join(name), b"x").unwrap();
         }
-        let mut files = files(root.path());
-        files.run_effect(FilesEffect::SelectAll).unwrap();
+        let files = files(root.path());
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(matches!(
             files
+                .state()
                 .run_effect_for(FilesEffect::CopySelection, Some(invocation))
                 .unwrap(),
             Ran::Pending
@@ -1201,7 +1215,7 @@ mod tests {
         let mut tickets = Vec::new();
         let mut seen = 0;
         let publish_id = loop {
-            let (id, command) = request(&mut files, invocation);
+            let (id, command) = request(&files, invocation);
             match command {
                 Command::CaptureNamed { folder, entries } => {
                     assert_eq!(
@@ -1222,7 +1236,7 @@ mod tests {
                     tickets.push(ticket.clone());
                     assert!(
                         reply(
-                            &mut files,
+                            &files,
                             id,
                             Ok(Reply::CapturedNamed {
                                 ticket,
@@ -1249,7 +1263,7 @@ mod tests {
         };
         assert!(
             reply(
-                &mut files,
+                &files,
                 publish_id,
                 Ok(Reply::Published {
                     offer: offer.clone()
@@ -1257,10 +1271,10 @@ mod tests {
             )
             .is_none()
         );
-        let (release_id, command) = request(&mut files, invocation);
+        let (release_id, command) = request(&files, invocation);
         assert_eq!(command, Command::Release { tickets });
         assert_eq!(
-            reply(&mut files, release_id, Ok(Reply::Released)),
+            reply(&files, release_id, Ok(Reply::Released)),
             Some(Ok(Completion::Published(offer)))
         );
     }
@@ -1270,20 +1284,21 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("selected");
         std::fs::write(&target, b"original").unwrap();
-        let mut files = files(root.path());
-        files.run_effect(FilesEffect::SelectAll).unwrap();
-        let retained = files.shown_selection.objects[&target].1.clone().unwrap();
+        let files = files(root.path());
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
+        let retained = files.state().shown_selection.objects[&target]
+            .1
+            .clone()
+            .unwrap();
         let original = retained.observed();
         std::fs::rename(&target, root.path().join("old")).unwrap();
         std::fs::write(&target, b"replacement").unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
-        assert!(matches!(
-            files
-                .run_effect_for(FilesEffect::CopySelection, Some(invocation))
-                .unwrap(),
-            Ran::Pending
-        ));
-        let (capture_id, command) = request(&mut files, invocation);
+        let ran = files
+            .state()
+            .run_effect_for(FilesEffect::CopySelection, Some(invocation));
+        assert!(matches!(ran.unwrap(), Ran::Pending));
+        let (capture_id, command) = request(&files, invocation);
         let Command::Capture {
             sources,
             destination,
@@ -1301,18 +1316,18 @@ mod tests {
             host_fs::names::unix_path_bytes(&target).unwrap()
         );
         let destination = tempfile::tempdir().unwrap();
-        files.navigate(destination.path().into());
+        files.state().navigate(destination.path().into());
         assert_eq!(
             Arc::strong_count(&retained),
             2,
             "job holds the source after navigation"
         );
         let ticket = uuid::Uuid::new_v4().to_string();
-        assert!(reply(&mut files, capture_id + 1, Ok(Reply::Released)).is_none());
-        assert!(files.local_clipboard.busy());
+        assert!(reply(&files, capture_id + 1, Ok(Reply::Released)).is_none());
+        assert!(files.state().local_clipboard.busy());
         assert!(
             reply(
-                &mut files,
+                &files,
                 capture_id,
                 Ok(Reply::Captured {
                     sources: vec![ticket.clone()],
@@ -1326,7 +1341,7 @@ mod tests {
             1,
             "host capture acknowledgement releases the local loan"
         );
-        let (publish_id, command) = request(&mut files, invocation);
+        let (publish_id, command) = request(&files, invocation);
         assert_eq!(
             command,
             Command::Publish {
@@ -1341,7 +1356,7 @@ mod tests {
         };
         assert!(
             reply(
-                &mut files,
+                &files,
                 publish_id,
                 Ok(Reply::Published {
                     offer: offer.clone()
@@ -1349,7 +1364,7 @@ mod tests {
             )
             .is_none()
         );
-        let (release_id, command) = request(&mut files, invocation);
+        let (release_id, command) = request(&files, invocation);
         assert_eq!(
             command,
             Command::Release {
@@ -1357,12 +1372,12 @@ mod tests {
             }
         );
         assert_eq!(
-            reply(&mut files, release_id, Ok(Reply::Released)),
+            reply(&files, release_id, Ok(Reply::Released)),
             Some(Ok(Completion::Published(offer)))
         );
-        assert!(!files.local_clipboard.busy());
+        assert!(!files.state().local_clipboard.busy());
         assert!(
-            files.clipboard.is_empty(),
+            files.state().clipboard.is_empty(),
             "native publication never fills the legacy path clipboard"
         );
     }
@@ -1372,59 +1387,77 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("selected");
         std::fs::write(&target, b"shown").unwrap();
-        let mut files = files(root.path());
+        let files = files(root.path());
         std::fs::rename(&target, root.path().join("old")).unwrap();
         std::fs::write(&target, b"replacement").unwrap();
-        files.run_effect(FilesEffect::SelectAll).unwrap();
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
         assert!(
             files
+                .state()
                 .run_effect_for(FilesEffect::CopySelection, Some(invocation))
                 .is_err()
         );
-        assert!(files.local_clipboard.take_request().is_none());
-        files.run_effect(FilesEffect::ClearSelection).unwrap();
-        files.refresh();
-        files.run_effect(FilesEffect::SelectAll).unwrap();
-        assert!(files.run_effect(FilesEffect::CopySelection).is_err());
-        assert!(files.local_clipboard.take_request().is_none());
+        assert!(files.state().local_clipboard.take_request().is_none());
+        files
+            .state()
+            .run_effect(FilesEffect::ClearSelection)
+            .unwrap();
+        files.state().refresh();
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
+        assert!(
+            files
+                .state()
+                .run_effect(FilesEffect::CopySelection)
+                .is_err()
+        );
+        assert!(files.state().local_clipboard.take_request().is_none());
         assert!(matches!(
             files
+                .state()
                 .run_effect_for(FilesEffect::CutSelection, Some(invocation))
                 .unwrap(),
             Ran::Pending
         ));
-        let (id, _) = request(&mut files, invocation);
+        let (id, _) = request(&files, invocation);
         assert_eq!(
-            reply(&mut files, id, Err("source grant revoked".into())),
+            reply(&files, id, Err("source grant revoked".into())),
             Some(Err("source grant revoked".into()))
         );
-        assert!(files.clipboard.is_empty());
-        assert!(!files.local_clipboard.busy());
-        assert!(files.local_clipboard.take_request().is_none());
+        assert!(files.state().clipboard.is_empty());
+        assert!(!files.state().local_clipboard.busy());
+        assert!(files.state().local_clipboard.take_request().is_none());
     }
 
     #[test]
     fn native_copy_timeout_refuses_success_and_cannot_retarget_a_late_reply() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("selected"), b"shown").unwrap();
-        let mut files = files(root.path());
-        files.run_effect(FilesEffect::SelectAll).unwrap();
+        let files = files(root.path());
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
         let invocation = InvocationId(uuid::Uuid::new_v4());
         files
+            .state()
             .run_effect_for(FilesEffect::CopySelection, Some(invocation))
             .unwrap();
-        let (id, _) = request(&mut files, invocation);
-        assert!(files.local_clipboard.timeout(ui::time::now()).is_none());
+        let (id, _) = request(&files, invocation);
+        assert!(
+            files
+                .state()
+                .local_clipboard
+                .timeout(ui::time::now())
+                .is_none()
+        );
         assert!(matches!(
             files
+                .state()
                 .local_clipboard
                 .timeout(ui::time::now() + Duration::from_secs(21)),
             Some(Err(_))
         ));
         assert!(
             reply(
-                &mut files,
+                &files,
                 id,
                 Ok(Reply::Captured {
                     sources: vec![uuid::Uuid::new_v4().to_string()],
@@ -1433,25 +1466,26 @@ mod tests {
             )
             .is_none()
         );
-        assert!(!files.local_clipboard.busy());
-        assert!(files.local_clipboard.take_request().is_none());
+        assert!(!files.state().local_clipboard.busy());
+        assert!(files.state().local_clipboard.take_request().is_none());
     }
 
     #[test]
     fn native_publication_failure_releases_captured_tickets_before_answering() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("selected"), b"shown").unwrap();
-        let mut files = files(root.path());
-        files.run_effect(FilesEffect::SelectAll).unwrap();
+        let files = files(root.path());
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
         let invocation = InvocationId::new();
         files
+            .state()
             .run_effect_for(FilesEffect::CutSelection, Some(invocation))
             .unwrap();
-        let (capture, _) = request(&mut files, invocation);
+        let (capture, _) = request(&files, invocation);
         let ticket = uuid::Uuid::new_v4().to_string();
         assert!(
             reply(
-                &mut files,
+                &files,
                 capture,
                 Ok(Reply::Captured {
                     sources: vec![ticket.clone()],
@@ -1460,7 +1494,7 @@ mod tests {
             )
             .is_none()
         );
-        let (publish, command) = request(&mut files, invocation);
+        let (publish, command) = request(&files, invocation);
         assert_eq!(
             command,
             Command::Publish {
@@ -1470,13 +1504,13 @@ mod tests {
         );
         assert!(
             reply(
-                &mut files,
+                &files,
                 publish,
                 Err("Cut requires a current write grant".into())
             )
             .is_none()
         );
-        let (release, command) = request(&mut files, invocation);
+        let (release, command) = request(&files, invocation);
         assert_eq!(
             command,
             Command::Release {
@@ -1484,42 +1518,47 @@ mod tests {
             }
         );
         assert_eq!(
-            reply(&mut files, release, Ok(Reply::Released)),
+            reply(&files, release, Ok(Reply::Released)),
             Some(Err("Cut requires a current write grant".into()))
         );
-        assert!(files.clipboard.is_empty());
-        assert!(!files.local_clipboard.busy());
+        assert!(files.state().clipboard.is_empty());
+        assert!(!files.state().local_clipboard.busy());
     }
 
     #[test]
     fn native_clipboard_inspection_uses_its_current_caller_and_absence_never_falls_back() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("selected"), b"shown").unwrap();
-        let mut files = files(root.path());
+        let files = files(root.path());
         let invocation = InvocationId::new();
         assert!(matches!(
             files
+                .state()
                 .run_effect_for(FilesEffect::ClipboardStatus, Some(invocation))
                 .unwrap(),
             Ran::Pending
         ));
-        let (id, command) = request(&mut files, invocation);
+        let (id, command) = request(&files, invocation);
         assert_eq!(command, Command::Snapshot);
         assert_eq!(
-            reply(&mut files, id, Ok(Reply::Snapshot { offer: None })),
+            reply(&files, id, Ok(Reply::Snapshot { offer: None })),
             Some(Ok(Completion::Snapshot(None)))
         );
-        let super::super::FileServices::Hosted(services) = &mut files.services else {
-            panic!("host services")
-        };
-        services.local_clipboard = false;
-        files.run_effect(FilesEffect::SelectAll).unwrap();
+        {
+            let mut state = files.state();
+            let super::super::FileServices::Hosted(services) = &mut state.services else {
+                panic!("host services")
+            };
+            services.local_clipboard = false;
+        }
+        files.state().run_effect(FilesEffect::SelectAll).unwrap();
         assert!(
             files
+                .state()
                 .run_effect_for(FilesEffect::CopySelection, Some(invocation))
                 .is_err()
         );
-        assert!(files.local_clipboard.take_request().is_none());
-        assert!(files.clipboard.is_empty());
+        assert!(files.state().local_clipboard.take_request().is_none());
+        assert!(files.state().clipboard.is_empty());
     }
 }

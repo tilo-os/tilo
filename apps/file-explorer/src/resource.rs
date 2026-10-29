@@ -9,7 +9,7 @@
 //! hidden files) is the person's [`FilesPreferences`], which follow them to
 //! their other devices and are never seen by collaborators. The folder a
 //! window shows, its listing and selection are the window's own; its other
-//! work is effects on the live rows the surface publishes.
+//! work is effects on the live rows its view publishes.
 
 use std::rc::Rc;
 
@@ -17,10 +17,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, FileHistory, LiveRow, ResourceApp,
-    ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{EffectAnswer, Effected, FileHistory, LiveRow, Publishes, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{
@@ -31,7 +28,7 @@ use ui::widget::Element;
 
 use crate::effects::FilesEffect;
 use crate::file_ops::{Change, FileOp};
-use crate::files_app::{FileExplorerWidget, Ran};
+use crate::files_app::{FileExplorerWidget, FilesState, Ran};
 use crate::model::{SortBy, SortOrder, ViewMode};
 
 /// How many carried-out filesystem changes the document keeps, so recent
@@ -968,7 +965,7 @@ pub(crate) fn parse_sort_order(token: &str) -> SortOrder {
     }
 }
 
-/// Framework app: the files widget is the surface over [`FileExplorer`].
+/// Framework app: the files window is a view of [`FileExplorer`].
 pub struct FileExplorerShell;
 
 impl ResourceApp for FileExplorerShell {
@@ -996,9 +993,7 @@ impl ResourceApp for FileExplorerShell {
         let services = cx.take_lent::<crate::files_app::HostedFileServices>();
         #[cfg(feature = "samples")]
         if let Some(scene) = cx.fixture::<crate::scenarios::Scene>() {
-            let widget = FileExplorerWidget::for_scene(&scene);
-            cx.on_open(widget.opener());
-            return cx.surface(widget);
+            return files_view(cx, FileExplorerWidget::for_scene(&scene));
         }
         let widget = match (lent, services) {
             (Some(inputs), Some(services)) => {
@@ -1007,9 +1002,7 @@ impl ResourceApp for FileExplorerShell {
             (Some(inputs), None) => FileExplorerWidget::with_startup_inputs(inputs),
             (None, _) => FileExplorerWidget::new(),
         };
-        // A search hit, or an agent's `open`, shows the row it names.
-        cx.on_open(widget.opener());
-        cx.surface(widget)
+        files_view(cx, widget)
     }
 
     #[cfg(feature = "samples")]
@@ -1225,133 +1218,183 @@ fn carry_out_cloud(
     })
 }
 
-impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
-    fn present(&mut self, state: &Rc<FileExplorer>) {
-        self.present_places(&state.bookmarks());
-        self.follow_ops(&state.ops);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<FileExplorer>) {
-        if let Some(source) = cx.file_history() {
-            self.show_file_history_in(source);
-        }
-        if let Some(argument) = cx.launch_arguments().first() {
-            self.open_launch_argument(argument);
-        }
-        if cx.mode().is_live() && cx.launch_flag(crate::received_shares::STDIN_FLAG) {
-            match crate::received_shares::read_link(std::io::stdin()) {
-                Ok(link) => self.admit_received_share(link),
-                Err(error) => self.set_external_status(error),
-            }
-        }
-        // Each device carries out the filesystem changes queued for it, and
-        // records what it changed; a change asked for here runs under the
-        // invocation that asked, which completes once it settled.
-        let native = self.native_undo_queue();
-        let ops = cx.device().map(|device| {
-            let me = device.to_owned();
-            cx.outbox_awaited(
-                FileExplorer::paths().ops,
-                move |_, task: &FileTask| task.device == me,
-                move |entry, task, cx| {
-                    let Some((operation, redo)) =
-                        cx.live().with(|state| native_compensation(state, &task))
-                    else {
-                        let reverting = cx.live().with(|state| reverting_changes(state, &task))?;
-                        if matches!(
-                            task.op,
-                            FileOp::CloudImport { .. } | FileOp::ImportMounted { .. }
-                        ) {
-                            let consent = match consume_source(&task, entry) {
-                                Ok(consent) => consent,
-                                Err(reason) => {
-                                    return Ok(Effected::settled(&ui::tilo_resource::Settled::<
-                                        Vec<Change>,
-                                    >::Failed {
-                                        reason,
-                                        partial: vec![],
-                                    }));
-                                }
-                            };
-                            return Ok(cx.thread(
-                                move |progress| carry_out_source(&task, consent, progress),
-                                |(), answer, _| Ok(answer),
-                            ));
-                        }
-                        // An agent's change names the paths it writes before
-                        // writing them, so their versions record the agent,
-                        // for its person; the host takes who acted from its
-                        // own custody of the invocation.
-                        let attribution =
-                            cx.attribute_writes(task.op.written_paths(reverting.as_deref()));
-                        if runs_tracked(&task.op) || attribution.is_some() {
-                            // Copies and moves can take minutes: off the UI
-                            // thread, with progress and Cancel. So is a
-                            // change waiting for its attribution.
-                            let work = (task, reverting, attribution);
-                            return Ok(cx.thread(
-                                move |progress| carry_out_attributed(work, &progress),
-                                |(), answer, _| Ok(answer),
-                            ));
-                        }
-                        return Ok(carry_out(&task, reverting.as_deref()));
-                    };
-                    // The host acts for the invocation that asked for it.
-                    let invocation = cx
-                        .invocation()
-                        .ok_or("the clipboard host acts only for the change's own invocation")?;
-                    if native.borrow().len() >= 16 {
-                        return Err("clipboard compensation queue is full".into());
-                    }
-                    let expected = operation.clone();
-                    let reply = cx.reply_then(move |(), output, _| {
-                        if output
-                            .value
-                            .as_ref()
-                            .and_then(|value| value.get("operation"))
-                            .and_then(serde_json::Value::as_str)
-                            != Some(expected.as_str())
-                        {
-                            return Err(
-                                "clipboard Undo receipt differs from its current consequence"
-                                    .into(),
-                            );
-                        }
-                        let operation = expected.clone();
-                        Ok(Effected::settled(&Settled::Done(vec![if redo {
-                            Change::ClipboardTransfer { operation }
-                        } else {
-                            Change::ClipboardUndo { operation }
-                        }])))
-                    });
-                    native.borrow_mut().push(crate::files_app::UndoRequest {
-                        redo,
-                        invocation,
-                        operation,
-                        reply,
-                    });
-                    Ok(Effected::Pending)
-                },
-            )
+/// The files `window` shows, as a view of the resource: the state it
+/// shares with the view answers [`FilesEffect`]s and carries out this
+/// device's queued filesystem work, and publishes the listing's rows, the
+/// edits bound to them and what the explorer finds for the search.
+fn files_view(cx: &ViewCx<FileExplorer>, mut window: FileExplorerWidget) -> Element {
+    let state = window.shared();
+    // A search hit, or an agent's `open`, shows the row it names.
+    cx.on_open(state.borrow().opener());
+    attach_files(cx, &mut state.borrow_mut());
+    window.follow(cx.live().clone());
+    answer_effects(cx, &state);
+    {
+        // A capture stages its scenario on the window's next sync, once it
+        // is laid out.
+        let staged = Rc::clone(&state);
+        cx.on_stage(move |scenario| {
+            staged.borrow_mut().stage_on_next_sync(scenario);
         });
-        self.attach_framework(
-            cx.dispatcher(),
-            cx.settings::<FilesPreferences>(),
-            cx.settings::<crate::recent::RecentFiles>(),
-            cx.device().map(str::to_owned),
-            ops,
-        );
     }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
+    {
+        let bound = Rc::clone(&state);
+        cx.bind_declarations(move |_| bound.borrow().bound_declarations());
     }
+    let (rows, row, edits, entries, intents) = (
+        Rc::clone(&state),
+        Rc::clone(&state),
+        Rc::clone(&state),
+        Rc::clone(&state),
+        state,
+    );
+    cx.publishing(
+        Publishes::new()
+            // The listing's entries, remote accounts, nearby transfers and
+            // a failed listing's retry.
+            .live_rows(move || rows.borrow().published_live_rows())
+            .live_row(move |id| row.borrow().published_row(id).map(LiveRow::from_resource))
+            // Rename, move and trash the entry a row shows, through the
+            // queue.
+            .row_edits(move |row| edits.borrow().entry_declarations(row))
+            // The places, the mount's collaborative records and the remote
+            // file accounts: what the explorer holds, not the document.
+            .search_entries(move || entries.borrow().search_entries_shown())
+            // A document chosen here opens in its own app.
+            .host_intents(move || intents.borrow_mut().take_host_intent()),
+        Box::new(window),
+    )
+}
 
-    fn effect(
-        &mut self,
-        effect: FilesEffect,
-        cx: &mut EffectCx<FileExplorer, Self>,
-    ) -> EffectAnswer {
+/// Show what the launch named, and carry out this device's queued
+/// filesystem changes for `files`.
+fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
+    if let Some(source) = cx.file_history() {
+        files.show_file_history_in(source);
+    }
+    if let Some(argument) = cx.launch_arguments().first() {
+        files.open_launch_argument(argument);
+    }
+    if cx.mode().is_live() && cx.launch_flag(crate::received_shares::STDIN_FLAG) {
+        match crate::received_shares::read_link(std::io::stdin()) {
+            Ok(link) => files.admit_received_share(link),
+            Err(error) => files.set_external_status(error),
+        }
+    }
+    // Each device carries out the filesystem changes queued for it, and
+    // records what it changed; a change asked for here runs under the
+    // invocation that asked, which completes once it settled.
+    let native = files.native_undo_queue();
+    let ops = carry_out_queued(cx, native);
+    files.attach_framework(
+        cx.dispatcher(),
+        cx.settings::<FilesPreferences>(),
+        cx.person::<crate::recent::RecentRecord>(),
+        cx.device().map(str::to_owned),
+        ops,
+    );
+}
+
+/// The filesystem changes queued for this device, carried out here; a
+/// clipboard Undo or Redo goes to the clipboard host through `native`.
+fn carry_out_queued(
+    cx: &ViewCx<FileExplorer>,
+    native: Rc<std::cell::RefCell<Vec<crate::files_app::UndoRequest>>>,
+) -> Option<ui::framework::Projection> {
+    cx.device().map(|device| {
+        let me = device.to_owned();
+        cx.outbox_awaited(
+            FileExplorer::paths().ops,
+            move |_, task: &FileTask| task.device == me,
+            move |entry, task, cx| {
+                let Some((operation, redo)) =
+                    cx.live().with(|state| native_compensation(state, &task))
+                else {
+                    let reverting = cx.live().with(|state| reverting_changes(state, &task))?;
+                    if matches!(
+                        task.op,
+                        FileOp::CloudImport { .. } | FileOp::ImportMounted { .. }
+                    ) {
+                        let consent = match consume_source(&task, entry) {
+                            Ok(consent) => consent,
+                            Err(reason) => {
+                                return Ok(Effected::settled(&ui::tilo_resource::Settled::<
+                                    Vec<Change>,
+                                >::Failed {
+                                    reason,
+                                    partial: vec![],
+                                }));
+                            }
+                        };
+                        return Ok(cx.thread(
+                            move |progress| carry_out_source(&task, consent, progress),
+                            |(), answer, _| Ok(answer),
+                        ));
+                    }
+                    // An agent's change names the paths it writes before
+                    // writing them, so their versions record the agent,
+                    // for its person; the host takes who acted from its
+                    // own custody of the invocation.
+                    let attribution =
+                        cx.attribute_writes(task.op.written_paths(reverting.as_deref()));
+                    if runs_tracked(&task.op) || attribution.is_some() {
+                        // Copies and moves can take minutes: off the UI
+                        // thread, with progress and Cancel. So is a
+                        // change waiting for its attribution.
+                        let work = (task, reverting, attribution);
+                        return Ok(cx.thread(
+                            move |progress| carry_out_attributed(work, &progress),
+                            |(), answer, _| Ok(answer),
+                        ));
+                    }
+                    return Ok(carry_out(&task, reverting.as_deref()));
+                };
+                // The host acts for the invocation that asked for it.
+                let invocation = cx
+                    .invocation()
+                    .ok_or("the clipboard host acts only for the change's own invocation")?;
+                if native.borrow().len() >= 16 {
+                    return Err("clipboard compensation queue is full".into());
+                }
+                let expected = operation.clone();
+                let reply = cx.reply_then(move |(), output, _| {
+                    if output
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.get("operation"))
+                        .and_then(serde_json::Value::as_str)
+                        != Some(expected.as_str())
+                    {
+                        return Err(
+                            "clipboard Undo receipt differs from its current consequence".into(),
+                        );
+                    }
+                    let operation = expected.clone();
+                    Ok(Effected::settled(&Settled::Done(vec![if redo {
+                        Change::ClipboardTransfer { operation }
+                    } else {
+                        Change::ClipboardUndo { operation }
+                    }])))
+                });
+                native.borrow_mut().push(crate::files_app::UndoRequest {
+                    redo,
+                    invocation,
+                    operation,
+                    reply,
+                });
+                Ok(Effected::Pending)
+            },
+        )
+    })
+}
+
+/// Answer [`FilesEffect`]s from the shared `state`, and publish their
+/// availability as it says.
+fn answer_effects(cx: &ViewCx<FileExplorer>, state: &Rc<std::cell::RefCell<FilesState>>) {
+    let answer = Rc::clone(state);
+    let status = Rc::clone(state);
+    cx.effects(move |effect: FilesEffect, cx| -> EffectAnswer {
+        let mut files = answer.borrow_mut();
         // Cloud accounts and transfer state belong to the local person, not
         // to every collaborator allowed to edit the workspace's files.
         if host_person_only(&effect) && !ui::bound_dispatch::host_person_invocation_permitted() {
@@ -1360,97 +1403,109 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         // A handed-over file answers with its content, which the next step
         // takes by address.
         if let FilesEffect::HandOver { file } = &effect {
-            return Effected::content(&self.hand_over(file)?);
+            return Effected::content(&files.hand_over(file)?);
         }
         let recovery =
-            matches!(effect, FilesEffect::RecoverClipboardTransfers) && self.hosted_clipboard();
+            matches!(effect, FilesEffect::RecoverClipboardTransfers) && files.hosted_clipboard();
         let receipt = matches!(
             effect,
             FilesEffect::Paste { .. } | FilesEffect::Restore { .. }
-        ) && self.hosted_clipboard();
-        Ok(match self.run_effect_for(effect, cx.invocation())? {
+        ) && files.hosted_clipboard();
+        Ok(match files.run_effect_for(effect, cx.invocation())? {
             Ran::Done(Some(answer)) => Effected::value(answer),
             Ran::Done(None) => Effected::done(),
             Ran::Pending => {
-                self.await_effect(if recovery {
-                    cx.reply_then(|_, output, cx| {
-                        let value = output.value.ok_or("clipboard recovery receipt absent")?;
-                        let operations: Vec<String> = serde_json::from_value(
-                            value
-                                .get("operations")
-                                .ok_or("clipboard recovery operations absent")?
-                                .clone(),
-                        )
-                        .map_err(|error| error.to_string())?;
-                        // An Undo the host carried out before it could answer
-                        // (a restart, a killed process) is settled from its
-                        // durable receipt.
-                        let recovered: Vec<(Id, String)> = cx.live().with(|state| {
-                            state
-                                .ops
-                                .pending()
-                                .filter_map(|(id, task)| {
-                                    let (operation, redo) = native_compensation(state, task)?;
-                                    (!redo && operations.contains(&operation))
-                                        .then(|| (id.clone(), operation))
-                                })
-                                .collect()
-                        });
-                        for (id, operation) in recovered {
-                            cx.submit(FileExplorer::paths().ops.settle(
-                                &id,
-                                &Settled::Done(vec![Change::ClipboardUndo { operation }]),
-                            ));
-                        }
-                        if let Some(error) = value.get("error").and_then(serde_json::Value::as_str)
-                        {
-                            return Err(error.to_owned());
-                        }
-                        Ok(Effected::value(value))
-                    })
+                files.await_effect(if recovery {
+                    recovery_reply(cx)
                 } else if receipt {
-                    cx.reply_then(|files, output, cx| {
-                        let receipt: crate::files_app::ClipboardReceipt = serde_json::from_value(
-                            output.value.ok_or("clipboard host receipt absent")?,
-                        )
-                        .map_err(|error| error.to_string())?;
-                        if receipt.completed > 0 {
-                            files.follow_clipboard_receipt(&receipt);
-                            let device = files
-                                .clipboard_device()
-                                .ok_or("clipboard receiving device absent")?;
-                            cx.submit(if receipt.restore {
-                                FileExplorer::RECORD_RESTORE.with(file_explorer::RecordRestore {
-                                    device,
-                                    receipt: receipt.clone(),
-                                })
-                            } else {
-                                FileExplorer::RECORD_TRANSFER.with(file_explorer::RecordTransfer {
-                                    device,
-                                    receipt: receipt.clone(),
-                                })
-                            });
-                        }
-                        if let Some(error) = receipt.error {
-                            return Err(error);
-                        }
-                        Ok(Effected::done())
-                    })
+                    receipt_reply(cx, Rc::clone(&answer))
                 } else {
                     cx.reply()
                 });
                 Effected::Pending
             }
         })
-    }
+    })
+    .status(move || status.borrow().effect_statuses());
+}
 
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
+/// Settle the Undos the clipboard host carried out before it could
+/// answer, from its recovery receipt.
+fn recovery_reply(cx: &mut ui::framework::EffectCx<FileExplorer>) -> ui::framework::EffectReply {
+    cx.reply_then(|(), output, cx| {
+        let value = output.value.ok_or("clipboard recovery receipt absent")?;
+        let operations: Vec<String> = serde_json::from_value(
+            value
+                .get("operations")
+                .ok_or("clipboard recovery operations absent")?
+                .clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        // An Undo the host carried out before it could answer
+        // (a restart, a killed process) is settled from its
+        // durable receipt.
+        let recovered: Vec<(Id, String)> = cx.live().with(|state| {
+            state
+                .ops
+                .pending()
+                .filter_map(|(id, task)| {
+                    let (operation, redo) = native_compensation(state, task)?;
+                    (!redo && operations.contains(&operation)).then(|| (id.clone(), operation))
+                })
+                .collect()
+        });
+        for (id, operation) in recovered {
+            cx.submit(FileExplorer::paths().ops.settle(
+                &id,
+                &Settled::Done(vec![Change::ClipboardUndo { operation }]),
+            ));
+        }
+        if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+            return Err(error.to_owned());
+        }
+        Ok(Effected::value(value))
+    })
+}
 
+/// Record what the clipboard host transferred or restored, from its
+/// receipt.
+fn receipt_reply(
+    cx: &mut ui::framework::EffectCx<FileExplorer>,
+    state: Rc<std::cell::RefCell<FilesState>>,
+) -> ui::framework::EffectReply {
+    cx.reply_then(move |(), output, cx| {
+        let mut files = state.borrow_mut();
+        let receipt: crate::files_app::ClipboardReceipt =
+            serde_json::from_value(output.value.ok_or("clipboard host receipt absent")?)
+                .map_err(|error| error.to_string())?;
+        if receipt.completed > 0 {
+            files.follow_clipboard_receipt(&receipt);
+            let device = files
+                .clipboard_device()
+                .ok_or("clipboard receiving device absent")?;
+            cx.submit(if receipt.restore {
+                FileExplorer::RECORD_RESTORE.with(file_explorer::RecordRestore {
+                    device,
+                    receipt: receipt.clone(),
+                })
+            } else {
+                FileExplorer::RECORD_TRANSFER.with(file_explorer::RecordTransfer {
+                    device,
+                    receipt: receipt.clone(),
+                })
+            });
+        }
+        if let Some(error) = receipt.error {
+            return Err(error);
+        }
+        Ok(Effected::done())
+    })
+}
+
+impl FilesState {
     /// Pin the folder shown to the Favorites, or unpin it; rename or trash
     /// what the person selected; change the files of the folder shown.
-    fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
+    pub(crate) fn bound_declarations(&self) -> Vec<ActionDecl<FileExplorer>> {
         let mut declarations = Vec::new();
         if let Some(place) = self.current_place() {
             declarations.extend(if self.current_is_favourite() {
@@ -1469,29 +1524,6 @@ impl ResourceSurface<FileExplorer, FilesEffect> for FileExplorerWidget {
         declarations.extend(self.selection_declarations());
         declarations.extend(self.file_op_declarations());
         declarations
-    }
-
-    /// The listing's entries, remote accounts, nearby transfers and a
-    /// failed listing's retry.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.published_live_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.published_row(id).map(LiveRow::from_resource)
-    }
-
-    const ROW_DECLARATIONS: bool = true;
-
-    /// Rename, move and trash the entry a row shows, through the queue.
-    fn row_declarations(&self, row: &str) -> Vec<ActionDecl<FileExplorer>> {
-        self.entry_declarations(row)
-    }
-
-    /// The places, the mount's collaborative records and the remote file
-    /// accounts: what the explorer holds, not the document.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.search_entries_shown()
     }
 }
 

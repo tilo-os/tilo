@@ -134,6 +134,8 @@ impl WorkspaceTree {
         }
         let mut left = before;
         let strips = std::mem::take(&mut left.strips);
+        // The windows' canvas places go where the windows go.
+        let arrangement = std::mem::take(&mut left.arrangement);
         if let Some(target) = self
             .desktop
             .workspaces
@@ -143,6 +145,9 @@ impl WorkspaceTree {
             // The room has its workspace already: the slot's windows move
             // into it, and its id names that workspace from now on.
             target.strips.extend(strips);
+            for (group, place) in arrangement.places {
+                target.arrangement.places.entry(group).or_insert(place);
+            }
             let target = target.id;
             self.workspace_aliases.insert(left.id, room);
             if self.desktop.active == left.id {
@@ -154,6 +159,7 @@ impl WorkspaceTree {
             // its place, with its windows.
             let mut joined = Workspace::in_room(left.id, room, left.name.clone());
             joined.strips = strips;
+            joined.arrangement = arrangement;
             self.desktop.workspaces.insert(index, joined);
         }
         binding.joined.push((slot, placeholder, room));

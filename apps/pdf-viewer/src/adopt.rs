@@ -28,7 +28,8 @@ use ui::tilo_resource;
 use tilo_pdf::{AnnotationInfo, AnnotationKind, FieldKind, FormField, PageGeometry};
 
 use crate::model::{
-    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MarkupStyle, PtRect, Reply,
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MarkupStyle, PdfAnchor,
+    PtRect, Reply, Thread,
 };
 
 /// The most annotations one import takes over; a file beyond it keeps the
@@ -95,9 +96,9 @@ impl AdoptedEntry {
 /// What an import adds to the record.
 #[derive(Clone, Debug, Default)]
 pub struct ImportPlan {
-    /// Annotations in user space, each with the page occurrence it is on.
-    pub annotations: Vec<(Annotation, String)>,
-    pub comments: Vec<Comment>,
+    /// Annotations in user space, on the source pages they came from.
+    pub annotations: Vec<Annotation>,
+    pub comments: Vec<Thread>,
     pub form_values: Vec<(String, FormEntry)>,
     pub adopted: Vec<AdoptedEntry>,
 }
@@ -248,6 +249,7 @@ fn annotation_of(
     };
     Some(Annotation {
         id: imported_id(source_hash, page.page, info.index),
+        page_id: format!("source-{}", page.page + 1),
         page: page.page + 1,
         kind,
         color,
@@ -312,16 +314,23 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                     && !matches!(annotation.kind, AnnoKind::FreeText { .. }));
             if wants_thread {
                 threads.insert(info.index, plan.comments.len());
-                plan.comments.push(Comment {
+                let date = if annotation.created_ms > 0 {
+                    tilo_document::annotation::iso_time(annotation.created_ms)
+                } else {
+                    String::new()
+                };
+                plan.comments.push(Thread {
                     id: format!("{id}-c"),
-                    anno_id: Some(id.clone()),
                     page: annotation.page,
-                    author: info.author.clone(),
-                    body: info.contents.clone(),
-                    created: annotation.created_ms,
-                    resolved: false,
-                    replies: Vec::new(),
-                    blocks: Vec::new(),
+                    comment: Comment::new(
+                        PdfAnchor {
+                            page_id: page_id.clone(),
+                            annotation: id.clone(),
+                        },
+                        info.author.clone(),
+                        date,
+                        info.contents.clone(),
+                    ),
                 });
             }
             plan.adopted.push(AdoptedEntry {
@@ -333,7 +342,7 @@ pub fn plan_import<S: std::hash::BuildHasher>(
                 print: String::new(),
                 parent: None,
             });
-            plan.annotations.push((annotation, page_id.clone()));
+            plan.annotations.push(annotation);
         }
         // Replies, in page order, onto their parent's thread (a reply to a
         // reply joins the same thread).
@@ -359,30 +368,30 @@ pub fn plan_import<S: std::hash::BuildHasher>(
             } else {
                 let parent_page = page.page + 1;
                 threads.insert(root, plan.comments.len());
-                plan.comments.push(Comment {
+                plan.comments.push(Thread {
                     id: format!("{parent_id}-c"),
-                    anno_id: Some(parent_id.clone()),
                     page: parent_page,
-                    author: by_index
-                        .get(&root)
-                        .map(|a| a.author.clone())
-                        .unwrap_or_default(),
-                    body: String::new(),
-                    created: 0,
-                    resolved: false,
-                    replies: Vec::new(),
-                    blocks: Vec::new(),
+                    comment: Comment::new(
+                        PdfAnchor {
+                            page_id: page_id.clone(),
+                            annotation: parent_id.clone(),
+                        },
+                        by_index
+                            .get(&root)
+                            .map(|a| a.author.clone())
+                            .unwrap_or_default(),
+                        String::new(),
+                        String::new(),
+                    ),
                 });
                 plan.comments.len() - 1
             };
             let reply_id = imported_id(source_hash, page.page, info.index);
-            if let Some(c) = plan.comments.get_mut(comment) {
-                c.replies.push(Reply {
-                    id: reply_id.clone(),
-                    author: info.author.clone(),
-                    body: info.contents.clone(),
-                    blocks: Vec::new(),
-                });
+            if let Some(thread) = plan.comments.get_mut(comment) {
+                thread.comment.replies.push(
+                    tilo_resource::Id::from_raw(reply_id.clone()),
+                    Reply::new(info.author.clone(), String::new(), info.contents.clone()),
+                );
             }
             plan.adopted.push(AdoptedEntry {
                 id: reply_id,
@@ -399,12 +408,12 @@ pub fn plan_import<S: std::hash::BuildHasher>(
     let comments_by_anno: HashMap<&str, &Comment> = plan
         .comments
         .iter()
-        .filter_map(|c| Some((c.anno_id.as_deref()?, c)))
+        .filter_map(|thread| Some((thread.pinned()?, &thread.comment)))
         .collect();
     let prints: HashMap<String, String> = plan
         .annotations
         .iter()
-        .map(|(a, _)| {
+        .map(|a| {
             (
                 a.id.clone(),
                 thread_print(a, comments_by_anno.get(a.id.as_str()).copied()),
@@ -497,14 +506,14 @@ pub fn thread_print(a: &Annotation, thread: Option<&Comment>) -> String {
     s.push_str(&a.author);
     if let Some(c) = thread {
         s.push('|');
-        s.push_str(&c.body);
-        for r in &c.replies {
+        s.push_str(&c.text);
+        for (id, r) in c.replies.iter() {
             s.push('|');
-            s.push_str(&r.id);
+            s.push_str(id.as_str());
             s.push('\u{1f}');
             s.push_str(&r.author);
             s.push('\u{1f}');
-            s.push_str(&r.body);
+            s.push_str(&r.text);
         }
     }
     tilo_content::hash_bytes(s.as_bytes())

@@ -387,10 +387,10 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
             move |(_, selection)| panel(&editor, &detail_dispatcher, &actions, selection)
         },
     );
-    let app = crate::app::ContactsApp::new().with_accounts(editor, Box::new(pane));
-    // A picked search hit (or an agent's `open`) shows its contact.
-    cx.on_open_item(app.opener());
-    cx.surface(app)
+    crate::app::window(
+        cx,
+        crate::app::ContactsApp::new().with_accounts(editor, Box::new(pane)),
+    )
 }
 
 pub(crate) fn review_rows(editor: &Editor) -> Vec<LiveRow> {
@@ -709,7 +709,6 @@ mod tests {
     use crate::model::Contact;
     use crate::resource::ContactsShell;
     use tilo_contact_directory::routing::{SenderAccount, routes};
-    use ui::framework::ResourceSurface;
     use ui::framework::testing::TestApp;
 
     fn fixture() -> (TestApp<ContactsShell>, String, String) {
@@ -740,15 +739,24 @@ mod tests {
         .unwrap()
     }
 
+    /// The account review the window publishes.
+    fn review_row(
+        resources: &[ui::tilo_actions::ResourceSpec],
+    ) -> Option<ui::tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.kind == "contacts.account-review" {
+                Some(resource.clone())
+            } else {
+                review_row(&resource.children)
+            }
+        })
+    }
+
     fn confirm(app: &mut TestApp<ContactsShell>) -> Pending {
         let p = pending(app);
         app.settle();
         let row = format!("contacts.account-review:{}", p.token);
-        let published = app
-            .with_surface::<ContactsApp, _>(|surface| {
-                surface.live_row(&row).unwrap().into_resource()
-            })
-            .unwrap();
+        let published = review_row(&app.harness().resources()).unwrap();
         assert!(published.label.contains(&p.person));
         assert!(published.label.contains(&p.service));
         assert!(published.label.contains(&p.recipient));

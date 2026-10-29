@@ -2397,19 +2397,7 @@ impl App {
             else {
                 continue;
             };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let Some(history) = self.history.as_mut() else {
-                continue;
-            };
-            match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    history.pending_control_needs_confirmation(id);
-                }
-                Ok(_) => history.pending_control_consumed(id),
-                Err(error) => history.pending_control_refused(id, error.to_string()),
-            }
+            self.settle_history_control(prepared, confirmation.is_some());
         }
         self.service_embedded_history_commands(embedded);
     }
@@ -3112,7 +3100,7 @@ impl App {
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
         palette.open();
-        self.actions.palette_window = self.invoking_window_rect();
+        self.actions.palette_window = self.tree().invoking_window_rect();
         // Discovery reads the still-admitted current tree; clear its pointers
         // immediately before replacing the retained modal instance.
         self.bindings.clear();
@@ -3120,23 +3108,6 @@ impl App {
         self.focused_node = None;
         self.actions.action_palette = Some(Box::new(palette));
         self.rebuild_action_palette_admission();
-    }
-
-    /// The window the palette was asked for from, when this app lays several
-    /// out in its tree (the desktop's strip of app tiles). `None` for a
-    /// standalone app ([`crate::action_palette::invoking_window`]).
-    fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
-        crate::action_palette::invoking_window(
-            &self.layout.taffy,
-            self.layout.root_node,
-            self.input.pressed_at,
-            self.focused_node,
-            |node| {
-                self.inspect_node(node, crate::action_palette::tile_rect)
-                    .ok()
-                    .flatten()
-            },
-        )
     }
 
     /// Open search the way `request` asks: this app, or one part of it, with
@@ -3410,7 +3381,7 @@ impl App {
                 });
         }
         // Read before the tree it is found in is discarded.
-        let anchor = self.acting_control_rect();
+        let anchor = self.tree().acting_control_rect();
         self.open_action_palette();
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3436,7 +3407,7 @@ impl App {
     /// control they used: a click is never dropped with only a log line, and
     /// never opens search.
     pub(super) fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
-        let anchor = self.acting_control_rect();
+        let anchor = self.tree().acting_control_rect();
         self.refuse_at(error, anchor);
     }
 
@@ -3455,24 +3426,6 @@ impl App {
             .refusals
             .push((crate::bound_dispatch::refusal_reason(error), anchor));
         self.layout.layout_dirty = true;
-    }
-
-    /// The control the person acted on last, in window coordinates: under
-    /// their last press, else the one holding the keyboard.
-    fn acting_control_rect(&self) -> Option<vello::kurbo::Rect> {
-        crate::control_notice::acting_control(
-            &self.layout.taffy,
-            self.layout.root_node,
-            self.input.pressed_at,
-            self.focused_node,
-            |node| {
-                self.inspect_node(node, |widget| {
-                    Some((widget.get_rect(), widget.is_focusable()))
-                })
-                .ok()
-                .flatten()
-            },
-        )
     }
 
     /// Say why this pass's refused invocations did not run: the last one,
@@ -3506,6 +3459,7 @@ impl App {
 
     /// The person pressed or typed again: what stood at their last control
     /// is done with.
+    #[cfg(feature = "native")]
     pub(super) fn dismiss_control_notice(&mut self) {
         if self.actions.control_notice.take().is_some() {
             self.request_redraw_for_notice();
@@ -3559,6 +3513,7 @@ impl App {
     /// Open search on the app's action `address`, asking for its
     /// arguments: the session's search inside a session, the window's own
     /// outside one. Whether it opened.
+    #[cfg(feature = "native")]
     pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         let asked = crate::search::SearchRequest::asking(
             crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
@@ -4192,6 +4147,7 @@ impl crate::host_core::HostCore for App {
         crate::host_core::HostTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
+            history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
             taffy: &self.layout.taffy,
@@ -4199,6 +4155,8 @@ impl crate::host_core::HostCore for App {
             permissions: &self.permission_ctx,
             focused: self.focused_node,
             history_layout: self.history_layout,
+            root_node: self.layout.root_node,
+            pointer: &self.input.pointer,
         }
     }
 
@@ -4213,6 +4171,7 @@ impl crate::host_core::HostCore for App {
             crate::host_core::HostTree {
                 state: &self.state,
                 root: self.root_widget.as_ref(),
+                history: self.history.as_deref(),
                 bindings: &self.bindings,
                 node_map: &self.layout.node_map,
                 taffy: &self.layout.taffy,
@@ -4220,12 +4179,41 @@ impl crate::host_core::HostCore for App {
                 permissions: &self.permission_ctx,
                 focused: self.focused_node,
                 history_layout: self.history_layout,
+                root_node: self.layout.root_node,
+                pointer: &self.input.pointer,
             },
         )
     }
 
+    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
+        crate::host_core::HostDocument {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.layout.node_map,
+            permissions: &self.permission_ctx,
+            author: &self.collaboration.local_author,
+        }
+    }
+
+    fn widget_reached(&mut self) {
+        self.mark_semantic_tree_stale();
+    }
+
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
+    }
+
+    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
+        self.history.as_mut()
+    }
+
+    fn acting_for_mut(
+        &mut self,
+    ) -> &mut std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    > {
+        &mut self.actions.acting_for
     }
 
     fn dispatch_current_history_control(

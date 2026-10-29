@@ -3593,44 +3593,7 @@ impl PeerPublicationMut<'_> {
         Ok(messages)
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct GovernedIdentity {
-    pub(crate) device_cert: DeviceCert,
-    #[serde(default)]
-    pub(crate) revocations: Vec<tilo_user_identity::RevocationEntry>,
-    #[serde(default)]
-    pub(crate) admission: Option<RedemptionReceipt>,
-    #[serde(default)]
-    pub(crate) admissions: Vec<RedemptionReceipt>,
-    #[serde(default)]
-    pub(crate) workspace_delegations: Vec<crate::join::WorkspaceDelegation>,
-    /// Present when the device is a delegate of its person: an agent, or an
-    /// installed bot ([`delegates`]). Absent from every other identity's
-    /// bytes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) delegate: Option<GovernedDelegateRow>,
-}
-impl GovernedIdentity {
-    pub(crate) fn has_admission(&self) -> bool {
-        // The governor admits a bot device itself, so its installation is
-        // its admission; an agent row is not, which keeps other people's
-        // agents out.
-        self.admission.is_some()
-            || !self.admissions.is_empty()
-            || self
-                .delegate
-                .as_ref()
-                .is_some_and(|row| row.installation.is_some())
-    }
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct RedemptionReceipt {
-    pub(crate) invite_id: [u8; 32],
-    pub(crate) user_public_key: [u8; 32],
-    pub(crate) device_public_key: [u8; 32],
-    pub(crate) request_id: [u8; 32],
-    pub(crate) role: crate::join::MemberRole,
-}
+pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
 
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {
@@ -3972,8 +3935,12 @@ pub(crate) mod bot_members_tests;
 #[path = "state/administrators_tests.rs"]
 mod administrators_tests;
 #[cfg(test)]
+#[path = "state/admitting_tests.rs"]
+mod admitting_tests;
+#[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
+mod governed_rows;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]
 mod held_queue_tests;

@@ -290,7 +290,8 @@ pub struct MailState {
     /// coming, not an empty mailbox.
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
     /// The senders (lower-case addresses) whose remote images the person
-    /// allowed. Part of the person's Mail preferences, so it follows them.
+    /// allowed: the trusted senders record ([`crate::trusted_senders`]),
+    /// synced with the workspace.
     pub remote_senders: std::collections::BTreeSet<String>,
     /// The messages whose remote images the person loaded while this window
     /// is open: one message's, not its sender's.

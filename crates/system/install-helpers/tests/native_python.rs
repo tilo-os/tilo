@@ -70,7 +70,7 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
         )
         .env(
             "TILO_FIRSTBOOT_HOME_SEEDS_BINARY",
-            tilo_test_env::package_binary!("install-test-home-seeds"),
+            tilo_test_env::package_binary!("tilo-firstboot-home-seeds"),
         )
         .env(
             "TILO_FIRSTBOOT_FILES_BINARY",
@@ -110,7 +110,7 @@ fn prepared_binding() -> std::io::Result<()> {
 
 #[test]
 fn native_home_seeds() -> std::io::Result<()> {
-    let binary = tilo_test_env::package_binary!("install-test-home-seeds");
+    let binary = tilo_test_env::package_binary!("tilo-firstboot-home-seeds");
     suite(
         "os/tests/test_firstboot_home_seeds_native.py",
         &["--binary", binary.to_str().unwrap()],

@@ -45,6 +45,8 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod collab_outbound;
 pub(crate) mod collaborator_versions;
+pub mod continuation;
+pub mod continuation_registry;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
 pub mod crash_notice;
@@ -122,6 +124,8 @@ pub mod live_activities;
 pub(crate) mod live_embeds;
 pub mod live_presence;
 pub mod live_waves;
+#[cfg(test)]
+mod local_app_card_tests;
 pub(crate) mod local_audio_graph;
 mod local_person;
 pub mod magnifier;
@@ -152,8 +156,6 @@ pub mod peer_windows;
 pub mod pending_window;
 pub mod persist;
 pub(crate) mod person_quick_composer;
-pub mod personal_continuity;
-pub mod personal_continuity_registry;
 pub mod personal_tethering;
 pub mod personal_tethering_runtime;
 pub mod personal_workspaces;
@@ -161,7 +163,6 @@ pub mod physical_gamepad;
 pub mod placement;
 pub mod pointer_readiness;
 pub mod portal_dialog;
-mod power_menu;
 pub mod present;
 pub mod projection;
 mod projection_overlay;
@@ -203,7 +204,6 @@ pub mod storage_notice;
 pub mod system_sounds;
 pub(crate) mod system_update;
 pub mod tab_binding;
-pub mod tab_documents;
 pub mod test_control;
 #[cfg(unix)]
 pub mod test_control_socket;
@@ -531,14 +531,12 @@ fn try_to_ui_tile_for_tab(
                     }
                 }
             }
-            ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
+            ShellKind::Other(s)
+                if s.eq_ignore_ascii_case("Notes") || s.eq_ignore_ascii_case("Word") =>
+            {
                 return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
                     "in-process apps",
                 ));
-            }
-            #[cfg(feature = "in-process-apps")]
-            ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
-                UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
             }
             _ => UiTile::Stub {
                 kind: to_ui_kind(kind),
@@ -584,13 +582,12 @@ pub fn build_tilo_overlay_host_with_options(
 /// Extracted so `ShellOverlayHost::resync_strips_from_tree` can reach for
 /// the same conversion when splicing freshly-added groups into a live
 /// [`GroupRow`].
-pub fn to_ui_window_group(g: &state::WindowGroup, records: &ui::record::RecordStore) -> UiGroup {
-    to_ui_window_group_with_inputs(g, records, &hosted_inputs::HostedTileInputs::default())
+pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
+    to_ui_window_group_with_inputs(g, &hosted_inputs::HostedTileInputs::default())
 }
 
 pub fn to_ui_window_group_with_inputs(
     g: &state::WindowGroup,
-    records: &ui::record::RecordStore,
     inputs: &hosted_inputs::HostedTileInputs,
 ) -> UiGroup {
     let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
@@ -616,12 +613,7 @@ pub fn to_ui_window_group_with_inputs(
             )
         })
         .collect();
-    let mut group =
-        UiGroup::new(g.id, tabs_with_content, g.active_tab, g.width).with_maximized(g.maximized);
-    // Every tab gets its own document before it is ever synced, so no
-    // hosted app writes a keystroke into the shell's own state.
-    tab_documents::bind_group_records(&mut group, records);
-    group
+    UiGroup::new(g.id, tabs_with_content, g.active_tab, g.width).with_maximized(g.maximized)
 }
 
 /// Wires the hosted file explorer's document activation to
@@ -856,7 +848,6 @@ pub fn session_record_store() -> ui::record::RecordStore {
 /// session's record-creation refusals, and foreign-surface readiness.
 pub(crate) struct NativeTileResolver<'a> {
     pub inputs: &'a hosted_inputs::HostedTileInputs,
-    pub failures: &'a std::collections::BTreeMap<u64, String>,
 }
 
 impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
@@ -873,9 +864,6 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
             request.tab.id,
             self.inputs,
         ))
-    }
-    fn creation_refusal(&self, tab: &state::Tab) -> Option<String> {
-        self.failures.get(&tab.id).cloned()
     }
     fn tab_icon(&self, tab: &state::Tab) -> Option<ui::icons::AppImage> {
         crate::app_icons::for_tile(&tab.tile)
@@ -949,6 +937,26 @@ pub fn mount_in_process(
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
+        // Messages and Passwords borrow what only the session holds: the
+        // person's messaging accounts and their credential owner. They are
+        // drawn here in every session until those are served to the apps'
+        // own processes.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
+            messages::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |_| {},
+        ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
+            apps.borrow_mut().mount(
+                passwords::definition(),
+                &room,
+                tab,
+                ui::record::RecordId::room_default(),
+                |_| {},
+            )
+        }
         _ => mount_app(apps, kind, &room, tab, inputs)?,
     };
     Some(match mounted {
@@ -1010,25 +1018,17 @@ fn mount_app(
             ui::record::RecordId::room_default(),
             |_| {},
         ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
-            messages::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::room_default(),
-            |_| {},
-        ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
-            apps.borrow_mut().mount(
-                passwords::definition(),
-                &room,
-                tab,
-                ui::record::RecordId::room_default(),
-                |_| {},
-            )
-        }
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::for_tab(tab),
+            |_| {},
+        ),
+        // Every Word tab is a document of its own, on the tab's record.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Word") => apps.borrow_mut().mount(
+            word_processor::definition(),
             &room,
             tab,
             ui::record::RecordId::for_tab(tab),
@@ -1168,24 +1168,19 @@ pub(crate) fn install_component_wake(wake: crate::session_runtime::Wake) {
 /// rebuilds both together when the active workspace changes.
 pub fn build_workspace_root(
     tree: &WorkspaceTree,
-    records: &ui::record::RecordStore,
     chrome: &chrome_state::Chrome,
 ) -> (
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
 ) {
-    let failures = chrome.borrow().record_creation_errors(tree);
-    build_desktop_root(&tree.desktop, records, chrome, &failures)
+    build_desktop_root(&tree.desktop, chrome)
 }
 
-/// [`build_workspace_root`] for a desktop alone, with the tabs whose record
-/// could not be created already found: all a rebuild needs, so it never
-/// copies the tree's replication documents.
+/// [`build_workspace_root`] for a desktop alone: all a rebuild needs, so it
+/// never copies the tree's replication documents.
 pub(crate) fn build_desktop_root(
     desktop: &state::DesktopTree,
-    records: &ui::record::RecordStore,
     chrome: &chrome_state::Chrome,
-    failures: &std::collections::BTreeMap<u64, String>,
 ) -> (
     Box<dyn Widget>,
     std::collections::HashMap<state::StripId, *mut GroupRow>,
@@ -1194,22 +1189,13 @@ pub(crate) fn build_desktop_root(
     let state = chrome.borrow();
     let mut resolver = NativeTileResolver {
         inputs: &state.hosted_inputs,
-        failures,
     };
     work_accounting::surface_built();
     let mut surface = Box::new(tilo_desktop::composition::DesktopSurface::build(
         desktop,
-        records,
         &mut resolver,
         surface_chrome,
     ));
-    for id in surface.strip_ids() {
-        if let Some(row) = surface.row_mut(id) {
-            for group in &mut row.groups {
-                tab_documents::apply_creation_failures(group, failures);
-            }
-        }
-    }
     let rows = surface_row_ptrs(&mut surface);
     (surface, rows)
 }
@@ -1308,8 +1294,7 @@ fn build_overlay_host_from_chrome(
     enable_peer_sync: bool,
     fixture: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
-    let records = chrome.borrow().records().clone();
-    let (root, group_row_ptrs) = build_workspace_root(tree, &records, &chrome);
+    let (root, group_row_ptrs) = build_workspace_root(tree, &chrome);
     // The band under the top bar that sheets and prompts lay out under. With
     // padding off on the outer Container/Column the topbar lands at y=0, so
     // its bottom is exactly `TOPBAR_HEIGHT_PX`.

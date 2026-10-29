@@ -3231,6 +3231,8 @@ pub use autocomplete::{
 };
 pub mod mention_picker;
 pub use mention_picker::{MentionCandidate, MentionQuery};
+pub mod completion;
+pub(crate) mod completion_card;
 pub mod text_completion;
 pub use text_completion::{EmojiQuery, TextCompletion};
 mod number_input;
@@ -3333,6 +3335,10 @@ pub use attached::{
     Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,
     SwipeProps,
 };
+mod rich_input;
+pub use rich_input::{RichInput, RichInputProps};
+mod chat_parts;
+pub use chat_parts::{EmojiPickerButton, EmojiPickerProps, Quote, QuoteProps, ReactionsProps};
 pub use swipe_row::SwipeRow;
 mod pacer;
 pub use pacer::Pacer;
@@ -3358,9 +3364,9 @@ mod overflow_door;
 pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
-    STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, StripLane, TabDropTarget, WheelJumpAccum,
-    pan_within_canvas, wheel_jump_detents,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, GroupRow, GroupTopology,
+    HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX,
+    StripLane, TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
 mod strip_deck;

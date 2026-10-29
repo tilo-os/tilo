@@ -2482,6 +2482,21 @@ fn pump_floating_surface_service(
             &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
         );
     }
+    // A development session's test control activates controls of the
+    // focused window by their test ids: each window of the focused app is
+    // asked, and the focused one acts.
+    if let Some((app, test_ids)) = frame_builder.host_mut().take_test_activations() {
+        for connection in appearance.connections_of(&app) {
+            for test_id in &test_ids {
+                service.send(
+                    connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::ActivateTestId {
+                        test_id: test_id.clone(),
+                    },
+                );
+            }
+        }
+    }
     // What the person did with apps' slots in their windows' bars.
     for (connection, event) in frame_builder.host_mut().take_toolbar_outbox() {
         service.send(
@@ -4213,6 +4228,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // Construction work counted at the workspace's factories, and the
         // workspace whose content those factories last reconciled.
         if let Some(fields) = dump.as_object_mut() {
+            // The canvas as this device shows it: the lens, the caret, the
+            // selection, each window's place and rect, answers on their way.
+            fields.insert("canvas".into(), self.fb.host().canvas_state());
             fields.insert(
                 "workspace_work".into(),
                 serde_json::json!(crate::shell::work_accounting::snapshot()),
@@ -5289,6 +5307,9 @@ fn execute_planned_action(
                     *pressed,
                 )));
         }
+        PlannedAction::ActivateTestId { test_id } => {
+            fb.host_mut().queue_test_activation(test_id.clone());
+        }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -5447,12 +5468,12 @@ fn execute_locked_action(
         // make the lock screen bypassable by a socket client that renders
         // nothing; answering `ok` for an action that never ran would leave a
         // caller who cannot see the screen believing it did.
-        PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
-            Some(InvokeFailure {
-                code: "session_locked".into(),
-                message: test_control::SESSION_LOCKED.into(),
-            })
-        }
+        PlannedAction::Snapshot { .. }
+        | PlannedAction::InvokeAction { .. }
+        | PlannedAction::ActivateTestId { .. } => Some(InvokeFailure {
+            code: "session_locked".into(),
+            message: test_control::SESSION_LOCKED.into(),
+        }),
         // Pointer and modifier input is swallowed while locked.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
@@ -8083,10 +8104,7 @@ fn start_session_peer_sync(
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
             let net = Arc::new(
                 crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
-                    .map_err(|error| error.to_string())?
-                    .with_continuation_labels(Box::new(
-                        crate::shell::doc_open::DesktopContinuationLabels,
-                    )),
+                    .map_err(|error| error.to_string())?,
             );
             // Joining reads the enrolled rooms, this device's identities and
             // the community configuration, and redeems a boot invitation:

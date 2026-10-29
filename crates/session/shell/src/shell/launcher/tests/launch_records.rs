@@ -202,3 +202,56 @@ fn in_process_private_window_binding_is_single_use_and_exact() {
         None
     );
 }
+
+/// An instance a tilolang host runs is connected by the session for the
+/// launch of its window: its record carries that launch's creation record
+/// and ticket, so the broker records it as it records the launched app. A
+/// process that is no live launch of the app in the room gets no record,
+/// and each record is spent by its one connection.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_tilolang_instance_is_attested_as_its_windows_launch() {
+    let app = format!("so.tilo.lang.notes.{}", uuid::Uuid::new_v4());
+    let room = uuid::Uuid::new_v4().to_string();
+    let ours = std::process::id();
+    let mut window = LauncherStandIn::spawn();
+    register_trusted_window_launch(
+        window.pid(),
+        launch_identity(&app, &room),
+        Some(5),
+        Some(31),
+    );
+
+    assert!(
+        !register_tilolang_instance(window.pid(), "so.tilo.lang.chat", &room, 5),
+        "the launch is another app's"
+    );
+    assert!(
+        !register_tilolang_instance(window.pid(), &app, "other-room", 5),
+        "the launch is in another room"
+    );
+    assert!(register_tilolang_instance(window.pid(), &app, &room, 5));
+    let attested = authenticated_window_launch(ours, &app, &room, Some(5))
+        .expect("the session's connection for the instance");
+    assert_eq!(attested.continuation_instance, Some(5));
+    assert_eq!(
+        attested.launch_ticket,
+        Some(31),
+        "the window launch's ticket"
+    );
+    assert!(
+        authenticated_window_launch(ours, &app, &room, Some(5)).is_none(),
+        "spent by its connection"
+    );
+    assert!(
+        authenticated_window_launch(window.pid(), &app, &room, Some(5)).is_some(),
+        "the window's own record stays for its process"
+    );
+
+    window.stop();
+    unregister_launched_process(window.pid());
+    assert!(
+        !register_tilolang_instance(window.pid(), &app, &room, 5),
+        "an ended launch has no instances"
+    );
+}

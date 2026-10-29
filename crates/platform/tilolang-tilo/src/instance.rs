@@ -247,6 +247,8 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Principal, bool)>>,
     lenses_changed: bool,
+    /// The person and the room's policy the runtime's members were last read from.
+    members_from: Option<(String, tilo_action_policy::RoomPolicy)>,
     names_changed: bool,
     outgoing: Outgoing,
     in_flight: VecDeque<u64>,
@@ -301,6 +303,7 @@ impl Instance {
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
+            members_from: None,
             names_changed: false,
             outgoing: Rc::default(),
             in_flight: VecDeque::new(),
@@ -361,6 +364,11 @@ impl Instance {
     #[must_use]
     pub fn app(&self) -> &str {
         &self.app
+    }
+
+    /// Ask the window to come forward ("Show this window"), with the next frame it is sent.
+    pub fn activate_window(&mut self) {
+        self.out.push(ToUi::Activate);
     }
 
     /// The anchors search hits and agents asked the window to show, until it shows them.
@@ -957,6 +965,22 @@ impl Instance {
         self.out.extend(sent);
     }
 
+    /// The window shows what was typed into its bound control `key` of `lane` (the edit it
+    /// sent just applied): take it as what the window holds, so a later change from elsewhere
+    /// (the draft cleared once it was sent) differs from it and is sent.
+    fn shown_by_window(&mut self, lane: Lane, key: &str) {
+        let Some(value) = self
+            .view(lane)
+            .and_then(|view| view.borrow().bound_value(key))
+        else {
+            return;
+        };
+        let shown = plain(&NoNames).value(&value);
+        if let Some(view) = self.lane_mut(lane) {
+            view.bound.insert(key.to_owned(), shown);
+        }
+    }
+
     /// Bring the lenses the views read up to date with presence: who else is at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
     pub fn set_peers(&mut self, peers: HashMap<String, String>) {
@@ -1113,7 +1137,7 @@ impl Instance {
             match host.open_plan(&anchor) {
                 Ok(plan) => {
                     if let Some(target) = plan.target
-                        && (!target.path.is_empty() || plan.app != self.app)
+                        && (target.item.is_some() || plan.app != self.app)
                     {
                         // A search hit or an agent's `open`: no hand moved it, it lands at once.
                         self.open_detail(&target, None, Some(ui::Front::Action));
@@ -1272,8 +1296,27 @@ impl Instance {
                 at,
                 delete,
                 insert,
-            } => self.splice(lane, &key, seq, (at, delete), &insert),
-            ToApp::Edit { lane, key, text } => self.edit(lane, &key, Value::Text(text)),
+            } => {
+                let edited = self.splice(lane, &key, seq, (at, delete), &insert);
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
+            ToApp::Edit { lane, key, text } => {
+                let edited = self.edit(lane, &key, Value::Text(text));
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
+            ToApp::EditRich { lane, key, rich } => {
+                let edited = self.edit(lane, &key, Value::Rich(wire::runtime_rich(&rich)));
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
@@ -1599,7 +1642,8 @@ impl Instance {
         }
         // Who is at a resource shows wherever a view reads its lenses.
         let lenses = std::mem::take(&mut self.lenses_changed);
-        let changed = received || door || opened || settled || lenses || renamed;
+        let members = self.follow_members();
+        let changed = received || door || opened || settled || lenses || renamed || members;
         if changed {
             self.poll_views();
         }
@@ -1611,6 +1655,30 @@ impl Instance {
         }
         self.flush();
         changed
+    }
+
+    /// Give the runtime the workspace's members as the room's policy has them now, when it
+    /// changed: who is in it, their roles, and who reads what. Whether it did.
+    fn follow_members(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let standing = self.standing.borrow().as_ref().and_then(|source| source());
+        let Some(standing) = standing else {
+            return false;
+        };
+        let seen = self.members_from.as_ref().is_some_and(|(person, policy)| {
+            *person == standing.person && *policy == standing.policy
+        });
+        if seen {
+            return false;
+        }
+        host.runtime().set_members(
+            crate::members::members_of(&standing, &self.me),
+            Some(crate::members::reads_of(&standing, &self.me, &host)),
+        );
+        self.members_from = Some((standing.person, standing.policy));
+        true
     }
 
     /// Send the window the tree of `lane` again as patches, read anew.
@@ -2066,7 +2134,7 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
             return text;
         }
     }
-    if resource.path.is_empty() && meta.roots.contains(&ty.id) {
+    if resource.item.is_none() && meta.roots.contains(&ty.id) {
         return meta.title;
     }
     sentence(&ty.name)

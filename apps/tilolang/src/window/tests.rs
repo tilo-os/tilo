@@ -606,7 +606,7 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
 #[test]
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut room = Room::new("notes");
-    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 0);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 0);
     // An empty notebook offers its primary action and says one sentence.
     let empty = slot_of(&room.composed(), "overview")
         .into_iter()
@@ -617,7 +617,7 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
     assert_eq!(empty.props.get("action"), Some(&Value::text("New note")));
     room.header_action("New note");
     assert_eq!(
-        room.items_of("so.tilo.lang.notes", "notes"),
+        room.items_of("so.tilo.lang.notes", "items"),
         1,
         "the action inserted a note"
     );
@@ -635,9 +635,7 @@ fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_
 fn new_note_on_the_door() -> (String, String) {
     let descriptor = Room::surveyed()
         .into_iter()
-        .find(|d| {
-            d.resource_kind == "tl.so.tilo.lang.notes.Notebook" && d.action_label == "New note"
-        })
+        .find(|d| d.resource_kind == "tl.so.tilo.lang.notes.Notes" && d.action_label == "New note")
         .expect("the notebook publishes New note");
     (descriptor.address.resource, descriptor.address.action)
 }
@@ -649,7 +647,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     // An agent's task makes a note: the window stays where the person left it.
     room.applies_as(Some(task()), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 1);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 1);
     assert_eq!(
         room.window.detail_target(),
         None,
@@ -659,7 +657,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     let script = ActionInvoker::actor("ada".to_owned());
     room.applies_as(Some(script), &notebook, &new_note, &Json::Null)
         .unwrap();
-    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 2);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 2);
     assert_eq!(
         room.window.detail_target(),
         None,
@@ -667,7 +665,7 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
     );
     // The person pressing New note in the window opens what it made, whatever was made before.
     room.header_action("New note");
-    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), 3);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), 3);
     let opened = room
         .window
         .detail_target()
@@ -767,11 +765,11 @@ fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
 #[test]
 fn a_scenario_stages_exactly_its_data_however_many_frames_run() {
     let mut room = Room::seeded("notes");
-    let staged = room.items_of("so.tilo.lang.notes", "notes");
+    let staged = room.items_of("so.tilo.lang.notes", "items");
     for _ in 0..6 {
         room.settle();
     }
-    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), staged);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), staged);
     assert_eq!(room.rows().len(), staged);
     let records = tilolang_tilo::action::resource_ids(&room.doc, "so.tilo.lang.notes");
     assert_eq!(records.len(), 1, "one notebook");
@@ -807,10 +805,7 @@ fn the_published_tree_has_the_host_and_every_record() {
     let resources = Room::resources();
     let kinds: Vec<&str> = resources.iter().map(|r| r.kind.as_str()).collect();
     assert!(kinds.contains(&"tl.host"), "{kinds:?}");
-    assert!(
-        kinds.contains(&"tl.so.tilo.lang.notes.Notebook"),
-        "{kinds:?}"
-    );
+    assert!(kinds.contains(&"tl.so.tilo.lang.notes.Notes"), "{kinds:?}");
 }
 
 // ----- the door ----------------------------------------------------------------------------
@@ -1126,7 +1121,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         .instance
         .set_standing(Rc::new(move || Some(standing.clone())));
     let todos = room.items_of("so.tilo.lang.todo", "items");
-    let notes = room.items_of("so.tilo.lang.notes", "notes");
+    let notes = room.items_of("so.tilo.lang.notes", "items");
     let args = cleanup_args(&room);
     let waiting = room
         .agent_invokes(HOST, "run-flow", &args)
@@ -1161,7 +1156,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "the done ones went, once"
     );
     assert_eq!(
-        room.items_of("so.tilo.lang.notes", "notes"),
+        room.items_of("so.tilo.lang.notes", "items"),
         notes + 1,
         "and one note says so"
     );
@@ -1171,7 +1166,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     );
     room.settle();
     assert_eq!(room.items_of("so.tilo.lang.todo", "items"), todos - done);
-    assert_eq!(room.items_of("so.tilo.lang.notes", "notes"), notes + 1);
+    assert_eq!(room.items_of("so.tilo.lang.notes", "items"), notes + 1);
 }
 
 #[test]
@@ -1301,7 +1296,7 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
         "the list holds its scenario"
     );
     assert!(
-        room.items_of("so.tilo.lang.notes", "notes") >= 12,
+        room.items_of("so.tilo.lang.notes", "items") >= 12,
         "and the notebook its"
     );
 }
@@ -1911,10 +1906,23 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
     assert!(room.window.detail_target().is_some());
 
     crate::updates::hand_over(later_notes(|source| {
-        source.replace("tags: Set<Text>", "tags: Set<Int>").replace(
-            "action tag(n: Note, t: Text)",
-            "action tag(n: Note, t: Int)",
-        )
+        let source = source
+            .replace("tags: Set<Text>", "tags: Set<Int>")
+            .replace(
+                "action tag(n: Note, t: Text)",
+                "action tag(n: Note, t: Int)",
+            )
+            .replace(
+                "action untag(n: Note, t: Text)",
+                "action untag(n: Note, t: Int)",
+            )
+            .replace("ui.Chip(t)", "ui.Chip(\"{t}\")");
+        ["planning", "work", "q3"]
+            .iter()
+            .enumerate()
+            .fold(source, |source, (n, tag)| {
+                source.replace(&format!("tags.add(\"{tag}\")"), &format!("tags.add({n})"))
+            })
     }));
     room.settle();
 

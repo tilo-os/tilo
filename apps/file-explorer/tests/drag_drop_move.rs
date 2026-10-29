@@ -16,7 +16,8 @@ use vello::kurbo::Point;
 
 fn folder_center(h: &Harness, name: &str) -> Point {
     let (_p, rect) =
-        h.w.debug_folder_targets()
+        h.w.state()
+            .debug_folder_targets()
             .into_iter()
             .find(|(p, _)| p.file_name().is_some_and(|n| n == name))
             .unwrap_or_else(|| panic!("folder {name} is not a published drop target"));
@@ -32,7 +33,7 @@ fn drag_from_to(h: &mut Harness, source: Point, target: Point) {
     // drag-begin the app turns into a live drag.
     h.move_cursor(Point::new(source.x + 16.0, source.y));
     assert!(
-        h.w.debug_pin_dragging(),
+        h.w.state().debug_pin_dragging(),
         "the threshold-crossing move started a drag"
     );
     h.move_cursor(target);
@@ -83,7 +84,7 @@ fn dragging_a_multi_selection_moves_every_item() {
     let a_pt = row_center(d.path(), 1);
     let mut h = Harness::new(d.path());
     // Select both files, then drag one of them: the whole selection travels.
-    h.w.debug_select(&[1, 2]);
+    h.w.state().debug_select(&[1, 2]);
     h.layout();
     let dest_pt = folder_center(&h, "dest");
 
@@ -109,7 +110,8 @@ fn dropping_on_the_up_affordance_moves_to_the_parent() {
     let file_pt = row_center(&sub, 0);
     let mut h = Harness::new(&sub);
     let up =
-        h.w.debug_up_button_rect()
+        h.w.state()
+            .debug_up_button_rect()
             .expect("a subdirectory has an Up button");
 
     drag_from_to(&mut h, file_pt, up.center());

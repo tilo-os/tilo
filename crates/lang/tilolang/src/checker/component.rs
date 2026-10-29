@@ -199,6 +199,7 @@ impl Checker<'_> {
                 Type::Bool => vec![Ty::Bool],
                 Type::Int => vec![Ty::Int],
                 Type::Float => vec![Ty::Float],
+                Type::RichText => vec![Ty::RichText],
                 _ => Vec::new(),
             };
             if self.bind_typed(&node, value, &want).is_some() {
@@ -301,10 +302,45 @@ impl Checker<'_> {
                     }
                 }
             }
-            Type::List(_) => {
+            Type::List(_) | Type::Set(_) | Type::Map { .. } => {
                 let v = self.expr(value, None);
-                if fits(ty, &v.ty) || v.ty.is_error() {
+                if v.ty.is_error() {
+                    return;
+                }
+                if matches!(v.ty, Ty::Collection(_)) {
+                    // Not copied whole on every change, and not yet followed by the host
+                    // item by item: a view takes it live instead.
+                    let t = self.show(&v.ty);
+                    self.err(
+                        "E020",
+                        value.span,
+                        format!(
+                            "{}'s `{name}` is {}; found {t}, a collection, which a component's prop does not take: hand it to a view's `Collection<T>` parameter, which gets it live, or loop over it in a slot",
+                            shown(d),
+                            ty.show()
+                        ),
+                    );
+                } else if !fits(ty, &v.ty) {
+                    mismatch(self, &v.ty);
+                } else if offers_actions(ty) {
+                    // Each action is shown by the component and run by an event of its node.
+                    self.emit(host(Imp::UiActions, vec![node, Ex::str(name), v]));
+                } else {
                     self.arg_prop(node, name, v);
+                }
+            }
+            Type::Action => {
+                let v = self.expr(value, None);
+                if v.ty.is_error() {
+                    return;
+                }
+                if fits(ty, &v.ty) {
+                    let one = Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(v.ty.clone())));
+                    let tmp = self.fresh(one.ty.clone());
+                    self.emit(Stmt::Set(tmp, one));
+                    let list = Ex::local(tmp, Ty::List(Box::new(v.ty.clone())));
+                    self.emit(host(Imp::ListPushH, vec![list.clone(), v]));
+                    self.emit(host(Imp::UiActions, vec![node, Ex::str(name), list]));
                 } else {
                     mismatch(self, &v.ty);
                 }
@@ -772,6 +808,16 @@ fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
     passed
 }
 
+/// Whether values of `ty` hold actions offered to the person (`List<Action>`).
+fn offers_actions(ty: &Type) -> bool {
+    match ty {
+        Type::Action => true,
+        Type::Option(inner) | Type::List(inner) | Type::Set(inner) => offers_actions(inner),
+        Type::Map { value, .. } => offers_actions(value),
+        _ => false,
+    }
+}
+
 /// The language's type of a description's scalar type, for checking literals against it.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
@@ -783,7 +829,9 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Time => Ty::Time,
         Type::RichText => Ty::RichText,
         Type::Option(inner) => Ty::Option(Box::new(lang_type(inner))),
-        Type::List(inner) => Ty::List(Box::new(lang_type(inner))),
+        Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
+        Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
+        Type::Action => super::platform::host_ty("Action"),
         Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
     }
 }
@@ -793,7 +841,11 @@ fn lang_type(ty: &Type) -> Ty {
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
         (Type::Option(inner), found) => fits(inner, found),
-        (Type::List(inner), Ty::List(item)) => fits(inner, item),
+        // A list or a set takes either of the language's.
+        (Type::List(inner) | Type::Set(inner), Ty::List(item) | Ty::Set(item)) => fits(inner, item),
+        // The language's maps are keyed by text.
+        (Type::Map { key, value }, Ty::Map(held)) => **key == Type::Text && fits(value, held),
+        (Type::Action, Ty::Record(key)) => key.app == crate::host::HOST_APP && key.name == "Action",
         _ => matches!(
             (ty, found),
             (_, Ty::Error)

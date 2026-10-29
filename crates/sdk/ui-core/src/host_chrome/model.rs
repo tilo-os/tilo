@@ -13,10 +13,9 @@ use super::edit::EDIT_RESOURCE;
 use crate::i18n::I18nManager;
 use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
 use crate::search::request::SEARCH_RESOURCE;
-use crate::standalone_history_host::{HISTORY_RESOURCE, encode_entry};
+use crate::standalone_history_host::{HISTORY_RESOURCE, HISTORY_SESSION_KIND, encode_entry};
 use crate::widget::HistoryEntryId;
 
-const HISTORY_SESSION_KIND: &str = "tilo.host.history.session";
 /// How many recent changes a History menu lists.
 pub(crate) const RECENT_CHANGES: usize = 8;
 

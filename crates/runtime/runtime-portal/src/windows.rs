@@ -31,8 +31,22 @@ pub const OPEN_VERB: &[u8] = b"open";
 /// the shell and the apps are updated apart.
 pub const SERVES_VERB: &[u8] = b"serves";
 
+/// The verb of a window's patch connection, for a tilolang app whose instance a tilolang host
+/// runs (`crate::tilolang_host`): the window's instance, in decimal, with the connection. The
+/// window shows what the instance sends over it, and holds nothing of the app's data.
+pub const PATCH_VERB: &[u8] = b"patch";
+
 /// The largest request: a few numbers and flags.
 pub const MAX_MESSAGE: usize = 4096;
+
+/// What the shell sends on a door.
+#[derive(Debug)]
+pub enum Message {
+    /// A window request (encoded) and the connections it names.
+    Open(Vec<u8>, Vec<Descriptor>),
+    /// The patch connection of the window `instance`.
+    Patch(u64, Descriptor),
+}
 
 /// A descriptor the door carries, owned: the door itself, or a connection a
 /// window request hands over.
@@ -198,6 +212,70 @@ pub fn has_message(door: &Descriptor) -> io::Result<bool> {
             Ok((_, length)) => Ok(length > 0),
             Err(rustix::io::Errno::AGAIN) => Ok(false),
             Err(error) => Err(error.into()),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = door;
+        Err(unsupported())
+    }
+}
+
+/// Send the window `instance` its patch connection `patch` on `door`.
+///
+/// # Errors
+///
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_patch(door: &Descriptor, instance: u64, patch: &Descriptor) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let instance = instance.to_string();
+        crate::jobs::send(
+            door.as_fd(),
+            &[PATCH_VERB, instance.as_bytes()],
+            &[patch.as_fd()],
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (door, instance, patch);
+        Err(unsupported())
+    }
+}
+
+/// The next message on `door`; `None` at end of file, when the shell closed
+/// its end.
+///
+/// # Errors
+///
+/// The socket's error; a message that is neither a window request nor a
+/// patch connection with its one descriptor; [`io::ErrorKind::Unsupported`]
+/// off Linux.
+pub fn receive_message(door: &Descriptor) -> io::Result<Option<Message>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
+        let mut buffer = vec![0_u8; MAX_MESSAGE];
+        let Some((length, fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+            return Ok(None);
+        };
+        let message = buffer.get(..length).unwrap_or_default();
+        match crate::jobs::decode(message).as_slice() {
+            [verb, request] if *verb == OPEN_VERB => Ok(Some(Message::Open(request.to_vec(), fds))),
+            [verb, instance] if *verb == PATCH_VERB => {
+                let instance = std::str::from_utf8(instance)
+                    .ok()
+                    .and_then(|instance| instance.parse().ok())
+                    .ok_or_else(|| invalid("a patch connection names no window"))?;
+                let [patch] = <[Descriptor; 1]>::try_from(fds)
+                    .map_err(|_| invalid("a patch connection without its descriptor"))?;
+                Ok(Some(Message::Patch(instance, patch)))
+            }
+            _ => Err(invalid(
+                "the window door carried something other than a window request",
+            )),
         }
     }
     #[cfg(not(target_os = "linux"))]

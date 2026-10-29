@@ -487,6 +487,17 @@ fn compare(
     ]))
 }
 
+/// Whether the instant `at` (ISO-8601 UTC) is in the time `value` as a Time filter reads it at
+/// `clock` (`-14d`, `today`, `2026-10-01..`, `>2026-10-01`): what `grep(changed: -14d)` asks
+/// of a resource's last change.
+///
+/// # Errors
+/// `value` is no time a filter takes.
+pub fn time_holds(value: &str, at: &str, clock: &Clock) -> Result<bool, String> {
+    let pred = compare("at", value, &|text| span_of(text, false, clock))?;
+    pred.eval(&mut |_: &String| Ok::<Lit, String>(Lit::Time(at.to_owned())))
+}
+
 /// What a point of a filter's value stands for: its first value, its last, and whether the
 /// last is in it (a day of a Time filter ends before the next day starts).
 type Span = (Lit, Lit, bool);

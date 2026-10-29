@@ -250,6 +250,7 @@ fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
     let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
     meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
+    meta.at_event = at_event_fns(&a.ir, &a.env.app);
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
     let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
@@ -319,6 +320,20 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         default: f.default.clone(),
         role: f.role.clone(),
     }
+}
+
+/// The arguments the checker made functions of: the runtime runs them when an event fires.
+fn at_event_fns(ir: &crate::ir::Module, app: &str) -> Vec<FnMeta> {
+    ir.at_event
+        .iter()
+        .map(|a| FnMeta {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            doc: String::new(),
+            params: params_meta(&a.params, app),
+            result: a.result.meta_text(app),
+        })
+        .collect()
 }
 
 /// The views the checker made of UI loop bodies: the host calls them like declared views.
@@ -722,7 +737,26 @@ pub fn compile_program(
     visible: &[PackageMeta],
     bound: &[Binding],
 ) -> Result<CompiledProgram, Vec<Diagnostic>> {
+    compile_program_reading(source, visible, bound, &[])
+}
+
+/// [`compile_program`] for a program that may also read the apps `sources` (each by the name
+/// programs call it and its id) that its host does not hold: `grep(re, in: chat)`,
+/// `describe(chat)` and a reference to one of their resources are read through the platform
+/// (agents.md, "Querying").
+///
+/// # Errors
+/// The diagnostics, located in `source`.
+pub fn compile_program_reading(
+    source: &str,
+    visible: &[PackageMeta],
+    bound: &[Binding],
+    sources: &[(String, String)],
+) -> Result<CompiledProgram, Vec<Diagnostic>> {
     let mut fingerprint = String::from(source);
+    for (alias, app) in sources {
+        fingerprint.push_str(&format!("\nsource {alias}:{app}"));
+    }
     for b in bound {
         fingerprint.push_str(&format!("\n{}:{}", b.name, b.ty));
     }
@@ -733,16 +767,13 @@ pub fn compile_program(
     let short = key.get(..16).unwrap_or(&key);
     let app = format!("{PROGRAM_APP_PREFIX}{short}");
     let flow = format!("program-{short}");
-    let mut host = crate::host::host_meta();
-    host.types.push(TypeMeta {
-        id: format!("host-{}", checker::RESOURCE_TYPE_NAME.to_lowercase()),
-        name: checker::RESOURCE_TYPE_NAME.to_owned(),
-        doc: "Any resource of the workspace, of whichever app: what `find` answers when its query names no type. `.of(T)` keeps those of one type.".to_owned(),
-        fields: Vec::new(),
-        search: crate::meta::SearchMeta::default(),
-        holder: false,
-    });
-    let env = agent_env(&app, &host, visible);
+    let host = crate::host::host_meta();
+    let mut env = agent_env(&app, &host, visible);
+    for (alias, source) in sources {
+        if !env.sources.iter().any(|(_, known)| known == source) {
+            env.sources.push((alias.clone(), source.clone()));
+        }
+    }
     let mut diags = Vec::new();
     let mut params = Vec::new();
     for b in bound {

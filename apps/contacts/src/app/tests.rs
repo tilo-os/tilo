@@ -3421,7 +3421,7 @@ fn import_and_export_run_through_the_file_chooser() {
     // --- phase: a_running_import_refuses_a_second ---
     {
         let mut app = Live::empty(1280, 800);
-        let _running = app.begin_file_work(FileWork::Import).unwrap();
+        let _running = super::files::begin_file_work(&app.file_work, FileWork::Import).unwrap();
         let (services, _recorder) = ui::host::HostServices::recording();
         let refused = ui::host::scoped(&services, || {
             app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
@@ -3491,7 +3491,7 @@ fn check_import_conflict_decisions() {
             );
         }
         act_named(&mut app, choice, &ui::a11y::Action::Activate);
-        assert!(app.import_conflicts.is_empty());
+        assert!(app.asked.borrow().import_conflicts.is_empty());
         assert_eq!(
             app.store.contact(original.id).unwrap().emails[0].value,
             original.emails[0].value
@@ -4266,8 +4266,7 @@ fn check_calendar_and_type_popups_frame_does_not_panic() {
 
 fn check_importing_state_is_visible_and_announced_as_busy() {
     let mut app = sampled();
-    let work = app
-        .begin_file_work(FileWork::Import)
+    let work = super::files::begin_file_work(&app.file_work, FileWork::Import)
         .expect("production import guard");
     drive_frame(&mut app, 1280, 800);
     let progress = named_widget(&app, "Importing contacts", Role::ProgressBar)
@@ -4282,7 +4281,7 @@ fn check_importing_state_is_visible_and_announced_as_busy() {
         "the actual import action is unavailable while running"
     );
     assert!(
-        app.begin_file_work(FileWork::Import).is_err(),
+        super::files::begin_file_work(&app.file_work, FileWork::Import).is_err(),
         "duplicate file work is refused"
     );
     drop(work);
@@ -4623,7 +4622,9 @@ fn check_hostile_known_uid_is_reported_for_review_without_overwriting_contact() 
     assert_eq!(result.conflicts, 1);
     assert!(result.failure_message().contains("review"));
     let review = app
-        .import_conflict_rows()
+        .asked
+        .borrow()
+        .conflict_rows()
         .into_iter()
         .next()
         .expect("the pending collision has an addressable review resource")

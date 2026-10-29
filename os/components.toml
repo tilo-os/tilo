@@ -502,8 +502,10 @@ name = "installer"
 kind = "boot"
 scope = "vm"
 scenario = "os/dev/test-installer-cycle.sh"
-packages = ["installer"]
+packages = ["imager", "tilo-install-helpers"]
 bins = ["tilo-installer", "tilo-firstboot-home-seeds"]
+# The guided setup's destination side, without its host side.
+features = ["imager/destination"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-installer", to = "/usr/libexec/tilo/tilo-installer", mode = "0755" },

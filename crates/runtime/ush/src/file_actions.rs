@@ -55,6 +55,7 @@ pub mod watch;
 use collab_types::caps::Access;
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now;
+use tilo_content::ContentStore;
 use tilo_environment::Environment;
 pub use tilo_environment::files::{
     AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
@@ -64,6 +65,7 @@ use tilo_resource::{Id, Invoke, Replica, Settled};
 
 use crate::audit::{AuditLog, AuditRecord};
 use crate::broker::{BrokerState, EnvironmentHandle, Response};
+use crate::content::EnvironmentContent;
 use crate::policy::Policy;
 use crate::records::{Invoker, RecordError, Records};
 
@@ -184,10 +186,20 @@ pub enum Operation {
         path: PathBuf,
         contents: Option<Vec<u8>>,
     },
+    /// Keep a copy of what is at `path` in the recoverable store, leaving
+    /// it where it is: what an `append` adds to.
+    KeepCopy {
+        path: PathBuf,
+    },
     /// Create or replace `path` with `contents`.
     Write {
         path: PathBuf,
-        contents: Vec<u8>,
+        contents: Contents,
+    },
+    /// Add `contents` to the end of `path`, making it if it is not there.
+    Append {
+        path: PathBuf,
+        contents: Contents,
     },
     /// Create `path`, empty, only where nothing is there yet.
     MakeFile {
@@ -206,6 +218,46 @@ pub enum Operation {
         path: PathBuf,
         symbolic: bool,
     },
+}
+
+/// What a write puts in a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Contents {
+    /// The bytes themselves, as the action carried them.
+    Bytes(Vec<u8>),
+    /// Content in the environment's content store, by its hash: streamed
+    /// from there, whatever its size.
+    Stored(String),
+}
+
+impl Contents {
+    /// What `hash` names in `content`, when this device has it.
+    fn stored(hash: &str, content: &ContentStore) -> Result<Self, Refusal> {
+        if content.has(hash) {
+            Ok(Self::Stored(hash.to_owned()))
+        } else {
+            Err(Refusal::Nothing(format!(
+                "tilo.content:{hash} is not in the environment's content store on this device"
+            )))
+        }
+    }
+
+    /// Write all of it to `to`.
+    fn write_to(&self, to: &mut fs::File, content: &ContentStore) -> io::Result<()> {
+        use std::io::Write as _;
+        match self {
+            Self::Bytes(bytes) => to.write_all(bytes),
+            Self::Stored(hash) => {
+                let mut from = content.open(hash).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("tilo.content:{hash} is no longer in the content store"),
+                    )
+                })?;
+                io::copy(&mut from, to).map(drop)
+            }
+        }
+    }
 }
 
 /// What an action will do, decided before it does any of it.
@@ -258,7 +310,7 @@ impl Plan {
 ///
 /// The reason nothing can be done: a missing source, a destination that
 /// cannot take the plan.
-pub fn plan(action: &FileAction) -> Result<Plan, Refusal> {
+pub fn plan(action: &FileAction, content: &ContentStore) -> Result<Plan, Refusal> {
     match action {
         FileAction::Copy(op) => plan_copy(op),
         FileAction::Move(op) => plan_move(op),
@@ -268,8 +320,8 @@ pub fn plan(action: &FileAction) -> Result<Plan, Refusal> {
         FileAction::Link(op) => plan_link(op),
         FileAction::Truncate(op) => plan_truncate(op),
         FileAction::Touch(op) => plan_touch(op),
-        FileAction::Append(op) => plan_append(op),
-        FileAction::Write(op) => plan_write(op),
+        FileAction::Append(op) => plan_append(op, content),
+        FileAction::Write(op) => plan_write(op, content),
         FileAction::Revert(_) | FileAction::Restore(_) => Ok(Plan::default()),
     }
 }
@@ -285,6 +337,7 @@ pub fn plan(action: &FileAction) -> Result<Plan, Refusal> {
 pub fn apply(
     plan: &Plan,
     store: &Recoverable,
+    content: &ContentStore,
 ) -> Result<Vec<UndoEntry>, (ActionError, Vec<UndoEntry>)> {
     let mut done = Vec::new();
     for op in &plan.ops {
@@ -307,11 +360,20 @@ pub fn apply(
                         path: path.clone(),
                     })
             }
+            Operation::KeepCopy { path } => store.stash_copy(path).map(|id| UndoEntry::Kept {
+                id,
+                path: path.clone(),
+            }),
             Operation::Touch { .. } => Ok(UndoEntry::Touched),
             Operation::MakeFile { path } => create_file(path)
                 .map_err(io(path))
                 .map(|()| UndoEntry::MakeFile { path: path.clone() }),
-            Operation::Write { path, contents } => write_file(path, contents)
+            Operation::Write { path, contents } => write_file(path, contents, false, content)
+                .map_err(io(path))
+                .map(|()| UndoEntry::Write { path: path.clone() }),
+            // Undoing removes the file; what it held comes back from the
+            // copy kept beside it.
+            Operation::Append { path, contents } => write_file(path, contents, true, content)
                 .map_err(io(path))
                 .map(|()| UndoEntry::Write { path: path.clone() }),
             Operation::Copy { from, to } => {
@@ -462,19 +524,37 @@ impl Recoverable {
     /// Whatever kept the move from happening — in which case nothing was
     /// changed.
     pub fn stash(&self, path: &Path, contents: Option<&[u8]>) -> Result<String, ActionError> {
+        self.stash_with(path, |kept| match contents {
+            Some(bytes) => {
+                fs::write(kept, bytes)?;
+                fs::remove_file(path)
+            }
+            None => move_path(path, kept),
+        })
+    }
+
+    /// Keep a copy of the file at `path`, leaving it where it is; the
+    /// entry's id.
+    ///
+    /// # Errors
+    ///
+    /// Whatever kept the copy from being made — in which case nothing was
+    /// changed.
+    pub fn stash_copy(&self, path: &Path) -> Result<String, ActionError> {
+        self.stash_with(path, |kept| fs::copy(path, kept).map(drop))
+    }
+
+    fn stash_with(
+        &self,
+        path: &Path,
+        keep: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> Result<String, ActionError> {
         let id = self.mint().map_err(ActionError::Store)?;
         let slot = self.dir.join(&id);
         let kept = slot.join("payload");
         let result = (|| -> io::Result<()> {
             fs::create_dir_all(&slot)?;
-            match contents {
-                Some(bytes) => {
-                    fs::write(&kept, bytes)?;
-                    fs::remove_file(path)?;
-                }
-                None => fs::rename(path, &kept)?,
-            }
-            Ok(())
+            keep(&kept)
         })();
         if let Err(error) = result {
             // Nothing was changed; the slot holds no payload to put back.
@@ -519,7 +599,7 @@ impl Recoverable {
                 error,
             })?;
         }
-        fs::rename(&kept, path).map_err(|error| ActionError::Io {
+        move_path(&kept, path).map_err(|error| ActionError::Io {
             path: path.to_path_buf(),
             error,
         })?;
@@ -541,7 +621,7 @@ impl Recoverable {
                 error: io::Error::from(io::ErrorKind::AlreadyExists),
             });
         }
-        fs::rename(path, &kept).map_err(|error| ActionError::Io {
+        move_path(path, &kept).map_err(|error| ActionError::Io {
             path: path.to_path_buf(),
             error,
         })?;
@@ -619,6 +699,7 @@ pub fn carry_out(
     action: &FileAction,
     policy: &Policy,
     store: &Recoverable,
+    content: &ContentStore,
     now: Option<u64>,
     earlier: &dyn Fn(&str) -> Option<Settlement>,
 ) -> Settlement {
@@ -655,7 +736,7 @@ pub fn carry_out(
                 Err(error) => Settled::failed(error.to_string()),
             }
         }
-        action => match perform(action, policy, store, now) {
+        action => match perform(action, policy, store, content, now) {
             Ok(done) => Settled::Done(done),
             Err((error, partial)) => Settled::Failed {
                 reason: error.to_string(),
@@ -676,13 +757,15 @@ pub fn perform(
     action: &FileAction,
     policy: &Policy,
     store: &Recoverable,
+    content: &ContentStore,
     now: Option<u64>,
 ) -> Result<Vec<UndoEntry>, (FileActionError, Vec<UndoEntry>)> {
-    let plan = plan(action).map_err(|refusal| (FileActionError::Refused(refusal), Vec::new()))?;
+    let plan =
+        plan(action, content).map_err(|refusal| (FileActionError::Refused(refusal), Vec::new()))?;
     if let Some(refusal) = plan.refused_by(policy, now) {
         return Err((FileActionError::Refused(refusal), Vec::new()));
     }
-    apply(&plan, store).map_err(|(error, done)| (FileActionError::Failed(error), done))
+    apply(&plan, store, content).map_err(|(error, done)| (FileActionError::Failed(error), done))
 }
 
 /// The answer to one invocation on the record.
@@ -714,6 +797,7 @@ pub fn invoke(
     invoke: Option<Invoke<Environment>>,
     device: &str,
     store: &Recoverable,
+    content: &EnvironmentContent,
 ) -> Result<Invoked, RecordError> {
     let _held = store
         .lock()
@@ -728,12 +812,19 @@ pub fn invoke(
             }
             None => None,
         };
-        let settled = drain(replica, device, store)?;
+        let settled = drain(replica, device, store, &content.store())?;
         let settled = entry.as_ref().and_then(|entry| {
             settled
                 .into_iter()
                 .find_map(|(id, settled)| (id == *entry).then_some(settled))
         });
+        // What no task names any more, now that this one may have pushed
+        // the oldest out.
+        if let Ok(state) = replica.state()
+            && let Err(error) = content.collect(&state)
+        {
+            tracing::warn!(%error, "the environment's content store was not collected");
+        }
         Ok(Invoked { entry, settled })
     })
 }
@@ -748,6 +839,7 @@ pub fn drain(
     replica: &mut Replica<Environment>,
     device: &str,
     store: &Recoverable,
+    content: &ContentStore,
 ) -> Result<Vec<(Id, Settlement)>, RecordError> {
     let mut settled = Vec::new();
     loop {
@@ -764,7 +856,14 @@ pub fn drain(
         };
         let policy = Policy::new(state.grants.clone());
         let earlier = |entry: &str| state.files.outcome(&Id::from_raw(entry)).cloned();
-        let outcome = carry_out(&task.action, &policy, store, Some(unix_now()), &earlier);
+        let outcome = carry_out(
+            &task.action,
+            &policy,
+            store,
+            content,
+            Some(unix_now()),
+            &earlier,
+        );
         replica
             .apply(Environment::paths().files.settle(&id, &outcome))
             .map_err(|e| RecordError::Refused(e.to_string()))?;
@@ -806,6 +905,13 @@ pub fn store_in(environment: &EnvironmentHandle) -> PathBuf {
     environment.var_dir.join("lib").join(RECOVERABLE_IN_VAR)
 }
 
+/// Where an environment's content store lives: beside its `/var`, never in
+/// a guest.
+#[must_use]
+pub fn content_in(environment: &EnvironmentHandle) -> EnvironmentContent {
+    EnvironmentContent::at(environment.var_dir.with_file_name("content"))
+}
+
 /// The broker's answer to [`Request::FileAction`](crate::broker::Request):
 /// invoke the record's verb as the session's person, carry it out on this
 /// device, and record it in the audit log however it went.
@@ -824,6 +930,7 @@ pub fn brokered(
         Some(Environment::file_invoke(&state.device, action)),
         &state.device,
         &store,
+        &content_in(&state.environment),
     );
     let refused = |reason: String| {
         deny(state, action.verb(), &subjects(action), &reason);
@@ -876,7 +983,12 @@ pub fn carry_out_queued(state: &BrokerState) {
                 .environment
                 .records
                 .act(&state.environment.key, &invoker, |replica| {
-                    let settled = drain(replica, &state.device, &store)?;
+                    let settled = drain(
+                        replica,
+                        &state.device,
+                        &store,
+                        &content_in(&state.environment).store(),
+                    )?;
                     let state = replica
                         .state()
                         .map_err(|e| RecordError::Model(e.to_string()))?;
@@ -1115,13 +1227,13 @@ fn plan_truncate(op: &TruncateOp) -> Result<Plan, Refusal> {
                     })
                     .push(Operation::Write {
                         path: file.clone(),
-                        contents: sized(op.size),
+                        contents: Contents::Bytes(sized(op.size)),
                     });
             }
             Err(_) if op.create => {
                 plan = plan.writes(file.clone()).push(Operation::Write {
                     path: file.clone(),
-                    contents: sized(op.size),
+                    contents: Contents::Bytes(sized(op.size)),
                 });
             }
             Err(_) => return Err(Refusal::Missing(file.clone())),
@@ -1154,35 +1266,35 @@ fn plan_touch(op: &AppendFileOp) -> Result<Plan, Refusal> {
     Ok(plan)
 }
 
-fn plan_append(op: &AppendFileOp) -> Result<Plan, Refusal> {
+fn plan_append(op: &AppendFileOp, content: &ContentStore) -> Result<Plan, Refusal> {
+    let contents = match &op.content {
+        Some(hash) => Contents::stored(hash, content)?,
+        None => Contents::Bytes(op.text.clone().into_bytes()),
+    };
     let mut plan = Plan::default();
     for file in &op.files {
         plan = plan.writes(file.clone());
-        let mut contents = Vec::new();
         if let Ok(meta) = fs::symlink_metadata(file) {
             if meta.is_dir() {
                 return Err(Refusal::IsDirectory(file.clone()));
             }
-            // What is there is both what the text goes after and what
-            // undoing puts back, so it is kept beside the write.
-            let existing = fs::read(file).map_err(|_| Refusal::Missing(file.clone()))?;
-            plan = plan.push(Operation::Keep {
-                path: file.clone(),
-                contents: Some(existing.clone()),
-            });
-            contents = existing;
+            // What is there is what undoing puts back, so a copy of it is
+            // kept before anything is added.
+            plan = plan.push(Operation::KeepCopy { path: file.clone() });
         }
-        contents.extend_from_slice(op.text.as_bytes());
-        plan = plan.push(Operation::Write {
+        plan = plan.push(Operation::Append {
             path: file.clone(),
-            contents,
+            contents: contents.clone(),
         });
     }
     Ok(plan)
 }
 
-fn plan_write(op: &WriteOp) -> Result<Plan, Refusal> {
-    let contents = op.contents().map_err(Refusal::Nothing)?;
+fn plan_write(op: &WriteOp, content: &ContentStore) -> Result<Plan, Refusal> {
+    let contents = match &op.content {
+        Some(hash) => Contents::stored(hash, content)?,
+        None => Contents::Bytes(op.contents().map_err(Refusal::Nothing)?),
+    };
     let mut plan = Plan::default();
     for named in &op.files {
         // A write follows a symbolic link, as a shell's `>` does, so what
@@ -1201,10 +1313,11 @@ fn plan_write(op: &WriteOp) -> Result<Plan, Refusal> {
             if op.no_clobber {
                 return Err(Refusal::Exists(named.clone()));
             }
-            let existing = fs::read(&file).map_err(|_| Refusal::Missing(named.clone()))?;
+            // What it held is moved aside whole, not read: undoing puts it
+            // back.
             plan = plan.push(Operation::Keep {
                 path: file.clone(),
-                contents: Some(existing),
+                contents: None,
             });
         }
         plan = plan.push(Operation::Write {
@@ -1291,11 +1404,39 @@ fn create_file(path: &Path) -> io::Result<()> {
         .map(|_| ())
 }
 
-fn write_file(path: &Path, contents: &[u8]) -> io::Result<()> {
+fn write_file(
+    path: &Path,
+    contents: &Contents,
+    append: bool,
+    content: &ContentStore,
+) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, contents)
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(append)
+        .truncate(!append)
+        .open(path)?;
+    contents.write_to(&mut file, content)
+}
+
+/// Move `from` to `to`: a rename, or, where the two are on different
+/// filesystems (a workspace mount and the store beside `/var`), a copy and
+/// then the removal of the original.
+fn move_path(from: &Path, to: &Path) -> io::Result<()> {
+    match fs::rename(from, to) {
+        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
+            copy_tree(from, to)?;
+            if fs::symlink_metadata(from)?.is_dir() {
+                fs::remove_dir_all(from)
+            } else {
+                fs::remove_file(from)
+            }
+        }
+        moved => moved,
+    }
 }
 
 /// Copy a file or a whole tree, following the tree but not the symbolic links

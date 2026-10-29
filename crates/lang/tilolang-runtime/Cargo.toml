@@ -18,8 +18,12 @@ tilolang = { path = "../tilolang" }
 tilo-doc = { path = "../../doc/tilo-doc" }
 # A reference inside rich text is the catalogue's resource reference, in the one form every app writes.
 tilo-reference = { path = "../../collab/reference" }
+# Order keys of placed items (`place`): the fractional keys every collection orders by.
+tilo-resource = { path = "../../sdk/tilo-resource" }
 serde.workspace = true
 serde_json.workspace = true
+# `grep` and `read(matching:)` in agents' programs.
+regex.workspace = true
 thiserror.workspace = true
 # The interpreter. `engine.rs` is the only module that names it.
 wasmi = { version = "1.1", default-features = false, features = ["std"] }

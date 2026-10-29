@@ -403,9 +403,10 @@ authorization.
   [Filming two devices](filming-two-device-setup.md) is the setup a person
   follows to put two machines side by side and what a test already proves of
   it.
-- **App continuation** remains in `personal_continuity`. The fabric advertises
-  capability but does not duplicate launch intents, CRDT records, topology, or
-  focus state.
+- **App continuation** is each device's own part of the workspace layout: how
+  its windows resume and which one it is on sit in the layout record beside
+  the windows. The fabric advertises capability but does not duplicate launch
+  intents, CRDT records, topology, or focus state.
 - **Legacy app windows** (Wayland and X11 clients) run only on the device that
   started them; Tilo apps run on every device against the same records, so
   only these need a stream, and no device ever streams its desktop or chrome.

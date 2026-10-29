@@ -313,7 +313,6 @@ impl Compositor {
             .expect("seed the clipboard e2e desktop");
         // Let go of the file's writer lease: the compositor owns its session.
         drop(std::mem::take(&mut fixture_tree.native_runtime));
-        Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 
         let mut child = Self::spawn_compositor(
@@ -350,37 +349,6 @@ impl Compositor {
             this.privileged_socket.display()
         );
         this
-    }
-
-    /// This fixture authored the saved tabs, so it also creates their
-    /// documents before native startup performs existing-only admission.
-    /// Restart deliberately reuses these files without creating them again.
-    fn seed_tab_records(runtime_dir: &Path, tree: &shell::shell::state::WorkspaceTree) {
-        let mut owners = ui::record::RecordOwners::new(runtime_dir.join("data"));
-        let records = owners
-            .open(shell::shell::SHELL_RECORDS_PACKAGE, FIXTURE_RECORD_SCOPE)
-            .expect("open the fixture's explicit Shell record namespace");
-        for tab in tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-        {
-            shell::shell::tab_documents::create_scratch_tab_record(&records, tab.id)
-                .expect("create the authored fixture tab's document");
-            records
-                .try_open_record(&shell::shell::tab_documents::scratch_tab_record(tab.id))
-                .expect("the fixture tab must admit its existing document");
-        }
-        records
-            .try_flush()
-            .expect("persist every fixture tab document before starting the compositor");
-        // Release the writers and canonical ownership gates before the child
-        // opens these same records in its own session store.
-        drop(records);
-        drop(owners);
     }
 
     /// Kill and relaunch the native headless compositor on its existing
@@ -513,7 +481,6 @@ impl Compositor {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
-            // Match the namespace provisioned once by seed_tab_records.
             .env("TILO_PACKAGE_ID", shell::shell::SHELL_RECORDS_PACKAGE)
             .env("TILO_WORKSPACE_ID", FIXTURE_RECORD_SCOPE)
             // A CI checkout commonly lives at `/workspace`. It is not a Tilo

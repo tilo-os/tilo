@@ -40,7 +40,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, Setting};
+use ui::framework::{EffectReply, Setting};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -55,6 +55,7 @@ use crate::model::{
     CameraDevicePreferences, Capture, CaptureKind, CaptureMode, CapturePreferences, CodeKind,
     Facing, PhotoFormat, Resolution, ScanEntry, ScannedCode, Screen, Settings, Timer,
 };
+#[cfg(test)]
 use crate::record::Record as Camera;
 
 mod document_view;
@@ -62,7 +63,10 @@ mod hud;
 mod notice;
 mod scanner_view;
 mod settings_sheet;
+mod store;
 mod window_bar;
+
+pub(crate) use store::window;
 
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
@@ -398,8 +402,6 @@ pub struct CameraApp {
     selected_scanner: Option<String>,
     /// Set while the file chooser for a document export is open.
     document_export_pending: Rc<Cell<bool>>,
-    /// Set while the file chooser for an image to scan is open.
-    scan_import_pending: Rc<Cell<bool>>,
     document_crop_selection: ui::LocalState<CropSelection>,
     document_crop_editor: Option<ImageCropEditor>,
     document_crop_page: Option<usize>,
@@ -459,8 +461,10 @@ pub struct CameraApp {
 
     /// Photos the sample shutter took, registered on the next sync.
     sample_captures: Vec<crate::record::SharedCapture>,
-    /// Where the record's edits go, once the framework attached the surface.
+    /// Where the record's edits go, once the view attached the window.
     dispatcher: Option<ui::framework::Dispatcher<crate::record::Record>>,
+    /// What the window shares with the view's effect handler.
+    store: store::Shared,
     /// The window bar's entries.
     bar: window_bar::Bar,
     /// The time a screenshot is taken at, in Unix seconds; `None` reads the
@@ -531,6 +535,7 @@ impl CameraApp {
         Self {
             rect: Rect::ZERO,
             node: None,
+            store: store::Store::shared(matches!(storage, Storage::Disk(_))),
             storage,
             worker: crate::worker::CameraWorker::new(content.clone()),
             content,
@@ -564,7 +569,6 @@ impl CameraApp {
             scanner_devices,
             selected_scanner,
             document_export_pending: Rc::default(),
-            scan_import_pending: Rc::default(),
             document_crop_selection: ui::LocalState::new(CropSelection::default()),
             document_crop_editor: None,
             document_crop_page: None,
@@ -872,15 +876,7 @@ impl CameraApp {
     }
 
     fn available_camera_devices(&self) -> Vec<String> {
-        #[cfg(feature = "live-capture")]
-        {
-            if matches!(self.storage, Storage::Disk(_)) {
-                let mut devices = crate::capture::list_devices();
-                devices.truncate(crate::actions::MAX_PUBLISHED_CAMERA_DEVICES);
-                return devices;
-            }
-        }
-        Vec::new()
+        camera_devices(matches!(self.storage, Storage::Disk(_)))
     }
 
     /// Whether a real camera is open with pictures to pull every frame. A
@@ -1031,7 +1027,7 @@ impl CameraApp {
                 "Choose an image to scan".into(),
                 AccessState::new()
                     .focusable(true)
-                    .disabled(self.scan_import_pending.get()),
+                    .disabled(self.scan_import_pending()),
             ),
             Action::CycleResolution => (
                 Role::Button,
@@ -1294,8 +1290,12 @@ impl CameraApp {
     }
 
     /// The compact context Ctrl+K needs to build Camera's canonical resources.
+    #[cfg(test)]
     pub(crate) fn camera_resource_ctx(&self) -> crate::actions::CameraResourceCtx {
-        self.camera_resource_ctx_with_recent(self.captures.first().map(Self::capture_item))
+        self.camera_resource_ctx_with_recent(
+            self.captures.first().map(Self::capture_item),
+            self.available_camera_devices(),
+        )
     }
 
     fn capture_item(capture: &Capture) -> crate::actions::CaptureItem {
@@ -1310,8 +1310,8 @@ impl CameraApp {
     fn camera_resource_ctx_with_recent(
         &self,
         recent: Option<crate::actions::CaptureItem>,
+        camera_devices: Vec<String>,
     ) -> crate::actions::CameraResourceCtx {
-        let camera_devices = self.available_camera_devices();
         crate::actions::CameraResourceCtx {
             recent,
             mode: self.mode,
@@ -1322,7 +1322,7 @@ impl CameraApp {
             camera_devices,
             selected_camera: self.selected_camera.clone(),
             settings: self.settings,
-            scan_import_pending: self.scan_import_pending.get(),
+            scan_import_pending: self.scan_import_pending(),
             document_scanner_available: self.selected_scanner.as_ref().is_some_and(|selected| {
                 self.scanner_devices
                     .iter()
@@ -1757,30 +1757,6 @@ impl CameraApp {
         self.document_crop_page = None;
     }
 
-    /// Ask where to save the scanned pages as one searchable PDF, as the
-    /// export effect does.
-    fn export_document(&self, cx: &mut EffectCx<Camera, Self>) -> EffectAnswer {
-        if self.document_scan.pages.is_empty() {
-            return Err("Capture a page before exporting".into());
-        }
-        let Some(open) = ChooserOpen::open(&self.document_export_pending) else {
-            return Err("The save location chooser is already open".into());
-        };
-        Ok(cx.save_file(
-            ui::portal::PickRequest::save("Save scanned document", "Save", "Scanned document.pdf"),
-            self.document_scan.searchable_pdf(),
-            move |app, saved, _| {
-                drop(open);
-                app.dirty = true;
-                if saved {
-                    Ok(Effected::done())
-                } else {
-                    Err("Document export cancelled".into())
-                }
-            },
-        ))
-    }
-
     fn move_document_page(&mut self, later: bool) {
         if self.document_job.is_some() {
             return;
@@ -2074,11 +2050,13 @@ impl CameraApp {
     /// agent or a script. Work that settles later — a photo or clip being
     /// saved, a chosen image being scanned, a document page being scanned or
     /// read — answers its caller when it does.
-    pub(crate) fn answer_effect(
+    ///
+    /// Answers whether the caller waits until that work settles.
+    fn answer_effect(
         &mut self,
         effect: CameraEffect,
-        cx: &mut EffectCx<Camera, Self>,
-    ) -> EffectAnswer {
+        invocation: Option<ui::tilo_actions::InvocationId>,
+    ) -> Result<bool, String> {
         self.dirty = true;
         match effect {
             CameraEffect::OpenCamera => self.show_screen(Screen::Camera),
@@ -2118,9 +2096,9 @@ impl CameraApp {
                 self.change_settings(|settings| settings.default_facing = facing);
             }
             CameraEffect::Capture => {
-                self.capture(cx.invocation())?;
+                self.capture(invocation)?;
                 if self.pending_capture.is_some() {
-                    return Ok(self.answer_later(cx));
+                    return Ok(true);
                 }
             }
             CameraEffect::Record => {
@@ -2128,9 +2106,9 @@ impl CameraApp {
                     // Both live and sample recordings finalize through the
                     // bounded worker, so the caller hears back only once the
                     // clip is muxed, verified and registered.
-                    self.stop_recording(cx.invocation())?;
+                    self.stop_recording(invocation)?;
                     if self.pending_video.is_some() {
-                        return Ok(self.answer_later(cx));
+                        return Ok(true);
                     }
                 } else {
                     self.start_recording();
@@ -2139,13 +2117,15 @@ impl CameraApp {
             CameraEffect::RetryCamera => self.retry_camera(),
             CameraEffect::OpenCameraPrivacy => self.open_camera_privacy_settings(),
             CameraEffect::UseCamera { device } => self.select_camera(&device),
-            CameraEffect::ImportImage => return self.import_scan_image(cx),
+            CameraEffect::ImportImage | CameraEffect::ExportPdf => {
+                return Err("a file chooser answers through its effect".into());
+            }
             CameraEffect::CapturePage => {
                 let pages_before = self.document_scan.pages.len();
                 self.capture_document_page();
                 if self.document_job.is_some() {
-                    self.pending_document_job = cx.invocation();
-                    return Ok(self.answer_later(cx));
+                    self.pending_document_job = invocation;
+                    return Ok(true);
                 }
                 if self.document_scan.pages.len() == pages_before {
                     return Err("No document scanner is available".into());
@@ -2157,26 +2137,16 @@ impl CameraApp {
                 if self.document_job.is_none() {
                     return Err("Text recognition could not start".into());
                 }
-                self.pending_document_job = cx.invocation();
-                return Ok(self.answer_later(cx));
+                self.pending_document_job = invocation;
+                return Ok(true);
             }
             CameraEffect::CopyText => self.copy_document_text(),
-            CameraEffect::ExportPdf => return self.export_document(cx),
             CameraEffect::CropPage => self.begin_document_crop(),
             CameraEffect::MovePageEarlier => self.move_document_page(false),
             CameraEffect::MovePageLater => self.move_document_page(true),
             CameraEffect::RemovePage => self.remove_document_page(),
         }
-        Ok(Effected::done())
-    }
-
-    /// Owe the caller of the effect `cx` answers its answer until the work
-    /// it started settles ([`Self::settle`]).
-    fn answer_later(&mut self, cx: &mut EffectCx<Camera, Self>) -> Effected {
-        if let Some(invocation) = cx.invocation() {
-            self.replies.insert(invocation, cx.reply());
-        }
-        Effected::Pending
+        Ok(false)
     }
 
     /// Answer the caller waiting for `invocation`, if any still is.
@@ -2303,37 +2273,9 @@ impl CameraApp {
         self.toast.info(format!("Selected {device}"));
     }
 
-    /// Ask for an image with the file chooser and scan the code in it, as
-    /// the import effect does. The caller hears back once the scan settles.
-    fn import_scan_image(&mut self, cx: &mut EffectCx<Camera, Self>) -> EffectAnswer {
-        let Some(open) = ChooserOpen::open(&self.scan_import_pending) else {
-            return Err("An image picker is already open".into());
-        };
-        self.toast
-            .show("Choose an image containing a QR code or barcode");
-        let request = ui::portal::PickRequest::open("Scan a code from an image", "Scan").filter(
-            ui::portal::FileFilter::new("Images")
-                .mimetype("image/png")
-                .mimetype("image/jpeg")
-                .mimetype("image/webp")
-                .mimetype("image/gif"),
-        );
-        Ok(cx.choose_file(request, move |app, chosen, cx| {
-            drop(open);
-            app.dirty = true;
-            let Some(file) = chosen else {
-                app.toast.show("Image scan cancelled");
-                return Err("Image scan cancelled".into());
-            };
-            app.scan_image_bytes(file.bytes)?;
-            app.pending_scan_import = cx.invocation();
-            Ok(app.answer_later(cx))
-        }))
-    }
-
     /// Decode a code from the bytes of one chosen image. The image never
     /// enters Camera's collaborative state or a private media index.
-    fn scan_image_bytes(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+    pub(super) fn scan_image_bytes(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         self.scan_dismissed = false;
         let Some(generation) = self.scan_generation.checked_add(1) else {
             let error = "Code scan counter exhausted; restart Camera".to_owned();
@@ -2577,6 +2519,24 @@ impl Drop for ChooserOpen {
     }
 }
 
+/// The cameras of this device, when a window on disk lists them (`disk`):
+/// real discovery only, never a sample's.
+#[cfg_attr(
+    not(feature = "live-capture"),
+    allow(unused_variables, reason = "only live capture discovers cameras")
+)]
+fn camera_devices(disk: bool) -> Vec<String> {
+    #[cfg(feature = "live-capture")]
+    {
+        if disk {
+            let mut devices = crate::capture::list_devices();
+            devices.truncate(crate::actions::MAX_PUBLISHED_CAMERA_DEVICES);
+            return devices;
+        }
+    }
+    Vec::new()
+}
+
 fn frame_image_fill(buf: FrameBuf) -> Image {
     let (w, h) = (buf.w, buf.h);
     Image::from_rgba(Arc::from(buf.rgba), w, h).with_fit(ImageFit::Fill)
@@ -2811,7 +2771,17 @@ impl CameraApp {
 impl Widget for CameraApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.follow_document();
+        self.do_asks();
         // Another window, or another of the person's devices, changed the
         // capture preferences.
         if let Some((person, device)) = &self.preferences {
@@ -2825,6 +2795,7 @@ impl Widget for CameraApp {
         self.take_notice_action();
         self.declare_window_toolbar();
         self.publish_notice();
+        self.publish_rows();
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
@@ -2845,6 +2816,7 @@ impl Widget for CameraApp {
             let _ = self.push_camera_frame(fb);
             self.dirty = true;
         }
+        self.publish_rows();
         self.dirty
     }
 
@@ -2868,6 +2840,7 @@ impl Widget for CameraApp {
                 self.toast.fail(format!("Save failed: {error}"));
             }
         }
+        self.publish_rows();
     }
 
     fn build_layout(
@@ -3270,7 +3243,8 @@ impl Widget for CameraApp {
     }
     fn needs_idle_sync(&self) -> bool {
         self.document_export_pending.get()
-            || self.scan_import_pending.get()
+            || self.scan_import_pending()
+            || !self.store.borrow().asks.is_empty()
             || self.document_job.is_some()
     }
 
@@ -4575,7 +4549,10 @@ mod tests {
 
         fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {
             let dir = CAPTURE_DIR.with(|dir| dir.borrow().clone()).unwrap();
-            cx.surface(CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera))
+            crate::app::window(
+                cx,
+                CameraApp::with(Storage::Disk(Some(dir)), Screen::Camera),
+            )
         }
     }
 
@@ -4589,7 +4566,7 @@ mod tests {
         const TITLE: &'static str = "Camera";
 
         fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {
-            cx.surface(CameraApp::sample())
+            crate::app::window(cx, CameraApp::sample())
         }
     }
 
@@ -5168,7 +5145,7 @@ mod tests {
         assert!(cancelled.to_string().contains("cancelled"), "{cancelled}");
         app.settle();
         assert_eq!(
-            app.with_surface::<CameraApp, _>(|camera| camera.scan_import_pending.get()),
+            app.with_surface::<CameraApp, _>(|camera| camera.scan_import_pending()),
             Some(false),
             "the chooser is no longer shown as open"
         );

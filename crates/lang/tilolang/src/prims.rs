@@ -67,6 +67,9 @@ pub const PRIMS: &[Prim] = &[
         &[],
         &["bind", "placeholder", "on_change", "enabled"],
     ),
+    // Rich text typed, bound to a `RichText`: what a completion picks goes in as a reference
+    // (`ui.RichInput`).
+    prim_of("rich_input", &[], &["bind", "placeholder", "enabled"]),
     prim_of("image", &["src"], &["alt", "width", "height"]),
     prim_of("progress", &["value"], &[]),
     prim_of("divider", &[], &[]),
@@ -161,6 +164,12 @@ pub const CHOICES: &[Choice] = &[
         name: "Orientation",
         variants: &["portrait", "landscape", "ultrawide"],
     },
+    // What a principal is (`p.kind()`): a person, or software acting in the workspace.
+    Choice {
+        kind: "principal_kind",
+        name: "PrincipalKind",
+        variants: &["person", "agent"],
+    },
 ];
 
 pub fn choice(kind: &str) -> Option<&'static Choice> {
@@ -198,6 +207,9 @@ pub const BUILTINS: &[&str] = &[
     "open",
     "set",
 ];
+
+/// The fields of `workspace`.
+pub const WORKSPACE_FIELDS: &str = "members";
 
 /// The fields of `space` (layout.md, "Responding to space").
 pub const SPACE_FIELDS: &str = "width_class, compact, wide, orientation, width, height";
