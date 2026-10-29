@@ -466,11 +466,11 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
     use account_custody::GrantState;
     let id = id.to_string();
     pane.vertex_keys.insert(id.clone(), Ok(false));
-    let text = announced(&mut pane);
+    let text = announced(pane);
     assert!(text.iter().any(|line| line == "Sign in again"), "{text:#?}");
     assert!(!text.iter().any(|line| line == "Save key"), "{text:#?}");
     pane.vertex_keys.insert(id.clone(), Ok(true));
-    let text = announced(&mut pane);
+    let text = announced(pane);
     assert!(
         text.iter()
             .any(|line| line == "Signed in with Google on this device."),

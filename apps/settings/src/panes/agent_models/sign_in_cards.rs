@@ -276,20 +276,19 @@ impl AgentModelsModel {
         if let Some(message) = vertex.and_then(VertexSetup::message) {
             body.push(row(crate::widgets::error_caption(message)));
         }
-        body.push(self.sign_in_controls(actions, profile, waiting));
+        body.push(Self::sign_in_controls(actions, profile, waiting));
         // Vertex AI's model is typed above; every other one is chosen from
         // what the provider lists.
         if !google || vertex_target(&profile.endpoint).is_none() {
             self.panel
                 .profile_models(body, profile, self.panel.can_admin());
         }
-        body.extend(self.default_button(actions, profile, default_profile));
+        body.extend(Self::default_button(actions, profile, default_profile));
     }
 
     /// Sign in again (or stop the sign-in under way), offer to agents or
     /// not, and remove: the controls of a provider that signs in.
     fn sign_in_controls(
-        &self,
         actions: &Actions<Settings>,
         profile: &ProviderProfile,
         waiting: bool,

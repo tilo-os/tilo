@@ -1233,7 +1233,7 @@ impl AccountsPane {
     /// `button`, invoking `effect` through the page's actions: on the
     /// account's row for a row effect, else on the window.
     fn bound(cx: &ViewCx<Settings>, button: Button, effect: AccountsEffect) -> Button {
-        match Self::row_effect_binding(cx, &effect) {
+        match Self::row_effect_binding(cx, effect) {
             Some(binding) => button.bind_action(binding),
             None => button.unavailable(),
         }
@@ -1259,20 +1259,21 @@ impl AccountsPane {
     /// the root. `None` where it is not offered.
     fn row_effect_binding(
         cx: &ViewCx<Settings>,
-        effect: &AccountsEffect,
+        effect: AccountsEffect,
     ) -> Option<ui::tilo_actions::ActionBinding<()>> {
-        let Some(account) = Self::row_account(effect) else {
-            return cx.actions().effect(&SettingsEffect::from(effect.clone()));
+        let Some(account) = Self::row_account(&effect).cloned() else {
+            return cx.actions().effect(&SettingsEffect::from(effect));
         };
-        let spec = SettingsEffect::from(effect.clone()).bound();
+        let id = effect.id();
+        let spec = SettingsEffect::from(effect).bound();
         let resource = ui::tilo_actions::ResourceSpec::new(
             format!("settings.account:{account}"),
             "settings.account",
-            account,
+            &account,
         )
         .with_action(spec);
         let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
-            effect.id(),
+            id,
             &[],
             SettingsEffect::kind(),
         );
@@ -1917,7 +1918,7 @@ impl AccountsPane {
                 panel.push(self.kind_card(cx, kind));
             }
         }
-        panel.push(adding.unwrap_or_else(|| self.add_account_card(cx)));
+        panel.push(adding.unwrap_or_else(|| Self::add_account_card(cx)));
         panel.push(self.thunderbird_import_card(cx));
         if !self
             .account_root
@@ -2103,7 +2104,7 @@ impl AccountsPane {
                 t(toggle),
                 Self::row_effect_binding(
                     cx,
-                    &AccountsEffect::SetBrowserIdentityEnabled {
+                    AccountsEffect::SetBrowserIdentityEnabled {
                         account: id.clone(),
                         enabled: !account.enabled,
                     },
@@ -2113,7 +2114,7 @@ impl AccountsPane {
                 t("accounts-browser-identity-remove"),
                 Self::row_effect_binding(
                     cx,
-                    &AccountsEffect::RemoveBrowserIdentity {
+                    AccountsEffect::RemoveBrowserIdentity {
                         account: id.clone(),
                     },
                 ),
@@ -2140,7 +2141,7 @@ impl AccountsPane {
 
     /// The services an account can be added for, one row each: choosing
     /// one opens its form.
-    fn add_account_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
+    fn add_account_card(cx: &ViewCx<Settings>) -> SettingsSection {
         let providers = AccountKind::ALL
             .into_iter()
             .map(|kind| {
@@ -2156,7 +2157,7 @@ impl AccountsPane {
                 )
                 .icon(kind_icon(kind))
                 .disclosure();
-                provider = match Self::row_effect_binding(cx, &effect) {
+                provider = match Self::row_effect_binding(cx, effect) {
                     Some(binding) => provider.on_action(binding),
                     None => provider.with_enabled(false),
                 };
@@ -2396,7 +2397,7 @@ impl AccountsPane {
                     &t_args("settings-row-more", &[("name", label.clone().into())]),
                 ),
                 |menu, entry| {
-                    let binding = Self::row_effect_binding(cx, &entry.effect);
+                    let binding = Self::row_effect_binding(cx, entry.effect);
                     if entry.destructive {
                         menu.destructive(entry.label, binding)
                     } else {

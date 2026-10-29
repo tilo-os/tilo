@@ -85,7 +85,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let _ = model.borrow_mut().poll();
     Some(cx.switch(&held.shown, move |cx, _| {
         // The part keeps the model polled while it is shown.
-        let _showing = &showing;
+        let _showing = Rc::clone(&showing);
         model.borrow().page(cx)
     }))
 }
@@ -108,11 +108,11 @@ pub struct PanelActions(Rc<std::cell::RefCell<Option<Actions<Settings>>>>);
 
 impl PanelActions {
     /// What `build` makes with the panel's controls bound through `actions`.
-    fn lent<T>(&self, actions: Actions<Settings>, build: impl FnOnce() -> T) -> T {
+    fn lent<T>(&self, actions: Actions<Settings>, make: impl FnOnce() -> T) -> T {
         *self.0.borrow_mut() = Some(actions);
-        let built = build();
+        let made = make();
         *self.0.borrow_mut() = None;
-        built
+        made
     }
 }
 
@@ -967,12 +967,7 @@ impl AgentModelsArea {
     /// What a page showing the model holds while it does: the model is
     /// polled for it meanwhile. Pages share one.
     fn showing(&self) -> Rc<()> {
-        if let Some(held) = self.showing.borrow().upgrade() {
-            return held;
-        }
-        let held = Rc::new(());
-        *self.showing.borrow_mut() = Rc::downgrade(&held);
-        held
+        crate::watch::shared(&mut self.showing.borrow_mut(), || ())
     }
 
     /// Whether a page shows the model.
@@ -1836,12 +1831,11 @@ impl AgentModelsModel {
     }
 
     fn push_recommendation_confirm(
-        &self,
         actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         package: &LocalModelPackage,
     ) {
-        self.push_confirm(
+        Self::push_confirm(
             actions,
             body,
             package,
@@ -1857,7 +1851,6 @@ impl AgentModelsModel {
     /// with the accept and cancel controls (widget ids `controls`); cancel
     /// invokes `cancel`.
     fn push_confirm(
-        &self,
         actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         package: &LocalModelPackage,
@@ -1945,7 +1938,7 @@ impl AgentModelsModel {
                 value_row(&t("agent-rec-model"), &package.name),
                 note(&package.description),
             ]);
-            self.push_recommendation_confirm(actions, &mut body, package);
+            Self::push_recommendation_confirm(actions, &mut body, package);
         } else {
             // The model this device is suited for, and setting it up, on one
             // row.
@@ -2003,7 +1996,7 @@ impl AgentModelsModel {
         if confirming && model.installable() {
             let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
             let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
-            self.push_confirm(
+            Self::push_confirm(
                 actions,
                 &mut body,
                 package,
@@ -2109,11 +2102,7 @@ impl AgentModelsModel {
         )
     }
 
-    fn model_card(
-        &self,
-        actions: &Actions<Settings>,
-        model: &InstalledLocalModel,
-    ) -> SettingsSection {
+    fn model_card(actions: &Actions<Settings>, model: &InstalledLocalModel) -> SettingsSection {
         let status = phase_status(&model.phase);
         let storage = byte_size(model.package.installed_bytes);
         let status_label = t("agent-model-status");
@@ -2198,7 +2187,6 @@ impl AgentModelsModel {
 
     /// The offer to make `profile` the default, when it has a model.
     fn default_button(
-        &self,
         actions: &Actions<Settings>,
         profile: &ProviderProfile,
         default_profile: Option<&str>,
@@ -2279,7 +2267,7 @@ impl AgentModelsModel {
             ));
         } else {
             for model in &self.snapshot.models {
-                cards.push(self.model_card(actions, model));
+                cards.push(Self::model_card(actions, model));
             }
         }
         self.push_provider_cards(actions, &mut cards);
