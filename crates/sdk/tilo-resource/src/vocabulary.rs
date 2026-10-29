@@ -194,7 +194,16 @@ pub struct Declaration {
     /// edit of that edit, a bound verb that verb with its bound values. What
     /// another provider keeping the resource runs it as.
     pub invokes: Option<(String, serde_json::Map<String, serde_json::Value>)>,
+    /// The type of each parameter the code declares by its Rust type
+    /// ([`JsonSchema::field_type`](crate::JsonSchema::field_type)), by name:
+    /// what the surface publishes of it. A parameter without one is
+    /// published as its schema says.
+    pub param_types: Vec<(&'static str, ParamFieldType)>,
 }
+
+/// How a parameter's [`FieldType`](crate::FieldType) is worked out,
+/// declaring the records and enums it names.
+pub type ParamFieldType = crate::surface::FieldTypeOf;
 
 impl AsRef<Self> for Declaration {
     fn as_ref(&self) -> &Self {
@@ -232,6 +241,7 @@ impl Declaration {
             action_type: vocabulary.action_type,
             build,
             invokes: None,
+            param_types: Vec::new(),
         }
     }
 }

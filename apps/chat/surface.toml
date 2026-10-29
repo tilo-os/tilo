@@ -92,26 +92,26 @@ fields = [
 id = "begin-chat"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "initials", required = true, schema = { type = "string" } },
-  { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "initials", type = "text", required = true, schema = { type = "string" } },
+  { name = "color", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "introduce"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "initials", required = true, schema = { type = "string" } },
-  { name = "color", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "initials", type = "text", required = true, schema = { type = "string" } },
+  { name = "color", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
 id = "name-agent"
 kind = "undoable"
 params = [
-  { name = "participant", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "participant", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -119,7 +119,7 @@ id = "create-category"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -127,10 +127,10 @@ id = "create-channel"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "category", required = false, schema = { type = ["string", "null"] } },
-  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
-  { name = "topic", required = false, schema = { type = ["string", "null"] } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", type = { option = { named = "ChannelKind" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
+  { name = "topic", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -138,11 +138,11 @@ id = "create-channel-with-id"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "category", required = false, schema = { type = ["string", "null"] } },
-  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
-  { name = "topic", required = false, schema = { type = ["string", "null"] } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", type = { option = { named = "ChannelKind" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
+  { name = "topic", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -151,7 +151,7 @@ destructive = true
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "category", required = true, schema = { type = "string" } },
+  { name = "category", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -159,8 +159,8 @@ id = "move-channel"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "up", required = true, schema = { type = "boolean" } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "up", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -168,8 +168,8 @@ id = "move-category"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "category", required = true, schema = { type = "string" } },
-  { name = "up", required = true, schema = { type = "boolean" } },
+  { name = "category", type = "text", required = true, schema = { type = "string" } },
+  { name = "up", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -177,8 +177,8 @@ id = "arrange-channels"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "categories", required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "channels", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { category = { type = ["string", "null"] }, channel = { type = "string" } }, required = ["channel"] } } },
+  { name = "categories", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "channels", type = { list = { named = "ChannelPlace" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { category = { type = ["string", "null"] }, channel = { type = "string" } }, required = ["channel"] } } },
 ]
 
 [[resources.verbs]]
@@ -186,8 +186,8 @@ id = "set-channel-category"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "category", required = false, schema = { type = ["string", "null"] } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -195,8 +195,8 @@ id = "rename-channel"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -204,8 +204,8 @@ id = "set-channel-topic"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "topic", required = true, schema = { type = "string" } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "topic", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -213,8 +213,8 @@ id = "archive-channel"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "archived", required = true, schema = { type = "boolean" } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "archived", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -222,8 +222,8 @@ id = "rename-category"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "category", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "category", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -232,24 +232,24 @@ destructive = true
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "report-message"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "author", required = true, schema = { type = "string" } },
-  { name = "reason", required = true, schema = { type = "string" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "author", type = "text", required = true, schema = { type = "string" } },
+  { name = "reason", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "report-person"
 kind = "undoable"
 params = [
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "reason", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "reason", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -257,10 +257,10 @@ id = "decide-reports"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "person", required = true, schema = { type = "string" } },
-  { name = "reports", required = true, schema = { type = "array", items = { type = "string" } } },
-  { name = "ruling", required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { oneOf = [{ type = "string", const = "no-action" }, { type = "string", const = "restrict" }, { type = "string", const = "ban" }] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "person", type = "text", required = true, schema = { type = "string" } },
+  { name = "reports", type = { list = "text" }, required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "ruling", type = { named = "Ruling" }, required = true, schema = { type = "object", additionalProperties = false, properties = { model = { type = "string" }, outcome = { oneOf = [{ type = "string", const = "no-action" }, { type = "string", const = "restrict" }, { type = "string", const = "ban" }] }, reasoning = { type = "string" }, reverted = { type = "array", items = { type = "object", additionalProperties = false, properties = { app = { type = "string" }, changes = { type = "integer", maximum = 4294967295, minimum = 0 }, record = { type = "string" }, run = { type = "string" } }, required = ["app", "record", "run", "changes"] } }, until_ms = { type = ["integer", "null"] } }, required = ["outcome", "reasoning"] } },
 ]
 
 [[resources.verbs]]
@@ -268,17 +268,17 @@ id = "overturn-decision"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "decision", required = true, schema = { type = "string" } },
-  { name = "note", required = true, schema = { type = "string" } },
+  { name = "decision", type = "text", required = true, schema = { type = "string" } },
+  { name = "note", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "mark-read"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "part", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "seen", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "part", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "seen", type = "int", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -286,7 +286,7 @@ id = "submit-feedback"
 field = "comments"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "submission", required = true, schema = {} },
 ]
 
@@ -294,7 +294,7 @@ params = [
 id = "triage"
 kind = "undoable"
 params = [
-  { name = "report", required = true, schema = { type = "string" } },
+  { name = "report", type = "text", required = true, schema = { type = "string" } },
   { name = "update", required = true, schema = {} },
 ]
 
@@ -320,6 +320,13 @@ name = "ChannelKind"
 cases = [
   { name = "text" },
   { name = "voice" },
+]
+
+[[resources.types]]
+name = "ChannelPlace"
+fields = [
+  { name = "channel", type = "text" },
+  { name = "category", type = { option = "text" } },
 ]
 
 [[resources.types]]
@@ -549,6 +556,16 @@ fields = [
 ]
 
 [[resources.types]]
+name = "Ruling"
+fields = [
+  { name = "outcome", type = { named = "Outcome2" } },
+  { name = "until_ms", type = { option = "int" } },
+  { name = "reasoning", type = "text" },
+  { name = "model", type = "text" },
+  { name = "reverted", type = { list = { named = "Reverted" } } },
+]
+
+[[resources.types]]
 name = "ScreenshotRef"
 fields = [
   { name = "hash", type = "text" },
@@ -670,13 +687,13 @@ id = "post"
 incoming_message = true
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
-  { name = "parent", required = false, schema = { type = ["string", "null"] } },
-  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "body", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
   { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
-  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
-  { name = "written", required = false, schema = { type = ["integer", "null"] } },
+  { name = "mentions", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+  { name = "written", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -684,12 +701,12 @@ id = "post-file"
 incoming_message = true
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "content", required = true, schema = { type = "string", content = true } },
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
-  { name = "attachment", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
-  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "content", type = "text", required = true, schema = { type = "string", content = true } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "attachment", type = { option = { named = "AttachmentUpdate" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name", "blob"] } },
+  { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
 
 [[resources.verbs]]
@@ -697,11 +714,11 @@ id = "share-resource"
 incoming_message = true
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "reference", required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
-  { name = "source_provider", required = false, schema = { type = ["string", "null"] } },
-  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "reference", type = { named = "SharedReference" }, required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "source_provider", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
 
 [[resources.verbs]]
@@ -709,35 +726,35 @@ id = "share-window"
 incoming_message = true
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "reference", required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
-  { name = "source_provider", required = true, schema = { type = "string" } },
-  { name = "access", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] }] } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
-  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "reference", type = { named = "SharedReference" }, required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "source_provider", type = "text", required = true, schema = { type = "string" } },
+  { name = "access", type = { option = { named = "ShareAccess" } }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] }] } },
+  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
 
 [[resources.verbs]]
 id = "stop-sharing"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "set-share-access"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "access", required = true, schema = { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "access", type = { named = "ShareAccess" }, required = true, schema = { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] } },
 ]
 
 [[resources.verbs]]
 id = "share-open"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "open", required = true, schema = { type = "boolean" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "open", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -745,20 +762,20 @@ id = "deliver-message"
 incoming_message = true
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "author", required = true, schema = { type = "string" } },
-  { name = "body", required = true, schema = { type = "string" } },
-  { name = "ts", required = false, schema = { type = ["integer", "null"] } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "author", type = "text", required = true, schema = { type = "string" } },
+  { name = "body", type = "text", required = true, schema = { type = "string" } },
+  { name = "ts", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "edit-message"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
-  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
-  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string" } },
+  { name = "body", type = { option = { list = { named = "ClipBlock" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+  { name = "mentions", type = { option = { list = { named = "Mention" } } }, required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
 ]
 
 [[resources.verbs]]
@@ -766,7 +783,7 @@ id = "delete-message"
 destructive = true
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -775,40 +792,40 @@ destructive = true
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "pin"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "pinned", required = true, schema = { type = "boolean" } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "pinned", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
 id = "record-work"
 kind = "undoable"
 params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "work", required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
-  { name = "say", required = false, schema = { type = ["string", "null"] } },
+  { name = "message", type = "text", required = true, schema = { type = "string" } },
+  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
+  { name = "say", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
 id = "carry-counts"
 kind = "undoable"
 params = [
-  { name = "earlier", required = true, schema = { type = "object" } },
+  { name = "earlier", type = { map = { map = "int" } }, required = true, schema = { type = "object" } },
 ]
 
 [[resources.verbs]]
 id = "stream-output"
 kind = "undoable"
 params = [
-  { name = "channel", required = true, schema = { type = "string" } },
-  { name = "reply", required = true, schema = { type = "string" } },
-  { name = "name", required = false, schema = { type = ["string", "null"] } },
+  { name = "channel", type = "text", required = true, schema = { type = "string" } },
+  { name = "reply", type = "text", required = true, schema = { type = "string" } },
+  { name = "name", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "event", required = true, schema = {} },
 ]
 
@@ -862,6 +879,17 @@ cases = [
   { name = "image", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }] },
   { name = "video", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }, { name = "size", type = "int" }] },
   { name = "file", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "size", type = "int" }] },
+]
+
+[[resources.types]]
+name = "AttachmentUpdate"
+fields = [
+  { name = "kind", type = "text" },
+  { name = "name", type = "text" },
+  { name = "blob", type = "text" },
+  { name = "width", type = "int" },
+  { name = "height", type = "int" },
+  { name = "size", type = "int" },
 ]
 
 [[resources.types]]
@@ -967,6 +995,23 @@ cases = [
 ]
 
 [[resources.types]]
+name = "SharedReference"
+fields = [
+  { name = "kind", type = "text" },
+  { name = "id", type = "text" },
+  { name = "label", type = "text" },
+  { name = "span", type = { option = { named = "SharedSpan" } } },
+]
+
+[[resources.types]]
+name = "SharedSpan"
+fields = [
+  { name = "start", type = "int" },
+  { name = "end", type = "int" },
+  { name = "unit", type = "text" },
+]
+
+[[resources.types]]
 name = "ShownAs"
 fields = [
   { name = "name", type = "text" },
@@ -1008,6 +1053,17 @@ fields = [
 ]
 
 [[resources.types]]
+name = "StepUpdate"
+fields = [
+  { name = "id", type = "text" },
+  { name = "sequence", type = "int" },
+  { name = "resource", type = "text" },
+  { name = "label", type = "text" },
+  { name = "outcome", type = "text" },
+  { name = "why", type = { option = "text" } },
+]
+
+[[resources.types]]
 name = "Transition"
 fields = [
   { name = "state", type = { named = "AgentWorkState" } },
@@ -1031,6 +1087,18 @@ fields = [
   { name = "trace", type = { collection = { named = "Step" } } },
 ]
 
+[[resources.types]]
+name = "WorkUpdate"
+fields = [
+  { name = "state", type = "text" },
+  { name = "app", type = { option = "text" } },
+  { name = "did", type = { option = "text" } },
+  { name = "about", type = { option = "text" } },
+  { name = "route", type = { option = "text" } },
+  { name = "why", type = { option = "text" } },
+  { name = "trace", type = { list = { named = "StepUpdate" } } },
+]
+
 [[resources]]
 kind = "tilo.workspace.emoji"
 label = "Workspace emoji"
@@ -1043,15 +1111,15 @@ fields = [
 id = "add-emoji"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
-  { name = "image", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "image", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
 id = "remove-emoji"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.verbs]]
@@ -1059,7 +1127,7 @@ id = "remove-any-emoji"
 field = "moderation"
 kind = "undoable"
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources.types]]
@@ -1082,6 +1150,6 @@ fields = [
 id = "start-draft"
 kind = "undoable"
 params = [
-  { name = "key", required = true, schema = { type = "string" } },
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 

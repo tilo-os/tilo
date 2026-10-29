@@ -55,6 +55,12 @@ pub enum FieldType {
 }
 
 impl FieldType {
+    /// Whether it describes no type: any value.
+    #[must_use]
+    pub const fn is_any(&self) -> bool {
+        matches!(self, Self::Any)
+    }
+
     /// Whether it is an outbox.
     #[must_use]
     pub const fn is_outbox(&self) -> bool {
