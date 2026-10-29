@@ -342,9 +342,9 @@ pub mod prelude {
         TreeView, Widget, labeled_check, labeled_field,
     };
     pub use ui_core::{
-        LatestRequest, LatestTask, LocalState, PresenceCtx, RevisionHistory, SearchRegistry, State,
-        TextRenderer, Theme, UndoAccess, UndoRequest, UndoStatus, collaboration, column,
-        history_source, presence, row, search, stack,
+        LatestRequest, LatestTask, LocalState, PresenceCtx, SearchRegistry, State, TextRenderer,
+        Theme, UndoAccess, UndoRequest, UndoStatus, collaboration, column, history_source,
+        presence, row, search, stack,
     };
 }
 

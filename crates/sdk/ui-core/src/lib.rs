@@ -442,10 +442,7 @@ pub use search::{
     FnProvider, ListIndex, SearchGroup, SearchProvider, SearchRegistry, SearchResult,
 };
 pub use selection::{KeySelection, SelectionModel};
-pub use state::{
-    DocumentDiagnostics, DocumentFrontier, FrontierDiagnostics, Revision, RevisionHistory,
-    RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
-};
+pub use state::{DocumentFrontier, State, UndoEntry, UndoLog};
 pub use text_break::discretionary_hyphen_breaks;
 pub use text_break::{Hyphenate, MakeHyphenation, builtin_hyphenation, hyphenation_generation};
 #[cfg(feature = "lazy-hyphenation")]
