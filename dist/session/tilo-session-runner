@@ -85,7 +85,7 @@ stop_target() {
         flight_pipe=
     fi
     if [ -n "$logout_request" ]; then
-        rm -f -- "$logout_request"
+        rm -f -- "$logout_request" "${logout_request%/*}/lock-state"
         logout_request=
     fi
     if [ "$target_started" = 1 ]; then
@@ -247,6 +247,14 @@ logout_request=$session_runtime/logout-request-$$
 rm -f -- "$logout_request"
 TILO_SESSION_LOGOUT_REQUEST=$logout_request
 export TILO_SESSION_LOGOUT_REQUEST
+# The display manager has just authenticated this login, so it starts unlocked.
+# The compositor reads its lock state from beside the logout request and fails
+# closed without one: a missing record is how a crashed run of this same login
+# looks, and that must come back locked. It re-arms the record locked while it
+# runs and hands back its own state only after an ordered teardown, so a restart
+# within this login keeps what the person last had.
+rm -f -- "$session_runtime/lock-state"
+(umask 077; printf 'unlocked\n' >"$session_runtime/lock-state")
 
 # Keep a small persistent flight recorder in addition to journald. Abrupt
 # resets, boot-loader fallback, and journal vacuuming must not erase the only

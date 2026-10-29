@@ -5,8 +5,8 @@
 #
 #   - LANG=C.UTF-8 with no other locale override, TZ=UTC, and the US
 #     keyboard layout (XKB_DEFAULT_LAYOUT=us);
-#   - a fresh, empty HOME and XDG base directories (config, data, state,
-#     cache, runtime) that are deleted afterwards;
+#   - a fresh, empty HOME, TMPDIR and XDG base directories (config, data,
+#     state, cache, runtime) that are deleted afterwards, all below /tmp;
 #   - no desktop session: no display, keyring (on macOS, no login Keychain),
 #     audio or systemd socket, and
 #     both D-Bus addresses pointed at a socket that never exists. Code that
@@ -69,8 +69,9 @@ fi
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 
-# A short /tmp path keeps Unix socket paths below the 108-byte limit even when
-# TMPDIR points into a deeply nested build directory.
+# A short /tmp path keeps Unix socket paths below the 108-byte limit, also
+# those of sockets tests create in their temporary directories: the root is
+# their TMPDIR too.
 root=$(mktemp -d /tmp/tilo-test-env.XXXXXXXX)
 cleanup() {
     # Tests may leave read-only fixture trees behind.
@@ -91,6 +92,7 @@ export XDG_DATA_HOME="$root/data"
 export XDG_STATE_HOME="$root/state"
 export XDG_CACHE_HOME="$root/cache"
 export XDG_RUNTIME_DIR="$root/runtime"
+export TMPDIR="$root"
 # Fall back to the specification defaults, not a desktop's search path.
 unset XDG_CONFIG_DIRS XDG_DATA_DIRS
 
