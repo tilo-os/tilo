@@ -1844,6 +1844,20 @@ impl QuickFS {
         attr
     }
 
+    /// How long the kernel may keep attributes answered for `ttl`. The kernel
+    /// keeps one answer per inode for every caller, so attributes presented as
+    /// the caller's ([`Self::presented_to`] with no owner named) are never
+    /// kept: another account would be shown the previous caller as owner.
+    /// With the person named, every caller gets the same answer, kept as long
+    /// as any.
+    fn attr_ttl(&self, ttl: Duration) -> Duration {
+        if self.owner.is_some() {
+            ttl
+        } else {
+            Duration::ZERO
+        }
+    }
+
     /// Offer kernel passthrough for read-only opens of fully local files,
     /// with backing files materialised under `dir`. Takes effect only when
     /// the kernel negotiates it at `init`.
@@ -6406,7 +6420,8 @@ impl Filesystem for QuickFS {
                     attr.nlink = self.visible_dir_nlink(attr.ino.0);
                 }
                 let attr = self.presented_to(req, attr);
-                reply.entry(&Self::ttl_for(is_doc), &attr, Generation(0));
+                let ttl = Self::ttl_for(is_doc);
+                reply.entry_with_ttls(&self.attr_ttl(ttl), &ttl, &attr, Generation(0));
             }
             _ => reply.error(to_errno(ENOENT)),
         }
@@ -6415,7 +6430,10 @@ impl Filesystem for QuickFS {
     fn getattr(&self, req: &Request, ino: INodeNo, fh: Option<FileHandle>, reply: ReplyAttr) {
         match self.attr_for_request(ino.0, fh.map(|fh| fh.0)) {
             Ok((attr, is_doc)) => {
-                reply.attr(&Self::ttl_for(is_doc), &self.presented_to(req, attr));
+                reply.attr(
+                    &self.attr_ttl(Self::ttl_for(is_doc)),
+                    &self.presented_to(req, attr),
+                );
             }
             Err(e) => reply.error(to_errno(e)),
         }
@@ -6482,6 +6500,7 @@ impl Filesystem for QuickFS {
                 continue;
             };
             let attr = self.presented_to(req, attr);
+            let ttl = self.attr_ttl(ttl);
             let next_offset = u64::try_from(i).unwrap_or(u64::MAX).saturating_add(1);
             if reply.add(
                 INodeNo(e_ino),
@@ -6655,7 +6674,7 @@ impl Filesystem for QuickFS {
             );
         }
         reply.created(
-            &Self::ttl_for(codec.is_some()),
+            &self.attr_ttl(Self::ttl_for(codec.is_some())),
             &self.presented_to(req, attr),
             Generation(0),
             FileHandle(handle),
@@ -6813,7 +6832,7 @@ impl Filesystem for QuickFS {
                 if attr.kind == FileType::Directory {
                     attr.nlink = self.visible_dir_nlink(ino.0);
                 }
-                reply.attr(&TTL, &self.presented_to(req, attr));
+                reply.attr(&self.attr_ttl(TTL), &self.presented_to(req, attr));
             }
             None => reply.error(to_errno(ENOENT)),
         }
@@ -6847,7 +6866,12 @@ impl Filesystem for QuickFS {
                 if self.record_publisher.is_none() || self.history.is_none() {
                     self.record_version(attr.ino.0, fs_protocol::FileProvenance::Create, None);
                 }
-                reply.entry(&TTL, &self.presented_to(req, attr), Generation(0));
+                reply.entry_with_ttls(
+                    &self.attr_ttl(TTL),
+                    &TTL,
+                    &self.presented_to(req, attr),
+                    Generation(0),
+                );
             }
             None => reply.error(to_errno(EIO)),
         }

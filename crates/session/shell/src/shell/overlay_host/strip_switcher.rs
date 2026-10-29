@@ -23,10 +23,15 @@ impl super::ShellOverlayHost {
     }
 
     /// Whether the switcher is offered: a desktop with strips, outside the
-    /// overview, Quick Settings and a fullscreen window.
+    /// overview, Quick Settings, a fullscreen window and the canvas (which
+    /// shows every strip's windows at once, so there is no strip to be on).
     fn strip_switcher_offered(&self, ribbon: &ui::chrome::shell::StripRibbon) -> bool {
         let flags = self.overlay_flags();
-        !flags.overview && !flags.quick_settings && ribbon.count > 0 && !self.is_fullscreen()
+        !flags.overview
+            && !flags.quick_settings
+            && ribbon.count > 0
+            && !self.is_fullscreen()
+            && !self.canvas_shown()
     }
 
     /// What the ribbon and rail stand in and report, read from the chrome
@@ -48,7 +53,9 @@ impl super::ShellOverlayHost {
             .map_or(0.0, |ptr| unsafe { &*ptr }.scroll_x());
         StripFrame {
             ribbon_offered: self.strip_switcher_offered(&ribbon),
-            rail_offered: !self.overlay_flags().overview && !self.is_fullscreen(),
+            rail_offered: !self.overlay_flags().overview
+                && !self.is_fullscreen()
+                && !self.canvas_shown(),
             ribbon,
             rail,
             strips,
