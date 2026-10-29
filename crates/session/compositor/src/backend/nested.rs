@@ -294,16 +294,9 @@ impl Backend for NestedBackend {
         state: &mut State,
         frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
-        let mut guard = self.inner.borrow_mut();
-        let inner = &mut *guard;
-        if inner.output.name() != frame.output() {
-            return Err(BackendError(format!("no output named {}", frame.output())).into());
-        }
-        let output = inner.output.clone();
         crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
-            &mut inner.renderer,
+            &mut self.inner.borrow_mut().renderer,
             state,
-            &output,
             frame,
         )
     }

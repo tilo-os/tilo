@@ -556,6 +556,7 @@ impl State {
         self.space.refresh();
         self.popups.cleanup();
         self.unmapped.retain(IsAlive::alive);
+        self.sync_toplevels();
     }
 }
 

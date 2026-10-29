@@ -179,18 +179,7 @@ impl Backend for HeadlessBackend {
         state: &mut State,
         frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
-        let output = self
-            .outputs
-            .iter()
-            .find(|output| output.output.name() == frame.output())
-            .map(|output| output.output.clone())
-            .ok_or_else(|| BackendError(format!("no output named {}", frame.output())))?;
-        crate::capture::copy::<_, Image<'static, 'static>>(
-            &mut self.renderer,
-            state,
-            &output,
-            frame,
-        )
+        crate::capture::copy::<_, Image<'static, 'static>>(&mut self.renderer, state, frame)
     }
 
     fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {

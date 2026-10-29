@@ -1,7 +1,8 @@
 //! Screen capture against a headless compositor: a trusted tool copies a
 //! whole output and a region of it into shared memory through
 //! `wlr-screencopy`, waits for damage when it asks to, and copies through
-//! `ext-image-copy-capture`; ordinary clients see neither global.
+//! `ext-image-copy-capture`, and picks a window from the toplevel list and
+//! copies only it; ordinary clients see none of these globals.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -21,10 +22,22 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
 use tilo_compositor::{Compositor, HostLayer, OutputConfig, StackPolicy, SurfaceHost};
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_shm,
-    wl_shm::WlShm, wl_shm_pool::WlShmPool,
+    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_registry,
+    wl_registry::WlRegistry, wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool,
+    wl_surface::WlSurface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+};
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
+    ext_foreign_toplevel_handle_v1::{self, ExtForeignToplevelHandleV1},
+    ext_foreign_toplevel_list_v1::{self, ExtForeignToplevelListV1},
+};
+use wayland_protocols::ext::image_capture_source::v1::client::ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1;
+use wayland_protocols::xdg::shell::client::{
+    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base,
+    xdg_wm_base::XdgWmBase,
+};
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_image_capture_source_v1::ExtImageCaptureSourceV1,
     ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
@@ -56,6 +69,13 @@ struct Seen {
     screencopy: Option<ZwlrScreencopyManagerV1>,
     image_copy: Option<ExtImageCopyCaptureManagerV1>,
     sources: Option<ExtOutputImageCaptureSourceManagerV1>,
+    window_sources: Option<ExtForeignToplevelImageCaptureSourceManagerV1>,
+    toplevel_list: Option<ExtForeignToplevelListV1>,
+    /// Listed windows and their app ids.
+    toplevels: Vec<(ExtForeignToplevelHandleV1, String)>,
+    compositor: Option<WlCompositor>,
+    wm_base: Option<XdgWmBase>,
+    configured: bool,
     /// The screencopy frame's shm buffer: format, width, height, stride.
     buffer: Option<(u32, u32, u32, u32)>,
     buffer_done: bool,
@@ -224,6 +244,47 @@ fn compositor() -> Compositor {
     compositor
 }
 
+/// Open a window of `width` x `height` in one colour (B, G, R) and wait
+/// until it is configured and shown.
+fn open_window(
+    compositor: &mut Compositor,
+    tool: &mut Tool,
+    width: i32,
+    height: i32,
+    bgr: [u8; 3],
+) -> (WlSurface, XdgToplevel) {
+    let qh = tool.queue.handle();
+    let surface = tool
+        .seen
+        .compositor
+        .as_ref()
+        .unwrap()
+        .create_surface(&qh, ());
+    let xdg = tool
+        .seen
+        .wm_base
+        .as_ref()
+        .unwrap()
+        .get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id("org.example.shared".into());
+    surface.commit();
+    pump(compositor, tool, |seen| seen.configured);
+    let (buffer, memory) = tool.buffer(width, height);
+    let pixel = [bgr[0], bgr[1], bgr[2], 255];
+    rustix::io::pwrite(
+        &memory,
+        &pixel.repeat(usize::try_from(width * height).unwrap()),
+        0,
+    )
+    .unwrap();
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage_buffer(0, 0, width, height);
+    surface.commit();
+    pump(compositor, tool, |_| true);
+    (surface, toplevel)
+}
+
 fn trusted_tool(compositor: &mut Compositor) -> Tool {
     let mut tool = Tool::connect(compositor, true);
     pump(compositor, &mut tool, |seen| {
@@ -232,6 +293,10 @@ fn trusted_tool(compositor: &mut Compositor) -> Tool {
             && seen.screencopy.is_some()
             && seen.image_copy.is_some()
             && seen.sources.is_some()
+            && seen.window_sources.is_some()
+            && seen.toplevel_list.is_some()
+            && seen.compositor.is_some()
+            && seen.wm_base.is_some()
     });
     tool
 }
@@ -245,6 +310,8 @@ fn ordinary_clients_cannot_capture_the_screen() {
         "zwlr_screencopy_manager_v1",
         "ext_image_copy_capture_manager_v1",
         "ext_output_image_capture_source_manager_v1",
+        "ext_foreign_toplevel_image_capture_source_manager_v1",
+        "ext_foreign_toplevel_list_v1",
     ] {
         assert!(
             !tool.seen.globals.iter().any(|seen| seen == global),
@@ -404,6 +471,44 @@ fn a_trusted_tool_copies_an_output_through_image_copy_capture() {
     assert!(tool.seen.failed);
 }
 
+#[test]
+fn a_trusted_tool_picks_a_window_from_the_list_and_copies_only_it() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let _window = open_window(&mut compositor, &mut tool, 20, 10, GREEN);
+    pump(&mut compositor, &mut tool, |seen| {
+        seen.toplevels
+            .iter()
+            .any(|(_, app_id)| app_id == "org.example.shared")
+    });
+    let qh = tool.queue.handle();
+    let handle = tool.seen.toplevels[0].0.clone();
+    let source = tool
+        .seen
+        .window_sources
+        .clone()
+        .unwrap()
+        .create_source(&handle, &qh, ());
+    let session =
+        tool.seen
+            .image_copy
+            .clone()
+            .unwrap()
+            .create_session(&source, Options::empty(), &qh, ());
+    pump(&mut compositor, &mut tool, |seen| seen.session_done);
+    assert_eq!(tool.seen.session_size, Some((20, 10)), "the window's size");
+
+    let (buffer, memory) = tool.buffer(20, 10);
+    let frame = session.create_frame(&qh, ());
+    frame.attach_buffer(&buffer);
+    frame.damage_buffer(0, 0, 20, 10);
+    frame.capture();
+    pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready, "the frame was copied");
+    assert!(near(pixel(&memory, 20, 0, 0), GREEN));
+    assert!(near(pixel(&memory, 20, 19, 9), GREEN));
+}
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -430,6 +535,14 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 "ext_output_image_capture_source_manager_v1" => {
                     seen.sources = Some(registry.bind(name, 1, qh, ()));
                 }
+                "ext_foreign_toplevel_image_capture_source_manager_v1" => {
+                    seen.window_sources = Some(registry.bind(name, 1, qh, ()));
+                }
+                "ext_foreign_toplevel_list_v1" => {
+                    seen.toplevel_list = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wl_compositor" => seen.compositor = Some(registry.bind(name, 4, qh, ())),
+                "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
                 _ => {}
             }
         }
@@ -531,7 +644,81 @@ impl Dispatch<ExtImageCopyCaptureFrameV1, ()> for Seen {
     }
 }
 
+impl Dispatch<ExtForeignToplevelListV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ExtForeignToplevelListV1,
+        event: ext_foreign_toplevel_list_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } = event {
+            seen.toplevels.push((toplevel, String::new()));
+        }
+    }
+
+    event_created_child!(Seen, ExtForeignToplevelListV1, [
+        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ()),
+    ]);
+}
+
+impl Dispatch<ExtForeignToplevelHandleV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        handle: &ExtForeignToplevelHandleV1,
+        event: ext_foreign_toplevel_handle_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_foreign_toplevel_handle_v1::Event::AppId { app_id } = event
+            && let Some(listed) = seen
+                .toplevels
+                .iter_mut()
+                .find(|(listed, _)| listed == handle)
+        {
+            listed.1 = app_id;
+        }
+    }
+}
+
+impl Dispatch<XdgWmBase, ()> for Seen {
+    fn event(
+        _: &mut Self,
+        base: &XdgWmBase,
+        event: xdg_wm_base::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<XdgSurface, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        surface: &XdgSurface,
+        event: xdg_surface::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+            seen.configured = true;
+        }
+    }
+}
+
 delegate_noop!(Seen: ignore WlShm);
+delegate_noop!(Seen: ignore WlCompositor);
+delegate_noop!(Seen: ignore WlSurface);
+delegate_noop!(Seen: ignore XdgToplevel);
+delegate_noop!(Seen: ExtForeignToplevelImageCaptureSourceManagerV1);
 delegate_noop!(Seen: ignore WlOutput);
 delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);

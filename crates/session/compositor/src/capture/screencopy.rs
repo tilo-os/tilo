@@ -18,9 +18,7 @@ use smithay::reexports::wayland_server::{
 };
 use smithay::utils::{Buffer, Logical, Physical, Rectangle};
 
-use super::{
-    Frame as Copy, Reply, Watcher, buffer_size, check_dmabuf, check_shm, region_on_output,
-};
+use super::{Frame as Copy, Reply, Target, Watcher, check_dmabuf, check_shm, region_on_output};
 use crate::state::{ClientState, State};
 
 /// The protocol version offered.
@@ -71,7 +69,7 @@ impl Frame {
 pub struct FrameData {
     /// The output and the region in its physical pixels; `None` when the
     /// output is not ours or the region misses it (the frame failed).
-    target: Option<(String, Rectangle<i32, Physical>)>,
+    target: Option<Target>,
     cursor: bool,
     /// Set once a copy was asked for, with whether it waits for damage.
     used: Mutex<Option<bool>>,
@@ -150,16 +148,10 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for State {
                 used: Mutex::new(None),
             },
         );
-        let Some((name, region)) = target else {
+        let Some(size) = target.and_then(|target| state.frame_size(&target)) else {
             frame.failed();
             return;
         };
-        let transform = state
-            .shown_size(&name)
-            .map_or(smithay::utils::Transform::Normal, |(output, _)| {
-                output.current_transform()
-            });
-        let size = buffer_size(region.size, transform);
         let (Ok(width), Ok(height)) = (u32::try_from(size.w), u32::try_from(size.h)) else {
             frame.failed();
             return;
@@ -186,12 +178,12 @@ fn frame_target(
     state: &State,
     output: &WlOutput,
     region: Option<Rectangle<i32, Logical>>,
-) -> Option<(String, Rectangle<i32, Physical>)> {
+) -> Option<Target> {
     let name = Output::from_resource(output)?.name();
     let (output, shown) = state.shown_size(&name)?;
     let scale = output.current_scale().fractional_scale();
     let region = region_on_output(region, scale, shown)?;
-    Some((name, region))
+    Some(Target::Output { name, region })
 }
 
 impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for State {
@@ -222,27 +214,25 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for State {
             }
             *used = Some(with_damage);
         }
-        let Some((name, region)) = data.target.clone() else {
+        let Some(target) = data.target.clone() else {
             frame.failed();
             return;
         };
-        let Some((output, _)) = state.shown_size(&name) else {
+        let Some(size) = state.frame_size(&target) else {
             frame.failed();
             return;
         };
-        let size = buffer_size(region.size, output.current_transform());
         if let Err(why) = check_buffer(state, &buffer, size) {
             frame.post_error(zwlr_screencopy_frame_v1::Error::InvalidBuffer, why);
             return;
         }
         state.capture.queue(Copy {
             reply: Reply::Screencopy(Frame(frame.clone())),
-            output: name.clone(),
-            region,
+            watcher: Watcher::Client(client.id(), target.clone()),
+            target,
             buffer,
             cursor: data.cursor,
             wait_for_damage: with_damage,
-            watcher: Watcher::Client(client.id(), name),
         });
     }
 }
