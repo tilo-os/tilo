@@ -226,9 +226,12 @@ pub struct MapsApp {
     /// same path a Ctrl+K palette dispatch takes. `None` until the surface is
     /// attached; an unattached map only shows its edits.
     dispatch: Option<ui::framework::Dispatcher<Workspace>>,
-    /// This device's offline areas, as stored; `None` when the map has no
-    /// host to keep them.
-    offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
+    /// The offline areas record and this device's id; `None` when the map
+    /// has no host to keep them.
+    offline_areas: Option<(
+        ui::framework::PersonRecord<crate::offline_areas::OfflineAreas>,
+        String,
+    )>,
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
