@@ -2332,15 +2332,13 @@ impl AccountsPane {
         let id = accounts::AccountId::from(view.id.clone());
         let runtime = self.sync_statuses.get(&id);
         let mount = self.cloud.mount(&view.id);
-        let pending = self
-            .dir
-            .mail
-            .accounts
-            .iter()
-            .any(|account| account.id == view.id && account.config.import_pending)
-            || self.account_root.store().get(&id).is_some_and(|account| {
-                account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
-            });
+        let pending = self.dir.of(AccountKind::Mail).any(|account| {
+            account.id.as_str() == view.id
+                && (account.type_id.as_str() == accounts::thunderbird::PENDING_TYPE
+                    || account.config.get("import_pending") == Some(&serde_json::Value::Bool(true)))
+        }) || self.account_root.store().get(&id).is_some_and(|account| {
+            account.config.get("pending_reconnect") == Some(&serde_json::Value::Bool(true))
+        });
         let import_only = self.account_root.store().get(&id).is_some_and(|account| {
             accounts::cloud_types::files_mode(account)
                 == Some(accounts::cloud_types::FilesMode::Import)
@@ -2469,10 +2467,9 @@ impl AccountsPane {
         let service = if view.kind == AccountKind::GoogleDrive {
             Some(t("accounts-google-files-service"))
         } else if view.kind == AccountKind::Mail
-            && self.dir.mail.accounts.iter().any(|mail| {
-                mail.id == view.id
-                    && mail.config.auth == accounts::email::AuthMethod::OAuth
-                    && mail.config.imap_host == "imap.gmail.com"
+            && self.dir.mail_config(&view.id).is_some_and(|mail| {
+                mail.auth == accounts::email::AuthMethod::OAuth
+                    && mail.imap_host == "imap.gmail.com"
             })
         {
             Some(t("accounts-google-mail-service"))
@@ -2819,10 +2816,9 @@ impl AccountsPane {
         }
         let ids: Vec<String> = self
             .dir
-            .mail
-            .accounts
-            .iter()
-            .map(|account| account.id.clone())
+            .views_of(AccountKind::Mail)
+            .into_iter()
+            .map(|view| view.id)
             .collect();
         if self.mail_grants.asked.as_ref() == Some(&ids) {
             return;

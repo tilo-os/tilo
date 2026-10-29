@@ -23,13 +23,7 @@
 //! consume it. Passwords are sealed in the accompanying encrypted
 //! [`accounts::SecretVault`], never in the plaintext store.
 //!
-//! [`AccountDirectory::load_in`] projects that shared store into the in-memory
-//! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
-//! unchanged while the on-disk store is the shared one. Consequently the
-//! `MailStore` / `MailAccount` types below are now **render view-models**
-//! populated from the shared store (around the shared
-//! [`accounts::email::AccountConfig`]); every account kind writes the
-//! canonical store.
+//! The pane renders that store as it is ([`AccountDirectory`]).
 //!
 //! # Whose accounts these are
 //!
@@ -583,130 +577,7 @@ impl AccountRoot {
 }
 
 // ---------------------------------------------------------------------------
-// Mail view-model.
-// ---------------------------------------------------------------------------
-
-/// A single configured mail account.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MailAccount {
-    pub id: String,
-    pub config: AccountConfig,
-    pub tint: u8,
-}
-
-/// The mail account list.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MailStore {
-    pub accounts: Vec<MailAccount>,
-}
-
-// ---------------------------------------------------------------------------
-// DAV store — CalDAV (calendar) and WebDAV (files).
-// ---------------------------------------------------------------------------
-
-/// A `CalDAV` / `WebDAV` account. Both speak HTTP(S) to a base URL with a
-/// username, so they share one shape. Credentials are never serialised.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DavAccount {
-    pub id: String,
-    pub label: String,
-    /// Collection base URL, e.g. `https://dav.example.com/calendars/me/`.
-    pub base_url: String,
-    pub username: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub tint: u8,
-    #[serde(skip)]
-    pub password: String,
-}
-
-impl DavAccount {
-    pub fn new(
-        label: impl Into<String>,
-        base_url: impl Into<String>,
-        username: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: format!("dav-{}", uuid::Uuid::new_v4()),
-            label: label.into(),
-            base_url: base_url.into(),
-            username: username.into(),
-            enabled: true,
-            tint: 0,
-            password: String::new(),
-        }
-    }
-}
-
-/// A DAV account list. The *same* struct backs both the calendar and the
-/// files view of the canonical store.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DavStore {
-    pub accounts: Vec<DavAccount>,
-}
-
-// ---------------------------------------------------------------------------
-// Nextcloud store — one sign-in lighting up mail/calendar/files.
-// ---------------------------------------------------------------------------
-
-/// A Nextcloud account: a server URL + user that can surface mail,
-/// calendar, and files. Consumers derive per-service URLs from the root.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independently toggled service (files/calendar/mail) plus \
-              enabled, all serialised individually; not a state machine to collapse into an enum"
-)]
-pub struct NextcloudAccount {
-    pub id: String,
-    pub label: String,
-    /// Server root, e.g. `https://cloud.example.com`.
-    pub server_url: String,
-    pub username: String,
-    #[serde(default = "default_true")]
-    pub use_files: bool,
-    #[serde(default = "default_true")]
-    pub use_calendar: bool,
-    #[serde(default = "default_true")]
-    pub use_mail: bool,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub tint: u8,
-    #[serde(skip)]
-    pub password: String,
-}
-
-impl NextcloudAccount {
-    pub fn new(
-        label: impl Into<String>,
-        server_url: impl Into<String>,
-        username: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: format!("nc-{}", uuid::Uuid::new_v4()),
-            label: label.into(),
-            server_url: server_url.into(),
-            username: username.into(),
-            use_files: true,
-            use_calendar: true,
-            use_mail: true,
-            enabled: true,
-            tint: 0,
-            password: String::new(),
-        }
-    }
-}
-
-/// The Nextcloud account list.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct NextcloudStore {
-    pub accounts: Vec<NextcloudAccount>,
-}
-
-// ---------------------------------------------------------------------------
-// A read facade the panel renders over all four stores.
+// What the panel renders of the canonical store.
 // ---------------------------------------------------------------------------
 
 /// The protocol family of an account — drives grouping and the row icon.
@@ -810,9 +681,8 @@ impl AccountKind {
     }
 }
 
-/// A uniform, read-only view of one account for the panel. Built from any
-/// of the four stores. This is render-only; edits go through the typed
-/// store the account came from.
+/// A uniform, read-only view of one account for the panel. This is
+/// render-only; edits go through the canonical store.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountView {
     pub id: String,
@@ -824,113 +694,99 @@ pub struct AccountView {
     pub tint: u8,
 }
 
-/// The full set of accounts the panel shows, loaded from all four stores.
+/// The accounts the panel shows: the canonical store's, of every kind it
+/// lists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountDirectory {
-    pub mail: MailStore,
-    pub calendar: DavStore,
-    pub files: DavStore,
-    pub nextcloud: NextcloudStore,
-    /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive accounts,
-    /// straight from the canonical store.
-    pub cloud: Vec<accounts::Account>,
+    pub accounts: Vec<accounts::Account>,
 }
 
 impl AccountDirectory {
-    /// Loads the directory from the stores under `root`.
+    /// Loads the directory from the store under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
-        let shared = root.store();
         Self {
-            mail: mail_store_from_shared(&shared),
-            calendar: caldav_store_from_shared(&shared),
-            files: webdav_store_from_shared(&shared),
-            nextcloud: nextcloud_store_from_shared(&shared),
-            cloud: shared
+            accounts: root
+                .store()
                 .all()
                 .iter()
-                .filter(|account| {
-                    AccountKind::from_type_id(account.type_id.as_str())
-                        .is_some_and(AccountKind::is_cloud_storage)
-                })
+                .filter(|account| AccountKind::from_type_id(account.type_id.as_str()).is_some())
                 .cloned()
                 .collect(),
         }
     }
 
-    /// Whether every store is empty — the panel uses this to substitute a
+    /// Whether there are no accounts — the panel uses this to substitute a
     /// populated sample so the surface is never blank.
     pub fn is_empty(&self) -> bool {
-        self.mail.accounts.is_empty()
-            && self.calendar.accounts.is_empty()
-            && self.files.accounts.is_empty()
-            && self.nextcloud.accounts.is_empty()
-            && self.cloud.is_empty()
+        self.accounts.is_empty()
+    }
+
+    /// The accounts of one kind, in store order.
+    pub fn of(&self, kind: AccountKind) -> impl Iterator<Item = &accounts::Account> {
+        self.accounts.iter().filter(move |account| {
+            AccountKind::from_type_id(account.type_id.as_str()) == Some(kind)
+        })
+    }
+
+    /// A mail account's configuration.
+    pub fn mail_config(&self, id: &str) -> Option<AccountConfig> {
+        self.of(AccountKind::Mail)
+            .find(|account| account.id.as_str() == id)
+            .and_then(|account| AccountConfig::from_value(account.config.clone()).ok())
     }
 
     /// The uniform views for one kind, in store order.
     pub fn views_of(&self, kind: AccountKind) -> Vec<AccountView> {
-        match kind {
-            AccountKind::Mail => self
-                .mail
-                .accounts
-                .iter()
-                .map(|a| AccountView {
-                    id: a.id.clone(),
-                    kind,
-                    label: a.config.label().to_string(),
-                    summary: a.config.email.clone(),
-                    enabled: true,
-                    tint: a.tint,
-                })
-                .collect(),
-            AccountKind::CalDav => self.calendar.accounts.iter().map(dav_view_caldav).collect(),
-            AccountKind::WebDav => self.files.accounts.iter().map(dav_view_webdav).collect(),
-            AccountKind::Nextcloud => self.nextcloud.accounts.iter().map(nextcloud_view).collect(),
-            AccountKind::GoogleDrive
-            | AccountKind::OneDrive
-            | AccountKind::Dropbox
-            | AccountKind::ICloudDrive => self
-                .cloud
-                .iter()
-                .filter(|account| account.type_id.as_str() == kind.type_id())
-                .map(|account| cloud_view(kind, account))
-                .collect(),
+        self.of(kind)
+            .filter_map(|account| account_view(kind, account))
+            .collect()
+    }
+}
+
+/// A string field of an account's configuration, empty when absent.
+fn config_str<'a>(account: &'a accounts::Account, key: &str) -> &'a str {
+    account
+        .config
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+}
+
+fn account_view(kind: AccountKind, account: &accounts::Account) -> Option<AccountView> {
+    let id = account.id.to_string();
+    Some(match kind {
+        AccountKind::Mail => {
+            let config = AccountConfig::from_value(account.config.clone()).ok()?;
+            AccountView {
+                id,
+                kind,
+                label: config.label().to_string(),
+                summary: config.email,
+                enabled: true,
+                tint: account.tint,
+            }
         }
-    }
-}
-
-fn dav_view_caldav(a: &DavAccount) -> AccountView {
-    AccountView {
-        id: a.id.clone(),
-        kind: AccountKind::CalDav,
-        label: a.label.clone(),
-        summary: short_url(&a.base_url),
-        enabled: a.enabled,
-        tint: a.tint,
-    }
-}
-
-fn dav_view_webdav(a: &DavAccount) -> AccountView {
-    AccountView {
-        id: a.id.clone(),
-        kind: AccountKind::WebDav,
-        label: a.label.clone(),
-        summary: short_url(&a.base_url),
-        enabled: a.enabled,
-        tint: a.tint,
-    }
-}
-
-fn nextcloud_view(a: &NextcloudAccount) -> AccountView {
-    AccountView {
-        id: a.id.clone(),
-        kind: AccountKind::Nextcloud,
-        label: a.label.clone(),
-        summary: short_url(&a.server_url),
-        enabled: a.enabled,
-        tint: a.tint,
-    }
+        AccountKind::CalDav | AccountKind::Nextcloud | AccountKind::WebDav => {
+            let url = if kind == AccountKind::WebDav {
+                "base_url"
+            } else {
+                "server_url"
+            };
+            AccountView {
+                id,
+                kind,
+                label: account.display_name.clone(),
+                summary: short_url(config_str(account, url)),
+                enabled: account.enabled,
+                tint: account.tint,
+            }
+        }
+        AccountKind::GoogleDrive
+        | AccountKind::OneDrive
+        | AccountKind::Dropbox
+        | AccountKind::ICloudDrive => cloud_view(kind, account),
+    })
 }
 
 fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
@@ -966,19 +822,6 @@ pub fn short_url(url: &str) -> String {
         .to_string()
 }
 
-fn default_true() -> bool {
-    true
-}
-
-// ---------------------------------------------------------------------------
-// Bridges onto the shared canonical store.
-//
-// Email and CalDAV accounts live in the one `accounts::AccountStore`. These
-// project a filtered view of it back into the in-memory `MailStore` / `DavStore`
-// shapes the pane already renders, so the pane code and its tests are unchanged
-// while the on-disk store is now the shared one.
-// ---------------------------------------------------------------------------
-
 /// The shared-store type id for email accounts (Mail contributes these).
 const MAIL_TYPE: &str = "email";
 /// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
@@ -986,155 +829,68 @@ const CALDAV_TYPE: &str = "caldav";
 pub const WEBDAV_TYPE: &str = "webdav";
 pub const NEXTCLOUD_TYPE: &str = "nextcloud";
 
-/// Project the shared store's email accounts into a [`MailStore`].
-fn mail_store_from_shared(shared: &accounts::AccountStore) -> MailStore {
-    let ty = accounts::AccountTypeId::from(MAIL_TYPE);
-    let accounts: Vec<MailAccount> = shared
-        .list(&ty)
-        .into_iter()
-        .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
-        .filter_map(|a| {
-            // The opaque config is Mail's own `AccountConfig`.
-            let mut config = AccountConfig::from_value(a.config.clone()).ok()?;
-            config.import_pending |= a.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
-            Some(MailAccount {
-                id: a.id.to_string(),
-                config,
-                tint: a.tint,
-            })
-        })
-        .collect();
-    MailStore { accounts }
-}
-
-/// Project the shared store's `CalDAV` accounts into a [`DavStore`] (the shape
-/// the pane renders for the Calendar kind).
-fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
-    let ty = accounts::AccountTypeId::from(CALDAV_TYPE);
-    let accounts = shared
-        .list(&ty)
-        .into_iter()
-        .map(|a| DavAccount {
-            id: a.id.to_string(),
-            label: a.display_name.clone(),
-            base_url: a
-                .config
-                .get("server_url")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            username: a
-                .config
-                .get("username")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string(),
-            enabled: a.enabled,
-            tint: a.tint,
-            password: String::new(),
-        })
-        .collect();
-    DavStore { accounts }
-}
-
-fn webdav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
-    let ty = accounts::AccountTypeId::from(WEBDAV_TYPE);
-    DavStore {
-        accounts: shared
-            .list(&ty)
-            .into_iter()
-            .filter_map(|a| {
-                let mut config = a.config_as::<DavAccount>()?;
-                config.id = a.id.to_string();
-                config.label.clone_from(&a.display_name);
-                config.enabled = a.enabled;
-                config.tint = a.tint;
-                config.password.clear();
-                Some(config)
-            })
-            .collect(),
-    }
-}
-
-fn nextcloud_store_from_shared(shared: &accounts::AccountStore) -> NextcloudStore {
-    let ty = accounts::AccountTypeId::from(NEXTCLOUD_TYPE);
-    NextcloudStore {
-        accounts: shared
-            .list(&ty)
-            .into_iter()
-            .filter_map(|a| {
-                let mut config = a.config_as::<NextcloudAccount>()?;
-                config.id = a.id.to_string();
-                config.label.clone_from(&a.display_name);
-                config.enabled = a.enabled;
-                config.tint = a.tint;
-                config.password.clear();
-                Some(config)
-            })
-            .collect(),
-    }
-}
-
 /// A deterministic, populated directory for `--shots` and tests so the
 /// panel renders a realistic accounts list without touching disk.
 pub fn sample_directory() -> AccountDirectory {
-    let work = MailAccount {
-        id: "ada@example.com".into(),
-        config: AccountConfig {
-            email: "ada@example.com".into(),
-            display_name: "Work email".into(),
-            imap_host: "imap.fastmail.com".into(),
+    fn account(
+        id: &str,
+        type_id: &str,
+        name: &str,
+        tint: u8,
+        config: serde_json::Value,
+    ) -> accounts::Account {
+        let mut account = accounts::Account::new(id, type_id);
+        account.display_name = name.into();
+        account.tint = tint;
+        account.config = config;
+        account
+    }
+    let mail = |id: &str, name: &str, provider: &str, tint: u8| {
+        let config = AccountConfig {
+            email: id.into(),
+            display_name: name.into(),
+            imap_host: format!("imap.{provider}"),
             imap_port: 993,
             imap_tls: true,
-            smtp_host: "smtp.fastmail.com".into(),
+            smtp_host: format!("smtp.{provider}"),
             smtp_port: 465,
             smtp_tls: true,
-            username: "ada@example.com".into(),
+            username: id.into(),
             ..Default::default()
-        },
-        tint: 2,
+        };
+        account(
+            id,
+            MAIL_TYPE,
+            name,
+            tint,
+            config.to_value().unwrap_or_default(),
+        )
     };
-
-    let personal = MailAccount {
-        id: "ada.personal@gmail.com".into(),
-        config: AccountConfig {
-            email: "ada.personal@gmail.com".into(),
-            display_name: "Personal email".into(),
-            imap_host: "imap.gmail.com".into(),
-            imap_port: 993,
-            imap_tls: true,
-            smtp_host: "smtp.gmail.com".into(),
-            smtp_port: 465,
-            smtp_tls: true,
-            username: "ada.personal@gmail.com".into(),
-            ..Default::default()
-        },
-        tint: 5,
-    };
-
-    let mut cal = DavAccount::new(
-        "Team calendar",
-        "https://dav.example.com/calendars/ada/",
-        "ada",
-    );
-    cal.tint = 3;
-
-    let mut cloud = NextcloudAccount::new("Home Nextcloud", "https://cloud.example.com", "ada");
-    cloud.use_mail = false;
-    cloud.tint = 6;
-
     AccountDirectory {
-        mail: MailStore {
-            accounts: vec![work, personal],
-        },
-        calendar: DavStore {
-            accounts: vec![cal],
-        },
-        files: DavStore::default(),
-        nextcloud: NextcloudStore {
-            accounts: vec![cloud],
-        },
-        cloud: Vec::new(),
+        accounts: vec![
+            mail("ada@example.com", "Work email", "fastmail.com", 2),
+            mail("ada.personal@gmail.com", "Personal email", "gmail.com", 5),
+            account(
+                "dav-team",
+                CALDAV_TYPE,
+                "Team calendar",
+                3,
+                serde_json::json!({
+                    "server_url": "https://dav.example.com/calendars/ada/",
+                    "username": "ada",
+                }),
+            ),
+            account(
+                "nc-home",
+                NEXTCLOUD_TYPE,
+                "Home Nextcloud",
+                6,
+                serde_json::json!({
+                    "server_url": "https://cloud.example.com", "username": "ada",
+                    "use_files": true, "use_calendar": true, "use_mail": false,
+                }),
+            ),
+        ],
     }
 }
 
@@ -1381,7 +1137,11 @@ mod tests {
         }
         let mail = &dir.views_of(AccountKind::Mail)[0];
         assert_eq!(mail.summary, "ada@example.com");
-        assert_eq!(dir.mail.accounts[0].config.imap_host, "imap.fastmail.com");
+        assert_eq!(
+            dir.mail_config("ada@example.com")
+                .map(|config| config.imap_host),
+            Some("imap.fastmail.com".into())
+        );
         let cloud = &dir.views_of(AccountKind::Nextcloud)[0];
         assert_eq!(cloud.summary, "cloud.example.com");
 
@@ -1436,7 +1196,11 @@ mod tests {
             }
 
             let recovered = AccountDirectory::load_in(&root);
-            assert_eq!(recovered.nextcloud.accounts.len(), 1, "phase {phase}");
+            assert_eq!(
+                recovered.of(AccountKind::Nextcloud).count(),
+                1,
+                "phase {phase}"
+            );
             assert_eq!(
                 root.vault().get(&id).map(|secret| secret.password),
                 Some("sealed-secret".into()),

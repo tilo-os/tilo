@@ -887,7 +887,11 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
     store.upsert(account);
     root.save_store(&store).expect("the store is saved");
     let dir = AccountDirectory::load_in(&root);
-    assert_eq!(dir.mail.accounts.len(), 1, "the pane lists a Mail account");
+    assert_eq!(
+        dir.of(AccountKind::Mail).count(),
+        1,
+        "the pane lists a Mail account"
+    );
     root.custodian()
         .seal_oauth(
             &id,
