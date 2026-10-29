@@ -87,17 +87,12 @@ async fn a_room_hosted_here_dials_nothing_and_an_unreachable_host_is_said() {
     let here = Connect::new(governed_owner, governed).unwrap();
     assert!(here.hosted_here(&identity), "this device hosts it");
 
-    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
-        .relay_mode(iroh::RelayMode::Disabled)
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap();
+    let (endpoint, lookup) =
+        tilo_network_actor::loopback_endpoint(Some(iroh::SecretKey::from_bytes(&key.to_bytes())))
+            .await;
     let (commands, actor) = Actor::spawn_reporting_addrs(
         endpoint,
-        iroh::address_lookup::memory::MemoryLookup::new(),
+        lookup,
         Some(identity),
         Arc::new(std::sync::Mutex::new(Vec::new())),
     );
