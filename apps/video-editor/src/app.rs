@@ -48,9 +48,6 @@ use crate::model::{
 };
 use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
-#[cfg(any(feature = "decode", test))]
-#[cfg(test)]
-use crate::preview::CompositedFrame;
 use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
@@ -325,11 +322,6 @@ impl Notice {
     fn with_action(mut self, action: notices::NoticeAction) -> Self {
         self.action = Some(action);
         self
-    }
-
-    #[cfg(test)]
-    fn is_failure(&self) -> bool {
-        self.level == NoticeLevel::Failed
     }
 }
 
@@ -2567,11 +2559,6 @@ impl VideoEditorApp {
     /// Reconcile both side flaps with the current width and advance their
     /// eased reveal using real elapsed time. Kept as the motion-on helper for
     /// direct geometry tests; live drawing calls [`Self::advance_flap_with_motion`].
-    #[cfg(test)]
-    fn advance_flap(&mut self) {
-        self.advance_flap_with_motion(false);
-    }
-
     /// Advance both side flaps, respecting the host's reduced-motion setting.
     /// A reduced-motion frame lands at its target immediately rather than
     /// leaving a half-open panel behind after the host correctly suppresses
@@ -8653,9 +8640,6 @@ impl VideoEditorApp {
         modal_dialog::paint_actions(scene, tf, tr, theme, &l.modal, &spec);
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 impl VideoEditorApp {
     fn track_head_rect(r: &Regions, lane: &Rect) -> Rect {

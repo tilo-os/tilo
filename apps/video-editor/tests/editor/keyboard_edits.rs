@@ -1,5 +1,3 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
-
 //! Edit shortcuts, driven through the public surface: pick a clip on the
 //! timeline as a screen reader does, move the playhead with the go-to field,
 //! press the key, and read the project the host holds afterwards.

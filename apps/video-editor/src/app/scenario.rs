@@ -298,7 +298,7 @@ pub(crate) fn composed_project() -> Project {
 /// has loaded, and its interaction once the editor is laid out.
 #[derive(Default)]
 pub(super) struct CaptureStaging {
-    pub(super) scenario: ShotScenario,
+    scenario: ShotScenario,
     applied: bool,
     interaction_applied: bool,
     /// Other participants: a capture cannot wait on a collaboration socket,
@@ -377,14 +377,14 @@ impl VideoEditorApp {
     /// signature is pinned to the project the block describes: without that
     /// the next frame would read the staged report as one about a mix that
     /// has since changed and throw it away.
-    pub(super) fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
+    fn stage_mix_block(&mut self, at: f64, report: &crate::audio::MixReport) {
         self.mix_meters.record(at, report);
         self.mix_sig = Some(crate::audio::mix_signature(&self.project));
         self.mix = self.mix_meters.snapshot();
     }
 
     /// Dispatch a whole-media write for one bin source.
-    pub(super) fn dispatch_media(&mut self, mid: MediaId) {
+    fn dispatch_media(&mut self, mid: MediaId) {
         if let Some(m) = self.project.media(mid).cloned() {
             self.submit_media(&m);
         }
