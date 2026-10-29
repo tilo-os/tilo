@@ -58,10 +58,6 @@ pub(crate) fn restore(
     crate::owner::effect_receipt::validate(&view)?;
     Ok(view)
 }
-#[allow(
-    clippy::suspicious_operation_groupings,
-    reason = "a persisted floor stores the descriptor digest as `digest`"
-)]
 fn validate_enrollment(
     room: RoomId,
     record: &StoredRoom,
@@ -78,26 +74,6 @@ fn validate_enrollment(
         || enrollment.invitation != intent.verified_join().signed_invitation()
     {
         return Err("native committed room differs from its authenticated enrollment".into());
-    }
-    if enrollment.host.as_ref() != intent.delivery_host()
-        || enrollment.locator.as_ref() != intent.delivery_locator()
-    {
-        return Err("native service pin differs from its unique signed enrollment locator".into());
-    }
-    if enrollment.host.is_none() && (enrollment.hint.is_some() || enrollment.floor.is_some()) {
-        return Err("native descriptor has no independent service pin".into());
-    }
-    if enrollment.hint.is_some() != enrollment.floor.is_some() {
-        return Err("native persisted descriptor acknowledgement is incomplete".into());
-    }
-    if let (Some(hint), Some(host)) = (&enrollment.hint, &enrollment.host) {
-        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
-            .map_err(|e| e.to_string())?;
-        if enrollment.floor.as_ref().is_some_and(|floor| {
-            floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
-        }) {
-            return Err("native persisted descriptor/floor mismatch".into());
-        }
     }
     Ok(())
 }
@@ -410,10 +386,6 @@ impl NativeWorkspaceOwner {
                 enrollment_intent: pending.intent.clone(),
                 enrolled_at_ns: ns(now)?,
                 transport_hint: enrollment.transport_hint().clone(),
-                host: intent.delivery_host().cloned(),
-                locator: intent.delivery_locator().cloned(),
-                hint: enrollment.delivery_hint().cloned(),
-                floor: None,
             }),
             vouched: None,
             peer: peer.durable()?,

@@ -290,11 +290,6 @@ impl ShellNetwork {
                 tracing::warn!(%error, "native owner restored while data transport is unavailable");
             }
         }
-        // Whichever of the owner and this device's host opens second mends
-        // the replicas of the rooms that host governs.
-        if let Some(host) = self.room_host() {
-            self.mend_own_rooms(&host);
-        }
         owner
     }
     /// Run `future` on this network's runtime and wait for its output: the

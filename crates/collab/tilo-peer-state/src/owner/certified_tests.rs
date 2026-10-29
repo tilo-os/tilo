@@ -181,10 +181,6 @@ fn native_enrollment_retains_actual_verified_redemption_and_governance() {
     assert_eq!(enrolled.bootstrap(), &bootstrap);
     assert_eq!(enrolled.local_device(), &device);
     assert_eq!(enrolled.transport_hint(), &hint);
-    assert!(
-        enrolled.delivery_hint().is_none(),
-        "Iroh enrollment cannot invent a delivery host"
-    );
 }
 
 #[test]

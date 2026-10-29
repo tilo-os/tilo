@@ -128,23 +128,14 @@ pub(crate) struct StoredEnrollment {
     pub enrollment_intent: Vec<u8>,
     pub enrolled_at_ns: u64,
     pub transport_hint: TransportHint,
-    pub host: Option<DeviceCert>,
-    pub locator: Option<TransportHint>,
-    pub hint: Option<TransportHint>,
-    pub floor: Option<DescriptorFloor>,
 }
 /// The membership answer a host vouched for: a postcard
-/// [`tilo_peer_state::join::JoinTransportResponse`], checked again against
+/// [`crate::join::JoinTransportResponse`], checked again against
 /// the record whenever it is restored.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredVouch {
     #[serde(with = "base64_bytes")]
     pub bootstrap: Vec<u8>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct DescriptorFloor {
-    pub generation: u64,
-    pub digest: [u8; 32],
 }
 
 /// Only a successful state-file publication creates an enrollment handle.

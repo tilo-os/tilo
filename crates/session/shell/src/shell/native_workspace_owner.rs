@@ -30,9 +30,7 @@ pub use tilo_peer_state::owner::NativeAuthorityStorage;
 use tilo_peer_state::owner::{Change, FileHost};
 pub(crate) use tilo_peer_state::owner::{DocumentRead, NativeCommittedView, NativeWorkspaceOwner};
 #[cfg(test)]
-pub(crate) use tilo_peer_state::owner::{
-    NativeBootstrap, PendingEnrollmentId, PendingEnrollmentStatus,
-};
+pub(crate) use tilo_peer_state::owner::{PendingEnrollmentId, PendingEnrollmentStatus};
 
 #[cfg(test)]
 thread_local! {

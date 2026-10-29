@@ -235,11 +235,7 @@ fn caller<'a>(
     authority: &'a CallerAuthority,
     now: SystemTime,
 ) -> Result<&'a tilo_user_identity::DeviceCert, String> {
-    let trusted = view.device() == view.governor()
-        || view
-            .host()
-            .is_some_and(|host| host == view.device() && host.capabilities.can_act_as_host);
-    if !trusted {
+    if view.device() != view.governor() {
         return Err("private conversations require trusted workspace host custody".into());
     }
     view.peer()

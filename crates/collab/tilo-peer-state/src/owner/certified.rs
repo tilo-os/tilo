@@ -6,8 +6,7 @@ use crate::join::{
 use crate::owner::{PendingEnrollmentId, RoomId};
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::{
-    DeliveryOriginLocatorV1, IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES,
-    TRANSPORT_DELIVERY_ORIGIN_V1, WorkspaceHostMode,
+    IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, WorkspaceHostMode,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
@@ -26,7 +25,6 @@ struct IntentRecord {
 pub struct VerifiedNativeEnrollmentIntent {
     record: IntentRecord,
     join: VerifiedJoin,
-    delivery_locator: Option<TransportHint>,
 }
 impl std::fmt::Debug for VerifiedNativeEnrollmentIntent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,14 +67,6 @@ impl VerifiedNativeEnrollmentIntent {
     #[must_use]
     pub fn proof_digest(&self) -> [u8; 32] {
         *blake3::hash(self.complete_bytes()).as_bytes()
-    }
-    #[must_use]
-    pub fn delivery_host(&self) -> Option<&DeviceCert> {
-        self.delivery_locator.as_ref().map(|hint| &hint.host)
-    }
-    #[must_use]
-    pub fn delivery_locator(&self) -> Option<&TransportHint> {
-        self.delivery_locator.as_ref()
     }
     /// # Errors
     /// The intent exceeds its bound.
@@ -140,29 +130,7 @@ impl VerifiedNativeEnrollmentIntent {
             .get(record.hint_index as usize)
             .ok_or("native Iroh hint index missing")?;
         validate_historical_iroh(&join, hint, record.prepared_at_ns)?;
-        let mut locators = join
-            .grant()
-            .transport
-            .iter()
-            .filter(|hint| hint.kind == TRANSPORT_DELIVERY_ORIGIN_V1);
-        let delivery_locator = locators.next().cloned();
-        if locators.next().is_some() {
-            return Err("ambiguous native delivery host appointment".into());
-        }
-        if let Some(locator) = &delivery_locator {
-            DeliveryOriginLocatorV1::from_transport_hint(locator, &locator.host)
-                .map_err(|e| e.to_string())?;
-            if !locator.host.capabilities.can_act_as_host {
-                return Err("appointed delivery certificate cannot host".into());
-            }
-            // The original invitation signature appoints this exact full certificate.
-            join::verify_transport_hint_at(locator, &RevocationList::new(), record.prepared_at_ns)?;
-        }
-        Ok(Self {
-            record,
-            join,
-            delivery_locator,
-        })
+        Ok(Self { record, join })
     }
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(
@@ -291,10 +259,6 @@ impl VerifiedNativeEnrollment {
     #[must_use]
     pub fn transport_hint(&self) -> &TransportHint {
         self.intent.transport_hint()
-    }
-    #[must_use]
-    pub fn delivery_hint(&self) -> Option<&TransportHint> {
-        None
     }
     #[must_use]
     pub fn pending_id(&self) -> &PendingEnrollmentId {

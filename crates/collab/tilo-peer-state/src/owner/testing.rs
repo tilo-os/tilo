@@ -156,20 +156,6 @@ pub fn raw_fixture_at(
     );
     let device_key = SigningKey::from_bytes(&[63; 32]);
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
-    let host_key = SigningKey::from_bytes(&[69; 32]);
-    let mut host = certificate(
-        &SigningKey::from_bytes(&[62; 32]),
-        &host_key,
-        "Delivery host",
-    );
-    host.capabilities.can_act_as_host = true;
-    sign_device_cert(&mut host, &SigningKey::from_bytes(&[62; 32])).unwrap();
-    let locator = tilo_delivery_protocol::workspace_join::DeliveryOriginLocatorV1 {
-        version: 1,
-        origin: "https://native.example".into(),
-    }
-    .transport_hint(&host, &host_key)
-    .unwrap();
     let workspace_id = tilo_relay_protocol::room_workspace_id(ROOM).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
         version: 1,
@@ -198,7 +184,7 @@ pub fn raw_fixture_at(
             recipient_user_public_key: Some(device.user_public_key),
             invitee_name: Some("Member".into()),
             expires_at_ns: ns.checked_add(60_000_000_000).unwrap(),
-            transport: vec![hint.clone(), locator],
+            transport: vec![hint.clone()],
         },
         &governor_key,
     )
@@ -225,7 +211,7 @@ pub fn raw_fixture_at(
     let mut peer = StatePeer::new(
         ROOM,
         governor.clone(),
-        vec![governor.clone(), host.clone()],
+        vec![governor.clone()],
         RevocationList::new(),
         now,
     )
@@ -241,7 +227,7 @@ pub fn raw_fixture_at(
     collab_types::CommitNamed::commit_edit(&mut chat, "chat", "channels");
     peer.install_seed(
         SeedState {
-            room_changes: seed_room(ROOM, &governor, &[governor.clone(), host.clone()]).unwrap(),
+            room_changes: seed_room(ROOM, &governor, &[governor.clone()]).unwrap(),
             documents: vec![SeedDocument {
                 app_id: APP.into(),
                 record_id: String::new(),

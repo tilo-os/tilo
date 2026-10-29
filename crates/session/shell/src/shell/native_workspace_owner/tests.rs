@@ -5,10 +5,9 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{sync::Arc, time::SystemTime};
-use tilo_delivery_protocol::descriptor::GenerationExpectation;
+use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
 use tilo_peer_state::owner::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-use tilo_peer_state::{TransportOrigin, join};
 
 struct Fixture {
     enrollment: VerifiedNativeEnrollment,
@@ -454,184 +453,6 @@ fn native_v1_hidden_records_and_future_files_are_preserved_and_refused() {
     );
 }
 
-fn bootstrap_candidate(
-    owner: &NativeWorkspaceOwner,
-    generation: u64,
-    now: SystemTime,
-) -> join::TransportHint {
-    use tilo_delivery_protocol::descriptor;
-    owner
-        .with_current(RoomId::parse(ROOM).unwrap(), |view| {
-            let authority = descriptor::DescriptorAuthority {
-                peer: view,
-                pinned_governor: view.governor(),
-                pinned_host: view.host().unwrap(),
-                workspace: view.workspace(),
-                generation: descriptor::GenerationExpectation::FirstAccepted {
-                    minimum_generation: 1,
-                },
-                now,
-            };
-            let ns = tilo_peer_state::owner::testing::ns(now)?;
-            descriptor::issue_transport_hint(
-                &descriptor::DescriptorSettings {
-                    origin: "https://native.example".into(),
-                    issued_at_ns: ns,
-                    expires_at_ns: ns.checked_add(120_000_000_000).unwrap(),
-                    generation,
-                },
-                &authority,
-                &SigningKey::from_bytes(&[69; 32]),
-            )
-            .map_err(|e| e.to_string())
-        })
-        .unwrap()
-}
-fn bootstrap_response(
-    pending: &NativeBootstrap,
-    hint: &join::TransportHint,
-    now: SystemTime,
-) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
-    use ed25519_dalek::Signer;
-    use tilo_delivery_protocol::{bootstrap, descriptor};
-    let metadata = descriptor::inspect_persisted_hint(hint, &hint.host).unwrap();
-    let mut response = bootstrap::BootstrapResponse {
-        version: 1,
-        request: pending.request().clone(),
-        host_certificate: postcard::to_stdvec(&hint.host).unwrap(),
-        hint: postcard::to_stdvec(hint).unwrap(),
-        generation: metadata.generation,
-        descriptor_digest: metadata.descriptor_digest,
-        issued_at_ns: tilo_peer_state::owner::testing::ns(now).unwrap(),
-        expires_at_ns: tilo_peer_state::owner::testing::ns(now)
-            .unwrap()
-            .checked_add(10_000_000_000)
-            .unwrap(),
-        signature: [[0; 32]; 2],
-    };
-    response.signature = bootstrap::split_signature(
-        SigningKey::from_bytes(&[61; 32])
-            .sign(&response.signing_digest().unwrap())
-            .to_bytes(),
-    );
-    response
-}
-#[test]
-fn native_bootstrap_floor_requires_exact_governor_ack_and_survives_stale_save_and_reopen() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("state.json");
-    let tree = tree_at(&path);
-    let owner = open(tree.clone()).unwrap();
-    let fixture = fixture(&owner);
-    owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
-    let stale = tree.read().clone();
-    let hint = bootstrap_candidate(&owner, 2, fixture.now);
-    let key = SigningKey::from_bytes(&[63; 32]);
-    let pending = owner
-        .begin_bootstrap(room, &hint, &key, fixture.now)
-        .unwrap();
-    let mut bad = bootstrap_response(&pending, &hint, fixture.now);
-    bad.request.nonce[0] ^= 1;
-    assert!(owner.finish_bootstrap(pending, &bad, fixture.now).is_err());
-    assert!(matches!(
-        owner
-            .with_current(room, super::NativeCommittedView::descriptor_expectation)
-            .unwrap(),
-        GenerationExpectation::FirstAccepted { .. }
-    ));
-    let pending = owner
-        .begin_bootstrap(room, &hint, &key, fixture.now)
-        .unwrap();
-    let response = bootstrap_response(&pending, &hint, fixture.now);
-    owner
-        .finish_bootstrap(pending, &response, fixture.now)
-        .unwrap();
-    persist::save_tree_to(&stale, &path).unwrap();
-    let continuity = owner.with_current(room, |v| Ok(v.continuity())).unwrap();
-    let same = owner
-        .begin_bootstrap(room, &hint, &key, fixture.now)
-        .unwrap();
-    let response = bootstrap_response(&same, &hint, fixture.now);
-    owner
-        .finish_bootstrap(same, &response, fixture.now)
-        .unwrap();
-    assert_eq!(
-        owner.with_current(room, |v| Ok(v.continuity())).unwrap(),
-        continuity
-    );
-    let rollback = bootstrap_candidate(&owner, 1, fixture.now);
-    assert!(
-        owner
-            .begin_bootstrap(room, &rollback, &key, fixture.now)
-            .is_err()
-    );
-    let equivocation =
-        bootstrap_candidate(&owner, 2, fixture.now + std::time::Duration::from_nanos(1));
-    assert!(
-        owner
-            .begin_bootstrap(room, &equivocation, &key, fixture.now)
-            .is_err()
-    );
-    drop(stale);
-    drop(owner);
-    drop(tree);
-    let mut loaded = persist::load_tree_from(&path).unwrap();
-    loaded.persist_path = Some(path);
-    let reopened = open(loaded.shared()).unwrap();
-    match reopened
-        .with_current(room, super::NativeCommittedView::descriptor_expectation)
-        .unwrap()
-    {
-        GenerationExpectation::Current {
-            generation,
-            descriptor_digest,
-        } => {
-            assert_eq!(generation, 2);
-            assert_eq!(descriptor_digest, response.descriptor_digest);
-        }
-        GenerationExpectation::FirstAccepted { .. } => {
-            panic!("restart erased acknowledged descriptor floor")
-        }
-    }
-    assert!(
-        reopened
-            .begin_bootstrap(room, &rollback, &key, fixture.now)
-            .is_err()
-    );
-}
-#[test]
-fn native_identity_replacement_synchronously_fences_and_rejects_pending_bootstrap() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("state.json");
-    let owner = open(tree_at(&path)).unwrap();
-    let fixture = fixture(&owner);
-    owner.install(&fixture.enrollment, fixture.now).unwrap();
-    let room = RoomId::parse(ROOM).unwrap();
-    let hint = bootstrap_candidate(&owner, 1, fixture.now);
-    let pending = owner
-        .begin_bootstrap(room, &hint, &SigningKey::from_bytes(&[63; 32]), fixture.now)
-        .unwrap();
-    let response = bootstrap_response(&pending, &hint, fixture.now);
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counter = calls.clone();
-    let _subscription = owner.observe_fences(Arc::new(move |got, _| {
-        assert_eq!(got, room);
-        counter.fetch_add(1, Ordering::SeqCst);
-    }));
-    owner.invalidate_identity(room);
-    owner.invalidate_identity(room);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(owner.with_current(room, |_| Ok(())).is_err());
-    assert!(
-        owner
-            .finish_bootstrap(pending, &response, fixture.now)
-            .is_err()
-    );
-    assert!(owner.contains_room(room));
-}
-
 #[test]
 fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_disk() {
     let directory = tempfile::tempdir().unwrap();
@@ -792,20 +613,6 @@ pub(crate) fn test_owner_before_enrollment() -> (
             .unwrap();
     });
     (directory, owner, room, commit)
-}
-pub(crate) fn test_descriptor(
-    owner: &NativeWorkspaceOwner,
-    generation: u64,
-    now: SystemTime,
-) -> join::TransportHint {
-    bootstrap_candidate(owner, generation, now)
-}
-pub(crate) fn test_bootstrap_response(
-    pending: &NativeBootstrap,
-    hint: &join::TransportHint,
-    now: SystemTime,
-) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
-    bootstrap_response(pending, hint, now)
 }
 fn fresh_slot(
     path: &std::path::Path,
@@ -992,31 +799,6 @@ fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
         owner.pending_enrollment(room).is_err(),
         "fenced writer cannot hand out retry-send custody"
     );
-}
-
-#[test]
-fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
-    for removed in ["floor", "hint"] {
-        let (directory, owner, room, now, key) = test_enrolled_owner();
-        let hint = test_descriptor(&owner, 3, now);
-        let pending = owner.begin_bootstrap(room, &hint, &key, now).unwrap();
-        let response = test_bootstrap_response(&pending, &hint, now);
-        owner.finish_bootstrap(pending, &response, now).unwrap();
-        let path = directory.path().join("state.json");
-        drop(owner);
-        let mut raw: serde_json::Value = serde_json::from_slice(&record(&path)).unwrap();
-        raw["rooms"][ROOM][removed] = serde_json::Value::Null;
-        let bytes = serde_json::to_vec(&raw).unwrap();
-        std::fs::write(owner_file(&path), &bytes).unwrap();
-        let mut loaded = persist::load_tree_from(&path).unwrap();
-        loaded.persist_path = Some(path.clone());
-        let tree = loaded.shared();
-        assert!(
-            open(tree.clone()).is_err(),
-            "partial {removed} cannot reset an acknowledged floor or skip descriptor validation"
-        );
-        assert_eq!(record(&path), bytes);
-    }
 }
 
 #[test]

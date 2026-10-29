@@ -226,8 +226,7 @@ impl NativeChecks {
         self.owner
             .opened_owner("committed project host unavailable")?
             .with_current(room, |view| {
-                let host = view.host().unwrap_or_else(|| view.governor());
-                if host.device_public_key != binding.host {
+                if view.governor().device_public_key != binding.host {
                     return Err("approved project is governed by a different host".into());
                 }
                 Ok(())

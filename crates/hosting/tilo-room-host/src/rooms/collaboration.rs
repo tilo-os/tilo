@@ -718,20 +718,6 @@ impl Rooms {
         Ok((GovernanceCompletion { generation }, added))
     }
 
-    /// `room`'s whole history as its governor here holds it: what the
-    /// replica of this host's own device takes when it diverged from it.
-    ///
-    /// # Errors
-    /// The room is not hosted here.
-    pub async fn governed_history(&self, room: &str) -> Result<Vec<Vec<u8>>, CollaborationError> {
-        let room = self.room(room).await?;
-        let room = room.lock().await;
-        match room.peer().room_message() {
-            neighbour_wire::NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
-            _ => Err(CollaborationError::new("room governance missing")),
-        }
-    }
-
     /// Install a bot as a governed member of `room`, update its program,
     /// renew its delegation or uninstall it
     /// ([`WorkspaceMembershipCommand::InstallBot`],

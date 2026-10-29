@@ -345,6 +345,3 @@ pub enum WorkspaceJoinError {
         message: String,
     },
 }
-
-mod delivery_origin;
-pub use delivery_origin::{DeliveryOriginLocatorV1, TRANSPORT_DELIVERY_ORIGIN_V1};

@@ -3842,10 +3842,6 @@ mod admitting_tests;
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
 mod governed_rows;
-mod governor_history;
-#[cfg(test)]
-#[path = "state/governor_history_tests.rs"]
-mod governor_history_tests;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]
 mod held_queue_tests;

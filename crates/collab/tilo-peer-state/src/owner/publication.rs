@@ -652,30 +652,6 @@ pub(crate) fn retire_member_changes(
     Ok(())
 }
 
-/// Stop publishing this device's replica as the room's governance: its
-/// own host governs the room, and the replica only receives what that host
-/// writes. Changes it made as a member, waiting to be admitted, stay.
-pub(crate) fn withdraw_governance_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
-    if state(view)?
-        .governance
-        .first()
-        .is_none_or(|existing| existing.incremental)
-    {
-        return Ok(());
-    }
-    let publication = view
-        .record
-        .publication
-        .as_mut()
-        .ok_or("publication absent")?;
-    publication.governance.clear();
-    publication.revision = publication
-        .revision
-        .checked_add(1)
-        .ok_or("native publication revision exhausted")?;
-    Ok(())
-}
-
 pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
     let Some(existing) = state(view)?.governance.first().cloned() else {
         return Ok(());

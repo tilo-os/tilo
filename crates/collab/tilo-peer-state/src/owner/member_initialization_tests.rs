@@ -121,19 +121,6 @@ fn a_member_bootstrap_needs_its_own_key_and_never_signs_a_snapshot() {
     assert!(
         joined
             .owner
-            .initialize_application_record(
-                joined.room,
-                &creator,
-                &member(),
-                initialization,
-                joined.now
-            )
-            .is_err(),
-        "a member never signs a governor's snapshot of the record"
-    );
-    assert!(
-        joined
-            .owner
             .initialize_application_record_as_member(
                 joined.room,
                 &creator,

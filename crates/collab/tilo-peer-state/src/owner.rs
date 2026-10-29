@@ -11,7 +11,6 @@
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
 mod application_record;
-mod bootstrap;
 mod certified;
 mod checkpoint;
 mod document_read;
@@ -42,7 +41,6 @@ mod vouched;
 mod workspace_membership;
 
 pub use application_record::{ApplicationInitialization, ApplicationRecord};
-pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use checkpoint::{
     CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
@@ -73,7 +71,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
 };
-use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
@@ -218,40 +215,12 @@ impl NativeCommittedView {
     pub fn continuity(&self) -> u64 {
         self.record.continuity
     }
-    #[must_use]
-    pub fn host(&self) -> Option<&DeviceCert> {
-        self.record.enrollment.as_ref()?.host.as_ref()
-    }
-    #[must_use]
-    pub fn delivery_locator(&self) -> Option<&crate::join::TransportHint> {
-        self.record.enrollment.as_ref()?.locator.as_ref()
-    }
-    #[must_use]
-    pub fn hint(&self) -> Option<&crate::join::TransportHint> {
-        self.record.enrollment.as_ref()?.hint.as_ref()
-    }
     /// Where the host this device enrolled through is reached.
     ///
     /// # Errors
     /// The room's record holds no enrollment.
     pub fn transport_hint(&self) -> Result<&crate::join::TransportHint, String> {
         Ok(&self.enrollment()?.transport_hint)
-    }
-    /// # Errors
-    /// The enrollment pinned no delivery host independently of its governor.
-    pub fn descriptor_expectation(&self) -> Result<GenerationExpectation, String> {
-        if self.host().is_none() {
-            return Err("enrollment has no independently pinned delivery host".into());
-        }
-        Ok(match &self.enrollment()?.floor {
-            Some(floor) => GenerationExpectation::Current {
-                generation: floor.generation,
-                descriptor_digest: floor.digest,
-            },
-            None => GenerationExpectation::FirstAccepted {
-                minimum_generation: 1,
-            },
-        })
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
         let policy = self.peer.validated_media_policy().ok().flatten();
@@ -261,16 +230,8 @@ impl NativeCommittedView {
             .map(|doc| crate::room::media::security_basis(doc, &self.peer.revocations()))
             .transpose()
             .map_err(|e| e.to_string())?;
-        let enrollment = self.record.enrollment.as_ref();
-        let bytes = postcard::to_stdvec(&(
-            policy,
-            basis,
-            &self.record.device,
-            enrollment.and_then(|enrollment| enrollment.host.as_ref()),
-            enrollment.and_then(|enrollment| enrollment.hint.as_ref()),
-            enrollment.and_then(|enrollment| enrollment.floor.as_ref()),
-        ))
-        .map_err(|e| e.to_string())?;
+        let bytes = postcard::to_stdvec(&(policy, basis, &self.record.device))
+            .map_err(|e| e.to_string())?;
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 }
@@ -578,51 +539,6 @@ impl NativeWorkspaceOwner {
             .ok_or("native owner generation exhausted")?;
         self.publish_room(room, candidate, None)?;
         Ok(reports)
-    }
-    /// Take `changes`, the whole history of `room` as this device's own
-    /// host holds it, when this device's replica diverged from it
-    /// ([`crate::StatePeer::adopt_governor_history`]). A room
-    /// this device's host governs is signed under this device's key, and its
-    /// host is the one writer under that key: a replica that wrote under it
-    /// too (a build before the host wrote its membership changes for it)
-    /// refused the host's history from then on, and with it every app's
-    /// authorship. The replica stops publishing itself as the room's
-    /// governance as well.
-    ///
-    /// `None` when the replica was on the host's history already; else the
-    /// membership changes its own history made that the host's lacks, for
-    /// the caller to have the host commit again as they were made: an
-    /// invitation given here is the person's, never let go.
-    ///
-    /// # Errors
-    /// The room is not this device's own host's, is fenced, the host's
-    /// history does not admit, or the result cannot be published.
-    pub fn adopt_own_host_history(
-        &self,
-        room: RoomId,
-        changes: &[Vec<u8>],
-        now: SystemTime,
-    ) -> Result<Option<Vec<tilo_action_policy::Change>>, String> {
-        let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        let device = candidate.device().device_public_key;
-        if candidate.device() != candidate.governor()
-            || !hosted_by(candidate.transport_hint()?, &device)
-        {
-            return Err("the room is not governed by this device's own host".into());
-        }
-        let Some(beyond) = candidate.peer.adopt_governor_history(changes, now)? else {
-            return Ok(None);
-        };
-        publication::withdraw_governance_checkpoint(&mut candidate)?;
-        candidate.record.peer = candidate.peer.durable()?;
-        candidate.record.generation = candidate
-            .record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish_room(room, candidate, None)?;
-        Ok(Some(beyond))
     }
     /// The room changes `message` carries when one of the owner's devices,
     /// other than this one, sent it, or this device's own room host: the
