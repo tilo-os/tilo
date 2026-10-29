@@ -363,7 +363,12 @@ impl Host for MemoryHost {
         }
     }
 
-    fn open_write(&self, path: &Path, mode: WriteMode) -> io::Result<Box<dyn Write + Send>> {
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        _run: Option<&crate::host::Run>,
+    ) -> io::Result<Box<dyn Write + Send>> {
         let path = self.resolve(path);
         let mut tree = self.tree();
         let parent_is_dir = path

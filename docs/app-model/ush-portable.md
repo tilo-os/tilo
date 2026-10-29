@@ -153,7 +153,11 @@ agents and History see one model whichever tier ran a command.
 
 1. The shell interpreter, running tier 1 (the read commands as reads, the
    file commands as the environment's actions), on the device, as the default
-   for new Terminal sessions.
+   for new Terminal sessions. Built: it runs on the Tilo side, outside every
+   guest, its reads asked of the record's grants and every write (a redirect
+   too) an action of the record's, with a Linux guest started only for the
+   first program a session runs, which then serves the session's programs
+   one command at a time ([`ush.md`](ush.md), "The session's shell").
 2. Tier 2: a WASI runner over Tilo's mount, with a few signed tool packages,
    on devices and hosts (wasmi) and in the browser (its own engine).
 3. Tier 3 on the existing compute and placement system: one command as one
