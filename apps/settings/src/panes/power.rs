@@ -659,9 +659,13 @@ impl PowerArea {
         }
     }
 
-    /// Whether a page shows the hardware's first reading as on its way.
+    /// Whether a page shows the hardware's first reading as on its way:
+    /// none has landed, or one landed that the page has not taken yet
+    /// ([`Self::poll`]).
     pub(crate) fn first_read(&self) -> bool {
-        self.following.borrow().upgrade().is_some() && self.state.get().is_none()
+        self.following.borrow().upgrade().is_some()
+            && (self.state.get().is_none()
+                || self.seen.borrow().as_ref().map(|seen| seen.0) != Some(self.state.revision()))
     }
 
     /// Follow the hardware while a pane shows it; panes share one follow.
@@ -1539,6 +1543,7 @@ mod tests {
             let profile = tempfile::tempdir().unwrap();
             let cx = PaneCx::in_profile(profile.path().to_path_buf());
             let area = PowerArea::new(&cx);
+            area.warm();
             let state = tilo_test_env::wait_for("the hardware is read", || area.state.get());
             assert_eq!(state.battery, sample_battery());
             let prefs = cx.settings::<PowerPrefs>().get();

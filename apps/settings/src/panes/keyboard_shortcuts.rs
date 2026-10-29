@@ -500,18 +500,20 @@ mod tests {
     #[test]
     fn the_page_follows_the_bindings() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.harness().resize((1400, 6000)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::KeyboardShortcuts);
         app.settle();
         let chord = |app: &mut TestApp<SettingsShell>| {
-            app.harness()
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| node.author_id() == Some("shortcuts.search"))
-                .and_then(|(_, node)| node.value().map(str::to_owned))
+            ui::widget::find_test_id(app.harness().root_widget(), "shortcuts.search")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.value)
+                // Spoken as "Super + Space": compared without the spacing
+                // or case speech adds.
+                .map(|chord| chord.replace(' ', "").to_lowercase())
         };
         assert_eq!(
             chord(&mut app).as_deref(),
-            Some("Super+Space"),
+            Some("super+space"),
             "the default binding"
         );
         let mut config = ShortcutConfig::default();
@@ -522,7 +524,7 @@ mod tests {
             .set(&ShortcutPrefs::of(&config))
             .unwrap();
         app.settle();
-        assert_eq!(chord(&mut app).as_deref(), Some("Super+j"));
+        assert_eq!(chord(&mut app).as_deref(), Some("super+j"));
     }
 
     #[test]

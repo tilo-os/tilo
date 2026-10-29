@@ -123,6 +123,7 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
 /// sections is built as such, and so are the rows found of such a pane;
 /// outside it, only the panes the areas build show.
 fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) -> Element {
+    app.content_built().set(key.generation);
     let (body, offset): (Element, ScrollOffset) = if key.found.is_empty() {
         (
             pane_body(app, key.category, cx),
@@ -239,6 +240,9 @@ pub struct SettingsWindow {
     found_over: Option<NavPane>,
     value_follows: crate::setting::Follows,
     pages_seen: u64,
+    /// The language the content column was built in
+    /// ([`ui::i18n::I18nManager::revision`]).
+    language_seen: u64,
     secret: Option<crate::secrets::ShownPrompt>,
     /// The person's appearance, as the view follows it; `None` outside a
     /// view, where it is read from the settings when asked.
@@ -296,6 +300,7 @@ impl SettingsWindow {
             found_over: None,
             value_follows: crate::setting::Follows::default(),
             pages_seen: 0,
+            language_seen: ui::i18n::I18nManager::revision(),
             secret: None,
             look: None,
         }
@@ -566,6 +571,17 @@ impl SettingsWindow {
     /// Hand the effects what the drawn keyboard and the add-source picker
     /// show now: whatever moved them (a key held, a layout, a key inspected,
     /// a filter typed) went through the window.
+    /// Whether the content column shows what the window last asked of it:
+    /// the view's part is built again for a moved key on its next sync.
+    fn content_shown(&self) -> bool {
+        match &self.content {
+            Content::Bound(key, _) => {
+                key.with(|key| key.generation) == self.app.content_built().get()
+            }
+            Content::Detached(_) => true,
+        }
+    }
+
     fn share_keyboard(&self) {
         self.app
             .keyboard_drawn(self.keyboard_now().and_then(Result::ok));
@@ -834,6 +850,16 @@ impl Widget for SettingsWindow {
             self.refresh_shell_children();
         }
 
+        // Another language: the content column is built again in it, as a
+        // page that is view code over its sections wrote its words as it
+        // was built.
+        let language = ui::i18n::I18nManager::revision();
+        if language != self.language_seen {
+            self.language_seen = language;
+            self.structure_dirty = true;
+            self.refresh_shell_children();
+        }
+
         // A pane asked for a secret, or is done with the one it asked.
         if crate::secrets::ShownPrompt::follow(&mut self.secret, self.app.host().secrets()) {
             self.structure_dirty = true;
@@ -865,6 +891,7 @@ impl Widget for SettingsWindow {
             self.shell_text_scale = theme.text_scale;
             self.refresh_shell_children();
         }
+        let settled = !self.app.pane_settling() && self.content_shown();
         #[allow(
             clippy::expect_used,
             reason = "shell was just set unconditionally above; nothing between there and here can clear it"
@@ -878,17 +905,16 @@ impl Widget for SettingsWindow {
         let shell_node = shell.build_layout(taffy, theme, node_map);
         // The pane asked to show a setting is built: its control takes the
         // keyboard, which the rebuild keeps on it. A pane still being read
-        // shows its control once it is built; a control the pane does not
+        // (or showing its first reading as on its way) shows its control
+        // once it is built; a control the pane does not
         // show (no such device) leaves the page open at its top.
-        if let Some(setting) = self.reveal
-            && !self.app.pane_waits().get()
-        {
+        if let Some(setting) = self.reveal.filter(|_| settled) {
             self.reveal = None;
             clear_control_focus(shell);
             if focus_control(shell, &|id| setting.is_control(id)) {
                 self.reveal_scroll = Some(setting);
             }
-        } else if let Some(id) = self.capture_focus.filter(|_| !self.app.pane_waits().get()) {
+        } else if let Some(id) = self.capture_focus.filter(|_| settled) {
             if focus_control(shell, &|control| control == id) {
                 self.capture_focus = None;
             }

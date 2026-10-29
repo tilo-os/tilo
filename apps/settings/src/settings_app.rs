@@ -37,6 +37,8 @@ pub struct SettingsApp {
     area_reads: crate::effects::AreaReads,
     /// The pane shown waits for its area's read.
     pane_waits: Cell<bool>,
+    /// The generation of the content column last built.
+    content_built: Cell<u64>,
     /// The Keyboard pane was built without its layout list.
     keyboard_partial: Cell<bool>,
     pane_scroll: RefCell<HashMap<Category, ScrollOffset>>,
@@ -88,6 +90,7 @@ impl SettingsApp {
             areas,
             keyboard_map_input: ui::KeyboardMapInput::default(),
             pane_waits: Cell::new(false),
+            content_built: Cell::new(0),
             keyboard_partial: Cell::new(false),
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
@@ -296,6 +299,18 @@ impl SettingsApp {
 
     pub(crate) fn pane_waits(&self) -> &Cell<bool> {
         &self.pane_waits
+    }
+
+    /// The generation of the content column last built.
+    pub(crate) fn content_built(&self) -> &Cell<u64> {
+        &self.content_built
+    }
+
+    /// Whether the pane shown is not yet built as it will show: it waits
+    /// for its area's read, or shows an area's first reading of the device
+    /// as on its way.
+    pub(crate) fn pane_settling(&self) -> bool {
+        self.pane_waits.get() || self.areas.iter().any(crate::area::PaneArea::first_read)
     }
 
     pub(crate) fn keyboard_partial(&self) -> &Cell<bool> {

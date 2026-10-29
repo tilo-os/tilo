@@ -69,6 +69,37 @@ mod support {
         app
     }
 
+    /// Settings as a host opens it on `category`'s pane, laid out at
+    /// `viewport`, once the pane shows what it first reads: a page that is
+    /// view code over its sections is built only in the app's view, never
+    /// in a window outside it.
+    pub fn window_on(category: settings::categories::Category, (w, h): (f32, f32)) -> Window {
+        fn settling(widget: &dyn Widget) -> bool {
+            if let Some(window) = widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<SettingsWindow>())
+            {
+                return Widget::has_pending_visual_work(window);
+            }
+            widget.children().into_iter().any(settling)
+        }
+        let mut app = Window::new().expect("settings opens headlessly");
+        app.effect(&settings::effects::open_pane(category))
+            .expect("the pane opens");
+        app.harness()
+            .relayout_themed(ui::headless::viewport((w, h)), ui::Theme::dark())
+            .expect("settings lays out at the fixture size");
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| !settling(
+                    harness.root_widget()
+                )),
+            "{category:?} shows what it reads"
+        );
+        app.settle();
+        app
+    }
+
     /// The navigation rows the window's accessibility tree exports.
     pub fn window_rows(app: &mut Window) -> Vec<NavRow> {
         app.harness()

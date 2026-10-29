@@ -979,11 +979,15 @@ mod tests {
         app.harness().resize((1400, 4000)).unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Notifications);
         app.settle();
-        assert!(
+        // The delivery row says what holds notifications back.
+        let banners_off = |app: &mut TestApp<SettingsShell>| {
+            let off = t("notif-status-banners-off");
             app.harness()
-                .a11y_node_named(&t("notif-status-banners-off"))
-                .is_none()
-        );
+                .a11y_nodes()
+                .into_iter()
+                .any(|(_, node)| node.value() == Some(off.as_str()))
+        };
+        assert!(!banners_off(&mut app));
         app.settings::<NotificationPrefs>()
             .update(|prefs| {
                 prefs.show_banners = false;
@@ -995,12 +999,7 @@ mod tests {
             })
             .unwrap();
         app.settle();
-        assert!(
-            app.harness()
-                .a11y_node_named(&t("notif-status-banners-off"))
-                .is_some(),
-            "the status line follows the policy"
-        );
+        assert!(banners_off(&mut app), "the status line follows the policy");
         let prefs = app.settings::<NotificationPrefs>().get();
         let banners_on = |app: &str| {
             let rule = prefs.per_app.get(app).copied().unwrap_or_default();

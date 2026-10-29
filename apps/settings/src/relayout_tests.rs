@@ -83,8 +83,8 @@ fn a_press_survives_a_relayout() {
     assert!(app.settings::<AppearancePrefs>().get().high_contrast);
 }
 
-/// A value changed elsewhere moves the control it has; what the page shows
-/// otherwise (the chosen theme's tile) and the language rebuild it.
+/// A value changed elsewhere moves the control it has; the chosen theme's
+/// tiles show a new theme, and the language rebuilds the page.
 #[test]
 fn values_move_controls_and_shape_or_language_rebuild_them() {
     let mut app = opened("appearance");
@@ -95,12 +95,21 @@ fn values_move_controls_and_shape_or_language_rebuild_them() {
     settle(&mut app);
     assert_eq!(control(&mut app, "appearance.ui_scale").0, before);
 
+    let themed = app.harness().inspection_json().unwrap();
     app.settings::<AppearancePrefs>()
         .update(|prefs| prefs.choose_theme("Dark graphite"))
         .unwrap();
     settle(&mut app);
     let (rebuilt, _) = control(&mut app, "appearance.ui_scale");
-    assert_ne!(rebuilt, before, "a new theme rebuilds the page");
+    assert_eq!(
+        rebuilt, before,
+        "a new theme keeps the controls that do not show it"
+    );
+    assert_ne!(
+        app.harness().inspection_json().unwrap(),
+        themed,
+        "the page shows the new theme"
+    );
 
     let english = app.harness().inspection_json().unwrap();
     I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
