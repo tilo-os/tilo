@@ -1670,6 +1670,22 @@ impl Core {
         (handled, changed)
     }
 
+    /// Stage a forecast fetched `ago` ago, so a capture shows the age the page
+    /// states: minutes ago for a fresh one, hours for one that has gone stale.
+    pub fn seed_fetched(&mut self, ago: std::time::Duration) {
+        // The toolkit's clock, which the page reads the age back with: a
+        // capture renders against a fixed instant, and an age measured from
+        // the process clock would read as "just now" there.
+        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
+        let fetched_at = now.saturating_sub(ago.as_secs());
+        for snapshot in self.model.snapshots.values_mut() {
+            snapshot.fetched_at = fetched_at;
+        }
+        for air in self.model.air_quality.values_mut() {
+            air.fetched_at = fetched_at;
+        }
+    }
+
     /// Stage a live mid-drag reorder of the second saved place for a headless
     /// shot: the row floats free as a ghost under the cursor while the rest
     /// of the list has reflowed to open a gap near the tail where it will

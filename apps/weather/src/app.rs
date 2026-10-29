@@ -524,6 +524,10 @@ impl WeatherApp {
     /// * `"offline"` — cached conditions remain readable while connectivity
     ///   is unavailable.
     /// * `"error"` — a refresh error with a clear recovery message.
+    /// * `"fetched"` — a forecast fetched minutes ago, so the page says how
+    ///   old it is.
+    /// * `"stale"` — a forecast fetched hours ago: the same line, styled as
+    ///   out of date.
     ///
     /// `"onboarding"`, the first-run state with no saved places, stages
     /// nothing: its scenario saves no places.
@@ -557,6 +561,14 @@ impl WeatherApp {
                 .core
                 .borrow_mut()
                 .set_notice(Some(ForecastNotice::UpdateFailed)),
+            "fetched" => self
+                .core
+                .borrow_mut()
+                .seed_fetched(std::time::Duration::from_secs(4 * 60)),
+            "stale" => self
+                .core
+                .borrow_mut()
+                .seed_fetched(std::time::Duration::from_secs(5 * 60 * 60)),
             _ => {}
         }
         self.sync_rail();
