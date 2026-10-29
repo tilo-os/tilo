@@ -1169,6 +1169,13 @@ pub struct BooksApp {
     /// What a search hit or an agent's `open` asked to show, shown on the
     /// next sync.
     opens: Rc<std::cell::RefCell<Vec<String>>>,
+    /// What the reader shares with the view it is laid out in.
+    store: view::Shared,
+    /// The library as the view's document holds it, shown as it changes;
+    /// `None` for a reader outside the framework.
+    following: Option<ui::framework::Live<Ebook>>,
+    /// The `(revision, loads)` of the library last shown.
+    presented: Option<(u64, u64)>,
 }
 
 impl BooksApp {
@@ -1384,6 +1391,9 @@ impl BooksApp {
             opens: Rc::default(),
             record: Rc::new(Ebook::default()),
             record_stale: std::cell::Cell::new(false),
+            store: view::Shared::default(),
+            following: None,
+            presented: None,
         }
     }
 
@@ -2059,75 +2069,18 @@ impl BooksApp {
         }
     }
 
-    /// Shelve and open a book an effect placed, through the library's
+    /// Open a book an effect placed and shelved through the library's
     /// action, or say why it could not be opened.
-    fn finish_opening(
-        &mut self,
-        name: &str,
-        placed: Result<content::Placed, String>,
-        cx: &ui::framework::EffectCx<crate::resource::Ebook, Self>,
-    ) -> ui::framework::EffectAnswer {
+    fn opened(&mut self, placed: Result<content::Placed, String>) {
         self.dirty = true;
         match placed {
             Ok(placed) => {
-                cx.submit(crate::resource::shelve(&placed.entry));
                 self.pending_open_book = Some(placed.entry.id);
                 self.shelve(placed.book, placed.path);
                 self.clear_failure();
-                Ok(ui::framework::Effected::done())
             }
-            Err(error) => {
-                let message = format!("Couldn’t open {name}: {error}");
-                self.report_failure(message.clone());
-                Err(message)
-            }
+            Err(message) => self.report_failure(message),
         }
-    }
-
-    /// Ask the person for a book with the host's chooser, then place it
-    /// where the library reads it again and open it. A cancelled choice
-    /// opens nothing.
-    pub(crate) fn choose_book(
-        cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>,
-    ) -> ui::framework::Effected {
-        cx.choose_file(book_open_request(), |app: &mut Self, chosen, cx| {
-            let Some(file) = chosen else {
-                return Ok(ui::framework::Effected::done());
-            };
-            let store = app.content.clone();
-            let name = file.name;
-            Ok(cx.thread(
-                move |_| content::place_chosen_book(&file.bytes, store.as_ref()),
-                move |app: &mut Self, placed, cx| app.finish_opening(&name, placed, cx),
-            ))
-        })
-    }
-
-    /// Open the book whose bytes the content store holds as `hash`: parsed
-    /// off the UI thread, shelved through the library's action and opened.
-    /// What a launch on a book takes.
-    pub(crate) fn open_stored(
-        &self,
-        hash: String,
-        name: String,
-        cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>,
-    ) -> ui::framework::EffectAnswer {
-        let store = self
-            .content
-            .clone()
-            .ok_or_else(|| "this device keeps no book contents".to_string())?;
-        Ok(cx.thread(
-            move |_| {
-                let bytes = store
-                    .read(&hash)
-                    .ok_or_else(|| "its contents are not on this device".to_string())?;
-                content::open_handed_book(&bytes, None).map(|mut handed| {
-                    handed.content = Some(hash);
-                    content::placed(handed)
-                })
-            },
-            move |app: &mut Self, placed, cx| app.finish_opening(&name, placed, cx),
-        ))
     }
 
     fn drain_import_worker(&mut self, doc: &mut ui::widget::Edits<'_>) {
@@ -2808,8 +2761,8 @@ impl BooksApp {
     /// Ask to take the book `id` off the shelf, through the library's door.
     /// Removing is asked first, so nothing changes here yet: the shelf drops
     /// the row when the library no longer lists it ([`Self::adopt_shelf`]),
-    /// and this device forgets the book's file once the removal applied
-    /// ([`Self::forget_removed`]). A cancelled removal leaves the book as it
+    /// and this device forgets the book's file once the library no longer
+    /// lists it ([`Self::forget_left`]). A cancelled removal leaves the book as it
     /// was, still opening from its file.
     fn on_remove_from_library(&self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         self.edit(
@@ -2820,11 +2773,11 @@ impl BooksApp {
         );
     }
 
-    /// Forget what this device kept for the book `id`, which a removal
-    /// applied here took off the shelf, from whichever door: its file grant,
-    /// its watched-folder entry and its cover. Undo puts the row back but not
-    /// these, which is why the removal is asked first.
-    pub(crate) fn forget_removed(&mut self, id: &str) {
+    /// Forget what this device kept for the book `id`, which left the
+    /// library, from whichever door: its file grant, its watched-folder entry
+    /// and its cover. Undo puts the row back but not these, which is why the
+    /// removal is asked first.
+    fn forget_removed(&mut self, id: &str) {
         // A removed watched book is eligible to be discovered again. Keep the
         // watch registry an optimisation, never a hidden permanent exclusion;
         // importantly, do not discard deduplication for every other watched
@@ -3525,6 +3478,7 @@ impl BooksApp {
     }
 
     /// The library's edits bound to where the reader is in the open book.
+    #[cfg(test)]
     pub(crate) fn reading_declarations(
         &self,
     ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Ebook>> {
@@ -3539,8 +3493,30 @@ impl BooksApp {
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Ebook>) {
         let previous = std::mem::replace(&mut self.record, Rc::clone(state));
         self.record_stale.set(false);
+        self.forget_left(&previous);
         self.adopt_shelf(&previous);
         self.refresh_from_record();
+    }
+
+    /// Forget what this device kept for each book `previous` listed that
+    /// the library no longer does ([`Self::forget_removed`]): a removal is
+    /// asked first, so a book leaves the library only once the person
+    /// agreed. A past version previewed in History mode is no removal.
+    fn forget_left(&mut self, previous: &Ebook) {
+        if !self.live {
+            return;
+        }
+        let left: Vec<String> = previous
+            .entries
+            .values()
+            .filter(|entry| {
+                self.record.entry(&entry.id).is_none() && !self.shelving.contains(&entry.id)
+            })
+            .map(|entry| entry.id.clone())
+            .collect();
+        for id in left {
+            self.forget_removed(&id);
+        }
     }
 
     /// Put the books the library newly lists on the shelf and take off the
@@ -3600,10 +3576,12 @@ impl BooksApp {
         self.retire_layout();
     }
 
-    /// Read what the host gives the reader: whether the window is live, the
-    /// content store, the sample shelf of a screenshot, and this device's
-    /// file grants and watched folders.
-    pub(crate) fn attach_host(&mut self, cx: &ui::framework::SurfaceCx<crate::resource::Ebook>) {
+    /// Follow the library the view's document holds, and read what the host
+    /// gives the reader: whether the window is live, the content store, the
+    /// sample shelf of a screenshot, and this device's file grants and
+    /// watched folders.
+    pub(crate) fn follow(&mut self, cx: &ui::framework::ViewCx<Ebook>) {
+        self.following = Some(cx.live().clone());
         self.live = cx.mode().is_live();
         self.content = cx.content();
         #[cfg(feature = "samples")]
@@ -3624,52 +3602,59 @@ impl BooksApp {
             self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
             self.watched_folders
                 .clone_from(&self.local_library.watched_folders);
-            self.scan_watched_folders(&cx.jobs());
+            if !self.watched_folders.is_empty() {
+                view::scan_watched_folders(&self.store, &cx.jobs(), self.watched_folders.clone());
+            }
         }
     }
 
-    /// Look through the watched folders off the UI thread, and put the books
-    /// found there that the shelf does not hold yet on it, through the
-    /// library's actions like an import. Their files are this device's
-    /// grants, which open them.
-    fn scan_watched_folders(&self, jobs: &ui::framework::Jobs<crate::resource::Ebook>) {
-        if self.watched_folders.is_empty() {
+    /// What the reader shares with the view: what it shows, and what the
+    /// effects ask of it.
+    pub(crate) fn store(&self) -> view::Shared {
+        Rc::clone(&self.store)
+    }
+
+    /// Show the library the document holds, when it changed since the reader
+    /// last showed it.
+    fn follow_document(&mut self) {
+        let Some(shown) = self
+            .following
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
             return;
-        }
-        let folders = self.watched_folders.clone();
-        jobs.start(
-            "watched-folders",
-            move |cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>| {
-                Ok(cx.thread(
-                    move |_| content::find_watched_books(&folders),
-                    |app: &mut Self, found: Vec<content::FoundBook>, cx| {
-                        app.shelve_found(found, cx);
-                        Ok(ui::framework::Effected::done())
-                    },
-                ))
-            },
-        );
+        };
+        self.adopt_resource_state(&shown);
     }
 
-    /// Put `found` books the shelf does not hold yet on it, remembering
-    /// where each one's file is.
-    fn shelve_found<H: 'static>(
-        &mut self,
-        found: Vec<content::FoundBook>,
-        cx: &ui::framework::EffectCx<crate::resource::Ebook, H>,
-    ) {
-        let shelved: std::collections::HashSet<String> = cx.live().with(|state| {
-            state
-                .entries
-                .values()
-                .map(|entry| entry.id.clone())
-                .collect()
-        });
+    /// Do what the effects' completions, the jobs and a capture asked of the
+    /// reader since it last looked.
+    fn follow_store(&mut self) {
+        let asked = std::mem::take(&mut self.store.borrow_mut().asked);
+        for asked in asked {
+            match asked {
+                view::Asked::Opened(placed) => self.opened(*placed),
+                view::Asked::Found(found) => self.remember_found(found),
+                #[cfg(feature = "samples")]
+                view::Asked::Stage(scenario) => self.stage_scenario(&scenario),
+            }
+        }
+    }
+
+    /// Keep where the reader is and what search finds in its books where
+    /// the view publishes them.
+    fn publish_shown(&self) {
+        self.store.borrow_mut().shown = view::Shown {
+            reading: self.current_book_resource_context(),
+            search: self.book_search.clone(),
+        };
+    }
+
+    /// Remember where the books found in the watched folders are, which the
+    /// library holds once their rows land.
+    fn remember_found(&mut self, found: Vec<content::FoundBook>) {
         for book in found {
             self.local_library.remember_book(&book.entry.id, &book.path);
-            if !shelved.contains(&book.entry.id) {
-                cx.submit(crate::resource::shelve_found(&book.entry));
-            }
         }
         self.local_library.save();
         self.dirty = true;
@@ -4703,6 +4688,8 @@ impl Widget for BooksApp {
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document_ref(doc, path);
+        self.follow_document();
+        self.follow_store();
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
@@ -4767,6 +4754,7 @@ impl Widget for BooksApp {
             }
         }
         self.declare_window_bar();
+        self.publish_shown();
         if fingerprint != self.search_fingerprint && self.search_worker.is_none() {
             let Some(generation) = self.search_revision.checked_add(1) else {
                 // Never wrap a generation: a stale palette cursor must not
@@ -5405,12 +5393,18 @@ impl Widget for BooksApp {
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
-}
 
-impl BooksApp {
-    /// The books, chapters, annotations and remote books as search entries.
-    pub(crate) fn book_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.book_search.entries()
+    /// What an effect, a job or a capture asked is done on the next sync.
+    fn needs_idle_sync(&self) -> bool {
+        !self.store.borrow().asked.is_empty()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 }
 
@@ -5485,7 +5479,7 @@ impl BooksApp {
                     .map(ui::framework::Effected::value);
             }
             BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
-                return Err("opening a book is the surface's".into());
+                return Err("opening a book is the view's".into());
             }
         }
         self.record_progress();
@@ -5654,21 +5648,6 @@ impl BooksApp {
                 None => self.effect_replies.push((invocation, reply)),
             }
         }
-    }
-
-    /// Where the reader is in the open book, as the row it publishes.
-    pub(crate) fn reading_row(&self) -> Option<ui::framework::LiveRow> {
-        self.current_book_resource_context().map(|ctx| {
-            ui::framework::LiveRow::from_resource(crate::actions::reading_resource(&ctx))
-        })
-    }
-
-    /// The book, chapter, annotation or location a search hit names, with
-    /// what opens it. Its edits are the library's own, on the published row.
-    pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.book_search
-            .resolve(id)
-            .map(ui::framework::LiveRow::from_resource)
     }
 
     /// Where a search hit or an agent's `open` queues what to show.
@@ -8924,7 +8903,9 @@ mod chapter_layouts;
 mod query_view;
 mod search_worker;
 mod settings_page;
+mod view;
 use settings_page::{SettingsColumn, SettingsRow};
+pub(crate) use view::window;
 #[cfg(feature = "samples")]
 mod stage;
 

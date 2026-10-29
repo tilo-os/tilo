@@ -30,7 +30,7 @@ impl ResourceApp for BrowserBooks {
     const ARGUMENTS: usize = EbookShell::ARGUMENTS;
 
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
-        cx.surface(crate::BooksApp::new(cx.dispatcher(), true))
+        crate::app::window(cx, crate::BooksApp::new(cx.dispatcher(), true))
     }
 
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Ebook>> {
