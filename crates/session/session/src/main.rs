@@ -150,6 +150,18 @@ fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
         }
         Err(error) => tracing::warn!(%error, "connectivity service not started"),
     }
+    match tilo_system_service::SystemService::new(
+        Arc::new(tilo_system_service::device::OsSystem),
+        None,
+    ) {
+        Ok(mut system) => {
+            if let Err(error) = system.follow_location() {
+                tracing::warn!(%error, "the time zone does not follow the device");
+            }
+            services.push(Box::new(system));
+        }
+        Err(error) => tracing::warn!(%error, "system service not started"),
+    }
     match audio_helper().map(|helper| {
         let mut command = std::process::Command::new(helper);
         command.arg("--serve");

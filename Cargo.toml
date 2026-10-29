@@ -434,6 +434,7 @@ members = [
     "crates/session/bluetooth-agent",
     "crates/session/service",
     "crates/session/connectivity-service",
+    "crates/session/system-service",
     "crates/session/messaging-service",
     "crates/session/topbar",
     "crates/session/tray-host",
