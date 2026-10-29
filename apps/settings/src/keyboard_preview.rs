@@ -160,20 +160,7 @@ pub(crate) fn valid_model(model: &str) -> bool {
     matches!(model, "pc104" | "pc105" | "jp106" | "kr106")
 }
 
-/// Build a visual map from installed native XKB data and the same bounded
-/// keyboard options the compositor reads. Does not apply settings or capture input.
-///
-/// # Errors
-/// Rejects invalid sources or models and unavailable or invalid installed metadata.
-pub fn preview_layout(
-    source: &str,
-    model: &str,
-    policy: &settings_store::hardware::RichInputConfig,
-    label: String,
-) -> Result<KeyboardMap, String> {
-    map_with_options(source, model, label, Some(&policy.xkb_options().join(",")))
-}
-
+#[cfg(test)]
 pub(crate) fn map_with_options(
     source: &str,
     model: &str,
@@ -183,7 +170,7 @@ pub(crate) fn map_with_options(
     map_for_form(source, model, label, options, false)
 }
 
-/// [`map_with_options`] for the keyboard in front of the person: the compact
+/// The native XKB map for the keyboard in front of the person: the compact
 /// drawing (no navigation cluster or numpad) when `compact`, so a laptop's
 /// preview matches the laptop and every legend stays readable.
 pub(crate) fn map_for_form(
