@@ -5,13 +5,16 @@
 #[cfg(test)]
 use super::file_metadata;
 use crate::resource::Contacts;
+use std::cell::Cell;
 #[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
-use ui::framework::ChosenFile;
+use ui::framework::{ChosenFile, EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource::Invoke;
 
 use ui::portal::{FileFilter, PickRequest};
 
+use super::effects::{Ask, Asked};
 use super::{ContactsApp, FileWork, FileWorkGuard, ImportConflict, ParsedImport};
 
 use crate::model::{Contact, ContactId};
@@ -196,67 +199,24 @@ impl ContactsApp {
         }
         summary
     }
-    /// Add the imported `cards` the book does not hold yet, as one change;
-    /// a card whose id names a contact already is unchanged or waits for
-    /// review, and one whose contact was deleted is not brought back.
+    /// Add the imported `cards` the book does not hold yet, as one change
+    /// submitted through this window's door.
     pub(super) fn absorb_import_contacts(
-        &mut self,
+        &self,
         cards: impl IntoIterator<Item = Contact>,
         summary: &mut ImportSummary,
         first_new: &mut Option<ContactId>,
     ) {
-        let mut added = Vec::new();
-        for c in cards {
-            // A card earlier in this import counts as held already.
-            let held = self
-                .store
-                .contact(c.id)
-                .or_else(|| added.iter().find(|card: &&Contact| card.id == c.id));
-            if let Some(existing) = held {
-                if same_import_payload(existing, &c) {
-                    summary.unchanged += 1;
-                } else {
-                    let contact_id = c.id;
-                    if self.import_conflicts.len() < MAX_IMPORT_CONFLICTS {
-                        self.import_conflicts.push(ImportConflict {
-                            token: uuid::Uuid::new_v4(),
-                            existing: existing.id,
-                            incoming: c,
-                        });
-                        summary.conflicts += 1;
-                    } else {
-                        // Do not claim this collision is reviewable when the
-                        // bounded review queue deliberately declined it.
-                        summary.errors += 1;
-                    }
-                    tracing::warn!(%contact_id, "contacts: import UID collision needs review");
-                }
-                continue;
-            }
-            if self.store.removed.contains(&c.id) {
-                summary.errors += 1;
-                tracing::warn!(contact_id = %c.id, "contacts: import of a deleted contact");
-                continue;
-            }
-            added.push(c);
-        }
-        if added.is_empty() {
-            return;
-        }
-        let count = added.len();
-        let first = added.first().map(|contact| contact.id);
-        match self.submit(crate::resource::Contacts::add_all(added)) {
-            Ok(()) => {
-                if first_new.is_none() {
-                    *first_new = first;
-                }
-                summary.created += count;
-            }
-            Err(error) => {
-                summary.errors += count;
-                tracing::warn!(error = %error, "contacts: import action refused");
-            }
-        }
+        let book = Rc::clone(&self.store);
+        let mut asked = self.asked.borrow_mut();
+        absorb(
+            &book,
+            &mut asked.import_conflicts,
+            cards,
+            summary,
+            first_new,
+            |invoke| self.submit(invoke),
+        );
     }
     pub(crate) fn open_cards(&mut self, text: String) {
         self.opened_cards = Some(text);
@@ -281,6 +241,12 @@ impl ContactsApp {
         };
         let mut first_new = None;
         self.absorb_import_contacts(parsed.contacts, &mut summary, &mut first_new);
+        self.show_imported(&summary, first_new);
+        summary
+    }
+    /// Show what an import did: select the first contact it added and say
+    /// what became of the cards.
+    pub(super) fn show_imported(&mut self, summary: &ImportSummary, first_new: Option<ContactId>) {
         if let Some(id) = first_new {
             self.select_awaited(id);
         }
@@ -293,103 +259,40 @@ impl ContactsApp {
             || summary.conflicts > 0
             || summary.errors > 0
         {
-            self.show_import_summary(&summary);
+            self.show_import_summary(summary);
         } else {
             self.show_toast("No contacts found in the selected file(s)");
         }
-        summary
     }
-    pub(super) fn import_chosen(
-        files: Vec<ChosenFile>,
-        work: FileWorkGuard,
-        cx: &mut ui::framework::EffectCx<Contacts, Self>,
-    ) -> ui::framework::EffectAnswer {
-        if files.is_empty() {
-            return Ok(ui::framework::Effected::done());
-        }
-        if files.len() > MAX_IMPORT_FILES {
-            return Err(format!(
-                "select at most {MAX_IMPORT_FILES} vCard files at once"
-            ));
-        }
-        let total = files
-            .iter()
-            .map(|file| file.bytes.len() as u64)
-            .sum::<u64>();
-        if total > MAX_IMPORT_TOTAL_BYTES {
-            return Err(format!(
-                "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
-            ));
-        }
-        Ok(cx.thread(
-            move |_| parse_chosen(files),
-            move |app: &mut Self, parsed, _| {
-                drop(work);
-                let summary = app.apply_parsed_import(parsed);
-                if summary.completed() {
-                    Ok(ui::framework::Effected::done())
-                } else {
-                    Err(summary.failure_message())
-                }
-            },
-        ))
+    pub(super) fn portal_in_flight(&self) -> bool {
+        self.file_work.get().is_some()
     }
-    pub(super) fn begin_file_work(&self, work: FileWork) -> Result<FileWorkGuard, String> {
+    pub(super) fn request_export(&mut self, ids: &[ContactId], version: VCardVersion) -> bool {
+        if ids.is_empty() {
+            self.show_toast("Select at least one contact to export");
+            return false;
+        }
         if self.file_work.get().is_some() {
-            return Err("another contact file operation is running".into());
+            return false;
         }
-        self.file_work.set(Some(work));
-        Ok(FileWorkGuard(Rc::clone(&self.file_work)))
-    }
-    pub(super) fn export_bytes(
-        &self,
-        ids: &[ContactId],
-        version: VCardVersion,
-    ) -> Result<(Vec<u8>, usize), String> {
-        let contacts: Vec<Contact> = ids
-            .iter()
-            .filter_map(|id| self.store.contact(*id).cloned())
-            .collect();
-        if contacts.is_empty() {
-            return Err("there are no contacts to export".into());
-        }
-        Ok((
-            vcard::to_vcards(&contacts, version).into_bytes(),
-            contacts.len(),
-        ))
-    }
-    pub(super) fn export_to_chosen_file(
-        &self,
-        ids: &[ContactId],
-        version: VCardVersion,
-        cx: &mut ui::framework::EffectCx<Contacts, Self>,
-    ) -> ui::framework::EffectAnswer {
-        let (bytes, count) = self.export_bytes(ids, version)?;
-        let work = self.begin_file_work(FileWork::Export)?;
-        Ok(Self::save_export(bytes, count, version, work, cx))
-    }
-    pub(super) fn save_export(
-        bytes: Vec<u8>,
-        count: usize,
-        version: VCardVersion,
-        work: FileWorkGuard,
-        cx: &mut ui::framework::EffectCx<Contacts, Self>,
-    ) -> ui::framework::Effected {
-        cx.save_file(
-            contacts_export_request(EXPORT_FILE_NAME),
-            bytes,
-            move |app, saved, _| {
-                drop(work);
-                if saved {
-                    app.show_toast(format!(
-                        "Exported {count} contact{} ({})",
-                        if count == 1 { "" } else { "s" },
-                        version.label()
-                    ));
-                }
-                Ok(ui::framework::Effected::done())
-            },
-        )
+        let Some(jobs) = self.jobs.clone() else {
+            return false;
+        };
+        let (bytes, count) = match export_bytes(&self.store, ids, version) {
+            Ok(export) => export,
+            Err(error) => {
+                self.show_toast(format!("Export failed: {error}"));
+                return false;
+            }
+        };
+        let Ok(work) = begin_file_work(&self.file_work, FileWork::Export) else {
+            return false;
+        };
+        let asked = Rc::clone(&self.asked);
+        jobs.start::<()>("export", move |cx| {
+            Ok(save_export(bytes, count, version, work, asked, cx))
+        });
+        true
     }
     #[cfg(test)]
     pub(super) fn read_import_file(path: &std::path::Path) -> Result<String, String> {
@@ -435,35 +338,6 @@ impl ContactsApp {
             parts.push(format!("{} couldn't be imported", summary.errors));
         }
         self.show_toast(parts.join("; "));
-    }
-    pub(super) fn portal_in_flight(&self) -> bool {
-        self.file_work.get().is_some()
-    }
-    pub(super) fn request_export(&mut self, ids: &[ContactId], version: VCardVersion) -> bool {
-        if ids.is_empty() {
-            self.show_toast("Select at least one contact to export");
-            return false;
-        }
-        if self.file_work.get().is_some() {
-            return false;
-        }
-        let Some(jobs) = self.jobs.clone() else {
-            return false;
-        };
-        let (bytes, count) = match self.export_bytes(ids, version) {
-            Ok(export) => export,
-            Err(error) => {
-                self.show_toast(format!("Export failed: {error}"));
-                return false;
-            }
-        };
-        let Ok(work) = self.begin_file_work(FileWork::Export) else {
-            return false;
-        };
-        jobs.start::<Self>("export", move |cx| {
-            Ok(Self::save_export(bytes, count, version, work, cx))
-        });
-        true
     }
 }
 fn parse_chosen(files: Vec<ChosenFile>) -> ParsedImport {
@@ -568,4 +442,188 @@ impl ContactsApp {
         );
         Ok(true)
     }
+}
+
+/// Add the imported `cards` `book` does not hold yet, as one change;
+/// a card whose id names a contact already is unchanged or waits for
+/// review in `conflicts`, and one whose contact was deleted is not brought
+/// back.
+pub(super) fn absorb(
+    book: &Contacts,
+    conflicts: &mut Vec<ImportConflict>,
+    cards: impl IntoIterator<Item = Contact>,
+    summary: &mut ImportSummary,
+    first_new: &mut Option<ContactId>,
+    submit: impl FnOnce(Invoke<Contacts>) -> Result<(), String>,
+) {
+    let mut added = Vec::new();
+    for c in cards {
+        // A card earlier in this import counts as held already.
+        let held = book
+            .contact(c.id)
+            .or_else(|| added.iter().find(|card: &&Contact| card.id == c.id));
+        if let Some(existing) = held {
+            if same_import_payload(existing, &c) {
+                summary.unchanged += 1;
+            } else {
+                let contact_id = c.id;
+                if conflicts.len() < MAX_IMPORT_CONFLICTS {
+                    conflicts.push(ImportConflict {
+                        token: uuid::Uuid::new_v4(),
+                        existing: existing.id,
+                        incoming: c,
+                    });
+                    summary.conflicts += 1;
+                } else {
+                    // Do not claim this collision is reviewable when the
+                    // bounded review queue deliberately declined it.
+                    summary.errors += 1;
+                }
+                tracing::warn!(%contact_id, "contacts: import UID collision needs review");
+            }
+            continue;
+        }
+        if book.removed.contains(&c.id) {
+            summary.errors += 1;
+            tracing::warn!(contact_id = %c.id, "contacts: import of a deleted contact");
+            continue;
+        }
+        added.push(c);
+    }
+    if added.is_empty() {
+        return;
+    }
+    let count = added.len();
+    let first = added.first().map(|contact| contact.id);
+    match submit(Contacts::add_all(added)) {
+        Ok(()) => {
+            if first_new.is_none() {
+                *first_new = first;
+            }
+            summary.created += count;
+        }
+        Err(error) => {
+            summary.errors += count;
+            tracing::warn!(error = %error, "contacts: import action refused");
+        }
+    }
+}
+
+/// Import the vCard `files` the person chose, parsed off the UI thread and
+/// added as one change; the window shows what became of them.
+pub(super) fn import_chosen(
+    files: Vec<ChosenFile>,
+    work: FileWorkGuard,
+    asked: Asked,
+    cx: &mut EffectCx<Contacts>,
+) -> EffectAnswer {
+    if files.is_empty() {
+        return Ok(Effected::done());
+    }
+    if files.len() > MAX_IMPORT_FILES {
+        return Err(format!(
+            "select at most {MAX_IMPORT_FILES} vCard files at once"
+        ));
+    }
+    let total = files
+        .iter()
+        .map(|file| file.bytes.len() as u64)
+        .sum::<u64>();
+    if total > MAX_IMPORT_TOTAL_BYTES {
+        return Err(format!(
+            "selected files exceed the {MAX_IMPORT_TOTAL_BYTES}-byte import limit"
+        ));
+    }
+    Ok(cx.thread(
+        move |_| parse_chosen(files),
+        move |(), parsed, cx| {
+            drop(work);
+            let book = cx.live().get();
+            let mut summary = ImportSummary {
+                errors: parsed.errors,
+                ..ImportSummary::default()
+            };
+            let mut first_new = None;
+            let mut asked = asked.borrow_mut();
+            absorb(
+                &book,
+                &mut asked.import_conflicts,
+                parsed.contacts,
+                &mut summary,
+                &mut first_new,
+                |invoke| {
+                    if cx.dispatcher().read_only() {
+                        return Err("you can only view this address book".into());
+                    }
+                    cx.submit(invoke);
+                    Ok(())
+                },
+            );
+            let answer = if summary.completed() {
+                Ok(Effected::done())
+            } else {
+                Err(summary.failure_message())
+            };
+            asked.asks.push(Ask::Imported(summary, first_new));
+            answer
+        },
+    ))
+}
+
+/// Claim the one file operation for `work`, until the guard drops.
+pub(super) fn begin_file_work(
+    running: &Rc<Cell<Option<FileWork>>>,
+    work: FileWork,
+) -> Result<FileWorkGuard, String> {
+    if running.get().is_some() {
+        return Err("another contact file operation is running".into());
+    }
+    running.set(Some(work));
+    Ok(FileWorkGuard(Rc::clone(running)))
+}
+
+/// The contacts of `book` that `ids` name as one vCard file, and how many.
+pub(super) fn export_bytes(
+    book: &Contacts,
+    ids: &[ContactId],
+    version: VCardVersion,
+) -> Result<(Vec<u8>, usize), String> {
+    let contacts: Vec<Contact> = ids
+        .iter()
+        .filter_map(|id| book.contact(*id).cloned())
+        .collect();
+    if contacts.is_empty() {
+        return Err("there are no contacts to export".into());
+    }
+    Ok((
+        vcard::to_vcards(&contacts, version).into_bytes(),
+        contacts.len(),
+    ))
+}
+
+/// Save `bytes`, `count` contacts as `version`, where the person chooses;
+/// the window says when they are saved.
+pub(super) fn save_export(
+    bytes: Vec<u8>,
+    count: usize,
+    version: VCardVersion,
+    work: FileWorkGuard,
+    asked: Asked,
+    cx: &mut EffectCx<Contacts>,
+) -> Effected {
+    cx.save_file(
+        contacts_export_request(EXPORT_FILE_NAME),
+        bytes,
+        move |(), saved, _| {
+            drop(work);
+            if saved {
+                asked.borrow_mut().asks.push(Ask::Say(format!(
+                    "Exported {count} contact{} ({})",
+                    if count == 1 { "" } else { "s" },
+                    version.label()
+                )));
+            }
+            Ok(Effected::done())
+        },
+    )
 }
