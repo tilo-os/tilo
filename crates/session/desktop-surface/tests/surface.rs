@@ -485,9 +485,6 @@ impl ui::widget::Decorator for Hosted {
 }
 
 impl ui::widget::AppWidget for Hosted {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> ui::widget::AppKind {
         ui::widget::AppKind::Editor
     }

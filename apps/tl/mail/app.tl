@@ -1,4 +1,4 @@
-app so.tilo.lang.mail "Mail" (icon: .mail, category: .office)
+app so.tilo.lang.mail "Mail" (icon: .mail, category: .office, records: .own)
 
 /// What the server of one of the workspace's mail accounts holds. The account itself, its
 /// address, servers and signature, is the workspace settings', and its credentials stay in

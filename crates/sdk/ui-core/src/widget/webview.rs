@@ -2897,9 +2897,6 @@ mod tests {
 /// A web view is a window of its own where a page is all there is to show:
 /// a browser tab a host streams to this desktop. It keeps no record here.
 impl crate::widget::AppWidget for WebView {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> crate::widget::AppKind {
         crate::widget::AppKind::Browser
     }

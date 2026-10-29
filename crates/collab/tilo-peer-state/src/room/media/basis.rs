@@ -1,9 +1,5 @@
-//! One security-basis algorithm for both storage modes.
+//! The security-basis algorithm.
 use super::{MediaPolicyError, read::Error};
-use crate::resources::{
-    PeerResourceError,
-    json::{self, JsonLimits},
-};
 use crate::room::read::collections::Collections;
 use crate::room::read::{self, Capacity, LegacyRead, ReadError, RoomRead};
 use crate::state::GovernedIdentity;
@@ -12,11 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use tilo_action_policy::{Grant, Role};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
-#[derive(Clone, Copy)]
-pub(crate) struct BasisLimits {
-    pub(crate) collection_bytes: usize,
-    pub(crate) json: JsonLimits,
-}
 trait Decode {
     fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
@@ -32,26 +23,6 @@ impl Decode for Legacy {
     }
     fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
-    }
-}
-struct Bounded {
-    limits: JsonLimits,
-}
-impl Decode for Bounded {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
-        json::decode(bytes, self.limits).map_err(decode_error)
-    }
-    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
-        json::decode(bytes, self.limits).map_err(decode_error)
-    }
-    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
-        json::decode(bytes, self.limits).map_err(decode_error)
-    }
-}
-fn decode_error(error: PeerResourceError) -> Error {
-    match error {
-        PeerResourceError::Malformed => policy(MediaPolicyError::Malformed),
-        PeerResourceError::Capacity => Error::Decode(error),
     }
 }
 fn policy(error: MediaPolicyError) -> Error {
@@ -85,31 +56,6 @@ pub(super) fn legacy(
         },
     )
     .map_err(super::read::legacy_error)
-}
-pub(crate) fn bounded<R: RoomRead>(
-    room: &R,
-    extra: &[RevocationEntry],
-    limits: BasisLimits,
-) -> Result<[u8; 32], Error> {
-    bounded_entries(room, extra.iter(), limits)
-}
-/// The already verified local union is borrowed directly.
-pub(crate) fn bounded_entries<'a, R: RoomRead>(
-    room: &R,
-    extra: impl IntoIterator<Item = &'a RevocationEntry>,
-    limits: BasisLimits,
-) -> Result<[u8; 32], Error> {
-    let mut work = Work {
-        collections: Collections::limited(limits.collection_bytes),
-    };
-    project(
-        room,
-        &Bounded {
-            limits: limits.json,
-        },
-        extra,
-        &mut work,
-    )
 }
 
 #[expect(

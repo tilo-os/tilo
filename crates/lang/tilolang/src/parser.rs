@@ -15,28 +15,41 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
+/// Whether call arguments name only a filter's options: `(icon: .circle)`.
+fn only_opts(args: &[Arg]) -> bool {
+    !args.is_empty()
+        && args
+            .iter()
+            .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon"))
+}
+
+/// The arguments as a filter's options.
+fn opts_of(args: Vec<Arg>) -> Vec<ActionOpt> {
+    args.into_iter()
+        .filter_map(|a| {
+            Some(ActionOpt {
+                name: a.name?,
+                value: a.value,
+            })
+        })
+        .collect()
+}
+
 /// A named filter's predicate and the options written after it: `not done (icon: .circle)`
-/// parses as a call of `done`, told from one by naming only options.
+/// parses as a call of `done`, and `project == .none (icon: .inbox)` as a case with fields,
+/// each told from what it reads like by naming only options.
 fn split_opts(e: Expr) -> (Expr, Vec<ActionOpt>) {
     let span = e.span;
     match e.kind {
-        ExprKind::Call { callee, args }
-            if !args.is_empty()
-                && args
-                    .iter()
-                    .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon")) =>
-        {
-            let opts = args
-                .into_iter()
-                .filter_map(|a| {
-                    Some(ActionOpt {
-                        name: a.name?,
-                        value: a.value,
-                    })
-                })
-                .collect();
-            (*callee, opts)
+        ExprKind::Variant {
+            name,
+            args: Some(args),
+        } if only_opts(&args) => {
+            let span = Span::new(span.start, name.span.end);
+            let kind = ExprKind::Variant { name, args: None };
+            (Expr { kind, span }, opts_of(args))
         }
+        ExprKind::Call { callee, args } if only_opts(&args) => (*callee, opts_of(args)),
         ExprKind::Unary { op, operand } => {
             let (inner, opts) = split_opts(*operand);
             let span = Span::new(span.start, inner.span.end);
@@ -180,6 +193,7 @@ struct AppOptions {
     icon: Option<String>,
     category: Option<String>,
     previously: Vec<String>,
+    own_records: bool,
 }
 
 /// The launcher categories an app declares (`category: .office`), as the platform's menu
@@ -358,10 +372,12 @@ impl<'a> Parser<'a> {
     }
 
     /// The options after the app's title: `(icon: .note, category: .office, previously:
-    /// so.tilo.old)`, each at most once. `previously:` takes an app id, or several in brackets.
+    /// so.tilo.old, records: .own)`, each at most once. `previously:` takes an app id, or several
+    /// in brackets.
     fn app_options(&mut self) -> PResult<AppOptions> {
         let mut out = AppOptions::default();
         let mut seen_previously = false;
+        let mut records: Option<String> = None;
         if !self.eat(&Tok::LParen) {
             return Ok(out);
         }
@@ -370,7 +386,7 @@ impl<'a> Parser<'a> {
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon`, `category` or `previously`")?;
+            let key = self.ident("`icon`, `category`, `previously` or `records`")?;
             self.expect(&Tok::Colon)?;
             if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
@@ -415,11 +431,25 @@ impl<'a> Parser<'a> {
                         }
                         &mut out.category
                     }
+                    "records" => {
+                        if !matches!(value.name.as_str(), "own" | "shared") {
+                            return self.fail(
+                                value.span,
+                                format!(
+                                    "`.{}` is not where records are kept; an app's records are \
+                                     `.shared` with the workspace or each member's `.own`",
+                                    value.name
+                                ),
+                            );
+                        }
+                        &mut records
+                    }
                     other => {
                         return self.fail(
                             key.span,
                             format!(
-                                "an app has an `icon:`, a `category:` and `previously:`, not `{other}:`"
+                                "an app has an `icon:`, a `category:`, `previously:` and \
+                                 `records:`, not `{other}:`"
                             ),
                         );
                     }
@@ -435,6 +465,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        out.own_records = records.as_deref() == Some("own");
         Ok(out)
     }
 
@@ -505,10 +536,10 @@ impl<'a> Parser<'a> {
         let role = match self.peek() {
             Tok::Ident(n) if n == "primary" => ActionRole::Primary,
             Tok::Ident(n) if n == "destructive" => ActionRole::Destructive,
+            Tok::Ident(n) if n == "migration" => ActionRole::Migration,
             _ => return None,
         };
-        let next_is_role =
-            matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive");
+        let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration");
         (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
     }
 
@@ -566,6 +597,7 @@ impl<'a> Parser<'a> {
                 icon: options.icon,
                 category: options.category,
                 previously: options.previously,
+                own_records: options.own_records,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -612,6 +644,7 @@ impl<'a> Parser<'a> {
                         icon: options.icon,
                         category: options.category,
                         previously: options.previously,
+                        own_records: options.own_records,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }
@@ -731,7 +764,7 @@ impl<'a> Parser<'a> {
                 self.diags.push(Diagnostic::new(
                     "E090",
                     span,
-                    "an action is `primary` or `destructive`, not both: the primary action is the one main thing to do, and a destructive one never is. Keep one of the words",
+                    "an action is `primary`, `destructive` or a `migration`, one of them: the primary action is the one main thing to do, a destructive one never is, and a migration is never offered. Keep one of the words",
                 ));
                 continue;
             }

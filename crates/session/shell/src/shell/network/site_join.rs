@@ -77,7 +77,7 @@ impl ShellNetwork {
             .as_ref()
             .ok_or_else(|| SiteError::Refused("this computer has no identity yet".into()))?;
         let (certificate, _) = identity
-            .current_native_material(0)
+            .current_person_material()
             .map_err(SiteError::Refused)?;
         // The person's name, never the device's: a room, and a public one
         // above all, learns nothing of this person's devices.

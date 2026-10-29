@@ -30,6 +30,36 @@ have, and its actions change them there; what it creates goes under the new id. 
 before is signed into the app's manifest, and installing it over an app of that id from another
 publisher is refused; from the same publisher it takes that app's place.
 
+A package migrates its own records when its schema changes shape. The field the type no longer
+uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
+it. A `migration action` on the type moves what it held to where the type keeps it now:
+
+```
+type Column {
+    title: Text (title)
+    cards: Collection<Card>
+}
+
+type Board {
+    columns: Collection<Column>
+    cards: Collection<Card> (previously)
+}
+
+/// Puts each card of a board from before into its column, in the order the board showed them.
+migration action place_cards(b: Board) {
+    for card in b.cards {
+        let col = card.column
+        col.cards.move(card, to: col.cards.len())
+    }
+}
+```
+
+The platform runs it once on each resource of its type that holds something in a `(previously)`
+field (a type without one: once on each resource), as an ordinary action of the person whose
+window opened the data: it is in history, undone like any other, and records in the same change
+that it ran. A migration is never offered. It cannot delete anything; moving items between
+collections keeps their ids and history.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -326,7 +356,7 @@ apps:
 ```
 grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
 grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
-    .each(t -> todo.add(todo.todos, t.group(1)))
+    .each(t -> todo.add(todo.tasks, t.group(1)))
 find("standup chen")                                   // the palette's words, every app
 find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
 find("groceries").single()                             // one, or an error listing them

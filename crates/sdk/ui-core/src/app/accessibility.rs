@@ -556,7 +556,6 @@ impl App {
                 sweep.nodes.iter().copied(),
                 &self.bindings,
                 &self.collaboration.local_author,
-                &self.permission_ctx,
             )
         };
         // What the whole view says about history is read once per sweep, not
@@ -618,15 +617,6 @@ impl App {
                         .history_request(&mut self.state.doc, request)
                         .ok()
                         .flatten()
-                } else if let Some(owner) = self.bindings.legacy_for(node) {
-                    crate::bound_dispatch::legacy_history_request(
-                        &owner,
-                        request,
-                        &self.permission_ctx,
-                        &self.collaboration.local_author,
-                    )
-                    .ok()
-                    .flatten()
                 } else {
                     match request {
                         crate::undo::UndoRequest::Undo => self.state.undo_as(
@@ -657,23 +647,17 @@ impl App {
             }
             // Bound histories intentionally keep completed-action labels warm
             // across pending edits and dynamically mounted controls.
-            let bound_status = binding
-                .as_ref()
-                .map(|binding| {
-                    if let Some((_, status)) = bound_statuses
-                        .iter()
-                        .find(|(seen, _)| seen.same_component(binding))
-                    {
-                        return status.clone();
-                    }
-                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
-                    bound_statuses.push((binding.clone(), status.clone()));
-                    status
-                })
-                .or_else(|| {
-                    self.bindings
-                        .legacy_status(node, &self.collaboration.local_author)
-                });
+            let bound_status = binding.as_ref().map(|binding| {
+                if let Some((_, status)) = bound_statuses
+                    .iter()
+                    .find(|(seen, _)| seen.same_component(binding))
+                {
+                    return status.clone();
+                }
+                let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                bound_statuses.push((binding.clone(), status.clone()));
+                status
+            });
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     if let Some(local) = &local_status {
@@ -1418,7 +1402,7 @@ impl App {
             })
             .flatten();
         let handled = self
-            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     crate::a11y_child_route::perform(
                         widget,
@@ -1768,7 +1752,7 @@ impl App {
                         crate::bound_dispatch::ControlContinuationArguments::Text(value.to_owned())
                     };
                     return Ok(self.open_ordinary_confirmation(
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Component(
                             target.clone(),
                         ),
                         target.address.address.clone(),

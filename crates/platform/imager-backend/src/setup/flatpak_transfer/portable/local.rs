@@ -7,10 +7,11 @@ use super::{
     PortableFlatpakSource, StageGrant,
 };
 use crate::setup::{
-    migration::{PinnedDirectory, changed},
+    migration::changed,
     portable_transfer::ImportReview,
     user_transfer::{publish_private_artifact, read_private_artifact},
 };
+use crate::user_transfer::{clear_workspace as clear, private_workspace as private};
 use std::{
     ffi::OsStr,
     io,
@@ -186,29 +187,4 @@ impl SealedApplications {
         check()?;
         super::restore::apply(runner, &self.root, &self.manifest, home, cancel, &mut check)
     }
-}
-
-fn private(workspace: &Path) -> io::Result<Arc<PinnedDirectory>> {
-    let pin = PinnedDirectory::open_absolute(workspace)?;
-    pin.validate_destination()?;
-    crate::setup::destination_security::check_private_file(&pin.file)?;
-    Ok(pin)
-}
-
-/// Remove what an interrupted seal left behind; no record means no unit.
-fn clear(pin: &Arc<PinnedDirectory>, workspace: &Path) -> io::Result<()> {
-    let directory = cap_std::fs::Dir::from_std_file(
-        crate::setup::migration_durability::readable_directory(&pin.file)?,
-    );
-    for entry in directory.entries()? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let path = workspace.join(&name);
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(path)?;
-        } else {
-            std::fs::remove_file(path)?;
-        }
-    }
-    pin.validate_destination()
 }

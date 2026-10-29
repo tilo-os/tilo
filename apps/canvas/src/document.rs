@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ui::icons::Icon;
+use ui::prelude::{Model, resource, tilo_resource};
 
 use crate::media::MediumSpec;
 use crate::model::{Artwork, Ground, MarkBody};
@@ -394,7 +395,7 @@ pub fn file_name(title: &str, extension: &str) -> String {
 }
 
 /// An artwork opened or saved lately.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::JsonSchema)]
 pub struct Recent {
     /// Where the file is.
     pub path: String,
@@ -408,15 +409,46 @@ pub struct Recent {
     pub thumbnail: Option<String>,
 }
 
-/// The artworks opened or saved lately, newest first, one per path. Their
-/// paths name files on this device, so the list is a device-local setting.
+/// The artworks one device opened or saved lately, newest first, one per
+/// path.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecentArtworks {
     pub artworks: ui::tilo_resource::Recents<Recent, 8>,
 }
 
-impl ui::storage::SettingsSchema for RecentArtworks {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+tilo_resource::json_model!(RecentArtworks);
+
+/// The artworks opened or saved lately, by device: a record Canvas keeps
+/// beside the artwork in the workspace. Their paths name files on one
+/// device, so each device reads and writes only its own list.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct ArtworkRecents {
+    pub devices: BTreeMap<String, RecentArtworks>,
+}
+
+#[resource(kind = "canvas.recent-artworks", label = "Recent artworks")]
+impl ArtworkRecents {
+    /// `recent` was opened or saved on `device`: it moves to the front.
+    #[action(housekeeping)]
+    pub fn remember(&mut self, device: String, recent: Recent) {
+        self.devices.entry(device).or_default().remember(recent);
+    }
+
+    /// The artwork at `path` on `device` moved or was removed.
+    #[action(housekeeping)]
+    pub fn forget(&mut self, device: String, path: ui::tilo_resource::AbsolutePath) {
+        if let Some(recents) = self.devices.get_mut(&device) {
+            recents.forget(&path.to_string_lossy());
+        }
+    }
+}
+
+impl ArtworkRecents {
+    /// The artworks `device` opened or saved lately.
+    #[must_use]
+    pub fn on(&self, device: &str) -> RecentArtworks {
+        self.devices.get(device).cloned().unwrap_or_default()
+    }
 }
 
 impl RecentArtworks {

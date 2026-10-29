@@ -69,19 +69,7 @@ mod unsupported {
             review(source, destination, journal)
         }
 
-        pub fn verify_after_applications(&self) -> Result<CopyReport, String> {
-            Err(error().to_string())
-        }
-
-        pub fn verify_flatpak_installation(&self) -> Result<CopyReport, String> {
-            Err(error().to_string())
-        }
-
         pub fn verify_completed_tree(&self) -> Result<CopyReport, String> {
-            Err(error().to_string())
-        }
-
-        pub fn retain_review(&self) -> Result<(), String> {
             Err(error().to_string())
         }
 

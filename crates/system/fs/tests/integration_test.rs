@@ -72,10 +72,11 @@ async fn wait_for_mount(mount: impl AsRef<std::path::Path>) {
 /// prevents either teardown path from leaking into the next serialized test.
 async fn shutdown_fuse_fixture(
     session: fuser::BackgroundSession,
+    mount: &std::path::Path,
     endpoint: Endpoint,
     store: Arc<ContentStore>,
 ) {
-    fs::fuse_session::unmount_and_join(session).expect("unmount and join FUSE session");
+    fs::fuse_session::unmount_and_join(session, mount).expect("unmount and join FUSE session");
     endpoint.close().await;
     store
         .store()
@@ -142,7 +143,7 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
     if let Some(abort) = &abort {
         std::fs::write(abort, b"1").expect("abort the FUSE connection");
     }
-    let ended = fs::fuse_session::unmount_and_join(session);
+    let ended = fs::fuse_session::unmount_and_join(session, &mount);
     // An aborted connection still holds its mount point; detach it so the
     // temporary directory can go.
     let _ = std::process::Command::new("fusermount3")
@@ -155,6 +156,89 @@ fn teardown_reads_an_aborted_fuse_connection_as_a_clean_end() {
         "aborting the connection needs fusectl mounted at /sys/fs/fuse/connections"
     );
     ended.expect("an aborted connection ends the session cleanly");
+}
+
+/// A filesystem that answers nothing beyond the protocol's defaults.
+struct IdleFs;
+
+impl fuser::Filesystem for IdleFs {}
+
+/// Whether `mount` is in this process's mount table.
+fn mounted(mount: &std::path::Path) -> bool {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .expect("read mountinfo")
+        .lines()
+        .any(|line| line.split(' ').nth(4).map(std::path::Path::new) == Some(mount))
+}
+
+/// A mount `fs.service` makes (`AutoUnmount`, so `fusermount3` cleans up
+/// after a crash) that something still holds, as a shell's working
+/// directory or an open file does, is stopped. fuser only closes its
+/// socket to `fusermount3`, which leaves a live daemon's mount in place,
+/// and a held mount cannot be unmounted outright: either way the session
+/// served on and the join never returned, until systemd killed the daemon.
+/// The stop ends the connection, so the join returns and the mount is gone.
+#[test]
+fn stopping_a_held_auto_unmount_session_ends_it() {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    require_fuse!();
+    // `fusermount3` serves `AutoUnmount` mounts for every user, which only
+    // root may make (the FUSE lane is root in a user namespace).
+    tilo_test_env::require_capability!(
+        Fuse,
+        rustix::process::getuid().is_root(),
+        "an auto-unmount mount needs root"
+    );
+    let mount_dir = tempdir().expect("mount temp dir");
+    let mount = mount_dir
+        .path()
+        .canonicalize()
+        .expect("canonical mount path");
+    let mut config = Config::default();
+    config.mount_options = vec![
+        MountOption::FSName("quickfs_held".into()),
+        MountOption::AutoUnmount,
+    ];
+    config.acl = fuser::SessionACL::All;
+    let session = fuser::spawn_mount(IdleFs, &mount, &config).expect("spawn FUSE session");
+    assert!(mounted(&mount));
+    // Pins the mount without a request to the filesystem.
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(&mount)
+        .expect("hold the mount");
+    let (done, ended) = std::sync::mpsc::channel();
+    let stop_at = mount.clone();
+    std::thread::spawn(move || {
+        let _ = done.send(fs::fuse_session::unmount_and_join(session, &stop_at));
+    });
+    let ended = ended
+        .recv_timeout(tilo_test_env::hang_bound())
+        .expect("the stopped session never ended");
+    match ended {
+        Ok(()) => {
+            assert!(!mounted(&mount), "the stopped session is still mounted");
+            drop(holder);
+        }
+        // Ending a connection takes privilege over the whole machine; root
+        // in a user namespace (the FUSE lane) is refused it, promptly.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            let identity = std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|map| {
+                map.split_whitespace().collect::<Vec<_>>() == ["0", "0", "4294967295"]
+            });
+            assert!(
+                !identity,
+                "refused to end the connection as real root: {error}"
+            );
+            drop(holder);
+            let _ = std::process::Command::new("fusermount3")
+                .args(["-u", "-q", "-z", "--"])
+                .arg(&mount)
+                .status();
+        }
+        Err(error) => panic!("stopping the session failed: {error}"),
+    }
 }
 
 async fn shutdown_runtime_fixture(endpoint: Endpoint, store: Arc<ContentStore>) {
@@ -528,8 +612,9 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
 
             let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
             assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
-            fs::fuse_session::unmount_and_join(sa).expect("unmount Alice session");
-            fs::fuse_session::unmount_and_join(sb).expect("unmount Bob session");
+            fs::fuse_session::unmount_and_join(sa, alice_dir.path())
+                .expect("unmount Alice session");
+            fs::fuse_session::unmount_and_join(sb, bob_dir.path()).expect("unmount Bob session");
             shutdown_endpoint.close().await;
             shutdown_store
                 .store()
@@ -790,7 +875,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             // Hydration: reading the file returns the real ingested bytes.
             let read_back = std::fs::read(mount_path.join("test_file.txt")).expect("read file");
             assert_eq!(read_back, body, "FUSE read must return the real content");
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &mount_path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
     }
@@ -849,7 +934,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 // unlink
                 std::fs::remove_file(path.join("renamed.txt")).expect("unlink");
                 assert!(!path.join("renamed.txt").exists(), "unlinked file gone");
-                shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+                shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
             },
         )
         .await;
@@ -886,7 +971,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             assert!(listed.contains(&b"renamed-\xFE.txt".to_vec()));
 
             let snapshot = namespace.lock().unwrap().save();
-            fs::fuse_session::unmount_and_join(session).unwrap();
+            fs::fuse_session::unmount_and_join(session, first_mount.path()).unwrap();
             shutdown_endpoint.close().await;
             let reopened = Arc::new(Mutex::new(
                 Namespace::from_bytes("reopened", &snapshot).unwrap(),
@@ -901,7 +986,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             let mut after_restart = second_mount.path().to_path_buf();
             after_restart.push(std::ffi::OsString::from_vec(b"renamed-\xFE.txt".to_vec()));
             assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
-            fs::fuse_session::unmount_and_join(session).unwrap();
+            fs::fuse_session::unmount_and_join(session, second_mount.path()).unwrap();
             shutdown_endpoint.close().await;
             store.store().shutdown().await.unwrap();
         })
@@ -955,7 +1040,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             std::fs::remove_file(path.join("dir/inner.txt")).expect("unlink inner");
             std::fs::remove_dir(path.join("dir")).expect("rmdir empty dir");
             assert!(!path.join("dir").exists(), "empty dir removed");
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
     }
@@ -998,7 +1083,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 std::fs::read(path.join("data.bin")).unwrap(),
                 b"\x00\x01raw-bytes\xff"
             );
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
     }
@@ -1068,7 +1153,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 Some("local"),
                 "a directory is always local",
             );
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
     }
@@ -1136,7 +1221,7 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert_eq!(private_bytes, b"privated bytes");
             assert_eq!(std::fs::read(&destination).unwrap(), b"source bytes");
             drop(replaced_handle);
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
     }
@@ -1192,7 +1277,8 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert_eq!(observed, b"privatees");
             assert_eq!(std::fs::read(&path).unwrap(), b"new bytes");
             drop(old);
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
+                .await;
         })
         .await;
     }
@@ -1242,7 +1328,8 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             drop(right);
 
             assert_eq!(std::fs::read(&path).unwrap(), b"ONETWO");
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
+                .await;
         })
         .await;
     }
@@ -1342,7 +1429,8 @@ async fn fuse_open_handles_survive_replacement_unlink_and_concurrent_writes() {
             assert!(history.snapshot(source_record).unwrap().versions.len() >= 2);
             assert!(history.snapshot(victim_record).unwrap().versions.len() >= 2);
             drop(victim_handle);
-            shutdown_fuse_fixture(session, shutdown_endpoint, shutdown_store).await;
+            shutdown_fuse_fixture(session, mount_dir.path(), shutdown_endpoint, shutdown_store)
+                .await;
         })
         .await;
     }
@@ -1432,7 +1520,7 @@ impl ViewFixture {
     }
 
     async fn shutdown(self) {
-        shutdown_fuse_fixture(self.session, self.endpoint, self.store).await;
+        shutdown_fuse_fixture(self.session, self.dir.path(), self.endpoint, self.store).await;
     }
 }
 
@@ -1948,7 +2036,7 @@ struct DocumentFixture {
 
 impl DocumentFixture {
     async fn shutdown(self) {
-        shutdown_fuse_fixture(self.session, self.endpoint, self.store).await;
+        shutdown_fuse_fixture(self.session, self.dir.path(), self.endpoint, self.store).await;
     }
 }
 
@@ -2157,9 +2245,10 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
         session,
         endpoint,
         store,
+        dir,
         ..
     } = mount;
-    shutdown_fuse_fixture(session, endpoint, store).await;
+    shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }
 
 /// A file's availability is no change to the namespace, yet Files shows
@@ -2222,9 +2311,10 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
         session,
         endpoint,
         store,
+        dir,
         ..
     } = mount;
-    shutdown_fuse_fixture(session, endpoint, store).await;
+    shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }
 
 /// A file read whole through the mount is stored here: the read that
@@ -2324,7 +2414,8 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
         session,
         endpoint,
         store,
+        dir,
         ..
     } = mount;
-    shutdown_fuse_fixture(session, endpoint, store).await;
+    shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }

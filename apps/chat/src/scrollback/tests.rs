@@ -1,12 +1,12 @@
 //! A device that joins a chat whose messages fill several parts: the room
 //! sends it the head only, and it reads back through the earlier parts.
 
+use crate::testing::MountedChat;
 use ui::framework::testing::TestApp;
 use ui::framework::{Chain, PartArrival};
 use ui::tilo_resource::Id;
 
 use crate::ChatShell;
-use crate::app::ChatApp;
 use crate::parts::{ChatPart, PART_TEXT_BYTES, ReadMark};
 use crate::record::{CHAT_CHANNEL, MAX_MESSAGE_TEXT_BYTES, chat};
 use crate::resource::Chat;
@@ -24,7 +24,7 @@ fn long_post(n: usize) -> String {
 
 fn chain_of(window: &mut Window) -> Chain<ChatPart> {
     window
-        .with_surface::<ChatApp, _>(|surface| surface.chain.clone())
+        .with_chat(|surface| surface.chain.clone())
         .flatten()
         .expect("the window holds the chat's messages")
 }
@@ -41,7 +41,7 @@ fn held(window: &mut Window) -> Vec<u64> {
 /// The texts of the channel in view, oldest first.
 fn shown(window: &mut Window) -> Vec<String> {
     window
-        .with_surface::<ChatApp, _>(|surface| {
+        .with_chat(|surface| {
             surface
                 .messages
                 .iter()
@@ -112,14 +112,14 @@ fn join(writer: &mut Window, reader: &mut Window) {
 
 fn loading(window: &mut Window) -> bool {
     window
-        .with_surface::<ChatApp, _>(|surface| surface.scrollback.loading())
+        .with_chat(|surface| surface.scrollback.loading())
         .unwrap()
 }
 
 /// Where the message saying `text` was painted, from the view's top.
 fn painted_at(window: &mut Window, text: &str) -> Option<f64> {
     window
-        .with_surface::<ChatApp, _>(|surface| {
+        .with_chat(|surface| {
             let id = &surface
                 .messages
                 .iter()
@@ -135,7 +135,7 @@ fn painted_at(window: &mut Window, text: &str) -> Option<f64> {
 }
 
 fn open_channel(window: &mut Window, channel: &str) {
-    window.with_surface::<ChatApp, _>(|surface| {
+    window.with_chat(|surface| {
         let _ = surface.answer_effect(crate::effects::ChatEffect::OpenChannel {
             channel: channel.into(),
         });
@@ -162,7 +162,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
 
     // The reader scrolls to the top of what is held: the part before is
     // opened, and is on its way until the room's copy arrives.
-    bo.with_surface::<ChatApp, _>(|surface| {
+    bo.with_chat(|surface| {
         surface.scroll = 1.0e6;
         surface.timeline_at_end = false;
     });
@@ -189,7 +189,7 @@ fn scrolling_back_opens_earlier_parts_in_order_without_moving_the_view() {
     assert!((at - top).abs() < 1.0, "it did not move: {top} -> {at}");
 
     // Reading on back reaches part 0, the chain's first.
-    bo.with_surface::<ChatApp, _>(|surface| surface.scroll = 1.0e6);
+    bo.with_chat(|surface| surface.scroll = 1.0e6);
     bo.harness().relayout();
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![0, 1, 2]);
@@ -228,7 +228,7 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
     let mut bo = Window::on_device("bo").unwrap();
     three_parts(&mut ada, 30);
     let wanted = ada
-        .with_surface::<ChatApp, _>(|surface| {
+        .with_chat(|surface| {
             surface
                 .search_messages
                 .iter()
@@ -240,7 +240,7 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
     join(&mut ada, &mut bo);
     // The link is opened as a search hit or an agent's `open` is.
     let link = crate::testing::item("messages", &wanted);
-    bo.with_surface::<ChatApp, _>(|surface| surface.opener()(&link));
+    bo.with_chat(|surface| surface.opener()(&link));
     bo.harness().relayout();
     for part in [1, 0] {
         bo.harness().relayout();
@@ -251,7 +251,7 @@ fn a_link_to_a_message_in_a_part_not_held_opens_parts_until_it_is_found() {
     }
     bo.harness().relayout();
     assert_eq!(
-        bo.with_surface::<ChatApp, _>(|surface| surface.revealed_message.clone())
+        bo.with_chat(|surface| surface.revealed_message.clone())
             .flatten(),
         Some(wanted)
     );
@@ -276,7 +276,7 @@ fn a_joined_device_counts_unread_across_parts_it_does_not_hold() {
     .unwrap();
     join(&mut ada, &mut bo);
     let unread = |bo: &mut Window| {
-        bo.with_surface::<ChatApp, _>(|surface| {
+        bo.with_chat(|surface| {
             surface
                 .channels
                 .iter()
@@ -299,7 +299,7 @@ fn a_joined_device_counts_unread_across_parts_it_does_not_hold() {
         .unwrap();
     bo.harness().relayout();
     let first = bo
-        .with_surface::<ChatApp, _>(|surface| {
+        .with_chat(|surface| {
             let id = surface.scrollback.first_unread.clone()?;
             surface
                 .messages
@@ -398,7 +398,7 @@ fn an_earlier_part_the_room_lacks_ends_in_a_final_state() {
     bo.room_answered(crate::parts::part(0));
     bo.harness().relayout();
     let state = |bo: &mut Window| {
-        bo.with_surface::<ChatApp, _>(|surface| {
+        bo.with_chat(|surface| {
             let pager = surface.scrollback.pager.as_ref().unwrap();
             (
                 pager.unavailable(),
@@ -433,7 +433,7 @@ fn no_channel_in_view_reads_nothing_back() {
     let mut bo = Window::on_device("bo").unwrap();
     three_parts(&mut ada, 150);
     join(&mut ada, &mut bo);
-    bo.with_surface::<ChatApp, _>(|surface| {
+    bo.with_chat(|surface| {
         surface.active_channel.clear();
         surface.messages.clear();
     });
@@ -465,8 +465,5 @@ fn a_channel_with_nothing_earlier_reads_nothing_back() {
     bo.harness().relayout();
     bo.harness().relayout();
     assert_eq!(held(&mut bo), vec![2]);
-    assert!(
-        !bo.with_surface::<ChatApp, _>(|surface| surface.reads_back())
-            .unwrap()
-    );
+    assert!(!bo.with_chat(|surface| surface.reads_back()).unwrap());
 }

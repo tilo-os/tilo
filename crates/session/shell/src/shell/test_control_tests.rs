@@ -99,6 +99,10 @@ impl ControlState for WitnessedState {
     fn press_witness(&self) -> Option<(&dyn ui::widget::Widget, PressFacts)> {
         Some((&self.root, PressFacts::at(self.frame, self.in_transition)))
     }
+
+    fn chrome_state_json(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
 }
 
 #[test]
@@ -758,6 +762,21 @@ fn pointer_commands_plan_typed_buttons_clicks_drags_and_list_targets() {
                 panic!("expected Err");
             };
             assert_eq!(code, "desktop_in_transition");
+            // The state dump says the same, and says when it has settled.
+            let in_transition = |state: &WitnessedState| {
+                let (Response::State { chrome, .. }, _) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    state,
+                ) else {
+                    panic!("expected State");
+                };
+                chrome["in_transition"].clone()
+            };
+            assert_eq!(in_transition(&state), serde_json::json!(true));
+            state.in_transition = false;
+            assert_eq!(in_transition(&state), serde_json::json!(false));
         }
     }
 

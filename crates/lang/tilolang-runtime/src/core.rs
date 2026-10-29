@@ -76,6 +76,9 @@ pub struct Core {
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. Read
     /// once per outermost invocation; until the host sets one, it is the epoch.
     pub clock: RefCell<Option<Box<dyn Fn() -> String>>>,
+    /// How many seconds the person's clock is ahead of UTC, which `dated` reads a day and a
+    /// time typed against; UTC until the host says.
+    pub zone: RefCell<Option<Box<dyn Fn() -> i64>>>,
     /// References to collection items built so far: what a view materialized of the
     /// collections it read.
     pub items_built: std::cell::Cell<u64>,
@@ -181,6 +184,7 @@ impl Core {
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
+            zone: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
@@ -258,8 +262,8 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, ActThen, Actions, ArgAt, CollInsert, CollMove,
-            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, EnumGetF, EnumGetH,
-            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters,
+            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated, EnumGetF,
+            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters,
             FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
             IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
             ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
@@ -319,7 +323,7 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | UiActions => self.ui_import(imp, a),
-            EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {
+            EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase | Dated => {
                 self.platform_import(imp, a)
             }
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {

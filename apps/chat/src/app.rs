@@ -2689,6 +2689,9 @@ mod room;
 #[cfg(feature = "samples")]
 mod scenarios;
 mod submission;
+mod window;
 pub(crate) use call_chrome_motion::CallChromeMotion;
 pub(crate) use hits::{Hit, PaintedMessage};
 pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};
+pub use window::ChatWindow;
+pub(crate) use window::SharedChat;

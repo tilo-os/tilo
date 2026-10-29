@@ -117,11 +117,11 @@ impl Session {
         let mut doc = new_doc();
         let content = tilo_content::ContentStore::memory();
         let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
-        let mut app = PhotosApp::with_content(content.clone()).with_dispatcher(dispatch.clone());
-        app.open_path(&path);
+        let app = PhotosApp::with_content(content.clone()).with_dispatcher(dispatch.clone());
+        app.state().open_path(&path);
         ui::framework::testing::resolve(&dispatch, &mut doc).expect("the photograph imports");
         assert!(
-            app.open_photo_id().is_some() && library(&doc).photos.len() == 1,
+            app.state().open_photo_id().is_some() && library(&doc).photos.len() == 1,
             "the fixture failed to open its own staged photograph, so nothing \
              below proves anything"
         );

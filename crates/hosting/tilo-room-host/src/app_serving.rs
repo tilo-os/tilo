@@ -43,6 +43,20 @@ pub trait AppServingPlane: Send + Sync {
         self.serve(workspace_id, caller, message)
     }
 
+    /// Answer one of the host's own operations (`tilo.host`), asked of the
+    /// host itself by `caller` on the device `certificate` names, as the
+    /// relay's handshake verified it: no workspace is involved. A plane that
+    /// governs no rooms answers none.
+    fn serve_host(
+        &self,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: RemoteActionMessage,
+    ) -> Option<Pending<RemoteActionMessage>> {
+        let _ = (caller, certificate, message);
+        None
+    }
+
     /// Whether this plane answers `message` from `caller` at all. One that
     /// does not is refused as undeliverable, as by a host that serves no
     /// apps.

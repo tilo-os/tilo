@@ -30,8 +30,8 @@ pub trait DocumentHistory {
         Ok(())
     }
 
-    /// Presentation declaration for a legacy tile's eventual checked record.
-    /// The `TileHost` resolves custody after binding; this grants no authority.
+    /// Presentation declaration for the record this widget's owner checks out.
+    /// Grants no authority; the owner resolves custody.
     fn document_history_definition(&self) -> Option<&'static super::HistoryDefinition> {
         None
     }

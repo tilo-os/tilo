@@ -1,7 +1,11 @@
-//! The libraries only Settings uses, as an engine library beside the shared
-//! runtime (`libtilo_settings_engine.so`).
+//! Settings itself and the libraries only Settings uses, as an engine
+//! library beside the shared runtime (`libtilo_settings_engine.so`).
 //!
-//! Settings edits the settings sections as resource models
+//! Settings' library (`settings`: the window, its effects and every pane) is
+//! here; the app's binary is one call into it,
+//! [`tilo_settings_engine_run`], so the app's package carries next to nothing
+//! and Settings' code ships in the runtime bundle beside the runtime it is
+//! built against. Settings edits the settings sections as resource models
 //! (`settings-sections`, whose derived models are about 1.5 MB of code),
 //! administers the model providers (`provider-settings-ui`), mounts
 //! NTFS drives through the root service (`tilo-ntfs-mount`'s protocol),
@@ -12,12 +16,11 @@
 //! on a globe (`tilo-zone-globe`, with the world's coastlines). No
 //! other app does, so none of them belongs in the runtime every app maps;
 //! here they are a library of their own in the runtime bundle that only
-//! Settings names `DT_NEEDED`, beside the accounts engine, and the tapp
-//! carries Settings' own code.
+//! Settings names `DT_NEEDED`, beside the accounts engine.
 //!
 //! Like `runtime-dylib`, this crate re-exports the crates it provides, which
-//! records them as provided by this library for the apps' `-C prefer-dynamic`
-//! link. Outside the thin build (`thin`) it is empty: see the manifest.
+//! records them as provided by this library for a `-C prefer-dynamic` link.
+//! Outside the thin build (`thin`) it is empty: see the manifest.
 
 // Load the runtime explicitly, as thin apps do: rustc ignores an `--extern`
 // nothing names, and without it in the crate graph this library would link
@@ -35,6 +38,8 @@ pub use pc_keyboard_geometry;
 #[cfg(feature = "thin")]
 pub use provider_settings_ui;
 #[cfg(feature = "thin")]
+pub use settings;
+#[cfg(feature = "thin")]
 pub use settings_sections;
 #[cfg(feature = "thin")]
 pub use tilo_accessibility_settings;
@@ -42,6 +47,16 @@ pub use tilo_accessibility_settings;
 pub use tilo_wallpapers;
 #[cfg(feature = "thin")]
 pub use zone_globe;
+
+/// Run Settings: the whole of the app's binary (apps/settings/src/main.rs),
+/// which names this library and calls this function by its unmangled name:
+/// this library depends on the app's package, so the package cannot depend
+/// on it in turn. A panic unwinds through it as through any Rust call.
+#[cfg(feature = "thin")]
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn tilo_settings_engine_run() {
+    settings::run();
+}
 
 /// Run the engine's own code: read the wallpaper catalogue, which must name a
 /// default among its wallpapers, read the keyboard outlines, and ask the NTFS

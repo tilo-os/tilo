@@ -112,6 +112,7 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "dated" => return self.builtin_dated(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}

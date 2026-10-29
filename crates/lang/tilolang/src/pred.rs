@@ -58,6 +58,14 @@ pub enum Operand<F> {
     /// what it holds is bound when the predicate is asked ([`Pred::bind`]), and a store
     /// answers it as the literal.
     Arg(u32),
+    /// The time the predicate is asked at, `offset` seconds on: the day (`today + 1d`, a
+    /// Date) when `day`, else the instant (`now - 7d`, a Time). It is read when the predicate is
+    /// asked ([`Pred::at`]), so a named filter on it ("Today": `due <= today`) is answered from
+    /// the field's column then, never kept as a column of its own.
+    Clock {
+        day: bool,
+        offset: i64,
+    },
 }
 
 /// A value a predicate compares.
@@ -253,6 +261,35 @@ impl<F> Pred<F> {
         })
     }
 
+    /// The same predicate with each [`Operand::Clock`] read at `now`, seconds since 1970 (UTC),
+    /// by someone whose clock is `zone` seconds ahead of UTC: whose today it is.
+    #[must_use]
+    pub fn at(&self, now: i64, zone: i64) -> Self
+    where
+        F: Clone,
+    {
+        match self {
+            Self::Not(p) => Self::Not(Box::new(p.at(now, zone))),
+            Self::And(ps) => Self::And(ps.iter().map(|p| p.at(now, zone)).collect()),
+            Self::Or(ps) => Self::Or(ps.iter().map(|p| p.at(now, zone)).collect()),
+            Self::Cmp(op, a, b) => Self::Cmp(*op, a.at(now, zone), b.at(now, zone)),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether it reads the time it is asked at ([`Operand::Clock`]).
+    #[must_use]
+    pub fn reads_clock(&self) -> bool {
+        match self {
+            Self::Not(p) => p.reads_clock(),
+            Self::And(ps) | Self::Or(ps) => ps.iter().any(Self::reads_clock),
+            Self::Cmp(_, a, b) => {
+                matches!(a, Operand::Clock { .. }) || matches!(b, Operand::Clock { .. })
+            }
+            _ => false,
+        }
+    }
+
     /// Every field it reads.
     pub fn fields(&self) -> Vec<&F> {
         let mut out = Vec::new();
@@ -352,7 +389,28 @@ impl<F> Operand<F> {
             Self::Lit(l) => Operand::Lit(l.clone()),
             Self::Len(f) => Operand::Len(map(f)?),
             Self::Arg(n) => Operand::Arg(*n),
+            Self::Clock { day, offset } => Operand::Clock {
+                day: *day,
+                offset: *offset,
+            },
         })
+    }
+
+    fn at(&self, now: i64, zone: i64) -> Self
+    where
+        F: Clone,
+    {
+        match self {
+            Self::Clock { day: true, offset } => {
+                let days = now.saturating_add(zone).div_euclid(crate::calendar::DAY)
+                    + offset.div_euclid(crate::calendar::DAY);
+                Self::Lit(Lit::Date(crate::calendar::day_text(days)))
+            }
+            Self::Clock { day: false, offset } => Self::Lit(Lit::Time(crate::calendar::time_text(
+                now.saturating_add(*offset),
+            ))),
+            other => other.clone(),
+        }
     }
 
     fn bind(&self, args: &[Lit]) -> Option<Self>
@@ -377,8 +435,9 @@ impl<F> Operand<F> {
                     .as_text()
                     .map_or(0, |t| i64::try_from(t.chars().count()).unwrap_or(i64::MAX)),
             })),
-            // Bound before it is asked ([`Pred::bind`]): one that is not holds nothing.
-            Self::Arg(_) => Ok(Lit::Absent),
+            // Bound before it is asked ([`Pred::bind`], [`Pred::at`]): one that is not holds
+            // nothing.
+            Self::Arg(_) | Self::Clock { .. } => Ok(Lit::Absent),
         }
     }
 }

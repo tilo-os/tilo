@@ -7,18 +7,12 @@
 //! verbs are the operations that are more than setting a field: making and
 //! deleting a playlist, and bringing a catalogue song into the library.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    Command, EffectAnswer, EffectCx, LiveRow, ResourceApp, ResourceSurface, RunMode, SurfaceCx,
-    ViewCx,
-};
+use ui::framework::{Command, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, ActionCx, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
-use crate::actions::MusicEffect;
-use crate::app::MusicApp;
+use crate::app::Music;
 use crate::model::{CatalogueTrack, Library, Playlist};
 
 ui::embedded_catalog!(static CATALOG, ["en-US"]);
@@ -227,7 +221,7 @@ const SCENARIOS: &[&str] = &[
     "kept-view",
 ];
 
-/// Framework app: the music widget is the surface over [`Library`].
+/// Framework app: the music window is the view of [`Library`].
 pub struct MusicShell;
 
 impl ResourceApp for MusicShell {
@@ -287,17 +281,17 @@ impl ResourceApp for MusicShell {
         // Only a window someone uses plays audio, reads this device's
         // playback profile and reaches the network; a capture and a past
         // version show the library alone.
-        let app = match cx.mode() {
+        let music = match cx.mode() {
             RunMode::Live => {
-                let mut app = MusicApp::new();
-                app.enable_mpris();
-                app
+                let mut music = Music::new();
+                music.enable_mpris();
+                music
             }
-            RunMode::Capture | RunMode::Past => MusicApp::offline(),
+            RunMode::Capture | RunMode::Past => Music::offline(),
         };
         // A search hit, or an agent's `open`, plays the song or shows the
         // page the row it names does.
-        cx.on_open(app.opener());
+        cx.on_open(music.opener());
         // The shell keeps the sidebar (the destinations, kept views and
         // playlists as a list), its width, its drawer in a narrow window
         // and its keys, and the transport across the window's foot: what
@@ -310,8 +304,8 @@ impl ResourceApp for MusicShell {
             .content_kind(ui::widget::ContentKind::List)
             .with_window_toolbar()
             .with_pane_state(&pane);
-        let actions = app.transport_actions(&cx.actions());
-        let app = app.in_shell(&places, &transport, shell.window_bar_link(), &pane);
+        let actions = music.transport_actions(&cx.actions());
+        let music = music.in_shell(&places, &transport, shell.window_bar_link(), &pane);
         let sidebar = ui::widget::NavList::new(Vec::new())
             .with_id("music.places")
             .with_accessible_name("Music navigation")
@@ -319,7 +313,7 @@ impl ResourceApp for MusicShell {
         Box::new(
             shell
                 .sidebar(Box::new(sidebar))
-                .content(cx.surface(app))
+                .content(crate::app::window(cx, music))
                 .bottom_band(Box::new(ui::widget::MediaTransport::new(
                     &transport, actions,
                 ))),
@@ -338,93 +332,11 @@ impl ResourceApp for MusicShell {
     }
 }
 
-impl ResourceSurface<Library, MusicEffect> for MusicApp {
-    fn present(&mut self, state: &Rc<Library>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Library>) {
-        self.attach_dispatcher(cx.dispatcher());
-        self.attach_actions(cx.actions());
-        // The person's kept views follow them; the search wakes this window
-        // when the catalogue answers.
-        self.attach_views(cx.settings::<ui::framework::views::KeptViews>(), cx.waker());
-        if cx.mode().is_live() {
-            self.open_launch(&cx.launch());
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.stage_scenario(scenario);
-        }
-    }
-
-    /// The songs the live search found that the library does not hold.
-    fn search_query(&mut self, query: &ui::search::SearchQuery) {
-        self.queue_catalogue_query(query.text());
-    }
-
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.live_search_entries()
-    }
-
-    fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
-        // The song that plays is the one playing as the effect runs, not
-        // the one a control saw when it was bound.
-        let effect = match effect {
-            MusicEffect::ToggleLikePlaying => match self.playing_track() {
-                Some(track) => MusicEffect::ToggleLike { track },
-                None => return Err("Nothing is playing".into()),
-            },
-            effect => effect,
-        };
-        if let MusicEffect::ToggleLike { track } = &effect {
-            if cx.dispatcher().read_only() {
-                return Err("Liking a song requires permission to edit the library".into());
-            }
-            let current = cx.live().get();
-            let _gesture = cx.dispatcher().begin_group();
-            if !current.tracks.contains_key(track) {
-                cx.submit(self.catalogue_import(track)?);
-            }
-            cx.submit(
-                Invoke::edit(&Library::like(track, !current.is_liked(track)))
-                    .map_err(|error| error.to_string())?,
-            );
-            return Ok(ui::framework::Effected::done());
-        }
-        let invocation = cx.invocation().unwrap_or_default();
-        let answer = self.begin_effect(invocation, effect)?;
-        if matches!(answer, ui::framework::Effected::Pending) {
-            self.await_effect(invocation, cx.reply());
-        }
-        Ok(answer)
-    }
-
-    /// This device's player, queue and open file, and the tracks it keeps
-    /// offline: rows beside the library, carrying their effects.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.device_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.device_row(id)
-    }
-
-    const ROW_DECLARATIONS: bool = true;
-
-    /// The library's field edits bound to the row they act on: saving an
-    /// album, following an artist, taking a song out of a playlist or
-    /// moving it, and the recommendations' switches and feedback.
-    fn row_declarations(&self, row: &str) -> Vec<tilo_resource::ActionDecl<Library>> {
-        self.row_edits(row)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::MusicEffect;
+    use crate::app::MusicApp;
     use ui::framework::testing::TestApp;
 
     fn edit(edit: &tilo_resource::Edit<Library>) -> Invoke<Library> {
@@ -709,7 +621,7 @@ mod tests {
         .unwrap();
         app.settle();
         assert_eq!(
-            app.surface_mut::<MusicApp>().view_for_test(),
+            app.surface_mut::<MusicApp>().state().view_for_test(),
             crate::app::View::Album("al_glasslight".into())
         );
         assert!(
@@ -754,7 +666,7 @@ mod tests {
 
         let playlist = app.state().playlist("pl_morning").cloned().unwrap();
         let ids = playlist.track_ids();
-        let surface = app.surface_mut::<MusicApp>();
+        let surface = app.surface_mut::<MusicApp>().state();
         // What each row offers follows what it shows.
         let inputs: Vec<&str> = surface
             .row_edits("music.recommendation-input:likes")

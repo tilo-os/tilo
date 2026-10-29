@@ -285,6 +285,16 @@ impl<R: Resource> Reader<R> {
         self.core.follows(doc)
     }
 
+    /// Take `state` as the resource's state now, read elsewhere than from
+    /// a document this reader follows (a settings section, as the settings
+    /// document holds it): a new revision, in which everything changed.
+    pub fn replace(&mut self, state: R::State) {
+        self.state = Rc::new(state);
+        self.core.revision = self.core.revision.wrapping_add(1);
+        self.core.last = Delta::everything();
+        self.core.unreadable = None;
+    }
+
     /// Count the unchanged state as a new revision, so everything following
     /// it takes it again (a surface dropping an optimistic preview).
     pub fn represent(&mut self) {

@@ -1,34 +1,8 @@
-//! Limited decoding of the existing exact-admission wire index.
+//! Decoding of the exact-admission wire index.
 use super::{
     AdmissionError, AdmissionKey, Deserialize, DocumentAdmission, ExactAdmissions,
     MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, Serialize, WriterKey,
 };
-use crate::resources::{OuterLimits, PeerResourceError};
-
-pub(crate) struct BoundedExactAdmissions {
-    index: WireIndex,
-}
-impl BoundedExactAdmissions {
-    pub(crate) fn decode(bytes: &[u8], limits: OuterLimits) -> Result<Self, PeerResourceError> {
-        if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
-            return Err(PeerResourceError::Capacity);
-        }
-        let index: WireIndex = crate::resources::decode(bytes, limits)?;
-        if !matches_wire(&index, bytes) {
-            return Err(PeerResourceError::Malformed);
-        }
-        Ok(Self { index })
-    }
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
-        self.index.0.iter()
-    }
-    pub(crate) fn get(&self, key: &AdmissionKey) -> Option<&[u8; 32]> {
-        self.index.0.get(key)
-    }
-    pub(crate) fn marks(&self) -> impl Iterator<Item = (&WriterKey, u64)> {
-        self.index.0.marks()
-    }
-}
 
 /// Decodes one entry map of the wire index into `index`: its settled
 /// entries, or its recent ones. Every entry is checked against the whole
@@ -108,8 +82,6 @@ impl<'de> Deserialize<'de> for WireIndex {
         deserializer.deserialize_tuple(3, Visitor)
     }
 }
-impl crate::resources::outer::EncodeSchema for WireIndex {}
-impl crate::resources::outer::Schema<'_> for WireIndex {}
 
 pub(super) fn decode_index(bytes: &[u8]) -> Result<ExactAdmissions, AdmissionError> {
     if bytes.len() > MAX_EXACT_ADMISSION_BYTES {

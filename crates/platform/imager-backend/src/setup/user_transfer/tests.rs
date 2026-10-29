@@ -1,7 +1,9 @@
 use super::*;
 use crate::setup::flatpak_transfer::portable::{ApplicationsManifest, Deployment, Trust};
 use sha2::Digest as _;
-use std::{cell::RefCell, collections::VecDeque, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    cell::RefCell, collections::VecDeque, os::unix::fs::PermissionsExt, path::Path, time::Duration,
+};
 
 struct FixtureRunner {
     replies: RefCell<VecDeque<Result<String, String>>>,
@@ -197,7 +199,7 @@ fn runtime_socket_is_disclosed_without_blocking_home_data() {
     let socket_path = request.source_home.join("agent.sock");
     let _socket = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
     let reviewed = review(request.clone(), runner.applications()).unwrap();
-    let summary = reviewed.summary().unwrap();
+    let summary = reviewed.summary();
     assert_eq!(summary.runtime_sockets, 1);
     assert_eq!(summary.special_files, 0);
     let report = reviewed
@@ -210,11 +212,6 @@ fn runtime_socket_is_disclosed_without_blocking_home_data() {
         std::fs::read(request.target_home.join("personal")).unwrap(),
         b"personal"
     );
-    assert!(report.copies.iter().any(|copy| {
-        copy.metadata_limitations
-            .iter()
-            .any(|disclosure| disclosure.contains("agent.sock"))
-    }));
 }
 
 #[test]
@@ -224,7 +221,7 @@ fn actual_home_data_precedes_target_flatpak_install_and_originals_stay_unchanged
     let mut progress = 0;
     let report = reviewed
         .execute(&runner, &AtomicBool::new(false), false, |event| {
-            if matches!(event, TransferEvent::CopyProgress(_)) {
+            if matches!(event, TransferEvent::Progress(_)) {
                 progress += 1;
             }
         })
@@ -267,7 +264,6 @@ fn flatpak_only_transfers_real_data_without_other_home_files() {
     )
     .unwrap();
     let reviewed = review(request.clone(), runner.applications()).unwrap();
-    assert_eq!(reviewed.copy_count(), 2);
     let report = reviewed
         .execute(&runner, &AtomicBool::new(false), false, |_| {})
         .unwrap();
@@ -359,7 +355,7 @@ fn changed_source_cancellation_and_remote_failures_never_claim_completion() {
 }
 
 #[test]
-fn restarted_home_review_revalidates_receipts_and_source_instead_of_trusting_success() {
+fn restarted_home_review_reopens_the_sealed_unit_instead_of_trusting_success() {
     let (_temp, request, runner) = fixture(false);
     let reviewed = review(request.clone(), runner.applications()).unwrap();
     assert!(
@@ -370,7 +366,8 @@ fn restarted_home_review_revalidates_receipts_and_source_instead_of_trusting_suc
     );
     drop(reviewed);
     let resumed = review(request.clone(), runner.applications()).unwrap();
-    assert!(resumed.phase.lock().unwrap().complete.is_empty());
+    assert!(resumed.recovered());
+    assert!(resumed.phase.lock().unwrap().home.is_some());
     assert!(
         resumed
             .execute(&runner, &AtomicBool::new(false), false, |_| {})
@@ -382,24 +379,18 @@ fn restarted_home_review_revalidates_receipts_and_source_instead_of_trusting_suc
             .unwrap()
             .complete()
     );
+    // Once sealed, the unit is the authority: the original may change.
+    std::fs::write(request.source_home.join("personal"), b"source changed").unwrap();
+    recover(&runner, request.clone(), runner.applications()).unwrap();
+    let mut wrong = request.clone();
+    wrong.copy_flatpak = true;
+    assert!(recover(&runner, wrong, runner.applications()).is_err());
     std::fs::write(request.target_home.join("personal"), b"changed target").unwrap();
-    let resumed = recover(&runner, request.clone(), runner.applications()).unwrap();
-    if let Ok(report) = resumed.execute(&runner, &AtomicBool::new(false), true, |_| {}) {
-        assert!(!report.complete());
-    }
+    assert!(recover(&runner, request.clone(), runner.applications()).is_err());
     assert_eq!(
         std::fs::read(request.target_home.join("personal")).unwrap(),
         b"changed target"
     );
-    assert_eq!(
-        std::fs::read(request.source_home.join("personal")).unwrap(),
-        b"personal"
-    );
-    let mut wrong = request.clone();
-    wrong.copy_flatpak = true;
-    assert!(recover(&runner, wrong, runner.applications()).is_err());
-    std::fs::write(request.source_home.join("personal"), b"source changed").unwrap();
-    assert!(recover(&runner, request, runner.applications()).is_err());
 }
 
 #[test]
@@ -752,7 +743,7 @@ fn flatpak_only_interrupted_apps_repair_without_whole_home_or_original_repositor
 }
 
 #[test]
-fn flatpak_only_data_restart_replays_journals_and_refuses_changed_permissions() {
+fn flatpak_only_data_restart_reopens_the_unit_and_refuses_changed_permissions() {
     let (_temp, mut request, runner) = fixture(false);
     request.copy_home = false;
     request.copy_flatpak = true;
@@ -771,7 +762,7 @@ fn flatpak_only_data_restart_replays_journals_and_refuses_changed_permissions() 
             .complete()
     );
     std::fs::set_permissions(
-        request.target_home.join(".local"),
+        request.target_home.join(".var"),
         std::fs::Permissions::from_mode(0o777),
     )
     .unwrap();
@@ -780,7 +771,7 @@ fn flatpak_only_data_restart_replays_journals_and_refuses_changed_permissions() 
 }
 
 #[test]
-fn flatpak_only_restart_before_subtree_workers_start_uses_original_retained_review() {
+fn flatpak_only_restart_before_sealing_reviews_the_source_again() {
     let (_temp, mut request, runner) = fixture(false);
     request.copy_home = false;
     request.copy_flatpak = true;
@@ -793,9 +784,6 @@ fn flatpak_only_restart_before_subtree_workers_start_uses_original_retained_revi
     )
     .unwrap();
     let reviewed = review(request.clone(), runner.applications()).unwrap();
-    for copy in &reviewed.copies {
-        copy.retain_review().unwrap();
-    }
     durable::save(&request).unwrap();
     drop(reviewed);
     let restarted = recover(&runner, request.clone(), runner.applications()).unwrap();

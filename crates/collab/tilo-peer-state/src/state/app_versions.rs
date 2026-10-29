@@ -118,9 +118,7 @@ impl StatePeer {
             .clone()
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.room_actor_of(key));
         let versions = match doc.get(ROOT, APP_VERSIONS).map_err(err)? {
             Some((_, map)) => map,
             None => doc

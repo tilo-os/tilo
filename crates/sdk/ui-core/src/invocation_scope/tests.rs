@@ -8,20 +8,14 @@ struct OriginalCaller {
     expiry: u64,
 }
 
-fn fixture(id: u64) -> crate::bound_dispatch::legacy_document_tests::Fixture {
-    let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
-        id,
-        "77777777-7777-4777-8777-777777777777",
-    );
-    fixture
-        .store
-        .require_invocation_provenance(&fixture.checkout)
-        .unwrap();
-    fixture
+type Fixture = crate::history_mode::owner::RecordOwnerFixture;
+
+fn fixture(id: u64) -> Fixture {
+    Fixture::in_room(id, "77777777-7777-4777-8777-777777777777")
 }
 
 fn scope(
-    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
+    fixture: &Fixture,
     id: u64,
     actor: &str,
     expiry: u64,
@@ -42,7 +36,7 @@ fn scope(
     };
     let lease = PublishedInvocationLease::new(
         request,
-        fixture.target.owner.broker_route().unwrap(),
+        fixture.owner.broker_route().unwrap(),
         Arc::new(move || {
             (sampled.load(Ordering::Acquire) < expiry)
                 .then_some(())
@@ -51,11 +45,11 @@ fn scope(
     )
     .with_owner_token(Arc::new(caller))
     .unwrap();
-    ResourceInvocationScope::for_owner(fixture.target.owner.clone(), lease).unwrap()
+    ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap()
 }
 
 fn publication(
-    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
+    fixture: &Fixture,
     from: &[ChangeHash],
 ) -> Result<
     (
@@ -317,10 +311,7 @@ fn causal_scope_observes_only_newly_applied_remote_range_without_laundering_loca
                 })
                 .unwrap();
         }
-        assert_eq!(
-            fixture.target.owner.merge_remote(&incoming).unwrap(),
-            Some(true)
-        );
+        assert_eq!(fixture.owner.merge_remote(&incoming).unwrap(), Some(true));
         let result = fixture
             .store
             .with_checked(&fixture.checkout.id, |doc| {
@@ -338,46 +329,6 @@ fn causal_scope_observes_only_newly_applied_remote_range_without_laundering_loca
     }
 }
 
-#[test]
-fn causal_scope_required_unadapted_handler_refuses_before_start_and_cancel_fences_worker() {
-    let mut fixture = fixture(962);
-    let now = Arc::new(AtomicU64::new(99));
-    let job = scope(&fixture, 11, "caller", 200, &now);
-    let encoded = tilo_actions::EncodedAction {
-        type_id: "controlled.effect".into(),
-        payload: vec![],
-    };
-    let result = crate::bound_dispatch::legacy_document::invoke_legacy_effect(
-        &mut fixture.tile,
-        &fixture.target,
-        job.invocation(),
-        tilo_actions::OperationKind::Effect,
-        &encoded,
-        &mut AutoCommit::new(),
-        Some(&job),
-    );
-    assert!(result.is_err());
-    assert_eq!(
-        fixture.probe.starts.get(),
-        0,
-        "required admission never calls the legacy background handler first"
-    );
-    let effect = job.effect_scope().unwrap();
-    job.cancel();
-    let called = Arc::new(AtomicBool::new(false));
-    let worker_called = called.clone();
-    assert!(
-        std::thread::spawn(move || effect.with_effect(|| {
-            worker_called.store(true, Ordering::Release);
-            Ok(())
-        }))
-        .join()
-        .unwrap()
-        .is_err()
-    );
-    assert!(!called.load(Ordering::Acquire));
-}
-
 struct OriginalCallbackGate {
     armed: Arc<AtomicBool>,
     deny_other_checks: Arc<AtomicBool>,
@@ -386,7 +337,7 @@ struct OriginalCallbackGate {
 }
 
 fn scope_with_original_callback_gate(
-    fixture: &crate::bound_dispatch::legacy_document_tests::Fixture,
+    fixture: &Fixture,
     id: u64,
 ) -> (ResourceInvocationScope, OriginalCallbackGate) {
     let armed = Arc::new(AtomicBool::new(false));
@@ -406,7 +357,7 @@ fn scope_with_original_callback_gate(
     };
     let lease = PublishedInvocationLease::new(
         request,
-        fixture.target.owner.broker_route().unwrap(),
+        fixture.owner.broker_route().unwrap(),
         Arc::new(move || {
             if callback_armed.swap(false, Ordering::AcqRel) {
                 entered_tx.send(()).unwrap();
@@ -430,7 +381,7 @@ fn scope_with_original_callback_gate(
         expiry: 200,
     }))
     .unwrap();
-    let job = ResourceInvocationScope::for_owner(fixture.target.owner.clone(), lease).unwrap();
+    let job = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
     (
         job,
         OriginalCallbackGate {

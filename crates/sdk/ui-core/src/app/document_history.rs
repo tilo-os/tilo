@@ -299,47 +299,8 @@ impl App {
         if let Err(error) = result {
             tracing::debug!(?error, "history input refused");
         }
-        self.apply_confirmed_history_restore();
-        self.fulfil_history_preview();
+        self.settle_history_requests();
         self.history_changed(revision, open);
-    }
-
-    /// Build the preview root a selection asked for, inside this app's wake
-    /// scope like its live root, and hand it to the History host.
-    fn fulfil_history_preview(&mut self) {
-        if !self.document_history.has_preview_request() {
-            return;
-        }
-        let root = self.document_history.preview_root().and_then(|factory| {
-            let _scope = self.enter_wake_scope();
-            factory()
-                .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
-                .ok()
-        });
-        self.with_history(|host, context| host.install_preview(root, context));
-    }
-
-    /// Write a restore the History pane confirmed into the live document,
-    /// through the same undo log as every other action, then persist it.
-    fn apply_confirmed_history_restore(&mut self) {
-        let Some(confirmed) = self.document_history.take_confirmed_restore() else {
-            return;
-        };
-        let author = self.local_author().clone();
-        let result = self.apply_history_restore(&confirmed, author);
-        self.document_history.report_restore(&result);
-    }
-
-    /// The one write behind every restore, from the History pane or an
-    /// action: one attributed, undoable change, persisted like any other.
-    pub(super) fn apply_history_restore(
-        &mut self,
-        confirmed: &crate::standalone_history::ConfirmedHistoryRestore,
-        author: crate::permissions::UserId,
-    ) -> Result<bool, HistoryError> {
-        let result =
-            crate::standalone_history::apply_restore(&mut self.state, confirmed, Some(author));
-        self.history_written(result)
     }
 
     /// Name a run of changes in the live document, or remove its name: one
@@ -357,27 +318,6 @@ impl App {
             author,
         );
         self.history_written(result)
-    }
-
-    /// Persist and present what a History write changed.
-    fn history_written(
-        &mut self,
-        result: Result<bool, HistoryError>,
-    ) -> Result<bool, HistoryError> {
-        if matches!(result, Ok(true)) {
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-            match self.persistence.records.as_mut() {
-                Some(set) => set.tick(&mut self.state.doc),
-                None => {
-                    if let Some(saver) = self.persistence.autosave.as_mut() {
-                        saver.request(&mut self.state.doc);
-                    }
-                }
-            }
-        }
-        let _ = self.with_history(StandaloneHistoryHost::refresh);
-        result
     }
 
     #[cfg(feature = "native")]
@@ -544,20 +484,10 @@ impl App {
             self.persistence.records.as_ref(),
             &self.permission_ctx,
         );
-        let chrome = self
-            .document_history
-            .presentation_roots(&context)
-            .unwrap_or_default();
         let mut roots: Vec<(&dyn Widget, taffy::NodeId)> = vec![(self.root_widget.as_ref(), app)];
         roots.extend(
-            chrome.into_iter().zip(
-                layout
-                    .toolbar
-                    .into_iter()
-                    .chain(layout.search)
-                    .chain(layout.pane)
-                    .chain(layout.preview),
-            ),
+            self.document_history
+                .presentation_roots_in(layout, &context),
         );
         if let (Some(node), Some(palette)) = (palette_node, self.actions.action_palette.as_deref())
         {
@@ -582,20 +512,13 @@ impl App {
             );
             return;
         }
-        if let Some(layout) = self.history_layout {
-            let origin = self.document_history.apply_layout(
-                layout,
-                &self.layout.taffy,
-                self.layout.content_origin,
-            );
-            if layout.app_visible {
-                self.root_widget
-                    .apply_layout(&self.layout.taffy, layout.app, origin);
-            }
-        } else {
-            self.root_widget
-                .apply_layout(&self.layout.taffy, root, self.layout.content_origin);
-        }
+        self.document_history.apply_with_app(
+            self.history_layout,
+            &self.layout.taffy,
+            self.root_widget.as_mut(),
+            root,
+            self.layout.content_origin,
+        );
     }
 
     pub(super) fn history_handle_event(
@@ -616,119 +539,17 @@ impl App {
             *handled = true;
             return;
         }
-        let keyboard = matches!(
-            event,
-            winit::event::WindowEvent::KeyboardInput { .. } | winit::event::WindowEvent::Ime(_)
-        );
-        if keyboard && let Some(node) = self.focused_node.filter(|node| self.is_history_node(*node))
-        {
-            // SAFETY: this admitted chrome node is retained by App and unbound;
-            // no structural mutation occurs while forwarding its input.
-            let _ = unsafe {
-                crate::bound_dispatch::invoke_bound_node(
-                    &self.bindings,
-                    &self.layout.node_map,
-                    node,
-                    &mut self.state.doc,
-                    &self.state.root,
-                    |widget, doc, path| {
-                        widget.handle_event(
-                            event,
-                            &mut crate::widget::EventCtx {
-                                scale_factor: scale,
-                                modifiers: &self.input.modifiers,
-                                state: crate::widget::Edits::lend(doc),
-                                path,
-                                handled,
-                                focus_target: focus,
-                                node_id: node,
-                                taffy: &self.layout.taffy,
-                            },
-                        );
-                    },
-                )
-            };
-            return;
-        }
-        if let (Some(toolbar), Some(node)) = (self.document_history.toolbar_mut(), layout.toolbar)
-            && (!keyboard || self.focused_node == Some(node))
-        {
-            toolbar.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: scale,
-                    modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.layout.taffy,
-                },
-            );
-        }
-        if !*handled
-            && !keyboard
-            && let (Some(search), Some(node)) = (self.document_history.search_mut(), layout.search)
-        {
-            search.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: scale,
-                    modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.layout.taffy,
-                },
-            );
-        }
-        let pane_focused = self
-            .focused_node
-            .is_some_and(|node| Some(node) != layout.toolbar && self.is_history_node(node));
-        if !*handled
-            && (!keyboard || pane_focused)
-            && let Some(node) = layout.pane
-            && let Some(pane) = self.document_history.pane_mut()
-        {
-            pane.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: scale,
-                    modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.layout.taffy,
-                },
-            );
-        }
-        if !*handled
-            && !keyboard
-            && let Some(node) = layout.preview
-            && let Some(preview) = self.document_history.preview_mut()
-        {
-            preview.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: scale,
-                    modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
-                    path: &self.state.root,
-                    handled,
-                    focus_target: focus,
-                    node_id: node,
-                    taffy: &self.layout.taffy,
-                },
-            );
-        }
-        if !layout.app_visible && !keyboard {
-            *handled = true;
-        }
+        let input = crate::standalone_history_host::ChromeInput {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.layout.node_map,
+            taffy: &self.layout.taffy,
+            focused: self.focused_node,
+            modifiers: &self.input.modifiers,
+            scale,
+        };
+        self.document_history
+            .route_event(layout, input, event, handled, focus);
     }
     /// Omit the automatically added History and Search controls at native
     /// startup. System surfaces such as a login screen have no document to
@@ -883,8 +704,7 @@ impl App {
         let revision = self.document_history.revision();
         let open = self.document_history.is_open();
         let result = self.with_history(|host, context| host.invoke_local(encoded, context));
-        self.apply_confirmed_history_restore();
-        self.fulfil_history_preview();
+        self.settle_history_requests();
         self.history_changed(revision, open);
         result.map_err(|error| format!("History is unavailable: {error:?}"))
     }

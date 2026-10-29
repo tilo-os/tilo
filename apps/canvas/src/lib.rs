@@ -100,9 +100,15 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Artwork>) -> Element {
-        let recents = cx.settings::<document::RecentArtworks>();
+        let recents = cx
+            .person::<document::ArtworkRecents>()
+            .zip(cx.device().map(str::to_owned));
         let tools = tools::Tools {
-            recents: recents.state(),
+            recents: recents.as_ref().map_or_else(
+                || LocalState::new(std::rc::Rc::default()),
+                |(record, _)| record.state(),
+            ),
+            device: cx.device().unwrap_or_default().into(),
             ..tools::Tools::default()
         };
         let compact = LocalState::new(false);

@@ -20,6 +20,60 @@ pub trait PlaneMover: Send + Sync {
     fn move_plane(&self, x: i32, y: i32);
 }
 
+/// Whether an output's cursor plane may take legacy cursor ioctls yet, and
+/// where the pointer last asked it to be.
+///
+/// An atomic output's CRTC is lit by a nonblocking modeset. A legacy cursor
+/// ioctl on it before that modeset completed is an atomic commit of its own
+/// against a CRTC the driver is still setting up: amdgpu then reads the scan
+/// position of a display stream that does not exist yet and oopses, killing
+/// the thread that asked while it holds the device's modeset locks. The next
+/// ioctl that takes those locks, from any thread, oopses too. So nothing
+/// touches the cursor plane until the output is proven up, which binds it
+/// ([`Self::bind`]) and moves it to where the pointer went meanwhile.
+#[derive(Default)]
+pub struct CursorGate {
+    state: Mutex<GateState>,
+}
+
+#[derive(Default)]
+struct GateState {
+    bound: bool,
+    /// The last position the pointer asked for, in output pixels.
+    last: Option<(i32, i32)>,
+}
+
+impl CursorGate {
+    /// Whether the plane is bound and may be written.
+    pub fn bound(&self) -> bool {
+        self.state.lock_recover().bound
+    }
+
+    /// Mark the plane bound or not, without moving it.
+    pub fn set_bound(&self, bound: bool) {
+        self.state.lock_recover().bound = bound;
+    }
+
+    /// The pointer wants the plane at `(x, y)`: remembered either way, so a
+    /// plane bound later starts there. `true` when the plane may be moved now.
+    pub fn request(&self, x: i32, y: i32) -> bool {
+        let mut state = self.state.lock_recover();
+        state.last = Some((x, y));
+        state.bound
+    }
+
+    /// The plane was just bound: open the gate and `place` it where the
+    /// pointer last asked, under the gate, so a move requested after this
+    /// one reaches the kernel after it.
+    pub fn bind(&self, place: impl FnOnce((i32, i32))) {
+        let mut state = self.state.lock_recover();
+        state.bound = true;
+        if let Some(position) = state.last {
+            place(position);
+        }
+    }
+}
+
 /// The newest position not yet handed to the kernel, latest wins: a cursor
 /// that waited out a stall goes straight to where the pointer is now rather
 /// than replaying the path it took.
@@ -210,5 +264,31 @@ mod tests {
             || Arc::strong_count(&plane) == 1,
         );
         assert_eq!(*plane.moved.lock_recover(), vec![(1, 1)]);
+    }
+
+    #[test]
+    fn an_unbound_plane_is_not_moved_and_starts_where_the_pointer_went() {
+        let gate = CursorGate::default();
+        assert!(
+            !gate.request(10, 20),
+            "a plane still modesetting is not moved"
+        );
+        assert!(!gate.request(30, 40));
+        let mut placed = Vec::new();
+        gate.bind(|position| placed.push(position));
+        assert_eq!(placed, vec![(30, 40)], "bound where the pointer is now");
+        assert!(gate.request(50, 60), "a bound plane follows the pointer");
+
+        gate.set_bound(false);
+        assert!(
+            !gate.request(70, 80),
+            "a CRTC modesetting again is left alone"
+        );
+
+        let untouched = CursorGate::default();
+        let mut placed = Vec::new();
+        untouched.bind(|position| placed.push(position));
+        assert!(placed.is_empty(), "no pointer yet, nothing to place");
+        assert!(untouched.bound());
     }
 }

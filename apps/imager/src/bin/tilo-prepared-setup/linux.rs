@@ -115,12 +115,9 @@ pub(super) fn run() -> std::process::ExitCode {
                 | "--access-shared-files"
                 | "--install-enrolled-device"
                 | "--authenticate-install"
-                | "--access-existing"
                 | "--portable-home"
                 | "--portable-applications"
                 | "--browser-transfer"
-                | "--migration"
-                | "--installed-applications"
                 | "--retained-home-consumer"
                 | "--unseal-prepared-handoff"
                 | "--seal-prepared-handoff"
@@ -230,22 +227,6 @@ fn dispatch_installed_access(
             output,
         )
         .is_ok(),
-        "--access-existing" => imager::setup::installed_migration_helper::run_access(
-            arguments,
-            std::io::stdin(),
-            output,
-        )
-        .is_ok(),
-        "--installed-applications" => imager::setup::installed_migration_helper::run_applications(
-            arguments,
-            std::io::stdin(),
-            output,
-        )
-        .is_ok(),
-        "--migration" => {
-            imager::setup::installed_migration_helper::run(arguments, std::io::stdin(), output)
-                .is_ok()
-        }
         _ => return None,
     };
     Some(succeeded)

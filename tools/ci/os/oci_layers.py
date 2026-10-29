@@ -20,7 +20,8 @@ layers, so the pinned base is a fragment as it comes from the registry.
                                                      the layers the layout BUILT has over
                                                      the layout PARENT (`-` for none), as a
                                                      fragment, its uncompressed layers
-                                                     compressed
+                                                     compressed, every directory below an
+                                                     APART path a layer of its own
     oci_layers.py compose [--copy] OUT FRAGMENT...   an image of the fragments' layers, in
                                                      order, as a layout in OUT/oci, its
                                                      digest in OUT/digest; its blobs hard
@@ -76,6 +77,10 @@ LAYER_GZIP = LAYER_TAR + "+gzip"
 UNCOMPRESSED = {LAYER_TAR, "application/vnd.docker.image.rootfs.diff.tar"}
 ACTION = "org.tilo.layer.action"
 INPUTS = "org.tilo.layer.inputs"
+# Paths each directory below which is a layer of its own, whichever action writes it: the
+# preinstalled apps' trees, each named by its payload. In the one layer that copies them in,
+# one changed app made an update send every app again; apart, it sends the apps that changed.
+APART = ("usr/share/tilo-apps/trees",)
 
 
 def die(msg):
@@ -255,9 +260,71 @@ def cmd_inputs(globs):
     print(json.dumps({"inputs": inputs, "inputsDigest": sha256_bytes(canonical(inputs))}))
 
 
+def apart_piece(member):
+    """The directory below an APART path that MEMBER is, or is inside; None for any other."""
+    for root in APART:
+        if member.name.startswith(root + "/"):
+            child, _, below = member.name[len(root) + 1:].partition("/")
+            if below or member.isdir():
+                return f"{root}/{child}"
+    return None
+
+
+def split_apart(src, diff_id, work):
+    """The uncompressed layer SRC (DIFF_ID) as the layers whose union it is: first what lies
+    outside every directory below an APART path (their parents among it), then one layer for
+    each of those directories, in the order SRC first names them; [(SRC, DIFF_ID)] when it
+    holds none. Each entry keeps its bytes, so a directory's layer is the same whatever else
+    SRC held. A hard link reaches only within its own layer: one to a file in another becomes
+    a copy of that file, and the further names of that file there links to the copy."""
+    with open(src, "rb") as raw, tarfile.open(fileobj=raw, mode="r:") as tar:
+        members = tar.getmembers()
+        end = tar.offset
+        if tar.pax_headers:
+            die(f"{src}: a global pax header would not reach the layers it is split into")
+        pieces = {}
+        for m in members:
+            pieces.setdefault(apart_piece(m), []).append(m)
+        if not any(pieces):
+            return [(src, diff_id)]
+        bounds = {m.offset: nxt for m, nxt in zip(members, [m.offset for m in members[1:]] + [end])}
+        by_name = {m.name: m for m in members}
+        os.makedirs(work, exist_ok=True)
+        out = []
+        for piece in sorted(pieces, key=lambda p: p is not None):
+            path = os.path.join(work, f"{len(out)}-{os.path.basename(src)[:12]}.tar")
+            digest, copies = hashlib.sha256(), {}
+            with open(path, "wb") as f:
+                def put(data):
+                    digest.update(data)
+                    f.write(data)
+                for m in pieces[piece]:
+                    target = by_name.get(m.linkname) if m.islnk() else None
+                    if target is None or apart_piece(target) == piece:
+                        raw.seek(m.offset)
+                        put(raw.read(bounds[m.offset] - m.offset))
+                        continue
+                    entry = tarfile.TarInfo(m.name)
+                    for field in ("mode", "uid", "gid", "uname", "gname", "mtime", "pax_headers"):
+                        setattr(entry, field, getattr(m, field))
+                    if target.name in copies:
+                        entry.type, entry.linkname = tarfile.LNKTYPE, copies[target.name]
+                        put(entry.tobuf(tarfile.PAX_FORMAT, "utf-8", "surrogateescape"))
+                        continue
+                    copies[target.name] = m.name
+                    entry.size = target.size
+                    put(entry.tobuf(tarfile.PAX_FORMAT, "utf-8", "surrogateescape"))
+                    raw.seek(target.offset_data)
+                    put(raw.read(target.size) + b"\0" * (-target.size % tarfile.BLOCKSIZE))
+                put(b"\0" * (2 * tarfile.BLOCKSIZE))
+            out.append((path, "sha256:" + digest.hexdigest()))
+        return out
+
+
 def cmd_take(parent, built, out, action, inputs_file):
     """The layers BUILT added over PARENT. BUILT was built FROM PARENT, so its diff_ids start
-    with PARENT's; anything else means the action didn't build on what it was given."""
+    with PARENT's; anything else means the action didn't build on what it was given. A layer
+    holding directories below an APART path is taken as several (split_apart)."""
     b_manifest, b_config = image_of_layout(built)
     # `-`: built over nothing (a scratch stage), so every layer is its own.
     p_ids = [] if parent == "-" else image_of_layout(parent)[1]["rootfs"]["diff_ids"]
@@ -274,12 +341,16 @@ def cmd_take(parent, built, out, action, inputs_file):
         p_manifest = image_of_layout(parent)[0]
         p_layers = {d: l for l, d in zip(p_manifest["layers"], p_ids)}
     layers, packing = [], []
+    apart = os.path.join(out, ".apart")
     for layer, diff_id in zip(b_manifest["layers"][len(p_ids):], b_ids[len(p_ids):]):
         if diff_id in p_layers:
             layer = p_layers[diff_id]
             link_blob(parent, out, layer["digest"])
         elif layer.get("mediaType", "") in UNCOMPRESSED:
-            packing.append((len(layers), (blob_path(built, layer["digest"]), out, diff_id)))
+            for src, piece_id in split_apart(blob_path(built, layer["digest"]), diff_id, apart):
+                packing.append((len(layers), (src, out, piece_id)))
+                layers.append({"diffID": piece_id})
+            continue
         else:
             link_blob(built, out, layer["digest"])
         layers.append({"mediaType": layer.get("mediaType", ""), "digest": layer["digest"],
@@ -291,6 +362,8 @@ def cmd_take(parent, built, out, action, inputs_file):
         with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("fork")) as pool:
             for (i, _), (digest, size) in zip(packing, pool.map(_gzip_job, [j for _, j in packing])):
                 layers[i].update({"mediaType": LAYER_GZIP, "digest": digest, "size": size})
+    shutil.rmtree(apart, ignore_errors=True)
+    b_config["rootfs"]["diff_ids"] = p_ids + [l["diffID"] for l in layers]
     frag = {"action": action, "inputs": inputs["inputs"], "inputsDigest": inputs["inputsDigest"],
             "layers": layers, "config": b_config}
     with open(os.path.join(out, "fragment.json"), "w") as f:

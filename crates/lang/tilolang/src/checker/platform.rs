@@ -224,6 +224,31 @@ impl Checker<'_> {
         )
     }
 
+    /// `dated(text, at)`: when `text` says something is due, as people type it into a quick
+    /// add ("Call the landlord tomorrow 9am"), read against the time `at` (in an action, `now`)
+    /// in the zone of who runs it: a `host.Dated` holding the text without the phrase that said
+    /// when, the day it named and the moment, when it named a time (`crate::natural`).
+    pub(super) fn builtin_dated(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [text, at] = args else {
+            self.err(
+                "E022",
+                span,
+                "`dated` takes the text and the time it is read at: `dated(entry, now)`",
+            );
+            return Ex::error();
+        };
+        if let Some(a) = [text, at].into_iter().find(|a| a.name.is_some()) {
+            self.err(
+                "E022",
+                a.value.span,
+                "`dated` takes its text and time by position: `dated(entry, now)`",
+            );
+        }
+        let text = self.expr_as(&text.value, &Ty::Text);
+        let at = self.expr_as(&at.value, &Ty::Time);
+        Ex::host(Imp::Dated, vec![text, at], host_ty("Dated"))
+    }
+
     /// `phrase("tilolang-empty")` or `phrase("tilolang-none-selected", kind: noun)`: one of the
     /// platform's phrases, in the person's language, with its arguments.
     pub(super) fn builtin_phrase(&mut self, args: &[ast::Arg], span: Span) -> Ex {

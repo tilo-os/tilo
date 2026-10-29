@@ -1,16 +1,9 @@
 use super::*;
 use crate::coverage::Coverage;
-use crate::resources::native::{NativeBatch, NativeDocument};
 use crate::room::read::LegacyRead;
 use automerge::{AutoCommit, ObjType, ROOT, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
 
-fn limits() -> OuterLimits {
-    OuterLimits {
-        allocation_bytes: 256 * 1024,
-        collection_entries: 4096,
-    }
-}
 fn stored() -> (AutoCommit, Vec<u8>) {
     let (peer, _, _, _, _) = crate::admission_tests::seeded();
     let snapshot = peer.document("test.app", "tab:1").unwrap();
@@ -36,17 +29,10 @@ fn admitted() -> BTreeMap<String, u64> {
     let (peer, _, _, _, _) = crate::admission_tests::seeded();
     BTreeMap::from([(hex::encode(peer.authority().device_public_key), 1)])
 }
-fn native(room: &mut AutoCommit) -> NativeDocument {
-    NativeBatch::new(8 * 1024 * 1024)
-        .load(&room.save())
-        .unwrap()
-}
 
 #[test]
-fn coverage_reader_accepts_the_governed_checkpoint_in_both_storage_modes() {
-    let (mut room, snapshot) = stored();
-    let native = native(&mut room);
-    let read = native.read();
+fn coverage_reader_accepts_the_governed_checkpoint() {
+    let (room, snapshot) = stored();
     let legacy = governed_snapshot_matches(
         Some(&LegacyRead(&room)),
         ("test.app", "tab:1"),
@@ -54,15 +40,7 @@ fn coverage_reader_accepts_the_governed_checkpoint_in_both_storage_modes() {
         Some(&snapshot),
         &LegacyCoverage,
     );
-    let bounded = governed_snapshot_matches(
-        Some(&read),
-        ("test.app", "tab:1"),
-        &admitted(),
-        Some(&snapshot),
-        &BoundedCoverage { limits: limits() },
-    );
     assert_eq!(legacy, Ok(Governed::Current));
-    assert_eq!(bounded, Ok(Governed::Current));
 }
 
 #[test]
@@ -93,8 +71,6 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
             }
         }
         room.commit();
-        let native = native(&mut room);
-        let read = native.read();
         let payload = if mode == 3 {
             b"different snapshot".as_slice()
         } else {
@@ -107,64 +83,33 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
             Some(payload),
             &LegacyCoverage,
         );
-        let bounded = governed_snapshot_matches(
-            Some(&read),
-            ("test.app", "tab:1"),
-            &admitted(),
-            Some(payload),
-            &BoundedCoverage { limits: limits() },
-        );
         match mode {
             0 | 1 => {
                 assert_eq!(legacy, Ok(Governed::Current));
-                assert_eq!(bounded, Ok(Governed::Current));
             }
             2 => {
                 assert!(matches!(legacy, Err(CoverageMatchError::Decode(_))));
-                assert!(matches!(
-                    bounded,
-                    Err(CoverageMatchError::Decode(PeerResourceError::Malformed))
-                ));
             }
             _ => {
                 assert_eq!(legacy, Err(CoverageMatchError::NoMatch));
-                assert_eq!(bounded, Err(CoverageMatchError::NoMatch));
             }
         }
     }
 }
 
 #[test]
-fn coverage_reader_keeps_genuine_capacity_denial_and_does_not_decode_when_checkpoint_absent() {
-    let (mut room, snapshot) = stored();
-    let native = native(&mut room);
-    let read = native.read();
-    let decoder = BoundedCoverage {
-        limits: OuterLimits {
-            allocation_bytes: 16,
-            ..limits()
-        },
-    };
+fn coverage_reader_passes_a_route_it_does_not_cover() {
+    let (room, snapshot) = stored();
     assert_eq!(
         governed_snapshot_matches(
-            Some(&read),
+            Some(&LegacyRead(&room)),
             ("test.app", "tab:1"),
             &admitted(),
             None,
-            &decoder
+            &LegacyCoverage
         ),
         Ok(Governed::Current)
     );
-    assert!(matches!(
-        governed_snapshot_matches(
-            Some(&read),
-            ("test.app", "tab:1"),
-            &admitted(),
-            Some(&snapshot),
-            &decoder
-        ),
-        Err(CoverageMatchError::Decode(PeerResourceError::Capacity))
-    ));
     assert_eq!(
         governed_snapshot_matches(
             Some(&LegacyRead(&room)),
@@ -179,9 +124,7 @@ fn coverage_reader_keeps_genuine_capacity_denial_and_does_not_decode_when_checkp
 
 #[test]
 fn coverage_reader_reports_a_checkpoint_whose_body_has_not_been_admitted_as_arriving() {
-    let (mut room, _) = stored();
-    let native = native(&mut room);
-    let read = native.read();
+    let (room, _) = stored();
     let older = b"older checkpoint".as_slice();
     let arriving = BTreeMap::new();
     assert_eq!(
@@ -191,16 +134,6 @@ fn coverage_reader_reports_a_checkpoint_whose_body_has_not_been_admitted_as_arri
             &arriving,
             Some(older),
             &LegacyCoverage,
-        ),
-        Ok(Governed::Arriving)
-    );
-    assert_eq!(
-        governed_snapshot_matches(
-            Some(&read),
-            ("test.app", "tab:1"),
-            &arriving,
-            Some(older),
-            &BoundedCoverage { limits: limits() },
         ),
         Ok(Governed::Arriving)
     );

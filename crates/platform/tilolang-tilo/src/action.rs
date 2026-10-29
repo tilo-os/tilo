@@ -24,6 +24,9 @@ use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 /// The registry type id every [`DynAction`] is encoded under.
 pub const ACTION_TYPE: &str = "tl.action";
 
+/// The key of the map in a resource that holds the migrations that ran on it, by action id.
+pub const MIGRATED_KEY: &str = "$migrated";
+
 /// The key of the map in the room record that holds every tilolang resource.
 pub const RECORDS_KEY: &str = "tl";
 
@@ -128,6 +131,9 @@ pub enum DynEdit {
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
     /// records, which an action's follow-up changes write beside the package's resources.
     In { app: String, edit: Box<DynEdit> },
+    /// Record that the migration `migration` (its action id) ran on the resource `id`, in the
+    /// same change as what it did, so it runs once on each resource an earlier version wrote.
+    Migrated { id: String, migration: String },
 }
 
 impl DynEdit {
@@ -151,7 +157,8 @@ impl DynEdit {
             | Self::Insert { .. }
             | Self::Place { .. }
             | Self::Remove { .. }
-            | Self::OutboxSettle { .. } => false,
+            | Self::OutboxSettle { .. }
+            | Self::Migrated { .. } => false,
         }
     }
 }
@@ -256,6 +263,7 @@ impl DynAction {
                 DynEdit::Remove { .. }
                 | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
+                | DynEdit::Migrated { .. }
                 | DynEdit::In { .. } => {}
             }
         }
@@ -277,7 +285,8 @@ impl DynAction {
             | DynEdit::Place { id, .. }
             | DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. }) = edit
+            | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::Migrated { id, .. }) = edit
             else {
                 continue;
             };
@@ -328,7 +337,8 @@ fn target_map(
         | DynEdit::Place { id, .. }
         | DynEdit::Remove { id }
         | DynEdit::OutboxPush { id, .. }
-        | DynEdit::OutboxSettle { id, .. } => stored_map(doc, records, app, id),
+        | DynEdit::OutboxSettle { id, .. }
+        | DynEdit::Migrated { id, .. } => stored_map(doc, records, app, id),
     };
     match held {
         Some(map) => Ok(map),
@@ -437,9 +447,23 @@ fn apply_one(
                 doc.put(&held, "settled", outcome.as_str())?;
             }
         }
+        DynEdit::Migrated { id, migration } => {
+            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
+                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+            };
+            let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+            doc.put(&done, migration.as_str(), true)?;
+        }
         DynEdit::In { .. } => {}
     }
     Ok(())
+}
+
+/// Whether the migration `migration` (its action id) ran on the resource at the map `obj`.
+#[must_use]
+pub fn migrated(doc: &Doc, obj: &automerge::ObjId, migration: &str) -> bool {
+    map_in(doc, obj, MIGRATED_KEY)
+        .is_some_and(|done| doc.get(&done, migration).ok().flatten().is_some())
 }
 
 /// The items of each collection of a record being stored, in order, by the item holding the
@@ -721,7 +745,8 @@ impl DynAction {
             DynEdit::Place { id, item, .. } => (id, Some(item.clone())),
             DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
-            | DynEdit::OutboxSettle { id, .. } => (id, None),
+            | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::Migrated { id, .. } => (id, None),
             DynEdit::In { .. } => return None,
         };
         let root = crate::reads::resource_obj(doc, &self.app, id)?;

@@ -7455,9 +7455,6 @@ mod tests {
     }
 
     impl crate::widget::AppWidget for PaintedDeadline {
-        fn uses_host_record(&self) -> bool {
-            false
-        }
         fn app_kind(&self) -> crate::widget::AppKind {
             crate::widget::AppKind::Editor
         }
@@ -10203,9 +10200,6 @@ mod tests {
     }
 
     impl crate::widget::AppWidget for MinWidthApp {
-        fn uses_host_record(&self) -> bool {
-            false
-        }
         fn app_kind(&self) -> crate::widget::AppKind {
             crate::widget::AppKind::Files
         }
@@ -10672,9 +10666,6 @@ mod tests {
     }
 
     impl crate::widget::AppWidget for TreeMinimumApp {
-        fn uses_host_record(&self) -> bool {
-            false
-        }
         fn app_kind(&self) -> crate::widget::AppKind {
             crate::widget::AppKind::Files
         }

@@ -1,4 +1,4 @@
-//! The restore certificate sequence shared by both storage modes.
+//! The restore certificate sequence.
 use super::{BTreeMap, DeviceCert, VerifiedCertificate};
 use std::borrow::Borrow;
 
@@ -20,8 +20,7 @@ impl std::fmt::Display for RosterError {
     }
 }
 
-// Both storage modes execute exactly this restore sequence. In particular,
-// matching durable evidence is historical even when enrollment repeats it;
+// Matching durable evidence is historical even when enrollment repeats it;
 // only genuinely new enrollment is checked against the current time.
 fn restore<C: Borrow<DeviceCert>>(
     stored: impl IntoIterator<Item = C>,
@@ -75,38 +74,6 @@ fn verify_owned(value: DeviceCert, now: Option<u64>) -> Result<VerifiedCertifica
         None => VerifiedCertificate::historical_typed(value),
     }
     .map_err(RosterError::Certificate)
-}
-
-pub(in crate::state) struct BoundedRoster {
-    certificates: BTreeMap<[u8; 32], VerifiedCertificate>,
-}
-impl BoundedRoster {
-    pub(super) fn map(&self) -> &BTreeMap<[u8; 32], VerifiedCertificate> {
-        &self.certificates
-    }
-    pub(super) fn imported(certificates: BTreeMap<[u8; 32], VerifiedCertificate>) -> Self {
-        Self { certificates }
-    }
-    pub(super) fn restore(
-        stored: &[DeviceCert],
-        enrollment: &[DeviceCert],
-        authority: &DeviceCert,
-        now_ns: u64,
-    ) -> Result<Self, RosterError> {
-        let certificates = restore(
-            stored,
-            enrollment.iter().chain([authority]),
-            now_ns,
-            |value, now| verify_owned(value.clone(), now),
-        )?;
-        Ok(Self { certificates })
-    }
-    pub(super) fn verified(&self, key: &[u8; 32]) -> Option<&VerifiedCertificate> {
-        self.certificates.get(key)
-    }
-    pub(super) fn certificate(&self, key: &[u8; 32]) -> Option<&DeviceCert> {
-        self.certificates.get(key).map(AsRef::as_ref)
-    }
 }
 
 #[cfg(test)]
