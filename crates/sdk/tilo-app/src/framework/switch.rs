@@ -146,6 +146,29 @@ impl Widget for Switch {
         self.part.wants_pointer_capture()
     }
 
+    // The switch stands for its part in its container: a part that is a
+    // band on its way, or a column one moves in, moves what follows the
+    // switch as it would its own followers.
+    fn disclosing(&self) -> Option<ui_core::widget::Disclosing> {
+        self.part.disclosing()
+    }
+
+    fn place_disclosing(&mut self, slot: Rect) {
+        self.part.place_disclosing(slot);
+    }
+
+    fn is_band(&self) -> bool {
+        self.part.is_band()
+    }
+
+    fn note_placement(&mut self, placement: ui_core::widget::Placement) {
+        self.part.note_placement(placement);
+    }
+
+    fn paint_bounds(&self) -> Rect {
+        self.part.paint_bounds()
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         // The key may change between syncs (a selection made in this very
         // event), so the structure is re-checked here as well.
