@@ -834,23 +834,34 @@ impl Worker {
 
     fn dropped(&self, why: &Refusal) -> FrameOutcome {
         match why {
-            Refusal::Throttled => FrameOutcome::Skipped,
+            Refusal::Throttled => {}
             Refusal::RenderFailed(reason) => {
                 tracing::warn!(%reason, "the render service could not draw a frame");
-                self.repaint();
-                FrameOutcome::Skipped
             }
             Refusal::Invalid(reason) | Refusal::OverLimit(reason) => {
                 tracing::error!(%reason, "the render service refused a frame");
-                // The refused frame's damage never reached the service's
-                // buffer, so a later frame that repaints only its own damage
-                // would leave this one's regions stale on screen. The next
-                // frame is whole. It is not woken for: the same scene would
-                // be refused again.
-                self.full_repaint.store(true, Ordering::SeqCst);
-                FrameOutcome::Skipped
             }
         }
+        // The dropped frame's damage never reached the service's target, so
+        // a later frame that repaints only its own damage would leave this
+        // one's regions stale on screen: the next frame is whole.
+        self.full_repaint.store(true, Ordering::SeqCst);
+        if wake_after_drop(why) {
+            (self.wake)();
+        }
+        FrameOutcome::Skipped
+    }
+}
+
+/// Whether a frame the service dropped is drawn again at once, whole. One
+/// it throttled or failed to draw is: nothing else may change, and the
+/// window would keep the frame before it (a theme change showing only where
+/// a caret blinked). One it refused is not: the same scene would be refused
+/// again; it is drawn whole with the next change.
+fn wake_after_drop(why: &Refusal) -> bool {
+    match why {
+        Refusal::Throttled | Refusal::RenderFailed(_) => true,
+        Refusal::Invalid(_) | Refusal::OverLimit(_) => false,
     }
 }
 
@@ -927,6 +938,14 @@ mod tests {
     fn channel() -> (Arc<Channel>, Channel) {
         let (app, service) = Channel::pair().expect("a channel pair");
         (Arc::new(app), service)
+    }
+
+    #[test]
+    fn a_throttled_frame_is_drawn_again_at_once() {
+        assert!(wake_after_drop(&Refusal::Throttled));
+        assert!(wake_after_drop(&Refusal::RenderFailed("lost".to_owned())));
+        assert!(!wake_after_drop(&Refusal::Invalid("bad".to_owned())));
+        assert!(!wake_after_drop(&Refusal::OverLimit("layers".to_owned())));
     }
 
     #[test]
