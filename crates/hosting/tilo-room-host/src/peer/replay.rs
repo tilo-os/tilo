@@ -154,9 +154,10 @@ pub(super) async fn authorize_state_recipient(
     Ok(())
 }
 /// Write the room's bootstrap for `peer` ahead of its replay
-/// ([`Envelope::RoomBootstrap`]), in a room this relay governs: what a
-/// member device builds its replica from before it admits the replay. A
-/// peer relay federating the room keeps its own replica and gets none.
+/// ([`Envelope::RoomBootstrap`]), in a room this relay governs or hosts for
+/// its governor: what a member device builds its replica from before it
+/// admits the replay. A peer relay federating the room keeps its own
+/// replica and gets none.
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     workspace_id: u64,
     ws: &SharedWorkspace,
@@ -167,16 +168,23 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     if peer.role == crate::auth::PeerRole::PeerRelay {
         return Ok(());
     }
-    let authority = ws.lock().await.room_authority.clone();
-    let Some((rooms, authority)) =
-        authority.and_then(|authority| authority.rooms().map(|rooms| (rooms, authority)))
-    else {
-        return Ok(());
+    let (authority, hosted) = {
+        let runtime = ws.lock().await;
+        (
+            runtime.room_authority.clone(),
+            runtime.hosted_replica.clone(),
+        )
     };
-    let Some(bootstrap) = rooms
-        .subscriber_bootstrap(authority.room(), &peer.cert)
-        .await
-    else {
+    let bootstrap =
+        match authority.and_then(|authority| authority.rooms().map(|rooms| (rooms, authority))) {
+            Some((rooms, authority)) => {
+                rooms
+                    .subscriber_bootstrap(authority.room(), &peer.cert)
+                    .await
+            }
+            None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
+        };
+    let Some(bootstrap) = bootstrap else {
         return Ok(());
     };
     let envelope = Envelope::RoomBootstrap {

@@ -1493,62 +1493,20 @@ impl Rooms {
     }
 
     /// The workspace-join contract's membership answer for `device`, a
-    /// device the room just admitted to subscribe, postcard encoded: what
-    /// it builds its replica of the room from before the room's replay
-    /// ([`tilo_relay_protocol::Envelope::RoomBootstrap`]). A device of the
-    /// room's owner gets the owner's answer, a member's device its role's,
-    /// and a device that only watches a reader's. The governance messages
-    /// and records stay out: the replay that follows carries them.
+    /// device the room just admitted to subscribe ([`member_bootstrap`]).
     pub(crate) async fn subscriber_bootstrap(
         &self,
         room: &str,
         device: &DeviceCert,
     ) -> Option<Vec<u8>> {
-        use tilo_peer_state::join::{
-            JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
-        };
         let room = self.room(room).await.ok()?;
         let room = room.lock().await;
-        let peer = room.peer();
-        let role = peer
-            .permissions(device.device_public_key, SystemTime::now())
-            .map_or(collab_types::Role::Viewer, |authority| authority.role);
-        let answer = match role {
-            collab_types::Role::Owner => {
-                JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
-                    version: 1,
-                    device_cert: device.clone(),
-                    room: peer.room().to_owned(),
-                    workspace_id: room.workspace_id(),
-                    authority: peer.authority().clone(),
-                    certified_roster: peer.certificates(),
-                    revocations: peer.revocations(),
-                    records: Vec::new(),
-                    governance_messages: Vec::new(),
-                    generation: room.record.generation,
-                })
-            }
-            role => JoinTransportResponse::MembershipComplete(JoinBootstrap {
-                version: 1,
-                invite_id: [0; 32],
-                device_cert: device.clone(),
-                role: match role {
-                    collab_types::Role::Commenter => MemberRole::Commenter,
-                    collab_types::Role::Editor => MemberRole::Editor,
-                    collab_types::Role::Moderator => MemberRole::Moderator,
-                    _ => MemberRole::Viewer,
-                },
-                room: peer.room().to_owned(),
-                workspace_id: room.workspace_id(),
-                authority: peer.authority().clone(),
-                certified_roster: peer.certificates(),
-                revocations: peer.revocations(),
-                records: Vec::new(),
-                governance_messages: Vec::new(),
-                generation: room.record.generation,
-            }),
-        };
-        postcard::to_stdvec(&answer).ok()
+        member_bootstrap(
+            room.peer(),
+            room.workspace_id(),
+            room.record.generation,
+            device,
+        )
     }
 
     async fn room(&self, room: &str) -> Result<Arc<AsyncMutex<GovernedRoom>>, CollaborationError> {
@@ -2442,4 +2400,61 @@ fn system_time(now_ns: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_nanos(now_ns))
         .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+/// The workspace-join contract's membership answer for `device`, a device
+/// the room `peer` replicates just admitted to subscribe, postcard encoded:
+/// what it builds its replica of the room from before the room's replay
+/// ([`tilo_relay_protocol::Envelope::RoomBootstrap`]). A device of the
+/// room's owner gets the owner's answer, a member's device its role's, and
+/// a device that only watches a reader's. The governance messages and
+/// records stay out: the replay that follows carries them.
+pub(crate) fn member_bootstrap(
+    peer: &StatePeer,
+    workspace_id: u64,
+    generation: u64,
+    device: &DeviceCert,
+) -> Option<Vec<u8>> {
+    use tilo_peer_state::join::{
+        JoinBootstrap, JoinTransportResponse, MemberRole, OwnerBootstrapV1,
+    };
+    let role = peer
+        .permissions(device.device_public_key, SystemTime::now())
+        .map_or(collab_types::Role::Viewer, |authority| authority.role);
+    let answer = match role {
+        collab_types::Role::Owner => {
+            JoinTransportResponse::OwnerMembershipComplete(OwnerBootstrapV1 {
+                version: 1,
+                device_cert: device.clone(),
+                room: peer.room().to_owned(),
+                workspace_id,
+                authority: peer.authority().clone(),
+                certified_roster: peer.certificates(),
+                revocations: peer.revocations(),
+                records: Vec::new(),
+                governance_messages: Vec::new(),
+                generation,
+            })
+        }
+        role => JoinTransportResponse::MembershipComplete(JoinBootstrap {
+            version: 1,
+            invite_id: [0; 32],
+            device_cert: device.clone(),
+            role: match role {
+                collab_types::Role::Commenter => MemberRole::Commenter,
+                collab_types::Role::Editor => MemberRole::Editor,
+                collab_types::Role::Moderator => MemberRole::Moderator,
+                _ => MemberRole::Viewer,
+            },
+            room: peer.room().to_owned(),
+            workspace_id,
+            authority: peer.authority().clone(),
+            certified_roster: peer.certificates(),
+            revocations: peer.revocations(),
+            records: Vec::new(),
+            governance_messages: Vec::new(),
+            generation,
+        }),
+    };
+    postcard::to_stdvec(&answer).ok()
 }
