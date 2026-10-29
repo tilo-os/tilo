@@ -75,10 +75,5 @@ view answer_page(v: Answer) {
 
 /// An agent's answer to "what's left for the release?", over the workspace's tasks.
 scenario "a release answer" -> Answer {
-    answers.items.insert(Answer(
-        title: "Left for the release",
-        question: "What's left for the release?",
-        source: "card(tasks.tasks, count: tasks.tasks.items.count(t -> not t.done)) \{\n    list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n        row(t)\n    }\n}",
-        author: invoker
-    ))
+    answers.items.insert(Answer(title: "Left for the release", question: "What's left for the release?", source: "card(tasks.tasks, count: tasks.tasks.items.count(t -> not t.done)) \{\n    list(tasks.tasks.items.filter(t -> not t.done)) \{ t ->\n        row(t)\n    \}\n\}", author: invoker))
 }

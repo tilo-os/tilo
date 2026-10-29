@@ -18,9 +18,11 @@ mod cases {
         ViewInstance,
     };
 
+    /// An app's directory (for messages), source and committed lock, all from one path.
     macro_rules! app_source {
         ($name:literal) => {
             (
+                concat!("apps/tl/", $name),
                 include_str!(concat!("../../../../apps/tl/", $name, "/app.tl")),
                 include_str!(concat!("../../../../apps/tl/", $name, "/app.ids")),
             )
@@ -29,15 +31,15 @@ mod cases {
 
     /// Compile a package with its committed lock, which must already be complete: building
     /// assigns ids to anything new, and a lock that would change is a lock not committed.
-    fn build(name: &str, (src, ids): (&str, &str), imports: &[&App]) -> App {
-        let lock = IdsLock::parse(ids).unwrap_or_else(|e| panic!("{name}/app.ids: {e}"));
+    fn build((dir, src, ids): (&str, &str, &str), imports: &[&App]) -> App {
+        let lock = IdsLock::parse(ids).unwrap_or_else(|e| panic!("{dir}/app.ids: {e}"));
         let metas: Vec<tilolang::PackageMeta> = imports.iter().map(|a| a.meta().clone()).collect();
         let compiled = tilolang::compile_package(src, &lock, &metas)
-            .unwrap_or_else(|d| panic!("{name}: {d:#?}"));
+            .unwrap_or_else(|d| panic!("{dir}: {d:#?}"));
         assert_eq!(
             compiled.ids.to_text(),
             ids,
-            "apps/tl/{name}/app.ids is out of date: run `tilolang build apps/tl/{name}`"
+            "{dir}/app.ids is out of date: run `tilolang build {dir}`"
         );
         App { compiled }
     }
@@ -57,33 +59,29 @@ mod cases {
     }
 
     fn apps() -> Apps {
-        let notes = build("notes", app_source!("notes"), &[]);
-        let todo = build("todo", app_source!("tasks"), &[]);
+        let notes = build(app_source!("notes"), &[]);
+        let todo = build(app_source!("tasks"), &[]);
         let chat = build(
-            "block_chat",
             (
+                "crates/lang/tilolang-runtime/tests/block_chat",
                 include_str!("block_chat/app.tl"),
                 include_str!("block_chat/app.ids"),
             ),
             &[],
         );
         let letters = build(
-            "letters",
             (
+                "crates/lang/tilolang/tests/fixtures/letters",
                 include_str!("../../tilolang/tests/fixtures/letters/app.tl"),
                 include_str!("../../tilolang/tests/fixtures/letters/app.ids"),
             ),
             &[],
         );
-        let counter = build("counter", app_source!("counter"), &[]);
-        let channels = build("chat", app_source!("chat"), &[]);
-        let today = build("today", app_source!("today"), &[&notes, &todo, &channels]);
-        let board = build("board", app_source!("board"), &[]);
-        let views = build(
-            "views",
-            app_source!("views"),
-            &[&board, &todo, &channels, &notes],
-        );
+        let counter = build(app_source!("counter"), &[]);
+        let channels = build(app_source!("chat"), &[]);
+        let today = build(app_source!("today"), &[&notes, &todo, &channels]);
+        let board = build(app_source!("board"), &[]);
+        let views = build(app_source!("views"), &[&board, &todo, &channels, &notes]);
         Apps {
             notes,
             todo,
