@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, TaffyTree};
 use ui::framework::TextControl;
-use ui::framework::{Dispatcher, Submit};
+use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, Live, Submit, ViewCx};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -768,18 +768,21 @@ pub enum ExpandOutcome {
 }
 
 /// The application root: the window shell around the library's parts.
-pub struct SnippetsApp {
+pub struct SnippetsWindow {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    search: ui::search::SearchOpener,
+    /// The library as the document holds it, shown as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<Live<Snippets>>,
+    presented: Option<(u64, u64)>,
     /// What the content column was last built for.
     detail: DetailKey,
     /// Whether the overview column is in the shell (not for an empty
     /// library, whose one action the content column offers).
     overview_shown: bool,
-    /// A screenshot scenario to stage once its library is presented.
-    pending_scenario: Option<String>,
+    /// A screenshot scenario to stage once its library is shown.
+    pending_scenario: Rc<RefCell<Option<String>>>,
     /// The capture's specimen snippet has been opened.
     specimen_open: bool,
     /// How many layouts the window has had since the specimen opened.
@@ -788,10 +791,10 @@ pub struct SnippetsApp {
     bar: window_bar::Bar,
 }
 
-impl SnippetsApp {
-    /// The window before the framework presents the library: empty, until
-    /// the resource's state arrives.
-    pub fn new() -> Self {
+impl SnippetsWindow {
+    /// A window following `live` when the framework hosts it: empty until
+    /// the library arrives.
+    fn new(live: Option<Live<Snippets>>) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new()));
         let requests: Requests = Rc::default();
         let (detail, library_empty) = {
@@ -807,40 +810,63 @@ impl SnippetsApp {
         if !library_empty {
             shell.set_overview(Some(Box::new(ListPane::new(&core, &requests))));
         }
-        Self {
+        let mut window = Self {
             core,
             requests,
             shell,
-            search: ui::search::SearchOpener::new(),
+            live,
+            presented: None,
             detail,
             overview_shown: !library_empty,
-            pending_scenario: None,
+            pending_scenario: Rc::default(),
             specimen_open: false,
             settled_layouts: 0,
             bar: window_bar::Bar::default(),
+        };
+        window.follow_document();
+        window
+    }
+
+    /// A window outside the framework, which edits nothing.
+    #[cfg(test)]
+    pub(crate) fn bare() -> Self {
+        Self::new(None)
+    }
+
+    /// Show the library the document holds when it changed.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let held = (live.revision(), live.loads());
+        if self.presented == Some(held) {
+            return;
         }
+        self.presented = Some(held);
+        let state = live.get();
+        self.show_library(&state);
+    }
+
+    fn show_library(&mut self, state: &Rc<Snippets>) {
+        self.core.borrow_mut().show_library(state);
+        self.settle();
     }
 
     /// Stage a capture once its library (the starter library the resource's
-    /// scenario creates, none for `empty`) is presented and the window has
-    /// its size:
+    /// scenario creates, none for `empty`) is shown and the window has its
+    /// size:
     ///
     /// * `narrow` — the sidebar drawer open over the content.
     /// * `detail` — a narrow window showing the open snippet.
     /// * `expand` — the fill-in-variables dialog over the open snippet.
     /// * `language` — the language picker.
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.pending_scenario = Some(scenario.unwrap_or_default().to_string());
-        self.stage_pending_scenario();
-    }
-
     fn stage_pending_scenario(&mut self) {
-        let Some(scenario) = self.pending_scenario.take() else {
+        let Some(scenario) = self.pending_scenario.borrow_mut().take() else {
             return;
         };
         // The starter library is still on its way.
         if scenario != "empty" && self.core.borrow().library.snippets.is_empty() {
-            self.pending_scenario = Some(scenario);
+            *self.pending_scenario.borrow_mut() = Some(scenario);
             return;
         }
         // First open the specimen.
@@ -857,7 +883,7 @@ impl SnippetsApp {
         // The language picker opens under its control: let the window lay
         // the specimen's column out first.
         if scenario == "language" && self.settled_layouts == 0 {
-            self.pending_scenario = Some(scenario);
+            *self.pending_scenario.borrow_mut() = Some(scenario);
             return;
         }
         match scenario.as_str() {
@@ -932,13 +958,8 @@ impl SnippetsApp {
         self.core.borrow_mut().body_reachable = !drawer_open && !content_hidden;
     }
 
-    pub(crate) fn show_library(&mut self, state: &Rc<Snippets>) {
-        self.core.borrow_mut().show_library(state);
-        self.settle();
-    }
-
     /// Edit through the resource's dispatcher from now on.
-    pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
+    fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Snippets>) {
         self.bar.actions = Some(ui::framework::BarActions::new(dispatcher.clone()));
         self.core.borrow_mut().attach_dispatcher(dispatcher);
     }
@@ -946,9 +967,7 @@ impl SnippetsApp {
     /// What shows the snippet a search hit or an agent's `open` names, for
     /// [`ViewCx::on_open_item`](ui::framework::ViewCx::on_open_item); a
     /// snippet that is gone is refused.
-    pub(crate) fn opener(
-        &self,
-    ) -> impl FnMut(&SnippetId) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+    fn opener(&self) -> impl FnMut(&SnippetId) -> Result<(), ui::tilo_resource::Refusal> + 'static {
         let requests = Rc::clone(&self.requests);
         let core = Rc::clone(&self.core);
         move |id| {
@@ -1029,13 +1048,7 @@ impl SnippetsApp {
     }
 }
 
-impl Default for SnippetsApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ui::widget::Decorator for SnippetsApp {
+impl ui::widget::Decorator for SnippetsWindow {
     type Inner = NavShell;
 
     fn inner(&self) -> &NavShell {
@@ -1049,8 +1062,6 @@ impl ui::widget::Decorator for SnippetsApp {
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::UndoPoints>() {
             request.provide::<dyn ui::undo::UndoPoints>(self);
-        } else if request.wants::<dyn ui::widget::controls::ActionControls>() {
-            request.provide::<dyn ui::widget::controls::ActionControls>(self);
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -1059,14 +1070,13 @@ impl ui::widget::Decorator for SnippetsApp {
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ui::undo::UndoPoints>() {
             request.provide::<dyn ui::undo::UndoPoints>(self);
-        } else if request.wants::<dyn ui::widget::controls::ActionControls>() {
-            request.provide::<dyn ui::widget::controls::ActionControls>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
         if self.core.borrow_mut().report_copy_failure() {
             let message = tr("snippets-copy-failed");
             self.core.borrow_mut().toast(&message);
@@ -1076,11 +1086,13 @@ impl ui::widget::Decorator for SnippetsApp {
         self.take_window_toolbar_events();
         self.settle();
         self.refresh_columns();
+        self.stage_pending_scenario();
         self.declare_window_toolbar();
         Widget::sync(&mut self.shell, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.follow_document();
         let asked = self.take_window_toolbar_events();
         self.settle();
         self.refresh_columns();
@@ -1113,7 +1125,7 @@ impl ui::widget::Decorator for SnippetsApp {
             core.window = window;
         }
         // A staged picker opens once its control has been laid out.
-        if self.pending_scenario.is_some() {
+        if self.pending_scenario.borrow().is_some() {
             self.stage_pending_scenario();
         }
     }
@@ -1212,7 +1224,7 @@ impl ui::widget::Decorator for SnippetsApp {
 
     fn needs_animation_frame(&self) -> bool {
         // A capture keeps frames coming until its scenario is staged.
-        self.pending_scenario.is_some() || Widget::needs_animation_frame(&self.shell)
+        self.pending_scenario.borrow().is_some() || Widget::needs_animation_frame(&self.shell)
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
@@ -1338,11 +1350,11 @@ impl ui::widget::Decorator for SnippetsApp {
     }
 
     fn name(&self) -> &'static str {
-        "SnippetsApp"
+        "SnippetsWindow"
     }
 }
 
-impl ui::undo::UndoPoints for SnippetsApp {
+impl ui::undo::UndoPoints for SnippetsWindow {
     fn get_state(&self) -> Option<String> {
         let core = self.core.borrow();
         serde_json::to_string(&(&core.open, core.body.control().get_state())).ok()
@@ -1364,47 +1376,47 @@ mod window_bar;
 #[cfg(test)]
 mod tests;
 
-impl SnippetsApp {
-    pub(crate) fn show(&mut self, view: SnippetsView) -> ui::framework::EffectAnswer {
-        if matches!(view, SnippetsView::Search) {
-            self.search.open(ui::search::SearchRequest::this_app());
-            return Ok(ui::framework::Effected::done());
+/// Show what `view` asks for: a tag's or a folder's snippets, or the
+/// platform search over the library.
+fn show(core: &Shared, view: SnippetsView, cx: &EffectCx<Snippets>) -> EffectAnswer {
+    let mut core = core.borrow_mut();
+    match view {
+        SnippetsView::Search => {
+            cx.dispatcher()
+                .open_search(&ui::search::SearchRequest::this_app());
+            return Ok(Effected::done());
         }
-        {
-            let mut core = self.core.borrow_mut();
-            match view {
-                SnippetsView::Reveal { tag } => {
-                    if !core.library.tags().iter().any(|(known, _)| known == &tag) {
-                        return Err("tag no longer exists".into());
-                    }
-                    core.select(Selection::Tag(tag));
-                    core.show_pane = Some(NavPane::Overview);
-                }
-                SnippetsView::RevealFolder { folder } => {
-                    if !core.library.folders().contains(&folder) {
-                        return Err("folder no longer exists".into());
-                    }
-                    core.select(Selection::Folder(folder));
-                    core.show_pane = Some(NavPane::Overview);
-                }
-                SnippetsView::Search => {}
+        SnippetsView::Reveal { tag } => {
+            if !core.library.tags().iter().any(|(known, _)| known == &tag) {
+                return Err("tag no longer exists".into());
             }
+            core.select(Selection::Tag(tag));
         }
-        self.settle();
-        Ok(ui::framework::Effected::done())
+        SnippetsView::RevealFolder { folder } => {
+            if !core.library.folders().contains(&folder) {
+                return Err("folder no longer exists".into());
+            }
+            core.select(Selection::Folder(folder));
+        }
     }
+    core.show_pane = Some(NavPane::Overview);
+    Ok(Effected::done())
 }
 
-impl ui::widget::controls::ActionControls for SnippetsApp {
-    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
-        self.search
-            .take()
-            .or_else(|| ui::widget::controls::take_control_invocation(&mut self.shell))
-    }
-    fn has_pending_control_invocation(&self) -> bool {
-        self.search.is_pending()
-            || ui::widget::controls::has_pending_control_invocation(&self.shell)
-    }
+/// The Snippets window over the document's library: it shows the snippet a
+/// search hit or an agent's `open` names, answers [`SnippetsView`] and
+/// stages the captures.
+pub(crate) fn window(cx: &ViewCx<Snippets>) -> Element {
+    let mut window = SnippetsWindow::new(Some(cx.live().clone()));
+    window.attach_dispatcher(cx.dispatcher());
+    cx.on_open_item(window.opener());
+    let core = Rc::clone(&window.core);
+    cx.effects(move |view: SnippetsView, cx| show(&core, view, cx));
+    let pending = Rc::clone(&window.pending_scenario);
+    cx.on_stage(move |scenario| {
+        *pending.borrow_mut() = Some(scenario.unwrap_or_default().to_owned());
+    });
+    Box::new(window)
 }
 
 /// Whether `text` looks like it carries a credential — an assignment to a

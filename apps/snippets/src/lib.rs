@@ -42,7 +42,6 @@ pub mod model;
 pub mod resource;
 pub mod seed;
 
-pub use app::SnippetsApp;
 pub use model::{Language, Selection, SmartFolder, Snippet, SnippetId, Snippets};
 pub use resource::{SnippetsShell, SnippetsView};
 
