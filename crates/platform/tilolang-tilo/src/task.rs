@@ -593,8 +593,26 @@ impl Store for TaskStore {
         Vec::new()
     }
 
-    fn outbox_settle(&mut self, _: &OutboxEntry, _: &ChangeNote) -> Result<(), StoreError> {
+    fn outbox_mark(
+        &mut self,
+        _: &OutboxEntry,
+        _: &tilolang_runtime::store::OutboxState,
+        _: &ChangeNote,
+    ) -> Result<(), StoreError> {
         Err(StoreError::Invalid(WRITES_NOTHING.into()))
+    }
+
+    fn outbox_settle(
+        &mut self,
+        _: &OutboxEntry,
+        _: &tilolang_runtime::store::Settled,
+        _: &ChangeNote,
+    ) -> Result<(), StoreError> {
+        Err(StoreError::Invalid(WRITES_NOTHING.into()))
+    }
+
+    fn outbox_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {
+        Vec::new()
     }
 
     fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {

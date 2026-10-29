@@ -88,8 +88,8 @@ tool list (`pkg install` already adds tools there).
 ### Tier 3: Linux-only programs run in a container or VM, on demand
 
 Compilers, native binaries, anything that needs syscalls WASI doesn't have,
-and interactive Linux sessions. Each command becomes a compute job on the
-existing placement system:
+and interactive Linux programs such as `bash`. Each command becomes a compute
+job on the existing placement system:
 
 - **Where it runs.** The relay places it where it can run: the person's own
   device, one of their relays, or a workspace host that offers compute.
@@ -102,8 +102,8 @@ existing placement system:
   that asked for it is open, then stopped when the session closes. Its
   lifetime follows events (the session closes, the job ends), never a timer.
   A warm guest for an open Terminal session is that session's lease.
-- **A full Linux session** (bash in a guest) is tier 3 for the whole session.
-  It's what a person picks when they want bash on a real Linux.
+- **bash** is a tier-3 program like any other: `bash` in a session runs it
+  in the session's guest, for as long as it runs.
 
 ### The shell itself
 
@@ -143,8 +143,8 @@ agents and History see one model whichever tier ran a command.
 
 - An environment record keeps its tools and grants. Tools gain a tier, set
   by their package (WebAssembly or Linux image).
-- The new shell is the default for new Terminal sessions. "bash in a guest"
-  stays selectable as a full Linux session (tier 3).
+- The new shell is the shell of every Terminal environment session. bash
+  is a program in the session's guest (tier 3), not a separate session.
 - Until tier 3 runs as jobs, a command that isn't tier 1 says it needs tier 2
   or 3; in a guest on a Linux device, it runs in that guest, as it did before,
   so nothing a person relies on breaks.
@@ -185,4 +185,6 @@ Decided on 2026-10-28:
    - in the browser, the browser's own engine, behind the browser runtime's
      isolation. wasmi is not shipped to the browser.
 4. **Default:** the new ush is the default shell. A full Linux session (bash
-   in a guest) stays available as tier 3.
+   in a guest) stays available as tier 3. Since 2026-10-29 that is bash run
+   as a program in the session's guest; the separate Linux session choice
+   is gone.

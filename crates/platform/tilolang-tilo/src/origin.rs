@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilolang_runtime::OutsideSink;
 use tilolang_runtime::meta::Meta;
+use tilolang_runtime::{Delivery, OutsideSink};
 
 use crate::background::Waker;
 use crate::host::Host;
@@ -57,12 +57,9 @@ pub trait Origin {
     /// Take in what the service said and tell it what people changed.
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled;
 
-    /// An outside effect for one of the origin's capabilities. `Err` keeps it queued, saying why
-    /// it has not gone yet; it is handed again when the outbox is next settled.
-    ///
-    /// # Errors
-    /// The effect has not been carried out (yet).
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String>;
+    /// An outside effect for one of the origin's capabilities: hand it to the service, or say
+    /// what became of it since it was handed over.
+    fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery;
 }
 
 /// An origin as the instance holds it.
@@ -79,10 +76,11 @@ pub struct RoutingSink {
 }
 
 impl OutsideSink for RoutingSink {
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String> {
+    fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
         for origin in self.origins.borrow().iter() {
+            // Busy answering a poll: asked again on the next settle.
             let Ok(mut origin) = origin.try_borrow_mut() else {
-                return Err(format!("the connection for {capability} is busy"));
+                return Delivery::Pending;
             };
             if origin.serves(capability) {
                 return origin.deliver(capability, payload);
