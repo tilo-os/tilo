@@ -1051,7 +1051,6 @@ fn overlays_render_inside_the_window_at_the_users_scale_and_small_sizes() {
     }
 }
 
-#[test]
 #[path = "launcher_recovery_tests.rs"]
 mod launcher_recovery_tests;
 

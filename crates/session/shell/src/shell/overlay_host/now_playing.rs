@@ -633,7 +633,7 @@ mod tests {
             open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
         let seek = target(&host, "now_playing_seek");
         let finger = |phase, at: Point| {
-            WindowEvent::Touch(winit::event::Touch {
+            winit::event::WindowEvent::Touch(winit::event::Touch {
                 device_id: winit::event::DeviceId::dummy(),
                 phase,
                 location: winit::dpi::PhysicalPosition::new(at.x, at.y),
