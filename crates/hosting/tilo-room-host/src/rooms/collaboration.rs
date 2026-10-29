@@ -666,6 +666,10 @@ impl Rooms {
     /// Refuses a command that is not a member's own membership change, one
     /// the room's policy does not let `device` make, and a change that
     /// could not commit.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked until its change is committed and published"
+    )]
     pub async fn commit_own_membership(
         &self,
         room: &str,

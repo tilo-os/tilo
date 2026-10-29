@@ -16,7 +16,7 @@ fn authors(peer: &StatePeer, app: &str, now: SystemTime) -> bool {
 fn changes(peer: &StatePeer) -> Vec<Vec<u8>> {
     match peer.room_message() {
         NeighbourMsg::SyncResp { changes, .. } => changes,
-        _ => unreachable!("a room message is the room's changes"),
+        _ => panic!("a room message is the room's changes"),
     }
 }
 
@@ -75,7 +75,7 @@ fn a_replica_written_under_the_governors_key_takes_the_governors_history_back() 
             other => panic!("only the agent's grants were made here: {other:?}"),
         })
         .collect();
-    let mut made = agent.clone();
+    let mut made = agent;
     asked.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
     made.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
     assert_eq!(asked, made);
@@ -127,7 +127,7 @@ fn a_replica_written_under_the_governors_key_takes_the_governors_history_back() 
             TransportOrigin::RelayDelta(governor),
             NeighbourMsg::SyncResp {
                 changes: host.room_changes_since(&before),
-                room: room.clone(),
+                room,
             },
             now,
         )
