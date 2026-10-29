@@ -218,6 +218,10 @@ impl ShellOverlayHost {
     /// pictures: flying from where it stands to where it rests, faded in
     /// where it rests when it has nowhere to fly from, the carried one over
     /// everything with its shadow.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Rect ± Vec2 is float geometry translation and cannot panic"
+    )]
     pub(super) fn draw_window_flight(
         &mut self,
         scene: &mut Scene,
@@ -255,12 +259,12 @@ impl ShellOverlayHost {
             let Some(window) = listed.get(&picture.tab) else {
                 continue;
             };
-            let rest = picture.rect + origin;
+            let at_rest = picture.rect + origin;
             if picture.lifted {
                 ui::surface::shadow(
                     scene,
                     transform,
-                    rest,
+                    at_rest,
                     picture.radius,
                     &theme.tokens.elevation.floating,
                 );
@@ -269,7 +273,7 @@ impl ShellOverlayHost {
                     transform,
                     theme,
                     PreviewWell {
-                        rect: rest,
+                        rect: at_rest,
                         radius: picture.radius,
                         icon,
                     },
@@ -284,12 +288,12 @@ impl ShellOverlayHost {
                 .flatten();
             let (rect, radius, alpha) = match source {
                 Some(from) => (
-                    ui::motion::Zoom::rect_at(from, rest, p),
+                    ui::motion::Zoom::rect_at(from, at_rest, p),
                     ui::motion::Zoom::radius_at(g.window_radius, picture.radius, p),
                     picture.alpha,
                 ),
                 None => (
-                    rest,
+                    at_rest,
                     picture.radius,
                     picture.alpha * ui::motion::unit_opacity(p),
                 ),

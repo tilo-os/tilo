@@ -85,9 +85,9 @@ impl FileHost for TreeHost {
             {
                 return Err("the workspace made for the join is gone".into());
             }
-            rooms_change.then(move || {
-                let mut candidate = tree.clone_without_documents();
-                drop(tree);
+            let candidate = rooms_change.then(|| tree.clone_without_documents());
+            drop(tree);
+            candidate.map(|mut candidate| {
                 apply(&mut candidate, next, change);
                 crate::shell::action_authority::Export::of(&candidate)
             })
