@@ -121,6 +121,7 @@ fn list_schema() -> Value {
 #[must_use]
 pub fn descriptor() -> ActionDescriptor {
     ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(RESOURCE, LIST_ACTION),
         resource_kind: RESOURCE_KIND.into(),

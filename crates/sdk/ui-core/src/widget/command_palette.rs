@@ -208,6 +208,10 @@ pub struct CommandEntry {
     /// caret is at its end ([`CommandPalette::take_adjustment`]): a volume,
     /// a timeout, a mode.
     pub adjustable: bool,
+    /// Choosing it flips the state its badge shows, so the palette stays
+    /// open on the new state rather than closing
+    /// ([`tilo_actions::ActionState::toggles`]).
+    pub toggles: bool,
     action_address: Option<ActionAddress>,
     action_argument: Option<String>,
     /// The value `action_argument` takes when the row asks for none.
@@ -237,6 +241,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("description_is_path", &self.description_is_path)
             .field("description_facts", &self.description_facts)
             .field("adjustable", &self.adjustable)
+            .field("toggles", &self.toggles)
             .field("action_address", &self.action_address)
             .field("action_argument", &self.action_argument)
             .field("action_preset", &self.action_preset)
@@ -267,6 +272,7 @@ impl CommandEntry {
             description_is_path: false,
             description_facts: Vec::new(),
             adjustable: false,
+            toggles: false,
             action_address: None,
             action_argument: None,
             action_preset: None,
@@ -496,8 +502,40 @@ impl CommandEntry {
             entry = entry.with_argument(prompt.to_owned(), placeholder.to_owned());
             entry.action_argument = Some(primary.to_string());
         }
+        entry.show_state(&fa.action.state);
         entry.action_address = Some(ActionAddress::new(&fa.resource_id.0, &fa.action.id));
         entry
+    }
+
+    /// The row for one published action, as inert data: its label, what it
+    /// says of itself, the state it shows and the one line it asks for. The
+    /// host runs it by address when it is chosen, with what was typed as the
+    /// outcome's argument.
+    pub fn from_descriptor(
+        key: impl Into<String>,
+        action: &tilo_actions::ActionDescriptor,
+    ) -> Self {
+        let mut entry = CommandEntry::new(key, action.action_label.clone());
+        if let Some(description) = &action.description {
+            entry = entry.description(description.clone());
+        }
+        if let tilo_actions::InputSpec::Text {
+            prompt,
+            placeholder,
+            ..
+        } = &action.input
+        {
+            entry = entry.with_argument(prompt.clone(), placeholder.clone());
+        }
+        entry.show_state(&action.state);
+        entry
+    }
+
+    /// Show what an action's row shows of the state it acts on.
+    fn show_state(&mut self, state: &tilo_actions::ActionState) {
+        self.badge.clone_from(&state.badge);
+        self.keybinding.clone_from(&state.shortcut);
+        self.toggles = state.toggles;
     }
 }
 
@@ -1227,6 +1265,7 @@ impl CommandPalette {
         if let Some(entry) = self.entries.iter().find(|e| e.id == id)
             && let Some(address) = entry.action_address.clone()
         {
+            let toggles = entry.toggles;
             let mut arguments = serde_json::Map::new();
             if let (Some(name), Some(value)) = (
                 &entry.action_argument,
@@ -1238,7 +1277,7 @@ impl CommandPalette {
                 .emit(ControlInvocation { address, arguments });
             self.outcome = None;
             self.end_argument();
-            if self.mode == PaletteMode::Commands {
+            if self.mode == PaletteMode::Commands && !toggles {
                 self.focus(false);
             }
             return;
@@ -1251,9 +1290,10 @@ impl CommandPalette {
         {
             cb(state, path);
         }
+        let toggles = self.entries.iter().any(|e| e.id == id && e.toggles);
         self.outcome = Some(CommandOutcome { id, argument });
         self.end_argument();
-        if self.mode == PaletteMode::Commands {
+        if self.mode == PaletteMode::Commands && !toggles {
             self.focus(false);
         }
     }

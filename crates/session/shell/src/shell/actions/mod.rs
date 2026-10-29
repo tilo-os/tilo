@@ -36,7 +36,6 @@ pub(crate) mod strips;
 pub(crate) mod tabs;
 pub(crate) mod windows;
 pub(crate) mod workspaces;
-pub(crate) use shortcuts::ACTION_SHORTCUTS;
 pub(crate) use shortcuts::action_shortcut;
 
 pub(crate) use strips::valid_strip_name;

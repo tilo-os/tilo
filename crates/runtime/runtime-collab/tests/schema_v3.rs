@@ -166,6 +166,7 @@ async fn actions_carry_type_attribution_and_opaque_payloads() {
                         "word-processor",
                         &[
                             ExportedAction {
+                                state: tilo_actions::ActionState::default(),
                                 semantic_identity: Some(
                                     runtime_collab::ExportedResourceSemanticIdentity {
                                         kind: "document".into(),
@@ -187,6 +188,7 @@ async fn actions_carry_type_attribution_and_opaque_payloads() {
                                 view: None,
                             },
                             ExportedAction {
+                                state: tilo_actions::ActionState::default(),
                                 semantic_identity: None,
                                 resource: "word-processor.document".into(),
                                 action: "insert-image".into(),

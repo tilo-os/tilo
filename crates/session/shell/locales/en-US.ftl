@@ -932,6 +932,8 @@ window-share-failed = Couldn’t share the window
 window-unshare-failed = Couldn’t stop sharing the window
 window-share-end-failed = A closed window is still shared
 shell-terminal-unavailable = Terminal: { $error }
+shell-action-not-offered = Not available here
+shell-action-nothing-to-act-on = There is nothing to act on right now
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
@@ -1060,7 +1062,6 @@ search-kind-videos = Videos
 search-kind-playlists = Playlists
 search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
-search-kind-answers = Answers
 search-kind-people = People
 
 # Search before anything is typed: the launcher
@@ -1116,8 +1117,6 @@ search-provider-records = Records
 search-provider-app-content = Content in your apps
 # A locked app's entries (a password vault's logins) match what was typed:
 # this row offers to unlock the app; Enter opens it to unlock.
-search-unlock-app = Unlock { $app } to search for “{ $query }”
-search-unlock-app-detail = { $app } is locked
 search-provider-session = Session
 search-provider-permission-prompts = Permission requests
 permission-request-expired = Permission request is no longer pending
@@ -1129,11 +1128,8 @@ search-provider-tray = Tray
 search-provider-files = Files
 search-provider-quick-answers = Quick answers
 search-provider-people = People
-search-answer-sum = { $expression } =
 search-answer-copied = Copied
-search-answer-money-stale = { $amount } = · rates from { $age }
 search-matches = Matches “{ $word }”
-search-answer-open-address = Open { $address }
 search-provider-ask-agent = Ask an agent
 search-kind-agent = Agent
 search-ask-agent = Ask an agent: { $query }
@@ -1146,11 +1142,6 @@ canvas-ask-not-handed = The question didn't reach the agent. Press Enter to try 
 search-ask-agent-no-model = The agent has no AI model. Choose one in Settings.
 search-ask-agent-offline = You’re offline, and the agent’s model is on the internet.
 search-provider-web = Web
-search-kind-web = Web
-search-kind-websites = Websites
-search-web-for = Search the web for { $query }
-search-web-service-for = Search { $service } for { $query }
-search-web-subtitle = Web
 search-answer-no-browser = No app on this desktop opens web addresses.
 search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited

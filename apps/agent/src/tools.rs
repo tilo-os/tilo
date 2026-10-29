@@ -1775,6 +1775,7 @@ mod tests {
             broker_peer_id: None,
             broker_provider: None,
             descriptor: ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: kind.to_string(),

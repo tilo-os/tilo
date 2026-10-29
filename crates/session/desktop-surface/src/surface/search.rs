@@ -686,17 +686,33 @@ impl DesktopSurface {
             // click or key press, so it opens now and a blocked one is
             // said; a native handler may take its time, so it opens off
             // this thread.
-            Target::Open { uri } => {
+            Target::Open { uri, fallback } => {
+                // A browser tab takes only web addresses: a scheme an app
+                // or the person's browser would take opens as its fallback.
                 #[cfg(target_arch = "wasm32")]
-                if let Err(error) = ui::widget::try_open_external_url(&uri) {
+                if let Err(error) =
+                    ui::widget::try_open_external_url(fallback.as_deref().unwrap_or(&uri))
+                {
                     shared.acknowledger.say(error.to_string());
                 }
                 #[cfg(not(target_arch = "wasm32"))]
-                ui::widget::open_external_url(&uri);
+                match fallback {
+                    Some(fallback) => {
+                        std::thread::spawn(move || {
+                            if ui::widget::try_open_external_url(&uri).is_err() {
+                                ui::widget::open_external_url(&fallback);
+                            }
+                        });
+                    }
+                    None => ui::widget::open_external_url(&uri),
+                }
                 None
             }
             // Runs through the palette's control invocation instead.
             Target::Action(_) => None,
+            // This desktop lists no host-published actions: its windows'
+            // run through the palette's control invocation.
+            Target::Invoke(_) => None,
         };
         if let Some(admitted) = admitted {
             shared.queue.push(admitted);

@@ -407,6 +407,7 @@ fn descriptor(
     tags: Vec<String>,
 ) -> ExportedAction {
     ExportedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: DOC.into(),
         action: action.into(),
@@ -632,6 +633,7 @@ impl World {
                 record_id: String::new(),
                 live: true,
                 actions: vec![ExportedAction {
+                    state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     resource: "chat.channel:general".into(),
                     resource_kind: "chat.channel".into(),
@@ -662,6 +664,7 @@ impl World {
                 surfaces.remove(0);
             }
             let open = |app: &str, title: &str| ExportedAction {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 resource: format!("{}{app}", tools::LAUNCHER_OPEN_PREFIX),
                 resource_kind: "desktop.application".into(),
@@ -2732,6 +2735,7 @@ fn tool_results(body: &Value) -> Vec<(String, Value)> {
 #[test]
 fn only_a_first_read_of_a_resource_past_the_request_is_listed_as_a_lookup() {
     let descriptor = |resource: &str| tilo_actions::ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(resource, "read"),
         resource_kind: "notes.page".into(),

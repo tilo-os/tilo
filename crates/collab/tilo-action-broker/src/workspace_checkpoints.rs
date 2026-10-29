@@ -95,6 +95,7 @@ pub(super) fn actions() -> Vec<PublishedAction> {
     ]
     .into_iter()
     .map(|(action, label, params, mutation)| PublishedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: RESOURCE.into(),
         action: action.into(),

@@ -566,6 +566,7 @@ mod tests {
 
     fn descriptor(action: &str, view: Option<ResourceViewDescriptor>) -> ActionDescriptor {
         ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             address: ActionAddress::new(BLOCK, action),
             semantic_identity: None,
             resource_kind: "word_processor.block".into(),

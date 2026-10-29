@@ -210,18 +210,11 @@ impl SearchProvider for ActionsProvider {
             // Workspace navigation bumps the chrome revision on each invocation.
             // Rebuilding the whole palette here also rebuilt the shortcut table
             // for every bound row, synchronously on the compositor's loop.
-            let invite_offered = matches!(id, "peer.invite" | "peer.invite.named")
-                && ctx.chrome.peer_sync_enabled
-                && crate::shell::invite_policy::active_invite_route(ctx.chrome)
-                    .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here);
-            self.static_action(action, ctx, invite_offered)
-                .map(|mut row| {
-                    if ACTION_SHORTCUTS.iter().any(|(action, _)| *action == id) {
-                        row.shortcut =
-                            action_shortcut(&settings_store::hardware::ShortcutConfig::load(), id);
-                    }
-                    row
-                })
+            self.static_action(
+                action,
+                ctx,
+                &crate::shell::actions::host::Live::read(ctx.chrome),
+            )
         } else {
             let catalogue = self.catalogue(&ctx);
             // An action id from before ids named the room selects the
@@ -389,30 +382,19 @@ impl ActionsProvider {
         &self,
         action: &'static Action,
         ctx: SearchContext<'_>,
-        invite_offered: bool,
+        live: &crate::shell::actions::host::Live<'_>,
     ) -> Option<SearchResult> {
-        // A session not running peer sync has nothing to invite into.
-        if (action.id.starts_with("peer.") || INVITATION_ACTION_IDS.contains(&action.id))
-            && !ctx.chrome.peer_sync_enabled
-        {
+        // The row shows what the shell publishes of the action; one it does
+        // not offer here has no row.
+        let spec = action.spec(live);
+        if matches!(
+            &spec.contract.availability,
+            tilo_actions::Availability::Unavailable { code, .. } if code == "not_offered"
+        ) {
             return None;
         }
-        // The one invitation policy: no row for an invitation the issuer
-        // would refuse from here, as there is no composer for it.
-        if matches!(action.id, "peer.invite" | "peer.invite.named") && !invite_offered {
-            return None;
-        }
-        // Needs a room to record the capability in and a working
-        // broker (peer sync is not required — an agent uses this
-        // session's own broker socket).
-        if action.id.starts_with("agent.")
-            && (!ctx.chrome.collab_available()
-                || ctx.chrome.tree().desktop.active_workspace().is_none())
-        {
-            return None;
-        }
-        let label = t(action.label);
-        let subtitle = t(action.subtitle);
+        let label = spec.label.clone();
+        let subtitle = spec.description.clone().unwrap_or_default();
         {
             let score = 0;
             let creation_context = (action.id == "workspace.create")
@@ -461,16 +443,16 @@ impl ActionsProvider {
             });
             Some(SearchResult {
                 facts: Vec::new(),
-                shortcut: None,
+                shortcut: spec.state.shortcut.clone(),
                 kind: ResourceKind::Action,
                 operation_kind: action.kind,
                 provider_id: self.id().to_string(),
                 id: action.id.to_string(),
                 title: label,
                 subtitle: Some(subtitle),
-                badge: state_badge(action.id, ctx.chrome),
+                badge: spec.state.badge.clone(),
                 score,
-                params: live_params(action, ctx.chrome),
+                params: spec.params().to_vec(),
                 contract: Some(action.contract()),
                 on_open,
                 on_invoke,
@@ -493,8 +475,9 @@ impl ActionsProvider {
         // Every row is built with its searchable text; a query ranks them
         // together to keep the matches and score them.
         let mut candidates = ActionCandidates::default();
+        let live = crate::shell::actions::host::Live::read(ctx.chrome);
         for action in Action::ALL {
-            if let Some(row) = self.static_action(action, ctx, key.state.invite_offered) {
+            if let Some(row) = self.static_action(action, ctx, &live) {
                 candidates.record(
                     &row.title.to_lowercase(),
                     &row.subtitle.as_deref().unwrap_or_default().to_lowercase(),

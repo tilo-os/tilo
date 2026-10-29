@@ -1701,6 +1701,7 @@ mod tests {
             broker_peer_id: None,
             broker_provider: None,
             descriptor: ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: ActionAddress::new("calculator.range:main", "sample"),
                 resource_kind: "calculator.range".into(),
@@ -2136,6 +2137,7 @@ mod tests {
                 broker_peer_id: None,
                 broker_provider: None,
                 descriptor: ActionDescriptor {
+                    state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address: ActionAddress::new("calculator.range:main", "sample"),
                     resource_kind: "calculator.range".into(),

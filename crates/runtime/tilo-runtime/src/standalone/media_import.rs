@@ -151,6 +151,7 @@ impl WorkspaceGovernanceServices for MediaImport {
             return Vec::new();
         }
         vec![ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             address: ActionAddress::new(RESOURCE, ACTION),
             semantic_identity: None,
             resource_kind: "workspace.legacy-media".into(),
