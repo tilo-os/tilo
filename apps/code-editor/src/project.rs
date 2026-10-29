@@ -1090,7 +1090,7 @@ impl Model for Source {
                     delete: *delete,
                     insert: insert.clone(),
                 }
-                .apply_under(doc, &object)
+                .apply_to(doc, &object, &current)
                 .map_err(refused)?;
             }
             return Ok(());
@@ -1176,7 +1176,7 @@ impl Model for Source {
             )));
         }
         tilo_resource::TextEdit::Splice { at, delete, insert }
-            .apply_under(doc, &object)
+            .apply_to(doc, &object, &text)
             .map_err(refused)
     }
 

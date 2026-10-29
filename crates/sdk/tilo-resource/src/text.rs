@@ -177,9 +177,18 @@ impl TextEdit {
         let current = doc
             .text(obj)
             .map_err(|_| ActionError::Refused("the text is gone".into()))?;
+        self.apply_to(doc, obj, &current)
+    }
+
+    /// [`Self::apply_under`] when the caller already read `current`, the
+    /// text `obj` holds now: a large text is not read a second time.
+    ///
+    /// # Errors
+    /// As [`Self::apply_under`].
+    pub fn apply_to(&self, doc: &mut Doc, obj: &ObjId, current: &str) -> Result<(), ActionError> {
         let (at, delete, insert) = match self {
             Self::Splice { at, delete, insert } => (*at, *delete, insert.clone()),
-            Self::ReplaceText { text } => match splice_between(&current, text) {
+            Self::ReplaceText { text } => match splice_between(current, text) {
                 Some(Self::Splice { at, delete, insert }) => (at, delete, insert),
                 _ => return Ok(()),
             },
@@ -190,8 +199,8 @@ impl TextEdit {
                 "the text has {length} characters; the edit reaches past its end"
             )));
         }
-        let start = index(doc, &current, at);
-        let end = index(doc, &current, at.saturating_add(delete));
+        let start = index(doc, current, at);
+        let end = index(doc, current, at.saturating_add(delete));
         let removed = isize::try_from(end.saturating_sub(start))
             .map_err(|_| ActionError::Refused("the edit is too large".into()))?;
         doc.splice_text(obj, start, removed, &insert)?;
