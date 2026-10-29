@@ -1,8 +1,8 @@
 //! The workspace settings' controls on the device that hosts the workspace:
-//! the role a person picks for a member, their removal, a sandbox grant or
-//! an app's action given and taken back, is asked of the room's governor,
-//! and nothing changes here until the governor committed it. Then it shows
-//! on every device of the room.
+//! the role a person picks for a member and their removal are written by
+//! this device itself, as far as its person's grants reach; a sandbox grant
+//! or an app's action given and taken back is asked of the room's governor.
+//! Either way the change shows on every device of the room.
 
 use std::sync::Arc;
 
@@ -102,7 +102,7 @@ fn may_change(device: &Device, room: RoomId, person: &Person) -> bool {
     clippy::too_many_lines,
     reason = "one journey: a member's role changed, then the member removed"
 )]
-fn a_role_or_removal_picked_in_the_members_tab_is_the_governors_commit() {
+fn a_role_or_removal_picked_in_the_members_tab_reaches_every_device() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = scratch();
     let wakes = Arc::new(Wakes::default());
@@ -143,8 +143,8 @@ fn a_role_or_removal_picked_in_the_members_tab_is_the_governors_commit() {
     assert_eq!(own_role.area(), 0.0, "the owner's role is not a choice");
     assert_eq!(own_remove.area(), 0.0, "no one removes themselves here");
 
-    // Ada makes Grace a viewer: the chooser opens first, and the choice is
-    // asked of the governor, not applied here.
+    // Ada makes Grace a viewer: the chooser opens first, and this device
+    // writes the choice itself.
     let (role, _) = row_of(&host, &grace);
     click(&mut host, role);
     assert!(host.member_sheet_is_open_for_tests());
@@ -155,11 +155,6 @@ fn a_role_or_removal_picked_in_the_members_tab_is_the_governors_commit() {
     );
     let viewer = host.member_sheet_option_rects_for_tests()[0];
     click(&mut host, viewer);
-    assert_eq!(
-        first.role_of(room, &grace),
-        editor,
-        "nothing changes here before the governor commits it"
-    );
     let viewer = Some(tilo_action_policy::Role::Viewer);
     until(&[&first, &guest], "Grace a viewer on both devices", || {
         (first.role_of(room, &grace) == viewer && guest.role_of(room, &grace) == viewer)
@@ -171,8 +166,8 @@ fn a_role_or_removal_picked_in_the_members_tab_is_the_governors_commit() {
     );
     assert!(first.tree.read().governance_refusals.is_empty());
 
-    // Ada removes Grace: Remove asks to confirm, then the governor takes
-    // her out.
+    // Ada removes Grace: Remove asks to confirm, then her removal is
+    // written here and reaches every device.
     draw(&mut host);
     let (_, remove) = row_of(&host, &grace);
     click(&mut host, remove);
