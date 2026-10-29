@@ -94,7 +94,7 @@ fn native_chat_describes_as_tilolang_types() {
 
 #[test]
 fn a_tilolang_package_describes_through_the_same_catalogue() {
-    let todo = repo().join("apps/tl/todo");
+    let todo = repo().join("apps/tl/tasks");
     let text = tilolang_cli::describe::describe(&todo, &[]).expect("todo describes");
     assert!(text.starts_with("app "), "{text}");
     assert!(text.contains("type "), "{text}");

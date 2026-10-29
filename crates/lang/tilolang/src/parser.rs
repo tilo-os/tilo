@@ -15,28 +15,41 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
+/// Whether call arguments name only a filter's options: `(icon: .circle)`.
+fn only_opts(args: &[Arg]) -> bool {
+    !args.is_empty()
+        && args
+            .iter()
+            .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon"))
+}
+
+/// The arguments as a filter's options.
+fn opts_of(args: Vec<Arg>) -> Vec<ActionOpt> {
+    args.into_iter()
+        .filter_map(|a| {
+            Some(ActionOpt {
+                name: a.name?,
+                value: a.value,
+            })
+        })
+        .collect()
+}
+
 /// A named filter's predicate and the options written after it: `not done (icon: .circle)`
-/// parses as a call of `done`, told from one by naming only options.
+/// parses as a call of `done`, and `project == .none (icon: .inbox)` as a case with fields,
+/// each told from what it reads like by naming only options.
 fn split_opts(e: Expr) -> (Expr, Vec<ActionOpt>) {
     let span = e.span;
     match e.kind {
-        ExprKind::Call { callee, args }
-            if !args.is_empty()
-                && args
-                    .iter()
-                    .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon")) =>
-        {
-            let opts = args
-                .into_iter()
-                .filter_map(|a| {
-                    Some(ActionOpt {
-                        name: a.name?,
-                        value: a.value,
-                    })
-                })
-                .collect();
-            (*callee, opts)
+        ExprKind::Variant {
+            name,
+            args: Some(args),
+        } if only_opts(&args) => {
+            let span = Span::new(span.start, name.span.end);
+            let kind = ExprKind::Variant { name, args: None };
+            (Expr { kind, span }, opts_of(args))
         }
+        ExprKind::Call { callee, args } if only_opts(&args) => (*callee, opts_of(args)),
         ExprKind::Unary { op, operand } => {
             let (inner, opts) = split_opts(*operand);
             let span = Span::new(span.start, inner.span.end);

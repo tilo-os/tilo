@@ -1967,7 +1967,7 @@ fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
 }
 
 /// The keys of the places of the main window's sidebar: `std.list`'s, the item type's filters,
-/// after all of the items (`all`).
+/// after all of the items (`all`), or those a window lists of its own.
 fn places(node: &UiNode, out: &mut Vec<(String, String)>) {
     if node.kind == "ui.NavItem"
         && let Some(tilolang_runtime::Value::Text(key)) = node.props.get("key")
@@ -1979,15 +1979,27 @@ fn places(node: &UiNode, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// Choosing a place of the main window's sidebar, the first of the item type's filters, and
-/// back to all of the items: the first page of a filtered query, as the window shows it, and
-/// the list again. Only for a package whose main view lists places.
+/// The key of the place a sidebar's list has chosen.
+fn chosen(node: &UiNode) -> Option<String> {
+    if node.kind == "ui.NavList"
+        && let Some(tilolang_runtime::Value::Text(key)) = node.props.get("selected")
+    {
+        return Some(key.clone());
+    }
+    node.children.iter().find_map(chosen)
+}
+
+/// Choosing a place of the main window's sidebar, the first of the item type's filters
+/// besides the one it starts on, and back to that one (all of the items, for `std.list`): the
+/// first page of a filtered query, as the window shows it, and the list again. Only for a
+/// package whose main view lists places.
 fn filter(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
     let mut found = Vec::new();
     places(room.list.tree(), &mut found);
+    let start = chosen(room.list.tree()).unwrap_or_else(|| "all".to_owned());
     let (Some((_, all)), Some((_, place))) = (
-        found.iter().find(|(key, _)| key == "all").cloned(),
-        found.iter().find(|(key, _)| key != "all").cloned(),
+        found.iter().find(|(key, _)| *key == start).cloned(),
+        found.iter().find(|(key, _)| *key != start).cloned(),
     ) else {
         return Ok(None);
     };

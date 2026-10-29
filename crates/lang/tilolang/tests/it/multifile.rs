@@ -280,7 +280,7 @@ fn imports_are_found_among_sibling_packages_and_compiled_first() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names.last().map(String::as_str), Some("today"));
-    for dep in ["notes", "todo", "chat"] {
+    for dep in ["notes", "tasks", "chat"] {
         assert!(names.contains(&dep.to_string()), "{names:?}");
     }
     assert_eq!(names.len(), 4, "only what today imports: {names:?}");
