@@ -206,6 +206,8 @@ pub struct DevicePlace {
     /// The terminal's settings as commands left them, while the line editor
     /// has it taking keys one at a time: what it gets back afterwards.
     cooked: Mutex<Option<libc::termios>>,
+    /// Terminal's native editor capability, served by the line editor.
+    field: Option<Arc<SessionField>>,
 }
 
 impl DevicePlace {
@@ -246,6 +248,7 @@ impl DevicePlace {
             _suspend_write: suspend_write,
             terminal: None,
             cooked: Mutex::new(None),
+            field: None,
         })
     }
 
@@ -254,6 +257,13 @@ impl DevicePlace {
     #[must_use]
     pub fn on_terminal(mut self, terminal: OwnedFd) -> Self {
         self.terminal = Some(terminal);
+        self
+    }
+
+    /// Terminal edits the line at the prompt through `field`.
+    #[must_use]
+    pub fn with_field(mut self, field: Arc<SessionField>) -> Self {
+        self.field = Some(field);
         self
     }
 
@@ -349,6 +359,12 @@ impl Place for DevicePlace {
         // Switched on twice, it goes back to what it was first.
         cooked.get_or_insert(was);
         true
+    }
+
+    fn field(&self) -> Option<Arc<dyn ush_shell::field::Field>> {
+        self.field
+            .clone()
+            .map(|field| field as Arc<dyn ush_shell::field::Field>)
     }
 
     fn columns(&self) -> usize {
@@ -449,6 +465,21 @@ impl SessionStreams {
             stdout: Output::host(Std::Out, std::fs::File::from(self.stdout.try_clone()?)),
             stderr: Output::host(Std::Err, std::fs::File::from(self.stderr.try_clone()?)),
         })
+    }
+
+    /// [`Self::stdio`], its input read by the line editor through `field`
+    /// when Terminal edits the line too ([`SessionField::keys`]).
+    ///
+    /// # Errors
+    ///
+    /// A descriptor could not be duplicated.
+    pub fn stdio_editing(&self, field: Option<&Arc<SessionField>>) -> std::io::Result<Stdio> {
+        let mut io = self.stdio()?;
+        if let Some(field) = field {
+            let terminal = std::fs::File::from(self.stdin.try_clone()?);
+            io.stdin = Input::host(field.keys(terminal));
+        }
+        Ok(io)
     }
 }
 
@@ -980,7 +1011,7 @@ impl Session {
         script: Option<&str>,
     ) -> anyhow::Result<i32> {
         use crate::tilo_side::{
-            DevicePlace, Reaped, RecordEnvironment, RunningGuest, SessionGuest, SessionStreams,
+            Reaped, RecordEnvironment, RunningGuest, SessionGuest, SessionStreams,
         };
         let resolved = Resolved {
             key,
@@ -994,7 +1025,7 @@ impl Session {
         )?;
         let state = Arc::clone(broker.state());
         let dup = |fd: BorrowedFd<'_>| fd.try_clone_to_owned();
-        let place = Arc::new(DevicePlace::install()?.on_terminal(dup(std::io::stdin().as_fd())?));
+        let (place, field) = self.session_place()?;
         let streams = || -> std::io::Result<SessionStreams> {
             Ok(SessionStreams {
                 stdin: dup(std::io::stdin().as_fd())?,
@@ -1044,7 +1075,7 @@ impl Session {
                 .listing(listing),
         );
         let session_streams = streams()?;
-        let io = session_streams.stdio()?;
+        let io = session_streams.stdio_editing(field.as_ref())?;
         let host: Arc<dyn ush_shell::Host> = Arc::new(ush_tilo::TiloHost::new(
             Arc::new(RecordEnvironment::new(Arc::clone(&state))),
             Arc::new(ush_tilo::NativeFiles),
@@ -1078,6 +1109,24 @@ impl Session {
         drop(shell);
         drop(broker);
         Ok(status)
+    }
+
+    /// This device as the session's place: on the session's terminal, with
+    /// Terminal's native editor capability, when it asked for one, served
+    /// by the line editor.
+    fn session_place(&self) -> anyhow::Result<(Arc<DevicePlace>, Option<Arc<SessionField>>)> {
+        let field = self
+            .opts
+            .editor
+            .as_ref()
+            .map(|socket| SessionField::serve(Arc::clone(socket)))
+            .transpose()?;
+        let mut place =
+            DevicePlace::install()?.on_terminal(std::io::stdin().as_fd().try_clone_to_owned()?);
+        if let Some(field) = &field {
+            place = place.with_field(Arc::clone(field));
+        }
+        Ok((Arc::new(place), field))
     }
 
     /// What names the images the session's guest is built from, for Tab:
@@ -1205,6 +1254,10 @@ impl Session {
         Ok((child, netns, egress))
     }
 }
+
+mod field;
+
+pub use field::{Keys, SessionField};
 
 #[cfg(test)]
 mod tests;

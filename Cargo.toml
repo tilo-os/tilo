@@ -311,6 +311,7 @@ members = [
     "crates/platform/tilo-clock",
     "crates/platform/tilolang-tilo",
     "crates/platform/tilolang-host",
+    "crates/platform/tilolang-mail",
     "crates/platform/tilo-lock",
     "crates/platform/tilo-settings-records",
     "crates/platform/tilo-sort",

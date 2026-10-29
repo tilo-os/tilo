@@ -859,9 +859,17 @@ fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &M
         // A lookup is the run having read this, through system search under
         // its own permissions: the resource reads as the chip a link does, so
         // the person follows it where the run went without asking again.
-        MessageKind::Lookup => {
+        MessageKind::Step => {
+            return crate::program_step::step_row(cx, heading, message);
+        }
+        MessageKind::Lookup | MessageKind::Answer => {
             heading = heading.push(Box::new(
-                Badge::text(tr("tasks-message-lookup")).style(ChipStyle::Neutral),
+                Badge::text(tr(if message.kind == MessageKind::Answer {
+                    "tasks-message-answer"
+                } else {
+                    "tasks-message-lookup"
+                }))
+                .style(ChipStyle::Neutral),
             ));
             let Some(resource) =
                 serde_json::from_str::<ui::tilo_reference::ResourceAt>(&message.lookup).ok()

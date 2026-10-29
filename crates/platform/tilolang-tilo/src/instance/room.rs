@@ -218,6 +218,11 @@ impl RoomRecord {
         .map_err(RoomError::Open)?;
         let primary = native_initial::primary(&route.app_id, Some(&room));
         let governs = primary.is_none();
+        // A record read from the room is the room's up to what was read. One opened from this
+        // replica's own copy was handed to the room by nothing yet: its first changes (the
+        // copy's creation among them) are made here, and a sealed room's channel holds only
+        // what was written on it, so the first send hands it all of them.
+        let handed_nothing = primary.is_none();
         let opened = match primary {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
             None => Ok(open_stored(store)),
@@ -236,6 +241,9 @@ impl RoomRecord {
         let person = person.into();
         let mut record = Self::holding(doc, Some(writer), manager, route, person);
         record.governs = governs;
+        if handed_nothing {
+            record.sent.clear();
+        }
         Ok(record)
     }
 
