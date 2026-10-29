@@ -11,7 +11,9 @@
     reason = "smithay geometry: logical and physical coordinates of outputs and windows, far from i32 limits"
 )]
 
+use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
@@ -31,6 +33,38 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<R>,
     /// A hosted surface's layer.
     Hosted=MemoryRenderBufferRenderElement<R>,
+    /// The idle dim over everything, where no backlight dims.
+    Dim=SolidColorRenderElement,
+}
+
+/// The idle dim's buffer of one output.
+struct DimBuffer(std::cell::RefCell<SolidColorBuffer>);
+
+/// The dim over all of `output`, when the scene is dimmed without a
+/// backlight.
+fn dim_element<R>(state: &State, output: &Output) -> Option<OutputRenderElement<R>>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let alpha = state.dim_alpha()?;
+    let geometry = state.space.output_geometry(output)?;
+    output
+        .user_data()
+        .insert_if_missing(|| DimBuffer(std::cell::RefCell::new(SolidColorBuffer::default())));
+    let buffer = output.user_data().get::<DimBuffer>()?;
+    let mut buffer = buffer.0.borrow_mut();
+    buffer.update(geometry.size, Color32F::new(0.0, 0.0, 0.0, alpha));
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    Some(OutputRenderElement::Dim(
+        SolidColorRenderElement::from_buffer(
+            &buffer,
+            Point::<i32, Physical>::from((0, 0)),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        ),
+    ))
 }
 
 /// The elements `output` shows, front first, in its physical pixels.
@@ -46,11 +80,16 @@ where
     let Some(geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
+    let dim = dim_element(state, output);
     if state.locked() {
-        return state.lock_elements(renderer, output);
+        return dim
+            .into_iter()
+            .chain(state.lock_elements(renderer, output))
+            .collect();
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let mut elements = state.input_popup_elements(renderer, output);
+    let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
+    elements.extend(state.input_popup_elements(renderer, output));
     for host in state.hosts.iter().rev() {
         for layer in host.layers().into_iter().rev() {
             let location: Point<i32, Physical> =

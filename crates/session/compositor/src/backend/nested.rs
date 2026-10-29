@@ -93,6 +93,8 @@ struct Inner {
     /// When a frame may be drawn though the last one changed nothing.
     next_frame: Instant,
     closed: bool,
+    /// Switched off: the window keeps its last frame and nothing is drawn.
+    dark: bool,
 }
 
 /// The window backend. Created by [`NestedBackend::start`], which opens the
@@ -170,6 +172,7 @@ impl NestedBackend {
             presenting: None,
             next_frame: Instant::now(),
             closed: false,
+            dark: false,
         }));
         let events = Rc::clone(&inner);
         handle
@@ -197,7 +200,9 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: X11Event) 
             let Some(mode) = window_mode(new_size) else {
                 return;
             };
-            inner.output.change_current_state(Some(mode), None, None, None);
+            inner
+                .output
+                .change_current_state(Some(mode), None, None, None);
             inner.output.set_preferred(mode);
             inner.damage = OutputDamageTracker::from_output(&inner.output);
             inner.next_frame = Instant::now();
@@ -227,7 +232,7 @@ impl Backend for NestedBackend {
         let mut guard = self.inner.borrow_mut();
         let inner = &mut *guard;
         let now = Instant::now();
-        if inner.closed || inner.presenting.is_some() || now < inner.next_frame {
+        if inner.closed || inner.dark || inner.presenting.is_some() || now < inner.next_frame {
             return Ok(());
         }
         let (mut buffer, age) = inner
@@ -308,7 +313,17 @@ impl Backend for NestedBackend {
 
     fn next_deadline(&self) -> Option<Instant> {
         let inner = self.inner.borrow();
-        (inner.presenting.is_none() && !inner.closed).then_some(inner.next_frame)
+        (inner.presenting.is_none() && !inner.closed && !inner.dark).then_some(inner.next_frame)
+    }
+
+    fn set_power(&mut self, _state: &mut State, _name: &str, on: bool) -> Result<(), BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        inner.dark = !on;
+        if on {
+            inner.next_frame = Instant::now();
+            inner.damage = OutputDamageTracker::from_output(&inner.output);
+        }
+        Ok(())
     }
 
     fn closed(&self) -> bool {

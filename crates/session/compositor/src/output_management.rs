@@ -45,10 +45,11 @@ struct Head {
     position: (i32, i32),
     scale: f64,
     transform: Transform,
+    enabled: bool,
 }
 
 impl Head {
-    fn of(output: &Output) -> Self {
+    fn of(output: &Output, enabled: bool) -> Self {
         let properties = output.physical_properties();
         let location = output.current_location();
         Self {
@@ -63,6 +64,7 @@ impl Head {
             position: (location.x, location.y),
             scale: output.current_scale().fractional_scale(),
             transform: output.current_transform(),
+            enabled,
         }
     }
 }
@@ -138,9 +140,11 @@ impl OutputManagement {
     pub(crate) fn publish<'a>(
         &mut self,
         display: &DisplayHandle,
-        outputs: impl Iterator<Item = &'a Output>,
+        outputs: impl Iterator<Item = &'a (Output, bool)>,
     ) {
-        let heads: Vec<Head> = outputs.map(Head::of).collect();
+        let heads: Vec<Head> = outputs
+            .map(|(output, enabled)| Head::of(output, *enabled))
+            .collect();
         if heads == self.heads {
             return;
         }
@@ -225,7 +229,13 @@ fn new_head(
         shown: head.clone(),
     };
     for mode in &head.modes {
-        add_mode(display, &client, &mut bound, *mode, head.preferred == Some(*mode));
+        add_mode(
+            display,
+            &client,
+            &mut bound,
+            *mode,
+            head.preferred == Some(*mode),
+        );
     }
     send_state(&bound, head);
     Some(bound)
@@ -268,7 +278,13 @@ fn update_head(
     if let Some(client) = manager.client() {
         for mode in &head.modes {
             if !bound.modes.iter().any(|(known, _)| known == mode) {
-                add_mode(display, &client, bound, *mode, head.preferred == Some(*mode));
+                add_mode(
+                    display,
+                    &client,
+                    bound,
+                    *mode,
+                    head.preferred == Some(*mode),
+                );
             }
         }
     }
@@ -283,11 +299,14 @@ fn update_head(
     bound.shown = head.clone();
 }
 
-/// The head's changing properties: enabled, mode, position, transform,
-/// scale.
+/// The head's changing properties: enabled, and while it is, mode,
+/// position, transform, scale.
 fn send_state(bound: &BoundHead, head: &Head) {
     let object = &bound.head;
-    object.enabled(1);
+    object.enabled(i32::from(head.enabled));
+    if !head.enabled {
+        return;
+    }
     if let Some((_, mode)) = bound
         .modes
         .iter()

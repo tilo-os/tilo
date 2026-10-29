@@ -13,22 +13,19 @@
 use std::os::unix::net::UnixStream;
 
 use smithay::desktop::Window;
+use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Rectangle};
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
 use smithay::xwayland::xwm::{Reorder, ResizeEdge, XwmId};
 use smithay::xwayland::{X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
-use smithay::reexports::calloop::LoopHandle;
 
 use crate::state::State;
 use crate::{Error, LoopData, io};
 
 /// Start Xwayland and return its display number (for `DISPLAY`). Clients
 /// may connect at once: Xwayland accepts on the sockets prepared for it.
-pub(crate) fn start(
-    handle: &LoopHandle<'static, LoopData>,
-    state: &State,
-) -> Result<u32, Error> {
+pub(crate) fn start(handle: &LoopHandle<'static, LoopData>, state: &State) -> Result<u32, Error> {
     let (xwayland, client) = XWayland::spawn(
         &state.display,
         None,
@@ -80,8 +77,7 @@ smithay::delegate_xwayland_shell!(State);
 impl State {
     /// The element showing `surface`, if it is mapped.
     fn element_of(&self, surface: &X11Surface) -> Option<Window> {
-        self
-            .space
+        self.space
             .elements()
             .find(|window| window.x11_surface() == Some(surface))
             .cloned()
@@ -98,7 +94,10 @@ impl State {
 impl XwmHandler for State {
     fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
         // Events only come from the window manager that was started.
-        #[allow(clippy::expect_used, reason = "X11 events only arrive once the wm exists")]
+        #[allow(
+            clippy::expect_used,
+            reason = "X11 events only arrive once the wm exists"
+        )]
         self.xwm.as_mut().expect("X11 window manager")
     }
 
@@ -227,7 +226,8 @@ impl XwmHandler for LoopData {
         h: Option<u32>,
         reorder: Option<Reorder>,
     ) {
-        self.state.configure_request(xwm, window, x, y, w, h, reorder);
+        self.state
+            .configure_request(xwm, window, x, y, w, h, reorder);
     }
 
     fn configure_notify(

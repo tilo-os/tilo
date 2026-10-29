@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::DisplayHandle;
+use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{Logical, Point, Transform};
 
 use crate::state::State;
@@ -72,12 +73,13 @@ impl OutputChange {
 
 /// Why a configuration cannot be applied, before any backend looks at it:
 /// an unknown output, an unusable scale, or every output turned off.
+/// `outputs` are every known output's name and whether it is on now.
 pub(crate) fn check_changes(
     changes: &[OutputChange],
-    outputs: &[String],
+    outputs: &[(String, bool)],
 ) -> Result<(), String> {
     for change in changes {
-        if !outputs.contains(&change.name) {
+        if !outputs.iter().any(|(name, _)| name == &change.name) {
             return Err(format!("{}: no such output", change.name));
         }
         if change
@@ -87,10 +89,11 @@ pub(crate) fn check_changes(
             return Err(format!("{}: unusable scale", change.name));
         }
     }
-    let all_off = outputs.iter().all(|name| {
+    let all_off = outputs.iter().all(|(name, on)| {
         changes
             .iter()
-            .any(|change| &change.name == name && !change.enabled)
+            .find(|change| &change.name == name)
+            .map_or(!on, |change| !change.enabled)
     });
     if all_off && !outputs.is_empty() {
         return Err("every output would be off".into());
@@ -203,7 +206,7 @@ impl OutputConfig {
         Point::from(self.position)
     }
 
-    /// The output and its `wl_output` global.
+    /// The output, advertised to clients.
     pub(crate) fn create(&self, display: &DisplayHandle, model: &str) -> Output {
         let output = Output::new(
             self.name.clone(),
@@ -225,8 +228,35 @@ impl OutputConfig {
             Some(self.location()),
         );
         output.set_preferred(mode);
-        output.create_global::<State>(display);
+        advertise(&output, display);
         output
+    }
+}
+
+/// An output's `wl_output` global while clients see it.
+struct Global(std::cell::RefCell<Option<GlobalId>>);
+
+/// Show `output` to clients (`wl_output`); once, however often called.
+pub(crate) fn advertise(output: &Output, display: &DisplayHandle) {
+    output
+        .user_data()
+        .insert_if_missing(|| Global(std::cell::RefCell::new(None)));
+    if let Some(global) = output.user_data().get::<Global>() {
+        let mut global = global.0.borrow_mut();
+        if global.is_none() {
+            *global = Some(output.create_global::<State>(display));
+        }
+    }
+}
+
+/// Stop showing `output` to clients (it was turned off or unplugged).
+pub(crate) fn withdraw(output: &Output, display: &DisplayHandle) {
+    if let Some(id) = output
+        .user_data()
+        .get::<Global>()
+        .and_then(|global| global.0.borrow_mut().take())
+    {
+        display.remove_global::<State>(id);
     }
 }
 
@@ -243,23 +273,39 @@ mod tests {
 
     #[test]
     fn requested_modes_match_size_and_refresh_or_take_the_fastest() {
-        let modes = [mode(1920, 1080, 60_000), mode(1920, 1080, 143_981), mode(1280, 720, 60_000)];
+        let modes = [
+            mode(1920, 1080, 60_000),
+            mode(1920, 1080, 143_981),
+            mode(1280, 720, 60_000),
+        ];
         let request = |size, refresh_mhz| ModeRequest { size, refresh_mhz };
-        assert_eq!(find_mode(&modes, request((1920, 1080), None)), Some(modes[1]));
-        assert_eq!(find_mode(&modes, request((1920, 1080), Some(144_000))), Some(modes[1]));
-        assert_eq!(find_mode(&modes, request((1920, 1080), Some(59_940))), Some(modes[0]));
+        assert_eq!(
+            find_mode(&modes, request((1920, 1080), None)),
+            Some(modes[1])
+        );
+        assert_eq!(
+            find_mode(&modes, request((1920, 1080), Some(144_000))),
+            Some(modes[1])
+        );
+        assert_eq!(
+            find_mode(&modes, request((1920, 1080), Some(59_940))),
+            Some(modes[0])
+        );
         assert_eq!(find_mode(&modes, request((1920, 1080), Some(75_000))), None);
         assert_eq!(find_mode(&modes, request((800, 600), None)), None);
     }
 
     #[test]
     fn configurations_name_real_outputs_keep_one_on_and_use_real_scales() {
-        let outputs = vec!["eDP-1".to_owned(), "DP-1".to_owned()];
+        let outputs = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), true)];
         let scaled = OutputChange {
             scale: Some(1.5),
             ..OutputChange::enable("DP-1")
         };
-        assert_eq!(check_changes(&[scaled, OutputChange::disable("eDP-1")], &outputs), Ok(()));
+        assert_eq!(
+            check_changes(&[scaled, OutputChange::disable("eDP-1")], &outputs),
+            Ok(())
+        );
         assert!(check_changes(&[OutputChange::enable("HDMI-A-9")], &outputs).is_err());
         let zero = OutputChange {
             scale: Some(0.0),
@@ -268,22 +314,40 @@ mod tests {
         assert!(check_changes(&[zero], &outputs).is_err());
         assert!(
             check_changes(
-                &[OutputChange::disable("eDP-1"), OutputChange::disable("DP-1")],
+                &[
+                    OutputChange::disable("eDP-1"),
+                    OutputChange::disable("DP-1")
+                ],
                 &outputs
             )
             .is_err()
+        );
+        // An output already off counts as off; turning it back on is fine.
+        let one_off = vec![("eDP-1".to_owned(), true), ("DP-1".to_owned(), false)];
+        assert!(check_changes(&[OutputChange::disable("eDP-1")], &one_off).is_err());
+        assert_eq!(
+            check_changes(
+                &[OutputChange::disable("eDP-1"), OutputChange::enable("DP-1")],
+                &one_off
+            ),
+            Ok(())
         );
     }
 
     #[test]
     fn unplaced_outputs_pack_left_to_right_after_placed_ones() {
         let outputs = |list: &[(&str, i32)]| -> Vec<(String, i32)> {
-            list.iter().map(|(name, w)| ((*name).to_owned(), *w)).collect()
+            list.iter()
+                .map(|(name, w)| ((*name).to_owned(), *w))
+                .collect()
         };
         let none = std::collections::HashMap::new();
         // Pulling the middle display closes the hole it left.
         assert_eq!(
-            arrange(&outputs(&[("eDP-1", 1280), ("DP-1", 1920), ("DP-2", 2560)]), &none),
+            arrange(
+                &outputs(&[("eDP-1", 1280), ("DP-1", 1920), ("DP-2", 2560)]),
+                &none
+            ),
             vec![(0, 0), (1280, 0), (3200, 0)]
         );
         assert_eq!(

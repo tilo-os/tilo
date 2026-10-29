@@ -107,6 +107,7 @@ impl SessionLockHandler for State {
 
     fn lock(&mut self, confirmation: SessionLocker) {
         self.lock.locked = true;
+        self.lock_shown();
         self.lock.pending = Some(confirmation);
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
@@ -115,6 +116,7 @@ impl SessionLockHandler for State {
 
     fn unlock(&mut self) {
         self.lock.locked = false;
+        self.lock_lifted();
         self.lock.pending = None;
         self.lock.surfaces.clear();
         if let Some(keyboard) = self.seat.get_keyboard() {

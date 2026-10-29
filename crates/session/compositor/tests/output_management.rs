@@ -1,6 +1,7 @@
 //! `wlr-output-management` against a headless compositor: a trusted display
 //! tool sees the outputs, changes their scale and place, and is told when a
-//! change cannot be made; ordinary clients do not see the global at all.
+//! change cannot be made, turns one off and on again; a power tool switches a
+//! panel off and on; ordinary clients do not see either global at all.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -14,7 +15,9 @@
 use std::time::Duration;
 
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
-use wayland_client::protocol::{wl_registry, wl_registry::WlRegistry};
+use wayland_client::protocol::{
+    wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry,
+};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, event_created_child};
 use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_configuration_head_v1::ZwlrOutputConfigurationHeadV1,
@@ -22,6 +25,10 @@ use wayland_protocols_wlr::output_management::v1::client::{
     zwlr_output_head_v1::{self, ZwlrOutputHeadV1},
     zwlr_output_manager_v1::{self, EVT_HEAD_OPCODE, ZwlrOutputManagerV1},
     zwlr_output_mode_v1::{self, ZwlrOutputModeV1},
+};
+use wayland_protocols_wlr::output_power_management::v1::client::{
+    zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1,
+    zwlr_output_power_v1::{self, ZwlrOutputPowerV1},
 };
 
 #[derive(Default, Debug)]
@@ -31,6 +38,7 @@ struct Head {
     position: (i32, i32),
     scale: f64,
     modes: Vec<(i32, i32)>,
+    enabled: Option<bool>,
 }
 
 #[derive(Default)]
@@ -40,6 +48,9 @@ struct Tool {
     heads: Vec<Head>,
     serial: Option<u32>,
     outcome: Option<&'static str>,
+    outputs: Vec<(WlOutput, String)>,
+    power_manager: Option<ZwlrOutputPowerManagerV1>,
+    power: Option<zwlr_output_power_v1::Mode>,
 }
 
 struct Client {
@@ -182,6 +193,158 @@ fn turning_every_display_off_fails_and_changes_nothing() {
 }
 
 #[test]
+fn a_display_tool_turns_an_output_off_and_on_again() {
+    let mut compositor = two_outputs();
+    let mut client = Client::connect(&mut compositor, true);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.serial.is_some() && tool.heads.len() == 2
+    });
+    let head = |tool: &Tool| {
+        tool.heads
+            .iter()
+            .find(|head| head.name == "HEADLESS-2")
+            .and_then(|head| head.object.clone())
+            .expect("head")
+    };
+    let handle = client.queue.handle();
+    let manager = client.tool.manager.clone().expect("manager");
+    let configuration =
+        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+    configuration.disable_head(&head(&client.tool));
+    configuration.apply();
+    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+    assert_eq!(client.tool.outcome, Some("succeeded"));
+    pump(&mut compositor, &mut client, |tool| {
+        tool.heads
+            .iter()
+            .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(false))
+    });
+    assert!(
+        !compositor.output_lit("HEADLESS-2"),
+        "a turned-off panel is dark"
+    );
+    assert!(compositor.output_lit("HEADLESS-1"));
+    let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
+    assert_eq!(shot.pixel(10, 10), Some([0, 0, 0, 255]));
+
+    client.tool.outcome = None;
+    let configuration =
+        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+    configuration.enable_head(&head(&client.tool), &handle, ());
+    configuration.apply();
+    pump(&mut compositor, &mut client, |tool| tool.outcome.is_some());
+    assert_eq!(client.tool.outcome, Some("succeeded"));
+    pump(&mut compositor, &mut client, |tool| {
+        tool.heads
+            .iter()
+            .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(true))
+    });
+    assert!(compositor.output_lit("HEADLESS-2"));
+    compositor.render().expect("render");
+    let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
+    assert_ne!(
+        shot.pixel(10, 10),
+        Some([0, 0, 0, 255]),
+        "lit again, it draws"
+    );
+}
+
+#[test]
+fn a_power_tool_switches_one_panel_off_and_on() {
+    let mut compositor = two_outputs();
+    let mut client = Client::connect(&mut compositor, true);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.power_manager.is_some()
+            && tool.outputs.len() == 2
+            && tool.outputs.iter().all(|(_, name)| !name.is_empty())
+    });
+    let output = client
+        .tool
+        .outputs
+        .iter()
+        .find(|(_, name)| name == "HEADLESS-1")
+        .map(|(output, _)| output.clone())
+        .expect("output");
+    let handle = client.queue.handle();
+    let power = client
+        .tool
+        .power_manager
+        .clone()
+        .expect("power manager")
+        .get_output_power(&output, &handle, ());
+    pump(&mut compositor, &mut client, |tool| {
+        tool.power == Some(zwlr_output_power_v1::Mode::On)
+    });
+    power.set_mode(zwlr_output_power_v1::Mode::Off);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.power == Some(zwlr_output_power_v1::Mode::Off)
+    });
+    assert!(!compositor.output_lit("HEADLESS-1"));
+    assert!(compositor.output_lit("HEADLESS-2"), "only that panel");
+    power.set_mode(zwlr_output_power_v1::Mode::On);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.power == Some(zwlr_output_power_v1::Mode::On)
+    });
+    assert!(compositor.output_lit("HEADLESS-1"));
+}
+
+#[test]
+fn ordinary_clients_cannot_switch_panels_off() {
+    let mut compositor = two_outputs();
+    let mut client = Client::connect(&mut compositor, false);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.globals.iter().any(|global| global == "wl_compositor")
+    });
+    assert!(
+        !client
+            .tool
+            .globals
+            .iter()
+            .any(|global| global == "zwlr_output_power_manager_v1")
+    );
+}
+
+#[test]
+fn idle_blanking_darkens_every_panel_and_input_lights_them() {
+    let mut compositor = two_outputs();
+    compositor.render().expect("render");
+    compositor.blank_now().expect("blank");
+    assert!(!compositor.output_lit("HEADLESS-1"));
+    assert!(!compositor.output_lit("HEADLESS-2"));
+    let shot = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(shot.pixel(10, 10), Some([0, 0, 0, 255]));
+    compositor
+        .input(tilo_compositor::InputEvent::PointerMotion { x: 5.0, y: 5.0 })
+        .expect("input");
+    assert!(compositor.output_lit("HEADLESS-1"));
+    assert!(compositor.output_lit("HEADLESS-2"));
+    assert!(
+        compositor.take_session_events().is_empty(),
+        "blanking is not locking"
+    );
+}
+
+#[test]
+fn idle_locking_is_handed_to_the_session() {
+    let mut compositor = two_outputs();
+    compositor.set_idle_config(tilo_compositor::IdleConfig {
+        blank_timeout: None,
+        lock_timeout: Some(Duration::ZERO),
+        suspend_timeout: None,
+    });
+    compositor.dispatch(Duration::ZERO).expect("dispatch");
+    assert_eq!(
+        compositor.take_session_events(),
+        vec![tilo_compositor::SessionTransition::Locked]
+    );
+    compositor.dispatch(Duration::ZERO).expect("dispatch");
+    assert!(
+        compositor.take_session_events().is_empty(),
+        "once per episode"
+    );
+}
+
+#[test]
 fn a_configuration_made_against_an_old_serial_is_cancelled() {
     let mut compositor = two_outputs();
     let mut client = Client::connect(&mut compositor, true);
@@ -208,8 +371,18 @@ impl Dispatch<WlRegistry, ()> for Tool {
             name, interface, ..
         } = event
         {
-            if interface == "zwlr_output_manager_v1" {
-                tool.manager = Some(registry.bind(name, 4, handle, ()));
+            match interface.as_str() {
+                "zwlr_output_manager_v1" => {
+                    tool.manager = Some(registry.bind(name, 4, handle, ()));
+                }
+                "zwlr_output_power_manager_v1" => {
+                    tool.power_manager = Some(registry.bind(name, 1, handle, ()));
+                }
+                "wl_output" => {
+                    tool.outputs
+                        .push((registry.bind(name, 4, handle, ()), String::new()));
+                }
+                _ => {}
             }
             tool.globals.push(interface);
         }
@@ -260,6 +433,7 @@ impl Dispatch<ZwlrOutputHeadV1, ()> for Tool {
             zwlr_output_head_v1::Event::Name { name } => head.name = name,
             zwlr_output_head_v1::Event::Position { x, y } => head.position = (x, y),
             zwlr_output_head_v1::Event::Scale { scale } => head.scale = scale,
+            zwlr_output_head_v1::Event::Enabled { enabled } => head.enabled = Some(enabled != 0),
             _ => {}
         }
     }
@@ -281,7 +455,11 @@ impl Dispatch<ZwlrOutputModeV1, ()> for Tool {
         // Modes arrive right after their head's `mode` event, so they belong
         // to the last head that announced one.
         if let zwlr_output_mode_v1::Event::Size { width, height } = event
-            && let Some(head) = tool.heads.iter_mut().rev().find(|head| !head.name.is_empty())
+            && let Some(head) = tool
+                .heads
+                .iter_mut()
+                .rev()
+                .find(|head| !head.name.is_empty())
         {
             head.modes.push((width, height));
         }
@@ -306,4 +484,40 @@ impl Dispatch<ZwlrOutputConfigurationV1, ()> for Tool {
     }
 }
 
+impl Dispatch<WlOutput, ()> for Tool {
+    fn event(
+        tool: &mut Self,
+        object: &WlOutput,
+        event: wl_output::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event
+            && let Some(output) = tool.outputs.iter_mut().find(|(known, _)| known == object)
+        {
+            output.1 = name;
+        }
+    }
+}
+
+impl Dispatch<ZwlrOutputPowerV1, ()> for Tool {
+    fn event(
+        tool: &mut Self,
+        _power: &ZwlrOutputPowerV1,
+        event: zwlr_output_power_v1::Event,
+        (): &(),
+        _connection: &Connection,
+        _handle: &QueueHandle<Self>,
+    ) {
+        if let zwlr_output_power_v1::Event::Mode {
+            mode: wayland_client::WEnum::Value(mode),
+        } = event
+        {
+            tool.power = Some(mode);
+        }
+    }
+}
+
 wayland_client::delegate_noop!(Tool: ignore ZwlrOutputConfigurationHeadV1);
+wayland_client::delegate_noop!(Tool: ignore ZwlrOutputPowerManagerV1);
