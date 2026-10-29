@@ -11,9 +11,11 @@
 
 mod canvas;
 mod desktop;
+mod door;
 mod widget;
 
-pub use desktop::{DesktopHost, StripPolicy, desktop, desktop_with};
+pub use desktop::{DeskGesture, DesktopHost, StripPolicy, desktop, desktop_with};
+pub use door::{Doors, Published, Shared};
 pub use widget::WidgetHost;
 
 use std::cell::Cell;
@@ -194,6 +196,31 @@ impl AppHost {
     }
 }
 
+impl Published for AppHost {
+    fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
+        self.app.collect_resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+        let started = self.app.invoke_local_resource_action(address, arguments);
+        self.wants = true;
+        started
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.app.refresh_semantic_tree();
+        self.app
+            .semantic_tree()
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .collect()
+    }
+}
+
 impl SurfaceHost for AppHost {
     fn layers(&self) -> Vec<HostLayer> {
         let size = (
@@ -352,7 +379,7 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
         logical_key,
         text.clone(),
         location,
-        false,
+        key.repeat,
         text,
         key_without_modifiers,
     );
@@ -361,6 +388,14 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
         event,
         is_synthetic: false,
     }
+}
+
+/// The key a hosted surface got, as the toolkit names it, with the
+/// modifiers held: what a shortcut table matches against.
+#[must_use]
+pub fn toolkit_key(key: &HostKey) -> (Key, Modifiers) {
+    let (logical, _) = key_for(key.keysym, key.text);
+    (logical, Modifiers::from(modifiers_state(key.modifiers)))
 }
 
 /// The key `keysym` is: a named key when winit names it, else the

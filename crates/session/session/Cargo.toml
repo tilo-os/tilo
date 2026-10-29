@@ -21,8 +21,13 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }
 tilo-notification-banners = { path = "../notification-banners" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+os-actions = { path = "../../system/os-actions" }
+serde.workspace = true
 serde_json.workspace = true
+settings-store = { path = "../../system/settings-store" }
+tilo-paths = { path = "../../platform/tilo-paths" }
 tracing.workspace = true
+xkeysym = "0.2.1"
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

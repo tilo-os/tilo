@@ -14,33 +14,46 @@
 #![cfg(target_os = "linux")]
 
 mod chrome;
+mod config;
+mod controls;
+mod env;
+mod keys;
 mod panels;
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, OutputConfig, WindowPolicy};
-use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::ChromeIntent;
-use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk, DesktopChrome};
+use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
+use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
-use tilo_desktop::topbar::TopBarChrome;
+use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
-use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
+use tilo_surface_host::{DeskGesture, DesktopHost, Doors, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
-use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
+use ui::shortcut_table::ShortcutAction;
 
+pub use config::SessionConfig;
+pub use controls::{INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE, SessionCommand};
+pub use env::SessionEnvironment;
+pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
 pub use tilo_quick_settings::host::PanelHost;
 
-use chrome::{SessionChrome, SessionRules};
-use panels::{Banners, Held, Popover};
+use controls::SessionControls;
+use keys::{Invocations, SessionKeys};
+use panels::{Banners, Held, Popover, Readout};
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
+
+/// How soon after a press outside quick settings closed it the bar's own
+/// toggle of it is that same press, not a new ask to open it.
+const DISMISS_GRACE: Duration = Duration::from_millis(300);
 
 /// What a session starts with.
 pub struct Options {
@@ -57,6 +70,8 @@ pub struct Options {
     /// What quick settings reads of the device and carries out on it;
     /// without one, the bar's status cluster opens nothing.
     pub quick_settings: Option<Rc<dyn PanelHost>>,
+    /// The person's settings: shortcuts, input, gestures.
+    pub config: SessionConfig,
 }
 
 impl Default for Options {
@@ -68,19 +83,35 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
+            config: SessionConfig::default(),
         }
     }
+}
+
+/// Quick settings as the session shows it.
+struct QuickSettings {
+    open: Rc<Cell<bool>>,
+    /// When a press outside last closed it.
+    dismissed: Rc<Cell<Option<Instant>>>,
 }
 
 /// What the session keeps between frames, shared with the loop.
 struct Shared {
     handle: DesktopHandle,
+    desktop: DesktopHost,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    /// Whether quick settings is open, when the session has it.
-    quick_settings: Option<Rc<Cell<bool>>>,
+    quick_settings: Option<QuickSettings>,
+    /// Every hosted surface's published side: the session's action host.
+    doors: Doors,
+    /// Published actions keys and gestures asked for, waiting for the door.
+    invocations: Invocations,
+    /// What the session's own resources asked of the compositor.
+    commands: Rc<RefCell<Vec<SessionCommand>>>,
+    /// Quick settings' readings of the device, which a readout shows.
+    readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
 }
 
 impl Shared {
@@ -90,18 +121,145 @@ impl Shared {
         for ask in asks {
             match ask {
                 DesktopAsk::Intent(ChromeIntent::ToggleQuickSettings) => {
-                    if let Some(open) = &self.quick_settings {
-                        open.set(!open.get());
+                    if let Some(panel) = &self.quick_settings {
+                        let dismissed = panel
+                            .dismissed
+                            .take()
+                            .is_some_and(|at| at.elapsed() < DISMISS_GRACE);
+                        if !dismissed {
+                            panel.open.set(!panel.open.get());
+                        }
                     }
                 }
-                DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => {
-                    if let Some(open) = &self.quick_settings {
-                        open.set(true);
-                    }
-                }
+                DesktopAsk::Intent(ChromeIntent::ShowQuickSettings) => self.show_quick_settings(),
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
+                DesktopAsk::Shortcut(action) => self.shortcut(action),
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
             }
+        }
+    }
+
+    fn show_quick_settings(&self) {
+        if let Some(panel) = &self.quick_settings {
+            panel.open.set(true);
+        }
+    }
+
+    /// A desktop shortcut the chrome left to its host.
+    fn shortcut(&self, action: ShortcutAction) {
+        let mut invocations = self.invocations.borrow_mut();
+        match action {
+            ShortcutAction::QuickSettings => {
+                if let Some(panel) = &self.quick_settings {
+                    panel.open.set(!panel.open.get());
+                }
+            }
+            ShortcutAction::Notifications => {
+                self.show_quick_settings();
+                invocations.push(Invocation::new(QUICK_SETTINGS, "show-notifications"));
+            }
+            ShortcutAction::ClipboardHistory => {
+                self.show_quick_settings();
+                invocations.push(Invocation::new(QUICK_SETTINGS, "paste"));
+            }
+            ShortcutAction::Search => {
+                invocations.push(Invocation::new(DESK_RESOURCE, "open-search"));
+            }
+            ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
+            ShortcutAction::ToggleMagnifier => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::Magnifier(Magnify::Toggle)),
+            ShortcutAction::MagnifierZoomIn => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::Magnifier(Magnify::ZoomIn)),
+            ShortcutAction::MagnifierZoomOut => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::Magnifier(Magnify::ZoomOut)),
+            other => tracing::debug!(?other, "shortcut the session has no part in yet"),
+        }
+    }
+
+    /// What the touchpad gestures the desktop took asked, as the chrome's
+    /// published actions.
+    fn follow_gestures(&self) {
+        let gestures = self.desktop.take_gestures();
+        let mut invocations = self.invocations.borrow_mut();
+        for gesture in gestures {
+            invocations.push(match gesture {
+                DeskGesture::StepWindow(steps) => Invocation::shortcut(if steps < 0 {
+                    ShortcutAction::FocusPreviousWindow
+                } else {
+                    ShortcutAction::FocusNextWindow
+                }),
+                DeskGesture::StepStrip(steps) => {
+                    Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
+                }
+                DeskGesture::SwitchWorkspace(delta) => {
+                    Invocation::new(CHROME_RESOURCE, "switch-workspace").with("delta", delta)
+                }
+                DeskGesture::Overview(open) => Invocation::new(
+                    CHROME_RESOURCE,
+                    if open {
+                        "show-overview"
+                    } else {
+                        "hide-overview"
+                    },
+                ),
+            });
+        }
+    }
+
+    /// Run the published actions keys and gestures asked for, through the
+    /// door every caller uses.
+    fn run_invocations(&self) -> bool {
+        let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
+        let ran = !invocations.is_empty();
+        for invocation in invocations {
+            match self
+                .doors
+                .invoke(&invocation.address, &invocation.arguments)
+            {
+                Ok(_) => {
+                    if let Some(kind) = invocation.readout {
+                        self.show_readout(self.reading(kind));
+                    }
+                }
+                Err(error) => tracing::debug!(
+                    ?error,
+                    address = %invocation.address.encode(),
+                    "nothing carried out a key's action"
+                ),
+            }
+        }
+        ran
+    }
+
+    /// The readout of `kind` as the device reads now.
+    fn reading(&self, kind: OsdKind) -> Osd {
+        let readings = self.readings.borrow();
+        let state = readings
+            .as_ref()
+            .map(tilo_quick_settings::host::Feed::current);
+        let (level, on) = match (kind, state) {
+            (OsdKind::Volume, Some(state)) => (state.volume_level(), !state.volume_muted()),
+            (OsdKind::Brightness, Some(state)) => (state.brightness, true),
+            (OsdKind::AirplaneMode, Some(state)) => (0.0, state.radios.airplane_mode),
+            _ => (0.0, true),
+        };
+        Osd { kind, level, on }
+    }
+
+    /// Show `osd` through the readout's published action.
+    fn show_readout(&self, osd: Osd) {
+        let Ok(serde_json::Value::Object(arguments)) = serde_json::to_value(osd) else {
+            return;
+        };
+        let address = ActionAddress::new(OSD_RESOURCE, "show");
+        if let Err(error) = self.doors.invoke(&address, &arguments) {
+            tracing::debug!(?error, "no readout shown");
         }
     }
 
@@ -132,11 +290,14 @@ impl Shared {
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
-    desktop: DesktopHost,
-    /// The chrome above the windows.
-    chrome: Rc<RefCell<WidgetHost>>,
-    shared: Rc<Shared>,
+    shared: Shared,
     banners: tilo_notification_banners::Link,
+    /// The input preferences the compositor runs with now.
+    input: tilo_compositor::InputConfig,
+    /// The person logged out: the loop ends.
+    ended: bool,
+    /// The magnifier's zoom level and the one its toggle turns on at.
+    magnifier: (u8, u8),
 }
 
 impl Session {
@@ -149,6 +310,7 @@ impl Session {
         options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
+        let mut doors = Doors::default();
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let asks = Rc::new(RefCell::new(Vec::new()));
@@ -163,93 +325,84 @@ impl Session {
                 .with_asks(Rc::clone(&asks)),
             )
         });
+        desktop.set_gestures(options.config.gestures);
         let handle = desktop.with_policy(|policy| policy.handle().clone());
         let mut compositor = start(Box::new(policy))?;
+        compositor.set_input_config(options.config.input.clone());
         compositor.add_host(Box::new(desktop.clone()));
+        doors.add(Rc::new(RefCell::new(desktop.clone())));
 
         // The chrome above the windows: its own tree, beside the desk's.
-        let rules = Rc::new(SessionRules {
-            handle: handle.clone(),
-            person: options.person.clone(),
-            authors: RefCell::new(BTreeMap::new()),
-        });
-        let tree = handle.read(Clone::clone);
-        // The bar's source hands its intents to the chrome it sits in.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        let source = Rc::new(SessionChrome::new(
-            handle.clone(),
+        let chrome = Rc::new(RefCell::new(chrome::host(
+            &handle,
+            &options,
             Rc::clone(&intents),
-            options.person.clone(),
-        ));
-        let bar = TopBarChrome::from_tree(&tree)
-            .with_chrome(source)
-            .with_tilo_mark();
-        let chrome = DesktopChrome::new(
-            handle.clone(),
-            GENERATION.into(),
-            rules,
-            bar,
-            TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
-            false,
-        )
-        .with_intents(Rc::clone(&intents))
-        .with_asks(Rc::clone(&asks));
-        let keyboard = chrome.keyboard();
-        let placement = Placement {
-            origin: (0, 0),
-            size: (1, 1),
-            scale: options.scale,
-        };
-        let chrome = Rc::new(RefCell::new(
-            WidgetHost::new(Box::new(chrome), placement, false)
-                .covering_outputs()
-                .with_keyboard(keyboard),
-        ));
+            Rc::clone(&asks),
+        )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
+        doors.add(chrome);
 
-        let presentation = options.presentation;
         let banners = tilo_notification_banners::Link::new();
         match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
-            .and_then(|component| ui::App::from_component(component, presentation()))
+            .and_then(|component| ui::App::from_component(component, (options.presentation)()))
         {
             Ok(app) => {
-                compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
+                let surface = Rc::new(RefCell::new(Banners::new(
+                    app,
+                    banners.clone(),
+                    options.scale,
+                )));
+                compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+                doors.add(surface);
             }
             Err(error) => tracing::warn!(%error, "notification banners not mounted"),
         }
 
-        let quick_settings = options.quick_settings.and_then(|panel| {
-            let open = Rc::new(Cell::new(false));
-            match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
-                .and_then(|component| ui::App::from_component(component, presentation()))
-            {
-                Ok(app) => {
-                    compositor.add_host(Box::new(Popover::new(
-                        app,
-                        Rc::clone(&open),
-                        options.scale,
-                    )));
-                    Some(open)
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "quick settings not mounted");
-                    None
-                }
-            }
+        let readings = Rc::new(RefCell::new(None));
+        let quick_settings = options.quick_settings.clone().and_then(|panel| {
+            mount_quick_settings(&mut compositor, &mut doors, panel, &options, &readings)
         });
 
-        let shared = Rc::new(Shared {
+        // The hardware keys' readout, above the apps.
+        let readout = Rc::new(RefCell::new(Readout::new(options.scale)));
+        compositor.add_host(Box::new(Held(Rc::clone(&readout))));
+        doors.add(readout);
+
+        // The session's own resources, and the keys it answers wherever
+        // the keyboard is: above every surface, so offered every press
+        // first.
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        doors.add(Rc::new(RefCell::new(SessionControls::new(Rc::clone(
+            &commands,
+        )))));
+        let invocations = Invocations::default();
+        compositor.add_host(Box::new(SessionKeys::new(
+            options.config.shortcuts,
+            Rc::clone(&invocations),
+        )));
+
+        let shared = Shared {
             handle,
+            desktop,
             asks,
             intents,
             quick_settings,
-        });
+            doors,
+            invocations,
+            commands,
+            readings,
+        };
         Ok(Self {
             compositor,
-            desktop,
-            chrome,
             shared,
             banners,
+            input: options.config.input,
+            ended: false,
+            magnifier: (
+                settings_store::magnifier::OFF,
+                settings_store::magnifier::DEFAULT_ZOOM,
+            ),
         })
     }
 
@@ -280,8 +433,8 @@ impl Session {
 
     /// The desktop under the windows and its policy.
     #[must_use]
-    pub const fn desktop(&self) -> &DesktopHost {
-        &self.desktop
+    pub fn desktop(&self) -> &DesktopHost {
+        &self.shared.desktop
     }
 
     /// The host side of the desktop surface.
@@ -297,18 +450,19 @@ impl Session {
         &self.banners
     }
 
-    /// `read` of the desk's hosted tree, then of the chrome's.
-    fn each_layer<R>(&self, mut read: impl FnMut(&mut FrameHarness) -> R) -> [R; 2] {
-        let desk = self.desktop.with_widgets(|host| read(host.host_mut()));
-        let chrome = read(self.chrome.borrow_mut().host_mut());
-        [desk, chrome]
+    /// Reach `surface` (a service the session runs in its process) through
+    /// the session's door from now on: its resources are published beside
+    /// the desktop's, and keys that ask for its actions reach it.
+    pub fn publish(&mut self, surface: tilo_surface_host::Shared) {
+        self.shared.doors.add(surface);
     }
 
-    /// Everything the desktop publishes now: the desk's resource (its
-    /// windows among its children) and the chrome's, with their actions.
+    /// Everything the session publishes now: the desk's resource (its
+    /// windows among its children), the chrome's, the surface apps' and
+    /// the session's own, with their actions.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.each_layer(|host| host.resources()).concat()
+        self.shared.doors.resources()
     }
 
     /// Invoke the published action `action` of resource `resource`, as
@@ -324,29 +478,23 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
         let address = ActionAddress::new(resource, action);
-        let [desk, chrome] = self.each_layer(|host| {
-            tilo_actions::door::resolve(&host.resources(), &address)
-                .is_some()
-                .then(|| host.invoke_published(resource, action, arguments))
-        });
-        let started = desk
-            .or(chrome)
-            .unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))?;
-        self.shared.follow_asks();
+        let started = self.shared.doors.invoke(&address, arguments)?;
+        self.settle()
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
         Ok(started)
     }
 
-    /// The labels of the desktop's accessibility trees, the desk's and the
-    /// chrome's, as assistive technology reads them.
+    /// The labels of what the session shows to assistive technology: the
+    /// desk's, the chrome's and every open surface app's.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
-        self.each_layer(|host| {
-            host.a11y_nodes()
-                .into_iter()
-                .filter_map(|(_, node)| node.label().map(str::to_owned))
-                .collect::<Vec<_>>()
-        })
-        .concat()
+        self.shared.doors.accessible_labels()
+    }
+
+    /// Whether the person logged out, which ends the session's loop.
+    #[must_use]
+    pub const fn ended(&self) -> bool {
+        self.ended
     }
 
     /// Whether quick settings is open.
@@ -355,7 +503,71 @@ impl Session {
         self.shared
             .quick_settings
             .as_ref()
-            .is_some_and(|open| open.get())
+            .is_some_and(|panel| panel.open.get())
+    }
+
+    /// The input preferences the compositor runs with now.
+    #[must_use]
+    pub const fn input_config(&self) -> &tilo_compositor::InputConfig {
+        &self.input
+    }
+
+    /// Carry out everything asked since the last look: the desktop's asks,
+    /// the gestures it took, the actions keys asked for, and what those
+    /// asked in turn.
+    fn settle(&mut self) -> Result<(), Error> {
+        // Each round can ask for another (a key's shortcut the chrome
+        // leaves to the session); a few rounds settle any chain.
+        for _ in 0..4 {
+            self.shared.follow_asks();
+            self.shared.follow_gestures();
+            let ran = self.shared.run_invocations();
+            let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
+            let commanded = !commands.is_empty();
+            for command in commands {
+                self.command(command)?;
+            }
+            if !ran && !commanded && self.shared.asks.borrow().is_empty() {
+                break;
+            }
+            // What ran may have queued desktop commands on the shared
+            // handle (the chrome switching workspace): the desk carries
+            // them out on its next pass.
+            self.shared.desktop.with_widgets(WidgetHost::relayout);
+        }
+        Ok(())
+    }
+
+    fn command(&mut self, command: SessionCommand) -> Result<(), Error> {
+        match command {
+            SessionCommand::Lock => self.compositor.lock_now(),
+            SessionCommand::Magnifier(step) => {
+                let (zoom, remembered) = self.magnifier;
+                self.magnifier = settings_store::magnifier::step(zoom, remembered, step.into());
+                self.compositor.set_zoom(f64::from(self.magnifier.0));
+                Ok(())
+            }
+            SessionCommand::LogOut => {
+                // The login wrapper tears the session down once this
+                // process ends; without one, ending is the whole of it.
+                if let Err(error) = os_actions::request_logout() {
+                    tracing::info!(%error, "no login wrapper to tell of the logout");
+                }
+                self.ended = true;
+                Ok(())
+            }
+            SessionCommand::SetTouchpad { on } => {
+                let enabled = on.unwrap_or(!self.input.touchpad_enabled);
+                self.input.touchpad_enabled = enabled;
+                self.compositor.set_input_config(self.input.clone());
+                self.shared.show_readout(Osd {
+                    kind: OsdKind::Touchpad,
+                    level: 0.0,
+                    on: enabled,
+                });
+                Ok(())
+            }
+        }
     }
 
     /// One turn of the loop: wait up to `timeout` for clients and devices,
@@ -363,23 +575,58 @@ impl Session {
     ///
     /// # Errors
     /// The compositor failed.
-    pub fn step(&mut self, timeout: std::time::Duration) -> Result<(), Error> {
+    pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
-        self.shared.follow_asks();
+        self.settle()?;
         self.compositor.render()?;
-        self.shared.follow_asks();
-        Ok(())
+        self.settle()
     }
 
-    /// Run until `stop` holds.
+    /// Run until `stop` holds or the backend is done.
     ///
     /// # Errors
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
-        let shared = Rc::clone(&self.shared);
-        self.compositor.run(|compositor| {
-            shared.follow_asks();
-            stop(compositor)
-        })
+        while !self.ended && !self.compositor.closed() && !stop(&self.compositor) {
+            let timeout = self.compositor.next_wait();
+            self.step(timeout)?;
+        }
+        Ok(())
+    }
+}
+
+/// Quick settings as a popover under the bar, lent `panel`'s readings
+/// (which `readings` then holds too).
+fn mount_quick_settings(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    panel: Rc<dyn PanelHost>,
+    options: &Options,
+    readings: &panels::Readings,
+) -> Option<QuickSettings> {
+    let open = Rc::new(Cell::new(false));
+    let dismissed = Rc::new(Cell::new(None));
+    let panel = Rc::new(panels::Tap {
+        inner: panel,
+        feed: Rc::clone(readings),
+    });
+    match tilo_quick_settings::prepare(panel, &options.device, &options.person, 1)
+        .and_then(|component| ui::App::from_component(component, (options.presentation)()))
+    {
+        Ok(app) => {
+            let surface = Rc::new(RefCell::new(Popover::new(
+                app,
+                Rc::clone(&open),
+                Rc::clone(&dismissed),
+                options.scale,
+            )));
+            compositor.add_host(Box::new(Held(Rc::clone(&surface))));
+            doors.add(surface);
+            Some(QuickSettings { open, dismissed })
+        }
+        Err(error) => {
+            tracing::warn!(%error, "quick settings not mounted");
+            None
+        }
     }
 }

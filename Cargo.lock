@@ -21191,8 +21191,11 @@ dependencies = [
 name = "tilo-session"
 version = "0.1.0"
 dependencies = [
+ "os-actions",
  "rustix 1.1.4",
+ "serde",
  "serde_json",
+ "settings-store",
  "tilo-action-policy",
  "tilo-actions",
  "tilo-compositor",
@@ -21200,6 +21203,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-surface",
  "tilo-notification-banners",
+ "tilo-paths",
  "tilo-quick-settings",
  "tilo-surface-host",
  "tilo-ui",
@@ -21207,6 +21211,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "workspace-hack",
+ "xkeysym",
 ]
 
 [[package]]
@@ -21371,6 +21376,7 @@ dependencies = [
 name = "tilo-surface-host"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "smithay",
  "tilo-compositor",
  "tilo-cpu-raster",
