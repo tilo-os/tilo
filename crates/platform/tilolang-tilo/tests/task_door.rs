@@ -15,6 +15,7 @@ use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::{PlanRequest, edit_action, resource_id};
 use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
+use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
 use crate::fixtures::Replica;
 
@@ -29,6 +30,8 @@ pub struct Apps {
     pub refused: Vec<&'static str>,
     /// Apps the door cannot reach (not open), and why.
     pub unreachable: Vec<(&'static str, &'static str)>,
+    /// The apps whose record a task fetched, in order.
+    pub fetched: RefCell<Vec<String>>,
 }
 
 impl Apps {
@@ -72,12 +75,36 @@ impl Apps {
             invoked: RefCell::default(),
             refused: Vec::new(),
             unreachable: Vec::new(),
+            fetched: RefCell::default(),
         }
     }
 
     /// The host of `app`.
     pub fn replica(&self, app: &str) -> RefMut<'_, Replica> {
         self.replicas[self.by_app[app]].borrow_mut()
+    }
+
+    /// A task of these apps acting for ada, reading their records itself as the session's
+    /// door hands them over ([`RecordReads`]): no app's host answers its reads, only its
+    /// invocations.
+    pub fn record_task(self: &Rc<Self>) -> (TaskSession, Rc<RecordsDoor>) {
+        let door = Rc::new(RecordsDoor {
+            apps: Rc::clone(self),
+            reads: RecordReads::new(
+                &self.bundles,
+                std::collections::BTreeMap::new(),
+                Some("ada"),
+                Rc::clone(self) as Rc<dyn RecordSource>,
+            ),
+        });
+        let task = TaskSession::new(
+            "task-1",
+            Some("ada"),
+            &(Rc::clone(&door) as Rc<dyn TaskDoor>),
+            &self.bundles,
+        )
+        .unwrap();
+        (task, door)
     }
 
     /// A task of these apps, acting for ada.
@@ -89,6 +116,50 @@ impl Apps {
             &self.bundles,
         )
         .unwrap()
+    }
+}
+
+impl RecordSource for Apps {
+    fn record(&self, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
+        if !record.is_empty() {
+            return Err(format!(
+                "the test's apps keep their records in the room's record, not in {record}"
+            ));
+        }
+        if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
+            return Err((*why).to_owned());
+        }
+        self.fetched.borrow_mut().push(app.to_owned());
+        let index = *self.by_app.get(app).ok_or("no such app")?;
+        Ok(Some(self.replicas[index].borrow_mut().doc.save()))
+    }
+}
+
+/// A task's door that reads records itself: what [`Apps::record_task`] runs over.
+pub struct RecordsDoor {
+    apps: Rc<Apps>,
+    pub reads: RecordReads,
+}
+
+impl TaskDoor for RecordsDoor {
+    fn read(&self, app: &str, item: &str) -> Result<Json, String> {
+        self.reads.read(app, item)
+    }
+
+    fn query(&self, app: &str, request: &Json) -> Result<Json, String> {
+        self.reads.query(app, request)
+    }
+
+    fn begin_program(&self) {
+        self.reads.forget();
+    }
+
+    fn invoke(&self, call: &Json) -> Answered {
+        let answered = self.apps.invoke(call);
+        if let Some(app) = call["app"].as_str() {
+            self.reads.forget_app(app);
+        }
+        answered
     }
 }
 
