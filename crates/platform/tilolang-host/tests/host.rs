@@ -347,6 +347,7 @@ fn opened_from_own_copy(
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
         detail: None,
+        detail_target: None,
         activated: false,
     };
     (host, window, sent, route)
@@ -1158,8 +1159,13 @@ fn broker_labels(sent: &Sent) -> Vec<String> {
 /// runs them.
 fn typing(held: usize, field: &str, typed: &str) -> Typed {
     let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, sent, inbox, _route) =
-        running_with("ada", NOTES, notes(), Rc::clone(&directory));
+    let (mut host, mut window, sent, inbox, _route) = running_with(
+        "ada",
+        NOTES,
+        notes(),
+        Rc::clone(&directory),
+        automerge::AutoCommit::new(),
+    );
     settle(&mut host, &mut window);
     // The person starts a note from the empty notebook: it opens beside the list.
     let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
