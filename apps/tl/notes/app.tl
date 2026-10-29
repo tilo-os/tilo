@@ -32,9 +32,9 @@ default view note_editor for Note
 
 row view note_row for Note
 
-/// Starts a note.
+/// Starts a note. Its title starts empty: what is typed first names it.
 primary action new_note(notes: Notes) -> Note (icon: .plus) {
-    notes.insert(Note(title: "Untitled"))
+    notes.insert(Note(title: ""))
 }
 
 /// Pins or unpins a note.
@@ -79,14 +79,14 @@ view notebook(notes: Notes) {
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
 view note_row(n: Note) {
-    ui.ListRow(title: n.title, secondary: n.body, mark: if n.pinned { .pin })
+    ui.ListRow(title: if n.title.len() == 0 { "Untitled" } else { n.title }, secondary: n.body, mark: if n.pinned { .pin })
 }
 
 /// A note's window: its title, its tags as chips that come off with their remove button, and
 /// its body.
 view note_editor(n: Note) {
     std.document(n) {
-        ui.TextInput(value: n.title, placeholder: "Title")
+        ui.TextInput(value: n.title, placeholder: "Untitled")
         if not n.tags.is_empty() {
             row(gap: .related, wrap: true) {
                 for t in n.tags {

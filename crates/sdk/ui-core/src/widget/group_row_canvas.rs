@@ -132,6 +132,10 @@ impl GroupRow {
             _ => false,
         };
         self.canvas = view;
+        let carriable = self.canvas.is_some();
+        for group in &mut self.groups {
+            group.set_carriable(carriable);
+        }
         if only_panned {
             crate::widget::note_layout_moved();
         } else {
@@ -242,6 +246,9 @@ impl GroupRow {
         self.pan.viewport = self.rect;
         self.pan.inset = 0.0;
         for (group, node) in self.groups.iter_mut().zip(self.node_ids.iter()) {
+            // A window that came to the row while it shows a canvas is
+            // carried as the others are.
+            group.set_carriable(true);
             if !view.places.contains_key(&group.id) {
                 continue;
             }
@@ -252,8 +259,70 @@ impl GroupRow {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{make_group, relayout_strip};
+    use super::super::tests::{
+        dispatch_at, make_group, press_at, relayout_row_owned, relayout_strip,
+    };
     use super::*;
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    fn moved_to(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn released() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// On a canvas a window is carried by its title, and the carry owns the
+    /// pointer until it is let go: the deck lays every strip's row over the
+    /// canvas, and another row must not take the motion or the release. A
+    /// drag on empty canvas is never a strip pan.
+    #[test]
+    fn a_window_is_carried_by_its_title_and_owns_the_pointer_until_let_go() {
+        let mut row = GroupRow::new(vec![make_group(1, &[10]), make_group(2, &[20])]);
+        row.set_canvas(Some(view(
+            Point::ORIGIN,
+            1.0,
+            &[
+                (1, Rect::new(40.0, 40.0, 640.0, 440.0)),
+                (2, Rect::new(700.0, 40.0, 1200.0, 440.0)),
+            ],
+        )));
+        let (mut row, taffy, root) = relayout_row_owned(row, 1920.0);
+        let title = row.groups[0].tab_rects()[0].center();
+        assert!(
+            row.groups[0].carry_grab_hit(title),
+            "the title carries the window"
+        );
+        press_at(&mut row, &taffy, root, title);
+        for step in 1..=6 {
+            let at = title + Vec2::new(0.0, 30.0 * f64::from(step));
+            dispatch_at(&mut row, &taffy, root, &moved_to(at));
+        }
+        assert!(row.wants_pointer_capture(), "the carry owns the pointer");
+        dispatch_at(&mut row, &taffy, root, &released());
+        assert!(!row.wants_pointer_capture());
+        let (group, place) = row.take_pending_canvas_move().expect("the carry is kept");
+        assert_eq!(group, 1);
+        assert!((place.y0 - 220.0).abs() < 1.0, "{place:?}");
+
+        // Empty canvas: no strip pan, nothing claimed.
+        let empty = Point::new(1500.0, 800.0);
+        press_at(&mut row, &taffy, root, empty);
+        for step in 1..=6 {
+            let at = empty + Vec2::new(-40.0 * f64::from(step), 0.0);
+            dispatch_at(&mut row, &taffy, root, &moved_to(at));
+        }
+        assert!(!row.wants_pointer_capture(), "a canvas has no strip to pan");
+        dispatch_at(&mut row, &taffy, root, &released());
+    }
 
     fn view(origin: Point, zoom: f64, places: &[(u64, Rect)]) -> CanvasView {
         CanvasView {

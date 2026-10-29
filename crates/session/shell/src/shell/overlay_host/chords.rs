@@ -424,7 +424,7 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.layers.dismiss_topmost() {
+        if self.dismiss_topmost_popover() {
             *handled = true;
             return true;
         }

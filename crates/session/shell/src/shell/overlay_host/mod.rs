@@ -86,6 +86,7 @@ mod now_playing;
 mod palette_flow;
 mod parked_workspaces;
 mod peer_sync_dispatch;
+mod popovers;
 mod shared_window_follow;
 mod sheet_accessibility;
 pub(crate) mod sheet_apps;
