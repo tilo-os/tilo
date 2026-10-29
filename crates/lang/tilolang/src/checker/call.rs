@@ -277,11 +277,24 @@ impl Checker<'_> {
                 ),
             }
         }
+        // An action a view applies may leave out its last parameters: running it opens its
+        // form, which asks the person for them (forms-and-diagrams.md §1).
+        let asked = |at: usize| {
+            at_press
+                && slots
+                    .get(at..)
+                    .is_some_and(|rest| rest.iter().all(Option::is_none))
+                && params.get(at..).is_some_and(|rest| {
+                    rest.iter()
+                        .all(|p| p.default.is_some() || p.ty.asked_by_form())
+                })
+        };
         let missing: Vec<&str> = params
             .iter()
             .zip(&slots)
-            .filter(|(p, s)| s.is_none() && p.default.is_none())
-            .map(|(p, _)| p.name.as_str())
+            .enumerate()
+            .filter(|(at, (p, s))| s.is_none() && p.default.is_none() && !asked(*at))
+            .map(|(_, (p, _))| p.name.as_str())
             .collect();
         if !missing.is_empty() {
             self.err(
@@ -290,11 +303,21 @@ impl Checker<'_> {
                 format!("`{name}` is missing {}; it is {sig}", missing.join(", ")),
             );
         }
+        let given = slots
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |at| at + 1);
+        let asked_from: Vec<bool> = (0..params.len()).map(asked).collect();
         slots
             .into_iter()
             .zip(params)
-            .map(|(s, p)| match s {
-                None if p.default.is_none() => Some(Ex::error()),
+            .enumerate()
+            .map(|(at, (s, p))| match s {
+                None if p.default.is_none()
+                    && !(at >= given && asked_from.get(at).copied().unwrap_or(false)) =>
+                {
+                    Some(Ex::error())
+                }
                 other => other,
             })
             .collect()

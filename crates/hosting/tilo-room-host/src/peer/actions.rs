@@ -124,35 +124,115 @@ pub(super) async fn handle_remote_action(
 /// (`tilo.host`), asked over the caller's authenticated connection with no
 /// workspace. The host's governance decides who may, as for every door:
 /// only the devices of the host's own person, speaking for themselves.
-pub(super) fn handle_host_action(peer: &AuthenticatedPeer, session: &SessionCtx<'_>, frame: &[u8]) {
-    use tilo_actions::remote::RemoteActionFrame;
-    if !super::session_peer_authorized(peer, session)
-        || frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES
-    {
-        return;
+///
+/// Every request that can be read is answered: a refusal comes back at once
+/// as the returned envelope, and an answer the plane abandons comes back as a
+/// refusal ([`answer_later`]). A frame too large to read or that does not
+/// decode names no request to answer; it is logged.
+pub(super) fn handle_host_action(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    frame: &[u8],
+) -> Option<Envelope> {
+    use tilo_actions::remote::{ActionHostError, RemoteActionFrame, refuse};
+    if frame.len() > tilo_actions::remote::MAX_REMOTE_ACTION_FRAME_BYTES {
+        tracing::warn!(
+            device = %hex::encode(peer.device_public_key),
+            bytes = frame.len(),
+            "a host action frame exceeds the limit; it was not read"
+        );
+        return None;
+    }
+    let request = match RemoteActionFrame::decode(frame) {
+        Ok(request) => request,
+        Err(error) => {
+            tracing::warn!(
+                device = %hex::encode(peer.device_public_key),
+                %error,
+                "a host action frame does not decode; it names no request to answer"
+            );
+            return None;
+        }
+    };
+    let refused = |error: ActionHostError| host_action_envelope(refuse(&request.message, error)?);
+    if !super::session_peer_authorized(peer, session) {
+        return refused(ActionHostError::NotPermitted);
     }
     let Some(plane) = session.app_serving else {
-        return;
+        return refused(ActionHostError::Unavailable {
+            reason: "this host serves no host operations".into(),
+        });
     };
-    let Ok(request) = RemoteActionFrame::decode(frame) else {
-        return;
+    let caller = match session_caller(peer, session) {
+        Ok(caller) => caller,
+        Err((_, detail)) => {
+            return refused(ActionHostError::Refused {
+                reason: detail.into(),
+            });
+        }
     };
-    let Ok(caller) = session_caller(peer, session) else {
-        return;
-    };
+    let unanswered = refuse(
+        &request.message,
+        ActionHostError::Unavailable {
+            reason: "this host answers no such operation".into(),
+        },
+    );
+    let abandoned = refuse(
+        &request.message,
+        ActionHostError::Unavailable {
+            reason: "the host dropped the request".into(),
+        },
+    );
     let Some(reply) = plane.serve_host(&caller, &peer.cert, request.message) else {
-        return;
+        // `None` for a response (which needs no answer) or an operation the
+        // plane does not serve, which is refused.
+        return host_action_envelope(unanswered?);
     };
     let outbound = session.outbound.clone();
+    answer_later(reply, abandoned, move |reply| {
+        host_action_envelope(reply).map(|answer| (outbound, answer))
+    });
+    None
+}
+
+/// `message` as a `HostAction` answer; `None`, logged, if it cannot be
+/// encoded.
+fn host_action_envelope(message: tilo_actions::remote::RemoteActionMessage) -> Option<Envelope> {
+    match tilo_actions::remote::RemoteActionFrame::new(message).encode() {
+        Ok(frame) => Some(Envelope::HostAction { frame }),
+        Err(error) => {
+            tracing::error!(%error, "a host action answer does not encode; the asker is not answered");
+            None
+        }
+    }
+}
+
+/// Write the answer `reply` resolves to on the connection once it is ready;
+/// an answer the plane drops is `abandoned` instead (a refusal, or `None` for
+/// a message that needed no answer). The answer waits for room in the
+/// connection's queue rather than being dropped when the room's own traffic
+/// filled it, and ends with the connection.
+fn answer_later(
+    reply: tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>,
+    abandoned: Option<tilo_actions::remote::RemoteActionMessage>,
+    envelope: impl FnOnce(
+        tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<(mpsc::Sender<Envelope>, Envelope)>
+    + Send
+    + 'static,
+) {
     let runtime = tokio::runtime::Handle::current();
     reply.then(move |reply| {
-        let Some(frame) = reply.and_then(|reply| RemoteActionFrame::new(reply).encode().ok())
-        else {
+        let Some(message) = reply.or(abandoned) else {
             return;
         };
-        let answer = Envelope::HostAction { frame };
+        let Some((outbound, answer)) = envelope(message) else {
+            return;
+        };
         if let Err(mpsc::error::TrySendError::Full(answer)) = outbound.try_send(answer) {
+            tracing::info!("an answer to a member waits for room in its connection's queue");
             runtime.spawn(async move {
+                // A closed connection has no asker left to answer.
                 let _ = outbound.send(answer).await;
             });
         }
@@ -199,22 +279,42 @@ fn serve_locally(
             tilo_relay_protocol::refusal::TOO_MANY_CHANGES,
         ));
     }
+    let abandoned = tilo_actions::remote::refuse(
+        &request.message,
+        tilo_actions::remote::ActionHostError::Unavailable {
+            reason: "the host dropped the request".into(),
+        },
+    );
     let Some(reply) = plane.serve_certified(workspace_id, &caller, &peer.cert, request.message)
     else {
-        return Ok(None);
+        // A response needs no answer; a request the plane leaves unanswered
+        // is refused, so its asker does not wait for nothing.
+        return if abandoned.is_some() {
+            Err((
+                UnavailableReason::UnsupportedPeer,
+                "this host does not answer that request",
+            ))
+        } else {
+            Ok(None)
+        };
     };
     let outbound = session.outbound.clone();
     let to_device_public_key = peer.device_public_key;
     let from_device_public_key = *session.own_device_public_key;
     let from_user_public_key = *session.own_user_public_key;
-    // The answer is all the asker waits for: it waits for room in the
-    // connection's queue rather than being dropped when the room's own
-    // traffic filled it. It ends with the connection.
-    let runtime = tokio::runtime::Handle::current();
-    reply.then(move |reply| {
-        let Some(frame) = reply.and_then(|reply| RemoteActionFrame::new(reply).encode().ok())
-        else {
-            return;
+    // The answer is all the asker waits for: one the plane drops is a
+    // refusal, never nothing.
+    answer_later(reply, abandoned, move |reply| {
+        let frame = match RemoteActionFrame::new(reply).encode() {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::error!(
+                    workspace_id,
+                    %error,
+                    "a remote action answer does not encode; the asker is not answered"
+                );
+                return None;
+            }
         };
         let answer = Envelope::RemoteAction {
             workspace_id,
@@ -224,15 +324,7 @@ fn serve_locally(
             from_user_public_key,
             frame,
         };
-        if let Err(mpsc::error::TrySendError::Full(answer)) = outbound.try_send(answer) {
-            tracing::info!(
-                workspace_id,
-                "an answer to a member waits for room in its connection's queue"
-            );
-            runtime.spawn(async move {
-                let _ = outbound.send(answer).await;
-            });
-        }
+        Some((outbound, answer))
     });
     Ok(None)
 }
