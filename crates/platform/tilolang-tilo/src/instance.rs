@@ -228,6 +228,8 @@ pub struct Instance {
     opening: bool,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
+    /// What the window said it calls people, which `names` reads first.
+    told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
@@ -274,6 +276,10 @@ pub struct Instance {
     /// The window's keyboard focus: the bound control it is in.
     focus: Option<(Lane, String)>,
     composing: bool,
+    /// How many presses the window sent (`ToApp::Fire`) the instance ran, and how many of
+    /// them it told the window it ran (`ToUi::Took`).
+    fired: u64,
+    fired_told: u64,
 }
 
 impl Instance {
@@ -286,6 +292,7 @@ impl Instance {
         transport: Box<dyn Transport>,
     ) -> Self {
         let people = crate::members::People::new(&config.me, []);
+        let told = Rc::new(crate::names::Told::new(&config.me, names));
         Self {
             app: config.app,
             me: config.me,
@@ -296,7 +303,8 @@ impl Instance {
             record_loader: config.record_loader,
             standing: Rc::default(),
             platform,
-            names,
+            names: Rc::clone(&told) as Rc<dyn NameHost>,
+            told,
             host: Rc::default(),
             publication: None,
             root: None,
@@ -332,6 +340,8 @@ impl Instance {
             taken_build: None,
             focus: None,
             composing: false,
+            fired: 0,
+            fired_told: 0,
         }
     }
 
@@ -1348,7 +1358,10 @@ impl Instance {
                 key,
                 event,
                 value,
-            } => self.fire(lane, &key, &event, value.as_ref(), &mut ran),
+            } => {
+                self.fired += 1;
+                self.fire(lane, &key, &event, value.as_ref(), &mut ran)
+            }
             ToApp::Toggle { lane, key, checked } => self.edit(lane, &key, Value::Bool(checked)),
             ToApp::Splice {
                 lane,
@@ -1412,6 +1425,12 @@ impl Instance {
             }
             ToApp::Composing(composing) => {
                 self.composing = composing;
+                Ok(())
+            }
+            ToApp::Names { me, others } => {
+                if self.told.tell(me, others) {
+                    self.names_changed = true;
+                }
                 Ok(())
             }
         };
@@ -1715,6 +1734,12 @@ impl Instance {
             for lane in [Lane::Root, Lane::Detail] {
                 self.resend(lane);
             }
+        }
+        // The presses ran and what they opened is sent: what the person typed after them can
+        // go to the field focused now.
+        if self.fired != self.fired_told {
+            self.fired_told = self.fired;
+            self.out.push(ToUi::Took { fired: self.fired });
         }
         self.flush();
         changed
