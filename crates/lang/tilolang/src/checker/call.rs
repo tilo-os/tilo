@@ -1360,10 +1360,30 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        // Over a collection, a key the store can order by is asked of it first; the collection
+        // is held in a local for that, which the loop reads too.
+        let native = match &list.ty {
+            Ty::Collection(_) => self.sort_key(elem, &param.name, &body),
+            _ => None,
+        };
+        let (list, held) = match native {
+            Some(_) => {
+                let ty = list.ty.clone();
+                let local = self.fresh(ty.clone());
+                (Ex::local(local, ty), Some((local, list)))
+            }
+            None => (list, None),
+        };
         let mut fl = self.new_for(list, elem);
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
-        let key = self.expr(&body, None);
+        let key = match &native {
+            // A version sorts by its time; none comes first.
+            Some(super::order::SortKey::Version { last }) => {
+                self.version_time(Ex::local(fl.item_local, elem.clone()), *last)
+            }
+            _ => self.expr(&body, None),
+        };
         // A Date or a Time is ISO text, which sorts in time order.
         let key = match key.ty {
             Ty::Date | Ty::Time => key.typed(Ty::Text),
@@ -1402,7 +1422,13 @@ impl Checker<'_> {
         if desc {
             sorted = Ex::host(Imp::ListReverse, vec![sorted], out_ty.clone());
         }
-        Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty)
+        let looped = Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty);
+        match (native, held) {
+            (Some(key), Some((local, held))) => {
+                self.ordered_or_loop(local, held, &key, desc, looped)
+            }
+            _ => looped,
+        }
     }
 
     /// The body of `filter`, `any`, `all`, `find` and `count`: tests the lambda on the item.

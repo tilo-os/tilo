@@ -251,19 +251,19 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, Actions, CollInsert, CollMove, CollRemove,
-            CollWhere, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
-            EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop,
-            InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen,
-            ListNew, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys,
-            MapPut, MapRemove, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq,
-            PrincipalName, PrincipalNamed, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI,
-            RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF,
-            ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime, SetAdd,
-            SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat, StrEq,
-            StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-            TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, Versions,
+            Abort, ActOpen, ActRef, ActSet, ActThen, Actions, CollInsert, CollMove, CollOrdered,
+            CollRemove, CollWhere, CollWhereWith, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
+            EnumSetF, EnumSetH, EnumSetI, EventValue, Filters, FloatToStr, IdentPart, IntToStr,
+            Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF,
+            ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListReverse,
+            ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MetaOf, ModelCall, NoneV, Now,
+            Outside, Phrase, PrincipalEq, PrincipalName, PrincipalNamed, Query, QueueBlock, RecNew,
+            RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
+            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart,
+            RichTime, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
+            StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+            TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -275,6 +275,14 @@ impl Core {
             | NoneV | IsSome | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             CollWhere => {
                 let found = self.coll_where(a.h(0)?, a.h(1)?)?;
+                self.ret_h(found)
+            }
+            CollWhereWith => {
+                let found = self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?;
+                self.ret_h(found)
+            }
+            CollOrdered => {
+                let found = self.coll_ordered(a.h(0)?, a.h(1)?)?;
                 self.ret_h(found)
             }
             Query => {
@@ -304,7 +312,7 @@ impl Core {
             | SpaceF | UiBindState | StateGet | ActSet | ActThen | ActOpen => {
                 self.ui_import(imp, a)
             }
-            EventValue | Actions | Lenses | MetaOf | Versions | Phrase => {
+            EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {
                 self.platform_import(imp, a)
             }
             Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {

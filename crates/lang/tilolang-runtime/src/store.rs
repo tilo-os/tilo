@@ -295,6 +295,41 @@ pub struct Version {
     pub action: String,
 }
 
+/// The version of a resource an order or a key reads, beside its fields: its first
+/// (`created(r)`) or its last (`updated(r)`), ordered by their time. Named in an [`Order`] by
+/// the pseudo-field ids `$created` and `$updated`, which no declared field has.
+///
+/// [`Order`]: crate::query::Order
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reflected {
+    Created,
+    Updated,
+}
+
+impl Reflected {
+    pub const CREATED: &'static str = "$created";
+    pub const UPDATED: &'static str = "$updated";
+
+    /// The version the pseudo-field `field` names.
+    #[must_use]
+    pub fn of(field: &str) -> Option<Self> {
+        match field {
+            Self::CREATED => Some(Self::Created),
+            Self::UPDATED => Some(Self::Updated),
+            _ => None,
+        }
+    }
+
+    /// The pseudo-field naming it.
+    #[must_use]
+    pub const fn field(self) -> &'static str {
+        match self {
+            Self::Created => Self::CREATED,
+            Self::Updated => Self::UPDATED,
+        }
+    }
+}
+
 /// The versions of `at` among a document's change notes, oldest first: the changes whose
 /// resources include it.
 #[must_use]
@@ -666,7 +701,12 @@ pub trait Store {
         let mut keyed = Vec::with_capacity(base.len());
         for id in base.iter() {
             let target = at.item(&field.id, &id, item.clone());
-            let value = lit_of(&spec.id, self.read(&target, &spec)?, &Lit::Absent)?;
+            let value = match Reflected::of(&order.field) {
+                Some(end) => self
+                    .version_end(&target, end == Reflected::Updated)?
+                    .map_or(Lit::Absent, |v| Lit::Time(v.at)),
+                None => lit_of(&spec.id, self.read(&target, &spec)?, &Lit::Absent)?,
+            };
             keyed.push((value, id));
         }
         keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
@@ -712,6 +752,22 @@ pub trait Store {
     /// As [`Store::history`].
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
         Ok(versions_in(&self.history(&at.doc)?, at))
+    }
+
+    /// The first version of the resource `at` (`created(r)`), or its last (`updated(r)`,
+    /// `last`). A store with an index keeps both per resource, so a view showing them, or a
+    /// list sorted by them, reads no history.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions`].
+    fn version_end(&self, at: &ResourceRef, last: bool) -> Result<Option<Version>, StoreError> {
+        let mut versions = self.versions(at)?;
+        Ok(if last {
+            versions.pop()
+        } else {
+            versions.into_iter().next()
+        })
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;

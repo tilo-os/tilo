@@ -246,10 +246,12 @@ impl CollRef {
                 .filter
                 .as_deref()
                 .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
-            || self
-                .order
-                .as_ref()
-                .is_some_and(|order| order.field == field)
+            || self.order.as_ref().is_some_and(|order| {
+                // Any change of an item is its last version.
+                order.field == field
+                    || crate::store::Reflected::of(&order.field)
+                        == Some(crate::store::Reflected::Updated)
+            })
     }
 
     /// A reference to the item `id` of the collection.

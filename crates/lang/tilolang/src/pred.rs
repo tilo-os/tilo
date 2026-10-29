@@ -54,6 +54,10 @@ pub enum Operand<F> {
     Field(F),
     Lit(Lit),
     Len(F),
+    /// The `n`th value the code that asked holds (`c -> c.column == col`, `col` a local):
+    /// what it holds is bound when the predicate is asked ([`Pred::bind`]), and a store
+    /// answers it as the literal.
+    Arg(u32),
 }
 
 /// A value a predicate compares.
@@ -233,6 +237,22 @@ impl<F> Pred<F> {
         })
     }
 
+    /// The same predicate with each value the asking code holds ([`Operand::Arg`]) as the
+    /// literal `args` holds at its place; `None` when `args` holds none there.
+    #[must_use]
+    pub fn bind(&self, args: &[Lit]) -> Option<Self>
+    where
+        F: Clone,
+    {
+        Some(match self {
+            Self::Not(p) => Self::Not(Box::new(p.bind(args)?)),
+            Self::And(ps) => Self::And(ps.iter().map(|p| p.bind(args)).collect::<Option<_>>()?),
+            Self::Or(ps) => Self::Or(ps.iter().map(|p| p.bind(args)).collect::<Option<_>>()?),
+            Self::Cmp(op, a, b) => Self::Cmp(*op, a.bind(args)?, b.bind(args)?),
+            other => other.clone(),
+        })
+    }
+
     /// Every field it reads.
     pub fn fields(&self) -> Vec<&F> {
         let mut out = Vec::new();
@@ -331,6 +351,17 @@ impl<F> Operand<F> {
             Self::Field(f) => Operand::Field(map(f)?),
             Self::Lit(l) => Operand::Lit(l.clone()),
             Self::Len(f) => Operand::Len(map(f)?),
+            Self::Arg(n) => Operand::Arg(*n),
+        })
+    }
+
+    fn bind(&self, args: &[Lit]) -> Option<Self>
+    where
+        F: Clone,
+    {
+        Some(match self {
+            Self::Arg(n) => Self::Lit(args.get(usize::try_from(*n).ok()?)?.clone()),
+            other => other.clone(),
         })
     }
 
@@ -346,6 +377,8 @@ impl<F> Operand<F> {
                     .as_text()
                     .map_or(0, |t| i64::try_from(t.chars().count()).unwrap_or(i64::MAX)),
             })),
+            // Bound before it is asked ([`Pred::bind`]): one that is not holds nothing.
+            Self::Arg(_) => Ok(Lit::Absent),
         }
     }
 }

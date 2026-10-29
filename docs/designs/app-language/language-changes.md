@@ -14,7 +14,8 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    views and code can read it: `created(r)` and `updated(r)` (when, and by whom) and
    `history(r)` (versions, each with who, when and which action). Apps stop storing their own
    timestamps; Chat's `at: Time = Time("1970-01-01T00:00:00Z")` placeholder goes, and detail
-   views show "edited when, by whom" from it. Code can't rewrite the log, but undo, redo, restoring a version and reverting someone's
+   views show "edited when, by whom" from it. Lists sort by them like by a field
+   (`sort_by(c -> updated(c), desc)`), answered by the index. Code can't rewrite the log, but undo, redo, restoring a version and reverting someone's
    changes are ordinary actions on it: attributed, permission-checked and themselves undoable.
 3. **Scenarios set recorded inputs.** `as mia at 2026-06-29T07:02Z { post(...) }` runs the
    block with that time as `now`. Seed data stops overwriting fields after the fact.
