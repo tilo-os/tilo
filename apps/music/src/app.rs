@@ -1066,8 +1066,18 @@ impl Music {
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
-        let next_library =
-            <crate::model::Library as ui::tilo_resource::Resource>::read(state).unwrap_or_default();
+        // A library that does not read is not an empty one: the framework
+        // says why in place of the view, and the catalog, the playlists and
+        // what plays from them stay as they last read whole.
+        let next_library = match <crate::model::Library as ui::tilo_resource::Resource>::read(state)
+        {
+            Ok(library) => library,
+            Err(error) => {
+                tracing::warn!(%error, "music: the library does not read");
+                self.library_heads = Some(heads);
+                return;
+            }
+        };
         self.stored_library.clone_from(&next_library);
         self.library_revision = self.library_revision.wrapping_add(1);
         self.lib = next_library;

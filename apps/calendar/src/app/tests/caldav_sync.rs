@@ -29,7 +29,8 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.sample_accounts = false; // exercise the real (threaded) branch
         app.accounts = AccountStore::sample();
         let mut state = demo_document(&app);
-        app.start_sync(&mut Edits::lend(&mut state));
+        app.start_sync(&mut Edits::lend(&mut state))
+            .expect("a calendar that reads is synchronized");
         assert!(app.state().syncing, "a live sync is in flight");
         assert!(app.sync_rx.is_some(), "worker result channel is armed");
         // The worker's reply wakes the app through its waking channel;
@@ -50,7 +51,8 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.sample_accounts = false;
         app.accounts = AccountStore::default();
         let mut state = demo_document(&app);
-        app.start_sync(&mut Edits::lend(&mut state));
+        app.start_sync(&mut Edits::lend(&mut state))
+            .expect("a calendar that reads is synchronized");
         assert!(!app.state().syncing, "nothing to sync → no background work");
         assert!(app.status.text().unwrap_or("").contains("account"));
     }
@@ -207,7 +209,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: 1,
             },
             &mut Edits::lend(&mut doc),
-        );
+        )
+        .expect("the calendar reads");
         let id = remote_at(&doc, "work/default", "/dav/work/meeting.ics")
             .expect("what the server keeps there is known");
         app.apply_sync_result(
@@ -232,7 +235,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: 1,
             },
             &mut Edits::lend(&mut doc),
-        );
+        )
+        .expect("the calendar reads");
         assert_eq!(app.model.event(id).unwrap().title, "Server-edited title");
         assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
         app.apply_sync_result(
@@ -254,7 +258,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 events: 0,
             },
             &mut Edits::lend(&mut doc),
-        );
+        )
+        .expect("the calendar reads");
         assert!(app.model.event(id).is_none());
         assert!(
             !crate::resource::read_doc(&doc)
@@ -309,7 +314,8 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                         events: 0,
                     },
                     &mut Edits::lend(doc),
-                );
+                )
+                .expect("the calendar reads");
             };
 
         apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
@@ -324,4 +330,94 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
         assert!(app.model.task(id).is_some_and(|task| task.done));
         assert_eq!(remote_etag(&doc, id).as_deref(), Some("\"two\""));
     }
+}
+
+/// `doc` with its events no longer a keyed collection: what a newer or
+/// broken writer can leave behind.
+fn corrupt_events(doc: &mut AutoCommit) {
+    automerge::transaction::Transactable::put(doc, ROOT, "events", "not a keyed collection")
+        .expect("the field is written");
+}
+
+#[test]
+fn a_calendar_that_does_not_read_is_neither_emptied_nor_synchronized() {
+    let mut app = CalendarApp::new_demo();
+    let mut state = demo_document(&app);
+    present(&mut app, &mut state, &ROOT);
+    let shown: Vec<Id> = app.model.events.iter().map(|event| event.id).collect();
+    assert!(!shown.is_empty(), "the demo calendar has events");
+
+    corrupt_events(&mut state);
+    assert!(Calendar::read_whole(&state).is_err());
+    present(&mut app, &mut state, &ROOT);
+    assert_eq!(
+        app.model
+            .events
+            .iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>(),
+        shown,
+        "the calendar that last read whole stays, not an empty one"
+    );
+
+    // A pull is not planned from nothing: it would protect no queued upload
+    // and start from no sync token.
+    app.sample_accounts = false;
+    app.accounts = AccountStore::sample();
+    let refusal = app
+        .start_sync(&mut Edits::lend(&mut state))
+        .expect_err("no pull starts from a calendar that does not read");
+    assert!(refusal.starts_with("Sync unavailable"), "{refusal:?}");
+    assert!(app.sync_rx.is_none() && !app.state().syncing);
+    assert_eq!(app.status.text(), Some(refusal.as_str()));
+
+    // Nor is a finished pull folded into nothing, which would give each item
+    // the server holds a new identity.
+    let start = app
+        .today
+        .and_time(chrono::NaiveTime::from_hms_opt(8, 0, 0).unwrap());
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send((
+        caldav::SyncResult {
+            resources: vec![caldav::RemoteResource {
+                calendar_id: "work/default".into(),
+                href: "/dav/work/meeting.ics".into(),
+                etag: Some("\"one\"".into()),
+                events: vec![crate::model::Event {
+                    id: Uuid::new_v4(),
+                    title: "Pulled into a broken calendar".into(),
+                    start,
+                    end: start + Duration::hours(1),
+                    ..crate::model::Event::default()
+                }],
+                tasks: Vec::new(),
+            }],
+            ..caldav::SyncResult::default()
+        },
+        SyncOutcome::Synced {
+            calendars: 1,
+            events: 1,
+        },
+    ))
+    .unwrap();
+    app.sync_rx = Some(rx);
+    app.state().syncing = true;
+    app.poll_sync(&mut Edits::lend(&mut state));
+    assert!(!app.state().syncing, "the drain clears the in-flight flag");
+    assert!(
+        app.status
+            .text()
+            .is_some_and(|text| text.starts_with("Sync unavailable")),
+        "the bar says the pull was not folded in, not that it synced: {:?}",
+        app.status.text()
+    );
+    assert_eq!(
+        app.model
+            .events
+            .iter()
+            .map(|event| event.id)
+            .collect::<Vec<_>>(),
+        shown,
+        "nothing was reconciled into a calendar that does not read"
+    );
 }

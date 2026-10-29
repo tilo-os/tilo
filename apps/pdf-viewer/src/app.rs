@@ -1721,14 +1721,20 @@ impl PdfApp {
         if self.page_maps.len() != self.doc.page_count() {
             self.rebuild_page_maps();
         }
-        self.stored_annotations = PdfMarkup::of(state).list_annotations();
+        // Markup that does not read is not markup that holds nothing: the
+        // framework says why in place of the view, and the annotations,
+        // comments and their open views stay as they last read whole.
+        let Ok(markup) = <PdfMarkup as ui::tilo_resource::Resource>::read(state) else {
+            return;
+        };
+        self.stored_annotations = markup.list_annotations();
         self.annotations = self
             .stored_annotations
             .iter()
             .map(|a| self.page_map(a.page).annotation_to_card(a))
             .collect();
-        self.adopted = PdfMarkup::of(state).adopted_entries();
-        self.comments = PdfMarkup::of(state).list_comments();
+        self.adopted = markup.adopted_entries();
+        self.comments = markup.list_comments();
         let shown: HashSet<String> = self
             .comments
             .iter()
@@ -1743,12 +1749,12 @@ impl PdfApp {
         self.comment_views
             .get_mut()
             .retain(|key, _| shown.contains(key));
-        self.signatures = PdfMarkup::of(state)
+        self.signatures = markup
             .list_signatures()
             .iter()
             .map(|s| self.page_map(s.page).signature_to_card(s))
             .collect();
-        self.form_values = PdfMarkup::of(state).form_values;
+        self.form_values = markup.form_values;
     }
 
     // ---- geometry ---------------------------------------------------
