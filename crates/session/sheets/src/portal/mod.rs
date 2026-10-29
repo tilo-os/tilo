@@ -9,9 +9,10 @@
 //! answered and how, and tells the sheet what to show ([`Dialog`], plain
 //! data through [`PortalSeat`]). The sheet presents it and asks: every
 //! choice comes back as a [`PortalEffect`], and answering needs the person
-//! (agents may decline, but never allow). Anything typed stays out of the
-//! effects: it goes to the shell through the seat, and a secret prompt's
-//! fields are kept in buffers the shell owns and wipes.
+//! (agents may decline, but never allow). Anything typed stays out of what
+//! the shell is asked: typing (by key or by the `type` actions, whose text
+//! is a secret parameter) goes to the shell through the seat, and a secret
+//! prompt's fields are kept in buffers the shell owns and wipes.
 //!
 //! Keys: Up and Down (and Tab) move between the choices, Enter answers (or
 //! turns to the next page of a review), Left and Right page a review,
@@ -28,6 +29,7 @@ use ui::prelude::*;
 use ui::widget::{Element, SecretAnswer};
 
 use crate::presentation::Presentation;
+use crate::t;
 
 mod fixtures;
 mod keys;
@@ -92,6 +94,23 @@ pub enum PortalEffect {
     Answer {
         #[param("The answer, counted from zero")]
         index: u32,
+    },
+    /// Type into one of the sheet's fields: a launcher's name, a step's
+    /// answer or a draft's text
+    #[effect(own_device)]
+    Type {
+        #[param("name, answer, or draft-N for the draft's field N")]
+        field: String,
+        #[param(secret, "The field's whole text")]
+        text: String,
+    },
+    /// Type into one of the secret prompt's fields
+    #[effect(own_device)]
+    TypeSecret {
+        #[param("The field, counted from zero")]
+        field: u32,
+        #[param(secret, "The field's whole value")]
+        value: String,
     },
     /// Answer with what was typed into the secret prompt
     #[effect(own_device, attended)]
@@ -316,6 +335,8 @@ enum Focus {
 struct Shown {
     dialog: Option<Dialog>,
     focus: Focus,
+    /// Counts what was typed through the door, so the fields show it.
+    typed: u64,
 }
 
 impl Shown {
@@ -504,6 +525,115 @@ impl PortalSeat {
     pub fn press(&self, effect: PortalEffect) {
         self.asked.borrow_mut().push(effect);
     }
+
+    /// Take `effect` from the sheet's door. Typing stays in the seat and
+    /// is never asked; a secret prompt answered through the door is
+    /// answered with what its buffers hold, checked as the prompt checks
+    /// it.
+    fn take(&self, effect: PortalEffect) -> Result<(), String> {
+        let dialog = self.dialog();
+        match effect {
+            PortalEffect::Type { field, text } => {
+                let field = dialog
+                    .as_ref()
+                    .and_then(|dialog| typed_field(dialog, &field))
+                    .ok_or_else(|| t("portal-no-such-field"))?;
+                self.texts
+                    .borrow_mut()
+                    .insert(field, zeroize::Zeroizing::new(text));
+                self.retype();
+                return Ok(());
+            }
+            PortalEffect::TypeSecret { field, value } => {
+                let value = zeroize::Zeroizing::new(value);
+                let buffer = matches!(
+                    dialog,
+                    Some(Dialog {
+                        body: Body::Secret(_),
+                        ..
+                    })
+                )
+                .then(|| {
+                    let at = usize::try_from(field).ok()?;
+                    self.secrets.borrow().get(at).cloned()
+                })
+                .flatten()
+                .ok_or_else(|| t("portal-no-such-field"))?;
+                if let Ok(mut held) = buffer.lock() {
+                    zeroize::Zeroize::zeroize(&mut *held);
+                    held.push_str(&value);
+                }
+                self.retype();
+                return Ok(());
+            }
+            PortalEffect::Submit => {
+                if let Some(
+                    shown @ Dialog {
+                        body: Body::Secret(prompt),
+                        ..
+                    },
+                ) = &dialog
+                    && self.answer.borrow().is_none()
+                {
+                    let mut built = view::secret_prompt(shown, prompt, self);
+                    built.submit();
+                    match built.take_outcome() {
+                        Some(ui::widget::PromptOutcome::Submit(answer)) => {
+                            *self.answer.borrow_mut() = Some(answer);
+                        }
+                        _ => {
+                            return Err(built
+                                .error()
+                                .map_or_else(|| t("portal-secret-incomplete"), str::to_owned));
+                        }
+                    }
+                }
+            }
+            PortalEffect::Remember => {
+                if let Some(Dialog {
+                    body:
+                        Body::Secret(Prompt {
+                            option: Some((_, on)),
+                            ..
+                        }),
+                    ..
+                }) = &dialog
+                {
+                    self.option.set(Some(!self.option.get().unwrap_or(*on)));
+                    self.retype();
+                }
+            }
+            _ => {}
+        }
+        self.asked.borrow_mut().push(effect);
+        Ok(())
+    }
+
+    /// Show again what was typed through the door.
+    fn retype(&self) {
+        if let Some(shown) = self.shown.borrow().as_ref() {
+            shown.update(|shown| shown.typed = shown.typed.wrapping_add(1));
+        }
+        self.presentation.wake();
+    }
+}
+
+/// The typed field `name` names on `dialog`, when it has it and the person
+/// may change it.
+fn typed_field(dialog: &Dialog, name: &str) -> Option<Field> {
+    match (&dialog.body, name) {
+        (Body::Launcher { name: Some(_), .. }, "name") => Some(Field::Name),
+        (Body::Entry { .. }, "answer") => Some(Field::Answer),
+        (Body::Draft { rows, .. }, name) => {
+            let at: usize = name.strip_prefix("draft-")?.parse().ok()?;
+            rows.iter()
+                .find(|row| {
+                    row.index == at && row.editable && matches!(row.value, DraftValue::Text { .. })
+                })
+                .map(|row| Field::Draft(row.index))
+        }
+        _ => None,
+    }
 }
 
 /// The sheet as an app.
@@ -538,12 +668,16 @@ impl ResourceApp for PortalApp {
         });
         let dialog = seat.dialog();
         let focus = dialog.as_ref().map_or(Focus::Choices, Shown::first_focus);
-        let shown = cx.local(Shown { dialog, focus });
+        let shown = cx.local(Shown {
+            dialog,
+            focus,
+            typed: 0,
+        });
         *seat.shown.borrow_mut() = Some(shown.clone());
         seat.presentation.wake_with(cx.waker());
         let asking = seat.clone();
         cx.effects(move |effect: PortalEffect, _cx| {
-            asking.asked.borrow_mut().push(effect);
+            asking.take(effect)?;
             Ok(Effected::done())
         });
         let parts = view::Parts {

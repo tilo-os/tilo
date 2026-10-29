@@ -452,3 +452,107 @@ fn only_the_person_answers_but_anyone_may_decline() {
         );
     }
 }
+
+#[test]
+fn typing_is_a_published_step_whose_text_stays_in_the_seat() {
+    let (mut app, seat) = seated(dialog(draft()));
+    app.effect(&PortalEffect::Type {
+        field: "draft-0".to_owned(),
+        text: "grace@example.org".to_owned(),
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(seat.text(Field::Draft(0)).as_str(), "grace@example.org");
+    assert!(
+        app.harness()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.value() == Some("grace@example.org")),
+        "the field shows what was typed"
+    );
+    assert!(
+        seat.take_asked().is_empty(),
+        "typing asks the shell nothing"
+    );
+    // Only the fields the question has, and the person may change.
+    for field in ["draft-2", "draft-7", "answer", "name"] {
+        assert!(
+            app.effect(&PortalEffect::Type {
+                field: field.to_owned(),
+                text: "x".to_owned(),
+            })
+            .is_err(),
+            "{field}"
+        );
+    }
+    let (mut app, seat) = seated(dialog(Body::Entry {
+        masked: true,
+        required: true,
+        choices: Vec::new(),
+    }));
+    app.effect(&PortalEffect::Type {
+        field: "answer".to_owned(),
+        text: "4711".to_owned(),
+    })
+    .unwrap();
+    app.effect(&PortalEffect::Confirm).unwrap();
+    let asked = seat.take_asked();
+    assert_eq!(asked, [PortalEffect::Confirm]);
+    assert!(!asked_text(&asked).contains("4711"));
+    assert_eq!(seat.text(Field::Answer).as_str(), "4711");
+}
+
+#[test]
+fn a_secret_prompt_is_answered_through_the_door_as_the_prompt_checks_it() {
+    let (mut app, seat) = seated(network());
+    // A required field still empty: the prompt refuses, and nothing is
+    // asked.
+    assert!(app.effect(&PortalEffect::Submit).is_err());
+    assert!(seat.take_asked().is_empty());
+    assert!(seat.take_answer().is_none());
+    app.effect(&PortalEffect::TypeSecret {
+        field: 1,
+        value: "hunter2".to_owned(),
+    })
+    .unwrap();
+    assert!(
+        app.effect(&PortalEffect::TypeSecret {
+            field: 5,
+            value: "x".to_owned(),
+        })
+        .is_err()
+    );
+    app.settle();
+    assert_eq!(seat.secrets()[1].lock().unwrap().as_str(), "hunter2");
+    app.effect(&PortalEffect::Submit).unwrap();
+    let asked = seat.take_asked();
+    assert_eq!(asked, [PortalEffect::Submit]);
+    assert!(!asked_text(&asked).contains("hunter2"));
+    let answer = seat.take_answer().expect("the answer waits in the seat");
+    assert_eq!(answer.values[0].as_str(), "ada");
+    assert_eq!(answer.values[1].as_str(), "hunter2");
+}
+
+#[test]
+fn remember_ticks_a_secret_prompts_check_row() {
+    let Body::Secret(prompt) = network().body else {
+        panic!("the network fixture asks with a secret prompt")
+    };
+    let (mut app, seat) = seated(Dialog {
+        body: Body::Secret(Prompt {
+            option: Some(("Remember the password".to_owned(), true)),
+            ..prompt
+        }),
+        ..network()
+    });
+    app.effect(&PortalEffect::Remember).unwrap();
+    app.settle();
+    assert_eq!(seat.option(), Some(false));
+    app.effect(&PortalEffect::TypeSecret {
+        field: 1,
+        value: "hunter2".to_owned(),
+    })
+    .unwrap();
+    app.effect(&PortalEffect::Submit).unwrap();
+    assert_eq!(seat.take_answer().unwrap().option, Some(false));
+}
