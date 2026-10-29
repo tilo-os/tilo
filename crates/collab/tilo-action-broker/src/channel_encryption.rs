@@ -183,9 +183,8 @@ pub trait ChannelDirectory: Send {
     /// `route` is the channel's record when this device knows it: proven
     /// against the channel ([`ChannelRoute::proves`]), from a device's routed
     /// request or this device's own endpoint. Without it the directory names
-    /// the record only from grants naming it, and must withhold the channel
-    /// from every device a Deny over a pattern of records could keep out of
-    /// it ([`collab_types::pattern_read_witnesses`]).
+    /// the record only from grants naming it, and withholds a channel it
+    /// cannot name from every device: it may be a member's own record.
     fn allowed_devices(
         &self,
         room: RoomId,
@@ -1575,8 +1574,8 @@ pub mod testing {
         pub withheld: Arc<Mutex<HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>>>,
         /// Devices kept out of every record of an app: a Read Deny on the
         /// app. A channel whose route a device does not know may be any
-        /// app's, so they are kept out of it too, as a production directory
-        /// keeps out whoever may not read a pattern's witness.
+        /// app's, so they are kept out of it too (a production directory
+        /// keeps everyone out of a channel whose record it cannot name).
         pub withheld_apps: Arc<Mutex<HashMap<String, BTreeSet<Ed25519PublicKey>>>>,
     }
 

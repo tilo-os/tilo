@@ -1489,7 +1489,10 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     admit_view_reader(&rooms, &created.room, &key, &member).await;
     let governor = collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key);
     let device = collab_types::Ed25519PublicKey::from_bytes(member.device_public_key);
-    let channel = collab_types::ChannelId::new();
+    // The device names the record it asks for: a channel nobody named may
+    // be anyone's own record and admits no one.
+    let route = collab_types::ChannelRoute::new("so.tilo.notes", "tab:0000000000000001");
+    let channel = route.channel(&created.room);
     let vault = channel_crypto::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
@@ -1503,9 +1506,10 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     .access_request_now(1, false, &vault)
     .unwrap()
     .expect("a member waiting for the channel asks for it");
-    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
         room: created.room.clone(),
         request: Box::new(request),
+        route: Box::new(route),
         delivery: 1,
     })
     .unwrap();

@@ -261,15 +261,11 @@ trust anyone:
   too. A kept route is checked again when it is read back, so a damaged file
   names no record rather than a wrong one.
 
-A channel whose record a participant cannot name may be any record that nothing
-names. It is withheld from every device whose person may not read one of the
-records a Deny over a pattern stands for (`collab_types::pattern_read_witnesses`:
-for each such grant, a record it covers that no grant names), and admitted to
-every other reader of the room. So "Finance: Deny Read" keeps its person out
-of every channel of the room until a device names the channel's record, while
-everyone else reads as before. This also makes the order of arrival harmless:
-a plain request that reaches a participant before its routed copy admits no
-one the Deny could keep out. The
+A channel whose record a participant cannot name may be any record, a
+member's own record (`member:<root>:<kind>`, read by that person alone)
+included, and its id does not say whose. It is withheld from every device
+until a device names its record, so a plain request that reaches a participant
+before its routed copy admits no one. The
 record of a channel nobody has written yet is named by its first request, so a
 new record admits its author and every other reader the decision allows from
 its first key. Nothing a participant keeps can let a denied device back in: a lost

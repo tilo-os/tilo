@@ -170,19 +170,22 @@ enum Change {
 /// The devices governance lets read a room's channels: the room's governed
 /// member devices (`access`, as `peer` derived it at `now`), each record's
 /// channel less the devices a Read Deny on that record, its app or a pattern
-/// over it withholds. The record of a channel is named by a grant or by one
-/// of the routes `participant` keeps; a channel whose record is neither is
-/// withheld from whoever a Deny over a pattern could keep out of it.
+/// over it withholds. The record of a channel is named by a grant, by one
+/// of the routes `participant` keeps or by `named`; a channel whose record
+/// is none of these may be anyone's own record and is withheld from every
+/// member until it is named.
 fn readers(
     peer: &StatePeer,
     access: &GovernedAccess,
     participant: Option<&participation::Participant>,
+    named: Option<&collab_types::ChannelRoute>,
     now: SystemTime,
 ) -> Result<participation::Readers, String> {
     let key = |device: [u8; 32]| collab_types::Ed25519PublicKey::from_bytes(device);
-    let routes = participant
+    let mut routes = participant
         .map(participation::Participant::routes)
         .unwrap_or_default();
+    routes.extend(named.cloned());
     let record_readers = peer.governance().withheld_record_readers(now, &routes)?;
     let withheld = record_readers
         .withheld
@@ -1917,7 +1920,7 @@ impl Rooms {
             let now = SystemTime::now();
             let access = governed.peer().governance().governed_access(now)?;
             self.learn_queued_routes(room, &participant, &access)?;
-            let room_readers = readers(governed.peer(), &access, Some(&*participant), now)?;
+            let room_readers = readers(governed.peer(), &access, Some(&*participant), None, now)?;
             let taken = (
                 governed.workspace_id(),
                 governed.record.generation,
@@ -2174,7 +2177,13 @@ impl Rooms {
         let host = &self.inner.host;
         let now = SystemTime::now();
         let access: GovernedAccess = room.peer().governance().governed_access(now)?;
-        let readers = readers(room.peer(), &access, room.participation.as_deref(), now)?;
+        let readers = readers(
+            room.peer(),
+            &access,
+            room.participation.as_deref(),
+            None,
+            now,
+        )?;
         host.access
             .replace(room.workspace_id(), true, access)
             .await

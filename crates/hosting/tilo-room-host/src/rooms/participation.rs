@@ -13,7 +13,7 @@
 //! out of that channel alone. A channel id is a hash of its record's route,
 //! so the node keeps each route a device proved with its request
 //! ([`Participant::learn_route`]); a channel whose route it does not know is
-//! withheld from whoever a Deny over a pattern could keep out of it. A relay
+//! withheld from every member, as it may be a member's own record. A relay
 //! with a plain host certificate governs rooms without taking part in their
 //! channels: it only keeps and forwards their sealed frames.
 //!
@@ -49,7 +49,7 @@ pub(super) struct Readers {
     /// record.
     withheld: HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>,
     /// Who is kept out of every channel whose record the node cannot name:
-    /// whoever a Deny over a pattern of records could keep out of it.
+    /// every member device, as such a channel may be a member's own record.
     unrouted: BTreeSet<Ed25519PublicKey>,
 }
 
@@ -73,8 +73,8 @@ impl Readers {
     }
 
     /// Whether a Read Deny keeps `channel`'s record from any device; a
-    /// channel whose record the node cannot name counts as withheld when
-    /// a Deny over a pattern of records could reach it.
+    /// channel whose record the node cannot name counts as withheld, as it
+    /// may be a member's own.
     #[cfg(feature = "web")]
     pub fn withholds(&self, channel: ChannelId) -> bool {
         !self

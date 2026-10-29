@@ -187,7 +187,10 @@ pub struct RecordReaders {
     /// devices that may not read that record (possibly none).
     pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
     /// The member devices kept out of every channel whose record the caller
-    /// cannot name: those a Deny over a pattern of records could keep out.
+    /// cannot name: all of them. Such a channel may be any record, a
+    /// member's own (`member:<root>:<kind>`, read by that person alone)
+    /// included, so no one is admitted to it until a device names its
+    /// record.
     pub unrouted: BTreeSet<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default)]

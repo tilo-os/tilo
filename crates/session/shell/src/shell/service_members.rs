@@ -215,8 +215,9 @@ mod tests {
             .unwrap()
             .set_owner(owner_id.clone());
         let tree = tree.shared();
-        let channel =
-            collab_types::document_channel_id("so.tilo.writer", &room.to_string(), "brief");
+        // Each device names the record it asks for: a channel nobody named
+        // admits no one.
+        let route = collab_types::ChannelRoute::new("so.tilo.writer", "brief");
         let artifact = collab_types::ArtifactId::new();
 
         let transport = Arc::new(Room::default());
@@ -277,7 +278,7 @@ mod tests {
                 service.pump(&service_end, *now, wall);
             }
         };
-        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+        let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("the owner's device opens its own channel");
         };
         let before = keys
@@ -290,12 +291,12 @@ mod tests {
 
         // Without a grant the service only waits.
         assert!(matches!(
-            service.access(room, channel, now),
+            service.access_record(room, &route, now).1,
             ChannelAccess::Waiting
         ));
         run(&mut owner, &mut service, &mut now, 1_000, 5);
         assert!(matches!(
-            service.access(room, channel, now),
+            service.access_record(room, &route, now).1,
             ChannelAccess::Waiting
         ));
 
@@ -314,7 +315,7 @@ mod tests {
             tree.govern_requests_here_for_test(&owner_id);
         }
         run(&mut owner, &mut service, &mut now, 1_000, 5);
-        let ChannelAccess::Ready(service_keys) = service.access(room, channel, now) else {
+        let ChannelAccess::Ready(service_keys) = service.access_record(room, &route, now).1 else {
             panic!("a granted service member is admitted");
         };
         assert!(
@@ -323,7 +324,7 @@ mod tests {
                 .is_ok(),
             "it reads the channel's history, like any joiner"
         );
-        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+        let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("owner keys");
         };
         let during = keys
@@ -342,10 +343,10 @@ mod tests {
         // The grant's deadline passes: the owner removes the service.
         run(&mut owner, &mut service, &mut now, 2_000, 5);
         assert!(matches!(
-            service.access(room, channel, now),
+            service.access_record(room, &route, now).1,
             ChannelAccess::Removed
         ));
-        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+        let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("owner keys");
         };
         assert!(

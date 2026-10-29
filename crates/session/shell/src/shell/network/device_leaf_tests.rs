@@ -256,7 +256,8 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             .then_some(())
     });
 
-    let channel = document_channel_id(NOTES, &room.to_string(), "plan");
+    let route = collab_types::ChannelRoute::new(NOTES, "plan");
+    let channel = route.channel(&room.to_string());
     let mut owner_channels = channels(&owner, &owner_tree, &dir.path().join("owner"), &owner_key);
     let mut member_channels = channels(
         &member,
@@ -273,7 +274,7 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             Instant::now(),
             tilo_clock::try_unix_now().unwrap(),
         );
-        channels.access(room, channel, Instant::now())
+        channels.access_record(room, &route, Instant::now()).1
     };
     let ready = |access: ChannelAccess, who: &str| match access {
         ChannelAccess::Ready(keys) => Some(keys),
@@ -314,11 +315,13 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             "timed out waiting for both devices to open the channel; owner ready {}, \
              collaborator ready {}, (broker signed, the host signed) {:?}",
             matches!(
-                owner_channels.access(room, channel, Instant::now()),
+                owner_channels.access_record(room, &route, Instant::now()).1,
                 ChannelAccess::Ready(_)
             ),
             matches!(
-                member_channels.access(room, channel, Instant::now()),
+                member_channels
+                    .access_record(room, &route, Instant::now())
+                    .1,
                 ChannelAccess::Ready(_)
             ),
             signers()

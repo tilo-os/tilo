@@ -965,8 +965,8 @@ record's route, so a participant names the record
 from a grant naming it or from the route a device sends beside its access request
 (`NeighbourMsg::MlsRoutedAccessRequest`), which it keeps only if the route hashes to the channel's
 id and keeps beside the channel's group across restarts. A channel whose record it cannot name is
-withheld from every device a Deny over a pattern could keep out
-(`collab_types::pattern_read_witnesses`), so omitting the route gains a denied device nothing. A
+withheld from every device until one names it (it may be a member's own record), so omitting the
+route gains a denied device nothing. A
 denied device that held a key is removed in a new epoch of that channel alone. Held by
 `channel_encryption`'s `a_read_deny_on_an_app_withholds_every_routed_channel_of_it` and
 `a_device_withheld_from_one_channel_loses_only_that_channels_key`, `channel_policy`'s

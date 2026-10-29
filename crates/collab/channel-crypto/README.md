@@ -335,7 +335,7 @@ If the lost machine was the room's governor, see the known limits above.
   proves with its access request (`NeighbourMsg::MlsRoutedAccessRequest`), and
   admits a device, or a service member, only while the same read decision
   allows that record; a channel whose record it cannot name is withheld from
-  whoever a Deny over a pattern of records could keep out. A Deny below a
+  everyone, as it may be a member's own record. A Deny below a
   record (an item, a field) still binds only honest clients and doors: one key
   opens the whole record, so against a modified client the record is the
   confidentiality boundary

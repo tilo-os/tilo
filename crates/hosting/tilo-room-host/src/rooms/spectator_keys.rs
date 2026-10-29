@@ -60,10 +60,18 @@ impl Rooms {
         if let Decision::Deny(reason) = decision {
             return Err(reason.reason().into());
         }
-        let channel = collab_types::document_channel_id(&route.app_id, &route.room, &route.record);
+        let named = collab_types::ChannelRoute::new(&route.app_id, &route.record);
+        let channel = named.channel(&route.room);
         let now = SystemTime::now();
         let access = room.peer().governance().governed_access(now)?;
-        if readers(room.peer(), &access, room.participation.as_deref(), now)?.withholds(channel) {
+        let readers = readers(
+            room.peer(),
+            &access,
+            room.participation.as_deref(),
+            Some(&named),
+            now,
+        )?;
+        if readers.withholds(channel) {
             return Err(
                 "this record is kept from some of the room, and from those who watch".into(),
             );

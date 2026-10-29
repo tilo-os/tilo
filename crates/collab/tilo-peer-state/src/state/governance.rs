@@ -131,11 +131,11 @@ impl PeerGovernance<'_> {
     /// Deny on the record, on its app or on any pattern over it withholds its
     /// key, and the room's other records are unaffected.
     ///
-    /// A channel whose record the caller cannot name may be any record
-    /// nothing names. [`RecordReaders::unrouted`] lists every device that
-    /// may not read one of the records a Deny over a pattern stands for
-    /// ([`collab_types::pattern_read_witnesses`]): such a channel is withheld
-    /// from them until a device names its record, and from no one else.
+    /// A channel whose record the caller cannot name may be any record, a
+    /// member's own included, which only that person reads
+    /// ([`collab_types::member_record`]); its id does not say whose. So
+    /// [`RecordReaders::unrouted`] lists every member device: such a channel
+    /// admits no one until a device names its record.
     pub fn withheld_record_readers(
         self,
         now: SystemTime,
@@ -191,10 +191,7 @@ impl PeerGovernance<'_> {
                 devices,
             );
         }
-        let unrouted = collab_types::pattern_read_witnesses(&policy.grants, room)
-            .iter()
-            .flat_map(|(app, record)| denied(app, record))
-            .collect();
+        let unrouted = access.member_devices.iter().copied().collect();
         Ok(RecordReaders { withheld, unrouted })
     }
     /// Authority-authored collaborator projection. The structural owner is
