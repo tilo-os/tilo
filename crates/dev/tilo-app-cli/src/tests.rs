@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 fn request(dir: PathBuf) -> NewAppRequest {
     NewAppRequest {
@@ -4544,8 +4545,9 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
     {
         let root = PathBuf::from("/workspace/apps/demo");
         let roots = [root.clone()];
-        let changed = |path: &str| {
-            Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(path))
+        let changed = |path: &str| Event {
+            path: root.join(path),
+            kind: tilo_files::ChangeKind::Changed,
         };
 
         assert!(event_requires_restart(&changed("src/main.rs"), &roots));
@@ -4564,44 +4566,44 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         ));
         assert!(!event_requires_restart(&changed("Cargo.lock"), &roots));
         assert!(!event_requires_restart(&changed("src/main.rs.swp"), &roots));
-        assert!(!event_requires_restart(
-            &Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.clone()),
-            &roots
-        ));
-
-        let access = Event::new(EventKind::Access(notify::event::AccessKind::Any))
-            .add_path(root.join("src/main.rs"));
-        assert!(!event_requires_restart(&access, &roots));
+        assert!(!event_requires_restart(&changed(""), &roots));
+        assert!(
+            event_requires_restart(
+                &Event {
+                    path: root.clone(),
+                    kind: tilo_files::ChangeKind::Rescan,
+                },
+                &roots
+            ),
+            "missed changes may have touched a source"
+        );
     }
 
     // Phase: dev_build_drain_detects_a_newer_edit_without_reacting_to_noise.
     {
         let root = PathBuf::from("/workspace/apps/demo");
         let roots = [root.clone()];
-        let changed = |path: &str| {
-            Event::new(EventKind::Modify(notify::event::ModifyKind::Any)).add_path(root.join(path))
+        let changed = |path: &str| Event {
+            path: root.join(path),
+            kind: tilo_files::ChangeKind::Changed,
         };
-        let (sender, events) = mpsc::channel::<notify::Result<Event>>();
+        let (sender, events) = mpsc::channel::<Event>();
         sender
-            .send(Ok(changed("target/debug/demo")))
+            .send(changed("target/debug/demo"))
             .expect("queue build noise");
         sender
-            .send(Ok(changed("src/app.rs")))
+            .send(changed("src/app.rs"))
             .expect("queue newer source edit");
         drop(sender);
+        assert!(drain_pending_restart_events(&events, &roots));
+        assert!(events.try_recv().is_err(), "every queued event is drained");
 
-        let mut observed = Vec::new();
-        assert!(drain_pending_restart_events(&events, &roots, |event| {
-            observed.extend(event.paths.iter().cloned());
-        }));
-        assert_eq!(observed.len(), 2, "the watcher observes every queued event");
-
-        let (sender, events) = mpsc::channel::<notify::Result<Event>>();
+        let (sender, events) = mpsc::channel::<Event>();
         sender
-            .send(Ok(changed("Cargo.lock")))
+            .send(changed("Cargo.lock"))
             .expect("queue ignored lock update");
         drop(sender);
-        assert!(!drain_pending_restart_events(&events, &roots, |_| {}));
+        assert!(!drain_pending_restart_events(&events, &roots));
     }
 
     // Phase: dev_candidate_build_selects_default_binary_and_reports_failures.
@@ -4646,7 +4648,7 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         assert!(arguments.contains("--bin\ndesktop\n"), "{arguments}");
         assert!(!arguments.contains("--profile"), "{arguments}");
         let DevCandidate::Built(optimised) =
-            build_dev_candidate_interruptible(&plan, Some("thin-app"), None, &[], |_| {}).unwrap()
+            build_dev_candidate_interruptible(&plan, Some("thin-app"), None, &[]).unwrap()
         else {
             panic!("no watcher, so nothing supersedes the build");
         };
@@ -4781,15 +4783,15 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
         tilo_test_env::wait_until("the fake cargo and its child to start", || {
             leader_watch.is_file() && sleeper_watch.is_file()
         });
-        let _ = sender.send(Ok(Event::new(EventKind::Modify(
-            notify::event::ModifyKind::Any,
-        ))
-        .add_path(source)));
+        let _ = sender.send(Event {
+            path: source,
+            kind: tilo_files::ChangeKind::Changed,
+        });
     });
     // The fake build never ends on its own: only the cancel ends it.
     let (done, built) = mpsc::channel();
     std::thread::spawn(move || {
-        let outcome = build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {})
+        let outcome = build_dev_candidate_interruptible(&plan, None, Some(&events), &roots)
             .map(|outcome| matches!(outcome, DevCandidate::Superseded))
             .map_err(|error| error.to_string());
         let _ = done.send(outcome);
@@ -4845,13 +4847,12 @@ fn dev_build_keeps_compiling_through_editor_noise() {
     let roots = [app.clone()];
     let (sender, events) = mpsc::channel();
     sender
-        .send(Ok(Event::new(EventKind::Modify(
-            notify::event::ModifyKind::Any,
-        ))
-        .add_path(app.join("target/debug/desktop"))))
+        .send(Event {
+            path: app.join("target/debug/desktop"),
+            kind: tilo_files::ChangeKind::Changed,
+        })
         .unwrap();
-    let outcome =
-        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
+    let outcome = build_dev_candidate_interruptible(&plan, None, Some(&events), &roots).unwrap();
     assert_eq!(outcome_path(outcome), executable);
 }
 
@@ -5699,7 +5700,7 @@ fn the_embedded_portability_rules_cover_every_rule_id() {
 }
 
 #[test]
-fn source_snapshot_notices_an_edit_inotify_did_not_deliver() {
+fn source_snapshot_sees_source_edits_and_leaves_build_output_out() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path();
     std::fs::create_dir(root.join("src")).unwrap();
@@ -5859,78 +5860,36 @@ fn source_snapshot_keeps_a_readable_root_when_another_cannot_be_read() {
 }
 
 #[test]
-fn dev_watch_tick_sees_a_save_while_access_events_are_pending() {
+fn dev_watch_sees_saves_in_new_folders_and_leaves_build_output_out() {
     let temp = tempfile::tempdir().expect("temp dir");
     let root = temp.path().join("app");
-    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("target/debug")).unwrap();
+    let roots = vec![root.clone()];
+    let (sender, events) = mpsc::channel();
+    let _watches = watch_dev_roots(&roots, move |event| {
+        let _ = sender.send(event.clone());
+    })
+    .expect("watch");
+    std::fs::write(root.join("target/debug/out"), b"built").unwrap();
+    std::fs::create_dir(root.join("src")).unwrap();
+    // The new folder is watched once its creation is reported.
+    tilo_test_env::wait_until("the new folder to be reported", || {
+        events
+            .try_iter()
+            .any(|event: Event| event.path == root.join("src"))
+    });
     let source = root.join("src/lib.rs");
     std::fs::write(&source, "fn main() {}\n").unwrap();
-    let roots = vec![root.clone()];
-    let mut sources = snapshot_restart_sources(&roots).expect("scan");
-    let mut next_poll = Instant::now() + Duration::from_secs(60);
-    let mut watcher = DevWatcher::new(notify::recommended_watcher(|_| {}).expect("watcher"));
-    watcher.watch_tree(&root).expect("watch");
-
-    std::fs::write(&source, "fn main() { let _ = 1; }\n").unwrap();
-    let (sender, events) = mpsc::channel();
-    let access = Event::new(EventKind::Access(notify::event::AccessKind::Open(
-        notify::event::AccessMode::Any,
-    )))
-    .add_path(source);
-    for _ in 0..32 {
-        sender.send(Ok(access.clone())).expect("queue access");
-    }
-
-    let waiting = watch_tick(&events, &roots, &mut watcher, &mut sources, &mut next_poll);
+    let mut seen = Vec::new();
+    tilo_test_env::wait_until("the save to restart", || {
+        seen.extend(events.try_iter());
+        seen.iter()
+            .any(|event| event.path == source && event_requires_restart(event, &roots))
+    });
     assert!(
-        matches!(waiting, WatchTick::Idle),
-        "the poll interval must elapse before a stamp change restarts"
-    );
-
-    next_poll = Instant::now();
-    let tick = watch_tick(&events, &roots, &mut watcher, &mut sources, &mut next_poll);
-    assert!(
-        matches!(
-            tick,
-            WatchTick::Rebuild {
-                bump_revision: true
-            }
-        ),
-        "a save must restart while open events are still queued, got {tick:?}"
-    );
-    drop(sender);
-}
-
-#[test]
-fn opening_a_watched_directory_does_not_rewatch_it() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let root = temp.path().join("app");
-    std::fs::create_dir_all(root.join("src")).unwrap();
-    let mut watcher = DevWatcher::new(notify::recommended_watcher(|_| {}).expect("watcher"));
-    watcher.watch_tree(&root).expect("watch");
-    let directory_count = watcher.watched.len();
-    assert!(directory_count >= 2, "root and src are watched");
-
-    watcher.observe(
-        &Event::new(EventKind::Access(notify::event::AccessKind::Open(
-            notify::event::AccessMode::Any,
-        )))
-        .add_path(root.clone()),
-    );
-    assert_eq!(
-        watcher.watched.len(),
-        directory_count,
-        "an open event must not walk the tree again"
-    );
-
-    let created = root.join("locales");
-    std::fs::create_dir(&created).unwrap();
-    watcher.observe(
-        &Event::new(EventKind::Create(notify::event::CreateKind::Folder)).add_path(created.clone()),
-    );
-    assert!(
-        watcher.watched.contains(&created),
-        "a new directory is watched"
+        seen.iter()
+            .all(|event| !event.path.starts_with(root.join("target/debug"))),
+        "nothing below target is reported: {seen:?}"
     );
 }
 
@@ -5939,17 +5898,17 @@ fn build_tick_leaves_a_non_restart_flood_queued() {
     let root = PathBuf::from("/workspace/apps/demo");
     let roots = [root.clone()];
     let (sender, events) = mpsc::channel();
-    let access = Event::new(EventKind::Access(notify::event::AccessKind::Open(
-        notify::event::AccessMode::Any,
-    )))
-    .add_path(root.join("src/main.rs"));
+    let noise = Event {
+        path: root.join("target/debug/demo"),
+        kind: tilo_files::ChangeKind::Changed,
+    };
     for _ in 0..=DEV_EVENT_DRAIN_LIMIT {
-        sender.send(Ok(access.clone())).expect("queue access");
+        sender.send(noise.clone()).expect("queue build noise");
     }
-    assert!(!newer_source_during_build(&events, &roots, &mut |_| {}));
+    assert!(!newer_source_during_build(&events, &roots));
     assert!(
         events.try_recv().is_ok(),
-        "Cargo must be reaped before an open flood is drained"
+        "Cargo must be reaped before a flood of build output is drained"
     );
     drop(sender);
 }
@@ -6008,7 +5967,7 @@ fn in_place_build_stages_a_library_the_open_process_can_load() {
         program: cargo.into_os_string(),
         args: Vec::new(),
     };
-    let built = build_in_place_dev_app(&plan, None, &[], |_| {}, true).expect("in-place build");
+    let built = build_in_place_dev_app(&plan, None, &[], true).expect("in-place build");
     let DevCandidate::Built(host) = built else {
         panic!("the host should be built");
     };

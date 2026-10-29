@@ -338,7 +338,7 @@ fn rewrite_for(book: &mut Workbook, id: &Id, edit: GridEdit) -> Result<Layout, R
         .map(|(row, column, cell)| (row, column, cell.raw.0.clone()))
         .collect();
     for (row, column, raw) in cells {
-        let moved = crate::formula::remap_refs(&raw, edit);
+        let moved = crate::refs::remap_refs(&raw, edit);
         if moved != raw
             && let Some(cell) = sheet.cells.cell_mut(&row, &column)
         {
@@ -962,6 +962,53 @@ impl Workbook {
             .remove(&chart)
             .map(drop)
             .ok_or_else(|| Refusal::new("no such chart"))
+    }
+
+    /// Rename a sheet; the formulas that read it follow it to its new name.
+    #[action(item = sheets)]
+    pub fn rename_sheet(
+        &mut self,
+        sheet: &Id,
+        #[param("The new name")] name: String,
+    ) -> Result<(), Refusal> {
+        use crate::refs::{fold_sheet, rename_sheets};
+        let sheet = &self.sheet_key(sheet)?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Refusal::new("a sheet needs a name"));
+        }
+        let old = fold_sheet(&self.sheet_mut(sheet)?.name.0);
+        // References reach the first sheet of a name: when that is another
+        // one, no formula reads this sheet by name.
+        let reached = self
+            .sheets
+            .iter()
+            .find(|(_, other)| fold_sheet(&other.name.0) == old)
+            .is_some_and(|(id, _)| id == sheet);
+        if reached {
+            let ids: Vec<Id> = self.sheets.ids().cloned().collect();
+            for id in &ids {
+                let target = self.sheet_mut(id)?;
+                let formulas: Vec<(Id, Id, String)> = target
+                    .cells
+                    .cells()
+                    .filter(|(_, _, cell)| cell.raw.0.starts_with('=') && cell.raw.0.contains('!'))
+                    .map(|(row, column, cell)| (row, column, cell.raw.0.clone()))
+                    .collect();
+                for (row, column, raw) in formulas {
+                    let renamed = rename_sheets(&raw, |written| {
+                        (fold_sheet(written) == old).then(|| name.to_owned())
+                    });
+                    if renamed != raw
+                        && let Some(cell) = target.cells.cell_mut(&row, &column)
+                    {
+                        cell.raw = Atom(renamed);
+                    }
+                }
+            }
+        }
+        self.sheet_mut(sheet)?.name = Atom(name.to_owned());
+        Ok(())
     }
 
     /// Comment on cells.

@@ -28,14 +28,14 @@ struct Receipt<'a> {
     identity_public_key: [u8; 32],
     setup_binding: &'a str,
     install_profile: &'a Option<crate::setup::prepared_setup::PublicInstallProfile>,
-    retained_home: &'a Option<crate::setup::prepared_setup::RetainedHomePlan>,
+    retained_home: Option<&'a crate::setup::prepared_setup::RetainedHomePlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pending_computer_applications_scope:
         Option<crate::setup::prepared_setup::ComputerApplicationsScope>,
     #[serde(skip_serializing_if = "Option::is_none")]
     planned_btrfs_resize: &'a Option<crate::setup::prepared_setup::PlannedBtrfsResize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    completed_home: &'a Option<crate::setup::portable_home_media::Expectation>,
+    completed_home: Option<&'a crate::setup::portable_home_media::Expectation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_setup: Option<&'a Expectation>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -138,7 +138,7 @@ pub fn run(
     verify(package, &receipt)?;
     review.require_completed_export()?;
     let manifest = review.manifest();
-    if let Some(retained) = &manifest.retained_home {
+    if let Some(retained) = manifest.units.retained_home() {
         retained.as_plan().bytes()?;
     }
     // Effective geometry comes exclusively from authenticated sealed choices.
@@ -146,13 +146,9 @@ pub fn run(
     let effective = manifest
         .planned_btrfs_resize
         .as_ref()
-        .map(|resize| resize.effective_plan(manifest.retained_home.as_ref().ok_or_else(failed)?))
+        .map(|resize| resize.effective_plan(manifest.units.retained_home().ok_or_else(failed)?))
         .transpose()?;
-    let retained_home = if effective.is_some() {
-        &effective
-    } else {
-        &manifest.retained_home
-    };
+    let retained_home = effective.as_ref().or(manifest.units.retained_home());
     // Ordinary unlock also needs actual completed geometry proof for a sealed
     // planned resize. The explicit flag remains the legacy retained-source path.
     let verify_source = verify_source || manifest.planned_btrfs_resize.is_some();
@@ -178,15 +174,15 @@ pub fn run(
         retained_home,
         pending_computer_applications_scope: manifest.pending_computer_applications_scope()?,
         planned_btrfs_resize: &manifest.planned_btrfs_resize,
-        completed_home: &manifest.completed_home,
-        completed_setup: (manifest.completed_home.is_some()
-            || manifest.completed_applications_only)
-            .then_some(&receipt),
-        completed_applications_only: manifest.completed_applications_only,
-        completed_applications: (manifest.completed_home.is_some()
-            || manifest.completed_applications_only)
-            .then_some(manifest.portable_flatpak.as_ref())
-            .flatten(),
+        completed_home: manifest.units.completed_home(),
+        completed_setup: (manifest.units.completed_home().is_some()
+            || manifest.units.completed_applications_only())
+        .then_some(&receipt),
+        completed_applications_only: manifest.units.completed_applications_only(),
+        completed_applications: (manifest.units.completed_home().is_some()
+            || manifest.units.completed_applications_only())
+        .then_some(manifest.units.portable_flatpak())
+        .flatten(),
     };
     serde_json::to_writer(&mut *output, &receipt).map_err(|_| failed())?;
     output.write_all(b"\n")?;

@@ -21,13 +21,7 @@ impl Session {
 
     async fn new(root: &ed25519_dalek::SigningKey, tag: u8, tree: WorkspaceTree) -> Self {
         let device = iroh::SecretKey::from_bytes(&[tag; 32]);
-        let lookup = MemoryLookup::new();
-        let endpoint = iroh::Endpoint::builder(presets::N0)
-            .secret_key(device.clone())
-            .address_lookup(lookup.clone())
-            .bind()
-            .await
-            .unwrap();
+        let (endpoint, lookup) = tilo_network_actor::loopback_endpoint(Some(device.clone())).await;
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),

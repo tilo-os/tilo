@@ -40,6 +40,8 @@ pub struct Texts {
     pub schema: &'static TypeSchema,
     /// Its texts that are not blank, in field order.
     pub texts: Vec<String>,
+    /// The resources its rich text refers to, in the one form (`tilo_reference::embed`).
+    pub references: Vec<String>,
 }
 
 /// The path of the item `id` of the collection `field` of `resource`.
@@ -243,10 +245,12 @@ impl View<'_> {
                 .cloned()
                 .collect();
             if !texts.is_empty() {
+                let references = self.references(&held.path, schema)?;
                 out.push(Texts {
                     path: held.path,
                     schema,
                     texts,
+                    references,
                 });
             }
         }
@@ -274,11 +278,42 @@ impl View<'_> {
             return Ok(None);
         };
         let texts = self.texts(path, schema)?;
-        Ok((!texts.is_empty()).then(|| Texts {
+        if texts.is_empty() {
+            return Ok(None);
+        }
+        let references = self.references(path, schema)?;
+        Ok(Some(Texts {
             path: path.to_owned(),
             schema,
             texts,
+            references,
         }))
+    }
+
+    /// The resources the rich text of the resource at `path` refers to, each once, in the one
+    /// form: what search finds it by as they are called now, and what its backlinks are.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn references(&self, path: &str, schema: &TypeSchema) -> Result<Vec<String>, IndexError> {
+        let mut out: Vec<String> = Vec::new();
+        for field in schema
+            .fields
+            .iter()
+            .filter(|f| f.kind == crate::schema::MergeKind::RichText)
+        {
+            if let Some(FieldValue::Rich(rich)) = self.field(path, &field.id)? {
+                for reference in rich.references() {
+                    if reference.as_resource().is_some() {
+                        let value = reference.mark_value();
+                        if !out.contains(&value) {
+                            out.push(value);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// The texts of the resource at `path`, in field order, that are not blank: what search

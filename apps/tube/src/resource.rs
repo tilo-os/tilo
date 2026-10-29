@@ -14,8 +14,10 @@ use ui::framework::{
     SurfaceCx, ViewCx,
 };
 use ui::i18n::EmbeddedCatalog;
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
-    self, ActionCx, Collection, Edit, Id, Invoke, Model, Path, Refusal, SearchEntry, Set, resource,
+    self, ActionCx, Collection, Edit, Id, Model, Path, Refusal, SearchEntry, Set, resource,
 };
 use ui::widget::Element;
 
@@ -138,6 +140,7 @@ impl Library {
 /// its empty and loading states, device sync, a playing watch
 /// page, the narrow window with its rail summoned, the sidebar widened
 /// into a list, and every screen.
+#[cfg(feature = "samples")]
 pub(crate) const SCENARIOS: &[&str] = &[
     "home",
     "empty",
@@ -189,6 +192,7 @@ impl ResourceApp for TubeShell {
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -208,6 +212,7 @@ impl ResourceApp for TubeShell {
     }
 
     /// The sample library: the creators the sample catalogue subscribes to.
+    #[cfg(feature = "samples")]
     fn scenario(_name: Option<&str>) -> Vec<Invoke<Library>> {
         crate::sample::model()
             .subscriptions
@@ -247,13 +252,17 @@ impl ResourceApp for TubeShell {
 impl TubeShell {
     /// The widget the framework mounts: in a live window the online app,
     /// which fetches the real catalogue and runs device sync; in a capture
-    /// the bundled sample catalogue, offline; for a past version the
-    /// library alone.
+    /// the bundled sample catalogue, offline, where the build has it; for a
+    /// past version the library alone.
     pub(crate) fn surface(mode: RunMode) -> TubeApp {
         match mode {
             RunMode::Live => TubeApp::new().online(),
-            RunMode::Capture => TubeApp::new(),
-            RunMode::Past => TubeApp::empty(),
+            #[cfg(feature = "samples")]
+            RunMode::Capture => TubeApp::sample(),
+            #[cfg(not(feature = "samples"))]
+            RunMode::Capture | RunMode::Past => TubeApp::new(),
+            #[cfg(feature = "samples")]
+            RunMode::Past => TubeApp::new(),
         }
     }
 }
@@ -285,6 +294,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
         self.attach_framework(cx.dispatcher(), cx.actions(), history);
     }
 
+    #[cfg(feature = "samples")]
     fn stage(&mut self, scenario: Option<&str>) {
         if let Some(scenario) = scenario {
             self.stage_scenario(scenario);

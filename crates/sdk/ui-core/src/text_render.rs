@@ -744,6 +744,9 @@ impl HangingPunctuation {
 /// Minimum line counts retained on either side of a page/column break: the
 /// rule every paged layout shares.
 pub use tilo_doc::paging::Fragmentation;
+/// The page-break rules every paged layout shares: fit, manual breaks,
+/// widow and orphan splits, headings kept with their text.
+pub use tilo_doc::paging;
 
 impl Hyphenation {
     pub(crate) fn language(&self) -> Option<hypher::Lang> {

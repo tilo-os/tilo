@@ -276,7 +276,7 @@ fn a_real_prepared_package_reaches_a_new_identity_and_returns_a_verified_receipt
         &AtomicBool::new(false),
     )
     .unwrap();
-    assert_eq!(review.manifest().mail.len(), 1);
+    assert_eq!(review.manifest().units.mail().len(), 1);
     // The package's canonical importer installs the person's custody into the
     // real identity directory. The temporary joined record above never becomes
     // a second identity for the same person. It must not replace an unrelated

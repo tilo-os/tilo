@@ -27,7 +27,7 @@ ROLES = {
     'fs': ('crates/system/fs', 'fs', 'bin', False),
     'credential_helper': ('crates/system/account-custody', 'tilo-account-credential', 'bin', False),
     'prepared_helper': ('apps/imager', 'tilo-prepared-setup', 'bin', False),
-    'home_seeds': ('crates/session/installer', 'tilo-firstboot-home-seeds', 'bin', False),
+    'home_seeds': ('apps/imager', 'tilo-firstboot-home-seeds', 'bin', False),
     'staging_handoff': ('crates/system/install-helpers', 'tilo-staging-handoff', 'bin', False),
     'handoff_copy': ('crates/system/install-helpers', 'tilo-install-handoff-copy', 'bin', False),
     'firstboot_files': ('crates/system/firstboot-files', 'tilo-firstboot-files', 'bin', False),
@@ -40,7 +40,7 @@ ROLES = {
     'app_package': ('crates/packaging/tilo-app-package-cli', 'tilo-app-package', 'bin', False),
     'runtime_bundle': ('crates/packaging/runtime-bundle', 'tilo-runtime-bundle', 'bin', False),
     'install': ('crates/packaging/install', 'tilo-install', 'bin', False),
-    'installer': ('crates/session/installer', 'tilo-installer', 'bin', False),
+    'installer': ('apps/imager', 'tilo-installer', 'bin', False),
 }
 
 

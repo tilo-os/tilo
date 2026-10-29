@@ -509,7 +509,7 @@ doc = false
 "igd-next-0_17_1" = { package = "igd-next", version = "^0.17.1", default-features = false, features = ["aio_tokio", "bytes", "default", "futures", "http", "http-body-util", "hyper", "hyper-util", "tokio"] }
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
-"imager" = { path = "../../../apps/imager", default-features = false, features = ["installation"] }
+"imager" = { path = "../../../apps/imager", default-features = false, features = ["destination", "installation"] }
 "imager-backend" = { path = "../../../crates/platform/imager-backend", default-features = false, features = ["installation", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
@@ -524,7 +524,6 @@ doc = false
 "input-sys-1_18_0" = { package = "input-sys", version = "^1.18.0", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
-"installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }
@@ -1345,7 +1344,7 @@ doc = false
 "trash-5_2_6" = { package = "trash", version = "^5.2.6", default-features = false, features = ["chrono", "coinit_apartmentthreaded", "default"] }
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
-"tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media"] }
+"tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media", "samples"] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
 "twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
@@ -1411,7 +1410,7 @@ doc = false
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
 "vello_cpu-0_0_8" = { package = "vello_cpu", version = "^0.0.8", default-features = false, features = ["png", "std", "u8_pipeline"] }
 "vello_cpu-0_3_0" = { package = "vello_cpu", version = "^0.3.0", default-features = false, features = ["multithreading", "std", "u8_pipeline"] }
-"video-editor" = { path = "../../../apps/video-editor", default-features = false, features = ["decode", "default", "gst"] }
+"video-editor" = { path = "../../../apps/video-editor", default-features = false, features = ["decode", "default", "gst", "samples"] }
 "video-player" = { path = "../../../apps/video-player", default-features = false, features = ["decode", "default"] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-0_7_0" = { package = "wacore", version = "^0.7.0", default-features = false, features = [] }
@@ -2905,7 +2904,7 @@ doc = false
 "igd-next-0_17_1" = { package = "igd-next", version = "^0.17.1", default-features = false, features = ["aio_tokio", "bytes", "default", "futures", "http", "http-body-util", "hyper", "hyper-util", "tokio"] }
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
-"imager" = { path = "../../../apps/imager", default-features = false, features = ["installation"] }
+"imager" = { path = "../../../apps/imager", default-features = false, features = ["destination", "installation"] }
 "imager-backend" = { path = "../../../crates/platform/imager-backend", default-features = false, features = ["installation", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
@@ -2920,7 +2919,6 @@ doc = false
 "input-sys-1_18_0" = { package = "input-sys", version = "^1.18.0", default-features = false, features = ["libinput_1_11", "libinput_1_14", "libinput_1_15", "libinput_1_19"] }
 "install" = { path = "../../../crates/packaging/install", default-features = false, features = [] }
 "install-profile-model" = { path = "../../../crates/session/install-profile-model", default-features = false, features = [] }
-"installer" = { path = "../../../crates/session/installer", default-features = false, features = [] }
 "intl-memoizer-0_5_3" = { package = "intl-memoizer", version = "^0.5.3", default-features = false, features = [] }
 "intl_pluralrules-7_0_2" = { package = "intl_pluralrules", version = "^7.0.2", default-features = false, features = [] }
 "inventory-0_3_25" = { package = "inventory", version = "^0.3.25", default-features = false, features = [] }

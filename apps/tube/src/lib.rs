@@ -11,11 +11,11 @@
 //! without reaching collaborators.
 //!
 //! The live (online) app starts with an EMPTY catalogue and populates only
-//! from live results. The bundled [`sample`]
-//! exists solely for the hermetic `--shots`/demo review path (and tests), where
-//! a cold screenshot needs to be fully populated. Live fetch (`api`) runs on a
-//! worker thread
-//! that spawns on launch (online) or on the first real interaction.
+//! from live results. The bundled sample catalogue (`sample`, under the
+//! `samples` feature) exists solely for captures and tests, where a cold
+//! screenshot needs to be fully populated. Live fetch (`api`) runs on a
+//! worker thread that spawns on launch (online) or on the first real
+//! interaction.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -49,6 +49,7 @@ pub mod model;
 pub mod recommend;
 pub mod resource;
 mod rows;
+#[cfg(feature = "samples")]
 pub mod sample;
 pub mod screens;
 pub mod search_type;
@@ -76,7 +77,7 @@ mod tests {
         // catalogue (invented channels, subscriber and view counts) as
         // though it were real.
         {
-            let app = TubeApp::empty();
+            let app = TubeApp::new();
             let m = app.model_for_test();
             assert!(
                 m.videos.is_empty(),

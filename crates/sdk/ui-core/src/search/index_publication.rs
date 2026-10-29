@@ -99,6 +99,13 @@ pub struct IndexEntry {
     /// secrets unlocked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secret: bool,
+    /// What its text refers to, each in the one form a reference in rich
+    /// text is written in (`tilo_reference::embed`): the system index finds
+    /// the entry by what each is called now, not by the title written into
+    /// the text, and answers which entries refer to a resource (its
+    /// backlinks).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -147,6 +154,12 @@ impl IndexEntry {
                 .into_iter()
                 .map(|(text, weight)| (cut(text.trim().to_owned(), MAX_TEXT_BYTES), weight))
                 .filter(|(text, _)| !text.is_empty())
+                .take(MAX_FIELDS)
+                .collect(),
+            references: self
+                .references
+                .into_iter()
+                .filter(|reference| !reference.is_empty() && reference.len() <= MAX_ID_BYTES)
                 .take(MAX_FIELDS)
                 .collect(),
             ..self
@@ -351,6 +364,7 @@ mod tests {
             boost: 0,
             fields: Vec::new(),
             secret: false,
+            references: Vec::new(),
         }
     }
 

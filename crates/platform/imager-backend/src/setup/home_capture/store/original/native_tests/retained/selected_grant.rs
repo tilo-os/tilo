@@ -60,8 +60,8 @@ impl SelectedGrant {
         if review.manifest() != &self.manifest
             || review
                 .manifest()
-                .retained_home
-                .as_ref()
+                .units
+                .retained_home()
                 .is_none_or(|p| p.as_plan() != &plan)
         {
             return Err(io::ErrorKind::PermissionDenied.into());

@@ -728,6 +728,7 @@ requirement = { cores = 6, memory = "1GiB" }
 inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "scripts/moq-browser/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
   "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs",
@@ -882,7 +883,7 @@ readers = [
 package = "tilolang-app"
 # The window's tests compile the built-in tilolang packages (source and ids lock).
 inputs = ["apps/tl/"]
-readers = ["apps/tilolang/tests/opening.rs", "apps/tilolang/tests/support.rs"]
+readers = ["apps/tilolang/tests/opening.rs"]
 
 [[cargo]]
 package = "tilolang"
@@ -906,18 +907,39 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
+  "crates/lang/tilolang-runtime/tests/programs.rs",
+  "crates/lang/tilolang-runtime/tests/rich_text.rs",
 ]
 
 [[cargo]]
 package = "tilolang-tilo"
-# The collaboration tests compile the built-in packages from their sources.
-inputs = ["apps/tl/"]
+# The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
+inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
 readers = [
   "crates/platform/tilolang-tilo/tests/budgets.rs",
+  "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
+  "crates/platform/tilolang-tilo/tests/policy.rs",
+  "crates/platform/tilolang-tilo/tests/rich_text.rs",
 ]
+
+[[cargo]]
+package = "tilolang-host"
+# The host compiles built-in packages and embeds the UI host's catalogues.
+inputs = ["apps/tl/", "crates/platform/tilo-ui-host/locales/"]
+readers = [
+  "crates/platform/tilolang-host/examples/host_cost.rs",
+  "crates/platform/tilolang-host/src/phrases.rs",
+  "crates/platform/tilolang-host/tests/host.rs",
+]
+
+[[cargo]]
+package = "onboarding-walk"
+# The names test reads the shell's onboarding view it walks.
+inputs = ["crates/session/shell/src/onboarding_view.rs"]
+readers = ["crates/session/onboarding-walk/tests/names.rs"]
 
 [[cargo]]
 package = "mail"
@@ -1085,8 +1107,8 @@ inputs = [
   "os/tests/test_firstboot_transaction.py",
   "os/tests/test_installer_firstboot_runtime.py",
   "os/tests/test_prepared_first_use_binding.py",
-  "crates/session/installer/src/bin/tilo-firstboot-home-seeds.rs",
-  "crates/session/installer/src/account_handoff.rs",
+  "apps/imager/src/bin/tilo-firstboot-home-seeds.rs",
+  "apps/imager/src/setup/destination/account_handoff.rs",
   "apps/imager/src/bin/tilo-installer-prepared-setup-extract/",
   "os/dev/installer-code-bootstrap/tilo-installer-code-protocol.py",
   "os/dev/dev-target-uki.py", "os/hardware/profiles/lenovo-83ed.json",
@@ -1326,25 +1348,15 @@ inputs = ["os/legacy-guest-snapshot.env"]
 readers = ["crates/runtime/legacy-vm/src/image.rs"]
 
 [[cargo]]
-package = "installer"
-inputs = [
-  "crates/system/block-devices/tests/fixtures/installer.json",
-  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
-]
-readers = [
-  "crates/session/installer/src/disks.rs",
-  "crates/session/installer/src/online_accounts/browser.rs",
-]
-
-[[cargo]]
 package = "imager"
 inputs = [
   "crates/system/block-devices/tests/fixtures/imager.json",
+  "crates/system/block-devices/tests/fixtures/installer.json",
+  "os/usr/libexec/tilo-guided-partition", "apps/browser/tilo-app.toml",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
   "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
-  "crates/session/installer/src/layouts.rs", "crates/session/installer/src/media_profile.rs",
   "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
@@ -1352,6 +1364,8 @@ readers = [
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
   "apps/imager/tests/profile_transport.rs",
   "apps/imager/tests/prepared_extract_cli.rs",
+  "apps/imager/src/setup/destination/disks.rs",
+  "apps/imager/src/setup/destination/online_accounts/browser.rs",
 ]
 
 [[cargo]]

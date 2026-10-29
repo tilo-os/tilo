@@ -258,8 +258,8 @@ impl ReviewedInstalledRetainedLaunch {
         installed.revalidate()?;
         let manifest = installed.manifest();
         let plan = manifest
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(refused)?
             .as_plan();
         // Original credentials remain authenticated source facts. The target
@@ -576,8 +576,8 @@ impl InstalledRetainedLaunchInput {
             .reviewed
             .installed
             .manifest()
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(refused)?
             .as_plan();
         if binding.app_id != "so.tilo.file-explorer"
@@ -619,8 +619,8 @@ impl InstalledRetainedLaunchInput {
         self.revalidate(cancel)?;
         let manifest = self.reviewed.installed.manifest();
         let plan = manifest
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(refused)?
             .as_plan();
         if !plan.categories.home

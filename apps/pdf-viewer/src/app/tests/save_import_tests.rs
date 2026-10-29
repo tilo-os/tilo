@@ -457,18 +457,16 @@ fn a_region_copy_whose_render_result_was_lost_asks_again() {
         .raster_handle
         .as_ref()
         .expect("the sample opened on a worker");
-    let deadline = tilo_test_env::hang_deadline();
     // The render finishes, and its result goes before the reader drains it.
-    while !handle.drain_events().iter().any(|event| {
-        matches!(
-            event,
-            crate::source::RasterEvent::Rendered { request, .. }
-                if (request.page, crate::source::RasterBackend::bucket_for(request.target_width)) == key
-        )
-    }) {
-        assert!(ui::time::now() < deadline, "the crop's render never finished");
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    tilo_test_env::wait_until("the crop's render to finish", || {
+        handle.drain_events().iter().any(|event| {
+            matches!(
+                event,
+                crate::source::RasterEvent::Rendered { request, .. }
+                    if (request.page, crate::source::RasterBackend::bucket_for(request.target_width)) == key
+            )
+        })
+    });
     handle.note_results_evicted();
     settle_until(&mut app, &mut st, |app| app.region_waiting.is_none());
     assert!(

@@ -54,6 +54,9 @@ ENGINE_OWNERS = (
     # into this non-default member; they still exercise the same surfaces.
     "crates/dev/ui-examples/",
     "crates/collab/actions/",
+    # A document's history, revert and undo log, moved below the toolkit: a
+    # revert writes any document's text and marks back as they were.
+    "crates/collab/collaboration/",
     "crates/system/app-state/",
 )
 SCANNED_ROOTS = ("apps", "crates", "examples")

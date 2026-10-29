@@ -408,7 +408,6 @@ members = [
     "crates/session/greeter",
     "crates/platform/imager-backend",
     "crates/session/install-profile-model",
-    "crates/session/installer",
     "crates/session/liveness",
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
@@ -760,6 +759,11 @@ gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
 rquickjs = "0.9"
+# The spreadsheet formula engine: Excel-compatible functions, dynamic arrays
+# and cycle detection, evaluated over a workbook kept in step with the sheets.
+ironcalc_base = "0.9.1"
+# The local IANA zone name, which ironcalc_base needs for TODAY() and NOW().
+iana-time-zone = "0.1.65"
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }

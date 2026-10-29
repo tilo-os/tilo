@@ -260,10 +260,10 @@ impl Core {
             Outside, Phrase, PrincipalEq, PrincipalName, PrincipalNamed, Query, QueueBlock, RecNew,
             RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF,
             ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart,
-            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat,
-            StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF,
-            TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            RichTime, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
+            StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
+            TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -297,7 +297,7 @@ impl Core {
                 let part = self.ident_part(a.h(0)?, a.h(1)?)?;
                 self.ret_h(part)
             }
-            RichNew | RichPart | RichEmpty => self.rich_import(imp, a),
+            RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF

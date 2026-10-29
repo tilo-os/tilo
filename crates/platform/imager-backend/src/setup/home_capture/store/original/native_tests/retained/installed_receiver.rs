@@ -288,10 +288,10 @@ impl Receiver {
             .manifest()
             .pending_computer_applications_scope()?
             .is_none()
-            || review.manifest().portable_home.is_some()
-            || review.manifest().completed_home.is_some()
-            || review.manifest().portable_flatpak.is_some()
-            || review.manifest().completed_applications_only
+            || review.manifest().units.portable_home().is_some()
+            || review.manifest().units.completed_home().is_some()
+            || review.manifest().units.portable_flatpak().is_some()
+            || review.manifest().units.completed_applications_only()
         {
             return Err(denied());
         }
@@ -318,8 +318,8 @@ impl Receiver {
         if installed.manifest().identity_public_key != *identity_public_key
             || installed
                 .manifest()
-                .retained_home
-                .as_ref()
+                .units
+                .retained_home()
                 .is_none_or(|p| p.as_plan() != plan)
         {
             return Err(denied());

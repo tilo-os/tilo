@@ -44,6 +44,8 @@ tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features 
 # A Notion export arrives as an archive; it is read through the same bounded
 # zip reader as every other untrusted archive.
 uuid.workspace = true
+ironcalc_base.workspace = true
+iana-time-zone.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

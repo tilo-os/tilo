@@ -1,6 +1,10 @@
 include!("../../tools/test-assets-build.rs");
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The stand-in media only serves the demo project.
+    if std::env::var_os("CARGO_FEATURE_SAMPLES").is_none() {
+        return Ok(());
+    }
     prepare_fixture_assets("../..", "sample-media/artifacts.json", None)?;
     let output =
         std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);

@@ -604,6 +604,49 @@ pub fn relative(secs_ago: i64) -> String {
     widget_format(key, &[("count", count.into())])
 }
 
+/// The **relative** style ahead: a future interval (in seconds) as a coarse
+/// label in the host's language: `in a moment`, `in 3 min`, `in 2 hr`,
+/// `tomorrow`, `in 4 days`, `in 2 weeks`, `in 3 months`, `in 1 year`. Zero
+/// and negative deltas read `in a moment`.
+///
+/// ```
+/// use tilo_ui::format::relative_ahead;
+/// assert_eq!(relative_ahead(10), "in a moment");
+/// assert_eq!(relative_ahead(180), "in 3 min");
+/// assert_eq!(relative_ahead(3 * 86_400), "in 3 days");
+/// ```
+#[must_use]
+pub fn relative_ahead(secs_ahead: i64) -> String {
+    let (key, count) = if secs_ahead < 45 {
+        return widget_format("relative-ahead-moment", &[]);
+    } else if secs_ahead < 90 {
+        ("relative-ahead-minutes", 1)
+    } else if secs_ahead < HOUR {
+        ("relative-ahead-minutes", secs_ahead / MINUTE)
+    } else if secs_ahead < 90 * MINUTE {
+        ("relative-ahead-hours", 1)
+    } else if secs_ahead < DAY {
+        ("relative-ahead-hours", secs_ahead / HOUR)
+    } else if secs_ahead < 2 * DAY {
+        return widget_format("relative-ahead-tomorrow", &[]);
+    } else if secs_ahead < WEEK {
+        ("relative-ahead-days", secs_ahead / DAY)
+    } else if secs_ahead < 2 * WEEK {
+        ("relative-ahead-weeks", 1)
+    } else if secs_ahead < MONTH {
+        ("relative-ahead-weeks", secs_ahead / WEEK)
+    } else if secs_ahead < 2 * MONTH {
+        ("relative-ahead-months", 1)
+    } else if secs_ahead < YEAR {
+        ("relative-ahead-months", secs_ahead / MONTH)
+    } else if secs_ahead < 2 * YEAR {
+        ("relative-ahead-years", 1)
+    } else {
+        ("relative-ahead-years", secs_ahead / YEAR)
+    };
+    widget_format(key, &[("count", count.into())])
+}
+
 /// The relative style for list columns too tight for [`relative`]'s
 /// wording: `now`, `3m`, `2h`, `4d`, `2w`, `3mo`, `1y`. Zero and negative
 /// deltas (clock skew) read `now`.

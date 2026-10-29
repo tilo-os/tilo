@@ -26,9 +26,6 @@
 #   --no-build         use the last build in target/nested-session (or in
 #                      $TILO_NESTED_SESSION_BUILD, where a check hands its
 #                      build over in a read-only tree)
-#   --builder WHERE    where to build: remote or t (default: remote when
-#                      TILO_REMOTE_CARGO names a program on PATH, t
-#                      otherwise; also TILO_NESTED_BUILDER)
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
@@ -56,16 +53,8 @@
 # 1280x800 output (TILO_HEADLESS_SIZE overrides it) only when tilo-control
 # asks for a snapshot.
 #
-# Everything is built remotely by dist/dev/nested-session-build.sh, so the
-# machine running the session needs no Rust toolchain. Remote, it runs on the
-# builder of the remote cargo drop-in TILO_REMOTE_CARGO names (a cargo
-# replacement that also runs `PROGRAM --fetch DIR exec SCRIPT` on its builder
-# and copies DIR of the target directory back), which must be of this
-# machine's architecture, as one `exec` whose output is fetched into
-# target/nested-session; an unchanged tree rebuilds nothing there and fetches
-# nothing. With t it runs as t.toml's `nested-session` check (or
-# `nested-session-arm64`) and is downloaded with `t outputs`; an unchanged
-# tree returns the stored build at once. Re-running repackages only apps
+# dist/dev/nested-session-build.sh builds everything with cargo, into
+# target/nested-session. Re-running repackages only apps
 # whose binary, manifest or surface changed. A changed shared runtime
 # repackages every app, since apps link its exact build.
 set -euo pipefail
@@ -75,8 +64,6 @@ built_apps=$("$repo_root/dist/dev/nested-session-build.sh" --apps)
 apps=$built_apps
 state=${XDG_STATE_HOME:-$HOME/.local/state}/tilo-nested
 build=1
-builder=${TILO_NESTED_BUILDER:-}
-remote_cargo=${TILO_REMOTE_CARGO:-}
 prepare_only=0
 reset_identity=0
 fresh_desktop=0
@@ -97,7 +84,6 @@ while (($#)); do
         --ready) ready_out=$(realpath -m "${2:?--ready needs a file}"); shift 2 ;;
         --state) state=${2:?--state needs a directory}; shift 2 ;;
         --no-build) build=0; shift ;;
-        --builder) builder=${2:?--builder needs remote or t}; shift 2 ;;
         --prepare-only) prepare_only=1; shift ;;
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
@@ -110,20 +96,6 @@ while (($#)); do
     esac
 done
 
-if ((build)); then
-    if [[ -z $builder ]]; then
-        builder=t
-        [[ -n $remote_cargo ]] && command -v "$remote_cargo" >/dev/null && builder=remote
-    fi
-    case $builder in
-        remote) [[ -n $remote_cargo ]] || die "the remote builder needs TILO_REMOTE_CARGO"
-            command -v "$remote_cargo" >/dev/null \
-            || die "$remote_cargo is required on PATH to build, or pass --no-build" ;;
-        t) command -v t >/dev/null \
-            || die "t is required on PATH to build, or pass --no-build" ;;
-        *) die "unknown builder $builder (remote or t)" ;;
-    esac
-fi
 for tool in jq bwrap readelf python3 sha256sum; do
     command -v "$tool" >/dev/null || die "$tool is required on PATH"
 done
@@ -178,22 +150,9 @@ build_out=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}
 bin=$build_out/bin
 thin=$build_out/thin-app
 if ((build)); then
-    if [[ $builder == remote ]]; then
-        # One builder command for all of it: the script's builds share one
-        # jobserver there, and only the files that changed come back.
-        say "building the nested session on the remote builder ($remote_cargo exec)"
-        [[ $build_out == "$repo_root/target/nested-session" ]] \
-            || die "the remote builder builds into target/nested-session; unset TILO_NESTED_SESSION_BUILD or pass --no-build"
-        (cd "$repo_root" && "$remote_cargo" --fetch nested-session exec dist/dev/nested-session-build.sh) \
-            || die "the nested-session build failed (see above)"
-    else
-        # The build runs on a node of this machine's architecture.
-        check=nested-session
-        [[ $(uname -m) == aarch64 ]] && check=nested-session-arm64
-        say "building the nested session on t (t outputs $check)"
-        (cd "$repo_root" && t outputs "$check" --human >/dev/null) \
-            || die "the nested-session build failed (t log $check shows why)"
-    fi
+    say "building the nested session (dist/dev/nested-session-build.sh)"
+    "$repo_root/dist/dev/nested-session-build.sh" "$build_out" \
+        || die "the nested-session build failed (see above)"
 fi
 for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
             tilo-model-gateway tilo-ush tilo-control; do

@@ -78,12 +78,12 @@ mod actor {
         )
         .unwrap();
         assert_eq!(media.home_archive_protocol(), None);
-        let retained = review.manifest().retained_home.as_ref().unwrap();
+        let retained = review.manifest().units.retained_home().unwrap();
         assert_eq!(retained.as_plan(), &expected);
         let caller = review
             .manifest()
-            .retained_caller
-            .as_ref()
+            .units
+            .retained_caller()
             .expect("real root helper registered caller");
         caller
             .validate_binding(
@@ -92,8 +92,8 @@ mod actor {
                 &identity.public_key(),
             )
             .unwrap();
-        assert!(review.manifest().offline_applications.is_none());
-        assert!(review.manifest().portable_flatpak.is_none());
+        assert!(review.manifest().units.offline_applications().is_none());
+        assert!(review.manifest().units.portable_flatpak().is_none());
         let mut wrong_person = review.manifest().clone();
         wrong_person.identity_public_key = [99; 32];
         assert!(wrong_person.write(&root.join("wrong-person-plan")).is_err());
@@ -104,13 +104,15 @@ mod actor {
                 .write(&root.join("wrong-binding-plan"))
                 .is_err()
         );
-        assert!(review.manifest().portable_home.is_none());
+        assert!(review.manifest().units.portable_home().is_none());
         let mut conflicting = review.manifest().clone();
-        conflicting.portable_home = Some(prepared_setup::PortableHomePlan {
-            schema: 1,
-            selection: prepared_setup::PortableHomeSelection::FullHome,
-            applications: false,
-        });
+        conflicting
+            .units
+            .plan_home(prepared_setup::PortableHomePlan {
+                schema: 1,
+                selection: prepared_setup::PortableHomeSelection::FullHome,
+                applications: false,
+            });
         assert!(conflicting.write(&root.join("conflicting-plan")).is_err());
         assert_eq!(review.manifest().identity_public_key, identity.public_key());
         assert_eq!(media.projection()["shared_original_files"], true);
@@ -275,17 +277,14 @@ pub(in crate::setup) fn assert_journey_registration(preview: &super::super::Inst
     .unwrap();
     let manifest = review.manifest();
     assert_eq!(manifest.identity_public_key, identity.public_key());
-    assert_eq!(
-        manifest.retained_home.as_ref().unwrap().as_plan(),
-        &expected
-    );
+    assert_eq!(manifest.units.retained_home().unwrap().as_plan(), &expected);
     manifest
-        .retained_caller
-        .as_ref()
+        .units
+        .retained_caller()
         .unwrap()
         .validate_binding(&expected, &manifest.setup_binding, &identity.public_key())
         .unwrap();
-    assert!(manifest.portable_home.is_none());
+    assert!(manifest.units.portable_home().is_none());
     assert_eq!(media.home_archive_protocol(), None);
 }
 

@@ -159,6 +159,7 @@ pub(crate) fn index_entry(
         boost: entry.boost,
         fields,
         secret: entry.secret,
+        references: Vec::new(),
     })
 }
 

@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget};
 use tilo_search::{Document, Matching, Page, SearchIndex};
-use ui::search::index_publication::IndexEntry;
+use ui::search::index_publication::{IndexEntry, IndexWeight};
 
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -116,9 +116,17 @@ fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
     // Names a person half remembers: words across fields and typos.
     let mut index = SearchIndex::new(Matching::LOOSE);
     index.replace_all(entries.iter().enumerate().map(|(at, indexed)| {
+        // What the entry refers to counts as it is called now, never as the
+        // title written into its text when the reference was made.
         indexed
             .entry
             .searchable()
+            .chain(
+                indexed
+                    .referenced
+                    .iter()
+                    .map(|title| (title.as_str(), IndexWeight::Body)),
+            )
             .fold(Document::new(at as u64), |document, (text, weight)| {
                 document.field(text, weight.field_weight())
             })
@@ -179,6 +187,7 @@ pub(crate) fn open_at(
         boost: 0,
         fields: Vec::new(),
         secret: false,
+        references: Vec::new(),
     };
     open_entry(door, chrome, &slot, &entry)
 }
@@ -240,7 +249,7 @@ impl AppContentProvider {
     }
 
     fn row(&self, indexed: &IndexedEntry, score: i32) -> SearchResult {
-        let IndexedEntry { slot, entry } = indexed;
+        let IndexedEntry { slot, entry, .. } = indexed;
         let subtitle = entry
             .subtitle
             .clone()
@@ -491,6 +500,7 @@ pub(crate) fn open_in_window(
         boost: 0,
         fields: Vec::new(),
         secret: false,
+        references: Vec::new(),
     };
     let window: Vec<PublishedSurface> = door
         .broker

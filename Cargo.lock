@@ -1068,7 +1068,7 @@ dependencies = [
  "hexane",
  "itertools 0.15.0",
  "leb128",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rustc-hash 2.1.3",
  "serde",
  "sha2 0.11.0",
@@ -1273,6 +1273,30 @@ name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b71798fca2c1fe1086445a7258a4bc81e6e49dcd24c8d0dd9a1e57395b603f51"
+
+[[package]]
+name = "bitcode"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a6ed1b54d8dc333e7be604d00fa9262f4635485ffea923647b6521a5fff045d"
+dependencies = [
+ "arrayvec",
+ "bitcode_derive",
+ "bytemuck",
+ "glam",
+ "serde",
+]
+
+[[package]]
+name = "bitcode_derive"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "238b90427dfad9da4a9abd60f3ec1cdee6b80454bde49ed37f1781dd8e9dc7f9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "bitflags"
@@ -3039,7 +3063,7 @@ checksum = "ee3344d349528f449816cfa85e558c439bdca5a6d8a738cfb21e69f0b2b1952f"
 dependencies = [
  "hax-lib",
  "pastey",
- "rand 0.10.1",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -3975,7 +3999,7 @@ dependencies = [
  "data-encoding",
  "discord",
  "discord-wire",
- "rand 0.10.1",
+ "rand 0.10.3",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4237,7 +4261,6 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-cpu-raster",
- "tilo-doc",
  "tilo-document",
  "tilo-files",
  "tilo-net",
@@ -5388,7 +5411,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5891,6 +5914,12 @@ dependencies = [
  "log",
  "xml-rs",
 ]
+
+[[package]]
+name = "glam"
+version = "0.34.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc148d4ddd3930c52f9e5ae79b89805c6f07e9ff417e7b083e0348cea60a5aba"
 
 [[package]]
 name = "glib"
@@ -6748,7 +6777,7 @@ dependencies = [
  "idna",
  "ipnet",
  "jni 0.22.4",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rustls",
  "thiserror 2.0.21",
  "tinyvec",
@@ -6770,7 +6799,7 @@ dependencies = [
  "jni 0.22.4",
  "once_cell",
  "prefix-trie",
- "rand 0.10.1",
+ "rand 0.10.3",
  "ring",
  "thiserror 2.0.21",
  "tinyvec",
@@ -6795,7 +6824,7 @@ dependencies = [
  "ndk-context",
  "once_cell",
  "parking_lot",
- "rand 0.10.1",
+ "rand 0.10.3",
  "resolv-conf",
  "rustls",
  "smallvec",
@@ -6895,7 +6924,7 @@ version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2c461da2e0c9c93d875b597f0c78214fb0d2d5c57834b2ef2a2fa057fa20e24"
 dependencies = [
- "rand 0.10.1",
+ "rand 0.10.3",
  "zeroize",
 ]
 
@@ -6911,7 +6940,7 @@ dependencies = [
  "libcrux-hkdf",
  "libcrux-kem",
  "libcrux-traits",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "zeroize",
@@ -6931,7 +6960,7 @@ dependencies = [
  "ml-kem",
  "p256 0.13.2",
  "p384 0.13.1",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_chacha 0.10.0",
  "rand_core 0.10.0",
  "sha2 0.11.0",
@@ -7460,7 +7489,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "log",
- "rand 0.10.1",
+ "rand 0.10.3",
  "tokio",
  "url",
  "xmltree",
@@ -7505,10 +7534,12 @@ dependencies = [
  "blake3",
  "block-devices",
  "bounded-command",
+ "calendar",
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
  "cloud-source-dav",
+ "console-control",
  "crc32fast",
  "ed25519-dalek 3.0.0",
  "fs-native",
@@ -7517,6 +7548,7 @@ dependencies = [
  "install-profile-model",
  "launcher",
  "libc",
+ "os-actions",
  "reqwest 0.13.4",
  "runtime-dylib",
  "runtime-identity",
@@ -7534,6 +7566,7 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge-fork",
+ "tilo-dav",
  "tilo-desktop-model",
  "tilo-files",
  "tilo-fs",
@@ -7542,20 +7575,25 @@ dependencies = [
  "tilo-handoff",
  "tilo-identity-host",
  "tilo-image-codec",
+ "tilo-install-helpers",
  "tilo-lock",
  "tilo-net",
  "tilo-oauth",
  "tilo-paths",
+ "tilo-power-mgmt",
  "tilo-process",
  "tilo-relay-protocol",
  "tilo-seal",
  "tilo-secrets",
  "tilo-test-env",
+ "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
  "tokio",
+ "tracing-subscriber",
  "url",
  "uuid",
  "windows-sys 0.61.2",
@@ -7799,46 +7837,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "installer"
-version = "0.1.0"
-dependencies = [
- "account-custody",
- "accounts",
- "block-devices",
- "bounded-command",
- "calendar",
- "console-control",
- "imager-backend",
- "install-profile-model",
- "libc",
- "os-actions",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "staging-handoff-model",
- "taffy",
- "tempfile",
- "tilo-actions",
- "tilo-automerge-fork",
- "tilo-dav",
- "tilo-install-helpers",
- "tilo-lock",
- "tilo-oauth",
- "tilo-power-mgmt",
- "tilo-seal",
- "tilo-test-env",
- "tilo-ui",
- "tilo-vello",
- "tilo-winit",
- "tracing-subscriber",
- "url",
- "uuid",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "intl-memoizer"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7966,7 +7964,7 @@ dependencies = [
  "pin-project",
  "portable-atomic",
  "portmapper",
- "rand 0.10.1",
+ "rand 0.10.3",
  "reqwest 0.13.4",
  "rustc-hash 2.1.3",
  "rustls",
@@ -7996,7 +7994,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "n0-error",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "url",
  "zeroize",
@@ -8030,7 +8028,7 @@ dependencies = [
  "n0-future",
  "nested_enum_utils",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "range-collections",
  "redb",
  "ref-cast",
@@ -8057,7 +8055,7 @@ dependencies = [
  "n0-future",
  "ndk-context",
  "portable-atomic",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rustls",
  "simple-dns",
  "strum 0.28.0",
@@ -8084,7 +8082,7 @@ dependencies = [
  "n0-error",
  "n0-future",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "tokio",
  "tokio-util",
@@ -8169,7 +8167,7 @@ dependencies = [
  "num_enum",
  "pin-project",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rcgen",
  "reloadable-state",
  "reqwest 0.13.4",
@@ -8223,6 +8221,26 @@ dependencies = [
  "n0-future",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "ironcalc_base"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecf55ea346dcda5e0f0034d8300dc2d40ffbcb64e7c4db23bfa1d8a0cf11c738"
+dependencies = [
+ "bitcode",
+ "chrono",
+ "chrono-tz",
+ "csv",
+ "js-sys",
+ "rand 0.10.3",
+ "regex",
+ "regex-lite",
+ "ryu",
+ "serde",
+ "statrs",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -8862,7 +8880,7 @@ checksum = "4a227590b89ff55ce7cd97b5a7468c82d231db8f3b890bb4d4fb6d271e7524d7"
 dependencies = [
  "libcrux-curve25519",
  "libcrux-p256",
- "rand 0.10.1",
+ "rand 0.10.3",
  "tls_codec 0.5.0",
 ]
 
@@ -8920,7 +8938,7 @@ dependencies = [
  "libcrux-p256",
  "libcrux-sha3",
  "libcrux-traits",
- "rand 0.10.1",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -8945,7 +8963,7 @@ dependencies = [
  "libcrux-secrets",
  "libcrux-sha3",
  "libcrux-traits",
- "rand 0.10.1",
+ "rand 0.10.3",
  "tls_codec 0.5.0",
 ]
 
@@ -9021,7 +9039,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fa7a21e8c2e8baa8b40f0b176740f2ca4baadd79d1b00e48d6b1e363c42085a"
 dependencies = [
  "libcrux-secrets",
- "rand 0.10.1",
+ "rand 0.10.3",
 ]
 
 [[package]]
@@ -9975,7 +9993,7 @@ dependencies = [
  "kio",
  "moq-pattern",
  "num_enum",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "slab",
  "thiserror 2.0.21",
@@ -10463,7 +10481,7 @@ dependencies = [
  "getrandom 0.4.3",
  "identity-hash",
  "lru-slab",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
@@ -10618,7 +10636,7 @@ checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_core 0.10.0",
 ]
 
@@ -11684,7 +11702,7 @@ dependencies = [
  "delegate",
  "futures",
  "log",
- "rand 0.10.1",
+ "rand 0.10.3",
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
@@ -12549,7 +12567,7 @@ dependencies = [
  "n0-future",
  "netwatch",
  "num_enum",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "smallvec",
  "socket2",
@@ -12623,7 +12641,7 @@ dependencies = [
  "hmac 0.13.0",
  "md-5",
  "memchr",
- "rand 0.10.1",
+ "rand 0.10.3",
  "sha2 0.11.0",
  "stringprep",
 ]
@@ -13191,7 +13209,7 @@ dependencies = [
  "fastbloom",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_pcg",
  "ring",
  "rustc-hash 2.1.3",
@@ -13263,9 +13281,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
 dependencies = [
  "chacha20 0.10.2",
  "getrandom 0.4.3",
@@ -14411,7 +14429,7 @@ dependencies = [
  "pkcs5",
  "pkcs8 0.11.0",
  "polyval 0.7.3",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_core 0.10.0",
  "ring",
  "russh-cryptovec",
@@ -15503,6 +15521,8 @@ name = "sheets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "iana-time-zone",
+ "ironcalc_base",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -15577,7 +15597,6 @@ dependencies = [
  "naga",
  "neighbour-wire",
  "notes",
- "notify",
  "os-actions",
  "osk",
  "p256 0.14.0",
@@ -16316,6 +16335,17 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "statrs"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1837f9a1bd13dabbdbb04489c39451482d3cdd35a6e1a0d0f3570dea2b8c8be"
+dependencies = [
+ "approx 0.5.1",
+ "num-traits",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "stop-token"
@@ -17537,7 +17567,6 @@ dependencies = [
  "launcher",
  "libc",
  "messages",
- "notify",
  "proc-macro2",
  "quote",
  "registry-client",
@@ -17772,7 +17801,7 @@ dependencies = [
  "itertools 0.15.0",
  "js-sys",
  "leb128",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rustc-hash 2.1.3",
  "serde",
  "sha2 0.11.0",
@@ -17915,7 +17944,7 @@ dependencies = [
  "n0-future",
  "neighbour-wire",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rustls",
  "serde",
  "serde_json",
@@ -18363,7 +18392,7 @@ dependencies = [
  "hex",
  "iroh-base",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -18912,9 +18941,8 @@ dependencies = [
  "irpc",
  "libc",
  "moka",
- "notify",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "redb",
  "ref-cast",
  "runtime-collab",
@@ -20213,7 +20241,7 @@ dependencies = [
  "miracast",
  "postcard",
  "prost",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand_core 0.10.0",
  "rcgen",
  "rsa 0.10.0-rc.18",
@@ -20313,7 +20341,7 @@ dependencies = [
  "package-store",
  "photos",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "runtime-fs",
  "runtime-identity",
  "runtime-portal",
@@ -20394,7 +20422,7 @@ dependencies = [
  "iroh-base",
  "n0-future",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "thiserror 2.0.21",
  "tilo-clock",
@@ -20444,7 +20472,7 @@ dependencies = [
  "n0-future",
  "neighbour-wire",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -20477,7 +20505,7 @@ dependencies = [
  "moq-net",
  "neighbour-wire",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "tempfile",
@@ -20643,7 +20671,7 @@ dependencies = [
  "n0-future",
  "neighbour-wire",
  "postcard",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -20702,7 +20730,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "neighbour-wire",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -20735,7 +20763,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rcgen",
  "rustls",
  "serde",
@@ -22002,7 +22030,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "launcher",
- "notify",
  "registry-types",
  "runtime-portal",
  "rustix 1.1.4",
@@ -22011,6 +22038,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tilo-app-package",
+ "tilo-files",
  "tilo-ui",
  "tilolang",
  "tilolang-tilo",
@@ -22294,7 +22322,7 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",
- "rand 0.10.1",
+ "rand 0.10.3",
  "socket2",
  "tokio",
  "tokio-util",
@@ -22396,7 +22424,7 @@ dependencies = [
  "getrandom 0.4.3",
  "http",
  "httparse",
- "rand 0.10.1",
+ "rand 0.10.3",
  "ring",
  "rustls-pki-types",
  "sha1_smol",
@@ -22723,6 +22751,7 @@ dependencies = [
  "tilo-youtube-engine",
  "tracing",
  "tracing-subscriber",
+ "tube",
  "uuid",
  "wire-frame",
  "workspace-hack",
@@ -23776,6 +23805,7 @@ dependencies = [
  "tilo-winit",
  "tracing",
  "uuid",
+ "video-editor",
  "workspace-hack",
 ]
 
@@ -23856,7 +23886,7 @@ dependencies = [
  "log",
  "md5",
  "portable-atomic",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "serde-big-array",
  "serde_json",
@@ -23947,7 +23977,7 @@ dependencies = [
  "hmac 0.13.0",
  "log",
  "portable-atomic",
- "rand 0.10.1",
+ "rand 0.10.3",
  "serde",
  "sha1 0.11.0",
  "sha2 0.11.0",
@@ -23969,7 +23999,7 @@ dependencies = [
  "bytes",
  "hkdf 0.13.0",
  "log",
- "rand 0.10.1",
+ "rand 0.10.3",
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "wacore-binary",
@@ -24944,7 +24974,7 @@ dependencies = [
  "itoa",
  "log",
  "portable-atomic",
- "rand 0.10.1",
+ "rand 0.10.3",
  "scopeguard",
  "serde",
  "serde_json",
@@ -25468,7 +25498,7 @@ dependencies = [
  "hex",
  "launcher",
  "libc",
- "rand 0.10.1",
+ "rand 0.10.3",
  "reqwest 0.13.4",
  "rustix 1.1.4",
  "serde",
@@ -25952,7 +25982,7 @@ dependencies = [
  "proc-macro2",
  "quick-xml 0.41.0",
  "quote",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand 0.8.8",
  "rand 0.9.2",
  "rand_chacha 0.10.0",
@@ -26625,7 +26655,6 @@ dependencies = [
  "input-sys",
  "install",
  "install-profile-model",
- "installer",
  "intl-memoizer",
  "intl_pluralrules",
  "inventory",
@@ -26960,7 +26989,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "quote",
- "rand 0.10.1",
+ "rand 0.10.3",
  "rand 0.8.8",
  "rand 0.9.2",
  "rand_chacha 0.10.0",

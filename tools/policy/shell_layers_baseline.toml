@@ -48,6 +48,7 @@ crates = [
 
 # Workspace crates with a non-dev dependency on the shell, and why.
 [shell_dependants]
+"ux-bench" = "Runs declarative UX journeys against the native shell tree it builds in-process, so it links the shell as the thing it measures"
 
 # The shell's direct normal and build dependencies (package names). Remove a line
 # when a dependency goes; a new one is an [shell_dependencies.added] entry with
@@ -92,7 +93,6 @@ grandfathered = [
     "mime_guess",
     "neighbour-wire",
     "notes",
-    "notify",
     "os-actions",
     "package-store",
     "parking_lot",

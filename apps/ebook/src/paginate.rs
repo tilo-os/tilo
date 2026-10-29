@@ -9,7 +9,7 @@
 //! [`TextRenderer`] is available) and is cached per [`LayoutKey`]; it only
 //! recomputes when the chapter, content width, or a typography setting changes.
 
-use tilo_doc::paging::{Block as PageBlock, Fragmentation, PageFlow};
+use ui::text_render::paging::{Block as PageBlock, Fragmentation, PageFlow};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::{
     ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks,

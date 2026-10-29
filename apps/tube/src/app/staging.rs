@@ -17,6 +17,7 @@ use super::TubeApp;
 use super::playback::pump_player;
 
 impl TubeApp {
+    #[cfg(feature = "samples")]
     fn play_demo(&mut self) {
         // The sample video that carries captions, so the still shows the whole
         // watch page: picture, transport, settings and the lines being spoken.
@@ -58,6 +59,7 @@ impl TubeApp {
         self.player_video = Some(id);
     }
 
+    #[cfg(feature = "samples")]
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
             "empty" => self.show_empty_home(),
@@ -66,7 +68,6 @@ impl TubeApp {
             "device-sync" => self.show_device_sync_sample(),
             "play-demo" => self.play_demo(),
             "narrow" => {
-                self.force_sidebar_open_shot = true;
                 self.shell.open_sidebar();
                 self.shell.snap();
             }
@@ -155,12 +156,14 @@ impl TubeApp {
         self
     }
 
+    #[cfg(feature = "samples")]
     fn show_loading_home(&mut self) {
         self.model = TubeModel::default();
         self.model.feed_loading = true;
         self.model.route = Route::Home;
     }
 
+    #[cfg(feature = "samples")]
     fn show_empty_home(&mut self) {
         self.model = TubeModel::default();
         self.model.data_source.label = "offline: network unavailable".into();
@@ -209,7 +212,7 @@ impl TubeApp {
         self.model.route = route;
     }
 
-    #[cfg(feature = "grayjay-sync")]
+    #[cfg(all(feature = "samples", feature = "grayjay-sync"))]
     fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
         self.device_sync = crate::sync::DeviceSync::visual_sample();

@@ -22,7 +22,7 @@ use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
-use notify::Event;
+use tilo_files::native::WatchEvent as Event;
 
 use super::{DEV_STOP_REQUESTED, DevCandidate, newer_source_during_build, terminate_build_child};
 
@@ -390,9 +390,8 @@ pub(crate) enum FastOutcome {
 /// Rerun the recorded rustc command, stopping it for a newer edit.
 pub(crate) fn rebuild_with_rustc(
     fast: &FastRebuild,
-    events: &mpsc::Receiver<notify::Result<Event>>,
+    events: &mpsc::Receiver<Event>,
     roots: &[PathBuf],
-    mut observe: impl FnMut(&Event),
     timings: &mut Option<ReloadTimings>,
 ) -> FastOutcome {
     let mut command = fast.command();
@@ -429,7 +428,7 @@ pub(crate) fn rebuild_with_rustc(
             terminate_build_child(&mut rustc);
             return FastOutcome::Failed(anyhow::anyhow!("development stopped"));
         }
-        if newer_source_during_build(events, roots, &mut observe) {
+        if newer_source_during_build(events, roots) {
             terminate_build_child(&mut rustc);
             return FastOutcome::Done(DevCandidate::Superseded);
         }

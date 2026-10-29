@@ -13,7 +13,7 @@ by the launcher, in its sandbox, under its own id and custody.
 ## Start
 
 You need a nested-session build (`dist/dev/nested-session-build.sh
-target/nested-session`, which `dist/dev/nested-session.sh` has a remote cargo drop-in or t make) and the tool, built
+target/nested-session`, which `dist/dev/nested-session.sh` builds) and the tool, built
 with the nested session's profile:
 
 ```sh
@@ -129,12 +129,7 @@ tilolang dev apps/tl/notes --search apps/tl --session /tmp/s.json --build-runtim
 
 `tilolang dev` then:
 
-1. builds `tilolang-app` thin with `dist/dev/tilolang-runtime-build.sh`, on the
-   builder of the remote cargo drop-in `TILO_REMOTE_CARGO` names
-   (`$TILO_REMOTE_CARGO --fetch tilolang-runtime exec`) or on t (`t outputs
-   tilolang-runtime`), as `nested-session.sh` picks: `--builder remote|t` or
-   `TILO_NESTED_BUILDER`, by default the drop-in when it is on PATH; a build for
-   another architecture than this machine's is refused. It builds again on every
+1. builds `tilolang-app` thin with `dist/dev/tilolang-runtime-build.sh` (cargo). It builds again on every
    change of `apps/tilolang`, `tilolang-tilo`, `tilolang-runtime` or `tilolang`;
    a failed build leaves the apps on the last good runtime;
 2. bakes the binary into a runtime bundle signed by a key the launcher trusts;

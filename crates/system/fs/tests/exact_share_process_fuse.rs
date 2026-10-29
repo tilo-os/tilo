@@ -1275,28 +1275,30 @@ async fn revoke_grant(socket: &Path, grant_id: uuid::Uuid) -> ShareControlResult
 
 /// Every file the recipient creates under `cache`, its content store
 /// aside. Each durable write creates one: the temporary file it renames
-/// over the old one after an fsync of each, and of their directory.
-fn watch_durable_writes(cache: &Path) -> (notify::RecommendedWatcher, Arc<Mutex<Vec<PathBuf>>>) {
-    use notify::Watcher as _;
+/// over the old one after an fsync of each, and of their directory; the
+/// rename reports the file as created.
+fn watch_durable_writes(
+    cache: &Path,
+) -> (tilo_files::native::ChangeWatch, Arc<Mutex<Vec<PathBuf>>>) {
     let writes = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&writes);
     let blobs = cache.join("blobs");
-    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        let Ok(event) = event else { return };
-        if matches!(event.kind, notify::EventKind::Create(_)) {
+    let skipped = blobs.clone();
+    let watch = tilo_files::native::Watcher::tree(cache)
+        .skip(move |dir| dir == skipped)
+        .start(move |events| {
             seen.lock().unwrap().extend(
-                event
-                    .paths
-                    .into_iter()
-                    .filter(|path| !path.starts_with(&blobs)),
+                events
+                    .iter()
+                    .filter(|event| {
+                        event.kind == tilo_files::ChangeKind::Created
+                            && !event.path.starts_with(&blobs)
+                    })
+                    .map(|event| event.path.clone()),
             );
-        }
-    })
-    .unwrap();
-    watcher
-        .watch(cache, notify::RecursiveMode::Recursive)
+        })
         .unwrap();
-    (watcher, writes)
+    (watch, writes)
 }
 
 /// A recipient with a shared file open, hydrated, and nobody editing it,

@@ -75,6 +75,7 @@ impl SheetsApp {
             locale: None,
             doc_settings: DocSettings::default(),
             cache: None,
+            calc: crate::calc::Calc::new(),
             pending_reveal: None,
             clipboard: None,
             palette: {

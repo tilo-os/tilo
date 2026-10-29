@@ -204,6 +204,8 @@ mod tests {
             state: RoomSyncState::Synced,
             workspace: "Lounge".into(),
             writable: Some(true),
+            unsynced_writes: 0,
+            cannot_keep_writes: false,
         }));
         assert!(
             chat().can_participate(),

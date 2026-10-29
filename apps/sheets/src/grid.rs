@@ -2852,8 +2852,8 @@ impl Grid {
         let Some(body_text) = self.highlight_formula_body() else {
             return Vec::new();
         };
-        let spans = crate::formula::references(&body_text);
-        let slots = crate::formula::ref_color_slots(&spans);
+        let spans = crate::refs::references(&body_text);
+        let slots = crate::refs::ref_color_slots(&spans);
         spans
             .iter()
             .zip(&slots)
@@ -3354,8 +3354,8 @@ pub(crate) fn draw_formula_line(
     let mut segs: Vec<(usize, usize, Color)> = Vec::new();
     if chars.first() == Some(&'=') {
         let body: String = chars.get(1..).unwrap_or_default().iter().collect();
-        let spans = crate::formula::references(&body);
-        let slots = crate::formula::ref_color_slots(&spans);
+        let spans = crate::refs::references(&body);
+        let slots = crate::refs::ref_color_slots(&spans);
         let mut cursor = 0usize;
         for (span, slot) in spans.iter().zip(&slots) {
             let s = span.start + 1;

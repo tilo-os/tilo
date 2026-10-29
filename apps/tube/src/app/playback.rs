@@ -460,7 +460,10 @@ impl TubeApp {
     /// reviewable without the network.
     pub(super) fn request_captions_for(&mut self, id: &str) {
         if !self.online {
+            #[cfg(feature = "samples")]
             let tracks = crate::sample::caption_tracks(id);
+            #[cfg(not(feature = "samples"))]
+            let tracks = Vec::new();
             self.model.captions_of = id.to_string();
             self.model.caption_tracks = tracks;
             self.load_chosen_captions();
@@ -488,6 +491,7 @@ impl TubeApp {
             self.model.captions_notice = None;
             return;
         };
+        #[cfg(feature = "samples")]
         if let Some(cues) = crate::sample::caption_cues(&id, &language) {
             self.model.captions = cues;
             self.model.captions_notice = None;

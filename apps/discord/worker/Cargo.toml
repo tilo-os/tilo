@@ -56,7 +56,7 @@ tilo-agent-participant = { path = "../../../crates/agent/agent-participant" }
 tilo-automation = { path = "../../../crates/collab/automation" }
 tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }
 ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
-chat = { path = "../../chat" }
+chat = { path = "../../chat", features = ["samples"] }
 discord = { path = ".." }
 automerge.workspace = true
 ed25519-dalek.workspace = true

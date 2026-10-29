@@ -27,6 +27,10 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+# Where a stage copies another stage's file only so buildah keys the RUN that
+# bind-mounts that stage by its content: nothing there is installed.
+CACHE_KEY_DIRS = ("/tilo-payload-keys/", "/tilo-uki-key/")
+
 REPO = Path(__file__).resolve().parents[2]
 RERUN = "python3 tools/policy/check_component_manifest.py   (or tools/policy/run.sh)"
 WHY = ("the image and dev layers are both assembled from os/components.toml, so a Tilo "
@@ -384,6 +388,11 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
         if source_stage not in (BUILD_STAGE, PAYLOAD_STAGE) or instruction.stage == PAYLOAD_STAGE:
             continue
         for source, destination in pairs:
+            # A file copied into a cache-key directory only keys the RUN after
+            # it (buildah keys a RUN by its instruction, not by what a bind
+            # mount from another stage holds); it installs nothing.
+            if destination.startswith(CACHE_KEY_DIRS):
+                continue
             key = (source.removeprefix("/out/") if source.startswith("/out/") else source, destination)
             if key in direct:
                 matched_direct.add(key)

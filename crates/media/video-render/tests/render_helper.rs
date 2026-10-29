@@ -108,7 +108,7 @@ fn timeline(seconds: f64, source: Option<&str>) -> Project {
 fn run(project: &Project, sources: &[(&str, &[u8])], request: &Request) -> Finished {
     let parent = tempfile::tempdir().unwrap();
     let mut job = JobDir::create(parent.path(), 64 << 20).unwrap();
-    job.put_snapshot(&video_editor::seed::document_of(project).save())
+    job.put_snapshot(&video_editor::resource::document_of(project).save())
         .unwrap();
     for (hash, bytes) in sources {
         job.put_source(hash, &mut &bytes[..]).unwrap();
@@ -180,7 +180,7 @@ fn a_render_whose_source_is_missing_says_so() {
     let project = timeline(1.0, Some(&format!("tilo.content:{}", "ab".repeat(32))));
     let parent = tempfile::tempdir().unwrap();
     let job = JobDir::create(parent.path(), 1 << 20).unwrap();
-    job.put_snapshot(&video_editor::seed::document_of(&project).save())
+    job.put_snapshot(&video_editor::resource::document_of(&project).save())
         .unwrap();
     let outcome = client::render(
         &helper(),

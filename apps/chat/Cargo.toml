@@ -24,8 +24,10 @@ path = "src/main.rs"
 web-features = []
 
 [features]
-# The screenshot scenarios and the messages they stage: development runs,
-# captures and tests only, never a release.
+# The demo room, the screenshot scenarios and the messages they stage, and
+# the helpers that write a chat as its people would: development runs,
+# captures and tests (here and in the crates that test against a chat) only,
+# never a release.
 samples = []
 default = ["video"]
 thin = ["dep:runtime-dylib"]

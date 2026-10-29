@@ -19,12 +19,12 @@ impl PreparedMedia {
             || self.retained.as_ref() != Some(intent)
             || self.home.is_some()
             || self.applications.is_some()
-            || self.manifest.portable_home.is_some()
-            || self.manifest.offline_home.is_some()
-            || self.manifest.offline_applications.is_some()
-            || self.manifest.completed_home.is_some()
-            || self.manifest.completed_applications_only
-            || self.manifest.retained_caller.is_some()
+            || self.manifest.units.portable_home().is_some()
+            || self.manifest.units.offline_home().is_some()
+            || self.manifest.units.offline_applications().is_some()
+            || self.manifest.units.completed_home().is_some()
+            || self.manifest.units.completed_applications_only()
+            || self.manifest.units.retained_caller().is_some()
             || self.manifest.planned_btrfs_resize.is_some()
             || matches!(
                 self.manifest.identity_kind,
@@ -41,7 +41,7 @@ impl PreparedMedia {
             .lock()
             .map_err(|_| io::Error::other("Staging generation custody unavailable"))?;
         let (expected, _) = source.original_inventory_selection()?;
-        if let Some(copy) = &self.manifest.original_copy {
+        if let Some(copy) = self.manifest.units.original_copy() {
             if copy.source() != &expected || copy.reservation() != reservation {
                 return Err(io::Error::other("Staging source declaration changed"));
             }
@@ -51,8 +51,8 @@ impl PreparedMedia {
         if let Some(prepared) = &*generation {
             let copy = prepared
                 .manifest
-                .original_copy
-                .as_ref()
+                .units
+                .original_copy()
                 .ok_or_else(|| io::Error::other("Staging generation has another purpose"))?;
             if copy.source() != &expected || copy.reservation() != reservation {
                 return Err(io::Error::other("Staging source declaration changed"));
@@ -93,13 +93,13 @@ impl PreparedMedia {
         if self.retained.as_ref() != Some(intent)
             || self.home.is_some()
             || self.applications.is_some()
-            || self.manifest.original_copy.is_some()
-            || self.manifest.portable_home.is_some()
-            || self.manifest.offline_home.is_some()
-            || self.manifest.offline_applications.is_some()
-            || self.manifest.completed_home.is_some()
-            || self.manifest.completed_applications_only
-            || self.manifest.retained_caller.is_none()
+            || self.manifest.units.original_copy().is_some()
+            || self.manifest.units.portable_home().is_some()
+            || self.manifest.units.offline_home().is_some()
+            || self.manifest.units.offline_applications().is_some()
+            || self.manifest.units.completed_home().is_some()
+            || self.manifest.units.completed_applications_only()
+            || self.manifest.units.retained_caller().is_none()
         {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
@@ -107,7 +107,7 @@ impl PreparedMedia {
             .computer_applications()?
             .ok_or_else(|| io::Error::other("Selected application grant missing"))?;
         let bound: Plan = serde_json::from_value(apps.bind(operation, installation)?)?;
-        if let Some(composite) = &self.manifest.computer_applications {
+        if let Some(composite) = self.manifest.units.computer_applications() {
             composite.matches_staging(&self.manifest, intent, operation, installation)?;
             let copy = self
                 .manifest
@@ -128,15 +128,15 @@ impl PreparedMedia {
         if let Some(prepared) = &*generation {
             prepared
                 .manifest
-                .computer_applications
-                .as_ref()
+                .units
+                .computer_applications()
                 .ok_or_else(|| io::Error::other("Staging generation has another purpose"))?
                 .matches_staging(&prepared.manifest, intent, operation, installation)?;
             let copy = prepared
                 .manifest
                 .installed_original_copy_declaration()?
                 .ok_or_else(|| io::Error::other("Staging generation has another purpose"))?;
-            if prepared.manifest.computer_applications.is_none()
+            if prepared.manifest.units.computer_applications().is_none()
                 || copy.source() != &bound.original_inventory_selection()?.0
                 || copy.reservation() != reservation
             {

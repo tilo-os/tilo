@@ -27,11 +27,11 @@ fn operation(value: &str) -> io::Result<()> {
 }
 fn validate(record: &Record) -> io::Result<()> {
     record.manifest.validate()?;
-    let home = record.manifest.retained_home.as_ref().ok_or_else(invalid)?;
+    let home = record.manifest.units.retained_home().ok_or_else(invalid)?;
     let caller = record
         .manifest
-        .retained_caller
-        .as_ref()
+        .units
+        .retained_caller()
         .ok_or_else(invalid)?;
     if record.schema != 1 || record.purpose != "installed-retained-source" {
         return Err(invalid());
@@ -70,8 +70,8 @@ impl AuthenticatedInstalledRetained {
         validate(&parsed)?;
         if parsed
             .manifest
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(invalid)?
             .as_plan()
             .operation_id
@@ -95,7 +95,7 @@ impl AuthenticatedInstalledRetained {
 }
 pub(super) fn publish_namespace(setup: &PreparedSetupReview, namespace: &Path) -> io::Result<()> {
     setup.require_completed_export()?;
-    if setup.manifest.retained_caller.is_none() {
+    if setup.manifest.units.retained_caller().is_none() {
         return Ok(());
     }
     root()?;
@@ -112,8 +112,8 @@ pub(super) fn publish_namespace(setup: &PreparedSetupReview, namespace: &Path) -
     }
     let id = &record
         .manifest
-        .retained_home
-        .as_ref()
+        .units
+        .retained_home()
         .ok_or_else(invalid)?
         .as_plan()
         .operation_id;

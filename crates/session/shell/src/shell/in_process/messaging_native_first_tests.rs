@@ -1,7 +1,7 @@
 use super::*;
 use crate::network::PeerIdentityStore;
 use crate::session_runtime::runtime;
-use iroh::{Endpoint, address_lookup::memory::MemoryLookup, endpoint::presets};
+use iroh::{Endpoint, address_lookup::memory::MemoryLookup};
 use tilo_network_actor::Actor;
 use tilo_network_actor::NetCmd;
 struct Peer {
@@ -47,18 +47,12 @@ impl Peer {
             .unwrap();
         apps.install_credential_owner(vault.clone()).unwrap();
         apps.bind_messaging_record_wake(Arc::new(|| {}));
-        let lookup = MemoryLookup::new();
-        let endpoint = runtime()
-            .unwrap()
-            .block_on(
-                Endpoint::builder(presets::N0)
-                    .secret_key(iroh::SecretKey::from_bytes(
-                        &rig.admission.host.device_signing_key.to_bytes(),
-                    ))
-                    .address_lookup(lookup.clone())
-                    .bind(),
-            )
-            .unwrap();
+        let (endpoint, lookup) =
+            runtime()
+                .unwrap()
+                .block_on(tilo_network_actor::loopback_endpoint(Some(
+                    iroh::SecretKey::from_bytes(&rig.admission.host.device_signing_key.to_bytes()),
+                )));
         let (commands, task) = runtime()
             .unwrap()
             .block_on(async { Actor::spawn(endpoint.clone(), lookup.clone()) });

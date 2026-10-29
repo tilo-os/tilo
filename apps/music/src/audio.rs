@@ -140,7 +140,7 @@ impl AudioEngine {
         let engine = self.engine.get_or_insert_with(|| {
             media::MediaEngine::with_config(media::EngineConfig::default().audio_only())
         });
-        engine.open(source_for(uri));
+        engine.open(media::Source::for_uri(uri));
         engine.set_volume(volume);
     }
 
@@ -418,23 +418,6 @@ impl AudioEngine {
             self.eos,
             self.error.lock_recover(),
         )
-    }
-}
-
-/// The engine source for `uri`: a `file://` URI is the local file it names,
-/// anything else a stream the engine fetches. A page has no local files: the
-/// media element fetches every URI itself.
-fn source_for(uri: &str) -> media::Source {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(path) = url::Url::parse(uri)
-        .ok()
-        .filter(|url| url.scheme() == "file")
-        .and_then(|url| url.to_file_path().ok())
-    {
-        return media::Source::for_path(&path);
-    }
-    media::Source::Remote {
-        url: uri.to_owned(),
     }
 }
 

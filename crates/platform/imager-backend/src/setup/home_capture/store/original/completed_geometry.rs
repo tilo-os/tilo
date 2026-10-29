@@ -23,8 +23,8 @@ impl CompletedOriginalGeometry {
             return Ok(None);
         };
         let shared = manifest
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(|| super::failure("Resize lacks authenticated shared source"))?;
         let original = manifest
             .installed_original_copy_declaration()?
@@ -48,7 +48,7 @@ impl CompletedOriginalGeometry {
             .installed_original_copy_declaration()?
             .map(|d| d.source())
             != Some(&self.original)
-            || manifest.retained_home.as_ref() != Some(&self.shared)
+            || manifest.units.retained_home() != Some(&self.shared)
             || manifest.planned_btrfs_resize.as_ref() != Some(&self.resize)
             || self
                 .resize

@@ -29,7 +29,7 @@ type ScrollOffset = Rc<Cell<(f32, f32)>>;
 
 /// The whole window: built again when the run moves to another stage or the
 /// measurements kept change; the dial follows the stage's reading on its own.
-pub(crate) fn page(cx: &mut ViewCx<SpeedTest>) -> Element {
+pub(crate) fn page(cx: &ViewCx<SpeedTest>) -> Element {
     let runs = Runs::new(cx);
     runs.answer_effects(cx);
     // A screenshot holds the dial's arc still on the staged reading.

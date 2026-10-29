@@ -8,7 +8,7 @@ glyph-icon 1 apps/imager/src/app.rs
 glyph-icon 3 apps/logs/src/journal.rs
 glyph-icon 2 apps/settings/src/panes/updates.rs
 glyph-icon 1 apps/video-editor/src/app.rs
-glyph-icon 1 crates/session/installer/src/installer_app.rs
+glyph-icon 1 apps/imager/src/setup/destination/installer_app.rs
 glyph-icon 1 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 apps/agent/src/session/agent_loop.rs
 glyph-join 1 apps/agent/src/surface.rs
@@ -60,7 +60,6 @@ glyph-join 1 apps/terminal/src/scenarios.rs
 glyph-join 1 apps/totp/src/model.rs
 glyph-join 1 apps/totp/src/resource.rs
 glyph-join 1 apps/tube/src/actions.rs
-glyph-join 1 apps/tube/src/api.rs
 glyph-join 1 apps/tube/src/app.rs
 glyph-join 6 apps/tube/src/model.rs
 glyph-join 7 apps/tube/src/sample.rs
@@ -81,13 +80,13 @@ glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs
 glyph-join 1 crates/session/desktop/src/here.rs
 glyph-join 1 crates/session/desktop/src/workspace_settings.rs
 glyph-join 2 crates/session/desktop/src/workspace_settings/agent_access.rs
-glyph-join 1 crates/session/installer/src/disk_row.rs
-glyph-join 2 crates/session/installer/src/disks.rs
-glyph-join 12 crates/session/installer/src/installer_app.rs
-glyph-join 2 crates/session/installer/src/installer_app/surface.rs
-glyph-join 1 crates/session/installer/src/installer_network.rs
-glyph-join 1 crates/session/installer/src/online_accounts/mod.rs
-glyph-join 1 crates/session/installer/src/step_indicator.rs
+glyph-join 1 apps/imager/src/setup/destination/disk_row.rs
+glyph-join 2 apps/imager/src/setup/destination/disks.rs
+glyph-join 12 apps/imager/src/setup/destination/installer_app.rs
+glyph-join 2 apps/imager/src/setup/destination/installer_app/surface.rs
+glyph-join 1 apps/imager/src/setup/destination/installer_network.rs
+glyph-join 1 apps/imager/src/setup/destination/online_accounts/mod.rs
+glyph-join 1 apps/imager/src/setup/destination/step_indicator.rs
 glyph-join 2 crates/session/shell/src/bin/shots/main.rs
 glyph-join 6 crates/session/shell/src/bin/shots/scenario.rs
 glyph-join 1 crates/session/shell/src/compositor/backend/drm/seat_diag.rs
@@ -114,7 +113,6 @@ glyph-join 3 crates/session/shell/src/shell/test_control.rs
 glyph-join 1 crates/session/shell/src/shell/workspace_drop.rs
 glyph-join 1 crates/session/tray-host/src/item.rs
 hand-rolled 1 apps/feeds/src/reader_pane.rs
-hand-rolled 1 apps/pdf-viewer/src/render.rs
 hand-rolled 2 apps/word-processor/src/widget/paint.rs
 hand-rolled 2 apps/word-processor/src/widget/panels.rs
 hand-rolled 1 crates/session/desktop-surface/src/notifications/center.rs
