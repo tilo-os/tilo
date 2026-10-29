@@ -190,7 +190,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 | # | Layer | Who writes it | Contents |
 |---|---|---|---|
 | 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
-| 2 | **Distribution defaults** (`appearance.distribution_defaults` / `appearance.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
+| 2 | **Distribution defaults** (`appearance_device.distribution_defaults` / `appearance_device.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
 | 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, and the person's density |
 | 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |

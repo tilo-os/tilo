@@ -227,9 +227,8 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
     )
 }
 
-/// Version of the host-session input import. It lives in the input section
-/// because this is a compatibility migration for that section, not a global
-/// settings-document schema version.
+/// Version of the host-session input import. It lives in this device's input
+/// section: it says this device's host was imported, not another's.
 const HOST_INPUT_MIGRATION_VERSION_KEY: &str = "host_input_migration_version";
 const HOST_INPUT_MIGRATION_VERSION: u64 = 5;
 
@@ -260,7 +259,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// Returns an error when the shared settings store cannot persist the imported
 /// values. Missing schemas or unreadable host values are ignored individually.
 pub fn import_host_input_settings() -> Result<(), Box<dyn Error>> {
-    use settings_store::hardware::INPUT_SECTION;
+    use settings_store::hardware::{INPUT_DEVICE_SECTION, INPUT_SECTION};
     // Ask the host outside the settings lock: every read starts a process.
     // The import is then decided again under the lock against the section as
     // it stands, so a choice saved in the meantime still wins.
@@ -273,28 +272,45 @@ pub fn import_host_input_settings() -> Result<(), Box<dyn Error>> {
     // The layout the machine was installed with stands in for a GNOME
     // session that lists no sources, as GNOME itself falls back to it.
     let system = settings_store::keyboard_sources::system_sources();
-    let existing = settings_store::load_section(INPUT_SECTION);
+    // The person's input section, with whether this device imported its
+    // host already.
+    let migrated =
+        settings_store::load_section(INPUT_DEVICE_SECTION).remove(HOST_INPUT_MIGRATION_VERSION_KEY);
+    let with_marker = |section: &serde_json::Map<String, serde_json::Value>| {
+        let mut section = section.clone();
+        if let Some(version) = &migrated {
+            section.insert(HOST_INPUT_MIGRATION_VERSION_KEY.into(), version.clone());
+        }
+        section
+    };
+    let existing = with_marker(&settings_store::load_section(INPUT_SECTION));
     if host_input_migration_updates(&existing, &mut ask_host, &system).is_empty() {
         return Ok(());
     }
+    let origin = settings_store::ChangeOrigin::action(HOST_INPUT_IMPORT_ORIGIN);
     let mut imported = false;
-    settings_store::update_section_with(
-        INPUT_SECTION,
-        &settings_store::ChangeOrigin::action(HOST_INPUT_IMPORT_ORIGIN),
-        &mut |existing| {
-            let updates = host_input_migration_updates(
-                existing,
-                |schema, key| {
-                    host.get(&(schema.to_string(), key.to_string()))
-                        .cloned()
-                        .flatten()
-                },
-                &system,
-            );
-            imported = !updates.is_empty();
-            updates
-        },
-    )?;
+    let mut marker = None;
+    settings_store::update_section_with(INPUT_SECTION, &origin, &mut |existing| {
+        let mut updates = host_input_migration_updates(
+            &with_marker(existing),
+            |schema, key| {
+                host.get(&(schema.to_string(), key.to_string()))
+                    .cloned()
+                    .flatten()
+            },
+            &system,
+        );
+        marker = updates.remove(HOST_INPUT_MIGRATION_VERSION_KEY);
+        imported = !updates.is_empty() || marker.is_some();
+        updates
+    })?;
+    if let Some(version) = marker {
+        settings_store::update_section_by(
+            INPUT_DEVICE_SECTION,
+            serde_json::Map::from_iter([(HOST_INPUT_MIGRATION_VERSION_KEY.into(), version)]),
+            &origin,
+        )?;
+    }
     if imported {
         tracing::info!(
             version = HOST_INPUT_MIGRATION_VERSION,

@@ -7,6 +7,10 @@
 use crate::Key;
 use crate::day_schedule::{MODE_KEY, SECTION};
 
+/// This device's appearance: the defaults its OS image ships
+/// (`ui::theme_layers::DISTRIBUTION_DEFAULTS_KEY`).
+pub const DEVICE_SECTION: &str = "appearance_device";
+
 /// `"dark"`, `"light"` or [`crate::day_schedule::AUTOMATIC_MODE`]. Unset
 /// leaves the polarity to the distribution's theme.
 pub const MODE: Key<Option<String>> = Key::new(SECTION, MODE_KEY, || None);

@@ -22,13 +22,16 @@ pub mod protocol;
 /// Single-shot model calls in either provider dialect.
 pub mod transform;
 
-/// The `settings.json` section owned by this crate.
+/// The section holding the providers of this device and its network, and
+/// the default: this device's.
 pub const SETTINGS_SECTION: &str = "agent_providers";
+/// The section holding the hosted providers: they name no device, so it is
+/// the person's.
+pub const HOSTED_SECTION: &str = "agent_providers_person";
 /// The key holding the providers of this device and its network, and the
-/// default: they stay on the device.
+/// default, in [`SETTINGS_SECTION`].
 const CONFIG_KEY: &str = "config";
-/// The key holding the hosted providers: they name no device, so they roam
-/// with the person.
+/// The key holding the hosted providers in [`HOSTED_SECTION`].
 const HOSTED_KEY: &str = "hosted";
 
 /// The request dialect spoken by a provider endpoint.
@@ -698,6 +701,7 @@ fn loopback_http_endpoint(endpoint: &str) -> bool {
 /// The hosted providers of a configuration, as they roam with the person:
 /// each names an endpoint on the internet and a reference to its key, never
 /// the key, which each device keeps in its own vault.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
 pub struct HostedProfiles {
@@ -865,24 +869,27 @@ impl ProviderConfig {
 
 impl ProviderConfig {
     pub fn load() -> Self {
-        let section = settings_store::load_section(SETTINGS_SECTION);
-        Self::from_section(&section)
+        Self::from_document(&settings_store::load())
     }
 
     /// The configuration in `source`: another profile's settings.
     pub fn load_in(source: &dyn settings_store::SettingsSource) -> Self {
-        Self::from_section(&settings_store::load_section_in(source, SETTINGS_SECTION))
+        Self::from_document(&source.load())
     }
 
-    fn from_section(section: &Map<String, Value>) -> Self {
-        let local = section
-            .get(CONFIG_KEY)
-            .cloned()
+    /// The configuration `document` holds: this device's providers and the
+    /// person's hosted ones.
+    fn from_document(document: &Map<String, Value>) -> Self {
+        let leaf = |section: &str, key: &str| {
+            document
+                .get(section)
+                .and_then(|section| section.get(key))
+                .cloned()
+        };
+        let local = leaf(SETTINGS_SECTION, CONFIG_KEY)
             .and_then(|value| serde_json::from_value::<Self>(value).ok())
             .unwrap_or_default();
-        let hosted = section
-            .get(HOSTED_KEY)
-            .cloned()
+        let hosted = leaf(HOSTED_SECTION, HOSTED_KEY)
             .and_then(|value| serde_json::from_value::<HostedProfiles>(value).ok())
             .unwrap_or_default();
         Self::from_stored(local, hosted).sanitised()
@@ -926,19 +933,21 @@ impl ProviderConfig {
         }
     }
 
-    /// The section's two keys for this configuration.
-    fn section(&self) -> std::io::Result<Map<String, Value>> {
+    /// This configuration as its two sections store it: this device's
+    /// ([`SETTINGS_SECTION`]) and the person's ([`HOSTED_SECTION`]).
+    fn sections(&self) -> std::io::Result<(Map<String, Value>, Map<String, Value>)> {
         let (local, hosted) = self.clone().sanitised().stored();
-        let mut section = Map::new();
-        section.insert(
-            CONFIG_KEY.to_string(),
-            serde_json::to_value(local).map_err(std::io::Error::other)?,
-        );
-        section.insert(
-            HOSTED_KEY.to_string(),
-            serde_json::to_value(hosted).map_err(std::io::Error::other)?,
-        );
-        Ok(section)
+        let leaf = |key: &str, value: Value| Map::from_iter([(key.to_string(), value)]);
+        Ok((
+            leaf(
+                CONFIG_KEY,
+                serde_json::to_value(local).map_err(std::io::Error::other)?,
+            ),
+            leaf(
+                HOSTED_KEY,
+                serde_json::to_value(hosted).map_err(std::io::Error::other)?,
+            ),
+        ))
     }
 
     /// Merge our single configuration payload into the shared settings file.
@@ -950,7 +959,9 @@ impl ProviderConfig {
     /// Returns an error if the configuration cannot be serialised or the
     /// shared settings document cannot be updated.
     pub fn save(&self) -> std::io::Result<()> {
-        settings_store::update_section(SETTINGS_SECTION, self.section()?)
+        let (local, hosted) = self.sections()?;
+        settings_store::update_section(SETTINGS_SECTION, local)?;
+        settings_store::update_section(HOSTED_SECTION, hosted)
     }
 
     /// Atomically save only if the currently stored descriptions still equal
@@ -959,18 +970,25 @@ impl ProviderConfig {
     /// # Errors
     /// Returns persistence or unsupported-source errors; `false` is a conflict.
     pub fn compare_save(&self, expected: &Self) -> std::io::Result<bool> {
-        let section = settings_store::load_section(SETTINGS_SECTION);
-        if Self::from_section(&section) != *expected {
-            return Ok(false);
-        }
-        let values = self.section()?;
         let source = settings_store::source()
             .ok_or_else(|| std::io::Error::other("no config directory available"))?;
-        let result = source.compare_update_section(SETTINGS_SECTION, &section, values)?;
-        Ok(!matches!(
-            result,
-            settings_store::ConditionalUpdate::Superseded
-        ))
+        let document = source.load();
+        if Self::from_document(&document) != *expected {
+            return Ok(false);
+        }
+        let (local, hosted) = self.sections()?;
+        let read = |section: &str| match document.get(section) {
+            Some(Value::Object(section)) => section.clone(),
+            _ => Map::new(),
+        };
+        // This device's providers decide: the hosted ones follow them.
+        let result =
+            source.compare_update_section(SETTINGS_SECTION, &read(SETTINGS_SECTION), local)?;
+        if matches!(result, settings_store::ConditionalUpdate::Superseded) {
+            return Ok(false);
+        }
+        source.update_section(HOSTED_SECTION, hosted)?;
+        Ok(true)
     }
 
     /// Save this configuration to `source`: another profile's settings.
@@ -980,7 +998,9 @@ impl ProviderConfig {
     /// Returns an error if the configuration cannot be serialised or
     /// `source` cannot be updated.
     pub fn save_in(&self, source: &dyn settings_store::SettingsSource) -> std::io::Result<()> {
-        source.update_section(SETTINGS_SECTION, self.section()?)
+        let (local, hosted) = self.sections()?;
+        source.update_section(SETTINGS_SECTION, local)?;
+        source.update_section(HOSTED_SECTION, hosted)
     }
 
     /// Validate storage and runtime-safe invariants, returning user-facing
@@ -1781,18 +1801,13 @@ mod tests {
         config.save_in(&path).unwrap();
         assert_eq!(ProviderConfig::load_in(&path), config);
         let document = settings_store::SettingsSource::load(&path);
-        let section = document[SETTINGS_SECTION].as_object().unwrap();
-        let stored: ProviderConfig = serde_json::from_value(section[CONFIG_KEY].clone()).unwrap();
-        let roaming: HostedProfiles = serde_json::from_value(section[HOSTED_KEY].clone()).unwrap();
+        let stored: ProviderConfig =
+            serde_json::from_value(document[SETTINGS_SECTION][CONFIG_KEY].clone()).unwrap();
+        let roaming: HostedProfiles =
+            serde_json::from_value(document[HOSTED_SECTION][HOSTED_KEY].clone()).unwrap();
         assert_eq!(stored.profiles, vec![local]);
         assert_eq!(stored.default_profile, config.default_profile);
         assert_eq!(roaming.profiles, vec![hosted]);
-        assert!(settings_store::continuity::is_personal(
-            "tilo.agent_providers.hosted"
-        ));
-        assert!(!settings_store::continuity::is_personal(
-            "tilo.agent_providers.config"
-        ));
     }
 }
 

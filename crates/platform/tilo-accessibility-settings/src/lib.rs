@@ -103,9 +103,6 @@ macro_rules! accessibility_settings {
             /// Backend-neutral voice/language preset.
             $(#[$readonly])*
             pub screen_reader_voice: ScreenReaderVoice,
-            /// The screen reader, text size, contrast, language and keyboard
-            /// layout this person turns on apply to the login screens too.
-            pub apply_to_sign_in: bool,
             /// Personal recognition language; selecting it never grants microphone access.
             pub dictation_language: DictationLanguage,
             /// Preserve recognised speech without removing explicit self-repairs.
@@ -137,7 +134,6 @@ macro_rules! accessibility_settings {
                     switch_scan_ms: 0,
                     screen_reader_rate: $crate::DEFAULT_SCREEN_READER_RATE,
                     screen_reader_voice: $crate::ScreenReaderVoice::System,
-                    apply_to_sign_in: $crate::__private::APPLY_TO_SIGN_IN.default_value(),
                     dictation_language: $crate::__private::DictationLanguage::default(),
                     dictation_literal: false,
                 }
@@ -252,9 +248,6 @@ macro_rules! accessibility_settings {
                 if let Some(value) = key(section, "screen_reader_voice") {
                     settings.screen_reader_voice = value;
                 }
-                if let Some(value) = key(section, $crate::__private::APPLY_TO_SIGN_IN.name()) {
-                    settings.apply_to_sign_in = value;
-                }
                 if let Some(value) = key(section, "dictation_language") {
                     settings.dictation_language = value;
                 }
@@ -353,7 +346,6 @@ pub mod __private {
         DEFAULT_ZOOM, LAST_ZOOM_KEY, MAX_ZOOM, MagnifierState, MagnifierStep, MagnifierView, OFF,
         remembered_zoom, step as step_zoom,
     };
-    pub use settings_store::sign_in_comforts::APPLY_TO_SIGN_IN;
 
     pub fn clamp<T: Ord + Copy>(value: T, range: &std::ops::RangeInclusive<T>) -> T {
         value.clamp(*range.start(), *range.end())
@@ -466,12 +458,6 @@ mod tests {
         let round_trip: AccessibilitySettings =
             serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
         assert_eq!(round_trip, settings);
-    }
-
-    #[test]
-    fn the_login_screens_follow_the_person_unless_they_keep_them_apart() {
-        assert!(read(serde_json::json!({})).apply_to_sign_in);
-        assert!(!read(serde_json::json!({"apply_to_sign_in": false})).apply_to_sign_in);
     }
 
     #[test]

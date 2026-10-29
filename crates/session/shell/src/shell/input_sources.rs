@@ -31,12 +31,21 @@ impl ChromeState {
 /// return the keyboard group to select and the source's name. `None` with a
 /// single source.
 fn select_next(scope: &str) -> Option<(usize, String)> {
-    use crate::compositor::backend::drm::input_config::{KeyboardSettings, SECTION};
-    let section = settings_store::load_section(SECTION);
-    let mut base = settings_store::hardware::RichInputConfig::from_section(&section);
+    use crate::compositor::backend::drm::input_config::KeyboardSettings;
+    use settings_store::hardware::{INPUT_DEVICE_SECTION, INPUT_SECTION, INPUT_SECTIONS};
+    let mut base = settings_store::hardware::RichInputConfig::from_section(
+        &settings_store::load_sections(INPUT_SECTIONS),
+    );
     let mut config = settings_store::keyboard_sources::effective(&base, scope);
     config.select_next_source()?;
+    // The shared sources are the person's; one keyboard's own are this
+    // device's.
     let mut values = serde_json::Map::new();
+    let section = if scope == settings_store::keyboard_sources::ALL {
+        INPUT_SECTION
+    } else {
+        INPUT_DEVICE_SECTION
+    };
     if scope == settings_store::keyboard_sources::ALL {
         values.insert(
             "keyboard_layout".into(),
@@ -63,7 +72,7 @@ fn select_next(scope: &str) -> Option<(usize, String)> {
         base.keyboard_layout.clone_from(&config.keyboard_layout);
     }
     config = settings_store::keyboard_sources::effective(&base, scope);
-    if let Err(error) = settings_store::update_section(SECTION, values) {
+    if let Err(error) = settings_store::update_section(section, values) {
         tracing::warn!(%error, "input source choice could not be saved");
         return None;
     }
@@ -150,11 +159,13 @@ mod tests {
 
         let mut values = serde_json::Map::new();
         values.insert("keyboard_layouts".into(), serde_json::json!(["us", "de"]));
+        settings_store::update_section("input", values).expect("seed two sources");
+        let mut values = serde_json::Map::new();
         values.insert(
             "keyboard_assignments".into(),
             serde_json::json!({"usb-desk": {"sources": ["de", "us"], "active": "de"}}),
         );
-        settings_store::update_section("input", values).expect("seed two sources");
+        settings_store::update_section("input_device", values).expect("seed a keyboard's own");
         invoke_next(&chrome).expect("the shared sources switch");
         assert_eq!(
             chrome.borrow_mut().take_input_source_request(),
@@ -183,7 +194,7 @@ mod tests {
         chrome.borrow_mut().set_keyboard_scope("usb-desk".into());
         invoke_next(&chrome).expect("the keyboard's own sources switch");
         assert_eq!(chrome.borrow_mut().take_input_source_request(), Some(1));
-        let section = settings_store::load_section("input");
+        let section = settings_store::load_section("input_device");
         assert_eq!(
             section
                 .get("keyboard_assignments")

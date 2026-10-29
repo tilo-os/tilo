@@ -24,7 +24,7 @@ pub const MAX_MEDIA_SESSIONS: usize = 64;
 pub const MAX_CLIPBOARD_ITEMS: usize = 50;
 pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
 pub const MAX_ROAMING_SETTINGS: usize = 2048;
-pub const MAX_SETTING_BYTES: usize = settings_store::continuity::MAX_PERSONAL_VALUE_BYTES;
+pub const MAX_SETTING_BYTES: usize = settings_store::placement::MAX_PERSONAL_VALUE_BYTES;
 pub const MAX_WIFI_CREDENTIALS: usize = 256;
 pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
@@ -2684,15 +2684,13 @@ fn valid_bluetooth_pairing_action(
     request_id != &[0; 16] && authorization != &[0; 16] && valid_bluetooth_address(address)
 }
 
-/// Whether a settings-store leaf is deliberately part of a person's fabric.
-///
-/// This is an allowlist rather than a denylist: a newly-added setting stays
-/// local until its semantics have been reviewed. In particular, connector
-/// names, selected audio devices, display geometry/scale, radios, mounts,
-/// power policy, update state and credentials must never become convergent
-/// state merely because their key happens to begin with `tilo.`.
+/// Whether a settings-store leaf is part of a person's fabric: a leaf of a
+/// section the person holds ([`settings_store::placement`]). A section
+/// nobody declared stays on the device.
 pub(super) fn valid_setting_key(key: &str) -> bool {
-    valid_identifier(key, 256) && settings_store::continuity::is_personal(key)
+    valid_identifier(key, 256)
+        && settings_store::placement::holder_of_key(key)
+            == Some(settings_store::placement::Holder::Person)
 }
 
 fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError> {
@@ -3576,13 +3574,12 @@ mod tests {
         fn local_hardware_settings_do_not_roam() {
             for key in [
                 "tilo.device.name",
-                "tilo.display.hardware.edid",
                 "tilo.display.scale",
                 "tilo.network.interface.mac",
                 "tilo.storage.mount.usb",
-                "tilo.input.tablets",
-                "tilo.audio.output_device",
-                "tilo.agent_providers.api_key",
+                "tilo.input_device.tablets",
+                "tilo.audio_device.output_device",
+                "tilo.agent_providers.config",
             ] {
                 let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
                 source.settings.push(RoamingSetting {
@@ -3602,7 +3599,7 @@ mod tests {
                 "tilo.notifications.per_app",
                 "tilo.input.keyboard_layouts",
                 "tilo.audio.mono_output",
-                "tilo.display.night_light_temperature",
+                "tilo.display_person.night_light_temperature",
                 "tilo.shortcuts.bindings",
                 "tilo.desktop_controls.vim_mode",
                 "tilo.quick_settings.controls",
@@ -3611,13 +3608,14 @@ mod tests {
                 assert!(valid_setting_key(key), "expected {key} to roam");
             }
             for key in [
-                "tilo.appearance.wallpaper_path",
-                "tilo.input.future_device_serial",
-                "tilo.audio.input_device",
+                "tilo.appearance_device.wallpaper_path",
+                "tilo.input_device.keyboard_model",
+                "tilo.audio_device.input_device",
                 "tilo.display.auto_brightness",
                 "tilo.power.auto_suspend",
                 "tilo.updates.auto",
-                "tilo.security.local_credential.pin",
+                "tilo.security.local_credential",
+                "tilo.input",
             ] {
                 assert!(!valid_setting_key(key), "expected {key} to stay local");
             }

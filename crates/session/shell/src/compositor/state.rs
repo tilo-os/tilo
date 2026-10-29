@@ -9901,7 +9901,7 @@ mod keycap_layout_tests {
         let mut state = State::new(event_loop.handle(), display.handle());
         for model in ["jp106", "kr106", "pc104", "pc105"] {
             settings_store::update_section(
-                "input",
+                settings_store::hardware::INPUT_DEVICE_SECTION,
                 serde_json::json!({"keyboard_model": model})
                     .as_object()
                     .expect("input section")

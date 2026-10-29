@@ -4146,8 +4146,12 @@ impl FrameBuilder {
 
     fn refresh_display_comfort(&mut self) {
         let settings = settings_store::load();
-        let scheduled_night_light =
-            settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
+        let scheduled_night_light = settings_store::bool_at(
+            &settings,
+            settings_store::hardware::DISPLAY_PERSON_SECTION,
+            "night_light_schedule",
+        )
+        .unwrap_or(false);
         let automatic_theme = settings_store::str_at(
             &settings,
             "appearance",
@@ -4159,7 +4163,12 @@ impl FrameBuilder {
             (schedule, schedule.is_night(ui::theme::local_moment()))
         });
         self.night_light = night_light_on(
-            settings_store::bool_at(&settings, "display", "night_light").unwrap_or(false),
+            settings_store::bool_at(
+                &settings,
+                settings_store::hardware::DISPLAY_PERSON_SECTION,
+                "night_light",
+            )
+            .unwrap_or(false),
             scheduled_night_light,
             self.day_phase.map(|(_, night)| night),
         );
@@ -4171,7 +4180,7 @@ impl FrameBuilder {
         {
             self.night_light_temperature = settings_store::f64_in(
                 &settings,
-                "display",
+                settings_store::hardware::DISPLAY_PERSON_SECTION,
                 "night_light_temperature",
                 2_000.0..=6_500.0,
                 3_700.0,

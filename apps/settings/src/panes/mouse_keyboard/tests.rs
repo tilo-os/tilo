@@ -4,7 +4,7 @@
 use super::tablet::*;
 use super::*;
 use crate::effects::SettingsEffect;
-use crate::host::testing::{INPUT, TEXT_ASSISTANCE, edit_field};
+use crate::host::testing::{INPUT, INPUT_DEVICE, TEXT_ASSISTANCE, edit_field};
 use crate::resource::SettingsShell;
 use ui::prelude::TestApp;
 use winit::event::WindowEvent;
@@ -776,6 +776,7 @@ fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
     let inspected = app.settings::<InputPrefs>().get();
     assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
     assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
+    let inspected = app.settings::<InputDevicePrefs>().get();
     assert_eq!(inspected.keyboard_model, "pc104");
     assert_eq!(inspected.keyboard_preview.as_deref(), Some("de"));
     assert!(inspected.keyboard_preview_extra_levels);
@@ -830,14 +831,16 @@ fn keyboard_preview_actions_are_published_and_do_not_apply_until_requested() {
         "a level the drawn keyboard supplies is chosen"
     );
     assert_eq!(
-        app.settings::<InputPrefs>().get().keyboard_preview_level,
+        app.settings::<InputDevicePrefs>()
+            .get()
+            .keyboard_preview_level,
         usize::from(drawn > 1)
     );
     assert!(set(&mut app, InputEffect::ShowLiveKeyboardMap));
-    let input = app.settings::<InputPrefs>().get();
-    assert!(input.keyboard_preview.is_none());
-    assert_eq!(input.keyboard_preview_level, 0);
-    assert_eq!(input.keyboard_layout, "de");
+    let device = app.settings::<InputDevicePrefs>().get();
+    assert!(device.keyboard_preview.is_none());
+    assert_eq!(device.keyboard_preview_level, 0);
+    assert_eq!(app.settings::<InputPrefs>().get().keyboard_layout, "de");
 }
 
 #[test]
@@ -979,6 +982,7 @@ fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
     let _env = tilo_test_env::lock();
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     let before = app.settings::<InputPrefs>().get();
+    let before_device = app.settings::<InputDevicePrefs>().get();
     let inspect = InputEffect::InspectKeyboardKey { key: "AD06".into() };
     assert!(
         app.actions()
@@ -988,10 +992,14 @@ fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
     );
     assert!(set(&mut app, inspect));
     let inspected = app.settings::<InputPrefs>().get();
-    assert_eq!(inspected.keyboard_inspected_key, "AD06");
+    let inspected_device = app.settings::<InputDevicePrefs>().get();
+    assert_eq!(inspected_device.keyboard_inspected_key, "AD06");
     assert_eq!(inspected.keyboard_layout, before.keyboard_layout);
     assert_eq!(inspected.keyboard_layouts, before.keyboard_layouts);
-    assert_eq!(inspected.keyboard_preview, before.keyboard_preview);
+    assert_eq!(
+        inspected_device.keyboard_preview,
+        before_device.keyboard_preview
+    );
     assert!(!set(
         &mut app,
         InputEffect::InspectKeyboardKey {
@@ -1019,7 +1027,9 @@ fn physical_key_inspection_is_published_validated_and_never_applies_layout() {
         }
     ));
     assert_eq!(
-        app.settings::<InputPrefs>().get().keyboard_inspected_key,
+        app.settings::<InputDevicePrefs>()
+            .get()
+            .keyboard_inspected_key,
         "AD01",
         "a model switch must not leave an absent JIS position selected"
     );
@@ -1040,7 +1050,7 @@ fn input_effects_write_the_input_section() {
     let mut app = TestApp::<SettingsShell>::new().unwrap();
     edit_field(&mut app, INPUT, "touchpad_pointer_speed", 0.9).unwrap();
     edit_field(&mut app, INPUT, "mouse_natural_scroll", true).unwrap();
-    edit_field(&mut app, INPUT, "touchpad_enabled", false).unwrap();
+    edit_field(&mut app, INPUT_DEVICE, "touchpad_enabled", false).unwrap();
     assert!(set(
         &mut app,
         InputEffect::SetComposeKey { key: "ralt".into() }
@@ -1056,9 +1066,10 @@ fn input_effects_write_the_input_section() {
     let input = app.settings::<InputPrefs>().get();
     assert_eq!(input.touchpad_pointer_speed, Some(0.9));
     assert!(input.mouse_natural_scroll);
-    assert!(!input.touchpad_enabled);
+    let device = app.settings::<InputDevicePrefs>().get();
+    assert!(!device.touchpad_enabled);
     let active = settings_store::keyboard_sources::effective(
-        &input.rich_input(),
+        &input.rich_input(&device),
         settings_store::keyboard_sources::ALL,
     );
     assert_eq!(active.compose_key.as_deref(), Some("ralt"));
@@ -1175,7 +1186,7 @@ fn tablet_effects_keep_each_device_apart() {
             action: "left".into(),
         }
     ));
-    let input = app.settings::<InputPrefs>().get();
+    let input = app.settings::<InputDevicePrefs>().get();
     assert_eq!(input.tablets["pen-a"].eraser, EraserAction::Right);
     assert_eq!(
         input.tablets["pad-a"].dial_action(PadDial::Ring(0), 1),

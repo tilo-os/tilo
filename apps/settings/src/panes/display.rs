@@ -34,7 +34,7 @@ use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
-use crate::prefs::DisplayPrefs;
+use crate::prefs::{DisplayPrefs, NightLightPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -67,10 +67,10 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DisplayArea> {
 pub(crate) mod values;
 
 /// The Night Light switch, a comfort of every display.
-pub(crate) fn night_light(cx: &PaneCx, prefs: &Followed<DisplayPrefs>) -> Item {
+pub(crate) fn night_light(cx: &PaneCx, prefs: &Followed<NightLightPrefs>) -> Item {
     cx.row(t("display-night-light"))
         .id("display.night_light")
-        .of(prefs, DisplayPrefs::paths().night_light)
+        .of(prefs, NightLightPrefs::paths().night_light)
         .toggle()
 }
 
@@ -1013,6 +1013,8 @@ pub struct DisplayModel {
     ambient_sensor_available: bool,
     brightness: f32,
     prefs: Followed<DisplayPrefs>,
+    /// The person's night light, over every display.
+    night_light: Followed<NightLightPrefs>,
     output_config: DisplayConfig,
     /// External monitors whose brightness is set over DDC/CI, by output key,
     /// with their last known level. The built-in panel's backlight is the
@@ -1213,6 +1215,7 @@ impl DisplayModel {
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             pending_change: cx.follow::<PendingDisplayChange>(),
             prefs: cx.follow::<DisplayPrefs>(),
+            night_light: cx.follow::<NightLightPrefs>(),
             cx,
             of_device: true,
             brightness_control: control,
@@ -1372,6 +1375,7 @@ impl DisplayModel {
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             pending_change: cx.follow::<PendingDisplayChange>(),
             prefs: cx.follow::<DisplayPrefs>(),
+            night_light: cx.follow::<NightLightPrefs>(),
             cx,
             of_device: false,
             brightness_control: Arc::new(NoBrightness),
@@ -2752,12 +2756,14 @@ impl DisplayModel {
     /// Night light: its switch heads the group; when it comes on and how
     /// warm it makes the screen, as pictures of the screen at each warmth.
     fn build_night_light_card(&self) -> SettingsSection {
-        let prefs = *self.prefs.get();
-        let paths = crate::prefs::DisplayPrefs::paths();
+        let prefs = *self.night_light.get();
+        let paths = NightLightPrefs::paths();
         let switch = self.cx.bind_field(
-            ui::widget::Toggle::from_state(&self.prefs.shown(&paths.night_light, bool::clone))
-                .with_id("display.night_light")
-                .with_accessible_name(&t("display-night-light")),
+            ui::widget::Toggle::from_state(
+                &self.night_light.shown(&paths.night_light, bool::clone),
+            )
+            .with_id("display.night_light")
+            .with_accessible_name(&t("display-night-light")),
             paths.night_light,
         );
         crate::widgets::section_with(
@@ -2775,7 +2781,7 @@ impl DisplayModel {
                 self.cx
                     .row(t("display-night-light-warmth"))
                     .id("display.night_light_temperature")
-                    .of(&self.prefs, paths.night_light_temperature)
+                    .of(&self.night_light, paths.night_light_temperature)
                     .pictures(
                         NIGHT_LIGHT_TEMPERATURES.iter().map(|(_, kelvin)| *kelvin),
                         |kelvin: &u32| temperature_label(*kelvin),
@@ -3248,6 +3254,9 @@ impl PaneModel for DisplayModel {
             self.changed = true;
         }
         if self.prefs.refresh() {
+            self.changed = true;
+        }
+        if self.night_light.refresh() {
             self.changed = true;
         }
         std::mem::take(&mut self.changed)

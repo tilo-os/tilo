@@ -12113,7 +12113,7 @@ pub fn run() {
             }
             if settings_change.desktop_controls() {
                 frame_builder.host_mut().set_desktop_controls_config(
-                    settings_store::hardware::DesktopControlsConfig::load(),
+                    settings_store::desktop_controls::DesktopControlsConfig::load(),
                 );
             }
             frame_builder.follow_settings_sections(
