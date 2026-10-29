@@ -12,22 +12,22 @@ use std::sync::Arc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
-use crate::paint::PaintCtx;
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::search::{CommandRow, SearchGroup, SearchResult, SearchRow};
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{ControlSize, SearchField, SearchResultsView, TextInputKind, Widget};
+use crate::widget::{
+    ChipFace, ChipLead, ControlSize, SearchField, SearchResultsView, TextInputKind, Widget,
+};
 use tilo_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -571,15 +571,6 @@ fn format_number(value: f64, step: f64) -> String {
 /// A predicate narrowing which [`CommandEntry`] rows are shown.
 type EntryFilter = Box<dyn Fn(&CommandEntry) -> bool + Send + Sync>;
 
-/// A filter chip's colours in one state: its body fill, an optional
-/// hairline edge, and its label ink.
-#[derive(Clone, Copy)]
-struct FilterChipLook {
-    body: Color,
-    edge: Option<Color>,
-    text: Color,
-}
-
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent, orthogonal display/behavior toggle \
@@ -603,7 +594,6 @@ pub struct CommandPalette {
     query_placeholder: String,
     filter: Option<EntryFilter>,
     visible: Vec<usize>,
-    cursor: usize,
     rect: Rect,
     text_scale: f64,
     ui_scale: f64,
@@ -691,7 +681,6 @@ impl CommandPalette {
             query_placeholder: crate::i18n!("palette-placeholder"),
             filter: None,
             visible: Vec::new(),
-            cursor: 0,
             rect: Rect::ZERO,
             text_scale: 1.0,
             ui_scale: 1.0,
@@ -800,6 +789,13 @@ impl CommandPalette {
         let _ = self.field.take_dirty();
     }
 
+    /// Take or give up the keyboard; the list's selected row is focused to
+    /// assistive technology exactly while the palette holds it.
+    fn focus(&mut self, on: bool) {
+        self.is_focused = on;
+        self.results.set_focused(on);
+    }
+
     /// The field holds the keyboard exactly while the palette does.
     fn sync_field_focus(&mut self) {
         if self.field.is_focused() != self.is_focused {
@@ -902,14 +898,13 @@ impl CommandPalette {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.visible.clear();
-        self.cursor = 0;
         self.replan_rows();
     }
 
     /// Clears the query and any in-progress argument, focuses the palette,
     /// and resets the highlight to the first entry.
     pub fn open(&mut self) {
-        self.is_focused = true;
+        self.focus(true);
         self.end_argument();
         self.field.set_query("");
         let _ = self.field.take_dirty();
@@ -919,8 +914,8 @@ impl CommandPalette {
         self.submitted_argument = None;
         self.argument_cancelled = false;
         self.action_invocation.clear();
-        self.cursor = 0;
         self.rebuild();
+        self.set_cursor(0);
     }
 
     /// Open directly in the argument-entry step without first presenting a
@@ -938,7 +933,7 @@ impl CommandPalette {
         placeholder: impl Into<String>,
         prefill: Option<String>,
     ) {
-        self.is_focused = true;
+        self.focus(true);
         self.outcome = None;
         self.direct_argument = true;
         self.begin_argument(
@@ -966,7 +961,7 @@ impl CommandPalette {
         debug_assert!(entry.action_address.is_some());
         let id = entry.id.clone();
         self.set_entries(vec![entry]);
-        self.is_focused = true;
+        self.focus(true);
         self.outcome = None;
         self.action_invocation.clear();
         self.direct_argument = true;
@@ -980,7 +975,7 @@ impl CommandPalette {
     /// [`Self::take_argument_cancelled`]; the host decides what follows.
     /// Neither runs a row, so a step can't stand in for one.
     pub fn open_argument_step(&mut self, id: impl Into<String>, spec: ArgumentSpec) {
-        self.is_focused = true;
+        self.focus(true);
         self.outcome = None;
         self.submitted_argument = None;
         self.argument_cancelled = false;
@@ -1016,7 +1011,7 @@ impl CommandPalette {
     /// Discards any in-progress argument entry but keeps registered entries,
     /// so the next `open` reuses them.
     pub fn close(&mut self) {
-        self.is_focused = false;
+        self.focus(false);
         self.end_argument();
         self.direct_argument = false;
         self.sync_field_focus();
@@ -1060,7 +1055,7 @@ impl CommandPalette {
         let at_end = self.field.selection_anchor_focus_or_caret() == (end, end);
         let Some(entry) = self
             .visible
-            .get(self.cursor)
+            .get(self.results.cursor())
             .and_then(|&at| self.entries.get(at))
             .filter(|entry| entry.adjustable)
         else {
@@ -1082,9 +1077,6 @@ impl CommandPalette {
     /// The result list's rect (the card under its field and filter band,
     /// with the rows' padding) and cursor, from the card's.
     fn sync_list(&mut self) {
-        if !self.visible.is_empty() && self.results.cursor() != self.cursor {
-            self.results.set_cursor(self.cursor);
-        }
         // Before the first layout there is nothing to place the rows in;
         // a pending reveal waits for it.
         if self.rect.height() > 0.0 {
@@ -1209,7 +1201,7 @@ impl CommandPalette {
         if self.arg_state.is_some() {
             return;
         }
-        let Some(&idx) = self.visible.get(self.cursor) else {
+        let Some(&idx) = self.visible.get(self.results.cursor()) else {
             return;
         };
         let Some(entry) = self.entries.get(idx) else {
@@ -1249,7 +1241,7 @@ impl CommandPalette {
             self.outcome = None;
             self.end_argument();
             if self.mode == PaletteMode::Commands {
-                self.is_focused = false;
+                self.focus(false);
             }
             return;
         }
@@ -1264,7 +1256,7 @@ impl CommandPalette {
         self.outcome = Some(CommandOutcome { id, argument });
         self.end_argument();
         if self.mode == PaletteMode::Commands {
-            self.is_focused = false;
+            self.focus(false);
         }
     }
 
@@ -1297,7 +1289,7 @@ impl CommandPalette {
                 }
                 self.end_argument();
                 if self.direct_argument {
-                    self.is_focused = false;
+                    self.focus(false);
                     self.direct_argument = false;
                     self.sync_field_focus();
                 }
@@ -1335,8 +1327,8 @@ impl CommandPalette {
     /// Resets the cursor to 0.
     pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
         self.entries = entries;
-        self.cursor = 0;
         self.rebuild();
+        self.set_cursor(0);
     }
 
     /// Show host feedback on the selected row using the shared status pill and
@@ -1347,7 +1339,7 @@ impl CommandPalette {
         badge: impl Into<String>,
         description: impl Into<String>,
     ) {
-        let Some(&index) = self.visible.get(self.cursor) else {
+        let Some(&index) = self.visible.get(self.results.cursor()) else {
             return;
         };
         if let Some(entry) = self.entries.get_mut(index) {
@@ -1450,24 +1442,20 @@ impl CommandPalette {
     }
 
     pub fn cursor(&self) -> usize {
-        self.cursor
+        self.results.cursor()
     }
 
     /// Clamps silently so overlay callers hit-testing post-layout rects
     /// don't have to bounds-check.
     pub fn set_cursor(&mut self, index: usize) {
-        if self.visible.is_empty() {
-            self.cursor = 0;
-        } else {
-            self.cursor = index.min(self.visible.len().saturating_sub(1));
-        }
+        self.results.set_cursor(index);
         self.sync_list();
     }
 
     /// `None` if the filter matched no rows.
     pub fn selected_id(&self) -> Option<&str> {
         self.visible
-            .get(self.cursor)
+            .get(self.cursor())
             .and_then(|&i| self.entries.get(i))
             .map(|e| e.id.as_str())
     }
@@ -1483,7 +1471,10 @@ impl CommandPalette {
         if shown.is_empty() {
             return;
         }
-        self.cursor = self.cursor.clamp(shown.start, shown.end.saturating_sub(1));
+        let cursor = self
+            .cursor()
+            .clamp(shown.start, shown.end.saturating_sub(1));
+        self.results.set_cursor(cursor);
         self.sync_list();
     }
 
@@ -1531,31 +1522,6 @@ impl CommandPalette {
             .filter(|&row| row < self.visible.len())
     }
 
-    /// The ordinal in the synthetic list is deliberately relative to the
-    /// currently painted rows. This keeps the semantic tree bounded exactly
-    /// like painting while each row still reports its absolute result
-    /// position to assistive technology.
-    fn painted_entry_at(&self, ordinal: usize) -> Option<usize> {
-        (0..self.visible.len())
-            .filter(|&index| self.row_rect(index).is_some())
-            .nth(ordinal)
-    }
-
-    fn palette_result_target(entry_id: &str) -> String {
-        format!("command-palette:result:{entry_id}")
-    }
-
-    fn visible_entry_for_target(&self, target: &str) -> Option<usize> {
-        self.visible
-            .iter()
-            .position(|&entry_index| {
-                self.entries
-                    .get(entry_index)
-                    .is_some_and(|entry| target == Self::palette_result_target(&entry.id))
-            })
-            .filter(|&visible_index| self.row_rect(visible_index).is_some())
-    }
-
     fn handle_pointer_event(
         &mut self,
         event: &WindowEvent,
@@ -1569,7 +1535,6 @@ impl CommandPalette {
             // The pointer picks the row it is over where it stands: a row
             // half in view is not scrolled out from under it.
             if let Some(row) = self.row_at(self.last_cursor) {
-                self.cursor = row;
                 self.results.set_cursor_in_place(row);
                 *handled = true;
             }
@@ -1640,14 +1605,8 @@ impl CommandPalette {
         self.rect.y1 - PADDING
     }
 
-    /// `rounded-full` pill, `px-2 py-1` (≈ 12 px horizontal padding).
-    fn chip_rect(strip: Rect, x: f64, width: f64) -> Rect {
-        let h = (strip.height() - 8.0).max(20.0);
-        let cy = f64::midpoint(strip.y0, strip.y1);
-        Rect::new(x, cy - h / 2.0, x + width, cy + h / 2.0)
-    }
-
-    /// Active = accent fill + primary text; idle = white/5 fill + dim text.
+    /// The scope chips, the filetype chips that fit, and the full-text
+    /// toggle at the strip's end: the toolkit's chips, selected when on.
     fn draw_filter_strip(
         &self,
         scene: &mut Scene,
@@ -1656,126 +1615,41 @@ impl CommandPalette {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_style = theme.text(TextRole::Caption);
-
-        let active = FilterChipLook {
-            body: theme.tokens.colors.intent.accent,
-            edge: None,
-            text: theme.tokens.colors.text_primary,
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let h = ChipFace::height(theme);
+        let y0 = f64::midpoint(strip.y0, strip.y1) - h / 2.0;
+        let mut chip = |x: f64, label: &str, on: bool, text: &mut TextRenderer| {
+            let w = ChipFace::intrinsic_width(label, ChipLead::None, false, text, theme);
+            ChipFace::new(Rect::new(x, y0, x + w, y0 + h), label)
+                .selected(on)
+                .paint(scene, transform, text, theme);
+            w
         };
-        // Idle scope chips are Selectors (HIG §9.5): no fill, outlined by a
-        // hairline derived against the panel ground they sit on — a white
-        // veneer disappeared on a light palette, and a base-relative lift
-        // reads as a well on a panel ground darker than `raised`.
-        let idle = FilterChipLook {
-            body: Color::TRANSPARENT,
-            edge: Some(crate::surface::edge_on(crate::chrome::panel_ground(theme))),
-            text: theme.tokens.colors.text_dim,
-        };
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-
+        let ft_label = "FULL TEXT";
+        let ft_w = ChipFace::intrinsic_width(ft_label, ChipLead::None, false, text_renderer, theme);
+        let ft_x = strip.x1 - ft_w;
+        chip(ft_x, ft_label, self.search_filter.full_text, text_renderer);
         let mut x = strip.x0;
         for (scope, label) in [
             (SearchScope::Workspace, "WORKSPACE"),
             (SearchScope::All, "ALL"),
         ] {
-            let (w, _) = ctx.text.measure_style(label, None, &chip_text_style);
-            let chip_w = f64::from(w) + 16.0;
-            let chip = Self::chip_rect(strip, x, chip_w);
-            let look = if self.search_filter.scope == scope {
-                active
-            } else {
-                idle
-            };
-            Self::draw_chip(&mut ctx, chip, label, &chip_text_style, look);
-            x += chip_w + 6.0;
+            x += chip(x, label, self.search_filter.scope == scope, text_renderer) + gap;
         }
-
-        let ft_label = "FULL TEXT";
-        let (ft_w, _) = ctx.text.measure_style(ft_label, None, &chip_text_style);
-        let ft_chip_w = f64::from(ft_w) + 16.0;
-        let ft_chip = Self::chip_rect(strip, strip.x1 - ft_chip_w, ft_chip_w);
-        let ft_on = self.search_filter.full_text;
-        // "On" is a semantic state the theme defines (HIG §9.4), not a
-        // Tailwind emerald that ignores the palette.
-        let success = theme.tokens.colors.semantic.success;
-        let ft_active = FilterChipLook {
-            body: success.with_alpha_factor(0.2),
-            edge: None,
-            text: success,
-        };
-        Self::draw_chip(
-            &mut ctx,
-            ft_chip,
-            ft_label,
-            &chip_text_style,
-            if ft_on { ft_active } else { idle },
-        );
-
-        // Filetype chips fill the gap up to 8 px before the full-text toggle.
-        let mut fx = x;
-        let max_x = ft_chip.x0 - 8.0;
+        // Filetype chips fill the gap up to the full-text toggle.
         for ft in Filetype::ALL {
             let label = ft.label();
-            let (w, _) = ctx.text.measure_style(label, None, &chip_text_style);
-            let chip_w = f64::from(w) + 16.0;
-            if fx + chip_w > max_x {
+            let w = ChipFace::intrinsic_width(label, ChipLead::None, false, text_renderer, theme);
+            if x + w > ft_x - gap {
                 break;
             }
-            let chip = Self::chip_rect(strip, fx, chip_w);
-            let look = if self.search_filter.filetypes.contains(&ft) {
-                active
-            } else {
-                idle
-            };
-            Self::draw_chip(&mut ctx, chip, label, &chip_text_style, look);
-            fx += chip_w + 6.0;
+            x += chip(
+                x,
+                label,
+                self.search_filter.filetypes.contains(&ft),
+                text_renderer,
+            ) + gap;
         }
-    }
-
-    fn draw_chip(
-        ctx: &mut PaintCtx<'_>,
-        chip: Rect,
-        label: &str,
-        text_style: &TextStyle,
-        look: FilterChipLook,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            ..
-        } = ctx.reborrow();
-        // `rounded-full` ≈ half-height radius.
-        let radius = chip.height() / 2.0;
-        let shape = RoundedRect::from_rect(chip, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            look.body,
-            None,
-            &shape,
-        );
-        if let Some(edge) = look.edge {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                edge,
-                None,
-                &crate::surface::edge_outline(chip, radius),
-            );
-        }
-        let (w, h) = text_renderer.measure_style(label, None, text_style);
-        let tx = f64::midpoint(chip.x0, chip.x1) - f64::from(w) / 2.0;
-        let ty = f64::midpoint(chip.y0, chip.y1) - f64::from(h) / 2.0;
-        text_renderer.draw_style(
-            scene,
-            label,
-            look.text,
-            transform.pre_translate(Vec2::new(tx, ty)),
-            None,
-            text_style,
-        );
     }
 
     /// Painted in the list area so the card keeps its shape instead of
@@ -1861,7 +1735,8 @@ impl CommandPalette {
         }
     }
 
-    fn empty_results_rect(&self) -> Rect {
+    /// The result list's rows, inside the card's padding.
+    fn list_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0 + PADDING,
             self.list_top_y(),
@@ -1876,83 +1751,15 @@ impl CommandPalette {
     /// caret has nowhere left to go in the field (always with Ctrl).
     /// `true` when the key moved the selection or belonged to the list.
     pub fn handle_list_key(&mut self, key: &Key, shift: bool, ctrl: bool) -> bool {
-        let len = self.visible.len();
-        let last = len.saturating_sub(1);
-        let target = match key {
-            Key::Named(NamedKey::ArrowDown) => {
-                if self.cursor >= last {
-                    0
-                } else {
-                    self.cursor.saturating_add(1)
-                }
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                if self.cursor == 0 {
-                    last
-                } else {
-                    self.cursor.saturating_sub(1)
-                }
-            }
-            Key::Named(NamedKey::PageDown) => self
-                .cursor
-                .saturating_add(self.results.rows_per_page())
-                .min(last),
-            Key::Named(NamedKey::PageUp) => {
-                self.cursor.saturating_sub(self.results.rows_per_page())
-            }
-            Key::Named(NamedKey::Tab) => self.next_group_start(!shift),
-            Key::Named(NamedKey::Home)
-                if ctrl || (!shift && self.field.selection_anchor_focus_or_caret() == (0, 0)) =>
-            {
-                0
-            }
-            Key::Named(NamedKey::End)
-                if ctrl
-                    || (!shift && {
-                        let end = self.field.value().len();
-                        self.field.selection_anchor_focus_or_caret() == (end, end)
-                    }) =>
-            {
-                last
-            }
-            _ => return false,
-        };
-        // A key the list owns is consumed at its ends too, so it never
-        // scrolls or tabs through whatever is behind the palette.
-        if len > 0 {
-            self.cursor = target.min(last);
+        let caret = self.field.selection_anchor_focus_or_caret();
+        let end = self.field.value().len();
+        let owned =
+            self.results
+                .handle_list_key(key, shift, ctrl, (caret == (0, 0), caret == (end, end)));
+        if owned {
             self.sync_list();
         }
-        true
-    }
-
-    /// The first result of the group after the cursor's (`forward`) or of
-    /// the cursor's own group, else the one before it; wrapping at the
-    /// ends. An ungrouped list has one group, so Tab stays put.
-    fn next_group_start(&self, forward: bool) -> usize {
-        let starts = self.results.group_starts();
-        if starts.is_empty() {
-            return self.cursor;
-        }
-        if forward {
-            starts
-                .iter()
-                .copied()
-                .find(|&s| s > self.cursor)
-                .or_else(|| starts.first().copied())
-                .unwrap_or(self.cursor)
-        } else {
-            let own = starts.iter().copied().rfind(|&s| s <= self.cursor);
-            match own {
-                Some(s) if s < self.cursor => s,
-                _ => starts
-                    .iter()
-                    .copied()
-                    .rfind(|&s| s < self.cursor)
-                    .or_else(|| starts.last().copied())
-                    .unwrap_or(self.cursor),
-            }
-        }
+        owned
     }
 
     fn rebuild(&mut self) {
@@ -1984,9 +1791,6 @@ impl CommandPalette {
                 continue;
             }
             self.visible.push(i);
-        }
-        if self.cursor >= self.visible.len() {
-            self.cursor = self.visible.len().saturating_sub(1);
         }
         self.replan_rows();
     }
@@ -2095,31 +1899,6 @@ impl CommandPalette {
             alternates: entry.alternates.clone(),
         })));
         result
-    }
-
-    /// The painted rows of each section, in order, as `(section, visible
-    /// indices)`: the named groups assistive technology reads the list in.
-    /// Empty when no entry is in a section.
-    fn painted_sections(&self) -> Vec<(String, Vec<usize>)> {
-        let mut out: Vec<(String, Vec<usize>)> = Vec::new();
-        for visible_index in 0..self.visible.len() {
-            let Some(name) = self
-                .visible
-                .get(visible_index)
-                .and_then(|&entry_index| self.entries.get(entry_index))
-                .and_then(|entry| entry.section.as_deref())
-            else {
-                continue;
-            };
-            if self.row_rect(visible_index).is_none() {
-                continue;
-            }
-            match out.last_mut() {
-                Some((last, rows)) if last == name => rows.push(visible_index),
-                _ => out.push((name.to_owned(), vec![visible_index])),
-            }
-        }
-        out
     }
 }
 
@@ -2354,7 +2133,7 @@ impl Widget for CommandPalette {
                 // so a slip of the finger never costs the whole search.
                 Key::Named(NamedKey::Escape) => {
                     if self.field.is_empty() {
-                        self.is_focused = false;
+                        self.focus(false);
                         self.sync_field_focus();
                     } else {
                         self.set_query("");
@@ -2380,7 +2159,7 @@ impl Widget for CommandPalette {
         true
     }
     fn set_focus(&mut self, focused: bool) {
-        self.is_focused = focused;
+        self.focus(focused);
         self.sync_field_focus();
     }
     fn is_focused(&self) -> bool {
@@ -2475,75 +2254,26 @@ impl Widget for CommandPalette {
                 .with_text_selection(anchor, caret);
         }
 
-        let total = self.visible.len();
-        let row_node = |visible_index: usize| -> Option<AccessNode> {
-            let rect = self.row_rect(visible_index)?;
-            let entry = self
-                .visible
-                .get(visible_index)
-                .and_then(|&entry_index| self.entries.get(entry_index))?;
-            let mut item = AccessNode::new(Role::ListItem)
-                .with_action_target(Self::palette_result_target(&entry.id))
-                .with_name(entry.label.clone())
-                .with_position(visible_index.saturating_add(1), total)
-                .with_bounds(rect)
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.is_focused && visible_index == self.cursor)
-                        .selected(visible_index == self.cursor),
-                );
-            // The second line, read as one description: the facts
-            // are separate runs on screen, a list to a screen reader.
-            let line = entry.description.clone().or_else(|| {
-                (!entry.description_facts.is_empty()).then(|| entry.description_facts.join(", "))
-            });
-            if let Some(description) = &line {
-                item = item.with_description(description.clone());
-            }
-            if let Some(badge) = &entry.badge {
-                let description = line.as_deref().map_or_else(
-                    || format!("Status: {badge}"),
-                    |detail| format!("{detail}. Status: {badge}"),
-                );
-                item = item.with_description(description);
-            }
-            Some(item)
-        };
-        // Rows in sections are read as named groups of their section, as
-        // they are seen under its header.
-        let sections = self.painted_sections();
-        let mut result_children: Vec<AccessNode> = if sections.is_empty() {
-            (0..total).filter_map(row_node).collect()
-        } else {
-            sections
-                .into_iter()
-                .map(|(name, rows)| {
-                    AccessNode::new(Role::Group)
-                        .with_name(name)
-                        .with_children(rows.into_iter().filter_map(row_node).collect())
-                })
-                .collect()
-        };
-        if total == 0 && self.arg_state.is_none() {
-            result_children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(self.empty_results_title())
-                    .with_description(crate::i18n!("palette-no-results-hint"))
-                    .with_bounds(self.empty_results_rect()),
-            );
+        let mut list = self
+            .results
+            .accessibility()
+            .unwrap_or_else(|| AccessNode::new(Role::List));
+        if self.visible.is_empty() {
+            list.children = if self.arg_state.is_none() {
+                vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name(self.empty_results_title())
+                        .with_description(crate::i18n!("palette-no-results-hint"))
+                        .with_bounds(self.list_rect()),
+                ]
+            } else {
+                Vec::new()
+            };
         }
         let mut children = vec![
             query_node,
-            AccessNode::new(Role::List)
-                .with_name(crate::i18n!("palette-results"))
-                .with_bounds(Rect::new(
-                    self.rect.x0 + PADDING,
-                    self.list_top_y(),
-                    self.rect.x1 - PADDING,
-                    self.list_bottom_y(),
-                ))
-                .with_children(result_children),
+            list.with_name(crate::i18n!("palette-results"))
+                .with_bounds(self.list_rect()),
         ];
         if let (Some(token), Some(action)) = (self.field.scope_token(), &self.scope_token_action) {
             children.push(
@@ -2560,55 +2290,36 @@ impl Widget for CommandPalette {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        match path {
-            [0] => Some(self.input_row_rect()),
-            [1] => Some(Rect::new(
-                self.rect.x0 + PADDING,
-                self.list_top_y(),
-                self.rect.x1 - PADDING,
-                self.list_bottom_y(),
-            )),
-            [1, 0] if self.visible.is_empty() && self.arg_state.is_none() => {
-                Some(self.empty_results_rect())
-            }
-            [1, group, ordinal] => self
-                .painted_sections()
-                .get(*group)
-                .and_then(|(_, rows)| rows.get(*ordinal).copied())
-                .and_then(|visible_index| self.row_rect(visible_index)),
-            [1, group] if !self.painted_sections().is_empty() => {
-                let sections = self.painted_sections();
-                let rows = &sections.get(*group)?.1;
-                let first = self.row_rect(*rows.first()?)?;
-                let last = self.row_rect(*rows.last()?)?;
-                Some(first.union(last))
-            }
-            [1, ordinal] => self
-                .painted_entry_at(*ordinal)
-                .and_then(|visible_index| self.row_rect(visible_index)),
-            [2] if self.field.scope_token().is_some() && self.scope_token_action.is_some() => {
-                Some(self.field.scope_token_rect())
-            }
-            _ => None,
+        let mut node = self.accessibility()?;
+        for &index in path {
+            node = node.children.into_iter().nth(index)?;
         }
+        node.bounds.map(crate::a11y::AccessBounds::to_rect)
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        match path {
-            [0] => {
-                self.is_focused = true;
-                true
-            }
-            [1, ordinal] => {
-                let Some(visible_index) = self.painted_entry_at(*ordinal) else {
+        let target = match path {
+            [0] => None,
+            [1, ..] => {
+                let Some(target) = self.accessibility().and_then(|mut node| {
+                    for &index in path {
+                        node = node.children.into_iter().nth(index)?;
+                    }
+                    node.action_target
+                }) else {
                     return false;
                 };
-                self.set_cursor(visible_index);
-                self.is_focused = true;
-                true
+                Some(target)
             }
-            _ => false,
+            _ => return false,
+        };
+        if let Some(target) = target
+            && !self.results.select_action(&target)
+        {
+            return false;
         }
+        self.focus(true);
+        true
     }
 
     fn perform_action(
@@ -2620,7 +2331,7 @@ impl Widget for CommandPalette {
     ) -> bool {
         match action {
             crate::a11y::Action::Focus | crate::a11y::Action::Activate => {
-                self.is_focused = true;
+                self.focus(true);
                 true
             }
             _ => false,
@@ -2649,36 +2360,30 @@ impl Widget for CommandPalette {
         if target == "command-palette:query" {
             return match action {
                 Action::Focus | Action::Activate => {
-                    self.is_focused = true;
+                    self.focus(true);
                     true
                 }
                 // Assistive technology and agents set the query as a value,
                 // exactly as typing it would.
                 Action::SetValue(value) if self.arg_state.is_none() => {
-                    self.is_focused = true;
+                    self.focus(true);
                     self.set_query(value);
                     true
                 }
                 _ => false,
             };
         }
-        let Some(visible_index) = self.visible_entry_for_target(target) else {
+        if !self
+            .results
+            .perform_semantic_action(target, action, state, path)
+        {
             return false;
-        };
-        match action {
-            Action::Focus => {
-                self.set_cursor(visible_index);
-                self.is_focused = true;
-                true
-            }
-            Action::Activate => {
-                self.set_cursor(visible_index);
-                self.is_focused = true;
-                self.activate_selected(state, path);
-                true
-            }
-            _ => false,
         }
+        self.focus(true);
+        if self.results.take_activated().is_some() {
+            self.activate_selected(state, path);
+        }
+        true
     }
 }
 

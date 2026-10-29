@@ -223,6 +223,9 @@ pub struct SearchResultsView {
     /// The modifier held now: a selected command row shows the activation
     /// it would choose.
     held: Option<ActivationModifier>,
+    /// Its owner holds the keyboard: the selected row is the focused one
+    /// to assistive technology.
+    focused: bool,
 }
 
 impl SearchResultsView {
@@ -246,7 +249,14 @@ impl SearchResultsView {
             group_gap: 0.0,
             highlight: String::new(),
             held: None,
+            focused: false,
         }
+    }
+
+    /// Whether the owner of the list holds the keyboard, so assistive
+    /// technology reads the selected row as focused.
+    pub(crate) fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     /// Space above every group or section header that follows rows.
@@ -412,6 +422,20 @@ impl SearchResultsView {
         self.cursor = index.unwrap_or(usize::MAX);
         self.reveal = true;
         index.is_some()
+    }
+
+    /// Select the row whose `action_id` is `id`, when there is one.
+    pub(crate) fn select_action(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == id)
+        else {
+            return false;
+        };
+        self.cursor = index;
+        self.reveal = true;
+        true
     }
 
     pub fn selected(&self) -> Option<&SearchResult> {
@@ -584,6 +608,75 @@ impl SearchResultsView {
         match (shown.first(), shown.last()) {
             (Some(&first), Some(&last)) => first..last.saturating_add(1),
             _ => 0..0,
+        }
+    }
+
+    /// Moves through the results: arrows step and wrap, Page keys move a
+    /// view's worth, Tab and Shift+Tab jump to the next and previous
+    /// group, and Home and End reach the first and last result when the
+    /// owner's caret has nowhere left to go in its field (`caret_at_ends`:
+    /// at its start, at its end), always with Ctrl. `true` when the key
+    /// belongs to the list, including at its ends, so it never scrolls or
+    /// tabs through whatever is behind it.
+    pub fn handle_list_key(
+        &mut self,
+        key: &Key,
+        shift: bool,
+        ctrl: bool,
+        caret_at_ends: (bool, bool),
+    ) -> bool {
+        let len = self.flat.len();
+        let last = len.saturating_sub(1);
+        let cursor = self.cursor.min(last);
+        let target = match key {
+            Key::Named(NamedKey::ArrowDown) => {
+                if self.cursor >= last {
+                    0
+                } else {
+                    cursor.saturating_add(1)
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if self.cursor == 0 || self.cursor > last {
+                    last
+                } else {
+                    cursor.saturating_sub(1)
+                }
+            }
+            Key::Named(NamedKey::PageDown) => cursor.saturating_add(self.rows_per_page()).min(last),
+            Key::Named(NamedKey::PageUp) => cursor.saturating_sub(self.rows_per_page()),
+            Key::Named(NamedKey::Tab) => self.next_group_start(cursor, !shift),
+            Key::Named(NamedKey::Home) if ctrl || (!shift && caret_at_ends.0) => 0,
+            Key::Named(NamedKey::End) if ctrl || (!shift && caret_at_ends.1) => last,
+            _ => return false,
+        };
+        self.set_cursor(target);
+        true
+    }
+
+    /// The first result of the group after `cursor`'s (`forward`) or of
+    /// its own group, else the one before it; wrapping at the ends. An
+    /// ungrouped list has one group, so Tab stays put.
+    fn next_group_start(&self, cursor: usize, forward: bool) -> usize {
+        let starts = self.group_starts();
+        if forward {
+            starts
+                .iter()
+                .copied()
+                .find(|&s| s > cursor)
+                .or_else(|| starts.first().copied())
+                .unwrap_or(cursor)
+        } else {
+            let own = starts.iter().copied().rfind(|&s| s <= cursor);
+            match own {
+                Some(s) if s < cursor => s,
+                _ => starts
+                    .iter()
+                    .copied()
+                    .rfind(|&s| s < cursor)
+                    .or_else(|| starts.last().copied())
+                    .unwrap_or(cursor),
+            }
         }
     }
 
@@ -1564,14 +1657,9 @@ impl Widget for SearchResultsView {
         ) {
             return false;
         }
-        let Some(index) = self
-            .flat
-            .iter()
-            .position(|&(group, row)| self.groups[group].results[row].action_id == target)
-        else {
+        if !self.select_action(target) {
             return false;
-        };
-        self.cursor = index;
+        }
         if matches!(action, crate::a11y::Action::Activate) {
             self.activate_selected();
         }
@@ -1588,32 +1676,71 @@ impl Widget for SearchResultsView {
                     .with_live(crate::a11y::Politeness::Polite),
             ]
         } else {
-            self.plan()
-                .rows
-                .into_iter()
-                .filter_map(|row| {
-                    let result = self.groups.get(row.gi)?.results.get(row.ri)?;
-                    let description = result
-                        .row
-                        .as_ref()
-                        .map(SearchRow::spoken)
-                        .into_iter()
-                        .chain(result.subtitle.iter().cloned())
-                        .chain(result.preview.as_ref().map(SearchPreview::spoken))
-                        .collect::<Vec<_>>()
-                        .join(". ");
-                    let mut node = AccessNode::new(Role::ListItem)
-                        .with_name(result.title.clone())
-                        .with_action_target(&result.action_id)
-                        .with_bounds(row.rect)
-                        .with_position(row.flat.saturating_add(1), total)
-                        .with_state(AccessState::new().selected(row.flat == self.cursor));
-                    if !description.is_empty() {
-                        node = node.with_description(description);
+            let mut rows: Vec<(Option<&str>, AccessNode)> = Vec::new();
+            for row in self.plan().rows {
+                let Some(group) = self.groups.get(row.gi) else {
+                    continue;
+                };
+                let Some(result) = group.results.get(row.ri) else {
+                    continue;
+                };
+                let description = result
+                    .subtitle
+                    .iter()
+                    .cloned()
+                    .chain(result.row.as_ref().map(SearchRow::spoken))
+                    .chain(result.preview.as_ref().map(SearchPreview::spoken))
+                    .filter(|part| !part.is_empty())
+                    .fold(Vec::<String>::new(), |mut parts, part| {
+                        // A line shown as the subtitle and again as facts is
+                        // read once.
+                        if !parts.contains(&part) {
+                            parts.push(part);
+                        }
+                        parts
+                    })
+                    .join(". ");
+                let selected = row.flat == self.cursor;
+                let mut node = AccessNode::new(Role::ListItem)
+                    .with_name(result.title.clone())
+                    .with_action_target(&result.action_id)
+                    .with_bounds(row.rect)
+                    .with_position(row.flat.saturating_add(1), total)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused && selected)
+                            .selected(selected),
+                    );
+                if !description.is_empty() {
+                    node = node.with_description(description);
+                }
+                rows.push((group.section.as_deref(), node));
+            }
+            // Rows in sections are read as named groups of their section,
+            // as they are seen under its header.
+            if rows.iter().all(|(section, _)| section.is_none()) {
+                rows.into_iter().map(|(_, node)| node).collect()
+            } else {
+                let mut sections: Vec<(Option<&str>, Vec<AccessNode>)> = Vec::new();
+                for (section, node) in rows {
+                    match sections.last_mut() {
+                        Some((last, nodes)) if *last == section => nodes.push(node),
+                        _ => sections.push((section, vec![node])),
                     }
-                    Some(node)
-                })
-                .collect()
+                }
+                sections
+                    .into_iter()
+                    .flat_map(|(section, nodes)| match section {
+                        Some(name) => vec![
+                            AccessNode::new(Role::Group)
+                                .with_name(name)
+                                .with_children(nodes),
+                        ],
+                        None => nodes,
+                    })
+                    .collect()
+            }
         };
         if self.loading && !self.flat.is_empty() {
             children.push(
