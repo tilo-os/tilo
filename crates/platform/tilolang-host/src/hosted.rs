@@ -614,6 +614,9 @@ impl Hosted {
         {
             return;
         }
+        if self.relabel(&surface, inputs.clone()) {
+            return;
+        }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
         let resources = surface.resources();
         let handlers: HashSet<String> = HashSet::from([
@@ -651,6 +654,7 @@ impl Hosted {
                     })
                 {
                     self.published = Some((Vec::new(), state));
+                    self.published_from = None;
                 }
             }
             return;
@@ -682,6 +686,70 @@ impl Hosted {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
         }
+    }
+
+    /// Publish a change to the surface that moved only labels (a note's title typed into) as
+    /// those resources alone: their descriptors patched, and a delta of them, at the cost of
+    /// what changed whatever the notebook. `inputs` are the surface's ([`Surface::inputs`]).
+    /// Whether this turn's publishing is done; when the surface changed in more than labels
+    /// since the broker took it, the caller builds it whole.
+    ///
+    /// Nothing is validated again: no rule reads a label.
+    fn relabel(
+        &mut self,
+        surface: &Rc<Surface>,
+        inputs: (u64, Vec<tilolang_tilo::runtime::PackageId>),
+    ) -> bool {
+        let Some((from, (published_at, published_packages))) = &self.published_from else {
+            return false;
+        };
+        if !Rc::ptr_eq(from, surface) || *published_packages != inputs.1 {
+            return false;
+        }
+        let Some(labels) = surface.publications.borrow().labels_since(*published_at) else {
+            return false;
+        };
+        let Some((descriptors, state)) = &mut self.published else {
+            return false;
+        };
+        if labels
+            .iter()
+            .any(|(resource, _)| state.indices(resource).is_none())
+        {
+            return false;
+        }
+        let _phase = tilo_resource::profiling::Phase::start("tl.host.relabel");
+        for (resource, label) in &labels {
+            for index in state.indices(resource).unwrap_or_default() {
+                if let Some(descriptor) = descriptors.get_mut(*index) {
+                    descriptor.resource_label.clone_from(label);
+                }
+            }
+        }
+        let changed: Vec<&str> = labels
+            .iter()
+            .map(|(resource, _)| resource.as_str())
+            .collect();
+        let Some(delta) = state.relabel(descriptors, &changed) else {
+            return false;
+        };
+        if !delta.is_empty()
+            && !self
+                .record
+                .manager_mut()
+                .send(CollabRequest::PublishActionSurface {
+                    app_id: self.spec.app.clone(),
+                    delta,
+                })
+        {
+            // What the broker holds is no longer what was patched: a later turn sends the
+            // surface whole, as a reset.
+            self.published = None;
+            self.published_from = None;
+            return true;
+        }
+        self.published_from = Some((Rc::clone(surface), inputs));
+        true
     }
 
     /// Write what the record holds to its on-disk copy, as the instance ends.
