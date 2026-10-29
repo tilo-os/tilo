@@ -75,6 +75,12 @@ pub struct InstanceRequest {
     pub person: String,
     /// The length of the module in its memfd.
     pub module_len: u64,
+    /// The id whose room record the instance opens, when it is not the app's own: an app renamed
+    /// keeps using the record of its earliest id, as the installed catalogue believes the same
+    /// publisher signed it. The broker admits the instance's connection to that record only on
+    /// the same belief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_under: Option<String>,
 }
 
 /// The session's request to run an agent task's programs.
@@ -487,6 +493,7 @@ mod tests {
             instance: 7,
             person: "ada".into(),
             module_len: 12,
+            records_under: Some("so.tilo.lang.older-notes".into()),
         };
         let fds = InstanceFds {
             broker: connection(),

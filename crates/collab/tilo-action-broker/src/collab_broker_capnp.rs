@@ -53,6 +53,7 @@ mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod kept_record;
 mod native_checkout;
 #[cfg(test)]
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
@@ -8332,6 +8333,10 @@ impl collab_service::Server for CapnpCollabService {
                     return Err(capnp::Error::failed(reason));
                 }
             }
+            // A renamed app keeps using the record of an id it had before (`kept_record`).
+            let record_route = route.clone();
+            let (route, as_app) =
+                kept_record::working_route(self.lease.local_media.as_deref(), &record_route);
             // An attested launch joins its own route; another app's only to
             // read a record whose kinds it declared it reads.
             let route_access = match self.lease.local_media.as_ref() {
@@ -8353,7 +8358,7 @@ impl collab_service::Server for CapnpCollabService {
                 None => RouteAccess::Own,
             };
             if let Some(worker) = &self.worker {
-                if route != worker.route
+                if record_route != worker.route
                     || verified_identity.verified.user_public_key != worker.root
                     || verified_identity.verified.device_public_key != worker.device
                 {
@@ -8383,8 +8388,10 @@ impl collab_service::Server for CapnpCollabService {
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
-            let record_kind =
-                route_record_kind(&route, joined_record_kind(reader.get_record_kind()?)?)?;
+            let record_kind = route_record_kind(
+                &record_route,
+                joined_record_kind(reader.get_record_kind()?)?,
+            )?;
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
@@ -8507,6 +8514,7 @@ impl collab_service::Server for CapnpCollabService {
                 state: state.clone(),
                 directories: Rc::clone(&self.directories),
                 channel_id,
+                as_app,
                 peer_id: hold_id,
                 connection_id: peer_id,
                 verified_identity,
@@ -8660,6 +8668,8 @@ struct CapnpChannelHandle {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     channel_id: String,
+    /// The launched app, when the channel is the record of an id it had before ([`kept_record`]).
+    as_app: Option<String>,
     /// The route hold this channel publishes and works as ([`route_holds`]).
     peer_id: u64,
     /// The connection: its transport identity for document fanout,
@@ -8689,12 +8699,6 @@ impl Drop for CapnpChannelHandle {
 }
 
 impl CapnpChannelHandle {
-    /// A record-scoped connection names its record inside the channel id
-    /// (the SDK joins `<cluster>#record:<id>`), parsed back out here.
-    fn route(&self) -> CrdtRoute {
-        CrdtRoute::from_channel_key(&self.channel_id)
-    }
-
     /// Refuse a change on a channel the app holds only to read: no app
     /// writes on another app's route.
     fn writable(&self) -> Result<(), capnp::Error> {
@@ -9142,7 +9146,7 @@ impl CapnpChannelHandle {
     ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.route();
+        let route = self.record_route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(capnp::Error::failed(
                 "record content belongs to a certified app route".into(),
@@ -9202,7 +9206,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::ChannelKeysChangedParams,
         mut results: channel_handle::ChannelKeysChangedResults,
     ) -> Promise<(), capnp::Error> {
-        let route = self.route();
+        let route = self.record_route();
         if let Err(error) = self
             .state
             .revalidate_admission(&route, &self.verified_identity)
@@ -10447,7 +10451,8 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let state = self.state.clone();
         let peer_id = self.connection_id;
-        let route = self.route();
+        // A change of the record the channel carries, under the id it is kept under.
+        let route = self.record_route();
         let verified_identity = self.verified_identity.clone();
         let record_kind = self.record_kind.clone();
         Promise::from_future(async move {
@@ -10575,7 +10580,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let route = self.route();
+        let route = self.record_route();
         let native = match self
             .state
             .native_roster_for_subscriber(&route, &self.verified_identity)
@@ -10639,7 +10644,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let broker_channels = self.state.broker_channels.clone();
         let publisher = Arc::clone(self.state.publisher());
-        let route = self.route();
+        let route = self.record_route();
         Promise::from_future(async move {
             let p = params.get()?;
             let artifact_id_bytes = p.get_artifact_id()?.to_vec();
@@ -14773,6 +14778,7 @@ async fn authenticate_launcher_handoff(
                 answerable: false,
             });
         }
+        let earlier = kept_record::earlier_ids_of(services, &handoff.app_id);
         let opened = launch
             .launch_ticket
             .map(|ticket| workspace_open::ConnectedLaunch {
@@ -14785,6 +14791,7 @@ async fn authenticate_launcher_handoff(
                 handoff,
                 media_process,
                 launch,
+                earlier,
             ),
             launch: opened,
         });
@@ -16356,6 +16363,7 @@ pub mod tests {
             route: &CrdtRoute,
         ) -> channel_handle::Client {
             capnp_rpc::new_client(CapnpChannelHandle {
+                as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
@@ -20841,6 +20849,7 @@ pub mod tests {
                     let (fixture, caller, request) = durable_fixture(root.path(), None);
                     let client: channel_handle::Client =
                         capnp_rpc::new_client(CapnpChannelHandle {
+                            as_app: None,
                             person_chat_views: RefCell::default(),
                             committed_read: Rc::new(RefCell::new(
                                 committed_document::Slot::default(),
@@ -20897,6 +20906,7 @@ pub mod tests {
                 let admitted = fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
                 fixture.invocation_rx.try_recv().unwrap();
                 let foreign: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                    as_app: None,
                     person_chat_views: RefCell::default(),
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: fixture.state.clone(), directories: fixture.directories.clone(),

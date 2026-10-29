@@ -114,6 +114,7 @@ async fn local_report_admission(
                 .unwrap()
                 .clone();
             let raw: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                as_app: None,
                 person_chat_views: std::cell::RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: rig.state.clone(),
@@ -235,6 +236,7 @@ async fn local_report_admission(
             // surface it was made under) instead of waiting forever.
             let app_connection: channel_handle::Client =
                 capnp_rpc::new_client(CapnpChannelHandle {
+                    as_app: None,
                     person_chat_views: std::cell::RefCell::default(),
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: rig.state.clone(),
