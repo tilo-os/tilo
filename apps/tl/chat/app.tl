@@ -217,7 +217,7 @@ scenario "a team's channels" -> TextChannel {
     let design = add_channel(team, "design")
     design.topic = "Reviews and critique"
     add_channel(team, "release")
-    add_channel(team, "standup")
+    add_channel(team, "planning")
     let social = new_category(channels, "Social")
     add_channel(social, "weekend")
     add_channel(social, "books")
