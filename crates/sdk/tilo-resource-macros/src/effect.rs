@@ -166,6 +166,9 @@ struct VariantOptions {
     /// always asked first.
     attended: bool,
     risk: Option<syn::Path>,
+    /// `phrase = "path"`: the `fn(&Self) -> String` naming what one bound
+    /// invocation loses, which its caller types to confirm it.
+    phrase: Option<syn::Path>,
     /// `audience = "agents"` or `"people"`: who listings offer it to.
     audience: Option<syn::Ident>,
     untrusted: bool,
@@ -286,6 +289,9 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.attended = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
+            } else if meta.path.is_ident("phrase") {
+                options.phrase =
+                    Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
             } else if meta.path.is_ident("audience") {
                 options.audience = Some(crate::audience_option(&meta)?);
             } else if meta.path.is_ident("untrusted") {
@@ -322,7 +328,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 return Err(meta.error(
                     "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
-                     `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
+                     `own_device`, `attended`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
                      `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
                 ));
             }
@@ -368,6 +374,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     let mut encodes = Vec::new();
     let mut decodes = Vec::new();
     let mut consts = Vec::new();
+    let mut phrases = Vec::new();
     for variant in &data.variants {
         let options = variant_options(&variant.attrs)?;
         let ident = &variant.ident;
@@ -535,6 +542,21 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(::std::option::Option::None)
         };
+        if let Some(phrase) = &options.phrase {
+            if !options.row || !options.destructive {
+                return Err(syn::Error::new(
+                    phrase.span(),
+                    "a typed phrase names what one invocation loses: declare the effect \
+                     `destructive` and `row`, offered only bound to what it erases",
+                ));
+            }
+            let pattern = if matches!(variant.fields, Fields::Unit) {
+                quote!(Self::#ident)
+            } else {
+                quote!(Self::#ident { .. })
+            };
+            phrases.push(quote!(#pattern => ::core::option::Option::Some(#phrase(self)),));
+        }
         let row = options.row;
         let audience = options
             .audience
@@ -746,6 +768,17 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         .map_or_else(|| quote!(#krate::kind::DEFAULT_APP), |app| quote!(#app));
     let row_count = decls.len();
     let rows = decls.into_iter().map(|row| name_self(row, name));
+    let phrase = (!phrases.is_empty()).then(|| {
+        quote! {
+            fn confirmation_phrase(&self) -> ::core::option::Option<::std::string::String> {
+                #[allow(unreachable_patterns, reason = "the other effects are confirmed without typing")]
+                match self {
+                    #(#phrases)*
+                    _ => ::core::option::Option::None,
+                }
+            }
+        }
+    });
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;
@@ -765,6 +798,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     #(#ids)*
                 }
             }
+
+            #phrase
 
             #[allow(unused_mut, reason = "a unit effect has no arguments to insert")]
             fn arguments(&self) -> #krate::__private::serde_json::Map<::std::string::String, #krate::__private::serde_json::Value> {
