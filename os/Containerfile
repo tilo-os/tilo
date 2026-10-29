@@ -3030,6 +3030,9 @@ COPY --from=native-builder-payload \
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
+# The image takes each app's tree (trees/<payload root hash>) as a layer of its
+# own (tools/ci/os/oci_layers.py, APART), so an update sends the apps that
+# changed rather than every app.
 COPY --from=app-store /out/usr/share/tilo-apps/ /usr/share/tilo-apps/
 # The registry and each app's signed record, apart from the trees above.
 COPY --from=app-store /signatures/usr/share/tilo-apps/ /usr/share/tilo-apps/
