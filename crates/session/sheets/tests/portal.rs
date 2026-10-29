@@ -95,6 +95,7 @@ fn up_and_down_move_the_choice_enter_answers_and_escape_declines() {
     // from the first choice.
     key(&mut app, "ArrowDown");
     key(&mut app, "ArrowUp");
+    key(&mut app, "Tab");
     key(&mut app, "Enter");
     key(&mut app, "Escape");
     assert_eq!(
@@ -102,6 +103,7 @@ fn up_and_down_move_the_choice_enter_answers_and_escape_declines() {
         [
             PortalEffect::Select { index: 1 },
             PortalEffect::Select { index: 2 },
+            PortalEffect::Select { index: 1 },
             PortalEffect::Confirm,
             PortalEffect::Cancel,
         ]
@@ -331,6 +333,17 @@ fn the_person_changes_the_draft_on_the_sheet() {
     app.harness().type_text("x");
     app.settle();
     assert_eq!(seat.text(Field::Draft(0)).as_str(), "ada@example.orgx");
+    // Into the prose field: Enter is a new line there.
+    key(&mut app, "Tab");
+    key(&mut app, "Enter");
+    assert!(seat.take_asked().is_empty(), "a new line, not an answer");
+    assert!(seat.text(Field::Draft(1)).contains('\n'));
+    // The check row: Space ticks it; then the answers.
+    key(&mut app, "Tab");
+    key(&mut app, "Space");
+    assert_eq!(seat.take_asked(), [PortalEffect::Toggle { index: 2 }]);
+    key(&mut app, "Tab");
+    assert_eq!(seat.take_asked(), [PortalEffect::Select { index: 0 }]);
     // A press on the check row ticks it.
     app.harness()
         .perform_named("portal-draft-2", &ui::a11y::Action::Activate)
@@ -370,8 +383,12 @@ fn network() -> Dialog {
 
 #[test]
 fn a_secret_goes_to_the_shell_through_the_seat_and_never_into_an_effect() {
-    // The keyboard starts in the first field still empty: the password.
+    // The keyboard starts in the first field still empty, the password;
+    // Tab walks the prompt's own fields.
     let (mut app, seat) = seated(network());
+    with_modifiers(&mut app, &["Shift"], "Tab");
+    app.harness().type_text("x");
+    key(&mut app, "Tab");
     app.harness().type_text("hunter2");
     app.settle();
     assert_eq!(
@@ -382,7 +399,7 @@ fn a_secret_goes_to_the_shell_through_the_seat_and_never_into_an_effect() {
     // The shell refuses one field: the sheet is built again around what
     // was typed, and says why.
     let Body::Secret(prompt) = network().body else {
-        unreachable!()
+        panic!("the network fixture asks with a secret prompt")
     };
     seat.show(Some(Dialog {
         body: Body::Secret(Prompt {
@@ -404,7 +421,7 @@ fn a_secret_goes_to_the_shell_through_the_seat_and_never_into_an_effect() {
     assert_eq!(asked, [PortalEffect::Submit]);
     assert!(!asked_text(&asked).contains("hunter2"));
     let answer = seat.take_answer().expect("the answer waits in the seat");
-    assert_eq!(answer.values[0].as_str(), "ada");
+    assert_eq!(answer.values[0].as_str(), "adax");
     assert_eq!(answer.values[1].as_str(), "hunter2");
     assert!(
         seat.secrets()
@@ -427,7 +444,7 @@ fn escape_backs_out_of_a_secret_prompt() {
 fn only_the_person_answers_but_anyone_may_decline() {
     use ui::tilo_resource::Effect as _;
     for declaration in PortalEffect::declarations() {
-        let answers = matches!(&*declaration.id, "confirm" | "answer" | "submit");
+        let answers = matches!(declaration.id, "confirm" | "answer" | "submit");
         assert_eq!(
             declaration.attended, answers,
             "only answering needs the person: {}",
