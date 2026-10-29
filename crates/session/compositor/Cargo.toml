@@ -10,12 +10,14 @@ license.workspace = true
 # The protocol server, the desktop element model and the renderers: pixman
 # composites headless outputs on the CPU, GLES real ones; the TTY backend's
 # session, udev, libinput and KMS (DrmCompositor) come from smithay too, as
-# does the X11 window of the nested development backend.
+# does the X11 window of the nested development backend. renderer_multi
+# lets the primary GPU render for displays on other GPUs.
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "desktop",
     "renderer_pixman",
     "renderer_gl",
+    "renderer_multi",
     "backend_drm",
     "backend_gbm",
     "backend_egl",

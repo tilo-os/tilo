@@ -1,10 +1,12 @@
 //! A bare TTY: KMS outputs, libinput devices, a libseat session.
 //!
 //! The session (logind or seatd) hands out the device descriptors and pauses
-//! everything on a VT switch. Each connected connector of the primary GPU
-//! becomes an output driven by smithay's `DrmCompositor`: planes, direct
-//! scanout of client buffers and the cursor plane where the hardware has
-//! them, GLES composition of the rest, one frame per vertical blank.
+//! everything on a VT switch. Each connected connector of every GPU on the
+//! seat becomes an output driven by smithay's `DrmCompositor`: planes,
+//! direct scanout of client buffers and the cursor plane where the hardware
+//! has them, GLES composition of the rest, one frame per vertical blank.
+//! The primary GPU renders every output; a frame for another GPU's display
+//! is copied over to it (smithay's `GpuManager`).
 //! libinput's events become [`InputEvent`]s. Decisions that need no hardware
 //! live in [`devices`] and [`seat_diag`], where they are tested.
 
@@ -31,18 +33,19 @@ use smithay::backend::drm::compositor::FrameFlags;
 use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
 use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRenderElements};
 use smithay::backend::drm::{
-    DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, VrrSupport,
+    DrmDevice, DrmDeviceFd, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode, NodeType, VrrSupport,
 };
-use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
 use smithay::backend::renderer::ImportDma as _;
 use smithay::backend::renderer::gles::{Capability, GlesRenderer};
+use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
+use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session as _};
 use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::{LoopHandle, RegistrationToken};
-use smithay::reexports::drm::Device as _;
 use smithay::reexports::drm::control::{
     Device as _, Mode as DrmMode, ModeFlags, ModeTypeFlags, connector, crtc,
 };
@@ -71,6 +74,11 @@ type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
 type Queued = Option<Presentation>;
 type Manager = DrmOutputManager<Allocator, Exporter, Queued, DrmDeviceFd>;
 type Surface = DrmOutput<Allocator, Exporter, Queued, DrmDeviceFd>;
+type Api = GbmGlesBackend<GlesRenderer, DrmDeviceFd>;
+/// One GLES renderer per GPU.
+type Renderers = GpuManager<Api>;
+/// The primary GPU's renderer, drawing for one GPU's output.
+type Renderer<'a> = MultiRenderer<'a, 'a, Api, Api>;
 
 /// One lit output.
 struct Lit {
@@ -117,24 +125,59 @@ struct Wake {
 /// before the link to the display counts as down.
 const LINK_WAIT: Duration = Duration::from_secs(2);
 
-/// The primary GPU: its device, renderer and outputs.
+/// One GPU: its display device and outputs.
 struct Gpu {
     node: DrmNode,
+    /// Its render node, which names its renderer.
+    render: DrmNode,
     path: PathBuf,
     manager: Manager,
-    renderer: GlesRenderer,
     outputs: HashMap<crtc::Handle, Lit>,
     token: RegistrationToken,
-    /// The last topology line written, so it is written when it changes.
-    topology: String,
 }
 
 struct Inner {
     session: LibSeatSession,
     libinput: LibinputContext,
-    gpu: Option<Gpu>,
+    /// The GPUs on the seat, by device number.
+    gpus: HashMap<u64, Gpu>,
+    renderers: Renderers,
+    /// The render node of the GPU that renders every output.
+    primary: Option<DrmNode>,
     config: DisplayConfig,
     active: bool,
+    /// The last topology line written, so it is written when it changes.
+    topology: String,
+}
+
+impl Inner {
+    /// The GPU driving the output named `name`, and the output.
+    fn lit_mut(&mut self, name: &str) -> Option<(&mut Gpu, crtc::Handle)> {
+        self.gpus.values_mut().find_map(|gpu| {
+            let crtc = gpu
+                .outputs
+                .iter()
+                .find(|(_, lit)| lit.output.name() == name)
+                .map(|(crtc, _)| *crtc)?;
+            Some((gpu, crtc))
+        })
+    }
+}
+
+/// The renderer that draws for `target`'s outputs: the primary GPU's,
+/// copying the frame over when `target` is another GPU.
+fn renderer_for(
+    renderers: &mut Renderers,
+    primary: DrmNode,
+    target: DrmNode,
+    format: Fourcc,
+) -> Result<Renderer<'_>, BackendError> {
+    if target == primary {
+        renderers.single_renderer(&primary)
+    } else {
+        renderers.renderer(&primary, &target, format)
+    }
+    .map_err(|error| failed("renderer", error))
 }
 
 /// The TTY backend. Created by [`DrmBackend::start`], which registers the
@@ -164,22 +207,43 @@ impl DrmBackend {
             .udev_assign_seat(&seat)
             .map_err(|()| BackendError(format!("libinput: seat {seat} not assigned")))?;
 
+        let renderers = Renderers::new(GbmGlesBackend::with_factory(gles_renderer))
+            .map_err(|error| failed("renderers", error))?;
         let inner = Rc::new(RefCell::new(Inner {
             session,
             libinput: libinput.clone(),
-            gpu: None,
+            gpus: HashMap::new(),
+            renderers,
+            primary: None,
             config,
             active: true,
+            topology: String::new(),
         }));
 
         let udev = UdevBackend::new(&seat).map_err(|error| failed("udev", error))?;
         let gpu_path = primary_gpu(&seat, &udev)?;
-        let gpu = open_gpu(handle, &inner, &gpu_path)?;
-        state.enable_dmabuf(
-            gpu.renderer.dmabuf_formats().iter().copied().collect(),
-            Some(gpu.node),
-        );
-        inner.borrow_mut().gpu = Some(gpu);
+        let primary = open_gpu(handle, &inner, &gpu_path)?;
+        {
+            let mut inner = inner.borrow_mut();
+            inner.primary = Some(primary.render);
+            let formats = inner
+                .renderers
+                .single_renderer(&primary.render)
+                .map_err(|error| failed("renderer", error))?
+                .dmabuf_formats()
+                .iter()
+                .copied()
+                .collect();
+            state.enable_dmabuf(formats, Some(primary.node));
+            inner.gpus.insert(primary.node.dev_id(), primary);
+        }
+        // The other GPUs drive their displays; one that cannot be opened
+        // leaves the rest working.
+        let others =
+            devices::filter_kms_nodes(udev.device_list().map(|(_, path)| path.to_path_buf()));
+        for path in others.into_iter().filter(|path| *path != gpu_path) {
+            add_gpu(handle, &inner, &path);
+        }
         scan_connectors(&inner, state);
 
         let input = Rc::new(RefCell::new(libinput::Input::new(
@@ -218,28 +282,20 @@ impl DrmBackend {
         handle
             .insert_source(udev, move |event, (), data| match event {
                 UdevEvent::Changed { device_id } => {
-                    let ours = udev_inner
-                        .borrow()
-                        .gpu
-                        .as_ref()
-                        .is_some_and(|gpu| gpu.node.dev_id() == device_id);
-                    if ours {
+                    if udev_inner.borrow().gpus.contains_key(&device_id) {
                         scan_connectors(&udev_inner, &mut data.state);
                     }
                 }
-                UdevEvent::Added { path, .. } => {
-                    tracing::info!(path = %path.display(), "GPU added; not driven");
+                UdevEvent::Added { device_id, path } => {
+                    if !udev_inner.borrow().gpus.contains_key(&device_id)
+                        && !devices::filter_kms_nodes([path.clone()]).is_empty()
+                    {
+                        add_gpu(&udev_handle, &udev_inner, &path);
+                        scan_connectors(&udev_inner, &mut data.state);
+                    }
                 }
                 UdevEvent::Removed { device_id } => {
-                    let ours = udev_inner
-                        .borrow()
-                        .gpu
-                        .as_ref()
-                        .is_some_and(|gpu| gpu.node.dev_id() == device_id);
-                    if ours {
-                        tracing::warn!("primary GPU removed");
-                        remove_gpu(&udev_inner, &udev_handle, &mut data.state);
-                    }
+                    remove_gpu(&udev_inner, &udev_handle, &mut data.state, device_id);
                 }
             })
             .map_err(|error| failed("udev source", error.error))?;
@@ -261,38 +317,44 @@ impl Backend for DrmBackend {
         test: bool,
     ) -> Result<(), BackendError> {
         let mut inner = self.inner.borrow_mut();
-        let gpu = inner
-            .gpu
-            .as_mut()
-            .ok_or_else(|| BackendError("no GPU is driven".into()))?;
         // Every mode is resolved before anything changes: all or nothing.
         let mut plan = Vec::with_capacity(changes.len());
         for change in changes {
-            let (crtc, lit) = gpu
-                .outputs
-                .iter()
-                .find(|(_, lit)| lit.output.name() == change.name)
+            let (gpu, crtc) = inner
+                .lit_mut(&change.name)
                 .ok_or_else(|| BackendError(format!("{}: not lit", change.name)))?;
+            let Some(lit) = gpu.outputs.get(&crtc) else {
+                continue;
+            };
             let mode = match change.mode {
                 Some(request) => Some(drm_mode(&lit.modes, request).ok_or_else(|| {
                     BackendError(format!("{}: the display has no such mode", change.name))
                 })?),
                 None => None,
             };
-            plan.push((*crtc, mode, change));
+            plan.push((gpu.node.dev_id(), crtc, mode, change));
         }
         if test {
             return Ok(());
         }
-        for (crtc, mode, change) in plan {
+        let Inner {
+            gpus, renderers, ..
+        } = &mut *inner;
+        for (device, crtc, mode, change) in plan {
+            let Some(gpu) = gpus.get_mut(&device) else {
+                continue;
+            };
             let Some(lit) = gpu.outputs.get_mut(&crtc) else {
                 continue;
             };
             if let Some(mode) = mode {
+                let mut renderer = renderers
+                    .single_renderer(&gpu.render)
+                    .map_err(|error| failed("renderer", error))?;
                 lit.surface
-                    .use_mode::<_, OutputRenderElement<GlesRenderer>>(
+                    .use_mode::<_, OutputRenderElement<Renderer<'_>>>(
                         mode,
-                        &mut gpu.renderer,
+                        &mut renderer,
                         &DrmOutputRenderElements::default(),
                     )
                     .map_err(|error| failed(&format!("{}: mode", change.name), error))?;
@@ -321,24 +383,21 @@ impl Backend for DrmBackend {
                 );
             }
         }
-        log_topology(gpu, state);
+        log_topology(&mut inner, state);
         Ok(())
     }
 
     fn set_power(&mut self, state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
         let mut inner = self.inner.borrow_mut();
-        let gpu = inner
-            .gpu
-            .as_mut()
-            .ok_or_else(|| BackendError("no GPU is driven".into()))?;
         // A configuration that turned an output off or on changes what is
         // driven.
-        log_topology(gpu, state);
-        let lit = gpu
-            .outputs
-            .values_mut()
-            .find(|lit| lit.output.name() == name)
+        log_topology(&mut inner, state);
+        let (gpu, crtc) = inner
+            .lit_mut(name)
             .ok_or_else(|| BackendError(format!("{name}: not lit")))?;
+        let Some(lit) = gpu.outputs.get_mut(&crtc) else {
+            return Ok(());
+        };
         if on != lit.dark {
             return Ok(());
         }
@@ -375,9 +434,10 @@ impl Backend for DrmBackend {
 
     fn next_deadline(&self) -> Option<Instant> {
         let inner = self.inner.borrow();
-        let gpu = inner.gpu.as_ref()?;
-        gpu.outputs
+        inner
+            .gpus
             .values()
+            .flat_map(|gpu| gpu.outputs.values())
             .filter(|lit| !lit.queued && !lit.dark)
             .map(|lit| lit.next_frame)
             .min()
@@ -391,12 +451,32 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     if !inner.active {
         return;
     }
-    let Inner { gpu, config, .. } = &mut *inner;
-    let variable_refresh = &config.variable_refresh;
-    let Some(gpu) = gpu.as_mut() else {
+    let Inner {
+        gpus,
+        renderers,
+        primary,
+        config,
+        ..
+    } = &mut *inner;
+    let Some(primary) = *primary else {
         return;
     };
+    let variable_refresh = &config.variable_refresh;
     let now = Instant::now();
+    for gpu in gpus.values_mut() {
+        render_gpu(gpu, renderers, primary, variable_refresh, state, now);
+    }
+}
+
+/// Draw `gpu`'s outputs that are due.
+fn render_gpu(
+    gpu: &mut Gpu,
+    renderers: &mut Renderers,
+    primary: DrmNode,
+    variable_refresh: &HashSet<String>,
+    state: &mut State,
+    now: Instant,
+) {
     for lit in gpu.outputs.values_mut() {
         if lit.queued
             && lit.wake.as_ref().is_some_and(|wake| !wake.judged)
@@ -419,17 +499,23 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             variable_refresh.contains(&name),
             state.fullscreen_on(&lit.output),
         ));
+        let mut renderer = match renderer_for(renderers, primary, gpu.render, lit.surface.format())
+        {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                tracing::warn!(%error, output = name, "no renderer");
+                continue;
+            }
+        };
         // The pointer in front, where DrmCompositor can give it the cursor
         // plane.
-        let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
-            state.cursor_elements(&mut gpu.renderer, &lit.output);
-        elements.extend(output_elements(&mut gpu.renderer, state, &lit.output));
-        match lit.surface.render_frame(
-            &mut gpu.renderer,
-            &elements,
-            BACKGROUND,
-            FrameFlags::DEFAULT,
-        ) {
+        let mut elements: Vec<OutputRenderElement<Renderer<'_>>> =
+            state.cursor_elements(&mut renderer, &lit.output);
+        elements.extend(output_elements(&mut renderer, state, &lit.output));
+        match lit
+            .surface
+            .render_frame(&mut renderer, &elements, BACKGROUND, FrameFlags::DEFAULT)
+        {
             Ok(frame) => {
                 // Clients draw their next frame now; an output with nothing
                 // new is asked again one refresh later.
@@ -468,11 +554,12 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
 fn vblank(
     inner: &Rc<RefCell<Inner>>,
     state: &State,
+    device: u64,
     crtc: crtc::Handle,
     metadata: Option<&DrmEventMetadata>,
 ) {
     let mut inner = inner.borrow_mut();
-    let Some(gpu) = inner.gpu.as_mut() else {
+    let Some(gpu) = inner.gpus.get_mut(&device) else {
         return;
     };
     let device = gpu.manager.device();
@@ -641,7 +728,7 @@ fn pause(inner: &Rc<RefCell<Inner>>) {
     let mut inner = inner.borrow_mut();
     inner.active = false;
     inner.libinput.suspend();
-    if let Some(gpu) = inner.gpu.as_mut() {
+    for gpu in inner.gpus.values_mut() {
         gpu.manager.pause();
     }
 }
@@ -651,9 +738,9 @@ fn resume(inner: &Rc<RefCell<Inner>>) {
     if inner.libinput.resume().is_err() {
         tracing::warn!("libinput did not resume");
     }
-    if let Some(gpu) = inner.gpu.as_mut() {
+    for gpu in inner.gpus.values_mut() {
         if let Err(error) = gpu.manager.activate(false) {
-            tracing::warn!(?error, "GPU did not reactivate");
+            tracing::warn!(?error, path = %gpu.path.display(), "GPU did not reactivate");
         }
         for lit in gpu.outputs.values_mut() {
             // What was on screen before the switch is gone.
@@ -668,17 +755,36 @@ fn resume(inner: &Rc<RefCell<Inner>>) {
     inner.active = true;
 }
 
+/// Open the GPU at `path` and drive its displays, rendered by the primary.
+fn add_gpu(handle: &LoopHandle<'static, LoopData>, inner: &Rc<RefCell<Inner>>, path: &Path) {
+    match open_gpu(handle, inner, path) {
+        Ok(gpu) => {
+            tracing::info!(path = %path.display(), "GPU added");
+            inner.borrow_mut().gpus.insert(gpu.node.dev_id(), gpu);
+        }
+        Err(error) => tracing::warn!(%error, path = %path.display(), "GPU not driven"),
+    }
+}
+
 fn remove_gpu(
     inner: &Rc<RefCell<Inner>>,
     handle: &LoopHandle<'static, LoopData>,
     state: &mut State,
+    device: u64,
 ) {
-    let gpu = inner.borrow_mut().gpu.take();
-    if let Some(gpu) = gpu {
-        for lit in gpu.outputs.values() {
-            state.remove_output(&lit.output);
-        }
-        handle.remove(gpu.token);
+    let mut inner = inner.borrow_mut();
+    let Some(gpu) = inner.gpus.remove(&device) else {
+        return;
+    };
+    tracing::warn!(path = %gpu.path.display(), "GPU removed");
+    for lit in gpu.outputs.values() {
+        state.remove_output(&lit.output);
+    }
+    handle.remove(gpu.token);
+    inner.renderers.as_mut().remove_node(&gpu.render);
+    if inner.primary == Some(gpu.render) {
+        // Another GPU renders from now on.
+        inner.primary = inner.gpus.values().next().map(|gpu| gpu.render);
     }
 }
 
@@ -711,25 +817,34 @@ fn open_gpu(
         .map_err(|error| failed(&format!("open {}", path.display()), error))?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let node = DrmNode::from_file(fd.clone()).map_err(|error| failed("DRM node", error))?;
+    let render = node
+        .node_with_type(NodeType::Render)
+        .and_then(Result::ok)
+        .unwrap_or(node);
     let (device, notifier) =
         DrmDevice::new(fd.clone(), true).map_err(|error| failed("DRM device", error))?;
     let gbm = GbmDevice::new(fd).map_err(|error| failed("GBM device", error))?;
-    // SAFETY: the display is created from this GPU's GBM device, which
-    // outlives it inside the renderer.
-    let display =
-        unsafe { EGLDisplay::new(gbm.clone()) }.map_err(|error| failed("EGL display", error))?;
-    let context = EGLContext::new(&display).map_err(|error| failed("EGL context", error))?;
-    let renderer = gles_renderer(context, &device)?;
+    let renderer_formats = {
+        let mut inner = inner.borrow_mut();
+        inner
+            .renderers
+            .as_mut()
+            .add_node(render, gbm.clone())
+            .map_err(|error| failed("EGL display", error))?;
+        inner
+            .renderers
+            .single_renderer(&render)
+            .map_err(|error| failed("renderer", error))?
+            .dmabuf_formats()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+    };
     let allocator = GbmAllocator::new(
         gbm.clone(),
         GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
     );
-    let exporter = GbmFramebufferExporter::new(gbm.clone(), Some(node));
-    let renderer_formats = renderer
-        .dmabuf_formats()
-        .iter()
-        .copied()
-        .collect::<Vec<_>>();
+    let exporter = GbmFramebufferExporter::new(gbm.clone(), Some(render));
     let manager = Manager::new(
         device,
         allocator,
@@ -740,10 +855,11 @@ fn open_gpu(
     );
 
     let vblank_inner = Rc::clone(inner);
+    let dev_id = node.dev_id();
     let token = handle
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
-                vblank(&vblank_inner, &data.state, crtc, metadata.as_ref());
+                vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
                 render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
@@ -751,27 +867,30 @@ fn open_gpu(
         .map_err(|error| failed("DRM source", error.error))?;
     Ok(Gpu {
         node,
+        render,
         path: path.to_path_buf(),
-        topology: String::new(),
         manager,
-        renderer,
         outputs: HashMap::new(),
         token,
     })
 }
 
-/// The GPU's renderer. On panfrost (Mali) it runs without per-texture
+/// A GPU's renderer. On panfrost (Mali) it runs without per-texture
 /// fences: such a fence makes the driver submit every draw as its own
 /// batch, each reloading and writing back the whole framebuffer; KMS waits
 /// for the frame through the scanout buffer's implicit fence instead.
-fn gles_renderer(context: EGLContext, device: &DrmDevice) -> Result<GlesRenderer, BackendError> {
-    let panfrost = device
-        .get_driver()
-        .is_ok_and(|driver| driver.name() == "panfrost");
+fn gles_renderer(
+    display: &EGLDisplay,
+) -> Result<GlesRenderer, smithay::backend::renderer::multigpu::gbm::Error> {
+    let panfrost = EGLDevice::device_for_display(display)
+        .and_then(|device| device.drm_device_path())
+        .ok()
+        .and_then(|path| driver_of(&path))
+        .is_some_and(|driver| driver == "panfrost");
+    let context = EGLContext::new(display)?;
     // SAFETY: the context is current only on this thread, the loop's.
     let renderer = if panfrost {
-        let capabilities = unsafe { GlesRenderer::supported_capabilities(&context) }
-            .map_err(|error| failed("GLES capabilities", error))?
+        let capabilities = unsafe { GlesRenderer::supported_capabilities(&context) }?
             .into_iter()
             .filter(|capability| {
                 !matches!(capability, Capability::Fencing | Capability::ExportFence)
@@ -780,19 +899,66 @@ fn gles_renderer(context: EGLContext, device: &DrmDevice) -> Result<GlesRenderer
     } else {
         unsafe { GlesRenderer::new(context) }
     };
-    renderer.map_err(|error| failed("GLES renderer", error))
+    Ok(renderer?)
 }
 
-/// Light connectors that became connected, drop those that went away.
+/// The kernel driver behind a DRM device node (`/dev/dri/card0`).
+fn driver_of(path: &Path) -> Option<String> {
+    let name = path.file_name()?;
+    let driver =
+        std::fs::read_link(Path::new("/sys/class/drm").join(name).join("device/driver")).ok()?;
+    Some(driver.file_name()?.to_string_lossy().into_owned())
+}
+
+/// Light connectors that became connected, drop those that went away, on
+/// every GPU.
 fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let mut inner = inner.borrow_mut();
-    let config = inner.config.clone();
-    let Some(gpu) = inner.gpu.as_mut() else {
-        return;
-    };
+    let Inner {
+        gpus,
+        renderers,
+        config,
+        ..
+    } = &mut *inner;
+    let devices: Vec<u64> = gpus.keys().copied().collect();
+    for device in devices {
+        // Names other GPUs' outputs already have: a connector of the same
+        // name here is told apart by its card.
+        let taken: HashSet<String> = gpus
+            .iter()
+            .filter(|(id, _)| **id != device)
+            .flat_map(|(_, gpu)| gpu.outputs.values().map(|lit| lit.output.name()))
+            .collect();
+        if let Some(gpu) = gpus.get_mut(&device) {
+            scan_gpu(gpu, renderers, config, &taken, state);
+        }
+    }
+    arrange_outputs(gpus, config, state);
+    log_topology(&mut inner, state);
+}
+
+/// The output name of a connector of the card at `path`: the connector's
+/// name (`HDMI-A-1`), or `card1/HDMI-A-1` when another GPU's output has it.
+fn output_name(path: &Path, connector: &str, taken: &HashSet<String>) -> String {
+    if !taken.contains(connector) {
+        return connector.to_owned();
+    }
+    let card = path
+        .file_name()
+        .map_or_else(|| "card".into(), |name| name.to_string_lossy());
+    format!("{card}/{connector}")
+}
+
+fn scan_gpu(
+    gpu: &mut Gpu,
+    renderers: &mut Renderers,
+    config: &DisplayConfig,
+    taken: &HashSet<String>,
+    state: &mut State,
+) {
     let device = gpu.manager.device();
     let Ok(resources) = device.resource_handles() else {
-        tracing::warn!("DRM resources unreadable");
+        tracing::warn!(path = %gpu.path.display(), "DRM resources unreadable");
         return;
     };
     let connected: Vec<connector::Info> = resources
@@ -824,7 +990,8 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
         .iter()
         .filter(|info| !lit_connectors.contains(&info.handle()))
     {
-        let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+        let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+        let name = output_name(&gpu.path, &connector_name, taken);
         let modes: Vec<ModeInfo> = info
             .modes()
             .iter()
@@ -842,10 +1009,11 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             tracing::warn!(output = name, "connector advertises no usable mode");
             continue;
         };
+        let path = gpu.path.clone();
         let attempt = |result| {
             tracing::info!(
                 "{}",
-                topology::connector_attempt_line(&gpu.path, &name, mode.size(), result)
+                topology::connector_attempt_line(&path, &name, mode.size(), result)
             );
         };
         let Some(crtc) = free_crtc(gpu.manager.device(), &resources, info, &used) else {
@@ -855,18 +1023,23 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             continue;
         };
         let scale = config.scales.get(&name).copied().unwrap_or(1.0);
-        let lit = light(gpu, state, info, &name, crtc, *mode, scale);
-        let line = topology::connector_attempt_line(
-            &gpu.path,
-            &name,
-            mode.size(),
-            if lit.is_some() {
-                topology::ConnectorAttempt::Lit
-            } else {
-                topology::ConnectorAttempt::Failed("the modeset was refused")
+        let lit = light(
+            gpu,
+            renderers,
+            state,
+            &Lighting {
+                info,
+                name: &name,
+                crtc,
+                mode: *mode,
+                scale,
             },
         );
-        tracing::info!("{line}");
+        attempt(if lit.is_some() {
+            topology::ConnectorAttempt::Lit
+        } else {
+            topology::ConnectorAttempt::Failed("the modeset was refused")
+        });
         if let Some(lit) = lit {
             used.insert(crtc);
             if let Some(transform) = config.transforms.get(&name) {
@@ -881,18 +1054,21 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
             gpu.outputs.insert(crtc, lit);
         }
     }
-    arrange_outputs(gpu, &config, state);
-    log_topology(gpu, state);
 }
 
 /// Write the topology line when what is driven changed.
-fn log_topology(gpu: &mut Gpu, state: &State) {
-    let cards = std::collections::BTreeMap::from([(gpu.node.dev_id(), gpu.path.clone())]);
-    let mut driven: Vec<topology::Driven> = gpu
-        .outputs
+fn log_topology(inner: &mut Inner, state: &State) {
+    let cards: std::collections::BTreeMap<u64, PathBuf> = inner
+        .gpus
         .values()
-        .filter(|lit| !state.disabled_outputs.contains(&lit.output))
-        .map(|lit| {
+        .map(|gpu| (gpu.node.dev_id(), gpu.path.clone()))
+        .collect();
+    let mut driven: Vec<topology::Driven> = inner
+        .gpus
+        .values()
+        .flat_map(|gpu| gpu.outputs.values().map(move |lit| (gpu, lit)))
+        .filter(|(_, lit)| !state.disabled_outputs.contains(&lit.output))
+        .map(|(gpu, lit)| {
             let mode = lit.output.current_mode();
             let position = lit.output.current_location();
             topology::Driven {
@@ -907,21 +1083,21 @@ fn log_topology(gpu: &mut Gpu, state: &State) {
         .collect();
     driven.sort_by_key(|output| (output.logical_position, output.connector_name.clone()));
     let line = topology::topology_line(&cards, &driven);
-    if line != gpu.topology {
+    if line != inner.topology {
         tracing::info!("{line}");
-        gpu.topology = line;
+        inner.topology = line;
     }
 }
 
 /// Place every lit output: where the configuration says, the rest packed
 /// left to right in their current order after the configured ones, so an
 /// unplugged display leaves no hole for the pointer to get lost in.
-fn arrange_outputs(gpu: &Gpu, config: &DisplayConfig, state: &mut State) {
+fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut State) {
     // Outputs a configuration turned off keep their place for when they
     // come back but take none in the layout.
-    let mut lit: Vec<&Output> = gpu
-        .outputs
+    let mut lit: Vec<&Output> = gpus
         .values()
+        .flat_map(|gpu| gpu.outputs.values())
         .map(|lit| &lit.output)
         .filter(|output| !state.disabled_outputs.contains(output))
         .collect();
@@ -955,15 +1131,29 @@ fn logical_width(output: &Output) -> i32 {
 
 /// Drive `info`'s connector from `crtc` in `mode` and make it an output
 /// right of the others.
-fn light(
-    gpu: &mut Gpu,
-    state: &mut State,
-    info: &connector::Info,
-    name: &str,
+/// A connector to light: its name, the CRTC and mode to drive it with and
+/// the scale it starts at.
+struct Lighting<'a> {
+    info: &'a connector::Info,
+    name: &'a str,
     crtc: crtc::Handle,
     mode: DrmMode,
     scale: f64,
+}
+
+fn light(
+    gpu: &mut Gpu,
+    renderers: &mut Renderers,
+    state: &mut State,
+    lighting: &Lighting<'_>,
 ) -> Option<Lit> {
+    let &Lighting {
+        info,
+        name,
+        crtc,
+        mode,
+        scale,
+    } = lighting;
     let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
     let output = Output::new(
         name.to_owned(),
@@ -991,15 +1181,19 @@ fn light(
         output.add_mode(OutputMode::from(*advertised));
     }
     output.set_preferred(output_mode);
+    let mut renderer = renderers
+        .single_renderer(&gpu.render)
+        .map_err(|error| tracing::warn!(?error, output = name, "no renderer"))
+        .ok()?;
     let surface = gpu
         .manager
-        .initialize_output::<_, OutputRenderElement<GlesRenderer>>(
+        .initialize_output::<_, OutputRenderElement<Renderer<'_>>>(
             crtc,
             mode,
             &[info.handle()],
             &output,
             None,
-            &mut gpu.renderer,
+            &mut renderer,
             &DrmOutputRenderElements::default(),
         )
         .map_err(|error| tracing::warn!(?error, output = name, "output not lit"))
@@ -1091,5 +1285,13 @@ mod tests {
         );
         assert!(!vrr_wanted(true, false, true), "the person turned it off");
         assert!(!vrr_wanted(false, true, true), "the display cannot");
+    }
+
+    #[test]
+    fn a_connector_name_another_gpu_has_is_qualified_by_its_card() {
+        let taken = HashSet::from(["HDMI-A-1".to_owned()]);
+        let card = Path::new("/dev/dri/card1");
+        assert_eq!(output_name(card, "DP-1", &taken), "DP-1");
+        assert_eq!(output_name(card, "HDMI-A-1", &taken), "card1/HDMI-A-1");
     }
 }
