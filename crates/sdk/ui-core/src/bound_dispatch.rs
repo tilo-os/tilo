@@ -44,8 +44,7 @@ pub(crate) use input_provenance::physical_text;
 pub(crate) use input_provenance::{
     Input, input, note_drained_input, note_drained_origin, with_input, with_physical_text,
 };
-// The native app runtime drains attributed invocations; it is not built for wasm32.
-#[cfg(not(target_arch = "wasm32"))]
+// Both app hosts drain attributed invocations, the web desktop's included.
 pub(crate) use input_provenance::take_attributed_with_origin;
 use input_provenance::{capture_physical_drain, native_text_input, with_native_text};
 
