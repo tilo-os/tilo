@@ -12,6 +12,11 @@ pub struct NativeAuthorityStorage {
     pub(crate) pending: BTreeMap<RoomId, StoredPendingEnrollment>,
 }
 impl NativeAuthorityStorage {
+    /// Raised by every publication of the record.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
     #[must_use]
     pub fn requires(&self, room: RoomId) -> bool {
         self.rooms.contains_key(&room) || self.pending.contains_key(&room)

@@ -8,6 +8,9 @@
 use super::super::{RoomId, WorkspaceId, WorkspaceTree};
 
 const LAPTOP: &str = include_str!("../../../tests/fixtures/laptop-2026-10-20/state.json");
+/// The laptop's native owner's record, beside its state file.
+const LAPTOP_OWNER: &str =
+    include_str!("../../../tests/fixtures/laptop-2026-10-20/state.owner.json");
 const HOSTED_ROOMS: &str =
     include_str!("../../../tests/fixtures/laptop-2026-10-20/hosted-rooms.json");
 
@@ -44,7 +47,11 @@ fn previous_lounge() -> RoomId {
 }
 
 fn laptop() -> WorkspaceTree {
-    serde_json::from_str(LAPTOP).expect("the laptop's state file reads")
+    let mut tree: WorkspaceTree =
+        serde_json::from_str(LAPTOP).expect("the laptop's state file reads");
+    tree.native_authority =
+        serde_json::from_str(LAPTOP_OWNER).expect("the laptop's owner record reads");
+    tree
 }
 
 fn tabs_of(tree: &WorkspaceTree, workspace: WorkspaceId) -> Vec<u64> {
@@ -280,6 +287,11 @@ fn loading_the_laptops_file_binds_its_workspaces_to_their_rooms() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.json");
     std::fs::write(&path, LAPTOP).unwrap();
+    std::fs::write(
+        crate::shell::native_workspace_owner::owner_file(&path),
+        LAPTOP_OWNER,
+    )
+    .unwrap();
     let tree = crate::shell::persist::load_tree_from(&path).expect("the laptop's file loads");
     assert_eq!(tree.room_of(LOUNGE), Some(site_room()));
     assert_eq!(tabs_of(&tree, LOUNGE), LOUNGE_TABS);

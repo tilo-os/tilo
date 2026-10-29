@@ -12,7 +12,7 @@ use web_time::SystemTime;
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use reservation::check_actual_projection_bound;
-pub use reservation::{authority_limit, preflight_storage, reserved_file_bytes};
+pub use reservation::{authority_limit, preflight_storage};
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;

@@ -46,7 +46,8 @@ fn a_devices_own_terminal_audit_commits_here_and_a_retry_answers_the_original_re
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let committed = runtime.block_on(service.commit(request(&effect))).unwrap();
-    let persisted = std::fs::read(&fixture.path).unwrap();
+    let record = native_workspace_owner::owner_file(&fixture.path);
+    let persisted = std::fs::read(&record).unwrap();
     let retry = runtime.block_on(service.commit(request(&effect))).unwrap();
     assert_eq!(retry.binding, committed.binding);
     assert_eq!(retry.generation, committed.generation);
@@ -64,7 +65,7 @@ fn a_devices_own_terminal_audit_commits_here_and_a_retry_answers_the_original_re
         "a device records only its own person's receipts"
     );
     drop(service);
-    assert_eq!(std::fs::read(&fixture.path).unwrap(), persisted);
+    assert_eq!(std::fs::read(&record).unwrap(), persisted);
     drop(fixture);
 }
 
@@ -93,7 +94,8 @@ fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
             redacted: serde_json::to_vec(&effect).unwrap(),
         },
     };
-    let before = std::fs::read(&fixture.path).unwrap();
+    let record = native_workspace_owner::owner_file(&fixture.path);
+    let before = std::fs::read(&record).unwrap();
     // The disk: each write waits until the test lets it go.
     let (writing, at_write) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
@@ -113,7 +115,7 @@ fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
         .unwrap();
     let receipt = tokio::task::LocalSet::new().block_on(&runtime, async {
         let commit = tokio::task::spawn_local(service.commit(request));
-        tilo_test_env::within("the commit to reach its state-file write", async {
+        tilo_test_env::within("the commit to reach its write", async {
             while at_write.try_recv().is_err() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
@@ -139,9 +141,9 @@ fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
     drop(held);
     receipt.unwrap();
     assert_ne!(
-        std::fs::read(&fixture.path).unwrap(),
+        std::fs::read(&record).unwrap(),
         before,
-        "the commit reached the state file"
+        "the commit reached the owner's record"
     );
     drop(service);
     drop(fixture);
@@ -880,14 +882,15 @@ fn native_published_effects_cross_hot_boundary_and_restore_cold_exact_receipt() 
     let mut stored = crate::shell::persist::load_tree_from(&path).unwrap();
     stored.persist_path = Some(path.clone());
     let reopened = native_workspace_owner::open(stored.shared()).unwrap();
-    let bytes = std::fs::read(&path).unwrap();
+    let record = native_workspace_owner::owner_file(&path);
+    let bytes = std::fs::read(&record).unwrap();
     let retry = reopened
         .commit_effect_receipt(&request, &key, std::time::SystemTime::now())
         .unwrap();
     assert_eq!(retry.binding, original.binding);
     assert_eq!(retry.generation, original.generation);
     assert_eq!(retry.aggregate_hash, original.aggregate_hash);
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(std::fs::read(&record).unwrap(), bytes);
     reopened
         .with_current(room, |view| {
             let restored = tilo_desktop_model::projection::workspace_effect_receipts_of(

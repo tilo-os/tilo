@@ -1,9 +1,10 @@
-//! One state-file writer shared by UI snapshots and committed native owners.
-use super::{NativeAuthorityStorage, NativeWorkspaceOwner};
+//! The state file's one writer, shared by every snapshot of the tree, and
+//! the native owner attached to it.
+use super::NativeWorkspaceOwner;
 use crate::shell::state::{WeakWorkspaceTreeHandle, WorkspaceTreeHandle};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use std::{
-    io::{self, Write},
+    io,
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
@@ -11,7 +12,7 @@ use std::{
     },
 };
 use tilo_files::native::atomic::lease::{FileLease, LeaseMode};
-pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
+pub(crate) use tilo_joined_room::{LimitedWriter, MAX_STATE_BYTES};
 
 /// Where a snapshot stands among the writes of one state file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -34,7 +35,8 @@ pub(crate) enum Publication {
     Superseded,
 }
 
-/// Clones of the desktop share the writer, so stale UI snapshots cannot erase floors.
+/// Clones of the desktop share the writer, so a stale snapshot never
+/// overwrites a later one.
 #[derive(Clone, Default)]
 pub struct NativeStateRuntime(pub(super) Arc<Runtime>);
 /// Policy observers must not retain the state writer or its exclusive file lease.
@@ -44,9 +46,7 @@ pub(crate) struct NativeStateWitness(Weak<Runtime>);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AuthorityRejection {
     WriterRetired,
-    WriterFenced,
-    RoomUncertain,
-    InvalidSnapshot,
+    OwnerFenced,
     StaleAcceptedSnapshot,
     RoomOwnerRetired,
     RoomOwnerNotCurrent,
@@ -55,9 +55,7 @@ impl AuthorityRejection {
     pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::WriterRetired => "writer_retired",
-            Self::WriterFenced => "writer_fenced",
-            Self::RoomUncertain => "room_uncertain",
-            Self::InvalidSnapshot => "invalid_snapshot",
+            Self::OwnerFenced => "owner_fenced",
             Self::StaleAcceptedSnapshot => "stale_accepted_snapshot",
             Self::RoomOwnerRetired => "room_owner_retired",
             Self::RoomOwnerNotCurrent => "room_owner_not_current",
@@ -72,7 +70,7 @@ impl NativeStateWitness {
     #[cfg(test)]
     pub(crate) fn authority_is_current(
         &self,
-        storage: &NativeAuthorityStorage,
+        storage: &super::NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
     ) -> bool {
         self.authority_status(storage, room).is_ok()
@@ -80,25 +78,43 @@ impl NativeStateWitness {
     #[cfg(test)]
     pub(crate) fn authority_status(
         &self,
-        storage: &NativeAuthorityStorage,
+        storage: &super::NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
     ) -> Result<(), AuthorityRejection> {
         self.authority_status_awaiting(storage, room, |_| false)
     }
-    /// [`Self::authority_status`], except that a `storage` this writer has
-    /// since moved past is not stale while `exporting` says the record the
-    /// writer accepted instead (its digest) is still on its way to the
-    /// observer. An owner publication accepts its record before the policy
-    /// export carrying it is published; that export judges again when it
-    /// lands, so the gap between the two withdraws nothing by itself.
+    /// Whether `storage`, the record a policy was exported with, is still
+    /// the one the attached owner holds, and `room` current in it. A record
+    /// the owner published since is not stale while `exporting` says the
+    /// policy its publication exported (its revision) is still on its way
+    /// to the observer: that export judges again when it lands, so the gap
+    /// between the two withdraws nothing by itself.
     pub(crate) fn authority_status_awaiting(
         &self,
-        storage: &NativeAuthorityStorage,
+        storage: &super::NativeAuthorityStorage,
         room: crate::shell::state::RoomId,
-        exporting: impl FnOnce([u8; 32]) -> bool,
+        exporting: impl FnOnce(u64) -> bool,
     ) -> Result<(), AuthorityRejection> {
         let runtime = self.0.upgrade().ok_or(AuthorityRejection::WriterRetired)?;
-        NativeStateRuntime(runtime).authority_status(storage, room, exporting)
+        let Some(owner) = NativeStateRuntime(runtime).owner() else {
+            if storage.requires(room) {
+                return Err(AuthorityRejection::RoomOwnerRetired);
+            }
+            return Ok(());
+        };
+        owner
+            .health()
+            .map_err(|_| AuthorityRejection::OwnerFenced)?;
+        let current = owner.revision();
+        if current != storage.revision() && !exporting(current) {
+            return Err(AuthorityRejection::StaleAcceptedSnapshot);
+        }
+        if storage.requires(room) {
+            return owner
+                .with_current(room, |_| Ok(()))
+                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
+        }
+        Ok(())
     }
     /// Whether both witnesses observe the same writer.
     pub(crate) fn same_writer(&self, other: &Self) -> bool {
@@ -111,29 +127,21 @@ impl std::fmt::Debug for NativeStateRuntime {
     }
 }
 pub(super) struct Runtime {
-    /// Serializes binding and publication, and is held across their file
-    /// I/O (provisioning the directory chain, the state file's data and
-    /// directory syncs). Only they take it: what the frame loop asks of the
-    /// writer (its owner, its accepted authority, its path) is kept beside
-    /// it, so the loop never waits for a disk.
-    pub writer: Mutex<Writer>,
-    /// Serializes opening this writer's owner ([`super::open`]), which binds
-    /// and publishes without holding the tree, so the tree's lock is never
-    /// held across a disk sync. Nothing on the frame loop takes it.
+    /// Serializes binding and writing the state file, and is held across
+    /// their file I/O. What the frame loop asks of the writer (its owner,
+    /// its path) is kept beside it, so the loop never waits for a disk.
+    writer: Mutex<Writer>,
+    /// Serializes opening this writer's owner ([`super::open`]).
     opening: Mutex<()>,
     /// The state file this writer owns, set once its lease is held. It
     /// never changes afterwards.
     path: std::sync::OnceLock<PathBuf>,
-    /// Digest of the authority the state file holds, as of the latest
-    /// completed bind or publication; `Some` only once the lease is held.
-    /// Changed only with `writer` held, and never held across I/O.
-    accepted: Mutex<Option<[u8; 32]>>,
-    /// The attached owner and the tree whose state file it publishes into.
+    /// The attached owner and the tree whose state file it belongs to.
     /// Never held across I/O.
     attached: Mutex<Option<Attachment>>,
     pub(super) local_filesystem_consents: Mutex<super::local_filesystem_consents::Consents>,
-    pub healthy: AtomicBool,
-    uncertain_rooms: RwLock<std::collections::BTreeSet<crate::shell::state::RoomId>>,
+    /// Set once the writer writes nothing more.
+    closed: AtomicBool,
     /// Hands out [`StateSequence`]s; see [`NativeStateRuntime::next_sequence`].
     sequence: AtomicU64,
     /// Per [`Companion`], the newest snapshot it was written from. Held
@@ -150,20 +158,10 @@ pub(super) struct Runtime {
     >,
     /// The action policy this writer's tree has published.
     action_authority: Arc<crate::shell::action_authority::Authority>,
-    /// An owner publication between taking its sequence and installing its
-    /// record, and whether a snapshot of the tree was taken meanwhile. Read
-    /// and changed only with the tree held, so a snapshot and the install
-    /// are ordered by the tree's lock.
-    in_flight: Mutex<Option<InFlight>>,
     /// Runs each state-file write of this writer, on whichever thread makes
     /// it; see [`test_seam::wrap_writes`].
     #[cfg(test)]
     around_write: Mutex<Option<test_seam::AroundWrite>>,
-}
-/// See [`Runtime::in_flight`].
-#[derive(Default)]
-struct InFlight {
-    snapshotted: bool,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -171,17 +169,14 @@ impl Default for Runtime {
             writer: Mutex::new(Writer::default()),
             opening: Mutex::new(()),
             path: std::sync::OnceLock::new(),
-            accepted: Mutex::new(None),
             attached: Mutex::new(None),
             local_filesystem_consents: Mutex::default(),
-            healthy: AtomicBool::new(true),
-            uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
+            closed: AtomicBool::new(false),
             sequence: AtomicU64::new(0),
             companions: Mutex::new([0; 1]),
             document: crate::shell::persist::DocLog::default(),
             layout_documents: Mutex::default(),
             action_authority: Arc::default(),
-            in_flight: Mutex::new(None),
             #[cfg(test)]
             around_write: Mutex::new(None),
         }
@@ -195,7 +190,7 @@ impl Drop for Runtime {
     }
 }
 #[derive(Default)]
-pub(super) struct Writer {
+struct Writer {
     /// The exclusive lease on the state file's writer sentinel, once bound;
     /// released when the runtime is dropped.
     lease: Option<FileLease>,
@@ -208,59 +203,6 @@ type Attachment = (
     WeakWorkspaceTreeHandle,
 );
 
-/// One pretty-printing of an owner record: hashed for its digest and, when
-/// the state file is being written, copied out indented one level deeper,
-/// as the file embeds it. Wrapped in a [`LimitedWriter`] at
-/// [`tilo_joined_room::authority_limit`], the same pass is the record's
-/// `preflight_storage`, so a publication encodes its record once rather
-/// than once for each check.
-struct AuthorityWriter<'a> {
-    hash: blake3::Hasher,
-    embedded: Option<&'a mut Vec<u8>>,
-}
-impl Write for AuthorityWriter<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.hash.update(bytes);
-        if let Some(embedded) = self.embedded.as_deref_mut() {
-            // A pretty-printed newline is always structural: a newline in a
-            // string is escaped. So every line after the first is indented.
-            let mut lines = bytes.split(|byte| *byte == b'\n');
-            if let Some(first) = lines.next() {
-                embedded.extend_from_slice(first);
-            }
-            for line in lines {
-                embedded.extend_from_slice(b"\n  ");
-                embedded.extend_from_slice(line);
-            }
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-/// Pretty-print `storage` once: refuse it as `preflight_storage` would, and
-/// return the digest of that JSON; append it to `embedded`, indented to sit
-/// one level inside the state file, when given.
-pub(crate) fn encode_authority(
-    storage: &NativeAuthorityStorage,
-    embedded: Option<&mut Vec<u8>>,
-) -> io::Result<[u8; 32]> {
-    let limit = tilo_joined_room::authority_limit(storage).map_err(io::Error::other)?;
-    let mut writer = LimitedWriter::new(
-        AuthorityWriter {
-            hash: blake3::Hasher::new(),
-            embedded,
-        },
-        limit,
-    );
-    serde_json::to_writer_pretty(&mut writer, storage).map_err(io::Error::other)?;
-    Ok(*writer.into_inner().hash.finalize().as_bytes())
-}
-/// The digest the writer expects of the record the state file holds.
-pub(super) fn digest(storage: &NativeAuthorityStorage) -> io::Result<[u8; 32]> {
-    encode_authority(storage, None)
-}
 impl NativeStateRuntime {
     pub(crate) fn authority_witness(&self) -> NativeStateWitness {
         NativeStateWitness(Arc::downgrade(&self.0))
@@ -302,46 +244,8 @@ impl NativeStateRuntime {
     pub(super) fn is(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
-    /// Whether the record the state file holds, as of the latest completed
-    /// bind or publication, is the one whose digest is `authority`.
-    pub(super) fn holds(&self, authority: [u8; 32]) -> bool {
-        *self.0.accepted.lock() == Some(authority)
-    }
     pub(super) fn attach(&self, owner: &NativeWorkspaceOwner, tree: &WorkspaceTreeHandle) {
         *self.0.attached.lock() = Some((owner.downgrade(), tree.downgrade()));
-    }
-    pub(crate) fn requires_uncertain(&self, room: crate::shell::state::RoomId) -> bool {
-        self.0.uncertain_rooms.read().contains(&room)
-    }
-    /// Read-only witness for host policy exports. A stale/fenced native
-    /// authority must not renew an application action lease.
-    fn authority_status(
-        &self,
-        storage: &NativeAuthorityStorage,
-        room: crate::shell::state::RoomId,
-        exporting: impl FnOnce([u8; 32]) -> bool,
-    ) -> Result<(), AuthorityRejection> {
-        if !self.healthy() {
-            return Err(AuthorityRejection::WriterFenced);
-        }
-        if self.requires_uncertain(room) {
-            return Err(AuthorityRejection::RoomUncertain);
-        }
-        let expected = digest(storage).map_err(|_| AuthorityRejection::InvalidSnapshot)?;
-        let current = *self.0.accepted.lock();
-        if let Some(current) = current
-            && current != expected
-            && !exporting(current)
-        {
-            return Err(AuthorityRejection::StaleAcceptedSnapshot);
-        }
-        if storage.requires(room) {
-            let owner = self.owner().ok_or(AuthorityRejection::RoomOwnerRetired)?;
-            return owner
-                .with_current(room, |_| Ok(()))
-                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
-        }
-        Ok(())
     }
     /// Write nothing more, once any write in progress has finished: the
     /// state file stays as this writer last left it, as at the end of the
@@ -350,17 +254,8 @@ impl NativeStateRuntime {
     #[cfg(test)]
     pub(crate) fn close_for_shutdown(&self) {
         let _writer = self.0.writer.lock();
-        self.0.healthy.store(false, Ordering::Release);
+        self.0.closed.store(true, Ordering::Release);
     }
-    pub(super) fn healthy(&self) -> bool {
-        self.0.healthy.load(Ordering::Acquire)
-    }
-    /// The digest of the record the writer last published or bound.
-    #[cfg(test)]
-    pub(super) fn expected_digest(&self) -> Option<[u8; 32]> {
-        *self.0.accepted.lock()
-    }
-    /// Called only while the tree snapshot is held. `next` differs only for owner turns.
     /// Order of a snapshot of the tree among every other snapshot of it.
     /// Taken while the caller holds the tree, so a later sequence is never an
     /// older state. A write carrying it is skipped once a later one landed:
@@ -416,158 +311,47 @@ impl NativeStateRuntime {
         *written = sequence.0;
     }
 
-    /// Write `encoded`, the state file holding `next`, in place of the one
-    /// holding the record whose digest is `base`, unless a later snapshot
-    /// already reached the file. Refused when the file does not hold `base`.
+    /// Write `bytes`, the state file of snapshot `sequence`, to `path`,
+    /// unless a later snapshot already reached the file.
     pub(crate) fn publish(
         &self,
         path: &Path,
-        base: [u8; 32],
-        next: &NativeAuthorityStorage,
-        encoded: &crate::shell::persist::EncodedTree,
+        bytes: &[u8],
         sequence: StateSequence,
     ) -> io::Result<Publication> {
         let mut writer = self.0.writer.lock();
-        let written = self.write_held(&mut writer, path, base, next, encoded, sequence);
-        match written {
-            Ok(Publication::Written) => {
-                *self.0.accepted.lock() = Some(encoded.authority);
-                writer.published = sequence.0;
-                Ok(Publication::Written)
-            }
-            Ok(Publication::Superseded) => Ok(Publication::Superseded),
-            Err(error) => {
-                drop(writer);
-                Err(self.fence_if_uncertain(error))
-            }
-        }
-    }
-
-    /// The write of [`Self::publish`], with `writer` held, that leaves the
-    /// record it wrote for its caller to accept. An error is the atomic
-    /// replace's, for [`Self::fence_if_uncertain`] once `writer` is let go.
-    fn write_held(
-        &self,
-        writer: &mut Writer,
-        path: &Path,
-        base: [u8; 32],
-        next: &NativeAuthorityStorage,
-        encoded: &crate::shell::persist::EncodedTree,
-        sequence: StateSequence,
-    ) -> Result<Publication, WriteError> {
         if sequence.0 < writer.published {
             return Ok(Publication::Superseded);
         }
-        if !self.healthy() {
-            return Err(WriteError::Refused(io::Error::other(
-                "native state writer is fenced after uncertain publication",
-            )));
+        if self.0.closed.load(Ordering::Acquire) {
+            return Err(io::Error::other("the state file's writer is closed"));
         }
-        self.bind_held(writer, path, base)
-            .map_err(WriteError::Refused)?;
-        if *self.0.accepted.lock() != Some(base) {
-            return Err(WriteError::Refused(io::Error::other(
-                "stale native authority snapshot refused",
-            )));
-        }
+        self.bind_held(&mut writer, path)?;
         let replace = || {
             tilo_files::native::atomic::replace(
                 path,
-                &encoded.bytes,
+                bytes,
                 tilo_files::native::atomic::Privacy::OwnerOnly,
             )
         };
         #[cfg(test)]
-        let replaced = {
-            test_seam::before_write();
-            let around = self.0.around_write.lock().clone();
-            match around {
-                Some(around) => {
-                    let mut replaced = None;
-                    around(&mut || replaced = Some(replace()));
-                    replaced.expect("a test's write wrapper runs the write")
-                }
-                None => replace(),
-            }
-        };
+        let replaced = test_seam::run(self, replace);
         #[cfg(not(test))]
         let replaced = replace();
-        match replaced {
-            Ok(()) => Ok(Publication::Written),
-            Err(error) => {
-                if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
-                    {
-                        let mut uncertain = self.0.uncertain_rooms.write();
-                        uncertain.extend(next.rooms());
-                    }
-                    self.0.healthy.store(false, Ordering::Release);
-                    // Every authority this writer vouched for is withdrawn.
-                    tilo_identity_host::policy_change::announce();
-                    return Err(WriteError::Uncertain(error.into_io_error()));
-                }
-                Err(WriteError::Refused(error.into_io_error()))
-            }
-        }
-    }
-
-    /// The error of a write, after fencing the owner when the write may
-    /// have reached the file. Called with the writer let go.
-    fn fence_if_uncertain(&self, error: WriteError) -> io::Error {
-        match error {
-            WriteError::Refused(error) => error,
-            WriteError::Uncertain(error) => {
-                if let Some(owner) = self.owner() {
-                    owner.fence_all();
-                }
-                error
-            }
-        }
-    }
-
-    /// Start an owner publication: take the writer, which it keeps until
-    /// its record is installed. Taken before the tree, so a save holding
-    /// the tree never waits on the writer behind it.
-    pub(super) fn begin(&self) -> PublicationTurn<'_> {
-        PublicationTurn {
-            runtime: self,
-            writer: Some(self.0.writer.lock()),
-            written: None,
-            failed: None,
-        }
-    }
-
-    /// Note a snapshot of the tree being taken, with the tree held: whether
-    /// an owner publication is in flight, whose install then saves the tree
-    /// again (see [`PublicationTurn::finish`]).
-    pub(crate) fn snapshot_during_publication(&self) -> bool {
-        let mut in_flight = self.0.in_flight.lock();
-        in_flight.as_mut().is_some_and(|in_flight| {
-            in_flight.snapshotted = true;
-            true
-        })
-    }
-
-    /// Whether the state file has moved past the record whose digest is
-    /// `base`: a snapshot carrying it was overtaken by a publication.
-    pub(crate) fn moved_past(&self, base: [u8; 32]) -> bool {
-        self.healthy()
-            && self
-                .0
-                .accepted
-                .lock()
-                .is_some_and(|accepted| accepted != base)
+        replaced.map_err(tilo_files::native::atomic::PublicationError::into_io_error)?;
+        writer.published = sequence.0;
+        Ok(Publication::Written)
     }
 
     /// Own the state file at `path`, unless this writer already does. Once
     /// bound, this is a check of [`Runtime::path`] that waits for nothing,
-    /// however long a publication holds the writer.
-    pub(super) fn bind(&self, path: &Path, storage: &NativeAuthorityStorage) -> io::Result<()> {
+    /// however long a write holds the writer.
+    pub(super) fn bind(&self, path: &Path) -> io::Result<()> {
         if self.is_bound_to(path)? {
             return Ok(());
         }
-        let expected = digest(storage)?;
         let mut writer = self.0.writer.lock();
-        self.bind_held(&mut writer, path, expected)
+        self.bind_held(&mut writer, path)
     }
 
     /// Whether this writer already owns the state file at `path`; an error
@@ -581,17 +365,16 @@ impl NativeStateRuntime {
         }
     }
 
-    /// Take the exclusive lease on `path`'s writer sentinel and adopt the
-    /// file's authority if it is `expected`, with `writer` held throughout.
+    /// Take the exclusive lease on `path`'s writer sentinel, with `writer`
+    /// held throughout.
     ///
     /// The lease comes first. Another writer holding it (a second session
     /// on the same profile, a process that has not let go yet) is refused
     /// at the cost of one open and one `flock`. Only a writer holding the
     /// lease makes the directory chain durable, once, before anything is
-    /// published into it: that syncs every directory up to `/`, which on a
-    /// busy disk takes seconds, and a refused writer used to pay it again at
-    /// every save and every owner lookup, on whichever thread asked.
-    fn bind_held(&self, writer: &mut Writer, path: &Path, expected: [u8; 32]) -> io::Result<()> {
+    /// written into it: that syncs every directory up to `/`, which on a
+    /// busy disk takes seconds.
+    fn bind_held(&self, writer: &mut Writer, path: &Path) -> io::Result<()> {
         if self.is_bound_to(path)? {
             debug_assert!(writer.lease.is_some(), "a bound writer holds its lease");
             return Ok(());
@@ -632,142 +415,10 @@ impl NativeStateRuntime {
         if !provisioned {
             provision()?;
         }
-        if path.exists() {
-            #[derive(serde::Deserialize)]
-            struct DiskAuthority {
-                #[serde(default)]
-                schema_version: u32,
-                #[serde(default)]
-                native_authority: NativeAuthorityStorage,
-            }
-            use std::io::Read;
-            let file = std::fs::File::open(path)?;
-            let mut bytes = Vec::new();
-            file.take((MAX_STATE_BYTES as u64).saturating_add(1))
-                .read_to_end(&mut bytes)?;
-            if bytes.len() > MAX_STATE_BYTES {
-                return Err(io::Error::other(
-                    "native encoded state refusal cap exceeded",
-                ));
-            }
-            let disk: DiskAuthority = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-            if disk.schema_version != crate::shell::persist::NATIVE_STATE_SCHEMA_VERSION {
-                return Err(io::Error::other(
-                    "unsupported native authority state-file layout",
-                ));
-            }
-            tilo_joined_room::validate_file_layout(disk.schema_version, &disk.native_authority)
-                .map_err(io::Error::other)?;
-            if digest(&disk.native_authority)? != expected {
-                return Err(io::Error::other(
-                    "state-file authority changed since this snapshot was loaded",
-                ));
-            }
-        }
         writer.lease = Some(lease);
-        *self.0.accepted.lock() = Some(expected);
         // Set only here, with the writer held and unbound, so exactly once.
         let _ = self.0.path.set(path.into());
         Ok(())
-    }
-}
-
-/// What a write of the state file refused, or failed at after it may have
-/// reached the file.
-enum WriteError {
-    Refused(io::Error),
-    Uncertain(io::Error),
-}
-
-/// One owner publication's hold of the writer, from before its sequence is
-/// taken until its record is installed (see [`NativeStateRuntime::begin`]).
-pub(super) struct PublicationTurn<'a> {
-    runtime: &'a NativeStateRuntime,
-    writer: Option<parking_lot::MutexGuard<'a, Writer>>,
-    /// The record written and the sequence it carries, until accepted.
-    written: Option<([u8; 32], u64)>,
-    /// A failed write, whose fencing waits until the writer is let go.
-    failed: Option<WriteError>,
-}
-
-impl PublicationTurn<'_> {
-    /// Take this publication's sequence and mark it in flight. Called with
-    /// the tree held.
-    pub(super) fn start(&self) -> StateSequence {
-        *self.runtime.0.in_flight.lock() = Some(InFlight::default());
-        self.runtime.next_sequence()
-    }
-
-    /// Write the state file; the record it holds is accepted by
-    /// [`Self::accept`], when it is installed.
-    pub(super) fn write(
-        &mut self,
-        path: &Path,
-        base: [u8; 32],
-        next: &NativeAuthorityStorage,
-        encoded: &crate::shell::persist::EncodedTree,
-        sequence: StateSequence,
-    ) -> io::Result<()> {
-        let writer = self
-            .writer
-            .as_mut()
-            .ok_or_else(|| io::Error::other("native publication already ended"))?;
-        match self
-            .runtime
-            .write_held(writer, path, base, next, encoded, sequence)
-        {
-            Ok(Publication::Written) => {
-                self.written = Some((encoded.authority, sequence.0));
-                Ok(())
-            }
-            // The turn holds the writer from before its sequence was
-            // taken, so no later write can have landed first.
-            Ok(Publication::Superseded) => {
-                Err(io::Error::other("native owner publication was superseded"))
-            }
-            Err(error) => {
-                let shown = match &error {
-                    WriteError::Refused(error) | WriteError::Uncertain(error) => {
-                        io::Error::new(error.kind(), error.to_string())
-                    }
-                };
-                self.failed = Some(error);
-                Err(shown)
-            }
-        }
-    }
-
-    /// Accept the record [`Self::write`] wrote. Called with the tree held,
-    /// in the write that installs it.
-    pub(super) fn accept(&mut self) {
-        if let (Some((authority, sequence)), Some(writer)) = (self.written.take(), &mut self.writer)
-        {
-            *self.runtime.0.accepted.lock() = Some(authority);
-            writer.published = sequence;
-        }
-    }
-
-    /// End the publication's flight, with the tree held: whether a snapshot
-    /// was taken meanwhile, so the caller saves the tree again. That
-    /// snapshot still carries the old record; the file refuses it once
-    /// this record is in, and its save then stands down for this one.
-    pub(super) fn finish(&self) -> bool {
-        self.runtime
-            .0
-            .in_flight
-            .lock()
-            .take()
-            .is_some_and(|in_flight| in_flight.snapshotted)
-    }
-}
-
-impl Drop for PublicationTurn<'_> {
-    fn drop(&mut self) {
-        self.runtime.0.in_flight.lock().take();
-        drop(self.writer.take());
-        if let Some(error) = self.failed.take() {
-            drop(self.runtime.fence_if_uncertain(error));
-        }
     }
 }
 
@@ -782,12 +433,31 @@ pub(crate) mod test_seam {
         static BEFORE_WRITE: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
     }
 
-    pub(super) fn before_write() {
+    fn before_write() {
         BEFORE_WRITE.with(|hook| {
             if let Some(hook) = hook.borrow().as_ref() {
                 hook();
             }
         });
+    }
+
+    /// Run `write`, one write of `runtime`'s state file or of its owner's
+    /// record, through the hooks a test installed.
+    pub(in crate::shell::native_workspace_owner) fn run<T>(
+        runtime: &super::NativeStateRuntime,
+        write: impl FnOnce() -> T,
+    ) -> T {
+        before_write();
+        let around = runtime.0.around_write.lock().clone();
+        match around {
+            Some(around) => {
+                let mut write = Some(write);
+                let mut written = None;
+                around(&mut || written = write.take().map(|write| write()));
+                written.expect("a test's write wrapper runs the write")
+            }
+            None => write(),
+        }
     }
 
     /// Runs one state-file write, given as the closure it calls.
@@ -833,31 +503,5 @@ pub(crate) mod test_seam {
         let value = body();
         BEFORE_WRITE.with(|slot| *slot.borrow_mut() = previous);
         value
-    }
-}
-
-#[cfg(test)]
-mod action_authority_tests {
-    use super::*;
-    #[test]
-    fn action_authority_witness_rejects_fenced_uncertain_and_stale_native_writer() {
-        let runtime = NativeStateRuntime::default();
-        let witness = runtime.authority_witness();
-        let storage = NativeAuthorityStorage::default();
-        let room =
-            crate::shell::state::RoomId::parse("00000000-0000-4000-8000-000000000123").unwrap();
-        assert!(witness.authority_is_current(&storage, room));
-        runtime.0.healthy.store(false, Ordering::Release);
-        assert!(!witness.authority_is_current(&storage, room));
-        runtime.0.healthy.store(true, Ordering::Release);
-        runtime.0.uncertain_rooms.write().insert(room);
-        assert!(!witness.authority_is_current(&storage, room));
-        runtime.0.uncertain_rooms.write().remove(&room);
-        *runtime.0.accepted.lock() = Some([0xff; 32]);
-        assert!(!witness.authority_is_current(&storage, room));
-        *runtime.0.accepted.lock() = Some(digest(&storage).unwrap());
-        assert!(witness.authority_is_current(&storage, room));
-        drop(runtime);
-        assert!(!witness.authority_is_current(&storage, room));
     }
 }

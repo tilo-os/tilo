@@ -43,7 +43,7 @@ struct RoomPolicy {
 
 impl RoomPolicy {
     /// Whether the record this policy was exported with is still the one its
-    /// writer holds. A record the writer accepted after it, whose own export
+    /// owner holds. A record the owner published after it, whose own export
     /// is taken but not yet published, does not make it stale: that export
     /// replaces this policy and judges every sandbox again when it lands.
     fn accepted_status(
@@ -53,16 +53,10 @@ impl RoomPolicy {
     ) -> Result<(), crate::shell::native_workspace_owner::store::AuthorityRejection> {
         self.runtime
             .authority_status_awaiting(&self.authority, room, |accepted| {
-                // Read after the writer's record: an owner publication takes
+                // Read after the owner's record: an owner publication takes
                 // its export before it changes that record.
-                let exporting: Vec<_> = lock(exporting)
-                    .iter()
-                    .filter(|export| export.1.same_writer(&self.runtime))
-                    .map(|export| export.2.clone())
-                    .collect();
-                exporting.iter().any(|authority| {
-                    crate::shell::native_workspace_owner::store::encode_authority(authority, None)
-                        .is_ok_and(|digest| digest == accepted)
+                lock(exporting).iter().any(|export| {
+                    export.1.same_writer(&self.runtime) && export.2.revision() == accepted
                 })
             })
     }
@@ -803,6 +797,7 @@ mod tests {
             projection(&published, &binding).policy.owner.as_deref(),
             Some("person-a")
         );
+        crate::shell::persist::save_shared_tree_to(&tree, &path).unwrap();
         drop(owner);
         drop(tree);
         let mut restored = crate::shell::persist::load_tree_from(&path).unwrap();

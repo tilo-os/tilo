@@ -1125,21 +1125,14 @@ fn settled_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
 fn the_rooms_the_desktop_session_enrolled_are_refused() {
     let directory = tempfile::tempdir().unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
-    std::fs::write(
-        directory
+    let record = tilo_joined_room::owner_file_of(
+        &directory
             .path()
             .join(super::super::workspace::DESKTOP_WORKSPACE),
-        br#"{"native_authority": {"revision": 1, "rooms": {}, "pending": {}}}"#,
-    )
-    .unwrap();
+    );
+    std::fs::write(&record, br#"{"revision": 1, "rooms": {}, "pending": {}}"#).unwrap();
     assert!(desktop_enrolled(directory.path()).unwrap().is_empty());
-    std::fs::write(
-        directory
-            .path()
-            .join(super::super::workspace::DESKTOP_WORKSPACE),
-        b"not a workspace file",
-    )
-    .unwrap();
+    std::fs::write(&record, b"not an owner record").unwrap();
     assert!(
         desktop_enrolled(directory.path()).is_err(),
         "an unreadable desktop record refuses rather than guesses"

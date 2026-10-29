@@ -356,7 +356,7 @@ fn v4_with_activity() -> (u64, Vec<u8>) {
             maximized: false,
             focus_history: Vec::new(),
         });
-    let bytes = encode_tree(&tree).expect("encoded").bytes;
+    let bytes = encode_tree(&tree).expect("encoded");
     let mut file: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     *tab_tile(&mut file, id).expect("the Activity tab is in the file") =
         serde_json::Value::from("WorkspaceActivity");
@@ -411,53 +411,22 @@ struct StoredVersion {
     schema_version: u32,
 }
 
-/// Encode `tree` as its state file, refusing what exceeds the file's bounds.
+/// Encode `tree` as its state file, refusing what exceeds the file's bound.
 ///
 /// # Errors
-/// The authority's layout is invalid, or the encoded file would leave no
-/// room for the recovery its enrolled rooms reserved.
-pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<EncodedTree> {
-    // Refuse a malformed authority before copying anything.
-    check_authority(&tree.native_authority)?;
+/// The encoded file would exceed its cap.
+#[cfg(test)]
+pub(crate) fn encode_tree(tree: &WorkspaceTree) -> std::io::Result<Vec<u8>> {
     encode_durable(&DurableTree::of(tree))
-}
-
-/// A state file, encoded, and the digest of the owner record it holds.
-pub(crate) struct EncodedTree {
-    pub(crate) bytes: Vec<u8>,
-    /// What [`NativeStateRuntime::publish`] expects of the file once this is
-    /// in it: computed in the one pass that encoded the record.
-    ///
-    /// [`NativeStateRuntime::publish`]: super::native_workspace_owner::NativeStateRuntime
-    pub(crate) authority: [u8; 32],
-}
-
-fn check_authority(
-    authority: &super::native_workspace_owner::NativeAuthorityStorage,
-) -> std::io::Result<()> {
-    super::native_workspace_owner::publication::validate_file_layout(
-        NATIVE_STATE_SCHEMA_VERSION,
-        authority,
-    )
-    .map_err(std::io::Error::other)
 }
 
 /// Exactly what `state.json` holds, in [`WorkspaceTree`]'s serde shape, and
 /// nothing else: none of the tree's documents, which are saved beside it
-/// (see [`state_doc_path`]). Copying it costs the size of the file, not of
+/// (see [`state_doc_path`]), and not the native owner's record, which is
+/// kept in a file of its own. Copying it costs the size of the file, not of
 /// the history.
 #[derive(serde::Serialize)]
 pub(crate) struct DurableTree {
-    /// First, so the file can be written as this record, encoded once,
-    /// followed by [`DurableRest`].
-    native_authority: super::native_workspace_owner::NativeAuthorityStorage,
-    #[serde(flatten)]
-    rest: DurableRest,
-}
-
-/// Every field of [`DurableTree`] after the owner record.
-#[derive(serde::Serialize)]
-pub(crate) struct DurableRest {
     #[serde(flatten)]
     desktop: crate::shell::state::DesktopTree,
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
@@ -522,71 +491,31 @@ impl DurableTree {
             ws.sandbox.retain(ui::CapOverride::persists_across_restart);
         }
         Self {
-            native_authority: tree.native_authority.clone(),
-            rest: DurableRest {
-                desktop,
-                strips_to_retain: tree.strips_to_retain.clone(),
-                native_document_tabs: tree.native_document_tabs.clone(),
-                local_app_records,
-                package_launches,
-                workspace_aliases: tree.workspace_aliases.clone(),
-                joining_rooms: tree.joining_rooms.clone(),
-                archived_workspaces: archived.workspaces,
-                pending_placements: tree.pending_placements.clone(),
-                room_outbox: tree.room_outbox.clone(),
-                shared_window_use: tree.shared_window_use.clone(),
-                retired_fields: tree.retired_fields.clone(),
-            },
+            desktop,
+            strips_to_retain: tree.strips_to_retain.clone(),
+            native_document_tabs: tree.native_document_tabs.clone(),
+            local_app_records,
+            package_launches,
+            workspace_aliases: tree.workspace_aliases.clone(),
+            joining_rooms: tree.joining_rooms.clone(),
+            archived_workspaces: archived.workspaces,
+            pending_placements: tree.pending_placements.clone(),
+            room_outbox: tree.room_outbox.clone(),
+            shared_window_use: tree.shared_window_use.clone(),
+            retired_fields: tree.retired_fields.clone(),
         }
     }
 }
 
-/// Encode `durable` once, refusing it when the authority is malformed or the
-/// file would leave no room for the recovery its enrolled rooms reserved.
-///
-/// The owner record, by far the file's largest part, is pretty-printed once:
-/// that one pass also refuses it as `preflight_storage` would and hashes it
-/// for the writer's digest. The bytes are exactly `durable` pretty-printed.
-fn encode_durable(durable: &DurableTree) -> std::io::Result<EncodedTree> {
-    use super::native_workspace_owner::store::LimitedWriter;
-    /// How the file opens, up to the record: its first field.
-    const OPEN: &[u8] = b"{\n  \"native_authority\": ";
-    check_authority(&durable.native_authority)?;
-    let limit =
-        super::native_workspace_owner::publication::state_file_limit(&durable.native_authority)
-            .map_err(std::io::Error::other)?;
-    let mut embedded = Vec::new();
-    embedded.extend_from_slice(OPEN);
-    let authority = super::native_workspace_owner::store::encode_authority(
-        &durable.native_authority,
-        Some(&mut embedded),
-    )?;
-    if embedded.len() > limit {
-        return Err(std::io::Error::other(
-            "native encoded state refusal cap exceeded",
-        ));
-    }
-    // The other fields alone are an object, brace and all: with the record's
-    // comma in place of that brace, they continue the file. Never empty: the
-    // desktop has fields.
-    let mut fields = LimitedWriter::new(Vec::new(), limit.saturating_sub(embedded.len()));
-    serde_json::to_writer_pretty(&mut fields, &durable.rest).map_err(std::io::Error::other)?;
-    let mut fields = fields.into_inner();
-    if !fields.starts_with(b"{\n") {
-        return Err(std::io::Error::other(
-            "durable tree fields are not an object",
-        ));
-    }
-    if let Some(brace) = fields.first_mut() {
-        *brace = b',';
-    }
-    embedded.append(&mut fields);
+/// Encode `durable`, refusing a file over the cap.
+fn encode_durable(durable: &DurableTree) -> std::io::Result<Vec<u8>> {
+    use super::native_workspace_owner::store::{LimitedWriter, MAX_STATE_BYTES};
+    let mut bytes = LimitedWriter::new(Vec::new(), MAX_STATE_BYTES);
+    serde_json::to_writer_pretty(&mut bytes, durable)
+        .map_err(|_| std::io::Error::other("native encoded state refusal cap exceeded"))?;
     #[cfg(test)]
     ENCODES_ON_THIS_THREAD.with(|encodes| encodes.set(encodes.get().saturating_add(1)));
-    Ok(EncodedTree {
-        bytes: embedded,
-        authority,
-    })
+    Ok(bytes.into_inner())
 }
 
 /// What a save writes, taken from the tree while the caller holds it: a copy
@@ -602,9 +531,9 @@ pub struct TreeSnapshot {
     layouts: Vec<(RoomId, std::sync::Arc<DocLog>)>,
     runtime: super::native_workspace_owner::NativeStateRuntime,
     sequence: super::native_workspace_owner::store::StateSequence,
-    /// Taken while an owner publication was in flight, whose install saves
-    /// the tree again.
-    during_publication: bool,
+    /// The revision of the owner's record the tree held: a snapshot taken
+    /// before the owner's latest publication reached the tree is stale.
+    revision: u64,
 }
 
 impl TreeSnapshot {
@@ -624,7 +553,7 @@ impl TreeSnapshot {
         Self {
             layouts,
             sequence: tree.native_runtime.next_sequence(),
-            during_publication: tree.native_runtime.snapshot_during_publication(),
+            revision: tree.native_authority.revision(),
             runtime: tree.native_runtime.clone(),
             durable: DurableTree::of(tree),
         }
@@ -640,22 +569,19 @@ impl TreeSnapshot {
         self,
         path: &Path,
     ) -> std::io::Result<super::native_workspace_owner::store::Publication> {
-        let encoded = encode_durable(&self.durable)?;
-        // A snapshot changes no record: it holds the one the file holds.
-        let published = match self.runtime.publish(
-            path,
-            encoded.authority,
-            &self.durable.native_authority,
-            &encoded,
-            self.sequence,
-        ) {
-            // Taken while an owner publication was writing, it carries the
-            // record that publication replaced. The publication saves the
-            // tree again once installed, which holds all of this snapshot.
-            Err(_) if self.during_publication && self.runtime.moved_past(encoded.authority) => {
-                super::native_workspace_owner::store::Publication::Superseded
-            }
-            published => published?,
+        // A snapshot behind the owner's record never lands, nor do the
+        // policy and file-system exports taken with it: a stale copy of the
+        // tree would hand back what the room took away. The publication
+        // that moved the record on saves the tree again once it is in.
+        let stale = self
+            .runtime
+            .owner()
+            .is_some_and(|owner| owner.revision() != self.revision);
+        let published = if stale {
+            super::native_workspace_owner::store::Publication::Superseded
+        } else {
+            let encoded = encode_durable(&self.durable)?;
+            self.runtime.publish(path, &encoded, self.sequence)?
         };
         // Superseded or not, the changes cut for this snapshot are written:
         // the snapshot that superseded it may have been cut before them.
@@ -691,8 +617,6 @@ thread_local! {
 /// Refuses stale authority snapshots, encoded limits, competing writers, and
 /// publication failures. Uncertain publication fences subsequent writes.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    // Refuse a malformed authority before copying anything.
-    check_authority(&tree.native_authority)?;
     TreeSnapshot::of(tree).write_to(path).map(drop)
 }
 
@@ -708,7 +632,6 @@ pub fn save_shared_tree_to(
     path: &Path,
 ) -> std::io::Result<()> {
     let held = tree.read();
-    check_authority(&held.native_authority)?;
     let snapshot = TreeSnapshot::of(&held);
     drop(held);
     snapshot.write_to(path).map(drop)
@@ -1038,15 +961,11 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
             ),
         ));
     }
-    super::native_workspace_owner::publication::validate_file_layout(
-        tree.desktop.schema_version,
-        &tree.native_authority,
-    )
-    .map_err(std::io::Error::other)?;
-    super::native_workspace_owner::store::preflight(
-        &tree.native_authority,
-        super::native_workspace_owner::store::MAX_AUTHORITY_BYTES,
-    )?;
+    // What the owner holds, projected for the repairs below; the owner,
+    // once open, keeps it current.
+    tree.native_authority =
+        tilo_joined_room::read_file(&super::native_workspace_owner::owner_file(path))
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     // The file envelope's version is stamped on write; in memory the tree
     // carries the portable desktop schema.
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
@@ -1091,6 +1010,8 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
 /// is never kept beside it as retired, which would write it twice and
 /// change the file on every load.
 fn keep_only_unwritten_fields_retired(tree: &mut WorkspaceTree) {
+    // The native owner keeps its record in a file of its own now.
+    tree.retired_fields.remove("native_authority");
     if tree.retired_fields.is_empty() {
         return;
     }
@@ -1380,7 +1301,7 @@ mod tests {
             home_lounge,
             tree.desktop.workspaces[0].strips[0].window_groups[0].id,
         );
-        let bytes = encode_tree(&tree).expect("encoded").bytes;
+        let bytes = encode_tree(&tree).expect("encoded");
         let mut file: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         file["schema_version"] = serde_json::Value::from(3_u32);
         let v3 = serde_json::to_vec(&file).unwrap();
@@ -2565,7 +2486,7 @@ mod tests {
             "state.json keeps its exact shape"
         );
         assert_eq!(
-            String::from_utf8_lossy(&encode_tree(&tree).expect("encode").bytes),
+            String::from_utf8_lossy(&encode_tree(&tree).expect("encode")),
             String::from_utf8_lossy(&now),
             "the file written with its record encoded once is the same file"
         );

@@ -4,6 +4,7 @@
 )]
 use super::tests::tree_of;
 use super::*;
+use crate::shell::persist;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
@@ -83,10 +84,10 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
         "local success must include exact outgoing custody"
     );
     let path = directory.path().join("state.json");
-    let committed = std::fs::read(&path).unwrap();
+    let committed = std::fs::read(owner_file(&path)).unwrap();
     owner.commit_document(request, now).unwrap();
     assert_eq!(
-        std::fs::read(&path).unwrap(),
+        std::fs::read(owner_file(&path)).unwrap(),
         committed,
         "exact retry cannot append or rewrite"
     );
@@ -110,14 +111,14 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
 fn native_outgoing_failed_barrier_cannot_return_success_or_publish_a_frame() {
     let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let path = directory.path().join("state.json");
-    let before = std::fs::read(&path).unwrap();
+    let before = std::fs::read(owner_file(&path)).unwrap();
     let (request, _) = edit(&owner, room, &key, now, 2);
     let result = tilo_files::native::atomic::test_support::with_failure(
         tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
         || owner.commit_document(request, now),
     );
     assert!(result.is_err());
-    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert_eq!(std::fs::read(owner_file(&path)).unwrap(), before);
     assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
 }
 
@@ -225,7 +226,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
                 Ok(())
             })
             .unwrap();
-        let before_send = std::fs::read(directory.path().join("state.json")).unwrap();
+        let before_send = std::fs::read(owner_file(&directory.path().join("state.json"))).unwrap();
         let outgoing = owner
             .with_outgoing(room, later, |_, outgoing| {
                 Ok(outgoing
@@ -252,7 +253,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
             }
         }
         assert_eq!(
-            std::fs::read(directory.path().join("state.json")).unwrap(),
+            std::fs::read(owner_file(&directory.path().join("state.json"))).unwrap(),
             before_send,
             "send/duplicate is not an ACK"
         );
@@ -272,7 +273,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
         owner
             .receive(room, origin, acknowledgement[0].clone(), later)
             .unwrap();
-        let before_ack = std::fs::read(directory.path().join("state.json")).unwrap();
+        let before_ack = std::fs::read(owner_file(&directory.path().join("state.json"))).unwrap();
         assert!(
             tilo_files::native::atomic::test_support::with_failure(
                 tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
@@ -281,7 +282,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
             .is_err()
         );
         assert_eq!(
-            std::fs::read(directory.path().join("state.json")).unwrap(),
+            std::fs::read(owner_file(&directory.path().join("state.json"))).unwrap(),
             before_ack
         );
         assert_eq!(
@@ -319,11 +320,11 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
         let (request, _) = edit(&owner, room, &key, now, value as u64);
         owner.commit_document(request, now).unwrap();
     }
-    let before = std::fs::read(directory.path().join("state.json")).unwrap();
+    let before = std::fs::read(owner_file(&directory.path().join("state.json"))).unwrap();
     let (request, _) = edit(&owner, room, &key, now, 90);
     assert!(owner.commit_document(request.clone(), now).is_err());
     assert_eq!(
-        std::fs::read(directory.path().join("state.json")).unwrap(),
+        std::fs::read(owner_file(&directory.path().join("state.json"))).unwrap(),
         before
     );
     let governor_key = SigningKey::from_bytes(&[61; 32]);
@@ -655,7 +656,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
     let later = first + std::time::Duration::from_secs(301);
     checkpoint(&owner, room, &mut remote, later, 501);
     let path = directory.path().join("state.json");
-    let before = std::fs::read(&path).unwrap();
+    let before = std::fs::read(owner_file(&path)).unwrap();
     let peer_before = owner
         .with_current(room, |view| view.peer().durable())
         .unwrap();
@@ -664,7 +665,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
             .reconcile_outgoing(room, &key, later))
         .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(std::fs::read(owner_file(&path)).unwrap(), before);
     assert_eq!(
         owner
             .with_current(room, |view| view.peer().durable())
@@ -819,18 +820,15 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
             .unwrap();
         drop(owner);
         let mut encoded: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let reservation = &mut encoded["native_authority"]["rooms"][room.to_string()]["publication"]
-            ["reservation"];
+            serde_json::from_slice(&std::fs::read(owner_file(&path)).unwrap()).unwrap();
+        let reservation = &mut encoded["rooms"][room.to_string()]["publication"]["reservation"];
         let stored = reservation.clone();
         reservation["state_bytes"] = serde_json::json!(0);
-        std::fs::write(&path, serde_json::to_vec_pretty(&encoded).unwrap()).unwrap();
+        std::fs::write(owner_file(&path), serde_json::to_vec(&encoded).unwrap()).unwrap();
         let mut tree = persist::load_tree_from(&path).unwrap();
         let reread: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        let on_disk =
-            reread["native_authority"]["rooms"][room.to_string()]["publication"]["reservation"]
-                .clone();
+            serde_json::from_slice(&std::fs::read(owner_file(&path)).unwrap()).unwrap();
+        let on_disk = reread["rooms"][room.to_string()]["publication"]["reservation"].clone();
         let loaded = serde_json::to_value(&tree.native_authority).unwrap()["rooms"]
             [room.to_string()]["publication"]["reservation"]
             .clone();
@@ -872,47 +870,20 @@ fn native_outgoing_projection_history_substitution_cannot_restore() {
     drop(owner);
     let path = directory.path().join("state.json");
     let mut encoded: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    let entry =
-        &mut encoded["native_authority"]["rooms"][room.to_string()]["publication"]["projection"][0];
+        serde_json::from_slice(&std::fs::read(owner_file(&path)).unwrap()).unwrap();
+    let entry = &mut encoded["rooms"][room.to_string()]["publication"]["projection"][0];
     entry["id"] = serde_json::to_value(*blake3::hash(&bytes).as_bytes()).unwrap();
     entry["bytes"] = serde_json::to_value(bytes).unwrap();
     entry["binding"] = serde_json::to_value(request.binding().unwrap()).unwrap();
     entry["timestamp_ns"] = serde_json::json!(timestamp);
     entry["channel"] = serde_json::to_value(channel).unwrap();
     entry["incremental"] = serde_json::json!(incremental);
-    std::fs::write(&path, serde_json::to_vec_pretty(&encoded).unwrap()).unwrap();
+    std::fs::write(owner_file(&path), serde_json::to_vec(&encoded).unwrap()).unwrap();
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
     assert!(
         open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
         "valid local signature and reserved sequence cannot substitute uncommitted history"
-    );
-}
-
-#[test]
-fn native_outgoing_admission_reserves_actual_encoded_replacement_before_receipt() {
-    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
-    let mut remote = governor(&owner, room);
-    let (request, _) = snapshot_request(&owner, room, &key, now);
-    owner.commit_document(request, now).unwrap();
-    let reserved = publication::required_tree_bytes(&tree_of(&owner).read()).unwrap();
-    let later = now + std::time::Duration::from_secs(301);
-    checkpoint(&owner, room, &mut remote, later, 800);
-    // Governor input is a separate real state change; measure its committed reserve.
-    let reserved_after_checkpoint =
-        publication::required_tree_bytes(&tree_of(&owner).read()).unwrap();
-    assert!(reserved > 0 && reserved_after_checkpoint <= store::MAX_STATE_BYTES);
-    owner.reconcile_outgoing(room, &key, later).unwrap();
-    owner
-        .with_current(room, internals::check_actual_projection_bound)
-        .unwrap();
-    let actual = serde_json::to_vec_pretty(&*tree_of(&owner).read())
-        .unwrap()
-        .len();
-    assert!(
-        actual <= reserved_after_checkpoint,
-        "replacement and its floor must fit the storage reserved before signing"
     );
 }
 
@@ -969,7 +940,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     internals::seal(&mut candidate).unwrap();
     let mut prospective = tree_of(&owner).read().clone();
     internals::insert_room(&mut prospective.native_authority, room, candidate);
-    store::preflight(&prospective.native_authority, store::MAX_AUTHORITY_BYTES).unwrap();
+    tilo_joined_room::preflight(
+        &prospective.native_authority,
+        tilo_joined_room::MAX_AUTHORITY_BYTES,
+    )
+    .unwrap();
     assert!(
         tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
         "the refusal must come from the required recovery reserve: encoded={}, allowed={:?}",
@@ -979,100 +954,10 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
         tilo_joined_room::authority_limit(&prospective.native_authority),
     );
     let path = directory.path().join("state.json");
-    let before = std::fs::read(&path).unwrap();
+    let before = std::fs::read(owner_file(&path)).unwrap();
     assert!(owner.commit_document(request, now).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(std::fs::read(owner_file(&path)).unwrap(), before);
     assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
-}
-
-#[test]
-fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
-    use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-    use std::{cell::Cell, rc::Rc};
-    let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
-    let (request, _) = edit(&owner, room, &key, now, 911);
-    let mut candidate = owner.with_current(room, |view| Ok(view.clone())).unwrap();
-    let CommitOperation::Document {
-        app,
-        record,
-        envelope,
-    } = request.operation.clone()
-    else {
-        unreachable!()
-    };
-    internals::peer_mut(&mut candidate)
-        .admit_local_app_document(&app, &record, *envelope, now)
-        .unwrap();
-    internals::append_local(&mut candidate, internals::prepare(&request).unwrap()).unwrap();
-    internals::seal(&mut candidate).unwrap();
-    internals::bump_generation(&mut candidate);
-    let group_index = {
-        let handle = tree_of(&owner);
-        let mut tree = handle.write();
-        let groups = &mut tree.desktop.workspaces[0].strips[0].window_groups;
-        let index = groups.len();
-        groups.push(WindowGroup {
-            id: 990_000,
-            tabs: vec![Tab {
-                id: 990_001,
-                title: String::new(),
-                tile: TileContent::Foreign {
-                    app_id: "org.example.Editor".into(),
-                    surface_id: 0xfeed_beef,
-                },
-                app_title: None,
-            }],
-            active_tab: 990_001,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
-        index
-    };
-    let mut prospective = tree_of(&owner).read().clone();
-    internals::insert_room(&mut prospective.native_authority, room, candidate);
-    internals::bump_revision(&mut prospective.native_authority);
-    // Use the actual sanitizer/serializer on the small tree to derive this
-    // fixture. Adding ASCII title text changes only title and durable label.
-    let small = persist::encode_tree(&prospective).unwrap().bytes;
-    let sanitized: crate::shell::state::WorkspaceTree = serde_json::from_slice(&small).unwrap();
-    let reserved = publication::required_tree_bytes(&sanitized).unwrap() - small.len();
-    assert!(reserved > 2);
-    let title_len = (store::MAX_STATE_BYTES - small.len() - reserved / 2) / 2;
-    let final_encoded_len = small.len() + 2 * title_len;
-    assert!(final_encoded_len < store::MAX_STATE_BYTES);
-    assert!(final_encoded_len + reserved > store::MAX_STATE_BYTES);
-    let title = "t".repeat(title_len);
-    prospective.desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0].title =
-        title.clone();
-    tree_of(&owner).write().desktop.workspaces[0].strips[0].window_groups[group_index].tabs[0]
-        .title = title;
-    publication::preflight_tree(&prospective)
-        .expect("the live Foreign shape still has promised spare space");
-    assert!(
-        persist::encode_tree(&prospective).is_err(),
-        "the old final full-file cap accepted sanitized bytes that consumed the recovery reserve"
-    );
-    let path = directory.path().join("state.json");
-    let before = std::fs::read(&path).unwrap();
-    let checkpoints = Rc::new(Cell::new(0usize));
-    let observed = checkpoints.clone();
-    let result = tilo_files::native::atomic::test_support::with_observer(
-        move |_| observed.set(observed.get() + 1),
-        || owner.commit_document(request, now),
-    );
-    assert!(
-        result.is_err(),
-        "no receipt may precede the exact durable representation check"
-    );
-    assert_eq!(
-        checkpoints.get(),
-        0,
-        "refusal must occur before the file writer stages data"
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), before);
-    assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
-    owner.health().unwrap();
 }
 
 #[test]

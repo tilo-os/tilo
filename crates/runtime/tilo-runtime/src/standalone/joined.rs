@@ -627,23 +627,14 @@ impl GovernanceTransport for Joined {
     }
 }
 
-/// The rooms the desktop session enrolled this device in, from its
-/// workspace file in an adopted profile.
+/// The rooms the desktop session enrolled this device in, from its owner's
+/// record beside its workspace file in an adopted profile.
 pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<RoomId>> {
-    #[derive(serde::Deserialize)]
-    struct DesktopFile {
-        #[serde(default)]
-        native_authority: tilo_joined_room::NativeAuthorityStorage,
-    }
-    match std::fs::read(profile.join(super::workspace::DESKTOP_WORKSPACE)) {
-        Ok(bytes) => {
-            let file: DesktopFile = serde_json::from_slice(&bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            Ok(file.native_authority.rooms().collect())
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
-        Err(error) => Err(error),
-    }
+    let record =
+        tilo_joined_room::owner_file_of(&profile.join(super::workspace::DESKTOP_WORKSPACE));
+    tilo_joined_room::read_file(&record)
+        .map(|storage| storage.rooms().collect())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn room_topic(room: RoomId) -> Result<u64, String> {

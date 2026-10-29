@@ -51,7 +51,7 @@ pub use checkpoint::{
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 #[cfg(not(target_arch = "wasm32"))]
-pub use file_store::open_file;
+pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
@@ -60,8 +60,7 @@ pub use private_direct_conversations::{
     DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore,
 };
 pub use publication::{
-    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
-    validate_file_layout,
+    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, validate_file_layout,
 };
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
@@ -430,6 +429,17 @@ impl NativeWorkspaceOwner {
         // publication is over, with no lock of the host's held.
         self.0.notify(room, continuity);
         Ok(true)
+    }
+    /// The record as last published.
+    #[must_use]
+    pub fn storage(&self) -> NativeAuthorityStorage {
+        self.0.authority.read().clone()
+    }
+    /// The revision of the record as last published: every publication
+    /// raises it.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.0.authority.read().revision
     }
     /// Every room with a committed enrollment.
     #[must_use]

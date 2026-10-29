@@ -83,7 +83,8 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                 envelope,
             },
         };
-        let before = std::fs::read(&path).unwrap();
+        let before =
+            std::fs::read(super::super::native_workspace_owner::owner_file(&path)).unwrap();
         // A room this device holds no enrollment for has no records the
         // owner commits, and a commit into it anyway is refused without
         // touching the state file.
@@ -102,7 +103,10 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
             "a room this device holds no enrollment for commits nothing: {:?}",
             refused.map(|_| ())
         );
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            std::fs::read(super::super::native_workspace_owner::owner_file(&path)).unwrap(),
+            before
+        );
         // The commit writes on a blocking thread of its own, so the real
         // storage failure scope opens around the write on that thread.
         let failing = fail.then(|| {
@@ -120,10 +124,16 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         drop(failing);
         if fail {
             assert!(result.is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), before);
+            assert_eq!(
+                std::fs::read(super::super::native_workspace_owner::owner_file(&path)).unwrap(),
+                before
+            );
         } else {
             result.unwrap().validate_for(&request).unwrap();
-            assert_ne!(std::fs::read(&path).unwrap(), before);
+            assert_ne!(
+                std::fs::read(super::super::native_workspace_owner::owner_file(&path)).unwrap(),
+                before
+            );
             // The tree holds the owner it opened: let both go before the
             // state file is opened again.
             drop(service);

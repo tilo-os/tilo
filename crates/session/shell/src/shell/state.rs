@@ -755,8 +755,11 @@ pub struct GovernanceRefusal {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
-    /// Native authority is never re-derived from desktop caches.
-    #[serde(default)]
+    /// The native owner's record as it last published it, projected for
+    /// what reads the tree; the owner keeps it in a file of its own
+    /// ([`super::native_workspace_owner::owner_file`]), never derived from
+    /// desktop caches.
+    #[serde(skip)]
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,

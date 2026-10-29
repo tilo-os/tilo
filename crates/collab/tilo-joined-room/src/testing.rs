@@ -332,10 +332,17 @@ pub fn finalize(
 pub fn pending_id(room: crate::RoomId, generation: u64) -> crate::PendingEnrollmentId {
     crate::PendingEnrollmentId::new(room, generation, [0; 32])
 }
-/// The store an owner publishes through, for a host test to downcast.
+/// The host an owner opened with [`crate::open_file_with`] follows its
+/// publications through, for a host test to downcast.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn store(owner: &NativeWorkspaceOwner) -> Arc<dyn Store> {
-    Arc::clone(&owner.0.store)
+pub fn file_host(owner: &NativeWorkspaceOwner) -> Option<Arc<dyn crate::FileHost>> {
+    let store: Arc<dyn Store> = Arc::clone(&owner.0.store);
+    let store: Arc<dyn std::any::Any + Send + Sync> = store;
+    store
+        .downcast::<crate::file_store::FileStore>()
+        .ok()
+        .map(|store| Arc::clone(&store.host))
 }
 /// # Errors
 /// `now` is before the epoch or beyond `u64` nanoseconds.
@@ -432,7 +439,4 @@ pub fn stored(storage: &NativeAuthorityStorage, room: RoomId) -> Option<Stored> 
             .map(|entry| entry.bytes.clone())
             .collect(),
     })
-}
-pub fn set_stored_peer(storage: &mut NativeAuthorityStorage, room: RoomId, peer: Vec<u8>) {
-    storage.rooms.get_mut(&room).unwrap().peer = peer;
 }

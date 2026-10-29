@@ -328,8 +328,8 @@ fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
         *count = count.saturating_add(1);
     }
     assert!(
-        seen.contains_key("directory") && seen.contains_key("data"),
-        "the open's directory and data syncs were not both observed: {seen:?}"
+        seen.contains_key("directory"),
+        "the open's directory sync was not observed: {seen:?}"
     );
     // The writer holds its owner weakly: keep this one alive to look it up.
     let owner = opener
