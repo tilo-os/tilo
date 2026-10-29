@@ -20461,15 +20461,20 @@ dependencies = [
 name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tilo-copy-lint",
  "tilo-lock",
+ "tilo-service",
  "tokio",
  "tokio-util",
  "tracing",
  "workspace-hack",
  "zbus",
+ "zeroize",
 ]
 
 [[package]]
