@@ -234,24 +234,6 @@ impl Core {
         }
     }
 
-    /// A quick add's text read for when it is due, in the person's zone: the text without the
-    /// words that said when, the day and the time.
-    fn dated(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let text = self.text(a.h(0)?)?;
-        let at = self.text(a.h(1)?)?;
-        let Some(now) = tilolang::calendar::instant(&at) else {
-            return trap(format!("dated: `{at}` is not a time"));
-        };
-        let offset = self.zone.borrow().as_ref().map_or(0, |zone| zone());
-        let read = tilolang::natural::dated(&text, now, offset);
-        let opt = |v: Option<String>| Value::Opt(v.map(|t| Box::new(Value::Text(t))));
-        self.ret_h(Value::Tuple(vec![
-            Value::Text(read.text),
-            opt(read.day),
-            opt(read.at),
-        ]))
-    }
-
     /// A version as the language holds it: who, when, by which action.
     fn version_value(&self, v: crate::store::Version) -> Value {
         Value::Tuple(vec![
