@@ -453,6 +453,17 @@ impl<'a> Validator<'a> {
                 self.key(&who.id)?;
                 self.string(&who.name)
             }
+            Value::Rich(rich) => {
+                if rich.blocks.len() > self.limits.rows as usize
+                    || rich.embeds.len() > self.limits.rows as usize
+                {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "paragraphs of rich text"
+                    )));
+                }
+                rich.strings().try_for_each(|text| self.string(text))
+            }
         }
     }
 
@@ -541,6 +552,7 @@ impl<'a> Validator<'a> {
                     self.key(&resource.id)?;
                     self.key(&resource.ty)?;
                 }
+                ToApp::OpenReference { reference } => self.string(reference)?,
                 ToApp::Rows {
                     list, start, end, ..
                 } => {
@@ -585,11 +597,12 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Bool, Value::Bool(_) | Value::Int(_))
         | (Type::Principal, Value::Principal(_))
         | (Type::Resource, Value::Ref(_))
-        | (Type::Icon | Type::Time, Value::Text(_)) => true,
+        | (Type::Icon | Type::Time, Value::Text(_))
+        | (Type::RichText, Value::Rich(_)) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
         (Type::Option(inner), other) => fits(other, inner),
         (_, Value::Opt(Some(held))) => fits(held, ty),
-        (Type::Text, Value::List(_) | Value::Ref(_)) => false,
+        (Type::Text, Value::List(_) | Value::Ref(_) | Value::Rich(_)) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),
         (Type::List(inner), Value::List(items)) => items.iter().all(|item| fits(item, inner)),

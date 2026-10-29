@@ -725,6 +725,8 @@ pub struct BlockEditor {
     /// app-level navigation hit-testing independent of a guessed theme,
     /// padding, font advances, or window scale.
     live_link_hits: Vec<(Rect, LinkTarget)>,
+    /// How the references in the text read, and where each was painted.
+    references: references::References,
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
@@ -959,6 +961,7 @@ impl BlockEditor {
             overlay_viewport: None,
             popover_bounds: None,
             live_link_hits: Vec::new(),
+            references: references::References::default(),
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
@@ -9075,6 +9078,7 @@ impl Widget for BlockEditor {
     ) {
         #[cfg(test)]
         let setup_probe = crate::profiling::frame_probe::span("block_setup");
+        self.paint_references(theme);
         self.popovers_painted = false;
         if self.is_focused && !self.read_only {
             // Who `@` offers: the room as it is now, read where the editor
@@ -9848,6 +9852,7 @@ impl Widget for BlockEditor {
         #[cfg(test)]
         let links_probe = crate::profiling::frame_probe::span("block_link_hits");
         self.refresh_live_link_hits(theme, &painted);
+        self.refresh_reference_hits(theme, &painted);
         #[cfg(test)]
         drop(links_probe);
         if let Some(prefix) = outside_prefix {
@@ -9898,6 +9903,10 @@ impl Widget for BlockEditor {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.read_only {
+            self.handle_cursor_moved(event, ctx.scale_factor);
+            if self.activate_reference(event) {
+                *ctx.handled = true;
+            }
             return;
         }
         self.begin_edit();
@@ -9995,6 +10004,9 @@ impl Widget for BlockEditor {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.reference_at(point).is_some() {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         if self.image_resize.is_some()
             || (0..self.blocks.len()).any(|index| {
                 self.image_resize_handle(index)
@@ -11744,6 +11756,8 @@ mod handle_reveal;
 mod inline_markdown;
 #[path = "block_editor_present.rs"]
 mod present;
+#[path = "block_editor_references.rs"]
+pub mod references;
 #[path = "block_editor_text_menu.rs"]
 mod text_menu;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};

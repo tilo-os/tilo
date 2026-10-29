@@ -101,6 +101,7 @@ impl Checker<'_> {
                 return true;
             }
             ("avatar", "who") => Ty::Principal,
+            ("rich_text", "value") => Ty::RichText,
             ("card", "count") => Ty::Int,
             ("section", "title") | ("field" | "toggle", "label") => Ty::Text,
             _ => return false,

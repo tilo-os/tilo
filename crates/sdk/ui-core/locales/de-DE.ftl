@@ -678,6 +678,7 @@ mention-notice-title = { $name } hat dich in ‘{ $place }’ erwähnt
 mention-notice-channel = { $name } hat dich in { $channel } erwähnt
 mention-notice = { $name } hat dich erwähnt
 mention-notice-someone = Jemand
+rich-text-reference-unreadable = Nicht mit dir geteilt
 widget-block-duplicate = Block mit Unterelementen duplizieren
 
 widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren

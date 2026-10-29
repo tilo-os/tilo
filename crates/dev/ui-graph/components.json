@@ -836,6 +836,29 @@
       }
     },
     {
+      "name": "RichText",
+      "doc": "Rich text, shown: its paragraphs with their formatting, and each reference in it as the reader's own inline view of what it refers to (a person with their name, a channel, a task with its number), resolved under their permissions. Activating a reference opens it.",
+      "props": [
+        {
+          "name": "value",
+          "doc": "The text it shows.",
+          "type": "rich_text",
+          "required": true,
+          "positional": true
+        }
+      ],
+      "events": [
+        {
+          "name": "open_reference",
+          "doc": "A reference in the text was activated, carrying the reference. Without one, the reference is opened.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Document"
+      }
+    },
+    {
       "name": "Property",
       "doc": "One fact of a property list: what it is, and its value.",
       "props": [
