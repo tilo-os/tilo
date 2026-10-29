@@ -355,7 +355,10 @@ marked "for everyone".
 Every person gets a recovery key, shown once when their account is created, as now.
 It unwraps their user key, so it also opens the system volume for anyone allowed to
 unlock it. The first account's recovery key is the machine's recovery key. Using it
-always ends with setting a new secret.
+always ends with setting a new secret. On the login screen after boot, "Can't sign
+in" under the field asks for the recovery key and the new secret together.
+`tilo-authd` takes that change from the greeter's account for any person, as from
+root: the key is the proof, and it already opens the volume at the disk prompt.
 
 ## 5. Implementation shape
 
@@ -411,7 +414,7 @@ their protocols itself.
 | Security key | yes | yes | yes | yes |
 | Another device | yes | yes | yes | yes, with the action named on the approving device |
 | Fingerprint | no | only while the person's key is in memory (switching users) | yes | yes |
-| Recovery key | yes, under "Can't sign in" | yes | no: sign out first | no |
+| Recovery key | yes, under "Can't sign in" | yes, under "Can't sign in", then a new secret | no: sign out first | no |
 
 A factor that isn't enrolled or whose hardware isn't present isn't shown. The
 password field is always there.
