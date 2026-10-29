@@ -15298,7 +15298,6 @@ dependencies = [
  "tempfile",
  "test-http",
  "tilo-accessibility-settings",
- "tilo-accounts-engine",
  "tilo-actions",
  "tilo-app",
  "tilo-app-package",
@@ -15321,7 +15320,6 @@ dependencies = [
  "tilo-paths",
  "tilo-pc-keyboard-geometry",
  "tilo-relay-protocol",
- "tilo-settings-engine",
  "tilo-test-env",
  "tilo-vello",
  "tilo-wallpapers",
@@ -21154,6 +21152,7 @@ version = "0.1.0"
 dependencies = [
  "provider-settings-ui",
  "runtime-dylib",
+ "settings",
  "settings-sections",
  "tilo-accessibility-settings",
  "tilo-accounts-engine",
