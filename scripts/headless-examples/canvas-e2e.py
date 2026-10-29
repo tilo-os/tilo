@@ -487,15 +487,35 @@ def seed_chat(session: CanvasSession) -> dict:
                            "messages": sum(len(s) for _, s in CHAT)}, conversations=len(CHAT))
 
 
+BOARD_CARDS = [  # "a release board": column, title, notes
+    ("To do", "Write the release notes", "Lead with the sync fix, then the new board."),
+    ("To do", "Screenshots for the docs", ""),
+    ("To do", "Translate the onboarding", "German and French first."),
+    ("To do", "Check the importer on large tables", ""),
+    ("Doing", "Fix the sidebar at large text", "It collapses too early above 150%."),
+    ("Doing", "Review the sharing dialog", ""),
+    ("Done", "Bump the version", ""),
+    ("Done", "Merge the offline queue", "Landed on Tuesday."),
+    ("Done", "Plan the next cycle", ""),
+]
+
+
 def seed_board(session: CanvasSession) -> dict:
-    """The release board's columns. Its cards are left out: once Board holds a card, its window
-    refuses to publish its surface (a card tile's control binding is stale), so it offers no
-    action at all, to an agent or to this seed, until that is fixed."""
+    """The release board: its three columns and the cards in each."""
     board = AppActions(session, "board", "Board")
+    columns = {}
     for title in BOARD_COLUMNS:
         key = board.created("Column", board.keys("Column"), board.ids["new_column"])
         board.invoke(board.ids["rename_column"], {"title": title}, key)
-    return expect("Board", {"columns": len(board.keys("Column")), "cards": 0}, columns=len(BOARD_COLUMNS))
+        columns[title] = key
+    for column, title, notes in BOARD_CARDS:
+        key = board.created("Card", board.keys("Card"), board.ids["new_card"],
+                            {"col": board.ref("Column", columns[column], column)})
+        board.edit_item_text("Board.cards", key, "Card.title", title)
+        if notes:
+            board.edit_item_text("Board.cards", key, "Card.notes", notes)
+    return expect("Board", {"columns": len(board.keys("Column")), "cards": len(board.keys("Card"))},
+                  columns=len(BOARD_COLUMNS), cards=len(BOARD_CARDS))
 
 
 def seed(session: CanvasSession) -> dict:
@@ -607,7 +627,9 @@ def canvas_run(session: CanvasSession, out: Path, shots: Path) -> dict:
     shots.mkdir(parents=True, exist_ok=True)
     session.start(fresh=True)
     # An agent of the workspace's own takes the asks; the Tasks issue waits for it.
-    steps["agent"] = session.invoke("actions", "agent.invite", {"name": "Claude", "preset": "Contributor"})
+    steps["agent"] = session.invoke("actions", "agent.invite", {"name": "Claude", "preset": "contributor"})
+    # Adding an agent opens its access review in the workspace settings; close it.
+    session.key("Escape")
     session.invoke("actions", "workspace.show-canvas")
     state = until("the canvas", lambda: (lambda s: s if s.get("shown") and s.get("frame") else None)(
         canvas_state(session)), 30)

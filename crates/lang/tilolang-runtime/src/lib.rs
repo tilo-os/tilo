@@ -32,6 +32,7 @@ mod live;
 pub mod members;
 pub mod meta;
 mod num;
+pub mod origin;
 pub mod place;
 pub mod platform;
 pub mod program;

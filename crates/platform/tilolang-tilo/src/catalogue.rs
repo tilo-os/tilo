@@ -148,6 +148,22 @@ fn tilolang_kind(kind: &str) -> Option<(&str, &str)> {
         .then_some((app, name))
 }
 
+/// `name` in snake case: `WorkspaceEmoji` is `workspace_emoji`.
+fn snake_case(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().saturating_add(4));
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The action name of a verb id: `begin-chat` is `begin_chat`.
 fn action_name(id: &str) -> String {
     id.replace(['-', '.', ':'], "_")
@@ -298,6 +314,7 @@ impl Reader<'_> {
                     fields,
                     search: SearchMeta::default(),
                     holder: false,
+                    origin: None,
                 });
             }
         }
@@ -331,23 +348,30 @@ impl Reader<'_> {
             fields,
             search: SearchMeta::default(),
             holder: false,
+            origin: None,
         });
     }
 
     /// Declares the verb `verb` of the resource type `own` (none: a loose verb) as an action
-    /// taking its resource first. A verb with a parameter whose schema says no type tilolang
-    /// code can give is left out: tilolang code cannot call it yet.
+    /// taking its resource first. A verb with a parameter of a type tilolang code cannot give
+    /// (bytes, any JSON value) is left out: tilolang code cannot call it.
     fn action(&mut self, verb: &VerbSurface, own: Option<&str>, rename: &dyn Fn(&str) -> String) {
         let mut params = Vec::new();
         if let Some(own) = own {
             params.push(ParamMeta {
-                name: own.to_lowercase(),
+                name: snake_case(own),
                 ty: own.to_owned(),
                 default: None,
             });
         }
         for param in &verb.params {
-            let ty = FieldType::from_schema(&param.schema);
+            // What the code declared; a surface written before parameters had types says
+            // what its schema does.
+            let ty = if param.ty.is_any() {
+                FieldType::from_schema(&param.schema)
+            } else {
+                param.ty.clone()
+            };
             let ty = match ty {
                 FieldType::Option(_) => ty,
                 other if !param.required => FieldType::Option(Box::new(other)),

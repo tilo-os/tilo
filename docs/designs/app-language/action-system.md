@@ -43,7 +43,8 @@ search filters and sort, views (to be published as `ResourceViewSpec`).
    tilolang surface generator emit it, named records and enums are declared once in
    `Surface::types`, and `tilolang_tilo::catalogue::package_of` reads any surface as a package,
    which `tilolang describe` prints and `use so.tilo.chat as chat` checks against (compile-time
-   only so far). Verb parameters are still read from their JSON Schema.
+   only so far). Verb parameters carry it too (`JsonSchema::field_type`, derived); a parameter
+   declared only by its schema is read from the schema.
 
 Native side, independent of tilolang: the local agent participant invents its standing instead
 of using the workspace's grants and keeps no ledger, and the "ask only for a direct person" rule has

@@ -282,7 +282,7 @@ pub fn is_destructive(action: &ActionMeta) -> bool {
     action.role.as_deref() == Some("destructive")
 }
 
-fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
+fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: action.id.clone(),
         label: if action.label.is_empty() {
@@ -302,6 +302,7 @@ fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
                     name: param.name.clone(),
                     required: published.required,
                     schema: published.schema.as_deref().cloned().unwrap_or(Json::Null),
+                    ty: field_type_of_type(meta, &param.ty, types),
                 }
             })
             .collect(),
@@ -314,7 +315,7 @@ fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
 fn edit_verbs() -> Vec<VerbSurface> {
-    let verb = |id: &str, label: &str, value: Json| VerbSurface {
+    let verb = |id: &str, label: &str, value: Json, ty: FieldType| VerbSurface {
         id: id.to_owned(),
         label: label.to_owned(),
         description: Some("A bound control changes the field it shows.".to_owned()),
@@ -326,11 +327,13 @@ fn edit_verbs() -> Vec<VerbSurface> {
                 name: "field".to_owned(),
                 required: true,
                 schema: json!({"type": "string"}),
+                ty: FieldType::Text,
             },
             ParamSurface {
                 name: "value".to_owned(),
                 required: true,
                 schema: value,
+                ty,
             },
         ],
         writes: vec![RECORD_UNIT.to_owned()],
@@ -355,11 +358,13 @@ fn edit_verbs() -> Vec<VerbSurface> {
             EDIT_TEXT_ACTION,
             "Edit a text field",
             json!({"type": "string"}),
+            FieldType::Text,
         ),
         verb(
             EDIT_FLAG_ACTION,
             "Set a flag field",
             json!({"type": "boolean"}),
+            FieldType::Bool,
         ),
     ]
 }
@@ -417,6 +422,7 @@ fn field_surfaces(
 pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
+        let mut types = TypeSet::new();
         let mut verbs = edit_verbs();
         verbs.extend(
             meta.offered_actions()
@@ -424,10 +430,9 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
                     meta.subject_of(&action.params)
                         .is_some_and(|subject| subject.id == ty.id)
                 })
-                .map(|action| verb(meta, action)),
+                .map(|action| verb(meta, action, &mut types)),
         );
         let mut fields = Vec::new();
-        let mut types = TypeSet::new();
         field_surfaces(meta, ty, "", &mut Vec::new(), &mut types, &mut fields);
         surfaces.push(Surface {
             kind: meta.kind_of(&ty.name),
@@ -439,10 +444,11 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
             types: types.into_types(),
         });
     }
+    let mut types = TypeSet::new();
     let loose: Vec<VerbSurface> = meta
         .offered_actions()
         .filter(|action| meta.subject_of(&action.params).is_none())
-        .map(|action| verb(meta, action))
+        .map(|action| verb(meta, action, &mut types))
         .collect();
     surfaces.push(Surface {
         kind: meta.package_kind(),
@@ -451,7 +457,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
         person: false,
         verbs: loose,
         fields: Vec::new(),
-        types: Vec::new(),
+        types: types.into_types(),
     });
     surfaces
 }
@@ -486,6 +492,7 @@ pub fn host_surface() -> Surface {
                 name: "ticket".to_owned(),
                 required: true,
                 schema: json!({"type": "integer"}),
+                ty: FieldType::Int,
             }],
         )],
         fields: Vec::new(),

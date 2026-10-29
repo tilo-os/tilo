@@ -405,9 +405,9 @@ impl Core {
             return Ok(Value::List(items.into_iter().take(1).collect()));
         }
         if items.is_empty() {
-            return trap("single: nothing matches; widen what it looks in, or check the words");
+            return trap("nothing matches; widen what it looks in, or check the words");
         }
-        let mut why = format!("single: {} match, not one; say which:", items.len());
+        let mut why = format!("{} match, not one; say which:", items.len());
         for item in items.iter().take(SINGLE_LISTS) {
             let _ = write!(why, "\n{}", self.show(item).lines().next().unwrap_or(""));
         }

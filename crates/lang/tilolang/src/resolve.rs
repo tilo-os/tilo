@@ -32,6 +32,8 @@ pub struct TypeInfo {
     /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
     /// Code uses it as that container.
     pub holder: bool,
+    /// The kind of an outside service's resource it holds (`crate::origin`).
+    pub origin: Option<String>,
 }
 
 /// The name of the one field of a type that names a container (`type Notes =
@@ -506,6 +508,7 @@ impl Env {
                 fields,
                 search: t.search.clone(),
                 holder: t.holder,
+                origin: t.origin.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -861,6 +864,7 @@ impl Resolver<'_> {
                 }],
                 search: crate::meta::SearchMeta::default(),
                 holder: true,
+                origin: None,
             });
         }
         let aliases: Vec<(String, TypeExpr)> = self
@@ -901,8 +905,10 @@ impl Resolver<'_> {
                 fields,
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
+                origin: t.origin.as_ref().map(|o| o.name.clone()),
             });
         }
+        self.check_origins(&decls);
         // Every type's fields are known: each one's search reads its own, and the enums.
         for t in decls {
             let Some(at) = self
@@ -920,6 +926,84 @@ impl Resolver<'_> {
                 self.diags,
             );
             self.env.types[at].search = search;
+        }
+    }
+
+    /// Each type with an origin names a kind the platform has, and declares the kind's fields
+    /// it shows with the kind's types (`crate::origin`).
+    fn check_origins(&mut self, decls: &[&ast::TypeDecl]) {
+        for t in decls {
+            let Some(origin) = &t.origin else {
+                continue;
+            };
+            let Some(kind) = crate::origin::kind(&origin.name) else {
+                self.err(
+                    "E112",
+                    origin.span,
+                    format!(
+                        "no outside service has the kind `{}`; the kinds are: {}",
+                        origin.name,
+                        crate::origin::kind_names()
+                    ),
+                );
+                continue;
+            };
+            let Some(info) = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+                .cloned()
+            else {
+                continue;
+            };
+            for f in &t.fields {
+                let Some(want) = kind.field(&f.name.name) else {
+                    continue;
+                };
+                let Some(have) = info.fields.iter().find(|x| x.name == f.name.name) else {
+                    continue;
+                };
+                if !self.origin_type_fits(&have.ty, want.ty) {
+                    let shown = have.ty.meta_text(&self.env.app);
+                    self.err(
+                        "E112",
+                        f.name.span,
+                        format!(
+                            "`{}` of `{}` is the service's `{}`, a {}; it is declared {shown}",
+                            f.name.name, kind.name, want.name, want.ty
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a declared field type is the origin kind's `want` (`Text`, `Set<Text>`,
+    /// `Collection<mail.thread>`, ...).
+    fn origin_type_fits(&self, have: &Ty, want: &str) -> bool {
+        if let Some(inner) = want
+            .strip_prefix("Collection<")
+            .and_then(|r| r.strip_suffix('>'))
+        {
+            return match have {
+                Ty::Collection(item) => match item.as_ref() {
+                    Ty::Record(key) => self
+                        .env
+                        .type_info(key)
+                        .is_some_and(|t| t.origin.as_deref() == Some(inner)),
+                    _ => false,
+                },
+                _ => false,
+            };
+        }
+        match want {
+            "Text" => *have == Ty::Text,
+            "Bool" => *have == Ty::Bool,
+            "Int" => *have == Ty::Int,
+            "Time" => *have == Ty::Time,
+            "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
+            _ => false,
         }
     }
 
