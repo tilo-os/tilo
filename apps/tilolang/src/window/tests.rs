@@ -2026,3 +2026,106 @@ fn a_list_that_asks_for_more_rows_shows_the_ones_it_has_until_they_come() {
     room.frame();
     assert_eq!(rows.borrow().rendered().len(), len, "and every row is back");
 }
+
+#[test]
+fn todays_cards_show_their_resources_title_count_and_first_rows() {
+    fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            walk(child, kind, out);
+        }
+    }
+    let text = |node: &UiNode, name: &str| match node.props.get(name) {
+        Some(Value::Text(text)) => text.clone(),
+        _ => String::new(),
+    };
+    let mut room = Room::seeded("today");
+    // What the window holds of the view, as the app sent it.
+    let tree = room.window.root_tree().unwrap();
+    let mut cards = Vec::new();
+    walk(&tree, "ui.Card", &mut cards);
+    assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
+    assert_eq!(
+        text(cards[0], "title"),
+        "Saturday",
+        "a card is headed by its resource's title"
+    );
+    let mut shown = Vec::new();
+    for card in &cards {
+        assert!(
+            !text(card, "title").is_empty(),
+            "every card has a title: {card:?}"
+        );
+        let mut rows = Vec::new();
+        walk(card, "ui.ListRow", &mut rows);
+        let Some(Value::Int(count)) = card.props.get("count") else {
+            panic!("every card counts what it lists: {card:?}");
+        };
+        let preview = usize::try_from(*count).unwrap().min(5);
+        assert_eq!(
+            rows.len(),
+            preview,
+            "a card shows its first rows: {}",
+            text(card, "title")
+        );
+        assert!(
+            rows.iter().all(|row| !text(row, "title").is_empty()),
+            "each row is titled"
+        );
+        shown.extend(rows.iter().map(|row| text(row, "title")));
+    }
+    assert!(
+        shown.iter().any(|title| title == "Buy oat milk and eggs"),
+        "the open todos are the todo card's rows: {shown:?}"
+    );
+    // And the window draws them: a header and a row widget for each.
+    let widgets = content_widgets(&mut room);
+    let named = |name: &str| widgets.iter().filter(|(_, n)| n == name).count();
+    assert_eq!(named("SectionHeader"), 3, "{widgets:?}");
+    assert_eq!(named("ListRow"), shown.len(), "{widgets:?}");
+}
+
+#[test]
+fn a_send_pressed_in_the_frame_of_the_last_keystroke_sends_it_too() {
+    let mut room = Room::seeded("chat");
+    let shell = room.composed();
+    let input = first_input(&shell).expect("the composer").key.clone();
+    let send = node_with(&shell, "ui.Button", "label", "Send")
+        .expect("the composer's send")
+        .key
+        .clone();
+    room.window
+        .act(UiEvent::Edit(input.clone(), "See you at noo".to_owned()));
+    room.settle();
+    // The last keystroke and the press go to the app in one batch, before the view runs again.
+    room.window
+        .act(UiEvent::Edit(input, "See you at noon".to_owned()));
+    room.window
+        .act(UiEvent::Fire(send, "press".to_owned(), None));
+    room.settle();
+    let host = room.window.current_host().expect("the host started");
+    let conversation = room
+        .window
+        .detail_target()
+        .expect("the conversation")
+        .clone();
+    let items = |target: &ResourceRef, field: &str| match host.runtime().read(target, field) {
+        Ok(RtValue::List(items)) => items
+            .into_iter()
+            .filter_map(|item| match item {
+                RtValue::Ref(item) => Some(ResourceRef::clone(&item.target)),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        other => panic!("{field} is a collection: {other:?}"),
+    };
+    let last = items(&conversation, "messages").pop().expect("a message");
+    let part = items(&last, "parts").remove(0);
+    assert_eq!(
+        rt_text(&host.runtime().read(&part, "body").unwrap()),
+        "See you at noon",
+        "the message has the keystroke typed in the frame of the press"
+    );
+}

@@ -194,13 +194,14 @@ impl Checker<'_> {
         span: Span,
         sig: &str,
     ) -> Vec<Ex> {
-        self.bind_args_or_default(name, params, args, span, sig)
+        self.bind_args_or_default(name, params, args, span, sig, false)
             .into_iter()
             .map(|s| s.unwrap_or_else(Ex::error))
             .collect()
     }
 
-    /// As [`Self::bind_args`]; a parameter with a default may be left out, as `None`.
+    /// As [`Self::bind_args`]; a parameter with a default may be left out, as `None`. With
+    /// `at_press`, the arguments are those of an action a view applies ([`Self::arg_at_press`]).
     pub(super) fn bind_args_or_default(
         &mut self,
         name: &str,
@@ -208,6 +209,7 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
         sig: &str,
+        at_press: bool,
     ) -> Vec<Option<Ex>> {
         let mut slots: Vec<Option<Ex>> = vec![None; params.len()];
         let mut pos = 0usize;
@@ -258,7 +260,11 @@ impl Checker<'_> {
                 let _ = self.expr(&a.value, None);
                 continue;
             };
-            let v = self.expr_as(&a.value, &p.ty);
+            let v = if at_press {
+                self.arg_at_press(&a.value, &p.ty)
+            } else {
+                self.expr_as(&a.value, &p.ty)
+            };
             match slots.get_mut(i) {
                 Some(slot @ None) => *slot = Some(v),
                 _ => self.err(
@@ -291,6 +297,45 @@ impl Checker<'_> {
             .collect()
     }
 
+    /// An argument of an action a view applies, of type `want`: view state given as itself is
+    /// read when the event fires, so a press right after a keystroke sends the keystroke too.
+    /// An argument that reads view state any other way would be read when the view drew, a
+    /// value the press may have outrun, so it is refused.
+    pub(super) fn arg_at_press(&mut self, e: &ast::Expr, want: &Ty) -> Ex {
+        if let ExprKind::Ident(name) = &e.kind
+            && let Some(state) = self.state_named(name)
+        {
+            if state.ty == *want || want.is_error() {
+                return Self::state_at(&state);
+            }
+            let (have, want) = (self.show(&state.ty), self.show(want));
+            self.err("E111", e.span, format!("`{name}` is {have} and the parameter is {want}: an action takes view state as it is, read when it is pressed. Declare `{name}` as {want}"));
+            return Ex::error();
+        }
+        let mut names = std::collections::BTreeSet::new();
+        super::boundary::names_in(e, &mut names);
+        if let Some(name) = names.iter().find(|n| self.state_named(n).is_some()) {
+            self.err("E111", e.span, format!("an action applied here runs when it is pressed, and reads the view state it takes then; this argument reads `{name}` when the view draws, which a quick press outruns. Give `{name}` itself and compute from it in the action"));
+            let _ = self.expr(e, None);
+            return Ex::error();
+        }
+        self.expr_as(e, want)
+    }
+
+    /// The view state `state` as an action's argument, read when the event fires: a handle
+    /// until then, a scalar's boxed as its slot holds it.
+    pub(super) fn state_at(state: &super::StateRef) -> Ex {
+        let scalar = state.ty.is_scalar();
+        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
+        let boxed = Ex::new(Ek::I32(i32::from(scalar)), Ty::Bool);
+        let ty = if scalar {
+            Ty::Option(Box::new(state.ty.clone()))
+        } else {
+            state.ty.clone()
+        };
+        Ex::host(Imp::StateAt, vec![layer, Ex::str(&state.id), boxed], ty)
+    }
+
     fn action_ref(c: &Callable) -> ActionRef {
         ActionRef {
             app: c.app.clone(),
@@ -304,7 +349,10 @@ impl Checker<'_> {
 
     fn call_callable(&mut self, c: &Callable, args: &[ast::Arg], span: Span) -> Ex {
         let sig = c.signature(&self.env.app);
-        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig);
+        // An action a view applies runs when its event fires: the view state it takes is read
+        // then, not when the view drew.
+        let at_press = matches!(c.kind, CKind::Action | CKind::Flow) && self.st.ctx == Ctx::View;
+        let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         let ctx = self.st.ctx;
         match (c.kind, ctx) {
             (CKind::Fn, _) => {
@@ -695,7 +743,7 @@ impl Checker<'_> {
             let _ = self.expr(&value.value, None);
             return Ex::error();
         };
-        let v = self.expr_as(&value.value, &state.ty);
+        let v = self.arg_at_press(&value.value, &state.ty);
         Self::set_action(&state, v)
     }
 

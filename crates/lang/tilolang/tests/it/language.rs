@@ -163,6 +163,37 @@ fn typing_in_a_composer_is_personal() {
 }
 
 #[test]
+fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
+    // Given as itself, view state is read when the event fires.
+    let pressed = format!(
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    lens n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, draft).then(set(draft, \"\")))\n        button(\"More\", on: set(n, n))\n    }}\n}}"
+    );
+    let compiled = crate::common::compile_with(&pressed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    // Read any other way, it would be the value the view drew with, which a press outruns.
+    let drawn = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, \"{{draft}}!\"))\n}}"
+    );
+    assert!(
+        codes(&drawn).iter().any(|c| c == "E111"),
+        "{:?}",
+        codes(&drawn)
+    );
+    let counted = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens n: Int = 1\n    button(\"More\", on: set(n, n + 1))\n}}"
+    );
+    assert!(
+        codes(&counted).iter().any(|c| c == "E111"),
+        "{:?}",
+        codes(&counted)
+    );
+    // A flow or an action reads its own arguments as they are.
+    ok(
+        "action a(c: C, t: Text) {\n    c.t = t\n}\naction b(c: C) {\n    let t = c.t\n    a(c, t)\n}",
+    );
+}
+
+#[test]
 fn sort_by_takes_dates_and_times_and_a_descending_order() {
     ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(x -> x.due ?? 2026-01-01, desc)\n}");
     ok("fn f(c: C) -> List<C> {\n    c.items.sort_by(x -> x.at ?? 2026-01-01T00:00Z, asc)\n}");
