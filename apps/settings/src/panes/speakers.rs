@@ -1066,11 +1066,7 @@ impl SpeakersModel {
         )
     }
 
-    fn group_row(
-        &self,
-        actions: &Actions<Settings>,
-        group: &ui::collaboration::SpeakerGroupInfo,
-    ) -> Item {
+    fn group_row(actions: &Actions<Settings>, group: &ui::collaboration::SpeakerGroupInfo) -> Item {
         let ready = group
             .members
             .iter()
@@ -1166,7 +1162,7 @@ impl SpeakersModel {
             self.setup
                 .groups()
                 .iter()
-                .map(|group| self.group_row(actions, group))
+                .map(|group| Self::group_row(actions, group))
                 .collect()
         };
         let mut body = group_rows;

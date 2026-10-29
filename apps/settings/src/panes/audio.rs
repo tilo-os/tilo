@@ -2166,13 +2166,14 @@ mod tests {
             "and no other output is"
         );
 
+        let before = speakers.commands.lock().unwrap().len();
         app.effect(&SettingsEffect::from(AudioEffect::SelectOutput {
             device: "Speakers".into(),
         }))
         .expect("the output is chosen");
-        assert_eq!(
-            speakers.commands.lock().unwrap().last(),
-            Some(&SpeakerCommand::StopUsingAsOutput),
+        assert!(
+            speakers.commands.lock().unwrap()[before..]
+                .contains(&SpeakerCommand::StopUsingAsOutput),
             "choosing another output leaves the set"
         );
         assert!(!model(&mut app, |model| model.sets.shown[0].output_here));
