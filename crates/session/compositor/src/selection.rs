@@ -140,7 +140,7 @@ impl Selections {
     }
 }
 
-fn is_text_mime(mime: &str) -> bool {
+pub(crate) fn is_text_mime(mime: &str) -> bool {
     TEXT_MIMES.contains(&mime)
 }
 
@@ -202,7 +202,7 @@ pub(crate) fn host_offer(offer: Vec<(String, Vec<u8>)>) -> Option<BTreeMap<Strin
 
 /// Write `bytes` to a reader's pipe off the loop: a reader that is slow or
 /// never reads must not stall the compositor. Closing the pipe is the end.
-fn serve(fd: OwnedFd, bytes: Vec<u8>) {
+pub(crate) fn serve(fd: OwnedFd, bytes: Vec<u8>) {
     std::thread::spawn(move || {
         if let Err(error) = std::fs::File::from(fd).write_all(&bytes) {
             tracing::debug!(%error, "selection reader went away mid-transfer");

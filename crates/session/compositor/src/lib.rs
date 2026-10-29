@@ -28,6 +28,7 @@ pub mod config;
 mod cursor;
 pub mod dim;
 mod display_change;
+mod dnd;
 pub mod gestures;
 pub mod host;
 pub mod idle;
@@ -47,6 +48,8 @@ mod state;
 mod tablet;
 mod text_input;
 mod touch;
+mod xdnd;
+mod xdnd_bridge;
 mod xwayland;
 
 use std::os::unix::net::UnixStream;
@@ -399,6 +402,18 @@ impl Compositor {
         self.data.state.set_host_selection(selection, offer);
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Start dragging `offer` (bytes per format; files as `text/uri-list`)
+    /// out of the hosted surface app the pointer is pressed on, as a
+    /// client's drag would: Wayland clients, X11 clients and hosted apps
+    /// under the pointer are offered it until the button comes up, and the
+    /// app learns how it went ([`SurfaceHost::drag_ended`]). False when
+    /// there is nothing to drag or no hosted surface under the pointer.
+    pub fn start_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
+        let started = self.data.state.start_host_drag(offer);
+        self.display.flush_clients()?;
+        Ok(started)
     }
 
     /// The formats `selection` offers now, whoever owns it.
