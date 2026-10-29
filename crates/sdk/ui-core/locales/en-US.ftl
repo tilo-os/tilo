@@ -485,6 +485,26 @@ relative-ago-years = { $count ->
         [one] { $count } year ago
        *[other] { $count } years ago
     }
+relative-ahead-moment = in a moment
+relative-ahead-minutes = in { $count } min
+relative-ahead-hours = in { $count } hr
+relative-ahead-tomorrow = tomorrow
+relative-ahead-days = { $count ->
+        [one] in { $count } day
+       *[other] in { $count } days
+    }
+relative-ahead-weeks = { $count ->
+        [one] in { $count } week
+       *[other] in { $count } weeks
+    }
+relative-ahead-months = { $count ->
+        [one] in { $count } month
+       *[other] in { $count } months
+    }
+relative-ahead-years = { $count ->
+        [one] in { $count } year
+       *[other] in { $count } years
+    }
 
 # Dates, times and numbers (ui::format). Months are 1 = January … 12 =
 # December; weekdays are 1 = Monday … 7 = Sunday.

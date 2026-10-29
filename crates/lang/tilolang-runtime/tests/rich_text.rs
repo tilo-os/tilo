@@ -192,6 +192,34 @@ mod cases {
     }
 
     #[test]
+    fn a_time_in_rich_text_is_a_run_marked_with_the_moment() {
+        let b = Room::on(&AmStore::new(), None);
+        let post = returned_ref(b.call(
+            "schedule",
+            vec![
+                Value::resource(&b.board),
+                Value::text("2026-10-29T09:30:00Z"),
+            ],
+        ));
+        let body = b.body(&post);
+        assert_eq!(body.plain_text(), "Standup at 2026-10-29T09:30:00Z");
+        let block = &body.blocks[0];
+        let time = block
+            .marks
+            .iter()
+            .find(|m| m.name == tilo_doc::inline_time::MARK)
+            .expect("a time mark");
+        assert_eq!((time.start, time.end), (11, 31));
+        let tilo_doc::document::MarkValue::Str(value) = &time.value else {
+            panic!("{time:?}")
+        };
+        assert_eq!(
+            tilo_doc::inline_time::InlineTime::of_mark(value).map(|t| t.at),
+            Some("2026-10-29T09:30:00Z".to_owned())
+        );
+    }
+
+    #[test]
     fn two_writers_edits_with_references_merge_as_splices_and_marks() {
         let (mut sa, mut sb) = (AmStore::new(), AmStore::new());
         let a = Room::on(&sa, None);

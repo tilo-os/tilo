@@ -21,7 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{BlockEditor, BlockKind, EditScope};
 use crate::widget::EventCtx;
-use crate::widget::markdown_input::{self, InlineKind};
+use crate::widget::markdown_input::{self, InlineKind, InlineMatch};
 use crate::widget::marks::{self, Mark, MarkSpan};
 
 /// A block's text, marks and caret at one moment.
@@ -60,17 +60,25 @@ pub(super) struct TypingToSettle {
     markdown: Option<(String, bool)>,
 }
 
-fn mark_for(kind: InlineKind) -> Mark {
-    match kind {
+fn mark_for(found: &InlineMatch) -> Mark {
+    match found.kind {
         InlineKind::Bold => Mark::Bold,
         InlineKind::Italic => Mark::Italic,
         InlineKind::Code => Mark::Code,
         InlineKind::Strikethrough => Mark::Strikethrough,
+        InlineKind::Link => {
+            let target = found.target.clone().unwrap_or_default();
+            if super::html::is_resource_link(&target) {
+                Mark::ResourceLink(target)
+            } else {
+                Mark::ExternalLink(target)
+            }
+        }
     }
 }
 
 fn ends_with_delimiter(text: &str) -> bool {
-    text.ends_with(['*', '_', '`', '~'])
+    text.ends_with(['*', '_', '`', '~', ')', ' '])
 }
 
 fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
@@ -195,13 +203,23 @@ impl BlockEditor {
         }) {
             return false;
         }
-        let (Some(head), Some(content), Some(tail)) = (
+        let (Some(head), Some(content), Some(between), Some(tail)) = (
             now.get(..found.open.start),
             now.get(found.content.clone()),
+            now.get(found.content.end..found.close.start),
             now.get(found.close.end..),
         ) else {
             return false;
         };
+        // Text already linked is not linked again.
+        if found.kind == InlineKind::Link
+            && line.marks().iter().any(|span| {
+                matches!(span.mark, Mark::ExternalLink(_) | Mark::ResourceLink(_))
+                    && overlaps(&span.range, &found.content)
+            })
+        {
+            return false;
+        }
         let typed = LineState {
             text: now.to_owned(),
             marks: line.marks().to_vec(),
@@ -214,10 +232,10 @@ impl BlockEditor {
         marks::add_mark_to_range(
             &mut spans,
             start..start.saturating_add(content.len()),
-            mark_for(found.kind),
+            mark_for(&found),
         );
         let formatted = LineState {
-            text: format!("{head}{content}{tail}"),
+            text: format!("{head}{content}{between}{tail}"),
             marks: spans,
             caret: caret
                 .saturating_sub(found.open.len())
@@ -226,7 +244,7 @@ impl BlockEditor {
         show(line, &formatted);
         // The typed closing delimiter ended the span: what is typed next is
         // plain, though the document would carry the mark on over it.
-        line.close_marks_at(formatted.caret, vec![mark_for(found.kind)]);
+        line.close_marks_at(formatted.caret, vec![mark_for(&found)]);
         self.inline_conversion = Some(InlineConversion {
             block_id,
             typed,
@@ -378,20 +396,22 @@ fn formatted_prose(text: &str) -> (String, Vec<MarkSpan>) {
         let Some(found) = markdown_input::detect_inline(&out) else {
             continue;
         };
-        let (Some(head), Some(content)) =
-            (out.get(..found.open.start), out.get(found.content.clone()))
-        else {
+        let (Some(head), Some(content), Some(between)) = (
+            out.get(..found.open.start),
+            out.get(found.content.clone()),
+            out.get(found.content.end..found.close.start),
+        ) else {
             continue;
         };
         let start = found.open.start;
-        let formatted = format!("{head}{content}");
+        let formatted = format!("{head}{content}{between}");
         let length = content.len();
         marks::shift_after_edit(&mut spans, found.close.start, 0, found.close.len());
         marks::shift_after_edit(&mut spans, found.open.start, 0, found.open.len());
         marks::add_mark_to_range(
             &mut spans,
             start..start.saturating_add(length),
-            mark_for(found.kind),
+            mark_for(&found),
         );
         out = formatted;
     }

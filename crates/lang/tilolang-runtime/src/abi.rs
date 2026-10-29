@@ -143,6 +143,7 @@ imports! {
     (RichNew, "rich_new", "i", "i"),
     (RichPart, "rich_part", "ii", "i"),
     (RichEmpty, "rich_empty", "i", "i"),
+    (RichTime, "rich_time", "i", "i"),
     (Phrase, "phrase", "ii", "i"),
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),

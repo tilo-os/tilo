@@ -349,7 +349,7 @@ impl Block {
     }
 
     pub fn heading(level: u8, text: &str) -> Self {
-        Self::text_block(BlockKind::Heading(level.clamp(1, 3)), text)
+        Self::text_block(BlockKind::Heading(level.clamp(1, 6)), text)
     }
 
     pub fn bullet(indent: u8, text: &str) -> Self {
@@ -1253,8 +1253,9 @@ impl BlockEditor {
                     out.push_str("## ");
                     out.push_str(b.text());
                 }
-                BlockKind::Heading(_) => {
-                    out.push_str("### ");
+                BlockKind::Heading(level) => {
+                    out.push_str(&"#".repeat(usize::from((*level).clamp(3, 6))));
+                    out.push(' ');
                     out.push_str(b.text());
                 }
                 BlockKind::Bullet { indent } => {
@@ -5026,18 +5027,16 @@ pub enum CursorPlacement {
 
 /// Markdown heading prefix at the start of `text`: `(level, prefix_byte_len)`.
 ///
-/// Shared by `from_markdown`, live `#`/`##`/`###` promotion, and the typed-prefix
+/// Shared by `from_markdown`, live `#` to `######` promotion, and the typed-prefix
 /// gate that only fires when the caret sits exactly on that prefix.
 fn heading_markdown_prefix(text: &str) -> Option<(u8, usize)> {
-    if text.starts_with("### ") {
-        Some((3, 4))
-    } else if text.starts_with("## ") {
-        Some((2, 3))
-    } else if text.starts_with("# ") {
-        Some((1, 2))
-    } else {
-        None
-    }
+    let hashes = text.bytes().take_while(|byte| *byte == b'#').count();
+    let level = u8::try_from(hashes)
+        .ok()
+        .filter(|level| (1..=6).contains(level))?;
+    text.get(hashes..)
+        .is_some_and(|rest| rest.starts_with(' '))
+        .then_some((level, hashes.saturating_add(1)))
 }
 
 fn is_heading_prefix(s: &str) -> bool {
@@ -6465,7 +6464,7 @@ fn kind_from_str(s: &str) -> BlockKind {
         return BlockKind::Divider;
     }
     if let Some(n) = s.strip_prefix("heading") {
-        let lvl = n.parse::<u8>().unwrap_or(1).clamp(1, 3);
+        let lvl = n.parse::<u8>().unwrap_or(1).clamp(1, 6);
         return BlockKind::Heading(lvl);
     }
     if let Some(rest) = s.strip_prefix("bullet:") {
@@ -9981,6 +9980,7 @@ impl Widget for BlockEditor {
             .filter_map(|block| block.line.next_wake_deadline())
             .chain(self.handle_fade_deadline())
             .chain(self.handle_fade_end())
+            .chain(self.references_wake())
             .min();
         self.for_each_child(&mut |child| {
             if let Some(deadline) = child.next_wake_deadline() {
@@ -11665,6 +11665,12 @@ impl BlockEditor {
                     let _ = self.try_promote_to_heading(focused_idx);
                 } else if now.get(..caret) == Some("> ") {
                     let _ = self.try_promote_to_quote(focused_idx);
+                } else if matches!(b.kind, BlockKind::Paragraph) && now == "---" && caret == 3 {
+                    // A rule typed on its own line is a divider, as Markdown reads it.
+                    Self::remove_line_range(&mut self.blocks[focused_idx].line, 0..3);
+                    self.try_convert_to(focused_idx, BlockKind::Divider);
+                    self.edit_pending = true;
+                    self.commit_pending = true;
                 } else if matches!(b.kind, BlockKind::Paragraph)
                     && caret == now.len()
                     && let Some(language) = now.strip_prefix("```")
@@ -11759,6 +11765,9 @@ pub use html::{blocks_from_html, blocks_to_html};
 mod handle_reveal;
 #[path = "block_editor_inline_markdown.rs"]
 mod inline_markdown;
+#[cfg(test)]
+#[path = "block_editor_markdown_shortcut_tests.rs"]
+mod markdown_shortcut_tests;
 #[path = "block_editor_present.rs"]
 mod present;
 #[path = "block_editor_references.rs"]
