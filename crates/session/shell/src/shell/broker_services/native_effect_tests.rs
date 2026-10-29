@@ -238,7 +238,7 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
     // it in the owner and its projection onto the tree.
     let fixture = fixture_with(|tree| {
         let mut tree = tree.write();
-        tree.stewarded_rooms.remove(&room);
+        tree.sealed_rooms.remove(&room);
         tree.committed_record_rooms.remove(&room);
     });
     let actions = fixture.broker.app_action_broker().unwrap();
