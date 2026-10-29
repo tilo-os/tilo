@@ -42,11 +42,11 @@ pub(crate) use quick_settings::{
 use shortcuts::ACTION_SHORTCUTS;
 pub(crate) use shortcuts::action_shortcut;
 
+pub(crate) use strips::valid_strip_name;
 use strips::{
     STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
     move_strip, remove_strip, rename_strip,
 };
-pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
 use tabs::{
     TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
     rename_focused_tab,

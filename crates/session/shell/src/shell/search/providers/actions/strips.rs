@@ -47,7 +47,7 @@ pub(super) const STRIP_REMOVE_PARAMS: &[ActionParam] = &[ActionParam::optional(
 
 // A strip name is checked the same wherever it is given: here, and in the
 // strip switcher on every host.
-pub(crate) use tilo_desktop::strip_switcher::{STRIP_NAME_MAX_CHARS, valid_strip_name};
+pub(crate) use tilo_desktop::strip_switcher::valid_strip_name;
 
 pub(super) fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let default_name = t("search-action-strip-create-default-name");

@@ -34,7 +34,7 @@ pub(crate) use agent_markers::AccessibleAgentMarker;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
-use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_f64, usize_of_isize};
+use ui::num::f32_of_f64;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -137,7 +137,7 @@ use std::path::PathBuf;
 use ui::CommandEntry;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::search::system::filters::draw_filter_chip;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,

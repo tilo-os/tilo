@@ -17,6 +17,7 @@ use tilo_desktop::window_switcher::{
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
@@ -78,7 +79,7 @@ impl ShellOverlayHost {
                 } else {
                     group
                         .active_host()
-                        .map_or_else(|| group.get_rect(), ui::widget::Widget::get_rect)
+                        .map_or_else(|| group.get_rect(), Widget::get_rect)
                 })
             })
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)

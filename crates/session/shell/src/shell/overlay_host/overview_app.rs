@@ -140,6 +140,9 @@ impl ShellOverlayHost {
                 state.overlays.overview = false;
                 state.bump();
             }
+            // Its flag is down now, so the flag decides from here: asked up
+            // again before it has finished leaving, it comes back.
+            self.overview_closing = true;
             self.latch_overview_transition();
             acted = true;
         }
@@ -345,8 +348,12 @@ impl ShellOverlayHost {
                             strip,
                         },
                     ),
-                    None => state
-                        .push_warning_notification(t("overview-window-move-failed"), String::new()),
+                    None => {
+                        state.push_warning_notification(
+                            t("overview-window-move-failed"),
+                            String::new(),
+                        );
+                    }
                 }
             }
             OverviewPick::RenameStrip { strip, name } => {

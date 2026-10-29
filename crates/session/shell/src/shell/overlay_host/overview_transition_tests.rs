@@ -621,6 +621,8 @@ fn the_overview_and_its_flag_follow_each_other() {
     h.latch_overview_transition();
     h.update(&AutoCommit::new(), &automerge::ROOT);
     assert_eq!(presentation.phase(), Phase::Open, "and comes up again");
+    // Drawn open, so its pictures have somewhere to fly back from.
+    h.force_overview_settled(true);
     chrome.borrow_mut().overlays.overview = false;
     h.latch_overview_transition();
     h.update(&AutoCommit::new(), &automerge::ROOT);

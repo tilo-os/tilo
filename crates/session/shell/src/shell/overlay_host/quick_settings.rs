@@ -1226,7 +1226,7 @@ impl ShellOverlayHost {
     /// so a capture or a test finds it where a person sees it.
     pub(super) fn settle_quick_settings(&mut self) {
         let doc = automerge::AutoCommit::new();
-        let theme = self.overview_layout_theme.clone();
+        let theme = self.layout_theme.clone();
         let mut text = TextRenderer::new();
         for _ in 0..4 {
             self.pump_quick_settings(&doc, &automerge::ROOT);
