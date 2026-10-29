@@ -190,10 +190,9 @@ impl Kind for Home {
     reason = "test support: a fixture that cannot be written fails the calling test"
 )]
 pub mod fixtures {
-    use super::{PortableHome, Prepared};
+    use super::*;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
     pub fn fixture() -> (tempfile::TempDir, PathBuf, PortableHome) {
         let home = tempfile::tempdir().unwrap();
         let state = home.path().join(".local/state/tilo/prepared-setup");

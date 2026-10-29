@@ -114,10 +114,9 @@ impl Kind for Applications {
     reason = "test support: a fixture that cannot be written fails the calling test"
 )]
 pub mod fixtures {
-    use super::{PortableApplications, Prepared, root};
+    use super::*;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
     pub fn fixture() -> (tempfile::TempDir, PathBuf, PortableApplications) {
         let (home, identity, _) = crate::portable_home::fixtures::fixture();
         let prepared = Prepared::open(home.path()).unwrap();
