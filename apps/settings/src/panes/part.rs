@@ -538,15 +538,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         },
     },
     crate::area::PaneEntry {
-        categories: &[Category::RegionFormats],
-        build: |app, _| {
-            Box::new(region::RegionPane::new(
-                app.host().clone(),
-                region::language::area(app),
-            ))
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::Updates],
         build: |app, _| model_pane(updates::area(app).map(updates::UpdatesArea::model)),
     },
@@ -647,12 +638,12 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_value!("appearance.ui_scale" => known appearance::values::ui_scale),
     crate::setting::setting_bound_switch!("a11y.screen_reader" => accessibility::values::screen_reader, crate::accessibility_settings::AccessibilitySettings => accessibility::values::screen_reader_switch),
     crate::setting::setting_value!("a11y.dictation_language" => known accessibility::values::dictation_language),
-    crate::setting::setting_entry!("region.currency", tilo_locale::Locale => region::currency),
-    crate::setting::setting_entry!("region.date", tilo_locale::Locale => region::date_format),
-    crate::setting::setting_entry!("region.time", tilo_locale::Locale => region::time_format),
-    crate::setting::setting_entry!("region.measurement", tilo_locale::Locale => region::measurement),
-    crate::setting::setting_entry!("region.numbers", tilo_locale::Locale => region::number_style),
-    crate::setting::setting_entry!("region.first_day", tilo_locale::Locale => region::first_day),
+    crate::setting::setting_row!("region.currency", tilo_locale::Locale => region::currency),
+    crate::setting::setting_row!("region.date", tilo_locale::Locale => region::date_format),
+    crate::setting::setting_row!("region.time", tilo_locale::Locale => region::time_format),
+    crate::setting::setting_row!("region.measurement", tilo_locale::Locale => region::measurement),
+    crate::setting::setting_row!("region.numbers", tilo_locale::Locale => region::number_style),
+    crate::setting::setting_row!("region.first_day", tilo_locale::Locale => region::first_day),
     crate::setting::setting_value!("region.language" => known region::language::value),
     crate::setting::setting_switch!("time.automatic" => time_date::values::automatic, time_date::values::automatic_switch),
     crate::setting::setting_value!("time.zone" => time_date::values::zone),

@@ -23,7 +23,12 @@ use crate::settings_app::SettingsApp;
 
 crate::effects::effect_family!(LanguageEffect => answer);
 
-crate::area::pane_area! { LanguageArea; }
+crate::area::pane_area! {
+    LanguageArea;
+    fn poll(&self) {
+        LanguageArea::poll(self);
+    }
+}
 
 /// The window's [`LanguageArea`].
 pub fn area(app: &SettingsApp) -> Option<&LanguageArea> {
@@ -60,6 +65,11 @@ pub struct LanguageArea {
     pub installing: LocalState<Option<String>>,
     /// Why the last install failed.
     pub failed: LocalState<Option<String>>,
+    /// Moves whenever what the Language card shows does: what the
+    /// repositories offer, an install starting or stopping.
+    pub shown: LocalState<u64>,
+    /// The revisions [`Self::shown`] last moved for.
+    seen: std::cell::Cell<(u64, u64, u64)>,
 }
 
 impl Default for LanguageArea {
@@ -76,6 +86,20 @@ impl LanguageArea {
             offered: Reading::new(read_offered),
             installing: LocalState::new(None),
             failed: LocalState::new(None),
+            shown: LocalState::new(0),
+            seen: std::cell::Cell::new((0, 0, 0)),
+        }
+    }
+
+    /// Move [`Self::shown`] when what the Language card shows moved.
+    fn poll(&self) {
+        let now = (
+            self.offered.revision(),
+            self.installing.revision(),
+            self.failed.revision(),
+        );
+        if self.seen.replace(now) != now {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
     }
 
