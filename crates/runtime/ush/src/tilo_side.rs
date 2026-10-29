@@ -39,7 +39,6 @@ use crate::broker::{Broker, BrokerState, Response, RunGroup};
 use crate::file_actions::FileAction;
 use crate::guest_exec::{Answer, Request};
 use crate::policy::Policy;
-use crate::records::Records;
 use crate::supervisor::{Resolved, Session};
 
 /// The environment record, through the session's broker.
@@ -49,6 +48,8 @@ pub struct RecordEnvironment {
     /// changed.
     document: Option<std::path::PathBuf>,
     grants: Mutex<Option<(Stamp, Vec<CapOverride>)>>,
+    /// Where a write too large to travel inside its action is kept.
+    content: Option<crate::content::EnvironmentContent>,
 }
 
 /// What a document looked like when it was read.
@@ -73,18 +74,22 @@ fn stamp(path: &Path) -> Option<Stamp> {
 
 impl RecordEnvironment {
     pub fn new(state: Arc<Mutex<BrokerState>>) -> Self {
-        let document = state.lock().ok().and_then(|state| {
-            state
-                .environment
-                .records
-                .record_dir(&state.environment.key)
-                .ok()
-                .map(|dir| dir.join(app_state::DOCUMENT_FILE))
+        let (document, content) = state.lock().ok().map_or((None, None), |state| {
+            (
+                state
+                    .environment
+                    .records
+                    .record_dir(&state.environment.key)
+                    .ok()
+                    .map(|dir| dir.join(app_state::DOCUMENT_FILE)),
+                Some(crate::file_actions::content_in(&state.environment)),
+            )
         });
         Self {
             state,
             document,
             grants: Mutex::new(None),
+            content,
         }
     }
 
@@ -121,6 +126,13 @@ impl Environment for RecordEnvironment {
             Response::Denied { reason } => Err(reason),
             other => Err(format!("unexpected answer: {other:?}")),
         }
+    }
+
+    fn keep(&self) -> std::io::Result<Box<dyn ush_tilo::Keeping>> {
+        self.content
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("the environment's content store is not here"))?
+            .keep()
     }
 }
 
@@ -581,8 +593,7 @@ impl Session {
     /// could not be started.
     pub fn run_tilo_side(&mut self, script: Option<&str>) -> anyhow::Result<i32> {
         self.store.ensure()?;
-        let (key, environment) = Records::at(self.store.records_root())
-            .resolve(self.opts.environment.as_deref(), &*self.images)?;
+        let (key, environment) = self.resolve_record()?;
         let session_dir = self.store.session_dir(&self.session_id);
         std::fs::create_dir_all(&session_dir)?;
         let outcome = self.tilo_side_in(key, environment, &session_dir, script);
@@ -674,18 +685,30 @@ impl Session {
         let user = crate::guest::GuestUser::current();
         let now = Some(unix_now());
         let policy = Policy::new(resolved.environment.grants.clone());
-        let cwd = policy
-            .trusted_dirs(now)
-            .into_iter()
+        let home = crate::home::home_of(&resolved.environment, &user);
+        // The session starts at `~` when the grants reach it, else in the
+        // first directory they grant.
+        let cwd = std::iter::once(home.clone())
+            .filter(|home| policy.permits(home, collab_types::caps::Access::Read, now))
+            .chain(policy.trusted_dirs(now))
             .chain(policy.readable_dirs(now))
             .next()
             .unwrap_or_else(|| PathBuf::from("/"));
-        let mut shell = ush_shell::Shell::new(host, self.shell_env(&resolved, &user), cwd, io);
+        let mut shell = ush_shell::Shell::new(
+            Arc::clone(&host),
+            self.shell_env(&resolved, &user, &home),
+            cwd,
+            io,
+        );
         let status = if let Some(script) = script {
             shell.run_to_exit(script)
         } else {
-            let rc = self.store.environment_home(&resolved.key).join(".ushrc");
-            if let Ok(text) = std::fs::read_to_string(rc) {
+            // Read as every file is: through the grants.
+            let rc = host.open_read(&home.join(".ushrc")).and_then(|mut file| {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut file, &mut text).map(|_| text)
+            });
+            if let Ok(text) = rc {
                 shell.set_interactive(true);
                 let _ = shell.run_script(&text);
             }
@@ -704,10 +727,11 @@ impl Session {
         &self,
         resolved: &Resolved,
         user: &crate::guest::GuestUser,
+        home: &Path,
     ) -> Vec<(String, String)> {
         let mut env: Vec<(String, String)> = [
             ("PATH", crate::guest::GUEST_PATH.to_owned()),
-            ("HOME", user.home().to_string_lossy().into_owned()),
+            ("HOME", home.to_string_lossy().into_owned()),
             ("TERM", self.opts.term.clone()),
             ("USER", user.name.clone()),
             ("LOGNAME", user.name.clone()),
@@ -754,7 +778,9 @@ impl Session {
         plan.runs = None;
         plan.resolver = Some(egress.resolv_conf().to_owned());
         plan.prepare()?;
-        crate::supervisor::seed_guest_home(&plan.guest_home)?;
+        if !plan.home_by_grants {
+            crate::supervisor::seed_guest_home(&plan.guest_home)?;
+        }
         let entry = plan.helper_runtime.as_ref().map_or_else(
             || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
             crate::helper_runtime::HelperRuntime::entry,

@@ -64,6 +64,12 @@ pub struct Environment {
     pub grants: Vec<CapOverride>,
     /// Whether the home survives the session.
     pub home: HomePolicy,
+    /// The home `~` names on the Tilo side and in the guest alike: the
+    /// workspace's own folder, the one synced between its devices and
+    /// collaborators, which every environment of the workspace shares.
+    /// Empty until the first device that opens the environment gives it
+    /// one ([`Environment::SET_HOME`]), which also grants it.
+    pub home_dir: String,
     /// File actions, each settled by the device that carried it out with
     /// what it changed.
     pub files: Outbox<FileTask, Vec<UndoEntry>>,
@@ -96,7 +102,7 @@ pub struct ToolRef {
 /// What happens to an environment's home when a session ends.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomePolicy {
-    /// One home per environment, kept in the `ush` store.
+    /// One home per environment, kept: [`Environment::home_dir`].
     #[default]
     Persistent,
     /// A fresh home per session, removed when it ends.
@@ -188,6 +194,22 @@ impl Environment {
         let grant = dir_grant(Path::new(&path), write)?;
         self.grants.retain(|c| c.id != grant.id);
         self.grants.push(grant);
+        Ok(())
+    }
+
+    /// Set home.
+    ///
+    /// Makes a directory the environment's home: the folder `~` names in
+    /// its shell, on the Tilo side and in its guest — the workspace's own
+    /// folder. The home is granted to the environment read-write, as
+    /// `grant-dir` would; revoking that grant later is the person's choice
+    /// and is kept.
+    #[action]
+    pub fn set_home(&mut self, #[param("Directory")] path: String) -> Result<(), String> {
+        let grant = dir_grant(Path::new(&path), true)?;
+        self.grants.retain(|c| c.id != grant.id);
+        self.grants.push(grant);
+        self.home_dir = path.trim_end_matches('/').to_owned();
         Ok(())
     }
 
@@ -439,6 +461,7 @@ impl Environment {
         let action = FileAction::Touch(AppendFileOp {
             files: paths_of(paths),
             text: String::new(),
+            content: None,
         });
         self.queue_file(cx, files, device, action)
     }
@@ -454,10 +477,15 @@ impl Environment {
         #[param("The device whose files change")] device: String,
         #[param("Absolute paths of the files")] paths: Vec<String>,
         #[param("The text to add, as given")] text: String,
+        #[param(
+            "What to add instead of `text`, any size, text or not: a tilo.content:<hash> reference to the environment's content store on the device"
+        )]
+        content: Option<String>,
     ) -> Result<(), String> {
         let action = FileAction::Append(AppendFileOp {
             files: paths_of(paths),
             text,
+            content: content_param(content.as_deref())?,
         });
         self.queue_file(cx, files, device, action)
     }
@@ -478,11 +506,16 @@ impl Environment {
             bool,
         >,
         #[param("Only make a file that is not there yet")] no_clobber: Option<bool>,
+        #[param(
+            "The contents instead of `text`, any size: a tilo.content:<hash> reference to the environment's content store on the device"
+        )]
+        content: Option<String>,
     ) -> Result<(), String> {
         let action = FileAction::Write(WriteOp {
             files: paths_of(paths),
             text,
             base64: base64.unwrap_or(false),
+            content: content_param(content.as_deref())?,
             no_clobber: no_clobber.unwrap_or(false),
         });
         self.queue_file(cx, files, device, action)
@@ -625,6 +658,7 @@ impl Environment {
                 device,
                 paths: texts(&op.files),
                 text: op.text.clone(),
+                content: op.content.as_deref().map(files::content_reference),
             }),
             FileAction::Write(op) => Self::WRITE.with(environment::Write {
                 device,
@@ -632,6 +666,7 @@ impl Environment {
                 text: op.text.clone(),
                 base64: Some(op.base64),
                 no_clobber: Some(op.no_clobber),
+                content: op.content.as_deref().map(files::content_reference),
             }),
             FileAction::Restore(op) => Self::RESTORE.with(environment::Restore {
                 device,
@@ -805,6 +840,19 @@ pub fn grant_id(path: &Path) -> String {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, path.as_os_str().as_encoded_bytes());
     format!("ush-grant-{:016x}", std::hash::Hasher::finish(&hasher))
+}
+
+/// The hash a `content` parameter names, when it is given.
+fn content_param(content: Option<&str>) -> Result<Option<String>, String> {
+    content
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .map(|content| {
+            files::content_hash(content)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("{content:?} is not a tilo.content:<hash> reference"))
+        })
+        .transpose()
 }
 
 /// The capability that grants `path` — exactly what the compositor writes
@@ -1143,6 +1191,44 @@ mod tests {
         assert_eq!(
             evolution::read_checked::<Environment>(&old).unwrap(),
             expected
+        );
+    }
+
+    /// An environment written before it had a home reads with none, and
+    /// gets one by an action that keeps every tool and grant it held.
+    #[test]
+    fn an_environment_from_before_homes_gets_one_and_keeps_what_it_held() {
+        use tilo_resource::Slot;
+        let mut r = replica();
+        r.apply(add(&["git"], "x86_64", image(2))).unwrap();
+        r.apply(Environment::GRANT_DIR.with(("/var/home/you/src".into(), true)))
+            .unwrap();
+        let root = tilo_resource::__private::ROOT;
+        let doc = r.doc_mut();
+        Slot::Key(&root, "home_dir").remove(doc).unwrap();
+        doc.commit();
+        let before = r.state().unwrap();
+        assert_eq!(before.home_dir, "", "no home yet");
+
+        r.apply(Environment::SET_HOME.with("/var/workspace/"))
+            .unwrap();
+        let after = r.state().unwrap();
+        assert_eq!(after.home_dir, "/var/workspace");
+        assert_eq!(after.tools, before.tools);
+        assert!(
+            before.grants.iter().all(|g| after.grants.contains(g)),
+            "every grant it held is still there"
+        );
+        let home = Path::new(&after.home_dir);
+        assert!(crate::files::permits(
+            &after.grants,
+            &home.join(".ushrc"),
+            Access::Write,
+            None
+        ));
+        assert!(
+            r.apply(Environment::SET_HOME.with("/usr")).is_err(),
+            "a home is a directory the environment may be granted"
         );
     }
 
