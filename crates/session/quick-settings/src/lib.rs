@@ -20,6 +20,7 @@
 use ui::tilo_resource;
 
 pub mod actions;
+pub mod device;
 mod device_status;
 pub mod effect;
 mod faces;

@@ -20562,8 +20562,10 @@ dependencies = [
  "serde",
  "settings-store",
  "tilo-app",
+ "tilo-audio-service",
  "tilo-media",
  "tilo-power-mgmt",
+ "tilo-test-env",
  "tracing",
  "workspace-hack",
 ]

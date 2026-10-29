@@ -1,9 +1,24 @@
 # Quick Settings and the device status it shares with the top bar.
 display-confirm-applying = Applying…
+display-identify-builtin = Built-in display
 host-qs-change-failed-airplane = Couldn’t change airplane mode
+host-qs-change-failed-bluetooth = Couldn’t change Bluetooth
+host-qs-change-failed-brightness = Couldn’t change brightness
+host-qs-change-failed-mobile = Couldn’t change mobile broadband
+host-qs-change-failed-power = Couldn’t change power mode
 host-qs-change-failed-state-restored = The control was restored to the current device state.
+host-qs-change-failed-value-restored = The control was restored to the current device value.
+host-qs-change-failed-volume = Couldn’t change volume
 host-qs-change-failed-wifi = Couldn’t change Wi-Fi
+host-qs-change-failed-wired = Couldn’t change wired network
+host-wifi-connect-failed-body = The network did not accept the connection. Try again from Wi‑Fi settings.
+host-wifi-connect-failed-title = Couldn’t connect to { $ssid }
+host-wifi-connected-open = Connected to the open network.
+host-wifi-connected-saved = Connected. This saved network will rejoin automatically.
+host-wifi-connected-title = Connected to { $ssid }
+host-wifi-join-check-password = Couldn't join. Check the password.
 power-lock = Lock
+qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
 qs-airplane-mode = Airplane mode
 qs-awake-app = { $app } is keeping the screen on
 qs-awake-apps = { $count } apps are keeping the screen on
@@ -22,7 +37,9 @@ qs-battery-time-to-full = { $hours ->
    *[other] Full in { $hours } h { $minutes } min
 }
 qs-bluetooth = Bluetooth
+qs-bluetooth-connect-failed = Could not connect { $device }
 qs-bluetooth-details = Bluetooth devices
+qs-bluetooth-disconnect-failed = Could not disconnect { $device }
 qs-bluetooth-empty = No devices found
 qs-bluetooth-off = Bluetooth is off
 qs-bluetooth-pair = Pair a new device
@@ -97,6 +114,7 @@ qs-turning-on = Turning on…
 qs-volume = Volume
 qs-volume-mute = Mute
 qs-vpn = VPN
+qs-vpn-change-failed = Could not change { $profile }
 qs-vpn-details = VPN profiles
 qs-vpn-empty = No VPN profiles. Add one in Settings.
 qs-vpn-settings = VPN settings
