@@ -949,6 +949,26 @@ pub fn mount_in_process(
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
+        // Messages and Passwords borrow what only the session holds: the
+        // person's messaging accounts and their credential owner. They are
+        // drawn here in every session until those are served to the apps'
+        // own processes.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
+            messages::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |_| {},
+        ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
+            apps.borrow_mut().mount(
+                passwords::definition(),
+                &room,
+                tab,
+                ui::record::RecordId::room_default(),
+                |_| {},
+            )
+        }
         _ => mount_app(apps, kind, &room, tab, inputs)?,
     };
     Some(match mounted {
@@ -1010,22 +1030,6 @@ fn mount_app(
             ui::record::RecordId::room_default(),
             |_| {},
         ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
-            messages::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::room_default(),
-            |_| {},
-        ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
-            apps.borrow_mut().mount(
-                passwords::definition(),
-                &room,
-                tab,
-                ui::record::RecordId::room_default(),
-                |_| {},
-            )
-        }
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),

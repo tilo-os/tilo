@@ -52,14 +52,12 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
 # Draw the packaged first-party apps (Terminal, Files, Notes, Editor, Word,
-# Browser, Messages, Passwords, Activity) inside this process, from their
+# Browser, Activity) inside this process, from their
 # crates: what the macOS runner, the `shots` captures and the tests that
 # drive those apps through the shell need. The Wayland session runs them as
 # their own processes, so its compositor is built without them.
 in-process-apps = [
     "dep:terminal",
-    "dep:messages",
-    "dep:passwords",
     "dep:browser",
     "dep:notes",
     "dep:activity",
@@ -227,8 +225,8 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
 terminal = { path = "../../../apps/terminal", optional = true }
-messages = { path = "../../../apps/messages", optional = true }
-passwords = { path = "../../../apps/passwords", optional = true }
+messages = { path = "../../../apps/messages" }
+passwords = { path = "../../../apps/passwords" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 accounts = { path = "../../system/accounts" }
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
