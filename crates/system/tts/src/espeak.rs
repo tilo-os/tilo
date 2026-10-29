@@ -8,12 +8,18 @@
 //! Interrupt semantics: each utterance is its own process. [`EspeakSpeaker::stop`]
 //! and any interrupting [`speak`] kill the currently-running child before
 //! spawning the next, giving the "stop and speak the new thing" behaviour the
-//! reader needs on focus changes.
+//! reader needs on focus changes. The children run, wait and queue on a
+//! thread of their own: the caller is usually a UI thread, which must never
+//! wait for speech to end.
 
+use std::collections::VecDeque;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::error::TtsError;
@@ -33,8 +39,150 @@ pub struct EspeakSpeaker {
     wpm: u32,
     /// `-v` voice argument (e.g. `"en-us"`), if set.
     voice: Option<String>,
-    /// The currently-running child, if any (so we can kill it to interrupt).
-    current: Option<Child>,
+    /// The thread that speaks, started with the first utterance.
+    player: Option<Player>,
+}
+
+/// What the player thread is asked to do.
+enum Job {
+    /// Speak `text` with `args`; `interrupt` drops what is speaking or queued.
+    Speak {
+        args: Vec<String>,
+        text: String,
+        interrupt: bool,
+    },
+    Stop,
+}
+
+/// The handle on the thread that runs one `espeak-ng` at a time.
+#[derive(Debug)]
+struct Player {
+    jobs: mpsc::Sender<Job>,
+    /// Whether a child runs or an utterance waits for one.
+    speaking: Arc<AtomicBool>,
+}
+
+/// How often the player looks whether the speaking child has finished.
+const REAP_INTERVAL: Duration = Duration::from_millis(20);
+
+impl Player {
+    fn start(bin: &'static str) -> Option<Self> {
+        let (jobs, inbox) = mpsc::channel();
+        let speaking = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&speaking);
+        std::thread::Builder::new()
+            .name("espeak-ng".into())
+            .spawn(move || play(bin, &inbox, &flag))
+            .map_err(|e| tracing::warn!("espeak-ng: no thread to speak on: {e}"))
+            .ok()?;
+        Some(Self { jobs, speaking })
+    }
+}
+
+/// The player thread: one child at a time, the next utterance once it ends,
+/// an interrupt or stop at once. Ends, killing its child, with the speaker.
+fn play(bin: &'static str, inbox: &mpsc::Receiver<Job>, speaking: &AtomicBool) {
+    let mut current: Option<Child> = None;
+    let mut queue: VecDeque<(Vec<String>, String)> = VecDeque::new();
+    loop {
+        if current
+            .as_mut()
+            .is_some_and(|child| !matches!(child.try_wait(), Ok(None)))
+        {
+            current = None;
+        }
+        if current.is_none()
+            && let Some((args, text)) = queue.pop_front()
+        {
+            match spawn(bin, &args, &text) {
+                Ok(child) => current = Some(child),
+                Err(e) => tracing::warn!("espeak-ng: failed to speak: {e}"),
+            }
+        }
+        speaking.store(current.is_some() || !queue.is_empty(), Ordering::Release);
+        let job = if current.is_some() {
+            match inbox.recv_timeout(REAP_INTERVAL) {
+                Ok(job) => Some(job),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match inbox.recv() {
+                Ok(job) => Some(job),
+                Err(_) => break,
+            }
+        };
+        match job {
+            Some(Job::Speak {
+                args,
+                text,
+                interrupt,
+            }) => {
+                if interrupt {
+                    kill(&mut current);
+                    queue.clear();
+                }
+                queue.push_back((args, text));
+            }
+            Some(Job::Stop) => {
+                kill(&mut current);
+                queue.clear();
+            }
+            None => {}
+        }
+    }
+    kill(&mut current);
+    speaking.store(false, Ordering::Release);
+}
+
+/// Kill and reap the child, if any, with its process group.
+fn kill(current: &mut Option<Child>) {
+    if let Some(mut child) = current.take() {
+        #[cfg(unix)]
+        if let Some(pid) = i32::try_from(child.id())
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// Start `bin` with `args` speaking `text`, read from its stdin.
+fn spawn(bin: &str, args: &[String], text: &str) -> Result<Child, TtsError> {
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    // Read text from stdin (`--stdin`) so we don't have to worry about shell
+    // quoting / arg-length limits for long utterances.
+    cmd.arg("--stdin");
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    let mut child = cmd.spawn().map_err(|e| TtsError::Spawn {
+        backend: "espeak-ng",
+        source: e,
+    })?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // Best-effort: if the write fails the child will just speak nothing.
+        let _ = stdin.write_all(text.as_bytes());
+        // espeak-ng's pulse output (pcaudiolib) exits before its final audio
+        // buffer fully drains, so the last phoneme gets clipped/stretched —
+        // a word like "button" is heard as "buttooo". Appending a
+        // sentence-final pause makes that ragged tail land on generated
+        // silence instead of on a real phoneme. Only added when the text
+        // doesn't already end in terminal punctuation.
+        let needs_pause = !text.trim_end().ends_with(['.', '!', '?', ',', ';', ':']);
+        if needs_pause {
+            let _ = stdin.write_all(b" .");
+        }
+        // Drop closes stdin -> espeak-ng sees EOF and speaks.
+    }
+    Ok(child)
 }
 
 /// espeak-ng's default speaking rate in words per minute.
@@ -77,77 +225,36 @@ impl EspeakSpeaker {
             bin,
             wpm: ESPEAK_DEFAULT_WPM,
             voice: None,
-            current: None,
+            player: None,
         })
     }
 
-    /// Reap the current child if it has already exited, so [`is_speaking`] is
-    /// accurate and we don't leave zombies.
-    fn poll_current(&mut self) {
-        if let Some(child) = self.current.as_mut() {
-            match child.try_wait() {
-                Ok(Some(_status)) => {
-                    self.current = None;
-                }
-                Ok(None) => { /* still running */ }
-                Err(_) => {
-                    self.current = None;
-                }
-            }
-        }
-    }
-
-    /// Kill and reap the current child, if any.
-    fn kill_current(&mut self) {
-        if let Some(mut child) = self.current.take() {
-            #[cfg(unix)]
-            if let Some(pid) = i32::try_from(child.id())
-                .ok()
-                .and_then(rustix::process::Pid::from_raw)
-            {
-                let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
-    fn spawn(&mut self, text: &str) -> Result<(), TtsError> {
-        let mut cmd = Command::new(self.bin);
-        cmd.arg("-s").arg(self.wpm.to_string());
+    /// The arguments before `--stdin`: rate and voice.
+    fn args(&self) -> Vec<String> {
+        let mut args = vec!["-s".to_owned(), self.wpm.to_string()];
         if let Some(v) = &self.voice {
-            cmd.arg("-v").arg(v);
+            args.extend(["-v".to_owned(), v.clone()]);
         }
-        // Read text from stdin (`--stdin`) so we don't have to worry about shell
-        // quoting / arg-length limits for long utterances.
-        cmd.arg("--stdin");
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(unix)]
-        cmd.process_group(0);
+        args
+    }
 
-        let mut child = cmd.spawn().map_err(|e| TtsError::Spawn {
-            backend: "espeak-ng",
-            source: e,
-        })?;
-        if let Some(mut stdin) = child.stdin.take() {
-            // Best-effort: if the write fails the child will just speak nothing.
-            let _ = stdin.write_all(text.as_bytes());
-            // espeak-ng's pulse output (pcaudiolib) exits before its final audio
-            // buffer fully drains, so the last phoneme gets clipped/stretched —
-            // a word like "button" is heard as "buttooo". Appending a
-            // sentence-final pause makes that ragged tail land on generated
-            // silence instead of on a real phoneme. Only added when the text
-            // doesn't already end in terminal punctuation.
-            let needs_pause = !text.trim_end().ends_with(['.', '!', '?', ',', ';', ':']);
-            if needs_pause {
-                let _ = stdin.write_all(b" .");
+    /// Hand `job` to the player, starting it first if need be.
+    fn send(&mut self, job: Job) {
+        if self.player.is_none() {
+            if matches!(job, Job::Stop) {
+                return;
             }
-            // Drop closes stdin -> espeak-ng sees EOF and speaks.
+            self.player = Player::start(self.bin);
         }
-        self.current = Some(child);
-        Ok(())
+        let Some(player) = &self.player else {
+            return;
+        };
+        if matches!(job, Job::Speak { .. }) {
+            player.speaking.store(true, Ordering::Release);
+        }
+        if player.jobs.send(job).is_err() {
+            self.player = None;
+        }
     }
 }
 
@@ -161,25 +268,18 @@ fn probe(bin: &str) -> bool {
 
 impl Speaker for EspeakSpeaker {
     fn speak_utterance(&mut self, utterance: Utterance) {
-        self.poll_current();
-        if utterance.interrupt {
-            self.kill_current();
-        } else if self.current.is_some() {
-            // Non-interrupting while something is speaking: espeak-ng has no
-            // server-side queue, so we wait for the current child to finish.
-            // (The reader's SpeechQueue normally serializes for us; this is the
-            // safety net for direct callers.)
-            if let Some(mut child) = self.current.take() {
-                let _ = child.wait();
-            }
-        }
-        if let Err(e) = self.spawn(&utterance.text) {
-            tracing::warn!("espeak-ng: failed to speak: {e}");
-        }
+        // A non-interrupting utterance waits on the player for the one
+        // speaking, never here.
+        let job = Job::Speak {
+            args: self.args(),
+            text: utterance.text,
+            interrupt: utterance.interrupt,
+        };
+        self.send(job);
     }
 
     fn stop(&mut self) {
-        self.kill_current();
+        self.send(Job::Stop);
     }
 
     #[allow(
@@ -204,10 +304,9 @@ impl Speaker for EspeakSpeaker {
     }
 
     fn is_speaking(&self) -> bool {
-        // Const-eval is impossible here without &mut to reap; report optimistic
-        // truthiness based on whether we believe a child is live. Callers that
-        // need precision should drive the SpeechQueue instead.
-        self.current.is_some()
+        self.player
+            .as_ref()
+            .is_some_and(|player| player.speaking.load(Ordering::Acquire))
     }
 
     fn backend_name(&self) -> &'static str {
@@ -215,11 +314,8 @@ impl Speaker for EspeakSpeaker {
     }
 }
 
-impl Drop for EspeakSpeaker {
-    fn drop(&mut self) {
-        self.kill_current();
-    }
-}
+// Dropping the speaker drops the player's sender: the thread kills its child
+// and ends.
 
 #[cfg(test)]
 mod tests {
@@ -237,7 +333,7 @@ mod tests {
                 bin: ESPEAK_BIN,
                 wpm: ESPEAK_DEFAULT_WPM,
                 voice: None,
-                current: None,
+                player: None,
             };
             s.set_rate(1.0);
             assert_eq!(s.wpm, ESPEAK_DEFAULT_WPM);
@@ -255,7 +351,7 @@ mod tests {
                 bin: ESPEAK_BIN,
                 wpm: ESPEAK_DEFAULT_WPM,
                 voice: None,
-                current: None,
+                player: None,
             };
             assert_eq!(s.voice, None);
             s.set_voice("en-us");
@@ -266,7 +362,7 @@ mod tests {
                 bin: ESPEAK_BIN,
                 wpm: ESPEAK_DEFAULT_WPM,
                 voice: None,
-                current: None,
+                player: None,
             };
             assert_eq!(s.backend_name(), "espeak-ng");
         }
@@ -275,9 +371,40 @@ mod tests {
                 bin: ESPEAK_BIN,
                 wpm: ESPEAK_DEFAULT_WPM,
                 voice: None,
-                current: None,
+                player: None,
             };
             assert!(!s.is_speaking());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn speech_queues_and_stops_on_its_own_thread() {
+        // `sh -c 'sleep 5' --stdin` stands in for a voice that takes a while.
+        let player = Player::start("sh").expect("a thread to speak on");
+        let long = || Job::Speak {
+            args: vec!["-c".into(), "sleep 5".into()],
+            text: "a long sentence".into(),
+            interrupt: false,
+        };
+        let started = std::time::Instant::now();
+        player.speaking.store(true, Ordering::Release);
+        player.jobs.send(long()).unwrap();
+        player.jobs.send(long()).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the caller waited"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(player.speaking.load(Ordering::Acquire));
+        player.jobs.send(Job::Stop).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while player.speaking.load(Ordering::Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stop left it speaking"
+            );
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }

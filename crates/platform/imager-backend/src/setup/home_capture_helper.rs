@@ -75,7 +75,7 @@ impl OriginalRequest {
             ));
         }
         Ok(Self {
-            schema: 2,
+            schema: 3,
             action: OriginalAction::RegisterOriginal,
             home: super::migration_store::NativePath::encode(home),
             plan,
@@ -101,7 +101,7 @@ impl OriginalRequest {
             ));
         }
         Ok(Self {
-            schema: 2,
+            schema: 3,
             action: OriginalAction::RegisterApplications,
             home: super::migration_store::NativePath::encode(home),
             plan,
@@ -545,7 +545,7 @@ fn execute_retained(request: RetainedRequest, caller: u32, directory: &Path) -> 
     }
 }
 fn execute_original(request: OriginalRequest, caller: u32, directory: &Path) -> io::Result<()> {
-    if request.schema != 2 {
+    if request.schema != 3 {
         return Err(failure("Unsupported original source registration"));
     }
     request.validate_material()?;
@@ -728,7 +728,7 @@ mod tests {
             .unwrap();
         let uid = rustix::process::getuid().as_raw();
         let grant: Grant = serde_json::from_value(serde_json::json!({
-            "schema":1,"operation":uuid::Uuid::new_v4().to_string(),"caller":uid,
+            "schema":2,"operation":uuid::Uuid::new_v4().to_string(),"caller":uid,
             "home":super::super::migration_store::NativePath::encode(directory.path()),
             "inode":std::fs::metadata(directory.path()).unwrap().ino(),"owner":uid,
             "filesystem":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],

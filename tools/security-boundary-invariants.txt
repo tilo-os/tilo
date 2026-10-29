@@ -61,7 +61,12 @@ os/tests/greeter_auth_security.sh
 os/tests/secret_service_single_provider.sh
 os/tests/repair_mode.sh
 os/tests/installer_profile_transport.sh
-os/tests/imager_release_invariants.sh
+apps/imager/packaging/test_release_catalog.py
+os/tests/forgejo_release_publication.sh
+os/tests/internal_bundle_catalog.sh
+os/tests/public_release_origin.sh
+os/tests/winget_acceptance_monitor.sh
+os/tests/winget_publication_idempotency.sh
 os/tests/imager_broker_credentials.sh
 os/tests/imager_ephemeral_runner.sh
 os/tests/imager_ephemeral_runner_windows.sh
@@ -70,5 +75,4 @@ os/tests/generation_series_security.sh
 os/tests/system_extension_invariants.sh
 os/tests/tinker_subprocess_invariants.sh
 os/tests/local_model_catalog_invariants.sh
-os/tests/release_pipeline_invariants.sh
 os/tests/test_thin_app_selection.py

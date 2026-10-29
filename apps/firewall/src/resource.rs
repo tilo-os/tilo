@@ -30,7 +30,7 @@ use ui::capability_door::Door;
     available = Firewall::available,
     children = Firewall::zone_places,
     search = Firewall::search,
-    version = 2,
+    version = 3,
     migrate = crate::model::upgrade,
 )]
 impl Firewall {
@@ -428,6 +428,54 @@ mod tests {
         );
         assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
         assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
+    }
+
+    /// A configuration of version 2 stored each rule's match with its fields
+    /// flat beside its variant's name. Opened now, every rule matches what it
+    /// matched, its fields stored by its variant.
+    #[test]
+    fn rules_kept_with_flat_matches_migrate_to_fields_stored_by_variant() {
+        use ui::automerge::{ObjType, ReadDoc as _, ScalarValue};
+        use ui::tilo_resource::{Model as _, Replica, Slot, evolution, read_key};
+        let mut replica = Replica::<Firewall>::new();
+        replica
+            .apply(Firewall::import_of(&sample_config()))
+            .unwrap();
+        let expected = replica.state().unwrap();
+        let doc = replica.doc_mut();
+        let root = ui::automerge::ROOT;
+        let mut flattened = Vec::new();
+        for (_, zone) in evolution::map_values(doc, &root, "zones").unwrap() {
+            for rule in evolution::collection_items(doc, &zone, "rules").unwrap() {
+                let matcher: crate::model::Matcher = read_key(doc, &rule, "matcher").unwrap();
+                Slot::Key(&rule, "matcher").remove(doc).unwrap();
+                let map = Slot::Key(&rule, "matcher")
+                    .object(doc, ObjType::Map)
+                    .unwrap();
+                evolution::fixture(doc, &map, &matcher.to_json()).unwrap();
+                flattened.push(rule);
+            }
+        }
+        assert!(!flattened.is_empty(), "the sample has rules to migrate");
+        Slot::Key(&root, evolution::VERSION_KEY)
+            .put_scalar(doc, ScalarValue::Uint(2))
+            .unwrap();
+        doc.commit();
+        let mut old = doc.fork();
+        assert!(
+            evolution::read_checked::<Firewall>(&old).is_err(),
+            "unmigrated"
+        );
+        assert!(evolution::migrate::<Firewall>(&mut old).unwrap());
+        assert_eq!(evolution::read_checked::<Firewall>(&old).unwrap(), expected);
+        for rule in flattened {
+            let (_, matcher) = old.get(&rule, "matcher").unwrap().unwrap();
+            assert!(
+                old.keys(&matcher)
+                    .all(|key| key == "$variant" || key.starts_with("$field/")),
+                "a match's fields are stored by its variant"
+            );
+        }
     }
 
     /// The configuration still to apply is the stored one until this device

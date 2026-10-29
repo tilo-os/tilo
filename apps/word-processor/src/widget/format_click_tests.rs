@@ -22,13 +22,13 @@ fn press_bar(app: &mut App, name: &str) {
 }
 
 fn first_block_marks(app: &mut App) -> Vec<(String, usize, usize)> {
-    app.with_surface::<WordProcessorWidget, _>(|w| {
+    app.with_surface::<WordProcessorWidget, _>(super::tests::on_editor(|w| {
         w.blocks[0]
             .marks
             .iter()
             .map(|m| (m.name.clone(), m.start, m.end))
             .collect()
-    })
+    }))
     .unwrap()
 }
 
@@ -38,24 +38,28 @@ fn first_block_marks(app: &mut App) -> Vec<(String, usize, usize)> {
 fn bar_bold_bolds_a_double_clicked_word_as_one_step() {
     let mut app = open();
     let body = app
-        .with_surface::<WordProcessorWidget, _>(|w| w.zoom_viewport.center())
+        .with_surface::<WordProcessorWidget, _>(super::tests::on_editor(|w| {
+            w.zoom_viewport.center()
+        }))
         .unwrap();
     app.harness().click_at(body.x, body.y);
     app.harness().type_text("Meeting notes");
     app.settle();
     let word = app
-        .with_surface::<WordProcessorWidget, _>(|w| {
+        .with_surface::<WordProcessorWidget, _>(super::tests::on_editor(|w| {
             let l = w.laid.first().expect("a laid block");
             Point::new(
                 w.rect.x0 + l.text_x + 12.0,
                 w.rect.y0 + l.y_top + l.height / 2.0,
             )
-        })
+        }))
         .unwrap();
     app.harness().double_click_at(word.x, word.y);
     app.settle();
     assert!(
-        app.with_surface::<WordProcessorWidget, _>(|w| w.inner.has_selection())
+        app.with_surface::<WordProcessorWidget, _>(super::tests::on_editor(|w| w
+            .inner
+            .has_selection()))
             .unwrap(),
         "the double-click selected the word"
     );
@@ -77,7 +81,9 @@ fn bar_bold_bolds_a_double_clicked_word_as_one_step() {
         "undo takes back the bold"
     );
     let text = app
-        .with_surface::<WordProcessorWidget, _>(|w| w.blocks[0].text.clone())
+        .with_surface::<WordProcessorWidget, _>(super::tests::on_editor(|w| {
+            w.blocks[0].text.clone()
+        }))
         .unwrap();
     assert_eq!(text, "Meeting notes", "and leaves the typing");
 }

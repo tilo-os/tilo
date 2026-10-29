@@ -4,6 +4,7 @@
 
 pub use settings_sections::desktop::*;
 pub use settings_sections::device_vpn::DeviceVpnPrefs;
+pub use settings_sections::mobile_data::{MobileDataUsage, ResetDay};
 pub use settings_sections::osk::{KEYBOARD_APP_ID, OskSourceSettings};
 pub use settings_sections::prefs::*;
 pub use settings_sections::providers::{AgentProviders, HostedAgentProviders};
@@ -35,8 +36,6 @@ pub fn mute_shown(english: &str) -> String {
 /// unwinding from a failed assertion. `HOME` and the cache directory stay put
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 pub mod test_env {
-    use crate::settings_app::SettingsApp;
-
     /// Holds the redirected environment for a test's duration.
     pub struct ConfigGuard {
         // Field order is drop order: restore the environment before the
@@ -61,34 +60,6 @@ pub mod test_env {
                 _env: env,
                 _dir: dir,
             }
-        }
-    }
-
-    /// A private config root handed to the app explicitly, leaving the
-    /// environment alone: for tests that construct and lay out the app but
-    /// persist nothing through the per-user settings file, so they run in
-    /// parallel with each other and with [`ConfigGuard`] tests.
-    pub struct ScratchConfig {
-        dir: tempfile::TempDir,
-    }
-
-    #[expect(
-        clippy::new_without_default,
-        reason = "making one creates a directory, which a default must not"
-    )]
-    impl ScratchConfig {
-        pub fn new() -> Self {
-            Self {
-                dir: tempfile::Builder::new()
-                    .prefix("tilo-settings-config-")
-                    .tempdir()
-                    .expect("create test config dir"),
-            }
-        }
-
-        /// The app over this scratch config root.
-        pub fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.dir.path().join("tilo"))
         }
     }
 }
@@ -123,7 +94,8 @@ mod tests {
     /// The settings of the profile at `root` after storing `value` as its
     /// section, as the panes and the door store it.
     fn store<T: SettingsSchema>(root: &std::path::Path, value: &T) -> serde_json::Value {
-        crate::host::PaneCx::in_profile(root.to_owned())
+        crate::area::AreaContext::in_profile(root.to_owned())
+            .storage
             .settings::<T>()
             .set(value)
             .unwrap();
@@ -160,7 +132,8 @@ mod tests {
     /// Section `T` as read from settings holding `text`.
     fn read<T: SettingsSchema>(text: &str) -> T {
         let dir = seeded(text);
-        crate::host::PaneCx::in_profile(dir.path().to_owned())
+        crate::area::AreaContext::in_profile(dir.path().to_owned())
+            .storage
             .settings::<T>()
             .get()
     }

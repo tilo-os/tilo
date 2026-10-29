@@ -163,9 +163,6 @@ mod tests {
     // decides when the grant ends here.
     struct Polled(crate::shell::channel_policy::WorkspaceChannelDirectory);
     impl crate::shell::channel_encryption::ChannelDirectory for Polled {
-        fn governs(&self, room: crate::shell::state::RoomId) -> bool {
-            self.0.governs(room)
-        }
         fn governor_of(
             &self,
             room: crate::shell::state::RoomId,
@@ -178,7 +175,7 @@ mod tests {
             channel: collab_types::ChannelId,
             route: Option<&collab_types::ChannelRoute>,
             now: u64,
-        ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+        ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
             self.0.allowed_devices(room, channel, route, now)
         }
     }
@@ -193,9 +190,7 @@ mod tests {
     )]
     #[test]
     fn a_temporary_service_member_reads_until_its_grant_expires() {
-        use crate::shell::channel_encryption::testing::{
-            Directory, Endpoint, Policy, Room, key, public,
-        };
+        use crate::shell::channel_encryption::testing::{Endpoint, Room, key, public};
         use crate::shell::channel_encryption::{
             ChannelAccess, ChannelEncryption, ChannelEncryptionConfig,
         };
@@ -217,8 +212,9 @@ mod tests {
             .unwrap()
             .set_owner(owner_id.clone());
         let tree = tree.shared();
-        let channel =
-            collab_types::document_channel_id("so.tilo.writer", &room.to_string(), "brief");
+        // Each device names the record it asks for: a channel nobody named
+        // admits no one.
+        let route = collab_types::ChannelRoute::new("so.tilo.writer", "brief");
         let artifact = collab_types::ArtifactId::new();
 
         let transport = Arc::new(Room::default());
@@ -248,14 +244,18 @@ mod tests {
                     })),
             )),
         );
+        // The service reads the same (replicated) workspace tree: every
+        // participant refuses a commit its own view of the policy does not
+        // back, so it accepts its admission only once it sees its grant.
         let mut service = open(
             SERVICE,
             service_dir.path(),
-            Box::new(Directory {
-                governs: false,
-                governor: public(OWNER),
-                policy: Policy::default(),
-            }),
+            Box::new(Polled(
+                WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
+                    .with_governors(Box::new(|_| {
+                        Some((*public(SERVICE).as_bytes(), *public(OWNER).as_bytes()))
+                    })),
+            )),
         );
         let (owner_end, service_end) = (
             Endpoint::join(&transport, room, 0),
@@ -275,7 +275,7 @@ mod tests {
                 service.pump(&service_end, *now, wall);
             }
         };
-        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+        let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("the owner's device opens its own channel");
         };
         let before = keys
@@ -288,12 +288,12 @@ mod tests {
 
         // Without a grant the service only waits.
         assert!(matches!(
-            service.access(room, channel, now),
+            service.access_record(room, &route, now).1,
             ChannelAccess::Waiting
         ));
         run(&mut owner, &mut service, &mut now, 1_000, 5);
         assert!(matches!(
-            service.access(room, channel, now),
+            service.access_record(room, &route, now).1,
             ChannelAccess::Waiting
         ));
 
@@ -312,7 +312,7 @@ mod tests {
             tree.govern_requests_here_for_test(&owner_id);
         }
         run(&mut owner, &mut service, &mut now, 1_000, 5);
-        let ChannelAccess::Ready(service_keys) = service.access(room, channel, now) else {
+        let ChannelAccess::Ready(service_keys) = service.access_record(room, &route, now).1 else {
             panic!("a granted service member is admitted");
         };
         assert!(
@@ -321,7 +321,7 @@ mod tests {
                 .is_ok(),
             "it reads the channel's history, like any joiner"
         );
-        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+        let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("owner keys");
         };
         let during = keys
@@ -340,10 +340,10 @@ mod tests {
         // The grant's deadline passes: the owner removes the service.
         run(&mut owner, &mut service, &mut now, 2_000, 5);
         assert!(matches!(
-            service.access(room, channel, now),
+            service.access_record(room, &route, now).1,
             ChannelAccess::Removed
         ));
-        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+        let ChannelAccess::Ready(keys) = owner.access_record(room, &route, now).1 else {
             panic!("owner keys");
         };
         assert!(

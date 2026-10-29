@@ -23,6 +23,13 @@ use serde::{Deserialize, Serialize};
 /// there, and there is one framing per version
 /// (docs/architecture/compatibility.md).
 pub const ALPN: &[u8] = b"tilo-relay/1";
+/// ALPN of the one connection between two of a person's devices, which
+/// carries their device-to-device session: each side first proves its
+/// person's certificates (the endpoint id proves the device key), then the
+/// two exchange what is for the person's own devices alone. The device with
+/// the lower endpoint id dials it, the other only when it is not dialled;
+/// of two dialled at once, both keep the lower id's.
+pub const SIBLING_ALPN: &[u8] = b"tilo-relay-sibling/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";
 
@@ -544,6 +551,18 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         frame: Vec<u8>,
     },
+
+    /// What a member device builds its replica of the room from, sent to a
+    /// subscriber before the room's replay: the room's
+    /// `tilo_workspace_join::JoinBootstrap` for this device, postcard
+    /// encoded, as a joining native device receives it. Its governance
+    /// messages and records stay out: the replay that follows carries the
+    /// room's retained governance and records.
+    RoomBootstrap {
+        workspace_id: u64,
+        #[serde(with = "serde_bytes")]
+        bootstrap: Vec<u8>,
+    },
 }
 
 impl Envelope {
@@ -590,6 +609,7 @@ impl Envelope {
             Self::RecordOpened { .. } => "RecordOpened",
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
+            Self::RoomBootstrap { .. } => "RoomBootstrap",
         }
     }
 
@@ -634,7 +654,8 @@ impl Envelope {
             | Self::VoiceCallList { workspace_id, .. }
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
-            | Self::RecordOpened { workspace_id, .. } => Some(*workspace_id),
+            | Self::RecordOpened { workspace_id, .. }
+            | Self::RoomBootstrap { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }
     }

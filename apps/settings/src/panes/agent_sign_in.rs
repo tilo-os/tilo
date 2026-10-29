@@ -26,16 +26,17 @@ use account_custody::{
 };
 use agent_provider_config::presets::Preset;
 use agent_provider_config::{ProviderProfile, SecretReference, SignInCredential, SignInIssuer};
+use ui::framework::Actions;
 use ui::widget::{Button, Row};
 use zeroize::Zeroizing;
 
-use super::agent_models::AgentModelsEffect;
+use super::agent_models::{AgentModelsEffect, invoking};
 use super::agent_vertex;
 use crate::channel::{self, Receiver, TryRecvError};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::BrowserOpener;
-use crate::widgets::{Item, SettingsSection, note, row, rows, section};
+use crate::resource::Settings;
+use provider_settings_ui::widgets::{Item, SettingsSection, note, row, rows, section};
 
 /// A provider set up by signing in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,9 +60,9 @@ impl Service {
 
     pub(crate) fn preset(self) -> Preset {
         match self {
-            Self::ChatGpt => Preset::ChatGpt,
-            Self::Copilot => Preset::Copilot,
-            Self::OpenRouter => Preset::OpenRouter,
+            Self::ChatGpt => Preset::CHATGPT,
+            Self::Copilot => Preset::COPILOT,
+            Self::OpenRouter => Preset::OPENROUTER,
         }
     }
 
@@ -394,7 +395,7 @@ impl SignInSetup {
     }
 
     /// The card of the sign-in under way.
-    pub(crate) fn section(&self, cx: &PaneCx) -> SettingsSection {
+    pub(crate) fn section(&self, actions: &Actions<Settings>) -> SettingsSection {
         let mut body: Vec<Item> = Vec::new();
         match self.wait.device_code() {
             Some((code, page)) => body.push(device_code_note(code, page)),
@@ -406,12 +407,11 @@ impl SignInSetup {
         if self.service == Service::ChatGpt {
             body.push(note(&t("agent-sign-in-chatgpt-unofficial")));
         }
-        body.push(row(Box::new(Row::new().push(Box::new(
-            cx.bind_invocation(
-                Button::new("agent-models-sign-in-cancel", &t("agent-cancel")),
-                AgentModelsEffect::CancelSignIn,
-            ),
-        )))));
+        body.push(row(Box::new(Row::new().push(Box::new(invoking(
+            actions,
+            Button::new("agent-models-sign-in-cancel", &t("agent-cancel")),
+            AgentModelsEffect::CancelSignIn,
+        ))))));
         section(&self.service.sign_in_label(), rows(body))
     }
 }

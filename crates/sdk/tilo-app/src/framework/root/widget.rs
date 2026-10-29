@@ -19,6 +19,7 @@ use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
 use ui_core::widget::capability::{Request, RequestMut};
 use ui_core::widget::controls::{ActionControls, AttributedControlInvocation};
+use ui_core::widget::empty_state::PaintedEmptyStates;
 use ui_core::widget::{AppKind, AppModel, AppWidget, Decorator, IconDescriptor, ModelPath, Widget};
 
 /// What the root widget asks of the root of one resource type: the view it
@@ -153,18 +154,19 @@ pub(crate) trait RootControls {
     fn has_pending_control_invocation(&self) -> bool;
 }
 
-/// The root widget of a framework app.
-pub(crate) struct RootWidget(Box<dyn RootModel>);
+/// The root widget of a framework app, and the empty states its view
+/// painted itself, described for it.
+pub(crate) struct RootWidget(Box<dyn RootModel>, PaintedEmptyStates);
 
 impl RootWidget {
     pub(crate) fn new(root: Box<dyn RootModel>) -> Self {
-        Self(root)
+        Self(root, PaintedEmptyStates::default())
     }
 
     /// The root widget a host mounts. Made here, not where the resource's
     /// type is known, so its widget table is compiled once for every app.
     pub(crate) fn boxed(root: Box<dyn RootModel>) -> Box<dyn AppWidget> {
-        Box::new(Self(root))
+        Box::new(Self::new(root))
     }
 }
 
@@ -241,7 +243,10 @@ impl Decorator for RootWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.0.draw(scene, transform, text, theme, presence);
+        let root = &mut self.0;
+        self.1.draw(transform, || {
+            root.draw(scene, transform, text, theme, presence);
+        });
     }
 
     fn needs_redraw(&self) -> bool {
@@ -289,8 +294,26 @@ impl Decorator for RootWidget {
         self.0.view_mut().handle_event(event, ctx);
     }
 
+    // An empty state the view draws as pixels (a surface's, a widget's
+    // own paint) is described as well, its action a button that clicks
+    // where it is drawn: often the only way on from a first-use screen, for
+    // a screen reader as much as for anyone.
     fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
-        self.0.view().accessibility()
+        let view = self.0.view();
+        self.1.describe(view.accessibility(), view)
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<ui_core::vello::kurbo::Rect> {
+        // Asked once per node without bounds of its own while the tree is
+        // built, so describing the whole view here would make a build
+        // quadratic in its nodes. With no empty state painted there is
+        // nothing of the root's own to place.
+        if self.1.is_empty() {
+            return self.0.view().synthetic_accessibility_rect(path);
+        }
+        Decorator::accessibility(self)
+            .and_then(|described| self.1.action_rect(&described, path))
+            .or_else(|| self.0.view().synthetic_accessibility_rect(path))
     }
 
     fn perform_semantic_action(

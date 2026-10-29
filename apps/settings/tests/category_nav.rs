@@ -18,7 +18,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use settings::SettingsApp;
 use settings::categories::Category;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -43,15 +42,15 @@ fn row_is_active(app: &mut Window, label: &str) -> bool {
 /// commands — proof the composition, including the new category's content
 /// pane, actually paints rather than collapsing to nothing.
 fn renders_something(app: &mut Window) -> bool {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<ui::widget::NavShell, _>(|shell| {
         let theme = ui::Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::empty();
         let mut scene = Scene::new();
-        settings.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        shell.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         !scene.encoding().is_empty()
     })
-    .expect("settings hosts its surface")
+    .expect("settings shows its shell")
 }
 
 /// Count the selected navigation rows. After a navigation exactly one row, the

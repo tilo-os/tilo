@@ -39,7 +39,12 @@ use serde_json::{Value, json};
 
 /// Text with at least one character that is not whitespace, trimmed. See
 /// the [module](self).
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// It is written, read and printed through the code for `String` (reading
+/// then checks the text, in code compiled once), so an app that takes one
+/// reuses what it already has for strings rather than a copy for this type.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct NonBlank(String);
 
 impl NonBlank {
@@ -48,6 +53,20 @@ impl NonBlank {
     pub fn parse(text: &str) -> Option<Self> {
         let trimmed = text.trim();
         (!trimmed.is_empty()).then(|| Self(trimmed.to_owned()))
+    }
+
+    /// `text` trimmed, or [`Blank`] when nothing is left: [`Self::parse`]
+    /// for text already owned, as JSON reads it.
+    #[inline(never)]
+    fn from_owned(text: String) -> Result<Self, Blank> {
+        if text.len() == text.trim().len() {
+            return if text.is_empty() {
+                Err(Blank)
+            } else {
+                Ok(Self(text))
+            };
+        }
+        Self::parse(&text).ok_or(Blank)
     }
 
     /// The text.
@@ -67,9 +86,12 @@ impl NonBlank {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Blank;
 
+/// What [`Blank`] says.
+const BLANK: &str = "blank text where something must be said";
+
 impl fmt::Display for Blank {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("blank text where something must be said")
+        f.write_str(BLANK)
     }
 }
 
@@ -103,6 +125,12 @@ impl From<NonBlank> for String {
     }
 }
 
+impl fmt::Debug for NonBlank {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
 impl fmt::Display for NonBlank {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -123,14 +151,17 @@ impl PartialEq<&str> for NonBlank {
 
 impl serde::Serialize for NonBlank {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.0)
+        self.0.serialize(serializer)
     }
 }
 
 impl<'de> serde::Deserialize<'de> for NonBlank {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        Self::parse(&text).ok_or_else(|| <D::Error as serde::de::Error>::custom(Blank))
+        // Read as a `String` is (the reader every app already has), then
+        // checked by code compiled once; the error is made from the plain
+        // message, which needs no formatting machinery per reader.
+        let text = String::deserialize(deserializer)?;
+        Self::from_owned(text).map_err(|Blank| <D::Error as serde::de::Error>::custom(BLANK))
     }
 }
 

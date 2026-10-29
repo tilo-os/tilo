@@ -93,6 +93,15 @@ impl ShellOverlayHost {
             .collect()
     }
 
+    /// Where the open menu's panel stands, its title and rows inside it.
+    pub fn power_menu_panel_rect(&self) -> Rect {
+        let panel = self.layers.power_menu.seat().panel();
+        if panel.is_zero_area() {
+            return Rect::ZERO;
+        }
+        panel + self.layers.power_menu.area().origin().to_vec2()
+    }
+
     /// Open the power menu for a capture of the desktop with it up.
     pub fn force_power_menu_for_visual_test(&mut self) {
         self.open_power_menu();

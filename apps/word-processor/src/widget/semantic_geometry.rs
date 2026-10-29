@@ -3,12 +3,12 @@
 //! This is not invocation authority or a presentation receipt. A future capture
 //! adapter must separately bind its anchor and document frontier to that frame.
 
-use super::{Affine, CARET_WIDTH, Rect, WordProcessorWidget, char_to_byte, num};
+use super::{Affine, CARET_WIDTH, Editor, Rect, char_to_byte, num};
 use tilo_actions::{InteractionAnchor, MAX_ANCHOR_ITEMS};
 
 const MAX_TEXT_RECTS: usize = 4096;
 
-impl WordProcessorWidget {
+impl Editor {
     /// Body text only: running-region layouts depend on the locally active
     /// region, so observing them cannot reliably resolve another participant.
     /// Returned rectangles are content coordinates, clipped through the actual

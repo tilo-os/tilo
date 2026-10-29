@@ -138,15 +138,15 @@ impl SecretAsks {
 }
 
 /// The prompt the window shows, with the key it was asked under.
-pub(crate) struct ShownPrompt {
-    pub key: String,
-    pub dialog: ModalDialog<SecretPrompt>,
+struct ShownPrompt {
+    key: String,
+    dialog: ModalDialog<SecretPrompt>,
 }
 
 impl ShownPrompt {
     /// Take in what the panes asked: open, refuse, wait or close. Whether
     /// the window's tree changed.
-    pub(crate) fn follow(shown: &mut Option<Self>, asks: &SecretAsks) -> bool {
+    fn follow(shown: &mut Option<Self>, asks: &SecretAsks) -> bool {
         let mut changed = false;
         for ask in asks.take_asks() {
             match ask {
@@ -185,7 +185,7 @@ impl ShownPrompt {
 
     /// Hand on what the person answered, if they did. Whether the prompt
     /// closed.
-    pub(crate) fn answered(shown: &mut Option<Self>, asks: &SecretAsks) -> bool {
+    fn answered(shown: &mut Option<Self>, asks: &SecretAsks) -> bool {
         let Some(prompt) = shown.as_mut() else {
             return false;
         };
@@ -204,6 +204,154 @@ impl ShownPrompt {
                 false
             }
             None => false,
+        }
+    }
+}
+
+/// The window's content, under the prompt a pane asked for while it is
+/// open: the prompt takes every event and is all assistive technology and
+/// the keyboard reach, drawn over the content, which stays laid out under
+/// it.
+///
+/// A piece of Settings' own around its shell: the toolkit's modal sheet
+/// (`ModalDialog`) is a widget a window holds, while these prompts are
+/// asked by the panes' areas from their background work, by the key the
+/// answer goes back under ([`SecretAsks`]), which no view state expresses.
+pub(crate) struct SecretSheet {
+    asks: SecretAsks,
+    shown: Option<ShownPrompt>,
+    /// The prompt opened or closed since the host last built the tree.
+    changed: bool,
+    content: ui::widget::Element,
+}
+
+impl SecretSheet {
+    pub(crate) fn new(asks: SecretAsks, content: ui::widget::Element) -> Self {
+        Self {
+            asks,
+            shown: None,
+            changed: false,
+            content,
+        }
+    }
+}
+
+impl ui::widget::Decorator for SecretSheet {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
+    }
+
+    fn name(&self) -> &'static str {
+        "SettingsSecretSheet"
+    }
+
+    fn take_structure_change(&mut self) -> ui::widget::StructureChange {
+        let own = ui::widget::StructureChange::of(std::mem::take(&mut self.changed));
+        own.join(self.content.take_structure_change())
+    }
+
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        // A pane asked for a secret, or is done with the one it asked.
+        if ShownPrompt::follow(&mut self.shown, &self.asks) {
+            self.changed = true;
+        }
+        self.content.sync(state, path);
+        if let Some(shown) = &mut self.shown {
+            shown.dialog.sync(state, path);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        // The prompt takes every event while it is open.
+        let Some(shown) = &mut self.shown else {
+            self.content.handle_event(event, ctx);
+            return;
+        };
+        shown.dialog.handle_detached(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            &mut ctx.state,
+            ctx.path,
+        );
+        *ctx.handled = true;
+        if ShownPrompt::answered(&mut self.shown, &self.asks) {
+            self.changed = true;
+        }
+    }
+
+    /// The content, or while it is open the prompt alone: nothing under it
+    /// is reachable.
+    fn children(&self) -> Vec<&dyn Widget> {
+        match &self.shown {
+            Some(shown) => vec![&shown.dialog as &dyn Widget],
+            None => self.content.children(),
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        match &mut self.shown {
+            Some(shown) => vec![&mut shown.dialog as &mut (dyn Widget + '_)],
+            None => self.content.children_mut(),
+        }
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        match &self.shown {
+            Some(shown) => visitor(&shown.dialog),
+            None => self.content.for_each_child(visitor),
+        }
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.content
+            .draw_overlay(scene, transform, text, theme, presence);
+        if let Some(shown) = &mut self.shown {
+            shown
+                .dialog
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+    }
+
+    fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
+        match &self.shown {
+            Some(shown) => shown.dialog.modal_capture(),
+            None => self.content.modal_capture(),
+        }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.shown
+            .as_ref()
+            .is_some_and(|shown| shown.dialog.needs_animation_frame())
+            || self.content.needs_animation_frame()
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let prompt = self
+            .shown
+            .as_ref()
+            .and_then(|shown| shown.dialog.next_wake_deadline());
+        match (prompt, self.content.next_wake_deadline()) {
+            (Some(prompt), Some(content)) => Some(prompt.min(content)),
+            (prompt, content) => prompt.or(content),
         }
     }
 }

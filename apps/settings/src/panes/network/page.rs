@@ -11,13 +11,13 @@ use ui::widget::{
 };
 
 use super::{
-    IPV6_METHODS, MAC_POLICIES, METERED_POLICIES, NetworkEffect, NetworkModel, PROXY_MODES,
-    ipv6_shown, mac_from_label, mac_id, mac_shown, metered_from_label, metered_id, metered_shown,
-    order, proxy_shown, security_shown,
+    IPV6_METHODS, MAC_POLICIES, METERED_POLICIES, NetworkEffect, PROXY_MODES, Page, ipv6_shown,
+    mac_from_label, mac_id, mac_shown, metered_from_label, metered_id, metered_shown, order,
+    proxy_shown, security_shown,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, block, card, error_caption, note, row, rows, setting_row,
     setting_row_described, value_row,
 };
@@ -45,7 +45,7 @@ fn last_joined(profile: &SavedNetworkProfile) -> String {
     }
 }
 
-impl NetworkModel {
+impl Page<'_> {
     /// Every network in range, narrowed by the window bar's search, and the
     /// way into one that hides its name.
     pub(super) fn all_page(&self) -> Vec<SettingsSection> {
@@ -155,7 +155,7 @@ impl NetworkModel {
         )
         .action(
             t("net-network-settings"),
-            self.cx.row_invocation(
+            self.row_invocation(
                 &resource,
                 NetworkEffect::OpenNetworkPage {
                     ssid: profile.name.clone(),
@@ -164,7 +164,7 @@ impl NetworkModel {
         )
         .destructive(
             t("net-forget"),
-            self.cx.row_invocation(
+            self.row_invocation(
                 &resource,
                 NetworkEffect::ForgetNetwork {
                     profile: profile.uuid.clone(),
@@ -173,7 +173,7 @@ impl NetworkModel {
         );
         line = line.trailing(Box::new(menu));
         Box::new(
-            match self.cx.row_invocation(
+            match self.row_invocation(
                 &resource,
                 NetworkEffect::OpenNetworkPage {
                     ssid: profile.name.clone(),
@@ -239,7 +239,7 @@ impl NetworkModel {
             .secondary(state);
         if !net.connected && !self.connecting.contains(&net.ssid) {
             signal = signal.trailing(Box::new(
-                self.cx.bind_row(
+                self.bind_row(
                     Button::new("settings.network.page.connect", &t("net-join"))
                         .role(ButtonRole::Primary),
                     &live,
@@ -304,7 +304,7 @@ impl NetworkModel {
         let mut out = vec![setting_row(
             &t("net-autoconnect"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     Toggle::from_state(&LocalState::new(profile.autoconnect))
                         .with_id(&format!("network.profile.autoconnect.{uuid}")),
@@ -323,7 +323,7 @@ impl NetworkModel {
             &t("net-priority"),
             &t("net-priority-caption"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     NumberInput::new(f64::from(settings.priority.unwrap_or(0)))
                         .with_range(-999.0, 999.0)
@@ -343,7 +343,7 @@ impl NetworkModel {
             &t("net-metered-connection"),
             &t("net-metered-caption"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     Dropdown::from_state(
                         METERED_POLICIES
@@ -370,7 +370,7 @@ impl NetworkModel {
             &t("net-hardware-address"),
             &t("net-mac-caption"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     Dropdown::from_state(
                         MAC_POLICIES.iter().map(|id| mac_shown(id)).collect(),
@@ -393,7 +393,7 @@ impl NetworkModel {
             &t("net-hidden-network"),
             &t("net-hidden-network-caption"),
             Box::new(
-                self.cx.bind_on_row(
+                self.bind_on_row(
                     &live,
                     Toggle::from_state(&LocalState::new(settings.hidden.unwrap_or(false)))
                         .with_id(&format!("network.profile.hidden.{uuid}")),
@@ -441,7 +441,7 @@ impl NetworkModel {
             .revealed
             .as_ref()
             .filter(|shown| shown.of == profile.uuid);
-        let show = self.cx.bind_row(
+        let show = self.bind_row(
             Button::icon_only(
                 &format!("settings.network.profile.password.show.{}", profile.uuid),
                 if revealed.is_some() {
@@ -474,7 +474,7 @@ impl NetworkModel {
         ))];
         out.push(row(Box::new(
             ui::widget::Row::new()
-                .push(Box::new(self.cx.bind_row(
+                .push(Box::new(self.bind_row(
                     Button::new(
                         &format!("settings.network.profile.password.set.{}", profile.uuid),
                         &t("net-change-password"),
@@ -507,7 +507,7 @@ impl NetworkModel {
                 &t("net-dns-servers"),
                 &t("net-dns-caption"),
                 Box::new(
-                    self.cx.bind_on_row(
+                    self.bind_on_row(
                         &live,
                         TextInput::from_state(&LocalState::new(ipv4.dns.join(", ")))
                             .with_id(&format!("network.profile.dns.{uuid}"))
@@ -606,7 +606,7 @@ impl NetworkModel {
                 &t("net-share-qr-title"),
                 &t("net-share-qr-caption"),
                 Box::new(
-                    self.cx.bind_row(
+                    self.bind_row(
                         Button::new(
                             "settings.network.page.qr",
                             &t(if shown.is_some() {
@@ -634,7 +634,7 @@ impl NetworkModel {
             out.push(setting_row_described(
                 &t("net-share-devices"),
                 &t("net-share-caption"),
-                Box::new(self.cx.bind_row(
+                Box::new(self.bind_row(
                     Button::new(
                         &format!("settings.network.profile.share.{}", profile.uuid),
                         &t("net-share"),
@@ -648,7 +648,7 @@ impl NetworkModel {
             out.push(setting_row(
                 &t("net-forget-network"),
                 Box::new(
-                    self.cx.bind_row(
+                    self.bind_row(
                         Button::new(
                             &format!("settings.network.profile.forget.{}", profile.uuid),
                             &t("net-forget"),

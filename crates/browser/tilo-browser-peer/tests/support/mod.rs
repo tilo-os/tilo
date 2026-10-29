@@ -56,8 +56,38 @@ pub fn scratch_dir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
+/// The test hosts' devices. A governed room's host writes the first state
+/// of each record a member starts; the tests read what members wrote.
+static HOSTS: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+/// Whether `device` is a test host's.
+pub fn is_host(device: &[u8; 32]) -> bool {
+    HOSTS.lock().unwrap().contains(device)
+}
+
+/// Whether `event` is a document a member wrote, not one of a host's.
+pub fn members_document(event: &PeerEvent) -> bool {
+    matches!(event, PeerEvent::Document(document) if !is_host(&document.author))
+}
+
 pub fn workspace() -> u64 {
     tilo_relay_protocol::room_workspace_id(ROOM).unwrap()
+}
+
+/// Have `relay` govern [`ROOM`], the person's workspace, unless it does,
+/// and admit `device` to it as its owner: what a page asks of its host
+/// before it joins ([`PeerHandle::join_placed`]), done here for a peer
+/// that reaches the host without its rooms route.
+pub async fn place(relay: &Relay, device: &DeviceCert) {
+    let rooms = relay.rooms().unwrap();
+    if rooms.summary(ROOM).await.is_err()
+        && let Err(error) = rooms.create_room("Workspace", Some(ROOM)).await
+    {
+        // Another peer of the test may have placed it meanwhile.
+        assert!(rooms.summary(ROOM).await.is_ok(), "{error}");
+    }
+    rooms.enter(ROOM, device).await.unwrap();
 }
 
 pub struct Device {
@@ -211,6 +241,7 @@ pub async fn start_host_serving(
         })
         .await
         .unwrap();
+    HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
 }
 
@@ -255,6 +286,7 @@ pub async fn start_room_host(
         })
         .await
         .unwrap();
+    HOSTS.lock().unwrap().insert(host.cert.device_public_key);
     TestHost { relay, web }
 }
 
@@ -386,12 +418,13 @@ pub async fn ready(peers: &[&PeerHandle]) {
 
 /// Wait until a participant of the room admitted `peer` to the note's channel.
 pub async fn admitted(peer: &PeerHandle) {
+    let note = format!("route {}/{} ", route().app_id, route().record);
     wait_for("a participant to admit the page", || {
         let ready = peer
             .status()
             .channels
             .lines()
-            .any(|line| line.starts_with("route ") && line.contains(": ready;"));
+            .any(|line| line.starts_with(&note) && line.contains(": ready;"));
         async move { ready.then_some(()) }
     })
     .await;
@@ -463,9 +496,10 @@ pub async fn next_document_on(
         pending.extend(peer.drain());
         let found = pending
             .iter()
-            .position(
-                |event| matches!(event, PeerEvent::Document(document) if &document.route == route),
-            )
+            .position(|event| {
+                members_document(event)
+                    && matches!(event, PeerEvent::Document(document) if &document.route == route)
+            })
             .and_then(|index| match pending.remove(index) {
                 PeerEvent::Document(document) => document.mutation(),
                 _ => None,
@@ -478,13 +512,12 @@ pub async fn next_document_on(
 pub async fn next_document(peer: &PeerHandle, pending: &mut Vec<PeerEvent>) -> DocumentMutation {
     wait_for("a document", || {
         pending.extend(peer.drain());
-        let found = pending
-            .iter()
-            .position(|event| matches!(event, PeerEvent::Document(_)))
-            .and_then(|index| match pending.remove(index) {
+        let found = pending.iter().position(members_document).and_then(|index| {
+            match pending.remove(index) {
                 PeerEvent::Document(document) => document.mutation(),
                 _ => None,
-            });
+            }
+        });
         async move { found }
     })
     .await

@@ -1,6 +1,6 @@
 //! Actual narrow Settings page with native configuration fixture; never a desktop capture.
-use settings::{SettingsApp, categories::Category};
-use ui::{State, headless::FrameHarness, theme::Theme, widget::Widget as _};
+use settings::{SettingsShell, categories::Category};
+use ui::{framework::testing::TestApp, theme::Theme};
 use winit::keyboard::{KeyboardLayout, KeyboardLayoutKey};
 
 fn main() -> Result<(), String> {
@@ -53,13 +53,23 @@ fn main() -> Result<(), String> {
         ("high-contrast", Theme::high_contrast()),
     ] {
         for width in [600, 1100] {
-            let mut app = SettingsApp::with_config_root(output.join("private-config"))
-                .with_category(Category::Keyboard);
-            app.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
-            app.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
+            // The Keyboard page is view code, built only in the app's view.
+            let mut app = TestApp::<SettingsShell>::new().map_err(|error| format!("{error:?}"))?;
+            app.effect(&settings::effects::open_pane(Category::Keyboard))
+                .map_err(|error| format!("{error:?}"))?;
+            let root = app.harness().root_widget_mut();
+            root.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
+            root.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
                 std::sync::Arc::clone(&snapshot),
             )));
-            let frame = FrameHarness::for_root(State::new(), app, (width, 1200), theme.clone());
+            let frame = app.harness();
+            frame
+                .relayout_themed((width, 1200), theme.clone())
+                .map_err(|error| format!("{error:?}"))?;
+            // The keyboard is drawn off the UI thread.
+            if !frame.settle_for_capture(ui::time::Duration::from_secs(30)) {
+                return Err("the Keyboard page did not come to rest".into());
+            }
             let path = output.join(format!("settings-key-inspection-{theme_name}-{width}.png"));
             frame.render_png(&path);
             if !path.is_file() {

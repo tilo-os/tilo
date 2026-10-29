@@ -981,7 +981,7 @@ impl ShellOverlayHost {
         if !self.palette_visible || current != scope {
             self.open_palette_with_scope(scope);
         }
-        self.palette.set_query(&handoff.query);
+        self.search.set_query(&handoff.query);
         self.palette_visible = true;
     }
 
@@ -1077,8 +1077,7 @@ impl ShellOverlayHost {
         // closed on a same-scope repeat, wrong for a "+" click.
         if !self.palette_visible {
             self.palette_visible = true;
-            self.palette.set_focus(true);
-            self.palette.set_query("");
+            self.search.set_query("");
         }
         // Re-run the query even when the palette was already up: the rows
         // carry a placement hint that just changed.
@@ -1097,7 +1096,7 @@ impl ShellOverlayHost {
         }
         self.expanded_kinds.clear();
         self.present_kinds.clear();
-        self.palette
+        self.search
             .set_query_placeholder(t("host-search-placeholder"));
         self.active_kind_filter.clear();
         let Some(chrome) = self.chrome.clone() else {
@@ -1117,21 +1116,6 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_clear_stale_open_target_for_tests(&mut self) {
         self.clear_stale_open_target();
-    }
-
-    /// Clears a typed wifi passphrase once the quick-settings popover
-    /// closes, so it doesn't outlive the window it was entered in — and
-    /// lets go of the field's value as soon as its prompt is gone, however
-    /// it went.
-    pub(super) fn clear_stale_wifi_password(&mut self) {
-        if let Some(chrome) = self.chrome.clone() {
-            let open = chrome.borrow().overlays.quick_settings;
-            let mut st = chrome.borrow_mut();
-            if !open && st.quick_settings.wifi_password.take().is_some() {
-                st.bump();
-            }
-        }
-        self.sync_wifi_password_input();
     }
 
     /// Frames the focused group and lights its focus marker through the

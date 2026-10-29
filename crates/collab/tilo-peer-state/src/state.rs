@@ -30,6 +30,8 @@ pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
+mod member_records;
+use member_records::empty_genesis;
 mod facades;
 mod governance;
 pub use facades::{
@@ -54,6 +56,7 @@ mod workspace_membership;
 mod workspace_shortcuts;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod held;
+mod joined;
 mod media_governance;
 mod native_publication;
 mod room_hosts;
@@ -187,7 +190,10 @@ pub struct RecordReaders {
     /// devices that may not read that record (possibly none).
     pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
     /// The member devices kept out of every channel whose record the caller
-    /// cannot name: those a Deny over a pattern of records could keep out.
+    /// cannot name: all of them. Such a channel may be any record, a
+    /// member's own (`member:<root>:<kind>`, read by that person alone)
+    /// included, so no one is admitted to it until a device names its
+    /// record.
     pub unrouted: BTreeSet<[u8; 32]>,
 }
 #[derive(Clone, Debug, Default)]
@@ -2210,8 +2216,19 @@ impl StatePeer {
             collab_types::check_appearances(&changes, shows.as_deref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
+        // A member's empty record, made where the room lets its app author
+        // and its writer change it: nothing in it needs a checkpoint. Made
+        // once: a record the room holds is never started over, nor its
+        // retained checkpoint replaced by an empty one.
+        let member_genesis = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
+            && !self.signed_by_owner(&source)
+            && self.may_create_record(&member, &route, authorization_time);
+        if member_genesis && route_existed {
+            return Err("the record exists already".into());
+        }
         if let DocumentMutation::Snapshot(bytes) = &mutation
             && !local_app
+            && !member_genesis
         {
             let entries =
                 crate::coverage::entries(self.core.room_doc.as_deref().ok_or("missing room")?)?;
@@ -2303,7 +2320,7 @@ impl StatePeer {
                     .or_default();
                 *floor = (*floor).max(*sequence);
             }
-        } else if !route_existed {
+        } else if !route_existed && !member_genesis {
             return self.defer(
                 source,
                 NeighbourMsg::AppDocument {
@@ -2381,7 +2398,7 @@ impl StatePeer {
         self.core.documents.insert(route.clone(), candidate);
         // Pending drains catch rejection and keep the outer candidate. Install
         // checkpoint freshness only after every fallible admission step succeeds.
-        if !local_app && matches!(mutation, DocumentMutation::Snapshot(_)) {
+        if !local_app && !member_genesis && matches!(mutation, DocumentMutation::Snapshot(_)) {
             self.core.checkpoint_times.insert(route, now);
         }
         Ok(AdmissionReport::new(
@@ -2628,7 +2645,8 @@ impl StatePeer {
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
             if !self.signed_by_owner(author.as_bytes()) {
-                return Err("only the owner's device may publish a retained checkpoint".into());
+                self.check_member_genesis(&route, bytes, *author.as_bytes(), now)?;
+                return Ok((message, None));
             }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;
             let mut watermarks = self
@@ -3803,150 +3821,8 @@ pub fn seed_room(
 }
 
 #[cfg(test)]
-mod delivery_admission_resource_tests {
-    use super::*;
-    #[test]
-    fn delivery_admission_local_snapshot_quota_failure_leaves_governance_unchanged() {
-        let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
-        peer.select_admission_v5().unwrap();
-        // Populate the real bounded index near its byte ceiling; no mocked admission/store.
-        let full = DocumentAdmission {
-            key: crate::admission::AdmissionKey {
-                room: String::new(),
-                app: String::new(),
-                record: "x".repeat(crate::MAX_EXACT_ADMISSION_BYTES - 100),
-                author: [0; 32],
-                sequence: 0,
-            },
-            operation_id: [1; 32],
-        };
-        peer.core.exact_admissions.insert(&full).unwrap();
-        let before = peer.durable().unwrap();
-        let document = peer.document("test.app", "tab:1").unwrap();
-        assert!(
-            peer.publication_mut()
-                .publish_document("test.app", "tab:1", document, &key, now)
-                .is_err()
-        );
-        assert!(
-            peer.durable().unwrap() == before,
-            "quota failure changed governance before admission"
-        );
-    }
-    #[test]
-    fn delivery_admission_review_quota_rejected_pending_checkpoint_does_not_refresh_route() {
-        let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
-        let mut author = receiver.clone();
-        let later = now + Duration::from_secs(301);
-        let current_document = author.document("test.app", "tab:1").unwrap();
-        let snapshot = author
-            .publication_mut()
-            .publish_document("test.app", "tab:1", current_document, &key, later)
-            .unwrap();
-        let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-        receiver.select_admission_v5().unwrap();
-        let pending = receiver
-            .receive_from_report(origin, snapshot, later)
-            .unwrap();
-        assert_eq!(
-            pending.primary(),
-            &InputDisposition::RetryLater(MissingPrerequisite::CheckpointCoverage)
-        );
-        assert_eq!(receiver.pending_count(), 1);
-        assert!(!receiver.fresh_checkpoint_for("test.app", "tab:1", later));
-        let checkpoint_times = receiver.core.checkpoint_times.clone();
-        let rows = receiver.rows();
-        let watermarks = receiver.replay_floors();
-        // Fill the actual bounded index so the otherwise valid pending checkpoint
-        // fails insertion inside a successful governance-triggered drain.
-        receiver
-            .core
-            .exact_admissions
-            .insert(&DocumentAdmission {
-                key: crate::admission::AdmissionKey {
-                    room: String::new(),
-                    app: String::new(),
-                    record: "x".repeat(crate::MAX_EXACT_ADMISSION_BYTES - 100),
-                    author: [0; 32],
-                    sequence: 0,
-                },
-                operation_id: [1; 32],
-            })
-            .unwrap();
-        let index = receiver.core.exact_admissions.encode().unwrap();
-        let report = receiver
-            .receive_from_report(origin, author.room_message(), later)
-            .unwrap();
-        assert_eq!(report.summary().rejected, 1);
-        assert!(report.settled().is_empty());
-        assert_eq!(receiver.pending_count(), 0);
-        assert_eq!(receiver.rows(), rows);
-        assert_eq!(receiver.replay_floors(), watermarks);
-        assert_eq!(receiver.core.exact_admissions.encode().unwrap(), index);
-        assert!(
-            !receiver.fresh_checkpoint_for("test.app", "tab:1", later),
-            "quota-rejected pending checkpoint refreshed the route"
-        );
-        assert_eq!(receiver.core.checkpoint_times, checkpoint_times);
-    }
-    #[test]
-    fn delivery_admission_restore_refuses_index_count_bomb_and_unbound_evidence() {
-        let literal = include_str!("../tests/fixtures/delivery-admission/native-v5.postcard.hex")
-            .split_ascii_whitespace()
-            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
-            .collect::<Vec<_>>();
-        let (peer, _, _, _, now) = crate::admission_tests::seeded();
-        let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
-        let bomb = postcard::to_allocvec(&DurableV5 {
-            version: 5,
-            base: value.base,
-            exact: &[0x81, 0x80, 0x04],
-        })
-        .unwrap();
-        assert!(
-            StatePeer::restore(
-                &bomb,
-                peer.room(),
-                peer.authority().clone(),
-                vec![],
-                RevocationList::new(),
-                now
-            )
-            .is_err()
-        );
-        let value: DurableV5<'_> = postcard::from_bytes(&literal).unwrap();
-        let mut index = ExactAdmissions::decode(value.exact).unwrap();
-        let first = index
-            .iter()
-            .next()
-            .map(|(key, id)| DocumentAdmission {
-                key: key.clone(),
-                operation_id: *id,
-            })
-            .unwrap();
-        let mut invalid = first;
-        invalid.key.sequence += 1;
-        index.insert(&invalid).unwrap();
-        let exact = index.encode().unwrap();
-        let bytes = postcard::to_allocvec(&DurableV5 {
-            version: 5,
-            base: value.base,
-            exact: &exact,
-        })
-        .unwrap();
-        assert!(
-            StatePeer::restore(
-                &bytes,
-                peer.room(),
-                peer.authority().clone(),
-                vec![],
-                RevocationList::new(),
-                now
-            )
-            .is_err()
-        );
-    }
-}
+#[path = "state/delivery_admission_resource_tests.rs"]
+mod delivery_admission_resource_tests;
 
 #[cfg(test)]
 #[path = "state/media_tests.rs"]

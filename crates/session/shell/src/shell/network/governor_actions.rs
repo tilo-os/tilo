@@ -32,21 +32,12 @@ struct GovernorRoute {
     source: [u8; 32],
     target: [u8; 32],
     governor_user: [u8; 32],
-    /// The governor is a host, which runs no apps: a relay governing the
-    /// room as a service, or the room host of the device it is placed on.
-    governor_hosts: bool,
 }
 
 impl GovernorRoute {
     /// Whether another device governs the room.
     fn elsewhere(&self) -> bool {
         self.source != self.target
-    }
-
-    /// Whether the room's governor opens its apps: another device that runs
-    /// them, not a host.
-    fn opens_apps(&self) -> bool {
-        self.elsewhere() && !self.governor_hosts
     }
 
     async fn ask(
@@ -211,55 +202,6 @@ async fn invoke(
 }
 
 impl ShellNetwork {
-    /// Record a member audit at the exact admitted governor on the existing
-    /// certified action lane. No endpoint fallback or caller-selected authority.
-    pub(crate) async fn record_effect_at_governor(
-        &self,
-        room: RoomId,
-        invocation: uuid::Uuid,
-        redacted: Vec<u8>,
-    ) -> Result<(), String> {
-        let route = self.governor_route(room)?;
-        let invocation = tilo_actions::InvocationId(invocation);
-        let redacted = String::from_utf8(redacted).map_err(|_| "invalid effect encoding")?;
-        let answer = tokio::time::timeout(governor_timeout(), async {
-            loop {
-                let answer = route
-                    .ask(
-                        &self.cmd_tx,
-                        ActionMessage::RecordEffectReceipt {
-                            invocation,
-                            redacted: redacted.clone(),
-                        },
-                    )
-                    .await;
-                match answer {
-                    Err(reason) if reason == tilo_network_actor::native_ingress::NOT_CONNECTED => {
-                        // The actor refused before queueing a directed request.
-                        // Wait for the original native session, never a fallback.
-                        tokio::time::sleep(STATUS_INTERVAL).await;
-                    }
-                    answer => break answer,
-                }
-            }
-        })
-        .await
-        .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
-        let fresh = self.governor_route(room)?;
-        if fresh.source != route.source
-            || fresh.target != route.target
-            || fresh.governor_user != route.governor_user
-        {
-            return Err("effect governor or selected device changed; outcome unknown".into());
-        }
-        match answer {
-            ActionMessage::EffectReceiptCommitted { invocation: got } if got == invocation => {
-                Ok(())
-            }
-            ActionMessage::Rejected { code } => Err(format!("effect governor refused: {code}")),
-            _ => Err("effect governor returned an unexpected answer".into()),
-        }
-    }
     /// Discover one existing resource on the currently governed room's host,
     /// using the same authenticated remote-action transport as the palette.
     pub(crate) async fn discover_resource_view(
@@ -334,9 +276,6 @@ impl ShellNetwork {
                 source: view.device().device_public_key,
                 target: view.governor().device_public_key,
                 governor_user: view.governor().user_public_key,
-                governor_hosts: view.governor().capabilities.can_act_as_host
-                    || super::relay_rooms::hosting_governor(view, room)
-                        .is_ok_and(|host| host.is_some()),
             })
         })
     }
@@ -346,26 +285,6 @@ impl ShellNetwork {
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
         self.governor_route(room)
             .is_ok_and(|route| route.elsewhere())
-    }
-
-    /// Whether another device governs `room` and it is a host (a home
-    /// relay), which creates the room's records on a member's request, as
-    /// `owner` holds the room.
-    pub(crate) fn host_creates_records(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
-        self.governed_elsewhere(room)
-            && owner
-                .with_current(room, |view| {
-                    Ok(view.governor().capabilities.can_act_as_host)
-                })
-                .unwrap_or(false)
-    }
-
-    /// Whether `room`'s governor opens the apps launched in it, creating
-    /// and placing their records. A host governing it runs no apps: this
-    /// session opens them itself, as it does its legacy windows.
-    pub(crate) fn governor_opens_apps(&self, room: RoomId) -> bool {
-        self.governor_route(room)
-            .is_ok_and(|route| route.opens_apps())
     }
 
     /// Invoke `resource`/`action` of `app_id` on `room`'s governor with
@@ -593,28 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn a_room_no_other_device_governs_is_opened_here() {
+    fn a_room_this_device_holds_alone_is_governed_here() {
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let room = tree.read().desktop.workspaces[0].room();
         let (net, _commands) = super::super::shell_network_for_test(tree, 0);
         assert!(!net.governed_elsewhere(room));
-        assert!(!net.governor_opens_apps(room));
-    }
-
-    #[test]
-    fn only_a_governing_device_opens_apps_not_a_host() {
-        let route = |target: u8, governor_hosts| super::GovernorRoute {
-            ws: 1,
-            room: uuid::Uuid::nil(),
-            source: [1; 32],
-            target: [target; 32],
-            governor_user: [9; 32],
-            governor_hosts,
-        };
-        assert!(route(2, false).opens_apps(), "a person's other device");
-        assert!(!route(2, true).opens_apps(), "a relay governing the room");
-        assert!(route(2, true).elsewhere());
-        assert!(!route(1, false).opens_apps(), "this device governs it");
     }
 
     #[test]

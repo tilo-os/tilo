@@ -222,103 +222,90 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
     Some((app, node.path))
 }
 
+// Version 3 carries no feedback and therefore no device, and Mesa
+// cannot initialise EGL without one.
 #[test]
-fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
-    // Phase `dmabuf_global_is_advertised_with_feedback`.
-    // Version 3 carries no feedback and therefore no device, and Mesa
-    // cannot initialise EGL without one.
-    {
-        fn phase() {
-            let Some((app, _node)) = walk() else {
-                eprintln!("skipping: no advertisable render node on this machine");
-                return;
-            };
-            let version = app.dmabuf_version.expect("global advertised");
-            assert!(
-                version >= 4,
-                "zwp_linux_dmabuf_v1 advertised at version {version}; a GPU client needs \
-                 version 4 feedback to learn the main device, and fails EGL init \
-                 (`failed to get driver name for fd -1`) without it"
-            );
-            assert!(
-                app.feedback_done,
-                "the compositor never completed a dmabuf_feedback batch"
-            );
-        }
-        phase();
-    }
+fn dmabuf_global_is_advertised_with_feedback() {
+    let Some((app, _node)) = walk() else {
+        eprintln!("skipping: no advertisable render node on this machine");
+        return;
+    };
+    let version = app.dmabuf_version.expect("global advertised");
+    assert!(
+        version >= 4,
+        "zwp_linux_dmabuf_v1 advertised at version {version}; a GPU client needs \
+         version 4 feedback to learn the main device, and fails EGL init \
+         (`failed to get driver name for fd -1`) without it"
+    );
+    assert!(
+        app.feedback_done,
+        "the compositor never completed a dmabuf_feedback batch"
+    );
+}
 
-    // Phase `feedback_main_device_is_the_advertised_render_node`.
-    // A wrong or absent number sends the client to no GPU at all.
-    {
-        fn phase() {
-            use std::os::unix::fs::MetadataExt as _;
+// A wrong or absent number sends the client to no GPU at all.
+#[test]
+fn feedback_main_device_is_the_advertised_render_node() {
+    use std::os::unix::fs::MetadataExt as _;
 
-            let Some((app, node)) = walk() else {
-                eprintln!("skipping: no advertisable render node on this machine");
-                return;
-            };
-            let expected = std::fs::metadata(&node)
-                .expect("probed render node must stat")
-                .rdev();
-            let got = app
-                .main_device
-                .expect("dmabuf_feedback carried no main_device event");
-            assert_eq!(
-                got,
-                expected as u64,
-                "main_device must be st_rdev of {} — clients resolve the GPU from this \
-                 number and get nothing usable if it is wrong",
+    let Some((app, node)) = walk() else {
+        eprintln!("skipping: no advertisable render node on this machine");
+        return;
+    };
+    let expected = std::fs::metadata(&node)
+        .expect("probed render node must stat")
+        .rdev();
+    let got = app
+        .main_device
+        .expect("dmabuf_feedback carried no main_device event");
+    assert_eq!(
+        got,
+        expected as u64,
+        "main_device must be st_rdev of {} — clients resolve the GPU from this \
+         number and get nothing usable if it is wrong",
+        node.display()
+    );
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&node)
+        .unwrap_or_else(|e| {
+            panic!(
+                "advertised main device {} cannot be opened: {e} — a client told to \
+                 allocate there would fail the same way",
                 node.display()
-            );
-            std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&node)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "advertised main device {} cannot be opened: {e} — a client told to \
-                         allocate there would fail the same way",
-                        node.display()
-                    )
-                });
-        }
-        phase();
-    }
+            )
+        });
+}
 
-    // Phase `every_advertised_format_is_one_the_compositor_can_composite`.
-    // Advertising more than the compositor can composite is what produces a
-    // client that renders happily into an error tile forever.
-    {
-        fn phase() {
-            use smithay::backend::allocator::{Fourcc, Modifier};
+// Advertising more than the compositor can composite is what produces a
+// client that renders happily into an error tile forever.
+#[test]
+fn every_advertised_format_is_one_the_compositor_can_composite() {
+    use smithay::backend::allocator::{Fourcc, Modifier};
 
-            let Some((app, _node)) = walk() else {
-                eprintln!("skipping: no advertisable render node on this machine");
-                return;
-            };
-            assert!(
-                !app.formats.is_empty(),
-                "the format table is empty; a client has nothing to allocate"
-            );
-            for entry in &app.formats {
-                let fourcc = Fourcc::try_from(entry.fourcc).unwrap_or_else(|_| {
-                    panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc)
-                });
-                // A buffer in an advertised layout must be one the compositor
-                // draws: the CPU reads it linear, or the presenting GPU was
-                // confirmed to sample it (the probe the advertised tiled
-                // layouts come from).
-                let modifier = Modifier::from(entry.modifier);
-                assert!(
-                    shell::shell::foreign::composites(fourcc, modifier)
-                        || shell::shell::gpu_frames::sampleable(fourcc, modifier),
-                    "advertised {fourcc:?} with modifier 0x{:x}, which the tile importer \
-                     cannot composite; a client that picks it renders into an error tile",
-                    entry.modifier
-                );
-            }
-        }
-        phase();
+    let Some((app, _node)) = walk() else {
+        eprintln!("skipping: no advertisable render node on this machine");
+        return;
+    };
+    assert!(
+        !app.formats.is_empty(),
+        "the format table is empty; a client has nothing to allocate"
+    );
+    for entry in &app.formats {
+        let fourcc = Fourcc::try_from(entry.fourcc)
+            .unwrap_or_else(|_| panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc));
+        // A buffer in an advertised layout must be one the compositor
+        // draws: the CPU reads it linear, or the presenting GPU was
+        // confirmed to sample it (the probe the advertised tiled
+        // layouts come from).
+        let modifier = Modifier::from(entry.modifier);
+        assert!(
+            shell::shell::foreign::composites(fourcc, modifier)
+                || shell::shell::gpu_frames::sampleable(fourcc, modifier),
+            "advertised {fourcc:?} with modifier 0x{:x}, which the tile importer \
+             cannot composite; a client that picks it renders into an error tile",
+            entry.modifier
+        );
     }
 }

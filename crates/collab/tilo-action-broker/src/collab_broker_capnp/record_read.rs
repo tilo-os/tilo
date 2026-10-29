@@ -1,0 +1,144 @@
+//! Record reads outside their app: the door an agent task's host reads a room's records
+//! through (`docs/designs/app-language/agents.md`, "Reading records outside their app").
+//!
+//! The caller is the agent acting for the person who admitted it ([`Caller::acting_for`]),
+//! never one a person's device handed its session to, and holds no app's route. Each read is
+//! decided at the record's node with that actor, the lesser of the agent's grants and the
+//! person's ([`BrokerActor::answer_in`]), then captured by the room's document owner under the
+//! person's device certificate, whose own check ([`NativeDocumentReads::authorize`]) is the
+//! person's read of the record. The capture's revalidation decides the agent's read again
+//! before every chunk it hands out. What leaves the broker is the record's committed content,
+//! read-only: the record channel's keys stay here, and nothing in a read writes to the record.
+
+use std::sync::{Arc, Weak};
+
+use tilo_action_policy::{ActionKind, Answer};
+use tilo_actions::remote::{
+    ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordCopy,
+    RecordReads,
+};
+
+use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
+
+use super::committed_document::{NativeDocumentRead, NativeDocumentReadContext, RecordRead};
+use super::{CapnpBrokerState, CrdtRoute};
+
+/// What a caller is told about a record it may not read.
+pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
+
+impl CapnpBrokerState {
+    /// The record read door, when this host keeps a room's documents and knows its person's
+    /// device.
+    pub fn record_reads(self: &Arc<Self>) -> Option<Arc<dyn RecordReads>> {
+        self.services.committed_documents.as_ref()?;
+        self.services.local_person.as_ref()?;
+        Some(Arc::new(BrokerRecordReads {
+            state: Arc::downgrade(self),
+        }))
+    }
+
+    /// Whether `caller` may read `address` in `room` now: decided at the record's node with
+    /// the caller's actor, an agent's bounded by its person's authority.
+    fn may_read_record(
+        &self,
+        caller: &Caller,
+        room: &str,
+        address: &RecordAddress,
+    ) -> Result<(), ActionHostError> {
+        super::action_host::check_execution(caller)?;
+        let node = collab_types::document_node(room, &address.app, &address.record);
+        match self.decide_for(caller, room, |workspace, actor, now| {
+            actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
+        }) {
+            Some(true) => Ok(()),
+            Some(false) => Err(ActionHostError::Refused {
+                reason: RECORD_READ_REFUSED.into(),
+            }),
+            None => Err(ActionHostError::NotPermitted),
+        }
+    }
+}
+
+/// The person an agent task acts for, when `caller` is one: an agent the host admitted as a
+/// member acting for its person, confined to a room.
+fn task_person(caller: &Caller) -> Option<(&str, &str)> {
+    if !matches!(caller.principal(), CallerPrincipal::Agent(_)) || caller.is_session_delegated() {
+        return None;
+    }
+    Some((caller.acting_for_person()?, caller.room()?))
+}
+
+struct BrokerRecordReads {
+    state: Weak<CapnpBrokerState>,
+}
+
+impl RecordReads for BrokerRecordReads {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &RecordAddress,
+    ) -> Result<RecordCopy, ActionHostError> {
+        let unavailable = |reason: String| ActionHostError::Unavailable { reason };
+        let state = self
+            .state
+            .upgrade()
+            .ok_or_else(|| unavailable("the broker stopped".into()))?;
+        let Some((person, room)) = task_person(caller) else {
+            return Err(ActionHostError::Refused {
+                reason: RECORD_READS_FOR_TASKS.into(),
+            });
+        };
+        state.may_read_record(caller, room, address)?;
+        let (Some(owner), Some(people)) = (
+            state.services.committed_documents.clone(),
+            state.services.local_person.clone(),
+        ) else {
+            return Err(unavailable(
+                tilo_actions::remote::RECORD_READS_UNAVAILABLE.into(),
+            ));
+        };
+        if owner.record_read(room, &address.app, &address.record) == RecordRead::Own {
+            return Err(unavailable(
+                "this device holds none of the room's records outside their apps".into(),
+            ));
+        }
+        let certificate = people.certificate(room, person).map_err(unavailable)?;
+        let checked = (Arc::downgrade(&state), caller.clone(), address.clone());
+        drop(state);
+        let revalidate = Arc::new(move || {
+            let (state, caller, address) = &checked;
+            let state = state.upgrade().ok_or("record read broker ended")?;
+            let room = caller.room().ok_or("record read lost its room")?;
+            state
+                .may_read_record(caller, room, address)
+                .map_err(|_| "record read no longer allowed".to_owned())
+        });
+        let context = NativeDocumentReadContext::for_task(
+            CrdtRoute::record(address.app.clone(), room, address.record.clone()),
+            certificate,
+            revalidate,
+        );
+        context
+            .revalidate()
+            .map_err(|reason| ActionHostError::Refused { reason })?;
+        match owner
+            .capture(&context, None, MAX_DOCUMENT_BYTES)
+            .map_err(|reason| ActionHostError::Refused { reason })?
+        {
+            NativeDocumentRead::Captured { body, .. } => {
+                Ok(RecordCopy::Document(body.bytes().to_vec()))
+            }
+            NativeDocumentRead::Absent => Ok(RecordCopy::Absent),
+            NativeDocumentRead::Pending => Err(unavailable(
+                "the record is still arriving from the room".into(),
+            )),
+            NativeDocumentRead::Unchanged(_) | NativeDocumentRead::Changes { .. } => Err(
+                unavailable("the room's owner answered a whole read with a part".into()),
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "record_read_tests.rs"]
+mod tests;

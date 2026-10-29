@@ -249,7 +249,15 @@ pub trait PressVantage {
     /// Whether a switch is underway, so a rectangle read now is not the one
     /// the caller was shown.
     fn desktop_in_transition(&self) -> bool;
+    /// Whether setup stands in front of the desktop, so only setup's own
+    /// controls (named under [`SETUP_PREFIX`]) are what the caller sees.
+    fn setup_in_front(&self) -> bool {
+        false
+    }
 }
+
+/// The prefix every control of setup (the onboarding view) is named under.
+pub const SETUP_PREFIX: &str = "onboarding.";
 
 /// The vantage a live desktop answers with: the frame it has drawn, whether a
 /// switch is underway, and the aim a harness read for a target.
@@ -257,6 +265,7 @@ pub trait PressVantage {
 pub struct PressFacts {
     frame: Option<u64>,
     in_transition: bool,
+    setup_in_front: bool,
     /// Presses a caller aimed at a target after reading where it was, keyed
     /// by that target, each waiting for the frame that lands it.
     aimed: std::sync::Arc<Mutex<HashMap<String, PressAim>>>,
@@ -271,8 +280,16 @@ impl PressFacts {
         Self {
             frame,
             in_transition,
+            setup_in_front: false,
             aimed: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// The same desktop with setup standing in front of it.
+    #[must_use]
+    pub fn with_setup_in_front(mut self, setup_in_front: bool) -> Self {
+        self.setup_in_front = setup_in_front;
+        self
     }
 
     /// The aim this desktop holds for `target`: the frame and the point the
@@ -309,6 +326,10 @@ impl PressVantage for PressFacts {
     fn desktop_in_transition(&self) -> bool {
         self.in_transition
     }
+
+    fn setup_in_front(&self) -> bool {
+        self.setup_in_front
+    }
 }
 
 /// Where a press on the target published at `path` belongs, or why pressing
@@ -329,7 +350,9 @@ pub fn press_point<S: std::hash::BuildHasher>(
     vantage: &dyn PressVantage,
     path: &str,
 ) -> Result<Point, NotReady> {
-    if vantage.desktop_in_transition() {
+    if vantage.desktop_in_transition()
+        || (vantage.setup_in_front() && !path.starts_with(SETUP_PREFIX))
+    {
         return Err(NotReady::InTransition);
     }
     target_drawn(root, registry, path)?;
@@ -596,6 +619,25 @@ mod tests {
         assert_eq!(
             press_point(&root, &registry, &switching, "Strips/Sheet"),
             Err(NotReady::InTransition)
+        );
+    }
+
+    #[test]
+    fn setup_in_front_holds_back_the_desktop_but_not_its_own_controls() {
+        let root = desktop(true, true);
+        let mut targets = registry("Strips/Sheet", Rect::new(0.0, 0.0, 10.0, 10.0));
+        targets.insert(
+            "onboarding.begin.card".into(),
+            Rect::new(0.0, 0.0, 20.0, 20.0),
+        );
+        let setup = PressFacts::at(Some(7), false).with_setup_in_front(true);
+        assert_eq!(
+            press_point(&root, &targets, &setup, "Strips/Sheet"),
+            Err(NotReady::InTransition)
+        );
+        assert_eq!(
+            press_point(&root, &targets, &setup, "onboarding.begin.card"),
+            Ok(Point::new(10.0, 10.0))
         );
     }
 

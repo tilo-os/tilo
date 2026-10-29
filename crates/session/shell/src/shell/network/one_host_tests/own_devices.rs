@@ -231,12 +231,11 @@ fn governance_from_a_persons_other_device_reaches_the_host_and_the_first_device(
 }
 
 /// A governance change a person makes on a device that does not host their
-/// workspace, while the host is away, waits: it is never shown as refused,
-/// and once the host's session is back it is asked and applies on both
-/// devices.
+/// workspace, while the host is away, is written on that device at once and
+/// never refused, and reaches the host once its session is back.
 #[test]
 #[serial_test::serial]
-fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
+fn governance_made_while_the_host_is_away_is_written_at_once_and_reaches_it_once_back() {
     use crate::shell::state::GovernanceRequest;
     use tilo_desktop_model::commands::DesktopCommand;
 
@@ -299,44 +298,32 @@ fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
     );
 
     // The desktop, the workspace's host, goes away; Ada renames the
-    // workspace on the laptop.
+    // workspace on the laptop, which writes it into its own copy of the
+    // room at once.
     first.go_offline();
     rename("Roadmap");
-    until(&[&second], "the rename to wait for the host", || {
-        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
-        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
+    until(&[&second], "the laptop to write the rename", || {
+        assert!(!refused_on(&second), "a host out of reach refused nothing");
+        (second.tree.read().room_outbox.is_empty()
+            && name_on(&second).as_deref() == Some("Roadmap"))
+        .then_some(())
     });
-    assert!(!refused_on(&second), "a host out of reach refused nothing");
 
-    // The desktop comes back: the laptop asks again, and the rename applies.
+    // The desktop comes back: the rename reaches it.
     first.come_back();
     second.reach(&first);
-    until(
-        &[&first, &second],
-        "the desktop to host the workspace again",
-        || first.hosted_rooms().contains(&room).then_some(()),
-    );
-    until(
-        &[&first, &second],
-        "the laptop to ask the host again",
-        || {
-            assert!(!refused_on(&second), "a host out of reach refused nothing");
-            second.tree.read().room_outbox.is_empty().then_some(())
-        },
-    );
     until(&[&first, &second], "the rename on both devices", || {
         assert!(!refused_on(&second), "a host out of reach refused nothing");
         (name_on(&first).as_deref() == Some("Roadmap")
             && name_on(&second).as_deref() == Some("Roadmap"))
         .then_some(())
     });
-    assert!(second.tree.read().room_outbox.is_empty());
     drop((first, second));
 }
 
 /// An effect a member device records in its own person's workspace while
-/// the workspace's host is away waits on that device, shown and never
-/// refused, and reaches the room's history once the host's session is
+/// the workspace's host is away is written on that device at once, shown and
+/// never refused, and reaches the room's history once the host's session is
 /// back: once, on both devices.
 #[test]
 #[serial_test::serial]
@@ -402,15 +389,16 @@ fn an_effect_recorded_while_the_host_is_away_reaches_the_room_once_it_is_back() 
         ),
     );
     assert!(recorded);
-    until(&[&second], "the effect to wait for the host", || {
-        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
-        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
+    // The laptop writes it into its own copy of the room at once: the
+    // receipt is its own, and needs no host.
+    until(&[&second], "the laptop to write the effect", || {
+        second.tree.read().room_outbox.is_empty().then_some(())
     });
-    assert_eq!(held_on(&second), 1, "the laptop shows it while it waits");
+    assert_eq!(held_on(&second), 1, "the laptop shows it");
     assert!(!refused_on(&second), "a host out of reach refused nothing");
 
-    // The desktop comes back: the laptop asks again, and the room's history
-    // holds the effect on both devices.
+    // The desktop comes back: the room's history holds the effect on both
+    // devices.
     first.come_back();
     second.reach(&first);
     until(

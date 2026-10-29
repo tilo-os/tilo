@@ -46,7 +46,7 @@ fn the_open_screen_folds_its_row_before_it_squeezes_the_path() {
 
 #[test]
 fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
-    let mut app = GitClientApp::new();
+    let mut app = GitClientState::open_empty();
     let mut state = crate::resource::GitClient::default();
     app.present_state(&state);
     assert!(app.awaiting_repo);
@@ -63,8 +63,8 @@ fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
 
 /// Build an app over the bundled sample, laid out at `w` x 800 with the
 /// flap settled to its mode default so geometry is deterministic.
-fn app_at(w: f64, screen: Screen) -> GitClientApp {
-    let mut app = GitClientApp::from_model(crate::sample::model().0, crate::sample::model().1);
+fn app_at(w: f64, screen: Screen) -> GitClientState {
+    let mut app = GitClientState::from_model(crate::sample::model().0, crate::sample::model().1);
     app.screen = screen;
     app.rect = Rect::new(0.0, 0.0, w, 800.0);
     app.drawer.resolve(app.rect);
@@ -73,7 +73,7 @@ fn app_at(w: f64, screen: Screen) -> GitClientApp {
     app
 }
 
-fn press(app: &mut GitClientApp, pos: Point, doc: &mut AutoCommit) {
+fn press(app: &mut GitClientState, pos: Point, doc: &mut AutoCommit) {
     app.pointer = Some(pos);
     let hit = app
         .targets
@@ -226,7 +226,9 @@ fn semantic_open_repository_binds_the_entered_repository() {
     let directory = tempfile::tempdir().unwrap();
     let _repository = git2::Repository::init(directory.path()).unwrap();
     let mut app = GitClientApp::open_empty();
-    app.open_input.set_text(directory.path().to_str().unwrap());
+    app.state()
+        .open_input
+        .set_text(directory.path().to_str().unwrap());
     let mut doc = automerge::AutoCommit::new();
     assert!(Widget::perform_semantic_action(
         &mut app,
@@ -255,15 +257,15 @@ fn semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs() {
             &automerge::ROOT,
         ));
     }
-    assert_eq!(app.open_input.value(), r"C:\Work\Grün 🌍");
-    assert_eq!(app.commit_input.value(), "Keep Unicode: Grün 🌍");
-    assert_eq!(app.branch_input.value(), "feature/grün");
+    assert_eq!(app.state().open_input.value(), r"C:\Work\Grün 🌍");
+    assert_eq!(app.state().commit_input.value(), "Keep Unicode: Grün 🌍");
+    assert_eq!(app.state().branch_input.value(), "feature/grün");
     assert!(app.test_awaiting_repo(), "editing a path must not open it");
 }
 
 fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
     let mut app = app_at(1_280.0, Screen::Changes);
-    let node = Widget::accessibility(&app).expect("git client is semantic");
+    let node = app.accessibility();
     assert!(!node.children.is_empty());
     let targets: std::collections::HashSet<_> = node
         .children
@@ -280,15 +282,14 @@ fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
     );
     for (index, child) in node.children.iter().enumerate() {
         assert_eq!(
-            Widget::synthetic_accessibility_rect(&app, &[index]),
+            app.synthetic_accessibility_rect(&[index]),
             child.bounds.map(ui::a11y::AccessBounds::to_rect),
             "semantic control {index} must activate inside the visible control"
         );
     }
 
     let mut doc = automerge::AutoCommit::new();
-    assert!(Widget::perform_semantic_action(
-        &mut app,
+    assert!(app.perform_semantic_action(
         "git.commit-message",
         &ui::a11y::Action::Focus,
         &mut ui::widget::Edits::lend(&mut doc),
@@ -299,12 +300,11 @@ fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
 
 /// Paint one frame with a real text renderer so every measured rect is
 /// the production geometry, not a hand-poked stand-in.
-fn draw_frame(app: &mut GitClientApp) {
+fn draw_frame(app: &mut GitClientState) {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    Widget::draw(
-        app,
+    app.draw(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,

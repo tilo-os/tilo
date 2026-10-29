@@ -190,7 +190,6 @@ doc = false
 "cms-0_2_3" = { package = "cms", version = "^0.2.3", default-features = false, features = [] }
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = ["samples"] }
-"codebase-qualification" = { path = "../../../crates/dev/codebase-qualification", default-features = false, features = ["default", "filesystem"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
@@ -864,7 +863,6 @@ doc = false
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
-"registry-review" = { path = "../../../crates/dev/registry-review", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -1220,6 +1218,7 @@ doc = false
 "tilo-network-actor" = { path = "../../../crates/session/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-secret-agent" = { path = "../../../crates/session/network-secret-agent", default-features = false, features = ["test-support"] }
 "tilo-nm" = { path = "../../../crates/system/tilo-nm", default-features = false, features = [] }
+"tilo-notification-banners" = { path = "../../../crates/session/notification-banners", default-features = false, features = [] }
 "tilo-notify" = { path = "../../../crates/platform/tilo-notify", default-features = false, features = [] }
 "tilo-ntfs-helper" = { path = "../../../crates/session/tilo-ntfs-helper", default-features = false, features = [] }
 "tilo-ntfs-mount" = { path = "../../../crates/system/ntfs-mount", default-features = false, features = ["default", "service"] }
@@ -1229,6 +1228,7 @@ doc = false
 "tilo-ocr" = { path = "../../../crates/media/ocr", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
 "tilo-output-passes" = { path = "../../../crates/session/output-passes", default-features = false, features = ["test-support"] }
+"tilo-overview" = { path = "../../../crates/session/overview", default-features = false, features = [] }
 "tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
@@ -1284,6 +1284,7 @@ doc = false
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = ["udisks"] }
 "tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document"] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
+"tilo-topbar" = { path = "../../../crates/session/topbar", default-features = false, features = [] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../../crates/platform/tilo-typst-fonts", default-features = false, features = [] }
@@ -2617,7 +2618,6 @@ doc = false
 "cms-0_2_3" = { package = "cms", version = "^0.2.3", default-features = false, features = [] }
 "cobs-0_3_0" = { package = "cobs", version = "^0.3.0", default-features = false, features = [] }
 "code-editor" = { path = "../../../apps/code-editor", default-features = false, features = [] }
-"codebase-qualification" = { path = "../../../crates/dev/codebase-qualification", default-features = false, features = ["default", "filesystem"] }
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-fixtures" = { path = "../../../crates/collab/collab-fixtures", default-features = false, features = [] }
@@ -3273,7 +3273,6 @@ doc = false
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
-"registry-review" = { path = "../../../crates/dev/registry-review", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -3627,6 +3626,7 @@ doc = false
 "tilo-oci-images" = { path = "../../../crates/packaging/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../../crates/media/ocr", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../../crates/runtime/os-search", default-features = false, features = [] }
+"tilo-overview" = { path = "../../../crates/session/overview", default-features = false, features = [] }
 "tilo-owner-commit" = { path = "../../../crates/collab/owner-commit", default-features = false, features = [] }
 "tilo-page-raster" = { path = "../../../crates/sdk/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }

@@ -4,37 +4,31 @@ use super::{
     DisplayEffect, DisplayModel, Dropdown, LiveRow, LocalState, SettingsEffect, SettingsSection,
     Toggle, effect, note, rows, section, setting_row, setting_row_described, t, t_args,
 };
-use settings_store::person_displays::{Layout, ResolvedDisplay};
+use provider_settings_ui::bound::{SettingRows as _, record_item};
+use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
+use ui::framework::{Dispatcher, ViewCx};
 use ui::tilo_resource::Effect;
 
-pub use crate::prefs::{AutomaticDisplayPrefs, SharedDisplayPrefs};
+pub use crate::prefs::{AutomaticDisplayPrefs, NightLightPrefs, SharedDisplayPrefs};
+use crate::resource::Settings;
 
 impl DisplayModel {
-    pub(super) fn set_automatic_display_input(&mut self, on: bool) -> Result<String, String> {
-        self.automatic_display_prefs
-            .settings()
-            .update(|prefs| prefs.automatic_display_input = on)
-            .map_err(|error| {
-                t_args(
-                    "display-shared-save-failed",
-                    &[("error", error.to_string().into())],
-                )
-            })?;
-        self.automatic_display_prefs.refresh();
-        self.changed = true;
-        Ok(t("display-shared-saved"))
+    /// The person's display arrangement, as stored now.
+    fn arrangement(&self) -> Arrangement {
+        self.storage
+            .settings::<SharedDisplayPrefs>()
+            .get()
+            .arrangement
     }
 
-    fn bind_shared_row<I: 'static, C: ui::framework::ActionControl<I>>(
-        &self,
-        row: &ui::tilo_actions::ResourceSpec,
-        control: C,
-        effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
-    ) -> C {
-        match self.cx.row_binding(row, effect) {
-            Some(binding) => control.bind_action(binding),
-            None => control.unavailable(),
-        }
+    /// Store `next` as the person's arrangement, through the section's
+    /// verb: only the displays whose entries it changes are written.
+    fn arrange(&self, next: &Arrangement) -> Result<(), String> {
+        self.sections
+            .invoke::<SharedDisplayPrefs>(
+                SharedDisplayPrefs::ARRANGE_DISPLAYS.with(next.to_value()),
+            )
+            .map_err(|error| t_args("display-shared-save-failed", &[("error", error.into())]))
     }
 
     pub(super) fn shared_layout(&self) -> Layout {
@@ -72,17 +66,11 @@ impl DisplayModel {
                 Some((device.device.clone(), (x, y)))
             })
             .collect();
-        Layout::resolve_at_device_origins(
-            &self.person_devices,
-            &self.shared_display_prefs.get().arrangement,
-            &origins,
-        )
+        Layout::resolve_at_device_origins(&self.person_devices, &self.arrangement(), &origins)
     }
 
     fn shared_revision(&self, device: &str, output: &str) -> u64 {
-        self.shared_display_prefs
-            .get()
-            .arrangement
+        self.arrangement()
             .entry(device, output)
             .map_or(0, |entry| entry.rev)
     }
@@ -122,11 +110,7 @@ impl DisplayModel {
         )
     }
 
-    pub(super) fn capture_shared_move_revisions(
-        &mut self,
-        device: &str,
-    ) -> Option<Vec<(String, u64)>> {
-        self.shared_display_prefs.refresh();
+    pub(super) fn capture_shared_move_revisions(&self, device: &str) -> Option<Vec<(String, u64)>> {
         let outputs = &self
             .person_devices
             .iter()
@@ -142,11 +126,10 @@ impl DisplayModel {
 
     /// Only the target's newer confirmed observation can pin a shared move.
     /// A concurrent arrangement edit is preserved rather than overwritten.
-    pub(super) fn confirm_shared_device_move(&mut self, device: &str) -> Result<(), String> {
+    pub(super) fn confirm_shared_device_move(&self, device: &str) -> Result<(), String> {
         let Some(expected) = self.shared_move_revisions.as_ref() else {
             return Ok(());
         };
-        self.shared_display_prefs.refresh();
         if expected
             .iter()
             .any(|(output, revision)| self.shared_revision(device, output) != *revision)
@@ -182,18 +165,7 @@ impl DisplayModel {
         else {
             return Err(t("display-shared-unavailable"));
         };
-        let next = layout.move_device(&self.shared_display_prefs.get().arrangement, device, dx, dy);
-        self.shared_display_prefs
-            .settings()
-            .update(|prefs| prefs.arrangement = next)
-            .map_err(|error| {
-                t_args(
-                    "display-shared-save-failed",
-                    &[("error", error.to_string().into())],
-                )
-            })?;
-        self.shared_display_prefs.refresh();
-        Ok(())
+        self.arrange(&layout.move_device(&self.arrangement(), device, dx, dy))
     }
 
     pub(super) fn shared_display_rows(&self) -> Vec<LiveRow> {
@@ -204,11 +176,19 @@ impl DisplayModel {
     }
 
     pub(super) fn shared_display_inspection(&self) -> serde_json::Value {
-        serde_json::json!({"devices": self.person_devices, "layout": self.shared_layout(), "arrangement": self.shared_display_prefs.get().arrangement, "automatic_input": self.automatic_display_prefs.get().automatic_display_input})
+        serde_json::json!({
+            "devices": self.person_devices,
+            "layout": self.shared_layout(),
+            "arrangement": self.arrangement(),
+            "automatic_input": self
+                .storage
+                .settings::<AutomaticDisplayPrefs>()
+                .get()
+                .automatic_display_input,
+        })
     }
 
     pub(super) fn edit_shared_display(&mut self, effect: &DisplayEffect) -> Result<String, String> {
-        self.shared_display_prefs.refresh();
         let (device, output, revision) = match effect {
             DisplayEffect::IncludeSharedDisplay {
                 device,
@@ -236,7 +216,7 @@ impl DisplayModel {
         {
             return Err(t("display-shared-unavailable"));
         }
-        let previous = &self.shared_display_prefs.get().arrangement;
+        let previous = &self.arrangement();
         let next = match effect {
             DisplayEffect::IncludeSharedDisplay { on, .. } => {
                 layout.set_enabled(previous, device, output, *on)
@@ -258,41 +238,33 @@ impl DisplayModel {
             }
             _ => return Err(t("display-shared-unavailable")),
         };
-        self.shared_display_prefs
-            .settings()
-            .update(|prefs| prefs.arrangement = next)
-            .map_err(|error| {
-                t_args(
-                    "display-shared-save-failed",
-                    &[("error", error.to_string().into())],
-                )
-            })?;
-        self.shared_display_prefs.refresh();
+        self.arrange(&next)?;
         self.changed = true;
         Ok(t("display-shared-saved"))
     }
 
-    pub(super) fn build_shared_displays_card(&self) -> Option<SettingsSection> {
+    pub(super) fn build_shared_displays_card(
+        &self,
+        cx: &ViewCx<NightLightPrefs>,
+        dispatcher: &Dispatcher<Settings>,
+    ) -> Option<SettingsSection> {
         let layout = self.shared_layout();
         if layout.displays.is_empty() && layout.inactive.is_empty() {
             return None;
         }
         let mut content = vec![note(&t("display-shared-description"))];
-        content.push(
-            self.cx
-                .row(t("display-shared-auto-input"))
-                .described(t("display-shared-auto-description"))
-                .toggle_effect(
-                    &LocalState::new(self.automatic_display_prefs.get().automatic_display_input),
-                    effect(DisplayEffect::SET_AUTOMATIC_DISPLAY_INPUT),
-                ),
-        );
+        content.extend(record_item(
+            cx,
+            &cx.settings::<AutomaticDisplayPrefs>(),
+            automatic_input,
+        ));
         for (display, active) in shared_displays(&layout) {
             let row = self.shared_row(display, active).into_resource();
             let device = display.device.clone();
             let output = display.output.clone();
             let revision = self.shared_revision(&device, &output);
-            let toggle = self.bind_shared_row(
+            let toggle = crate::on_row::bind(
+                dispatcher,
                 &row,
                 Toggle::from_state(&LocalState::new(display.enabled)),
                 effect(DisplayEffect::INCLUDE_SHARED_DISPLAY)
@@ -327,7 +299,8 @@ impl DisplayModel {
                     .collect::<Vec<_>>();
                 let device = display.device.clone();
                 let output = display.output.clone();
-                let choice = self.bind_shared_row(
+                let choice = crate::on_row::bind(
+                    dispatcher,
                     &row,
                     Dropdown::from_state(
                         options,
@@ -349,6 +322,17 @@ impl DisplayModel {
     }
 }
 
+/// The switch that lets a display nearby offer itself as this device's
+/// input.
+fn automatic_input(cx: &ViewCx<AutomaticDisplayPrefs>) -> provider_settings_ui::widgets::Item {
+    cx.setting(t("display-shared-auto-input"))
+        .described(t("display-shared-auto-description"))
+        .toggle_verb(
+            |prefs: &AutomaticDisplayPrefs| prefs.automatic_display_input,
+            AutomaticDisplayPrefs::SET_AUTOMATIC_DISPLAY_INPUT,
+        )
+}
+
 /// Every display of `layout` and whether its device has it switched on.
 fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, bool)> {
     let active = layout.displays.iter().map(|display| (display, true));
@@ -358,8 +342,9 @@ fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::PaneCx;
-    use crate::settings_app::SettingsApp;
+    use crate::panes::display::tests::{
+        App, change_model, dispatcher, frame, on_displays, read_model,
+    };
 
     fn devices() -> Vec<settings_store::person_displays::PersonDevice> {
         vec![settings_store::person_displays::PersonDevice {
@@ -385,6 +370,50 @@ mod tests {
         }]
     }
 
+    /// The offline peer of [`devices`] and a local device with the same
+    /// panel.
+    fn offline_and_local() -> (
+        settings_store::person_displays::PersonDevice,
+        settings_store::person_displays::PersonDevice,
+    ) {
+        let offline = devices().remove(0);
+        let mut local = offline.clone();
+        local.device = "local-peer".into();
+        local.label = "Local computer".into();
+        local.local = true;
+        local.online = true;
+        (offline, local)
+    }
+
+    /// The screens `devices` show, as the device fabric observes them.
+    fn screens(
+        devices: &[&settings_store::person_displays::PersonDevice],
+    ) -> Vec<settings_store::device_displays::DeviceDisplay> {
+        devices
+            .iter()
+            .map(|device| settings_store::device_displays::DeviceDisplay {
+                device: device.device.clone(),
+                device_label: device.label.clone(),
+                connector: "DP-1".into(),
+                output_id: Some("edid:panel-1".into()),
+                label: "Desk panel".into(),
+                online: device.online,
+                local: device.local,
+                x: if device.local { 0 } else { 1920 },
+                y: 120,
+                width: 960,
+                height: 540,
+                scale_milli: 2000,
+                revision: 1,
+            })
+            .collect()
+    }
+
+    /// The shared display `output` of `device`, as an agent addresses it.
+    fn shared(device: &str) -> String {
+        format!("settings.shared-display:{device}:edid:panel-1")
+    }
+
     fn names(widget: &dyn ui::widget::Widget, found: &mut Vec<String>) {
         fn visit(node: &ui::a11y::AccessNode, found: &mut Vec<String>) {
             if let Some(name) = &node.name {
@@ -402,48 +431,62 @@ mod tests {
         }
     }
 
-    #[test]
-    fn shared_canvas_keeps_offline_tiles_and_marks_exclusion_after_the_resource_edit() {
-        fn tiles(widget: &dyn ui::widget::Widget, found: &mut Vec<ui::a11y::AccessNode>) {
+    /// The tiles of the device arrangement canvas.
+    fn tiles(app: &mut App) -> Vec<ui::a11y::AccessNode> {
+        fn visit(widget: &dyn ui::widget::Widget, found: &mut Vec<ui::a11y::AccessNode>) {
             if widget.name() == "DisplayArrangement" {
                 found.extend(widget.accessibility().unwrap().children);
             }
             for child in widget.children() {
-                tiles(child, found);
+                visit(child, found);
             }
         }
-        let profile = tempfile::tempdir().unwrap();
-        let mut model = DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
-        let offline = devices().remove(0);
-        let mut local = offline.clone();
-        local.device = "local-peer".into();
-        local.label = "Local computer".into();
-        local.local = true;
-        local.online = true;
-        model.person_devices = vec![offline.clone(), local.clone()];
-        model.device_displays = [&offline, &local]
-            .into_iter()
-            .map(|device| settings_store::device_displays::DeviceDisplay {
-                device: device.device.clone(),
-                device_label: device.label.clone(),
-                connector: "DP-1".into(),
-                output_id: Some("edid:panel-1".into()),
-                label: "Desk panel".into(),
-                online: device.online,
-                local: device.local,
-                x: if device.local { 0 } else { 1920 },
-                y: 120,
-                width: 960,
-                height: 540,
-                scale_milli: 2000,
-                revision: 1,
-            })
-            .collect();
-        let mut before = Vec::new();
-        tiles(
-            crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
-            &mut before,
-        );
+        read_model(app, |model| {
+            let mut found = Vec::new();
+            visit(
+                provider_settings_ui::widgets::page(vec![
+                    model.build_device_arrangement_card(&dispatcher()).unwrap(),
+                ])
+                .as_ref(),
+                &mut found,
+            );
+            found
+        })
+    }
+
+    /// The accessible names of the device arrangement canvas.
+    fn canvas_names(app: &mut App) -> Vec<String> {
+        read_model(app, |model| {
+            let mut found = Vec::new();
+            names(
+                provider_settings_ui::widgets::page(vec![
+                    model.build_device_arrangement_card(&dispatcher()).unwrap(),
+                ])
+                .as_ref(),
+                &mut found,
+            );
+            found
+        })
+    }
+
+    fn automatic_input(app: &App) -> bool {
+        app.settings::<AutomaticDisplayPrefs>()
+            .get()
+            .automatic_display_input
+    }
+
+    #[test]
+    fn shared_canvas_keeps_offline_tiles_and_marks_exclusion_after_the_resource_edit() {
+        let mut app = on_displays();
+        let (offline, local) = offline_and_local();
+        let observed = screens(&[&offline, &local]);
+        let people = vec![offline.clone(), local];
+        change_model(&mut app, move |model| {
+            model.person_devices = people;
+            model.device_displays = observed;
+        });
+        frame(&mut app);
+        let before = tiles(&mut app);
         assert_eq!(before.len(), 2);
         let peer = before
             .iter()
@@ -466,19 +509,14 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        model
-            .apply(&DisplayEffect::IncludeSharedDisplay {
-                revision: model.shared_revision(&offline.device, "edid:panel-1"),
-                device: offline.device,
-                output: "edid:panel-1".into(),
-                on: false,
-            })
-            .unwrap();
-        let mut after = Vec::new();
-        tiles(
-            crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
-            &mut after,
-        );
+        app.call_on(
+            &shared(&offline.device),
+            "include-shared-display",
+            serde_json::json!({"on": false}),
+        )
+        .unwrap();
+        frame(&mut app);
+        let after = tiles(&mut app);
         assert_eq!(
             after.len(),
             2,
@@ -496,58 +534,37 @@ mod tests {
             "inclusion does not rewrite native placement"
         );
         assert!(
-            model.automatic_display_prefs.get().automatic_display_input,
+            automatic_input(&app),
             "inclusion leaves automatic input as it was"
         );
     }
 
     #[test]
     fn shared_canvas_numbers_follow_resolved_device_output_identity_and_order() {
-        let profile = tempfile::tempdir().unwrap();
-        let mut model = DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
-        let offline = devices().remove(0);
-        let mut local = offline.clone();
-        local.device = "local-peer".into();
-        local.label = "Local computer".into();
-        local.local = true;
-        local.online = true;
-        model.person_devices = vec![offline.clone(), local.clone()];
-        model.device_displays = [&offline, &local]
-            .into_iter()
-            .map(|device| settings_store::device_displays::DeviceDisplay {
-                device: device.device.clone(),
-                device_label: device.label.clone(),
-                connector: "DP-1".into(),
-                output_id: Some("edid:panel-1".into()),
-                label: "Desk panel".into(),
-                online: device.online,
-                local: device.local,
-                x: if device.local { 0 } else { 1920 },
-                y: 120,
-                width: 960,
-                height: 540,
-                scale_milli: 2000,
-                revision: 1,
-            })
-            .collect();
-        let mut legacy = model.device_displays[0].clone();
+        let mut app = on_displays();
+        let (offline, local) = offline_and_local();
+        let mut observed = screens(&[&offline, &local]);
+        let mut legacy = observed[0].clone();
         legacy.device = "legacy-peer".into();
         legacy.device_label = "Legacy computer".into();
         legacy.output_id = None;
         legacy.x = 2880;
         legacy.revision = 0;
-        model.device_displays.insert(1, legacy);
-        model
-            .apply(&DisplayEffect::OrderSharedDisplay {
-                device: local.device,
-                output: "edid:panel-1".into(),
-                revision: 0,
-                order: 1,
-            })
-            .unwrap();
-        let card = crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]);
-        let mut before = Vec::new();
-        names(card.as_ref(), &mut before);
+        observed.insert(1, legacy);
+        let people = vec![offline.clone(), local.clone()];
+        change_model(&mut app, move |model| {
+            model.person_devices = people;
+            model.device_displays = observed;
+        });
+        frame(&mut app);
+        app.call_on(
+            &shared(&local.device),
+            "order-shared-display",
+            serde_json::json!({"order": 1}),
+        )
+        .unwrap();
+        frame(&mut app);
+        let before = canvas_names(&mut app);
         assert!(
             before.iter().any(|name| name.starts_with("Display 2:")
                 && name.contains("Desk computer")
@@ -565,19 +582,14 @@ mod tests {
                 .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer")),
             "unresolved rows must not duplicate a resolved number: {before:?}"
         );
-        model
-            .apply(&DisplayEffect::OrderSharedDisplay {
-                revision: model.shared_revision(&offline.device, "edid:panel-1"),
-                device: offline.device,
-                output: "edid:panel-1".into(),
-                order: 1,
-            })
-            .unwrap();
-        let mut after = Vec::new();
-        names(
-            crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
-            &mut after,
-        );
+        app.call_on(
+            &shared(&offline.device),
+            "order-shared-display",
+            serde_json::json!({"order": 1}),
+        )
+        .unwrap();
+        frame(&mut app);
+        let after = canvas_names(&mut app);
         assert!(
             after
                 .iter()
@@ -594,63 +606,70 @@ mod tests {
                 .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer"))
         );
         assert!(
-            model.automatic_display_prefs.get().automatic_display_input,
+            automatic_input(&app),
             "numbering leaves automatic input as it was"
         );
     }
 
     #[test]
     fn shared_display_offline_edits_preserve_hardware_and_revision_boundaries() {
-        let profile = tempfile::tempdir().unwrap();
-        let mut model = DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
-        model.person_devices = devices();
-        let before = model.person_devices.clone();
-        model
-            .apply(&DisplayEffect::IncludeSharedDisplay {
-                device: "offline-peer".into(),
-                output: "edid:panel-1".into(),
-                revision: 0,
-                on: false,
-            })
-            .unwrap();
-        let revision = model.shared_revision("offline-peer", "edid:panel-1");
+        let mut app = on_displays();
+        change_model(&mut app, |model| model.person_devices = devices());
+        frame(&mut app);
+        app.call_on(
+            &shared("offline-peer"),
+            "include-shared-display",
+            serde_json::json!({"on": false}),
+        )
+        .unwrap();
+        frame(&mut app);
+        let (revision, enabled, observed, untouched) = read_model(&mut app, |model| {
+            (
+                model.shared_revision("offline-peer", "edid:panel-1"),
+                model.shared_layout().displays[0].enabled,
+                model.person_devices.clone(),
+                model.pending_candidate.is_none() && model.pending_device_move.is_none(),
+            )
+        });
         assert!(revision > 0);
-        assert!(!model.shared_layout().displays[0].enabled);
-        assert_eq!(model.person_devices, before);
-        assert!(model.pending_candidate.is_none() && model.pending_device_move.is_none());
-        assert!(
-            model
-                .apply(&DisplayEffect::IncludeSharedDisplay {
+        assert!(!enabled);
+        assert_eq!(observed, devices());
+        assert!(untouched);
+        let refused = app
+            .with_widget::<crate::window::Inspected, _>(move |settings| {
+                let mut model = crate::panes::display::area(settings)
+                    .unwrap()
+                    .model()
+                    .borrow_mut();
+                let stale = model.apply(&DisplayEffect::IncludeSharedDisplay {
                     device: "offline-peer".into(),
                     output: "edid:panel-1".into(),
                     revision: 0,
-                    on: true
-                })
-                .is_err()
-        );
-        assert!(!model.shared_layout().displays[0].enabled);
-        assert!(
-            model
-                .apply(&DisplayEffect::OrderSharedDisplay {
+                    on: true,
+                });
+                let out_of_order = model.apply(&DisplayEffect::OrderSharedDisplay {
                     device: "offline-peer".into(),
                     output: "edid:panel-1".into(),
                     revision,
-                    order: 0
-                })
-                .is_err()
-        );
-        model
-            .night_light
-            .settings()
-            .update(|prefs| prefs.night_light = true)
+                    order: 0,
+                });
+                stale.is_err() && out_of_order.is_err()
+            })
             .unwrap();
-        model.night_light.refresh();
-        model.shared_display_prefs.refresh();
+        assert!(refused, "a stale revision and order 0 are refused");
+        frame(&mut app);
+        assert!(!read_model(&mut app, |model| model
+            .shared_layout()
+            .displays[0]
+            .enabled));
+        crate::testing::edit_path(&mut app, "settings.night-light", &["night_light"], true)
+            .unwrap();
+        frame(&mut app);
         assert!(
-            !model.shared_layout().displays[0].enabled,
+            !read_model(&mut app, |model| model.shared_layout().displays[0].enabled),
             "comfort edits preserve the shared arrangement leaf"
         );
-        assert!(model.night_light.get().night_light);
+        assert!(app.settings::<NightLightPrefs>().get().night_light);
     }
 
     #[test]
@@ -662,7 +681,7 @@ mod tests {
             &crate::effects::open_pane(open),
         )
         .unwrap();
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::display::area(settings)
                 .unwrap()
                 .model()
@@ -716,27 +735,10 @@ mod tests {
         let mut observed = devices();
         observed[0].online = true;
         observed[0].outputs[0].enabled = false;
-        app.surface::<SettingsApp, _>(|settings| {
-            settings
-                .areas()
-                .find::<crate::panes::display::DisplayArea>()
-                .unwrap()
-                .model()
-                .borrow_mut()
-                .person_devices = observed;
-        });
-        app.settle();
+        change_model(&mut app, move |model| model.person_devices = observed);
+        frame(&mut app);
         let mut captions = Vec::new();
-        app.surface::<SettingsApp, _>(|settings| {
-            let model = settings
-                .areas()
-                .find::<crate::panes::display::DisplayArea>()
-                .unwrap()
-                .model()
-                .borrow();
-            let card = model.build_shared_displays_card().unwrap().into_section();
-            names(&card, &mut captions);
-        });
+        names(app.harness().root_widget(), &mut captions);
         assert!(
             captions.iter().any(|name| name.contains("Desk computer")
                 && name.contains("Switched off on that device")),
@@ -754,7 +756,7 @@ mod tests {
         assert!(offered(&mut app, "include-shared-display"));
         assert!(!offered(&mut app, "order-shared-display"));
 
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::display::DisplayArea>()
@@ -773,86 +775,94 @@ mod tests {
     #[test]
     fn shared_display_move_pins_only_confirmed_positions_and_preserves_concurrent_edits() {
         for concurrent in [false, true] {
-            let profile = tempfile::tempdir().unwrap();
-            let mut model =
-                DisplayModel::detached(PaneCx::in_profile(profile.path().to_path_buf()));
-            model.person_devices = devices();
-            model.person_devices[0].online = true;
-            model.device_displays = vec![settings_store::device_displays::DeviceDisplay {
-                device: "offline-peer".into(),
-                device_label: "Desk computer".into(),
-                connector: "DP-1".into(),
-                output_id: None,
-                label: "Desk panel".into(),
-                online: true,
-                local: false,
-                x: 1920,
-                y: 120,
-                width: 960,
-                height: 540,
-                scale_milli: 2000,
-                revision: 1,
-            }];
-            model
-                .apply(&DisplayEffect::IncludeSharedDisplay {
+            let mut app = on_displays();
+            let mut people = devices();
+            people[0].online = true;
+            change_model(&mut app, move |model| {
+                model.person_devices = people;
+                model.device_displays = vec![settings_store::device_displays::DeviceDisplay {
                     device: "offline-peer".into(),
-                    output: "edid:panel-1".into(),
-                    revision: 0,
-                    on: false,
-                })
-                .unwrap();
-            model
-                .apply(&DisplayEffect::MoveDeviceDisplay {
-                    display: model.device_displays[0].key(),
+                    device_label: "Desk computer".into(),
+                    connector: "DP-1".into(),
+                    output_id: None,
+                    label: "Desk panel".into(),
+                    online: true,
+                    local: false,
+                    x: 1920,
+                    y: 120,
+                    width: 960,
+                    height: 540,
+                    scale_milli: 2000,
                     revision: 1,
-                    x: 2000,
-                    y: 200,
-                })
-                .unwrap();
+                }];
+            });
+            frame(&mut app);
+            app.call_on(
+                &shared("offline-peer"),
+                "include-shared-display",
+                serde_json::json!({"on": false}),
+            )
+            .unwrap();
+            frame(&mut app);
+            let screen = read_model(&mut app, |model| model.device_displays[0].key());
+            app.call_on(
+                &format!("settings.device-display:{screen}"),
+                "move-device-display",
+                serde_json::json!({"x": 2000, "y": 200}),
+            )
+            .unwrap();
+            let shared_x =
+                |app: &mut App| read_model(app, |model| model.shared_layout().displays[0].rect.x);
             assert_eq!(
-                model.shared_layout().displays[0].rect.x,
+                shared_x(&mut app),
                 1920,
                 "a request never commits a placement"
             );
-            let ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. } =
-                model.take_host_intent().unwrap()
+            let Some(ui::widget::AppHostIntent::MoveDeviceDisplay { reply, .. }) =
+                app.harness().take_host_intent()
             else {
                 panic!("typed device placement");
             };
             reply.upgrade().unwrap().borrow_mut().result = Some(Ok(()));
-            model.poll_device_move();
+            frame(&mut app);
             assert_eq!(
-                model.shared_layout().displays[0].rect.x,
+                shared_x(&mut app),
                 1920,
                 "delivery is not target confirmation"
             );
             if concurrent {
-                let revision = model.shared_revision("offline-peer", "edid:panel-1");
-                model
-                    .apply(&DisplayEffect::IncludeSharedDisplay {
-                        device: "offline-peer".into(),
-                        output: "edid:panel-1".into(),
-                        revision,
-                        on: true,
-                    })
-                    .unwrap();
+                app.call_on(
+                    &shared("offline-peer"),
+                    "include-shared-display",
+                    serde_json::json!({"on": true}),
+                )
+                .unwrap();
+                frame(&mut app);
             }
-            let screen = &mut model.device_displays[0];
-            screen.x = 2000;
-            screen.y = 200;
-            screen.revision = 2;
-            model.poll_device_move();
-            let display = model.shared_layout().displays[0].clone();
+            change_model(&mut app, |model| {
+                let screen = &mut model.device_displays[0];
+                screen.x = 2000;
+                screen.y = 200;
+                screen.revision = 2;
+            });
+            frame(&mut app);
+            let (display, notice, settled) = read_model(&mut app, |model| {
+                (
+                    model.shared_layout().displays[0].clone(),
+                    model.notice.clone(),
+                    model.awaiting_device_move.is_none(),
+                )
+            });
             if concurrent {
                 assert!(display.enabled);
                 assert_eq!(display.rect.x, 1920);
-                assert_eq!(model.notice, Some(t("display-shared-move-stale")));
+                assert_eq!(notice, Some(t("display-shared-move-stale")));
             } else {
                 assert_eq!((display.rect.x, display.rect.y), (2000, 200));
                 assert!(!display.enabled);
-                assert_eq!(model.notice, Some(t("display-device-move-confirmed")));
+                assert_eq!(notice, Some(t("display-device-move-confirmed")));
             }
-            assert!(model.awaiting_device_move.is_none());
+            assert!(settled);
         }
     }
 
@@ -867,7 +877,7 @@ mod tests {
             &crate::effects::open_pane(open),
         )
         .unwrap();
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
             crate::panes::display::area(settings)
                 .unwrap()
                 .model()
@@ -896,15 +906,17 @@ mod tests {
     }
     #[test]
     fn shared_display_automatic_input_is_a_separate_local_admin_choice() {
-        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let mut app = App::new().unwrap();
         let before = app
             .call("inspect-shared-displays", serde_json::json!({}))
             .unwrap()
             .unwrap();
         assert_eq!(before["automatic_input"], true, "on until turned off");
-        app.call(
+        crate::testing::invoke_section(
+            &mut app,
+            "settings.automatic-display",
             "set-automatic-display-input",
-            serde_json::json!({"on":false}),
+            serde_json::json!({"on": false}),
         )
         .unwrap();
         app.settle();
@@ -913,43 +925,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after["automatic_input"], false);
-        app.surface::<SettingsApp, _>(|settings| {
-            let privacy = settings
-                .areas()
-                .find::<crate::panes::display::DisplayArea>()
-                .unwrap()
-                .model()
-                .borrow()
-                .cx
-                .settings::<crate::continuity::ContinuityPrivacy>()
-                .get();
-            assert!(
-                privacy.enabled && privacy.display_input,
-                "automatic input is its own switch: turning it off leaves display and input on"
-            );
-        });
+        let privacy = app.settings::<crate::continuity::ContinuityPrivacy>().get();
+        assert!(
+            privacy.enabled && privacy.display_input,
+            "automatic input is its own switch: turning it off leaves display and input on"
+        );
         assert_eq!(
             settings_store::placement::holder("continuity"),
             settings_store::placement::Holder::Device
         );
-    }
-
-    #[test]
-    fn shared_display_automatic_input_cannot_be_changed_by_a_viewer() {
-        let mut app =
-            ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
-                .unwrap();
-        assert!(
-            app.call(
-                "set-automatic-display-input",
-                serde_json::json!({"on":false})
-            )
-            .is_err()
-        );
-        let view = app
-            .call("inspect-shared-displays", serde_json::json!({}))
-            .unwrap()
-            .unwrap();
-        assert_eq!(view["automatic_input"], true);
     }
 }

@@ -30,17 +30,11 @@ pub enum Step<'a, K> {
 /// local edit costs as much as the edit; the middle aligns in
 /// `O(n log n)` as the longest increasing run of new positions.
 pub fn align<'a, K: Eq + Hash>(old: &'a [K], new: &'a [K]) -> Vec<Step<'a, K>> {
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let (prefix, suffix) = crate::text::common_ends(old, new);
     let (old_rest, new_rest) = (
         old.get(prefix..).unwrap_or(&[]),
         new.get(prefix..).unwrap_or(&[]),
     );
-    let suffix = old_rest
-        .iter()
-        .rev()
-        .zip(new_rest.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
     let old_mid = old_rest
         .get(..old_rest.len().saturating_sub(suffix))
         .unwrap_or(&[]);
@@ -168,15 +162,7 @@ const RUN_DIFF_CHAR_CAP: usize = 8_192;
 pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
     let a: Vec<char> = old.chars().collect();
     let b: Vec<char> = new.chars().collect();
-    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    let suffix = a
-        .get(prefix..)
-        .unwrap_or(&[])
-        .iter()
-        .rev()
-        .zip(b.get(prefix..).unwrap_or(&[]).iter().rev())
-        .take_while(|(x, y)| x == y)
-        .count();
+    let (prefix, suffix) = crate::text::common_ends(&a, &b);
     let a_mid = a.get(prefix..a.len().saturating_sub(suffix)).unwrap_or(&[]);
     let b_mid = b.get(prefix..b.len().saturating_sub(suffix)).unwrap_or(&[]);
 

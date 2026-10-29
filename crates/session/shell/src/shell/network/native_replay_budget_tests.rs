@@ -44,7 +44,7 @@ fn native_replay_yields_between_signed_admissions_without_reordering_control() {
         .try_send(NetEvent::PeerLeft {
             ws: DEFAULT_WS_TOPIC,
             peer: iroh::SecretKey::from_bytes(&[42; 32]).public(),
-            cause: PeerDepartureCause::LivenessTimedOut,
+            cause: PeerDepartureCause::HostSessionClosed,
             membership_epoch: None,
         })
         .unwrap();
@@ -83,7 +83,7 @@ fn native_replay_yields_between_signed_admissions_without_reordering_control() {
         .try_send(NetEvent::PeerLeft {
             ws: DEFAULT_WS_TOPIC,
             peer: iroh::SecretKey::from_bytes(&[43; 32]).public(),
-            cause: PeerDepartureCause::LivenessTimedOut,
+            cause: PeerDepartureCause::HostSessionClosed,
             membership_epoch: None,
         })
         .unwrap();

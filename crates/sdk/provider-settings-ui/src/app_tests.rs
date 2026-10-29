@@ -135,5 +135,267 @@ fn without_authority_the_window_says_who_sets_providers_up() {
     );
 }
 
+/// An agent manages providers through the actions alone: it reads the
+/// catalogue, and adds two accounts of one provider and an
+/// Anthropic-compatible one.
+#[test]
+fn agents_list_presets_and_add_providers_through_actions() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    let agent = || ui::tilo_actions::ActionInvoker::actor("provider-administrator");
+    let listed = app
+        .call_by(
+            agent(),
+            "model-providers.root",
+            ProviderEffect::LIST_PRESETS.id(),
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .value
+        .unwrap();
+    let presets = listed["presets"].as_array().unwrap();
+    let slugs: Vec<_> = presets
+        .iter()
+        .map(|preset| preset["preset"].as_str().unwrap())
+        .collect();
+    assert!(slugs.len() >= 40, "{slugs:?}");
+    for slug in [
+        "openrouter",
+        "zai-anthropic",
+        "anthropic-compatible",
+        "vllm",
+    ] {
+        assert!(slugs.contains(&slug), "{slug}");
+    }
+    // A sign-in runs where a host offers it, not from this window.
+    assert!(!slugs.contains(&"chatgpt"));
+    let zai = presets
+        .iter()
+        .find(|preset| preset["preset"] == "zai-anthropic")
+        .unwrap();
+    assert_eq!(zai["protocol"], "anthropic");
+    assert_eq!(zai["authentication"], "api-key");
+    assert!(zai["docs"].as_str().unwrap().starts_with("https://"));
+
+    for preset in ["openrouter", "openrouter", "zai-anthropic"] {
+        app.call_by(
+            agent(),
+            "model-providers.root",
+            ProviderEffect::ADD_PROVIDER.id(),
+            serde_json::json!({ "preset": preset }),
+        )
+        .unwrap();
+        app.settle();
+    }
+    let profiles = backend.state.lock_recover().config.profiles.clone();
+    assert_eq!(profiles.len(), 3);
+    assert_eq!(profiles[0].label, profiles[1].label);
+    assert_ne!(profiles[0].id, profiles[1].id);
+    assert_eq!(
+        profiles[2].key_header,
+        Some(agent_provider_config::KeyHeader::Bearer)
+    );
+    assert!(
+        app.call_by(
+            agent(),
+            "model-providers.root",
+            ProviderEffect::ADD_PROVIDER.id(),
+            serde_json::json!({ "preset": "chatgpt" }),
+        )
+        .is_err()
+    );
+}
+
+/// An agent says what a model can do, through the action on its provider,
+/// and is refused a model that calls no tools for an agent.
+#[test]
+fn agents_set_model_capabilities_and_cannot_plan_with_a_model_without_tools() {
+    let backend = Arc::new(FakeAdminBackend::default());
+    let mut app = mount(backend.clone());
+    run(
+        &mut app,
+        ProviderEffect::AddProvider {
+            preset: "openrouter".into(),
+        },
+    );
+    app.settle();
+    // The key is written through its action, and is never read back.
+    let provider = config(&mut app).profiles[0].id.clone();
+    run(
+        &mut app,
+        ProviderEffect::SaveProviderKey {
+            provider: provider.clone(),
+            key: Some("private-key-draft".into()),
+        },
+    );
+    app.settle();
+    assert_private(&mut app);
+    // The provider lists its models; one is taken, and is said to call no
+    // tools.
+    run(
+        &mut app,
+        ProviderEffect::ListProviderModels {
+            provider: provider.clone(),
+        },
+    );
+    app.settle();
+    run(
+        &mut app,
+        ProviderEffect::SetModelCapabilities {
+            provider: provider.clone(),
+            model: "listed-a".into(),
+            vision: Some(true),
+            tool_calling: Some(false),
+        },
+    );
+    app.settle();
+    let model = backend.state.lock_recover().config.profiles[0].models[0].clone();
+    assert_eq!(model.id, "listed-a");
+    assert_eq!(model.context_window, Some(200_000));
+    assert!(model.vision && !model.tool_calling);
+    assert_eq!(
+        model.capabilities_from,
+        agent_provider_config::CapabilitySource::Person
+    );
+    let refused = app.effect(&ProviderEffect::SetAgentModel {
+        agent: "writer".into(),
+        provider: Some(provider.clone()),
+        model: Some("listed-a".into()),
+    });
+    assert_eq!(
+        refused.err().map(|error| error.to_string()),
+        Some(crate::i18n::t("agent-model-no-tools"))
+    );
+    run(
+        &mut app,
+        ProviderEffect::SetModelCapabilities {
+            provider: provider.clone(),
+            model: "listed-a".into(),
+            vision: None,
+            tool_calling: Some(true),
+        },
+    );
+    app.settle();
+    app.effect(&ProviderEffect::SetAgentModel {
+        agent: "writer".into(),
+        provider: Some(provider.clone()),
+        model: Some("listed-a".into()),
+    })
+    .unwrap();
+    app.settle();
+    let config = backend.state.lock_recover().config.clone();
+    assert_eq!(config.agent_models["writer"].model, "listed-a");
+    // Giving the model back to its family table forgets the person's answer.
+    run(
+        &mut app,
+        ProviderEffect::SetModelCapabilities {
+            provider,
+            model: "listed-a".into(),
+            vision: None,
+            tool_calling: None,
+        },
+    );
+    app.settle();
+    let model = backend.state.lock_recover().config.profiles[0].models[0].clone();
+    assert!(!model.capabilities_set_by_person());
+}
+
+/// Pictures of the panel for review, rendered headless (lavapipe) into
+/// `target/provider-shots`: the catalogue, narrowed by its filter, and a
+/// provider's form with the models it listed and what each can do.
+#[test]
+#[ignore = "writes review pictures; run on demand"]
+fn review_pictures_of_the_catalogue_and_a_providers_form() {
+    let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+        || std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target"),
+        std::path::PathBuf::from,
+    );
+    let out = target.join("provider-shots");
+    std::fs::create_dir_all(&out).unwrap();
+    let backend = Arc::new(FakeAdminBackend::default());
+    let listing = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../agent/provider-config/tests/fixtures/openrouter-models.json"
+    ))
+    .unwrap();
+    backend.state.lock_recover().listing =
+        Some(agent_provider_config::transform::parse_models(&listing).unwrap());
+    let mut app = mount(backend.clone());
+    for (theme, name) in [
+        (ui::theme::Theme::dark(), "dark"),
+        (ui::theme::Theme::light(), "light"),
+    ] {
+        app.harness().set_theme(theme);
+        app.harness().resize((1280, 2400)).unwrap();
+        app.settle();
+        app.harness()
+            .render_png(&out.join(format!("catalogue-{name}.png")));
+    }
+    app.harness().set_theme(ui::theme::Theme::dark());
+    app.harness()
+        .click_named("agent-models-add-provider")
+        .unwrap();
+    app.harness().type_text("anthropic");
+    app.settle();
+    app.harness()
+        .render_png(&out.join("catalogue-filtered-dark.png"));
+    for preset in ["zai-anthropic", "openrouter"] {
+        run(
+            &mut app,
+            ProviderEffect::AddProvider {
+                preset: preset.into(),
+            },
+        );
+        app.settle();
+    }
+    let id = config(&mut app).profiles.last().unwrap().id.clone();
+    backend
+        .state
+        .lock_recover()
+        .keys
+        .insert(id.clone(), CredentialStatus::Configured);
+    run(&mut app, ProviderEffect::RefreshProviders);
+    app.settle();
+    run(
+        &mut app,
+        ProviderEffect::ListProviderModels {
+            provider: id.clone(),
+        },
+    );
+    app.settle();
+    run(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: id.clone(),
+            model: "anthropic/claude-sonnet-4.5".into(),
+        },
+    );
+    app.settle();
+    run(
+        &mut app,
+        ProviderEffect::SetProviderModel {
+            provider: id,
+            model: "moondream/moondream3-preview".into(),
+        },
+    );
+    app.settle();
+    for (theme, name) in [
+        (ui::theme::Theme::dark(), "dark"),
+        (ui::theme::Theme::light(), "light"),
+    ] {
+        app.harness().set_theme(theme);
+        app.harness().resize((1280, 3200)).unwrap();
+        app.settle();
+        app.harness().resize((1280, 3200)).unwrap();
+        app.settle();
+        app.harness()
+            .render_png(&out.join(format!("form-{name}.png")));
+    }
+    app.harness().resize((420, 3200)).unwrap();
+    app.settle();
+    app.harness()
+        .render_png(&out.join("form-compact-light.png"));
+}
+
 include!("fake_backend.rs");
 include!("mounted_tests.rs");

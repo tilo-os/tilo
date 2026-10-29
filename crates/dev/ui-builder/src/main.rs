@@ -2,13 +2,13 @@
 //! FILE` opens the graph in FILE and saves it back there.
 //!
 //! The graph is the file, not a document: the app's resource holds nothing,
-//! and the editor is the surface over it.
+//! and the editor is the whole view.
 
 use std::path::{Path, PathBuf};
 
-use ui::framework::{ResourceApp, ResourceSurface, ViewCx};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
-use ui::widget::{Decorator, Element, Text};
+use ui::widget::{Element, Text};
 use ui::{Theme, UiGraphEditor, UiGraphHandle};
 
 /// The editor's resource: the door its window is published on. The graph it
@@ -41,7 +41,7 @@ impl ResourceApp for UiBuilder {
             return Box::new(Text::new("tilo-ui-builder requires a UI graph path"));
         };
         match editor(&path) {
-            Ok(editor) => cx.surface(GraphSurface(editor)),
+            Ok(editor) => Box::new(editor),
             Err(error) => Box::new(Text::new(&error)),
         }
     }
@@ -57,26 +57,6 @@ fn editor(path: &Path) -> Result<UiGraphEditor, String> {
     Ok(UiGraphEditor::new(handle, Theme::dark())
         .map_err(|error| format!("build {}: {error}", path.display()))?
         .on_save(move |source| save(&save_path, source)))
-}
-
-/// The graph editor as the surface over the app's resource, which holds
-/// nothing for it to present.
-struct GraphSurface(UiGraphEditor);
-
-impl Decorator for GraphSurface {
-    type Inner = UiGraphEditor;
-
-    fn inner(&self) -> &UiGraphEditor {
-        &self.0
-    }
-
-    fn inner_mut(&mut self) -> &mut UiGraphEditor {
-        &mut self.0
-    }
-}
-
-impl ResourceSurface<UiGraph> for GraphSurface {
-    fn present(&mut self, _state: &std::rc::Rc<()>) {}
 }
 
 fn save(path: &Path, source: &str) -> Result<(), String> {

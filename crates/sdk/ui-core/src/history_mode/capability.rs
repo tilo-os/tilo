@@ -36,13 +36,6 @@ pub trait DocumentHistory {
         None
     }
 
-    /// Whether this widget presents its document's History itself, so the
-    /// host must not add the shared standalone History control beside it:
-    /// one document gets one History surface.
-    fn provides_document_history(&self) -> bool {
-        false
-    }
-
     /// Pure policy for physical text emitted by this owner. The host alone
     /// decides whether the exact author, instance and frontier may continue.
     /// Programmatic and agent document actions never consult this policy.
@@ -104,13 +97,6 @@ pub fn document_history_definition(
     widget: &(impl Widget + ?Sized),
 ) -> Option<&'static super::HistoryDefinition> {
     capability::<dyn DocumentHistory>(widget)?.document_history_definition()
-}
-
-/// Whether `widget` or a descendant presents its document's History itself.
-pub fn provides_document_history(widget: &dyn Widget) -> bool {
-    capability::<dyn DocumentHistory>(widget)
-        .is_some_and(DocumentHistory::provides_document_history)
-        || widget.children().into_iter().any(provides_document_history)
 }
 
 /// Tell `widget` a Document action it owns was applied.

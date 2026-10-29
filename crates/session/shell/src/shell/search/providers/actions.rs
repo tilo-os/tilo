@@ -23,30 +23,19 @@ mod device_pairing;
 mod enrollment_tokens;
 mod identity_admin;
 mod native_identity;
-mod quick_settings;
 mod shortcuts;
 mod strips;
 mod tabs;
 mod windows;
 mod workspaces;
-pub(crate) use quick_settings::QS_MUTE_ID;
-use quick_settings::{
-    DISPLAY_BRIGHTNESS_STEP, LEVEL_STEPS, QS_DISPLAY_BRIGHTNESS_PREFIX, QS_MUTE_KEYWORDS,
-    QS_TOGGLES, QUICK_SETTINGS_ACTIONS, apply_quick_settings_effect, display_brightness_connector,
-    level_badge, quick_settings_params, radio_is_on, stepped, validated_percent,
-};
-pub(crate) use quick_settings::{
-    QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
-    QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
-};
 use shortcuts::ACTION_SHORTCUTS;
 pub(crate) use shortcuts::action_shortcut;
 
+pub(crate) use strips::valid_strip_name;
 use strips::{
     STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
     move_strip, remove_strip, rename_strip, show_canvas, show_strips,
 };
-pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
 use tabs::{
     TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
     rename_focused_tab,
@@ -509,10 +498,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
-        }
-        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID
-        | QS_BLUETOOTH_ID | QS_AIRPLANE_ID => {
-            contract = quick_settings_contract();
         }
         DISPLAY_EXTEND_ID
         | DISPLAY_MIRROR_ID
@@ -3224,27 +3209,7 @@ fn display_layout_contract() -> tilo_actions::ActionContract {
     }
 }
 
-fn quick_settings_contract() -> tilo_actions::ActionContract {
-    tilo_actions::ActionContract {
-        kind: tilo_actions::ActionKind::Undoable,
-        retry: tilo_actions::RetryPolicy::Idempotent,
-        ..tilo_actions::ActionContract::default()
-    }
-}
-
-fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract {
-    let mut contract = quick_settings_contract();
-    if !available {
-        contract.availability = tilo_actions::Availability::Unavailable {
-            code: "quick_settings_unavailable".into(),
-            reason: t("search-action-quick-settings-unavailable"),
-        };
-    }
-    contract
-}
-
 pub struct ActionsProvider {
-    qs_actions: SharedQsActions,
     /// The rows' searchable text, indexed while it stays the same.
     ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
@@ -3304,10 +3269,9 @@ struct CatalogueState {
     invite_offered: bool,
     collab: bool,
     active_workspace: Option<crate::shell::state::WorkspaceId>,
-    quick_settings: QuickSettingsKey,
-    /// What the rows that show a setting's state say: Wi-Fi, Bluetooth,
-    /// airplane mode, Do Not Disturb, axis navigation.
-    states: [bool; 5],
+    /// What the rows that show a setting's state say: Do Not Disturb, axis
+    /// navigation.
+    states: [bool; 2],
     /// The settings document the rows read: the appearance mode and high
     /// contrast their badges show, and the shortcuts and keyboard layout
     /// their keycaps spell.
@@ -3316,25 +3280,11 @@ struct CatalogueState {
     search_sources: Vec<(String, String, bool)>,
 }
 
-/// The Quick Settings backend the rows call, what it can do, and whether a
-/// radio change is pending. The backend is named by address: the rows hold
-/// it, so it cannot be freed and another take its place while they live.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct QuickSettingsKey {
-    backend: usize,
-    availability: tilo_quick_settings::actions::QsActionAvailability,
-    radio_pending: bool,
-}
-
 impl ActionsProvider {
     pub fn new() -> Self {
         Self {
             search_preferences: None,
             provider_catalog: None,
-            qs_actions: Rc::new(SharedQsDispatcher::new(
-                Rc::new(tilo_quick_settings::actions::UnavailableQsActions),
-                tilo_quick_settings::actions::QsActionAvailability::default(),
-            )),
             ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
@@ -3345,23 +3295,14 @@ impl ActionsProvider {
     pub(crate) fn with_all_sources(
         search_preferences: crate::shell::search::SearchPreferencesHandle,
         provider_catalog: crate::shell::search::SearchProviderCatalogHandle,
-        qs_actions: SharedQsActions,
     ) -> Self {
         Self {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
-            qs_actions,
             ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
-        }
-    }
-
-    pub(crate) fn with_shared_qs_actions(qs_actions: SharedQsActions) -> Self {
-        Self {
-            qs_actions,
-            ..Self::new()
         }
     }
 
@@ -3430,73 +3371,22 @@ impl SearchProvider for ActionsProvider {
     fn toggles_in_place(&self, result: &SearchResult) -> bool {
         toggles_in_place(&result.id)
     }
-    fn adjustable(&self, result: &SearchResult) -> bool {
-        matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
-            || display_brightness_connector(&result.id).is_some()
-    }
-    /// ←/→ on Volume or Brightness: the same step "louder" or "dimmer" takes.
-    /// On one display's brightness row, that display moves by the same step.
-    fn adjust(
-        &self,
-        result: &SearchResult,
-        delta: i8,
-        doc: &mut ui::widget::Edits<'_>,
-        root: &automerge::ObjId,
-        chrome: &Chrome,
-    ) -> Result<(), ActionError> {
-        if let Some(connector) = display_brightness_connector(&result.id) {
-            let level = chrome
-                .borrow()
-                .quick_settings
-                .displays
-                .iter()
-                .find(|display| display.connector == connector)
-                .map(|display| (display.level * 100.0).round())
-                .ok_or_else(|| ActionError::Refused(format!("{connector} has no brightness")))?;
-            let step = if delta > 0 {
-                DISPLAY_BRIGHTNESS_STEP
-            } else {
-                -DISPLAY_BRIGHTNESS_STEP
-            };
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                "percent".into(),
-                serde_json::json!(f64::from((level + step).clamp(0.0, 100.0))),
-            );
-            let args = ActionArgs::bind_json(&result.params, &arguments)
-                .map_err(ActionError::Arguments)?;
-            return (result.on_open)(doc, root, chrome, &args);
-        }
-        let step = LEVEL_STEPS
-            .iter()
-            .find(|step| step.level == result.id && (step.delta > 0.0) == (delta > 0))
-            .ok_or_else(|| ActionError::Refused(format!("{} has no level to step", result.id)))?;
-        let args = stepped(&result.params, chrome, step.level, step.delta)?;
-        (result.on_open)(doc, root, chrome, &args)
-    }
     fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
         let catalogue = self.catalogue.borrow().clone()?;
         let at = *catalogue.by_id.get(&result.id)?;
         crate::shell::search::match_reason_in(needle, result, catalogue.fields.get(at)?)
     }
-    /// A radio's set-enabled form is for agents: a person flips the switch
-    /// row beside it, which already shows whether it is on. And an action
-    /// with nothing to act on (closing a sheet that is not open, declining a
-    /// pairing nobody asked for, stopping a follow that is not happening)
-    /// only takes a row from one that would do something: it is offered
-    /// only when the query names it exactly, where running it says why not.
+    /// An action with nothing to act on (closing a sheet that is not open,
+    /// declining a pairing nobody asked for, stopping a follow that is not
+    /// happening) only takes a row from one that would do something: it is
+    /// offered only when the query names it exactly, where running it says
+    /// why not.
     fn hidden_from_people(
         &self,
         result: &SearchResult,
         needle: &str,
         chrome: &ChromeState,
     ) -> bool {
-        if QS_TOGGLES
-            .iter()
-            .any(|toggle| toggle.set_enabled == result.id)
-        {
-            return true;
-        }
         let display_waiting = self
             .catalogue
             .borrow()
@@ -3627,158 +3517,6 @@ impl SearchProvider for ActionsProvider {
 }
 
 impl ActionsProvider {
-    /// With more than one display that can be dimmed, a brightness row for
-    /// each, named after its display, showing its level: ←/→ steps it in
-    /// place, Enter asks for a percentage. One display keeps the single
-    /// Brightness row.
-    fn push_display_brightness_rows(
-        &self,
-        out: &mut Vec<SearchResult>,
-        candidates: &mut ActionCandidates,
-        state: &ChromeState,
-    ) {
-        let displays = &state.quick_settings.displays;
-        if displays.len() < 2 || !self.qs_actions.action_available(QS_BRIGHTNESS_ID) {
-            return;
-        }
-        let Some(base) = out.iter().find(|row| row.id == QS_BRIGHTNESS_ID).cloned() else {
-            return;
-        };
-        let subtitle = t("search-brightness-display-subtitle");
-        for display in displays {
-            let id = format!("{QS_DISPLAY_BRIGHTNESS_PREFIX}{}", display.connector);
-            let run = Rc::clone(&base.on_open);
-            let params = base.params.clone();
-            let connector = display.connector.clone();
-            let on_open = Rc::new(
-                move |doc: &mut ui::widget::Edits<'_>,
-                      root: &automerge::ObjId,
-                      chrome: &Chrome,
-                      args: &ActionArgs| {
-                    let mut arguments = serde_json::Map::new();
-                    if let Some(percent) = args.number("percent") {
-                        arguments.insert("percent".into(), serde_json::json!(percent));
-                    }
-                    arguments.insert("display".into(), serde_json::json!(connector));
-                    let args = ActionArgs::bind_json(&params, &arguments)
-                        .map_err(ActionError::Arguments)?;
-                    run(doc, root, chrome, &args)
-                },
-            ) as Rc<crate::shell::search::OpenFn>;
-            let title = t_args(
-                "search-brightness-display",
-                &[("display", display.name.as_str().into())],
-            );
-            candidates.record(
-                &title.to_lowercase(),
-                &subtitle.to_lowercase(),
-                &id,
-                Vec::new(),
-            );
-            out.push(SearchResult {
-                id,
-                title,
-                subtitle: Some(subtitle.clone()),
-                badge: Some(t_args(
-                    "search-level-percent",
-                    &[("percent", f64::from((display.level * 100.0).round()).into())],
-                )),
-                params: base
-                    .params
-                    .iter()
-                    .filter(|param| param.name != "display")
-                    .cloned()
-                    .collect(),
-                on_open,
-                on_invoke: None,
-                on_begin_invoke: None,
-                ..base.clone()
-            });
-        }
-    }
-
-    /// Louder, quieter, brighter, dimmer and mute, each derived from the
-    /// level's set row already in `out`, with the live level as its pill.
-    fn push_level_steps(
-        &self,
-        out: &mut Vec<SearchResult>,
-        candidates: &mut ActionCandidates,
-        state: &ChromeState,
-    ) {
-        for step in LEVEL_STEPS {
-            let Some(base) = out.iter().find(|row| row.id == step.level).cloned() else {
-                continue;
-            };
-            if !self.qs_actions.action_available(step.level) {
-                continue;
-            }
-            let (level, delta, params) = (step.level, step.delta, base.params.clone());
-            let run = Rc::clone(&base.on_open);
-            let on_open = Rc::new(
-                move |doc: &mut ui::widget::Edits<'_>,
-                      root: &automerge::ObjId,
-                      chrome: &Chrome,
-                      _args: &ActionArgs| {
-                    run(doc, root, chrome, &stepped(&params, chrome, level, delta)?)
-                },
-            ) as Rc<crate::shell::search::OpenFn>;
-            let title = t(step.title);
-            candidates.record(
-                &title.to_lowercase(),
-                "",
-                step.id,
-                declared_keywords(step.keywords),
-            );
-            out.push(SearchResult {
-                id: step.id.to_string(),
-                title,
-                subtitle: None,
-                badge: Some(level_badge(state, level)),
-                params: Vec::new(),
-                on_open,
-                on_invoke: None,
-                on_begin_invoke: None,
-                ..base
-            });
-        }
-        if let Some(base) = out.iter().find(|row| row.id == QS_VOLUME_ID).cloned()
-            && self.qs_actions.action_available(QS_VOLUME_ID)
-        {
-            let actions = Rc::clone(&self.qs_actions);
-            let title = t("search-step-volume-mute");
-            candidates.record(
-                &title.to_lowercase(),
-                "",
-                QS_MUTE_ID,
-                declared_keywords(QS_MUTE_KEYWORDS),
-            );
-            out.push(SearchResult {
-                id: QS_MUTE_ID.to_string(),
-                title,
-                subtitle: None,
-                badge: None,
-                params: Vec::new(),
-                on_open: Rc::new(
-                    move |_doc: &mut ui::widget::Edits<'_>,
-                          _root: &automerge::ObjId,
-                          chrome: &Chrome,
-                          _args: &ActionArgs| {
-                        if !current_shell_action_authorized(&chrome.borrow(), QS_MUTE_ID) {
-                            return Err(ActionError::Refused(format!(
-                                "current workspace authority no longer permits {QS_MUTE_ID}"
-                            )));
-                        }
-                        let backend = actions.actions.borrow().clone();
-                        backend.toggle_mute().map_err(ActionError::Refused)
-                    },
-                ),
-                on_invoke: None,
-                on_begin_invoke: None,
-                ..base
-            });
-        }
-    }
-
     /// The catalogue for the current state, built only if that is not the
     /// state the retained one was built from.
     fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
@@ -3814,14 +3552,7 @@ impl ActionsProvider {
                     .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here),
             collab: ctx.chrome.collab_available(),
             active_workspace,
-            quick_settings: self.qs_actions.catalogue_key(),
-            states: [
-                ctx.chrome.quick_settings.wifi,
-                ctx.chrome.quick_settings.bluetooth,
-                ctx.chrome.quick_settings.radios.airplane_mode,
-                ctx.chrome.dnd(),
-                ctx.chrome.axis_navigation_enabled(),
-            ],
+            states: [ctx.chrome.dnd(), ctx.chrome.axis_navigation_enabled()],
             settings: settings_store::stamp(),
             search_sources: self.search_sources(),
         }
@@ -4580,228 +4311,6 @@ impl ActionsProvider {
                 resource: None,
             });
         }
-        for &(id, label_key, subtitle_key, keywords_key) in QUICK_SETTINGS_ACTIONS {
-            let label = t(label_key);
-            let subtitle = t(subtitle_key);
-            candidates.record(
-                &label.to_lowercase(),
-                &subtitle.to_lowercase(),
-                id,
-                declared_keywords(keywords_key),
-            );
-            let score = 0;
-            let actions = self.qs_actions.actions.borrow().clone();
-            let available = self.qs_actions.action_available(id);
-            let mut contract = quick_settings_contract_for(available);
-            if available
-                && matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID)
-                && self.qs_actions.radio_job.borrow().is_some()
-            {
-                contract.availability = tilo_actions::Availability::Unavailable {
-                    code: "quick_settings_radio_pending".into(),
-                    reason: t("display-confirm-applying"),
-                };
-            }
-            let on_begin_invoke = matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID).then(|| {
-                let slot = Rc::clone(&self.qs_actions);
-                Rc::new(
-                    move |_: &mut ui::widget::Edits<'_>,
-                          _: &automerge::ObjId,
-                          chrome: &Chrome,
-                          args: &ActionArgs| {
-                        if !current_shell_action_authorized(&chrome.borrow(), id) {
-                            return Err(ActionError::Refused(format!(
-                                "current workspace authority no longer permits {id}"
-                            )));
-                        }
-                        let enabled = args.boolean("enabled").unwrap_or(false);
-                        let change = if id == QS_WIFI_ID {
-                            os_actions::RadioChange::Wifi(enabled)
-                        } else {
-                            os_actions::RadioChange::Airplane(enabled)
-                        };
-                        match slot
-                            .start_radio(change, chrome)
-                            .map_err(ActionError::Refused)?
-                        {
-                            None => Ok(crate::shell::search::InvocationDisposition::Accepted(
-                                crate::shell::search::ActionReceipt::completed(),
-                            )),
-                            Some(job) => {
-                                let chrome = chrome.clone();
-                                let pending: crate::shell::search::PendingInvocation =
-                                    Rc::new(move || {
-                                        let Some(result) = job.result() else {
-                                            return Ok(None);
-                                        };
-                                        crate::shell::chrome_state::ChromeState::apply_radio_ticket(
-                                            &chrome, &job,
-                                        );
-                                        result.map_err(ActionError::Refused)?;
-                                        Ok(Some(crate::shell::search::ActionReceipt::completed()))
-                                    });
-                                Ok(crate::shell::search::InvocationDisposition::Pending(
-                                    pending,
-                                ))
-                            }
-                        }
-                    },
-                ) as Rc<crate::shell::search::BeginInvokeFn>
-            });
-            out.push(SearchResult {
-                facts: Vec::new(),
-                shortcut: None,
-                kind: ResourceKind::Action,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                badge: None,
-                provider_id: self.id().to_string(),
-                id: id.to_string(),
-                title: label,
-                subtitle: Some(subtitle),
-                score,
-                params: quick_settings_params(id),
-                contract: Some(contract),
-                on_open: Rc::new(move |_doc, _root, chrome, args| {
-                    if !current_shell_action_authorized(&chrome.borrow(), id) {
-                        return Err(ActionError::Refused(format!(
-                            "current workspace authority no longer permits {id}"
-                        )));
-                    }
-                    if matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID) {
-                        return Err(ActionError::Refused(
-                            "radio changes require lifecycle dispatch".into(),
-                        ));
-                    }
-                    apply_quick_settings_effect(id, actions.as_ref(), args)?;
-                    let mut state = chrome.borrow_mut();
-                    match id {
-                        QS_BRIGHTNESS_ID => {
-                            let level = validated_percent(args) / 100.0;
-                            match args.text("display") {
-                                Some(display) => {
-                                    if let Some(entry) = state
-                                        .quick_settings
-                                        .displays
-                                        .iter_mut()
-                                        .find(|entry| entry.connector == display)
-                                    {
-                                        entry.level = level;
-                                    }
-                                }
-                                None => state.quick_settings.brightness = level,
-                            }
-                        }
-                        QS_VOLUME_ID => {
-                            state
-                                .quick_settings
-                                .set_volume_level(validated_percent(args) / 100.0);
-                        }
-                        QS_WIFI_ID => {
-                            state.quick_settings.wifi = args.boolean("enabled") == Some(true);
-                        }
-                        QS_BLUETOOTH_ID => {
-                            state.quick_settings.bluetooth = args.boolean("enabled") == Some(true);
-                        }
-                        QS_AIRPLANE_ID => {
-                            state.quick_settings.radios.airplane_mode =
-                                args.boolean("enabled") == Some(true);
-                        }
-                        QS_POWER_ID => {
-                            state.quick_settings.power_profile = match args.text("profile") {
-                                Some("saver") => tilo_quick_settings::PowerProfile::Saver,
-                                Some("performance") => {
-                                    tilo_quick_settings::PowerProfile::Performance
-                                }
-                                _ => tilo_quick_settings::PowerProfile::Balanced,
-                            };
-                        }
-                        QS_VPN_ID => {
-                            if let Some(connection) =
-                                state.quick_settings.vpns.iter_mut().find(|connection| {
-                                    Some(connection.name.as_str()) == args.text("name")
-                                })
-                            {
-                                connection.active = args.boolean("enabled") == Some(true);
-                            }
-                        }
-                        _ => {}
-                    }
-                    state.bump();
-                    Ok(())
-                }),
-                on_invoke: None,
-                on_begin_invoke,
-                resource: None,
-            });
-        }
-        // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
-        // form asking for `enabled`, and the row says what it is now. They run
-        // the same set-enabled action with the opposite of the live state.
-        for toggle in QS_TOGGLES {
-            let (set_enabled_id, toggle_id) = (toggle.set_enabled, toggle.id);
-            let Some(base) = out.iter().find(|row| row.id == set_enabled_id).cloned() else {
-                continue;
-            };
-            if !self.qs_actions.action_available(set_enabled_id) {
-                continue;
-            }
-            let on = radio_is_on(ctx.chrome, set_enabled_id);
-            // A switch is its noun; the pill says whether it is on.
-            let title = t(toggle.name);
-            let subtitle = t(toggle.subtitle);
-            let params = base.params.clone();
-            let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
-                let enabled = !radio_is_on(&chrome.borrow(), set_enabled_id);
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("enabled".into(), serde_json::Value::Bool(enabled));
-                ActionArgs::bind_json(&params, &arguments).map_err(ActionError::Arguments)
-            };
-            let on_open = {
-                let run = Rc::clone(&base.on_open);
-                let opposite = opposite.clone();
-                Rc::new(
-                    move |doc: &mut ui::widget::Edits<'_>,
-                          root: &automerge::ObjId,
-                          chrome: &Chrome,
-                          _args: &ActionArgs| {
-                        run(doc, root, chrome, &opposite(chrome)?)
-                    },
-                ) as Rc<crate::shell::search::OpenFn>
-            };
-            let on_begin_invoke = base.on_begin_invoke.clone().map(|begin| {
-                Rc::new(
-                    move |doc: &mut ui::widget::Edits<'_>,
-                          root: &automerge::ObjId,
-                          chrome: &Chrome,
-                          _args: &ActionArgs| {
-                        begin(doc, root, chrome, &opposite(chrome)?)
-                    },
-                ) as Rc<crate::shell::search::BeginInvokeFn>
-            });
-            candidates.record(
-                &title.to_lowercase(),
-                &subtitle.to_lowercase(),
-                toggle_id,
-                declared_keywords(toggle.keywords),
-            );
-            out.push(SearchResult {
-                id: toggle_id.to_string(),
-                title,
-                subtitle: Some(subtitle),
-                badge: Some(on_off_badge(on)),
-                params: Vec::new(),
-                on_open,
-                on_begin_invoke,
-                ..base
-            });
-        }
-        for row in &mut out {
-            if matches!(row.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID) {
-                row.badge = Some(level_badge(ctx.chrome, &row.id));
-            }
-        }
-        self.push_level_steps(&mut out, &mut candidates, ctx.chrome);
-        self.push_display_brightness_rows(&mut out, &mut candidates, ctx.chrome);
         let actor = key.actor.clone();
         let profile_resource = {
             let tree = ctx.chrome.tree();
@@ -5067,10 +4576,8 @@ fn declared_keywords(key: &str) -> Vec<String> {
 pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
     use ui::icons::Icon;
     const FAMILIES: &[(&str, Icon)] = &[
-        ("quick-settings.wifi", Icon::Wifi),
         ("quick-settings.network", Icon::Wifi),
         ("quick-settings.bluetooth", Icon::Bluetooth),
-        ("quick-settings.airplane-mode", Icon::Plane),
         ("quick-settings.devices", Icon::MonitorSmartphone),
         ("quick-settings.clipboard", Icon::ClipboardPaste),
         ("quick-settings", Icon::Settings2),
@@ -5138,9 +4645,7 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
             | "appearance.theme.light"
             | "navigation.axis.enable"
             | "navigation.axis.disable"
-    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
-        || LEVEL_STEPS.iter().any(|step| step.id == id)
-        || id == QS_MUTE_ID
+    )
 }
 
 /// `ON` or `OFF`, as the search-source switches say it.
@@ -5703,341 +5208,329 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn shell_actions_dispatch_through_the_provider_and_report_real_results() {
-        // Phase `panel_actions_share_the_provider_dispatch_path`.
+    fn panel_actions_share_the_provider_dispatch_path() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let results = action_results(&provider, &chrome);
+
+        invoke_action(&results, "settings.open", &chrome);
+        assert!(chrome.borrow().overlays.ws_settings);
+
+        invoke_action(&results, "quick-settings.open", &chrome);
         {
-            let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
-            let results = action_results(&provider, &chrome);
-
-            invoke_action(&results, "settings.open", &chrome);
-            assert!(chrome.borrow().overlays.ws_settings);
-
-            invoke_action(&results, "quick-settings.open", &chrome);
-            {
-                let state = chrome.borrow();
-                assert!(state.overlays.quick_settings);
-                assert!(!state.overlays.ws_settings);
-                assert_eq!(
-                    state.quick_settings.current_level(),
-                    &tilo_quick_settings::QsLevel::Root
-                );
-            }
-
-            invoke_action(&results, "quick-settings.clipboard", &chrome);
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
             assert_eq!(
-                chrome.borrow().quick_settings.section,
-                Some(tilo_quick_settings::QsSection::Clipboard)
-            );
-
-            invoke_action(&results, "quick-settings.devices", &chrome);
-            assert_eq!(
-                chrome.borrow().quick_settings.section,
-                Some(tilo_quick_settings::QsSection::Devices)
+                state.quick_settings.current_level(),
+                &tilo_quick_settings::QsLevel::Root
             );
         }
 
-        // Phase `collaboration_actions_enqueue_typed_requests_through_the_provider`.
-        {
-            let provider = ActionsProvider::new();
-            let (chrome, _governed) =
-                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
-            chrome.borrow_mut().peer_sync_enabled = true;
-            let results = action_results(&provider, &chrome);
+        invoke_action(&results, "quick-settings.clipboard", &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.section,
+            Some(tilo_quick_settings::QsSection::Clipboard)
+        );
 
-            for id in ["peer.invite", "peer.connect"] {
-                assert!(matches!(
-                    begin_lifecycle_action(&results, id, &chrome),
-                    crate::shell::search::InvocationDisposition::Pending(_)
-                ));
-            }
-
-            let queued = chrome.borrow_mut().take_peer_sync_requests();
-            assert_eq!(queued.len(), 2);
-            let actions = queued
-                .into_iter()
-                .map(|request| match request {
-                    crate::shell::overlay_host::PeerSyncAction::Tracked { action, .. } => *action,
-                    other => panic!("lifecycle request must remain tracked, got {other:?}"),
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(
-                actions,
-                vec![
-                    crate::shell::overlay_host::PeerSyncAction::PromptInvite,
-                    crate::shell::overlay_host::PeerSyncAction::BrowseDirectory,
-                ]
-            );
-        }
-
-        // Phase `room_activity_action_opens_the_sheet_on_open`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let out = {
-                let cs = c.borrow();
-                p.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "activity",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &cs,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-            };
-            let action = out
-                .iter()
-                .find(|r| r.id == "room.activity.open")
-                .expect("typing 'activity' must surface the room-activity action");
-            assert_eq!(action.title, "Show workspace activity");
-            assert!(
-                c.borrow_mut().take_activity_open_request().is_none(),
-                "starts closed"
-            );
-            (action.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &c,
-                &ActionArgs::none(),
-            )
-            .expect("a nullary chrome action must run");
-            assert!(
-                c.borrow_mut().take_activity_open_request().is_some(),
-                "invoking the exported action opens the Activity app"
-            );
-            assert!(
-                !c.borrow().overlays.room_activity,
-                "Activity is an app's window, not a modal that captures input"
-            );
-            assert!(
-                !c.borrow().overlays.collaborators,
-                "the dropdown Activity can also be opened from is dismissed with it"
-            );
-        }
-
-        // Phase `dnd_action_toggles_flag_on_open`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let out = {
-                let cs = c.borrow();
-                p.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "do not disturb",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &cs,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-            };
-            let dnd = out
-                .iter()
-                .find(|r| r.id == "notifications.dnd.toggle")
-                .expect("DND action must be present");
-            assert!(!c.borrow().dnd(), "DND starts off");
-            let fire = |doc: &mut ui::widget::Edits<'_>| {
-                (dnd.on_open)(doc, &automerge::ROOT, &c, &ActionArgs::none())
-                    .expect("a nullary chrome action must run");
-            };
-            fire(&mut ui::widget::Edits::lend(&mut doc));
-            assert!(c.borrow().dnd(), "opening the action turns DND on");
-            fire(&mut ui::widget::Edits::lend(&mut doc));
-            assert!(!c.borrow().dnd(), "opening it again turns DND back off");
-        }
-
-        // Phase `tab_duplicate_failure_reaches_the_invoker_and_keeps_user_feedback`.
-        {
-            let action = Action::ALL
-                .iter()
-                .find(|action| action.id == "tab.duplicate")
-                .expect("duplicate action is registered");
-            let chrome =
-                ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(
-                    crate::shell::state::WorkspaceTree::default(),
-                ));
-            let args = ActionArgs::bind(action.params, []).expect("duplicate is nullary");
-            let error = (action.apply)(&mut chrome.borrow_mut(), &args)
-                .expect_err("no active tab must be a machine-readable failure");
-            assert!(
-                matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
-            );
-            assert!(
-                !chrome.borrow().notifications().is_empty(),
-                "the person still receives useful visible feedback"
-            );
-        }
-
-        // Phase `record_bring_reports_the_actual_queued_result`.
-        {
-            let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let result = {
-                let state = chrome.borrow();
-                provider
-                    .query(SearchContext {
-                        query_scope: None,
-                        include_programmatic: false,
-                        needle: "record.bring",
-                        wanted: &[ResourceKind::Action],
-                        chrome: &state,
-                        doc: &doc,
-                        doc_root: &automerge::ROOT,
-                    })
-                    .into_iter()
-                    .find(|result| result.id == "record.bring")
-                    .expect("record action")
-            };
-            let args = ActionArgs::bind(
-                &result.params,
-                [(
-                    "id".into(),
-                    crate::shell::search::action_api::ArgValue::Text("file:/tmp/example".into()),
-                )],
-            )
-            .expect("record arguments");
-            let disposition = result
-                .on_begin_invoke
-                .as_ref()
-                .expect("record bring has lifecycle admission")(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &args,
-            )
-            .expect("request is admitted to the room index");
-            let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
-                panic!("queued record work must not report terminal success");
-            };
-            assert!(ticket().expect("pending poll").is_none());
-            chrome
-                .borrow_mut()
-                .complete_record_request(1, Err("controlled index refusal".into()));
-            assert!(
-                matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("controlled"))
-            );
-        }
+        invoke_action(&results, "quick-settings.devices", &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.section,
+            Some(tilo_quick_settings::QsSection::Devices)
+        );
     }
 
     #[test]
-    fn shell_action_matching_ranks_prefix_substring_subtitle_and_fuzzy() {
-        // Phase `prefix_beats_substring_beats_subtitle`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_rc();
+    fn collaboration_actions_enqueue_typed_requests_through_the_provider() {
+        let provider = ActionsProvider::new();
+        let (chrome, _governed) =
+            crate::shell::native_workspace_owner::test_chrome_governing_its_room();
+        chrome.borrow_mut().peer_sync_enabled = true;
+        let results = action_results(&provider, &chrome);
+
+        for id in ["peer.invite", "peer.connect"] {
+            assert!(matches!(
+                begin_lifecycle_action(&results, id, &chrome),
+                crate::shell::search::InvocationDisposition::Pending(_)
+            ));
+        }
+
+        let queued = chrome.borrow_mut().take_peer_sync_requests();
+        assert_eq!(queued.len(), 2);
+        let actions = queued
+            .into_iter()
+            .map(|request| match request {
+                crate::shell::overlay_host::PeerSyncAction::Tracked { action, .. } => *action,
+                other => panic!("lifecycle request must remain tracked, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            vec![
+                crate::shell::overlay_host::PeerSyncAction::PromptInvite,
+                crate::shell::overlay_host::PeerSyncAction::BrowseDirectory,
+            ]
+        );
+    }
+
+    #[test]
+    fn room_activity_action_opens_the_sheet_on_open() {
+        let p = ActionsProvider::new();
+        let c = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let out = {
             let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let out = p.query(SearchContext {
+            p.query(SearchContext {
                 query_scope: None,
                 include_programmatic: false,
-                needle: "open",
+                needle: "activity",
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
                 doc: &doc,
                 doc_root: &automerge::ROOT,
-            });
-            let opens: Vec<_> = out.iter().filter(|r| r.title.starts_with("Open")).collect();
-            assert!(opens.iter().all(|r| r.score == 100));
-        }
+            })
+        };
+        let action = out
+            .iter()
+            .find(|r| r.id == "room.activity.open")
+            .expect("typing 'activity' must surface the room-activity action");
+        assert_eq!(action.title, "Show workspace activity");
+        assert!(
+            c.borrow_mut().take_activity_open_request().is_none(),
+            "starts closed"
+        );
+        (action.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &c,
+            &ActionArgs::none(),
+        )
+        .expect("a nullary chrome action must run");
+        assert!(
+            c.borrow_mut().take_activity_open_request().is_some(),
+            "invoking the exported action opens the Activity app"
+        );
+        assert!(
+            !c.borrow().overlays.room_activity,
+            "Activity is an app's window, not a modal that captures input"
+        );
+        assert!(
+            !c.borrow().overlays.collaborators,
+            "the dropdown Activity can also be opened from is dismissed with it"
+        );
+    }
 
-        // Phase `action_ids_and_out_of_order_terms_are_searchable`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_rc();
+    #[test]
+    fn dnd_action_toggles_flag_on_open() {
+        let p = ActionsProvider::new();
+        let c = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let out = {
             let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let score = |needle: &str| {
-                p.query(SearchContext {
+            p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "do not disturb",
+                wanted: &[ResourceKind::Action],
+                chrome: &cs,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let dnd = out
+            .iter()
+            .find(|r| r.id == "notifications.dnd.toggle")
+            .expect("DND action must be present");
+        assert!(!c.borrow().dnd(), "DND starts off");
+        let fire = |doc: &mut ui::widget::Edits<'_>| {
+            (dnd.on_open)(doc, &automerge::ROOT, &c, &ActionArgs::none())
+                .expect("a nullary chrome action must run");
+        };
+        fire(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(c.borrow().dnd(), "opening the action turns DND on");
+        fire(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(!c.borrow().dnd(), "opening it again turns DND back off");
+    }
+
+    #[test]
+    fn tab_duplicate_failure_reaches_the_invoker_and_keeps_user_feedback() {
+        let action = Action::ALL
+            .iter()
+            .find(|action| action.id == "tab.duplicate")
+            .expect("duplicate action is registered");
+        let chrome = ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(
+            crate::shell::state::WorkspaceTree::default(),
+        ));
+        let args = ActionArgs::bind(action.params, []).expect("duplicate is nullary");
+        let error = (action.apply)(&mut chrome.borrow_mut(), &args)
+            .expect_err("no active tab must be a machine-readable failure");
+        assert!(
+            matches!(error, ActionError::Refused(message) if message.contains("no tab") || message.contains("No tab"))
+        );
+        assert!(
+            !chrome.borrow().notifications().is_empty(),
+            "the person still receives useful visible feedback"
+        );
+    }
+
+    #[test]
+    fn record_bring_reports_the_actual_queued_result() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let result = {
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
                     query_scope: None,
                     include_programmatic: false,
-                    needle,
+                    needle: "record.bring",
                     wanted: &[ResourceKind::Action],
-                    chrome: &cs,
+                    chrome: &state,
                     doc: &doc,
                     doc_root: &automerge::ROOT,
                 })
                 .into_iter()
-                .find(|row| row.id == "settings.privacy.open")
-                .map(|row| row.score)
-            };
-            assert_eq!(score("settings.privacy.open"), Some(100));
-            assert_eq!(
-                score("security workspace"),
-                Some(crate::shell::search::provider_score(
-                    ui::search::MatchTier::Spanning.percent()
-                )),
-            );
-        }
+                .find(|result| result.id == "record.bring")
+                .expect("record action")
+        };
+        let args = ActionArgs::bind(
+            &result.params,
+            [(
+                "id".into(),
+                crate::shell::search::action_api::ArgValue::Text("file:/tmp/example".into()),
+            )],
+        )
+        .expect("record arguments");
+        let disposition = result
+            .on_begin_invoke
+            .as_ref()
+            .expect("record bring has lifecycle admission")(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .expect("request is admitted to the room index");
+        let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
+            panic!("queued record work must not report terminal success");
+        };
+        assert!(ticket().expect("pending poll").is_none());
+        chrome
+            .borrow_mut()
+            .complete_record_request(1, Err("controlled index refusal".into()));
+        assert!(
+            matches!(ticket(), Err(ActionError::Refused(message)) if message.contains("controlled"))
+        );
+    }
 
-        // Phase `empty_needle_returns_everything`.
-        {
-            let p = ActionsProvider::new();
-            // Peer-sync and agent rows included, so "everything" means the whole table.
-            let (c, _governed) =
-                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
-            c.borrow_mut().peer_sync_enabled = true;
-            let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let out = p.query(SearchContext {
+    #[test]
+    fn prefix_beats_substring_beats_subtitle() {
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "open",
+            wanted: &[ResourceKind::Action],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let opens: Vec<_> = out.iter().filter(|r| r.title.starts_with("Open")).collect();
+        assert!(opens.iter().all(|r| r.score == 100));
+    }
+
+    #[test]
+    fn action_ids_and_out_of_order_terms_are_searchable() {
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let score = |needle: &str| {
+            p.query(SearchContext {
                 query_scope: None,
                 include_programmatic: false,
-                needle: "",
+                needle,
                 wanted: &[ResourceKind::Action],
                 chrome: &cs,
                 doc: &doc,
                 doc_root: &automerge::ROOT,
-            });
-            assert!(
-                Action::ALL
-                    .iter()
-                    .all(|action| out.iter().any(|result| result.id == action.id))
-            );
-            assert!(out.iter().all(|r| r.score == 0));
-        }
+            })
+            .into_iter()
+            .find(|row| row.id == "settings.privacy.open")
+            .map(|row| row.score)
+        };
+        assert_eq!(score("settings.privacy.open"), Some(100));
+        assert_eq!(
+            score("security workspace"),
+            Some(crate::shell::search::provider_score(
+                ui::search::MatchTier::Spanning.percent()
+            )),
+        );
+    }
 
-        // Phase `unrequested_kind_returns_empty`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_rc();
-            let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let out = p.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "open",
-                wanted: &[ResourceKind::File],
-                chrome: &cs,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            assert!(out.is_empty());
-        }
+    #[test]
+    fn empty_needle_returns_everything() {
+        let p = ActionsProvider::new();
+        // Peer-sync and agent rows included, so "everything" means the whole table.
+        let (c, _governed) = crate::shell::native_workspace_owner::test_chrome_governing_its_room();
+        c.borrow_mut().peer_sync_enabled = true;
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert!(
+            Action::ALL
+                .iter()
+                .all(|action| out.iter().any(|result| result.id == action.id))
+        );
+        assert!(out.iter().all(|r| r.score == 0));
+    }
 
-        // Phase `a_typo_still_matches`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_rc();
-            let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let out = p.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "workspace setings",
-                wanted: &[ResourceKind::Action],
-                chrome: &cs,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            assert!(out.iter().any(|r| r.id == "settings.open"));
-        }
+    #[test]
+    fn unrequested_kind_returns_empty() {
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "open",
+            wanted: &[ResourceKind::File],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_typo_still_matches() {
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "workspace setings",
+            wanted: &[ResourceKind::Action],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert!(out.iter().any(|r| r.id == "settings.open"));
     }
 
     #[test]
@@ -6719,67 +6212,6 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_rebuilds_on_quick_settings_backend_and_availability() {
-        // The Quick Settings backend, what it can do, and a swap of either.
-        let first = Rc::new(RecordingQsActions::default());
-        let slot = Rc::new(SharedQsDispatcher::new(
-            first.clone(),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        ));
-        let provider = ActionsProvider::with_shared_qs_actions(Rc::clone(&slot));
-        let chrome = chrome_with_room();
-        let set_volume = |provider: &ActionsProvider| {
-            let rows = rows_for(provider, &chrome, "");
-            let volume = row(&rows, QS_VOLUME_ID).expect("volume action");
-            let args = ActionArgs::bind(
-                &volume.params,
-                [(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(40.0),
-                )],
-            )
-            .expect("volume arguments");
-            let mut doc = AutoCommit::new();
-            (volume.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &args,
-            )
-        };
-        set_volume(&provider).expect("the first backend sets the volume");
-        assert_eq!(*first.calls.borrow(), ["volume:40"]);
-        let second = Rc::new(RecordingQsActions::default());
-        slot.replace(
-            second.clone(),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        );
-        set_volume(&provider).expect("the second backend sets the volume");
-        assert_eq!(
-            *first.calls.borrow(),
-            ["volume:40"],
-            "a replaced backend is not called"
-        );
-        assert_eq!(*second.calls.borrow(), ["volume:40"]);
-        let volume_available = |provider: &ActionsProvider| {
-            row(&rows_for(provider, &chrome, ""), QS_VOLUME_ID)
-                .and_then(|row| row.contract.as_ref())
-                .expect("volume contract")
-                .availability
-                .is_available()
-        };
-        assert!(volume_available(&provider));
-        slot.replace(
-            second,
-            tilo_quick_settings::actions::QsActionAvailability {
-                volume: false,
-                ..tilo_quick_settings::actions::QsActionAvailability::all()
-            },
-        );
-        assert!(!volume_available(&provider), "the volume control went away");
-    }
-
-    #[test]
     fn workspace_activity_exact_local_actions_are_exported() {
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -6960,204 +6392,197 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn typed_shell_actions_deep_link_to_their_exact_surface() {
-        // Phase `search_source_customization_is_a_typed_exported_action`.
-        {
-            let preferences = Rc::new(std::cell::RefCell::new(
-                crate::shell::search::SearchPreferences::default(),
-            ));
-            let catalog = Rc::new(std::cell::RefCell::new(vec![
-                ("actions".to_string(), "Actions".to_string()),
-                ("files".to_string(), "Files".to_string()),
-            ]));
-            let provider =
-                ActionsProvider::with_preferences_and_catalog(Rc::clone(&preferences), catalog);
-            let chrome = chrome_rc();
-            let doc = AutoCommit::new();
-            let results = provider.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "search source",
-                wanted: &[ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            let action = results
+    fn search_source_customization_is_a_typed_exported_action() {
+        let preferences = Rc::new(std::cell::RefCell::new(
+            crate::shell::search::SearchPreferences::default(),
+        ));
+        let catalog = Rc::new(std::cell::RefCell::new(vec![
+            ("actions".to_string(), "Actions".to_string()),
+            ("files".to_string(), "Files".to_string()),
+        ]));
+        let provider =
+            ActionsProvider::with_preferences_and_catalog(Rc::clone(&preferences), catalog);
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let results = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "search source",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let action = results
+            .iter()
+            .find(|result| result.id == "search.provider.set")
+            .expect("search customization must be reachable without clicking settings UI");
+        assert_eq!(action.params, SEARCH_PROVIDER_SET_PARAMS);
+        assert_eq!(action.params[0].ty, ParamType::Text);
+        assert_eq!(action.params[1].ty, ParamType::Boolean);
+        let direct = results
+            .iter()
+            .find(|result| result.id == "search.provider.toggle:files")
+            .expect("people can customize a named source without knowing its opaque id");
+        assert_eq!(direct.title, "Disable Files search");
+        assert_eq!(direct.badge.as_deref(), Some("ON"));
+        assert!(direct.params.is_empty());
+        assert!(
+            results
                 .iter()
-                .find(|result| result.id == "search.provider.set")
-                .expect("search customization must be reachable without clicking settings UI");
-            assert_eq!(action.params, SEARCH_PROVIDER_SET_PARAMS);
-            assert_eq!(action.params[0].ty, ParamType::Text);
-            assert_eq!(action.params[1].ty, ParamType::Boolean);
-            let direct = results
-                .iter()
-                .find(|result| result.id == "search.provider.toggle:files")
-                .expect("people can customize a named source without knowing its opaque id");
-            assert_eq!(direct.title, "Disable Files search");
-            assert_eq!(direct.badge.as_deref(), Some("ON"));
-            assert!(direct.params.is_empty());
-            assert!(
-                results
-                    .iter()
-                    .all(|result| result.id != "search.provider.toggle:actions"),
-                "the accessibility and automation source cannot offer a disable affordance"
-            );
+                .all(|result| result.id != "search.provider.toggle:actions"),
+            "the accessibility and automation source cannot offer a disable affordance"
+        );
 
-            preferences
-                .borrow_mut()
-                .set_provider_enabled("files", false);
-            let disabled = provider.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "files search",
-                wanted: &[ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            let direct = disabled
-                .iter()
-                .find(|result| result.id == "search.provider.toggle:files")
-                .expect("a disabled source remains directly re-enableable");
-            assert_eq!(direct.title, "Enable Files search");
-            assert_eq!(direct.badge.as_deref(), Some("OFF"));
-        }
+        preferences
+            .borrow_mut()
+            .set_provider_enabled("files", false);
+        let disabled = provider.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "files search",
+            wanted: &[ResourceKind::Action],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        let direct = disabled
+            .iter()
+            .find(|result| result.id == "search.provider.toggle:files")
+            .expect("a disabled source remains directly re-enableable");
+        assert_eq!(direct.title, "Enable Files search");
+        assert_eq!(direct.badge.as_deref(), Some("OFF"));
+    }
 
-        // Phase `workspace_privacy_search_result_deep_links_to_exact_lens_tab`.
-        {
-            let p = ActionsProvider::new();
-            let c = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let out = {
-                let state = c.borrow();
-                p.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "workspace privacy",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-            };
-            let result = out
-                .iter()
-                .find(|result| result.id == "settings.privacy.open")
-                .expect("privacy governance is directly searchable");
-
-            (result.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &c,
-                &ActionArgs::none(),
-            )
-            .unwrap();
-
+    #[test]
+    fn workspace_privacy_search_result_deep_links_to_exact_lens_tab() {
+        let p = ActionsProvider::new();
+        let c = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let out = {
             let state = c.borrow();
-            assert!(state.overlays.ws_settings);
-            assert_eq!(
-                state.ws_settings_tab,
-                tilo_desktop::workspace_settings::WsTab::Permissions
-            );
-        }
+            p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "workspace privacy",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let result = out
+            .iter()
+            .find(|result| result.id == "settings.privacy.open")
+            .expect("privacy governance is directly searchable");
 
-        // Phase `status_privacy_is_a_typed_semantic_action`.
-        {
-            let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let results = {
-                let state = chrome.borrow();
-                provider.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "status privacy",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-            };
-            let action = results
-                .iter()
-                .find(|result| result.id == "presence.status-sharing.set")
-                .expect("agents must be able to control the same status privacy setting");
-            let args = ActionArgs::bind(
-                &action.params,
-                [(
-                    "mode".to_string(),
-                    tilo_actions::ArgValue::Text("off".into()),
-                )],
-            )
-            .unwrap();
+        (result.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &c,
+            &ActionArgs::none(),
+        )
+        .unwrap();
 
-            (action.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &args,
-            )
-            .unwrap();
+        let state = c.borrow();
+        assert!(state.overlays.ws_settings);
+        assert_eq!(
+            state.ws_settings_tab,
+            tilo_desktop::workspace_settings::WsTab::Permissions
+        );
+    }
 
-            assert_eq!(
-                chrome.borrow_mut().take_presence_requests(),
-                vec![
-                    crate::shell::chrome_state::PresenceRequest::SetStatusSharing(
-                        ui::StatusSharing::Off
-                    )
-                ]
-            );
-        }
+    #[test]
+    fn status_privacy_is_a_typed_semantic_action() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "status privacy",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let action = results
+            .iter()
+            .find(|result| result.id == "presence.status-sharing.set")
+            .expect("agents must be able to control the same status privacy setting");
+        let args = ActionArgs::bind(
+            &action.params,
+            [(
+                "mode".to_string(),
+                tilo_actions::ArgValue::Text("off".into()),
+            )],
+        )
+        .unwrap();
 
-        // Phase `desktop_tour_is_searchable_and_requests_the_trusted_chrome_modal`.
-        {
-            let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let results = {
-                let state = chrome.borrow();
-                provider.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "desktop tour",
-                    wanted: &[ResourceKind::Action],
-                    chrome: &state,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-            };
-            let result = results
-                .iter()
-                .find(|result| result.id == "desktop-tour.open")
-                .expect("the completed first-use tour must remain discoverable");
+        (action.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &args,
+        )
+        .unwrap();
 
-            (result.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            )
-            .unwrap();
-            assert!(chrome.borrow().overlays.desktop_tour);
-        }
+        assert_eq!(
+            chrome.borrow_mut().take_presence_requests(),
+            vec![
+                crate::shell::chrome_state::PresenceRequest::SetStatusSharing(
+                    ui::StatusSharing::Off
+                )
+            ]
+        );
+    }
 
-        // Phase `shortcut_help_search_result_teaches_both_help_routes`.
-        {
-            let action = Action::ALL
-                .iter()
-                .find(|action| action.id == "shortcut-help.toggle")
-                .expect("shortcut help action");
-            assert_eq!(t(action.label), "Show keyboard shortcuts");
-            let subtitle = t(action.subtitle);
-            assert!(subtitle.contains("Super+/"));
-            assert!(subtitle.contains("F1"));
-            assert!(subtitle.contains("same guide"));
-        }
+    #[test]
+    fn desktop_tour_is_searchable_and_requests_the_trusted_chrome_modal() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let results = {
+            let state = chrome.borrow();
+            provider.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "desktop tour",
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let result = results
+            .iter()
+            .find(|result| result.id == "desktop-tour.open")
+            .expect("the completed first-use tour must remain discoverable");
+
+        (result.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+        assert!(chrome.borrow().overlays.desktop_tour);
+    }
+
+    #[test]
+    fn shortcut_help_search_result_teaches_both_help_routes() {
+        let action = Action::ALL
+            .iter()
+            .find(|action| action.id == "shortcut-help.toggle")
+            .expect("shortcut help action");
+        assert_eq!(t(action.label), "Show keyboard shortcuts");
+        let subtitle = t(action.subtitle);
+        assert!(subtitle.contains("Super+/"));
+        assert!(subtitle.contains("F1"));
+        assert!(subtitle.contains("same guide"));
     }
 
     /// Row titles and subtitles are catalogue keys, which the source scan
@@ -7417,200 +6842,246 @@ mod tests {
         assert_eq!(t("search-action-appearance-language"), "Sprache ändern");
     }
 
+    // Offered only by a session running peer sync, and when offered,
+    // naming one selects it: a label-prefix match outranks other providers.
+    #[test]
+    fn collaboration_rows_appear_only_with_sync_and_lead_when_named() {
+        let p = ActionsProvider::new();
+        let doc = AutoCommit::new();
+        let query = |chrome: &ChromeState, needle: &str| {
+            p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+
+        let off = chrome_rc();
+        {
+            let cs = off.borrow();
+            assert!(
+                query(&cs, "invite").is_empty(),
+                "a session without peer sync must not offer to invite anyone",
+            );
+        }
+
+        // Invitations go into a room this device governs: a roomless
+        // session has nothing to invite into. Without a broker the agent
+        // row (also an "Invite …") stays out of this ranking, as it does
+        // for a roomless session.
+        let (on, _governed) =
+            crate::shell::native_workspace_owner::test_chrome_governing_its_room();
+        on.borrow_mut().peer_sync_enabled = true;
+        on.borrow_mut()
+            .set_collab_unavailable("this phase ranks the peer rows alone");
+        let cs = on.borrow();
+        let mut hits = query(&cs, "invite");
+        hits.sort_by_key(|r| -r.score);
+        assert_eq!(
+            hits.first().map(|r| r.id.as_str()),
+            Some("peer.invite"),
+            "typing \"invite\" must rank the invite command first, got {:?}",
+            hits.iter().map(|r| (&r.id, r.score)).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            hits[0].score, 100,
+            "a label-prefix match is the top of this provider's scale, which \
+             is what puts the row above hits from other providers",
+        );
+        let mut join = query(&cs, "join");
+        join.sort_by_key(|r| -r.score);
+        assert_eq!(join.first().map(|r| r.id.as_str()), Some("peer.connect"),);
+    }
+
+    // Needs a room (the grant is recorded *in* one) and a working broker
+    // (how an agent reaches the room). Not peer sync — an agent uses its
+    // own broker socket.
+    #[test]
+    fn the_agent_row_is_offered_only_where_it_can_work() {
+        let p = ActionsProvider::new();
+        let doc = AutoCommit::new();
+        let offered = |chrome: &ChromeState| {
+            p.query(SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "agent",
+                wanted: &[ResourceKind::Action],
+                chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+            .iter()
+            .any(|r| r.id == "agent.invite")
+        };
+
+        let roomless = chrome_rc();
+        assert!(
+            !offered(&roomless.borrow()),
+            "a session with no room has nowhere to record the grant, so it \
+             must not offer to admit anyone",
+        );
+
+        let broker_down = chrome_with_room();
+        broker_down
+            .borrow_mut()
+            .set_collab_unavailable("the broker could not start");
+        assert!(
+            !offered(&broker_down.borrow()),
+            "an agent reaches the room through the broker; with none there \
+             is nothing for the grant to admit",
+        );
+
+        let ready = chrome_with_room();
+        assert!(
+            offered(&ready.borrow()),
+            "a session with a room and a working broker must offer the row",
+        );
+        assert!(
+            !ready.borrow().peer_sync_enabled,
+            "and must do so without peer sync, which this row does not need",
+        );
+    }
+
+    // Asserted through `agent_members`, the same reader the roster paints
+    // from, not a row in a vector this test put there.
+    #[test]
+    fn invoking_it_admits_the_agent_to_the_room() {
+        let c = chrome_with_room();
+
+        let before = c
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture has a room")
+            .agent_members();
+        assert!(
+            before.is_empty(),
+            "nobody is admitted before the action runs"
+        );
+
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("the action is registered");
+        (action.apply)(&mut c.borrow_mut(), &ActionArgs::none())
+            .expect("the room's owner may admit an agent");
+        governed(&c, FIXTURE_USER);
+
+        let after = c
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture has a room")
+            .agent_members();
+        assert_eq!(
+            after,
+            vec![(
+                DEFAULT_AGENT_NAME.to_lowercase(),
+                tilo_action_policy::KindSet::READ
+            )],
+            "the shipped agent is admitted under its own name, case-folded",
+        );
+        assert!(
+            c.borrow().overlays.ws_settings,
+            "and the dedicated workspace Agents roster is shown so the \
+             person who admitted it can review its scope",
+        );
+    }
+
+    // A name typed in any case names one agent. Two spellings would be
+    // two subjects, which reads on screen as a grant that did not take.
+    #[test]
+    fn the_name_is_case_folded_into_one_principal() {
+        let c = chrome_with_room();
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("registered");
+        for spelling in ["Scribe", "SCRIBE", "  scribe  "] {
+            let args = ActionArgs::bind(
+                AGENT_INVITE_PARAMS,
+                [(
+                    "name".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text(spelling.to_string()),
+                )],
+            )
+            .expect("name is a declared text parameter");
+            (action.apply)(&mut c.borrow_mut(), &args).expect("owner may admit");
+            // The governor answers each before the next is typed, so a
+            // later spelling finds the agent already admitted.
+            c.borrow()
+                .tree_mut()
+                .govern_requests_here_for_test(&FIXTURE_USER.to_owned());
+        }
+        let members = c
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("fixture has a room")
+            .agent_members();
+        assert_eq!(
+            members.len(),
+            1,
+            "three spellings of one name must be one agent, got {members:?}",
+        );
+    }
+
     #[test]
     #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        clippy::significant_drop_tightening,
+        reason = "the authorization regression retains the chrome guard until each ambient-authority assertion completes"
     )]
-    fn collaboration_and_agent_rows_appear_only_where_they_can_work() {
-        // Phase `collaboration_rows_appear_only_with_sync_and_lead_when_named`.
-        // Offered only by a session running peer sync, and when offered,
-        // naming one selects it: a label-prefix match outranks other providers.
-        {
-            let p = ActionsProvider::new();
-            let doc = AutoCommit::new();
-            let query = |chrome: &ChromeState, needle: &str| {
-                p.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle,
-                    wanted: &[ResourceKind::Action],
-                    chrome,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-            };
+    fn non_admin_cannot_manage_identity_devices() {
+        use crate::shell::state::{Workspace, WorkspaceId};
 
-            let off = chrome_rc();
-            {
-                let cs = off.borrow();
-                assert!(
-                    query(&cs, "invite").is_empty(),
-                    "a session without peer sync must not offer to invite anyone",
-                );
-            }
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, "Someone else's workspace");
+        workspace.set_owner("a-different-person");
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop.active = id;
+        let chrome =
+            ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(tree));
 
-            // Invitations go into a room this device governs: a roomless
-            // session has nothing to invite into. Without a broker the agent
-            // row (also an "Invite …") stays out of this ranking, as it does
-            // for a roomless session.
-            let (on, _governed) =
-                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
-            on.borrow_mut().peer_sync_enabled = true;
-            on.borrow_mut()
-                .set_collab_unavailable("this phase ranks the peer rows alone");
-            let cs = on.borrow();
-            let mut hits = query(&cs, "invite");
-            hits.sort_by_key(|r| -r.score);
-            assert_eq!(
-                hits.first().map(|r| r.id.as_str()),
-                Some("peer.invite"),
-                "typing \"invite\" must rank the invite command first, got {:?}",
-                hits.iter().map(|r| (&r.id, r.score)).collect::<Vec<_>>(),
-            );
-            assert_eq!(
-                hits[0].score, 100,
-                "a label-prefix match is the top of this provider's scale, which \
-                 is what puts the row above hits from other providers",
-            );
-            let mut join = query(&cs, "join");
-            join.sort_by_key(|r| -r.score);
-            assert_eq!(join.first().map(|r| r.id.as_str()), Some("peer.connect"),);
-        }
-
-        // Phase `the_agent_row_is_offered_only_where_it_can_work`.
-        // Needs a room (the grant is recorded *in* one) and a working broker
-        // (how an agent reaches the room). Not peer sync — an agent uses its
-        // own broker socket.
-        {
-            let p = ActionsProvider::new();
-            let doc = AutoCommit::new();
-            let offered = |chrome: &ChromeState| {
-                p.query(SearchContext {
-                    query_scope: None,
-                    include_programmatic: false,
-                    needle: "agent",
-                    wanted: &[ResourceKind::Action],
-                    chrome,
-                    doc: &doc,
-                    doc_root: &automerge::ROOT,
-                })
-                .iter()
-                .any(|r| r.id == "agent.invite")
-            };
-
-            let roomless = chrome_rc();
-            assert!(
-                !offered(&roomless.borrow()),
-                "a session with no room has nowhere to record the grant, so it \
-                 must not offer to admit anyone",
-            );
-
-            let broker_down = chrome_with_room();
-            broker_down
-                .borrow_mut()
-                .set_collab_unavailable("the broker could not start");
-            assert!(
-                !offered(&broker_down.borrow()),
-                "an agent reaches the room through the broker; with none there \
-                 is nothing for the grant to admit",
-            );
-
-            let ready = chrome_with_room();
-            assert!(
-                offered(&ready.borrow()),
-                "a session with a room and a working broker must offer the row",
-            );
-            assert!(
-                !ready.borrow().peer_sync_enabled,
-                "and must do so without peer sync, which this row does not need",
-            );
-        }
-
-        // Phase `invoking_it_admits_the_agent_to_the_room`.
-        // Asserted through `agent_members`, the same reader the roster paints
-        // from, not a row in a vector this test put there.
-        {
-            let c = chrome_with_room();
-
-            let before = c
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .expect("fixture has a room")
-                .agent_members();
-            assert!(
-                before.is_empty(),
-                "nobody is admitted before the action runs"
-            );
-
+        for action_id in [
+            "identity.devices.copy",
+            "identity.device.enroll",
+            "identity.device.revoke",
+        ] {
             let action = Action::ALL
                 .iter()
-                .find(|a| a.id == "agent.invite")
-                .expect("the action is registered");
-            (action.apply)(&mut c.borrow_mut(), &ActionArgs::none())
-                .expect("the room's owner may admit an agent");
-            governed(&c, FIXTURE_USER);
-
-            let after = c
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .expect("fixture has a room")
-                .agent_members();
-            assert_eq!(
-                after,
-                vec![(
-                    DEFAULT_AGENT_NAME.to_lowercase(),
-                    tilo_action_policy::KindSet::READ
-                )],
-                "the shipped agent is admitted under its own name, case-folded",
-            );
-            assert!(
-                c.borrow().overlays.ws_settings,
-                "and the dedicated workspace Agents roster is shown so the \
-                 person who admitted it can review its scope",
-            );
-        }
-
-        // Phase `the_name_is_case_folded_into_one_principal`.
-        // A name typed in any case names one agent. Two spellings would be
-        // two subjects, which reads on screen as a grant that did not take.
-        {
-            let c = chrome_with_room();
-            let action = Action::ALL
-                .iter()
-                .find(|a| a.id == "agent.invite")
-                .expect("registered");
-            for spelling in ["Scribe", "SCRIBE", "  scribe  "] {
-                let args = ActionArgs::bind(
-                    AGENT_INVITE_PARAMS,
-                    [(
-                        "name".to_string(),
-                        crate::shell::search::action_api::ArgValue::Text(spelling.to_string()),
-                    )],
+                .find(|action| action.id == action_id)
+                .expect("device action is registered");
+            let args = if action_id == "identity.device.revoke" {
+                ActionArgs::bind(
+                    action.params,
+                    [
+                        (
+                            "device".into(),
+                            crate::shell::search::action_api::ArgValue::Text("0".repeat(64)),
+                        ),
+                        (
+                            "confirm".into(),
+                            crate::shell::search::action_api::ArgValue::Boolean(true),
+                        ),
+                    ],
                 )
-                .expect("name is a declared text parameter");
-                (action.apply)(&mut c.borrow_mut(), &args).expect("owner may admit");
-                // The governor answers each before the next is typed, so a
-                // later spelling finds the agent already admitted.
-                c.borrow()
-                    .tree_mut()
-                    .govern_requests_here_for_test(&FIXTURE_USER.to_owned());
-            }
-            let members = c
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .expect("fixture has a room")
-                .agent_members();
-            assert_eq!(
-                members.len(),
-                1,
-                "three spellings of one name must be one agent, got {members:?}",
+                .expect("confirmed revocation arguments bind")
+            } else {
+                ActionArgs::none()
+            };
+            let error = (action.apply)(&mut chrome.borrow_mut(), &args)
+                .expect_err("a non-admin must be refused before device state is touched");
+            assert!(
+                matches!(&error, ActionError::Refused(message) if message.contains("may not administer devices")),
+                "unexpected refusal for {action_id}: {error:?}",
             );
         }
     }
@@ -7620,825 +7091,260 @@ mod tests {
         clippy::significant_drop_tightening,
         reason = "the authorization regression retains the chrome guard until each ambient-authority assertion completes"
     )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn privileged_shell_actions_require_admin_authority_and_confirmation() {
-        // Phase `non_admin_cannot_manage_identity_devices`.
-        {
-            use crate::shell::state::{Workspace, WorkspaceId};
+    fn setup_profile_is_recorded_but_never_becomes_ambient_authority() {
+        let c = chrome_with_room();
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("registered");
+        let args = ActionArgs::bind(
+            AGENT_INVITE_PARAMS,
+            [
+                (
+                    "name".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text("Operator".to_string()),
+                ),
+                (
+                    "preset".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text("operator".to_string()),
+                ),
+            ],
+        )
+        .expect("declared setup parameters bind");
+        (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
 
-            let mut tree = WorkspaceTree::default();
-            let id = WorkspaceId::new();
-            let mut workspace = Workspace::new(id, "Someone else's workspace");
-            workspace.set_owner("a-different-person");
-            tree.desktop.workspaces.push(workspace);
-            tree.desktop.active = id;
-            let chrome =
-                ChromeState::new_with_handle(crate::shell::state::WorkspaceTreeHandle::new(tree));
-
-            for action_id in [
-                "identity.devices.copy",
-                "identity.device.enroll",
-                "identity.device.revoke",
-            ] {
-                let action = Action::ALL
-                    .iter()
-                    .find(|action| action.id == action_id)
-                    .expect("device action is registered");
-                let args = if action_id == "identity.device.revoke" {
-                    ActionArgs::bind(
-                        action.params,
-                        [
-                            (
-                                "device".into(),
-                                crate::shell::search::action_api::ArgValue::Text("0".repeat(64)),
-                            ),
-                            (
-                                "confirm".into(),
-                                crate::shell::search::action_api::ArgValue::Boolean(true),
-                            ),
-                        ],
-                    )
-                    .expect("confirmed revocation arguments bind")
-                } else {
-                    ActionArgs::none()
-                };
-                let error = (action.apply)(&mut chrome.borrow_mut(), &args)
-                    .expect_err("a non-admin must be refused before device state is touched");
-                assert!(
-                    matches!(&error, ActionError::Refused(message) if message.contains("may not administer devices")),
-                    "unexpected refusal for {action_id}: {error:?}",
-                );
-            }
-        }
-
-        // Phase `setup_profile_is_recorded_but_never_becomes_ambient_authority`.
-        {
-            let c = chrome_with_room();
-            let action = Action::ALL
-                .iter()
-                .find(|a| a.id == "agent.invite")
-                .expect("registered");
-            let args = ActionArgs::bind(
-                AGENT_INVITE_PARAMS,
-                [
-                    (
-                        "name".to_string(),
-                        crate::shell::search::action_api::ArgValue::Text("Operator".to_string()),
-                    ),
-                    (
-                        "preset".to_string(),
-                        crate::shell::search::action_api::ArgValue::Text("operator".to_string()),
-                    ),
-                ],
-            )
-            .expect("declared setup parameters bind");
-            (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
-
-            let state = c.borrow();
-            let user = state.active_local_user();
-            let mut tree = state.tree_mut();
-            let asked: Vec<_> = tree
-                .take_governance_requests()
-                .into_iter()
-                .filter_map(|(_, request)| match request {
-                    crate::shell::state::GovernanceRequest::Policy(
-                        tilo_action_policy::Change::Grant(grant),
-                    ) => Some(grant),
-                    _ => None,
-                })
-                .collect();
-            assert!(
-                asked
-                    .iter()
-                    .any(|grant| grant.id.as_str() == "agent-member:operator:operator"),
-                "the admission is asked of the room's governor"
-            );
-            let ws = tree.desktop.active_workspace().expect("fixture has room");
-            assert!(
-                ws.agent_members()
-                    .into_iter()
-                    .all(|(agent, _)| agent != "operator"),
-                "nothing changes here before the room's admitted document carries it"
-            );
-            // What the governor applies and the admitted document carries.
-            let ws = tree
-                .desktop
-                .active_workspace_mut()
-                .expect("fixture has room");
-            for grant in asked {
-                ws.govern_as_at(
-                    &user,
+        let state = c.borrow();
+        let user = state.active_local_user();
+        let mut tree = state.tree_mut();
+        let asked: Vec<_> = tree
+            .take_governance_requests()
+            .into_iter()
+            .filter_map(|(_, request)| match request {
+                crate::shell::state::GovernanceRequest::Policy(
                     tilo_action_policy::Change::Grant(grant),
-                    tilo_clock::unix_now(),
-                )
-                .expect("the governor admits the agent");
-            }
-            let ws = tree.desktop.active_workspace().expect("fixture has room");
-            assert_eq!(
-                ws.agent_members()
-                    .into_iter()
-                    .find(|(agent, _)| agent == "operator")
-                    .map(|(_, kinds)| kinds),
-                Some(tilo_action_policy::KindSet::ALL),
-                "the durable admission carries the selected preset"
-            );
-            let answer = |kind| {
-                ws.subject_authority(tilo_action_policy::Subject::agent("operator"))
-                    .decide(
-                        &ws.node().app("so.tilo.notes"),
-                        kind,
-                        &tilo_desktop_model::context_at(tilo_clock::unix_now()),
-                    )
-                    .answer
-            };
-            assert_eq!(
-                answer(tilo_action_policy::ActionKind::Undoable),
-                tilo_action_policy::Answer::Allow,
-                "an Operator makes undoable changes"
-            );
-            assert_eq!(
-                answer(tilo_action_policy::ActionKind::Outside),
-                tilo_action_policy::Answer::Ask,
-                "and asks first before reaching outside the room"
-            );
-        }
-
-        // Phase `retained_shell_action_rechecks_authority_before_mutation`.
-        {
-            let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let result = {
-                let state = chrome.borrow();
-                provider
-                    .query(SearchContext {
-                        query_scope: None,
-                        include_programmatic: false,
-                        needle: "do not disturb",
-                        wanted: &[ResourceKind::Action],
-                        chrome: &state,
-                        doc: &doc,
-                        doc_root: &automerge::ROOT,
-                    })
-                    .into_iter()
-                    .find(|result| result.id == "notifications.dnd.toggle")
-                    .expect("authorized action is discovered")
-            };
-            {
-                let state = chrome.borrow_mut();
-                let mut tree = state.tree_mut();
-                let workspace = tree.desktop.active_workspace_mut().expect("workspace");
-                workspace.policy.owner = None;
-                workspace.policy.members.clear();
-                drop(tree);
-            }
-            let error = (result.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            )
-            .expect_err("revocation between discovery and execution must win");
-            assert!(matches!(error, ActionError::Refused(_)));
-            assert!(!chrome.borrow().dnd());
-        }
-
-        // Phase `permanent_device_revocation_requires_admin_and_confirmation`.
-        {
-            let action = Action::ALL
+                ) => Some(grant),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            asked
                 .iter()
-                .find(|action| action.id == "identity.device.revoke")
-                .expect("device revocation is registered");
-            let contract = shell_action_contract(action.id);
-            assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
-            assert_eq!(
-                contract.confirmation,
-                tilo_actions::ConfirmationPolicy::Confirm
-            );
-            assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
-
-            let args = ActionArgs::bind(
-                action.params,
-                [(
-                    "device".into(),
-                    crate::shell::search::action_api::ArgValue::Text("0".repeat(64)),
-                )],
-            );
-            assert!(
-                matches!(args, Err(crate::shell::search::action_api::ArgError::Missing { name }) if name == "confirm"),
-                "confirmation is an enforced typed argument, not display-only metadata"
-            );
+                .any(|grant| grant.id.as_str() == "agent-member:operator:operator"),
+            "the admission is asked of the room's governor"
+        );
+        let ws = tree.desktop.active_workspace().expect("fixture has room");
+        assert!(
+            ws.agent_members()
+                .into_iter()
+                .all(|(agent, _)| agent != "operator"),
+            "nothing changes here before the room's admitted document carries it"
+        );
+        // What the governor applies and the admitted document carries.
+        let ws = tree
+            .desktop
+            .active_workspace_mut()
+            .expect("fixture has room");
+        for grant in asked {
+            ws.govern_as_at(
+                &user,
+                tilo_action_policy::Change::Grant(grant),
+                tilo_clock::unix_now(),
+            )
+            .expect("the governor admits the agent");
         }
+        let ws = tree.desktop.active_workspace().expect("fixture has room");
+        assert_eq!(
+            ws.agent_members()
+                .into_iter()
+                .find(|(agent, _)| agent == "operator")
+                .map(|(_, kinds)| kinds),
+            Some(tilo_action_policy::KindSet::ALL),
+            "the durable admission carries the selected preset"
+        );
+        let answer = |kind| {
+            ws.subject_authority(tilo_action_policy::Subject::agent("operator"))
+                .decide(
+                    &ws.node().app("so.tilo.notes"),
+                    kind,
+                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                )
+                .answer
+        };
+        assert_eq!(
+            answer(tilo_action_policy::ActionKind::Undoable),
+            tilo_action_policy::Answer::Allow,
+            "an Operator makes undoable changes"
+        );
+        assert_eq!(
+            answer(tilo_action_policy::ActionKind::Outside),
+            tilo_action_policy::Answer::Ask,
+            "and asks first before reaching outside the room"
+        );
     }
 
     #[test]
     #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        clippy::significant_drop_tightening,
+        reason = "the authorization regression retains the chrome guard until each ambient-authority assertion completes"
     )]
-    fn shell_action_contracts_match_availability_risk_and_mechanism() {
-        // Phase `window_actions_are_published_with_focus_and_layout_contracts`.
-        {
-            for id in WINDOW_FOCUS_ACTION_IDS
-                .iter()
-                .chain(WINDOW_LAYOUT_ACTION_IDS)
-            {
-                assert!(
-                    Action::ALL.iter().any(|action| action.id == *id),
-                    "{id} is listed but not published"
-                );
-            }
-            for id in WINDOW_FOCUS_ACTION_IDS {
-                assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::View);
-                let contract = shell_action_contract(id);
-                assert_eq!(
-                    contract.kind,
-                    tilo_actions::ActionKind::Read,
-                    "{id} only moves focus"
-                );
-                assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
-            }
-            for id in WINDOW_LAYOUT_ACTION_IDS {
-                assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
-                let contract = shell_action_contract(id);
-                assert_eq!(
-                    contract.kind,
-                    tilo_actions::ActionKind::Undoable,
-                    "{id} rearranges the shared desk"
-                );
-                assert!(contract.can_be_undone());
-                assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
-            }
-        }
-
-        // Phase `every_shell_action_exposes_a_valid_operational_contract`.
-        {
-            let chrome = chrome_with_room();
-            let state = chrome.borrow();
-            let doc = AutoCommit::new();
-            let results = ActionsProvider::new().query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "",
-                wanted: &[ResourceKind::Action],
-                chrome: &state,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            for result in results {
-                let contract = result
-                    .contract
-                    .unwrap_or_else(|| panic!("{} has no contract", result.id));
-                assert!(
-                    contract.validate_declaration().is_empty(),
-                    "{} has invalid contract: {:?}",
-                    result.id,
-                    contract.validate_declaration()
-                );
-            }
-        }
-
-        // Phase `contracts_match_current_availability_risk_and_document_mutation`.
-        {
-            let chrome = chrome_with_room();
-            let state = chrome.borrow();
-            let doc = AutoCommit::new();
-            let results = ActionsProvider::new().query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[ResourceKind::Action],
-                chrome: &state,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            for id in [
-                QS_BRIGHTNESS_ID,
-                QS_VOLUME_ID,
-                QS_WIFI_ID,
-                QS_POWER_ID,
-                QS_VPN_ID,
-                QS_BLUETOOTH_ID,
-                QS_AIRPLANE_ID,
-            ] {
-                let result = results
-                    .iter()
-                    .find(|result| result.id == id)
-                    .unwrap_or_else(|| panic!("missing Quick Settings effect {id}"));
-                assert!(matches!(
-                    result
-                        .contract
-                        .as_ref()
-                        .map(|contract| &contract.availability),
-                    Some(tilo_actions::Availability::Unavailable { .. })
-                ));
-            }
-            for id in ["identity.connect", "identity.select"] {
-                let contract = shell_action_contract(id);
-                assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
-                assert_eq!(
-                    contract.confirmation,
-                    tilo_actions::ConfirmationPolicy::Confirm
-                );
-                assert!(
-                    Action::ALL
-                        .iter()
-                        .find(|action| action.id == id)
-                        .expect("identity action")
-                        .params
-                        .iter()
-                        .any(|parameter| parameter.name == "confirm")
-                );
-            }
-            // A setting applied on the device itself is undone by undoing
-            // the change, never by the workspace's own undo.
-            assert_eq!(
-                quick_settings_contract().kind,
-                tilo_actions::ActionKind::Undoable
-            );
-            assert_eq!(
-                shell_action_kind("agent.invite"),
-                tilo_actions::OperationKind::Document
-            );
-            assert_eq!(
-                shell_action_kind("peer.invite.named"),
-                tilo_actions::OperationKind::Document
-            );
-        }
-
-        // Phase `quick_settings_contracts_follow_each_production_mechanism`.
-        {
-            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> =
-                Rc::new(RecordingQsActions::default());
-            let availability = tilo_quick_settings::actions::QsActionAvailability {
-                brightness: false,
-                volume: true,
-                wifi: false,
-                power_profile: true,
-                vpn: false,
-                bluetooth: true,
-                airplane_mode: false,
-            };
-            let provider = ActionsProvider::with_shared_qs_actions(Rc::new(
-                SharedQsDispatcher::new(dispatcher, availability),
-            ));
-            let chrome = chrome_with_room();
-            let doc = AutoCommit::new();
-            let results = provider.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            for (id, available) in [
-                (QS_BRIGHTNESS_ID, false),
-                (QS_VOLUME_ID, true),
-                (QS_WIFI_ID, false),
-                (QS_POWER_ID, true),
-                (QS_VPN_ID, false),
-                (QS_BLUETOOTH_ID, true),
-                (QS_AIRPLANE_ID, false),
-            ] {
-                let contract = results
-                    .iter()
-                    .find(|result| result.id == id)
-                    .and_then(|result| result.contract.as_ref())
-                    .unwrap_or_else(|| panic!("missing contract for {id}"));
-                assert_eq!(contract.availability.is_available(), available, "{id}");
-            }
-        }
-    }
-
-    #[test]
-    fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
-        use tilo_quick_settings::DisplayBrightness;
-        let recorder = Rc::new(RecordingQsActions::default());
-        let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
-        let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
-            dispatcher,
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        )));
+    fn retained_shell_action_rechecks_authority_before_mutation() {
+        let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
-        {
-            let mut state = chrome.borrow_mut();
-            state.quick_settings.displays = vec![
-                DisplayBrightness {
-                    connector: "eDP-1".into(),
-                    name: "Built-in display".into(),
-                    level: 0.5,
-                },
-                DisplayBrightness {
-                    connector: "DP-1".into(),
-                    name: "Dell U2723".into(),
-                    level: 0.3,
-                },
-            ];
-            state.quick_settings.focused_display = Some("DP-1".into());
-        }
         let mut doc = AutoCommit::new();
-        let results = provider.query(SearchContext {
-            query_scope: None,
-            include_programmatic: false,
-            needle: "quick-settings.",
-            wanted: &[ResourceKind::Action],
-            chrome: &chrome.borrow(),
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        let row = |id: &str| {
-            results
-                .iter()
-                .find(|result| result.id == id)
-                .cloned()
-                .unwrap_or_else(|| panic!("no row {id}"))
+        let result = {
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: "do not disturb",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id == "notifications.dnd.toggle")
+                .expect("authorized action is discovered")
         };
-        let panel = row("quick-settings.brightness.on.eDP-1");
-        assert_eq!(panel.title, "Brightness, Built-in display");
-        let monitor = row("quick-settings.brightness.on.DP-1");
-        assert_eq!(monitor.title, "Brightness, Dell U2723");
-        assert_eq!(monitor.badge.as_deref(), Some("30 %"));
-        assert!(provider.adjustable(&monitor), "←/→ steps it in place");
-        provider
-            .adjust(
-                &monitor,
-                1,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-            )
-            .expect("the step lands");
-        provider
-            .adjust(
-                &panel,
-                -1,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-            )
-            .expect("the step lands");
-        (row("quick-settings.brightness.up").on_open)(
+        {
+            let state = chrome.borrow_mut();
+            let mut tree = state.tree_mut();
+            let workspace = tree.desktop.active_workspace_mut().expect("workspace");
+            workspace.policy.owner = None;
+            workspace.policy.members.clear();
+            drop(tree);
+        }
+        let error = (result.on_open)(
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &chrome,
             &ActionArgs::none(),
         )
-        .expect("brighter runs");
-        assert_eq!(
-            recorder.calls.borrow().as_slice(),
-            [
-                "brightness:DP-1:40",
-                "brightness:eDP-1:40",
-                "brightness:DP-1:50"
-            ],
-            "each row moves its own display; brighter moves the focused one"
-        );
-    }
-
-    #[derive(Default)]
-    struct RecordingQsActions {
-        calls: std::cell::RefCell<Vec<String>>,
-        fail: std::cell::Cell<bool>,
-    }
-
-    impl tilo_quick_settings::actions::QsActions for RecordingQsActions {
-        fn set_brightness(&self, percent: f32) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("brightness:{percent}"));
-            self.result()
-        }
-
-        fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("brightness:{connector}:{percent}"));
-            self.result()
-        }
-
-        fn set_volume(&self, percent: f32) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("volume:{percent}"));
-            self.result()
-        }
-
-        fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("wifi:{enabled}"));
-            self.result()
-        }
-
-        fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("bluetooth:{enabled}"));
-            self.result()
-        }
-
-        fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("airplane:{enabled}"));
-            self.result()
-        }
-
-        fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("vpn:{name}:{enabled}"));
-            self.result()
-        }
-
-        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("connect-wifi:{ssid}:{password:?}"));
-            self.result()
-        }
-
-        fn set_power_profile(
-            &self,
-            profile: tilo_quick_settings::actions::PowerProfile,
-        ) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("power:{profile:?}"));
-            self.result()
-        }
-
-        fn toggle_mute(&self) -> Result<(), String> {
-            self.result()
-        }
-
-        fn set_mute(&self, _muted: bool) -> Result<(), String> {
-            self.result()
-        }
-    }
-
-    impl RecordingQsActions {
-        fn result(&self) -> Result<(), String> {
-            if self.fail.get() {
-                Err("controlled provider failure".into())
-            } else {
-                Ok(())
-            }
-        }
+        .expect_err("revocation between discovery and execution must win");
+        assert!(matches!(error, ActionError::Refused(_)));
+        assert!(!chrome.borrow().dnd());
     }
 
     #[test]
     #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+        clippy::significant_drop_tightening,
+        reason = "the authorization regression retains the chrome guard until each ambient-authority assertion completes"
     )]
-    fn quick_settings_actions_share_one_typed_validated_dispatch() {
-        // Phase `typed_quick_settings_effects_use_the_injected_dispatcher_exactly`.
+    fn permanent_device_revocation_requires_admin_and_confirmation() {
+        let action = Action::ALL
+            .iter()
+            .find(|action| action.id == "identity.device.revoke")
+            .expect("device revocation is registered");
+        let contract = shell_action_contract(action.id);
+        assert_eq!(contract.kind, tilo_actions::ActionKind::Outside);
+        assert_eq!(
+            contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
+
+        let args = ActionArgs::bind(
+            action.params,
+            [(
+                "device".into(),
+                crate::shell::search::action_api::ArgValue::Text("0".repeat(64)),
+            )],
+        );
+        assert!(
+            matches!(args, Err(crate::shell::search::action_api::ArgError::Missing { name }) if name == "confirm"),
+            "confirmation is an enforced typed argument, not display-only metadata"
+        );
+    }
+
+    #[test]
+    fn window_actions_are_published_with_focus_and_layout_contracts() {
+        for id in WINDOW_FOCUS_ACTION_IDS
+            .iter()
+            .chain(WINDOW_LAYOUT_ACTION_IDS)
         {
-            let recorder = Rc::new(RecordingQsActions::default());
-            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
-            let slot = Rc::new(SharedQsDispatcher::new(
-                dispatcher,
-                tilo_quick_settings::actions::QsActionAvailability::all(),
-            ));
-            let provider = ActionsProvider::with_shared_qs_actions(slot);
-            let chrome = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let results = provider.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            let cases = [
-                (
-                    QS_BRIGHTNESS_ID,
-                    vec![(
-                        "percent".into(),
-                        crate::shell::search::action_api::ArgValue::Number(37.5),
-                    )],
-                ),
-                (
-                    QS_VOLUME_ID,
-                    vec![(
-                        "percent".into(),
-                        crate::shell::search::action_api::ArgValue::Integer(64),
-                    )],
-                ),
-                (
-                    QS_WIFI_ID,
-                    vec![(
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(true),
-                    )],
-                ),
-                (
-                    QS_POWER_ID,
-                    vec![(
-                        "profile".into(),
-                        crate::shell::search::action_api::ArgValue::Text("saver".into()),
-                    )],
-                ),
-                (
-                    QS_VPN_ID,
-                    vec![
-                        (
-                            "name".into(),
-                            crate::shell::search::action_api::ArgValue::Text("Work".into()),
-                        ),
-                        (
-                            "enabled".into(),
-                            crate::shell::search::action_api::ArgValue::Boolean(false),
-                        ),
-                    ],
-                ),
-                (
-                    QS_BLUETOOTH_ID,
-                    vec![(
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(true),
-                    )],
-                ),
-                (
-                    QS_AIRPLANE_ID,
-                    vec![(
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(true),
-                    )],
-                ),
-            ];
-            for (id, supplied) in cases {
-                let result = results.iter().find(|result| result.id == id).expect(id);
-                let args = ActionArgs::bind(&result.params, supplied).expect("typed args bind");
-                if let Some(begin) = &result.on_begin_invoke {
-                    assert!(matches!(
-                        begin(
-                            &mut ui::widget::Edits::lend(&mut doc),
-                            &automerge::ROOT,
-                            &chrome,
-                            &args
-                        )
-                        .expect("controlled provider succeeds"),
-                        crate::shell::search::InvocationDisposition::Accepted(_)
-                    ));
-                } else {
-                    (result.on_open)(
-                        &mut ui::widget::Edits::lend(&mut doc),
-                        &automerge::ROOT,
-                        &chrome,
-                        &args,
-                    )
-                    .expect("controlled provider succeeds");
-                }
-            }
-            assert_eq!(
-                recorder.calls.borrow().as_slice(),
-                [
-                    "brightness:37.5",
-                    "volume:64",
-                    "wifi:true",
-                    "power:Saver",
-                    "vpn:Work:false",
-                    "bluetooth:true",
-                    "airplane:true",
-                ]
-            );
-            let state = chrome.borrow();
-            assert!(state.quick_settings.bluetooth);
-            assert!(state.quick_settings.radios.airplane_mode);
-        }
-
-        // Phase `invalid_quick_settings_values_never_dispatch_and_provider_failures_propagate`.
-        {
-            let recorder = Rc::new(RecordingQsActions::default());
-            let params = quick_settings_params(QS_BRIGHTNESS_ID);
             assert!(
-                ActionArgs::bind(
-                    &params,
-                    [(
-                        "percent".into(),
-                        crate::shell::search::action_api::ArgValue::Number(101.0)
-                    )],
-                )
-                .is_err()
-            );
-            assert!(recorder.calls.borrow().is_empty());
-
-            recorder.fail.set(true);
-            let args = ActionArgs::bind(
-                &params,
-                [(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(50.0),
-                )],
-            )
-            .expect("valid value binds");
-            let error = apply_quick_settings_effect(QS_BRIGHTNESS_ID, recorder.as_ref(), &args)
-                .expect_err("provider failure reaches the caller");
-            assert!(
-                matches!(error, ActionError::Refused(message) if message.contains("controlled"))
-            );
-            assert_eq!(recorder.calls.borrow().as_slice(), ["brightness:50"]);
-        }
-
-        // Phase `quick_settings_ui_adapter_and_external_effect_share_typed_dispatch`.
-        {
-            use tilo_quick_settings::actions::QsActions as _;
-
-            let recorder = Rc::new(RecordingQsActions::default());
-            let ui = ValidatedQsActions::new(recorder.as_ref());
-            let external = |id, supplied| {
-                let args = ActionArgs::bind(&quick_settings_params(id), supplied)
-                    .expect("valid external value binds");
-                apply_quick_settings_effect(id, recorder.as_ref(), &args)
-                    .expect("valid external value dispatches");
-            };
-
-            ui.set_brightness(37.5).expect("valid UI value dispatches");
-            external(
-                QS_BRIGHTNESS_ID,
-                vec![(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(37.5),
-                )],
-            );
-            ui.set_volume(64.0).expect("valid UI value dispatches");
-            external(
-                QS_VOLUME_ID,
-                vec![(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(64.0),
-                )],
-            );
-            ui.set_wifi(true).expect("valid UI value dispatches");
-            external(
-                QS_WIFI_ID,
-                vec![(
-                    "enabled".into(),
-                    crate::shell::search::action_api::ArgValue::Boolean(true),
-                )],
-            );
-            ui.set_power_profile(tilo_quick_settings::actions::PowerProfile::Saver)
-                .expect("valid UI value dispatches");
-            external(
-                QS_POWER_ID,
-                vec![(
-                    "profile".into(),
-                    crate::shell::search::action_api::ArgValue::Text("saver".into()),
-                )],
-            );
-            ui.set_vpn_connection("Work", false)
-                .expect("valid UI value dispatches");
-            external(
-                QS_VPN_ID,
-                vec![
-                    (
-                        "name".into(),
-                        crate::shell::search::action_api::ArgValue::Text("Work".into()),
-                    ),
-                    (
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(false),
-                    ),
-                ],
-            );
-            ui.set_bluetooth(true).expect("valid UI value dispatches");
-            external(
-                QS_BLUETOOTH_ID,
-                vec![(
-                    "enabled".into(),
-                    crate::shell::search::action_api::ArgValue::Boolean(true),
-                )],
-            );
-            assert_eq!(
-                recorder.calls.borrow().as_slice(),
-                [
-                    "brightness:37.5",
-                    "brightness:37.5",
-                    "volume:64",
-                    "volume:64",
-                    "wifi:true",
-                    "wifi:true",
-                    "power:Saver",
-                    "power:Saver",
-                    "vpn:Work:false",
-                    "vpn:Work:false",
-                    "bluetooth:true",
-                    "bluetooth:true",
-                ],
-                "every callable UI/external pair reaches the same provider with the same validated value"
-            );
-
-            assert!(ui.set_brightness(101.0).is_err());
-            assert_eq!(
-                recorder.calls.borrow().len(),
-                12,
-                "invalid UI value never dispatches"
-            );
-            recorder.fail.set(true);
-            assert!(
-                ui.set_wifi(true).is_err(),
-                "provider failure reaches the UI adapter"
+                Action::ALL.iter().any(|action| action.id == *id),
+                "{id} is listed but not published"
             );
         }
+        for id in WINDOW_FOCUS_ACTION_IDS {
+            assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::View);
+            let contract = shell_action_contract(id);
+            assert_eq!(
+                contract.kind,
+                tilo_actions::ActionKind::Read,
+                "{id} only moves focus"
+            );
+            assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+        }
+        for id in WINDOW_LAYOUT_ACTION_IDS {
+            assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
+            let contract = shell_action_contract(id);
+            assert_eq!(
+                contract.kind,
+                tilo_actions::ActionKind::Undoable,
+                "{id} rearranges the shared desk"
+            );
+            assert!(contract.can_be_undone());
+            assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+        }
+    }
+
+    #[test]
+    fn every_shell_action_exposes_a_valid_operational_contract() {
+        let chrome = chrome_with_room();
+        let state = chrome.borrow();
+        let doc = AutoCommit::new();
+        let results = ActionsProvider::new().query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        for result in results {
+            let contract = result
+                .contract
+                .unwrap_or_else(|| panic!("{} has no contract", result.id));
+            assert!(
+                contract.validate_declaration().is_empty(),
+                "{} has invalid contract: {:?}",
+                result.id,
+                contract.validate_declaration()
+            );
+        }
+    }
+
+    #[test]
+    fn contracts_match_current_availability_risk_and_document_mutation() {
+        for id in ["identity.connect", "identity.select"] {
+            let contract = shell_action_contract(id);
+            assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
+            assert_eq!(
+                contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert!(
+                Action::ALL
+                    .iter()
+                    .find(|action| action.id == id)
+                    .expect("identity action")
+                    .params
+                    .iter()
+                    .any(|parameter| parameter.name == "confirm")
+            );
+        }
+        assert_eq!(
+            shell_action_kind("agent.invite"),
+            tilo_actions::OperationKind::Document
+        );
+        assert_eq!(
+            shell_action_kind("peer.invite.named"),
+            tilo_actions::OperationKind::Document
+        );
     }
 
     #[test]
@@ -8556,208 +7462,6 @@ mod tests {
             tilo_action_policy::Answer::Allow
         );
         drop(tree);
-    }
-
-    fn radio_catalog(
-        registry: &crate::shell::search::SearchRegistry,
-        chrome: &Chrome,
-        doc: &AutoCommit,
-    ) -> crate::shell::search::action_api::ActionCatalog {
-        crate::shell::search::action_api::ActionCatalog::build(
-            registry,
-            "quick-settings.",
-            crate::shell::search::SearchScope::All,
-            None,
-            &chrome.borrow(),
-            doc,
-            &automerge::ROOT,
-            &crate::shell::search::action_api::AllVisible,
-        )
-    }
-
-    fn assert_radio_outcome(
-        poll: &crate::shell::search::PendingInvocation,
-        chrome: &Chrome,
-        change: os_actions::RadioChange,
-        outcome: &Result<(), String>,
-    ) {
-        if outcome.is_ok() {
-            let receipt = poll().unwrap().expect("real successful completion");
-            assert!(matches!(
-                receipt.update,
-                tilo_actions::InvocationUpdate::Succeeded { .. }
-            ));
-            match change {
-                os_actions::RadioChange::Wifi(_) => {
-                    assert!(chrome.borrow().quick_settings.wifi);
-                }
-                os_actions::RadioChange::Airplane(_) => {
-                    assert!(chrome.borrow().quick_settings.radios.airplane_mode);
-                }
-            }
-            assert!(chrome.borrow().notifications().is_empty());
-        } else {
-            assert!(
-                matches!(poll(), Err(ActionError::Refused(error)) if error.contains("fixture radio refusal"))
-            );
-            assert!(!chrome.borrow().quick_settings.wifi);
-            assert!(!chrome.borrow().quick_settings.radios.airplane_mode);
-            assert_eq!(chrome.borrow().notifications().len(), 1);
-            assert!(poll().is_err());
-            assert_eq!(chrome.borrow().notifications().len(), 1);
-        }
-    }
-
-    #[test]
-    fn radio_semantic_actions_wait_for_real_work_and_report_success_or_refusal() {
-        use crate::shell::search::InvocationDisposition;
-        use crate::shell::search::action_api::{ArgValue, ResourceRef};
-        use tilo_quick_settings::radio::fixture::Fixture;
-        for (id, change) in [
-            (QS_WIFI_ID, os_actions::RadioChange::Wifi(true)),
-            (QS_AIRPLANE_ID, os_actions::RadioChange::Airplane(true)),
-        ] {
-            for outcome in [Ok(()), Err("fixture radio refusal".into())] {
-                let fixture = Fixture::new();
-                let slot = Rc::new(SharedQsDispatcher::new(
-                    Rc::new(fixture.dispatcher),
-                    tilo_quick_settings::actions::QsActionAvailability::all(),
-                ));
-                let (wake_tx, wake_rx) = std::sync::mpsc::channel();
-                slot.set_radio_wake(Arc::new(move || {
-                    let _ = wake_tx.send(());
-                }));
-                let mut registry = crate::shell::search::SearchRegistry::new();
-                registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
-                    slot.clone(),
-                )));
-                let chrome = chrome_with_room();
-                chrome.borrow_mut().quick_settings.wifi = false;
-                chrome.borrow_mut().quick_settings.radios.airplane_mode = false;
-                let mut doc = AutoCommit::new();
-                let catalog = radio_catalog(&registry, &chrome, &doc);
-                let resource = ResourceRef::new("actions", id);
-                let action = catalog.select(&resource).expect("declared Wi-Fi action");
-                let disposition = action
-                    .invoke(
-                        &mut ui::widget::Edits::lend(&mut doc),
-                        &automerge::ROOT,
-                        &chrome,
-                        [("enabled".into(), ArgValue::Boolean(true))],
-                    )
-                    .expect("owner action is admitted");
-                let InvocationDisposition::Pending(poll) = disposition else {
-                    panic!("starting radio work cannot manufacture completion");
-                };
-                assert_eq!(
-                    tilo_test_env::recv("the radio work to start", &fixture.entered),
-                    change
-                );
-                assert!(poll().unwrap().is_none());
-                assert!(!chrome.borrow().quick_settings.wifi);
-                let busy_catalog = radio_catalog(&registry, &chrome, &doc);
-                assert!(matches!(
-                    busy_catalog
-                        .select(&resource)
-                        .unwrap()
-                        .contract()
-                        .unwrap()
-                        .availability,
-                    tilo_actions::Availability::Unavailable { .. }
-                ));
-                assert!(
-                    action
-                        .invoke(
-                            &mut ui::widget::Edits::lend(&mut doc),
-                            &automerge::ROOT,
-                            &chrome,
-                            [("enabled".into(), ArgValue::Boolean(false))],
-                        )
-                        .is_err(),
-                    "a stale descriptor cannot admit a second radio mutation"
-                );
-                fixture.release.send(outcome.clone()).unwrap();
-                tilo_test_env::recv("the radio work's wake", &wake_rx);
-                assert_radio_outcome(&poll, &chrome, change, &outcome);
-                assert!(!chrome.borrow().quick_settings.radio_change_pending);
-                let completion = slot
-                    .take_radio_completion()
-                    .expect("host consumes same owned receipt");
-                crate::shell::chrome_state::ChromeState::apply_radio_ticket(&chrome, &completion);
-                assert!(slot.take_radio_completion().is_none());
-                let restored = radio_catalog(&registry, &chrome, &doc);
-                assert!(matches!(
-                    restored
-                        .select(&resource)
-                        .unwrap()
-                        .contract()
-                        .unwrap()
-                        .availability,
-                    tilo_actions::Availability::Available
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn radio_semantic_admission_rechecks_current_dispatcher_and_workspace_authority() {
-        use crate::shell::search::action_api::{ArgValue, ResourceRef};
-        use tilo_quick_settings::radio::fixture::Fixture;
-        let fixture = Fixture::new();
-        let slot = Rc::new(SharedQsDispatcher::new(
-            Rc::new(fixture.dispatcher.clone()),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        ));
-        let mut registry = crate::shell::search::SearchRegistry::new();
-        registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
-            slot.clone(),
-        )));
-        let chrome = chrome_with_room();
-        let mut doc = AutoCommit::new();
-        let catalog = radio_catalog(&registry, &chrome, &doc);
-        let action = catalog
-            .select(&ResourceRef::new("actions", QS_WIFI_ID))
-            .unwrap();
-        slot.replace(
-            Rc::new(fixture.dispatcher.clone()),
-            tilo_quick_settings::actions::QsActionAvailability::default(),
-        );
-        assert!(
-            action
-                .invoke(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &chrome,
-                    [("enabled".into(), ArgValue::Boolean(true))]
-                )
-                .is_err()
-        );
-        assert!(fixture.entered.try_recv().is_err());
-        slot.replace(
-            Rc::new(fixture.dispatcher.clone()),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        );
-        chrome
-            .borrow_mut()
-            .tree_mut()
-            .desktop
-            .active_workspace_mut()
-            .unwrap()
-            .set_owner("foreign-owner");
-        assert!(
-            action
-                .invoke(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &chrome,
-                    [("enabled".into(), ArgValue::Boolean(true))]
-                )
-                .is_err()
-        );
-        assert!(
-            fixture.entered.try_recv().is_err(),
-            "revoked authority never reaches the native worker"
-        );
     }
 
     const FIXTURE_USER: &str = "shell-fixture";

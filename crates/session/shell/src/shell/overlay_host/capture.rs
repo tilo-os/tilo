@@ -249,7 +249,7 @@ impl ShellOverlayHost {
         let Some(p) = self.last_cursor else {
             return;
         };
-        if !self.notification_stack.rect().contains(p) {
+        if !self.banner_stack_rect().contains(p) {
             self.release_banner_keyboard();
         }
         // A press on a window, wherever it lands (an app's own surface

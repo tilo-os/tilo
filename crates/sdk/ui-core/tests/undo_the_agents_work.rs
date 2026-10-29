@@ -733,8 +733,7 @@ fn run_records_replicate_without_polluting_history() {
             rows.iter().map(|r| r.summary.clone()).collect::<Vec<_>>()
         );
         assert!(
-            rows.iter()
-                .all(|r| r.summary != tilo_ui::history_source::NO_VISIBLE_CHANGE),
+            rows.iter().all(|r| !r.summary.is_empty()),
             "and left no empty row behind: {:?}",
             rows.iter().map(|r| r.summary.clone()).collect::<Vec<_>>()
         );

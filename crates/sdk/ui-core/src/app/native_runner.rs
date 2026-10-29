@@ -2140,11 +2140,7 @@ impl AppHandler {
             other => other,
         };
         let app = &mut self.app;
-        let Some(root_node) = app
-            .history_layout
-            .map(|layout| layout.app)
-            .or(app.layout.root_node)
-        else {
+        let Some(root_node) = app.layout.root_node else {
             return;
         };
         let mut handled = false;
@@ -2499,7 +2495,6 @@ impl AppHandler {
                 .history
                 .as_ref()
                 .is_none_or(|history| history.live_interactive())
-            && app.history_layout.is_none()
             && app.close_admission.dialog.is_none())
         .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
@@ -2552,7 +2547,7 @@ impl AppHandler {
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
-        floating_content_changed |= app.root_widget.needs_redraw() || app.history_needs_redraw();
+        floating_content_changed |= app.root_widget.needs_redraw();
 
         // Admission reserved this pair before state updates. Taking it cannot
         // wait on GPU work; aborted layouts retain it in the handle for retry.
@@ -2596,7 +2591,6 @@ impl AppHandler {
         let culls = !full_redraw_required
             && !self.top_layer_drawn
             && app.history.is_none()
-            && app.history_layout.is_none()
             && !crate::render_thread::remote::requested();
         // While a view pans, the frame is drawn as layers instead of culled:
         // its worker copies what the pan keeps of the view and rasterises

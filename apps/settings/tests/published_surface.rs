@@ -64,10 +64,10 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
     app.settle();
     let bindings = app
-        .surface::<settings::SettingsApp, _>(|settings| {
-            ui::widget::controls::control_action_bindings(&*settings)
+        .with_widget::<ui::widget::NavShell, _>(|shell| {
+            ui::widget::controls::control_action_bindings(shell)
         })
-        .expect("the settings surface is mounted");
+        .expect("settings shows its shell");
     let open = open_pane(Category::Bluetooth);
     let navigation = bindings
         .iter()
@@ -124,10 +124,7 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         f64::midpoint(bluetooth.y0, bluetooth.y1),
     );
     app.settle();
-    let selected = app
-        .surface::<settings::SettingsApp, _>(|settings| settings.selected())
-        .expect("the settings surface is mounted");
-    assert_eq!(selected, Category::Bluetooth);
+    assert_eq!(crate::support::selected(&mut app), Category::Bluetooth);
 }
 
 /// A `settings://models/<id>` link opens Settings at Agent Models. Where the

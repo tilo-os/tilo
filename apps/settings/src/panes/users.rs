@@ -7,29 +7,29 @@
 //! host's identity actions, so no record or secret enters this process.
 //! Every change is a [`UsersEffect`] on the account or identity it names.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashSet;
 use std::fs;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use runtime_identity::{IdentitySummary, KeyProtection};
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{
-    Button, ButtonRole, ChipStyle, Column, DisclosureRow, DisclosureState, Row, RowMenu, TextInput,
-    TextInputKind, Widget,
+    Button, ButtonRole, ChipStyle, Column, DisclosureRow, DisclosureState, Element, Row, RowMenu,
+    TextInput, TextInputKind, Widget,
 };
 use zeroize::Zeroizing;
 
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, block, error_caption, field_row, note, row, rows, section,
     thing_row, untitled,
 };
@@ -110,7 +110,7 @@ pub enum UsersEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: UsersEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::users::area(app)
         .ok_or_else(crate::area::missing)?
@@ -139,13 +139,13 @@ pub(crate) fn answer(
         _ => Zeroizing::new(String::new()),
     };
     let created = matches!(effect, UsersEffect::CreateUser { .. });
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || {
             let outcome = carry_out(&backends, &users, &effect, &password);
             (outcome, Reread::of(&backends))
         },
-        move |app: &mut SettingsApp, (outcome, reread): (Result<(), String>, Option<Reread>), _| {
+        move |app: &SettingsApp, (outcome, reread): (Result<(), String>, Option<Reread>), _| {
             let model = crate::panes::users::area(app)
                 .ok_or_else(crate::area::missing)?
                 .model();
@@ -448,11 +448,14 @@ fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, O
 /// What the users area keeps for the window: the model, read when first
 /// needed.
 pub struct UsersArea {
-    cx: PaneCx,
+    /// Whether the model reads this device's accounts.
+    devices: bool,
     /// The window's client for the action door, shared with the other
     /// areas that act through the host.
     remote: ui::RemoteActions,
-    model: OnceCell<Shared<UsersModel>>,
+    model: OnceCell<Rc<RefCell<UsersModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
     /// The device's accounts, read off the UI thread after the window's
     /// first frame ([`Self::start_read`]); `None` stands for the samples a
     /// screenshot shows.
@@ -460,41 +463,49 @@ pub struct UsersArea {
 }
 
 impl UsersArea {
-    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
+    pub fn new(cx: &AreaContext, remote: ui::RemoteActions) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
             remote,
             model: OnceCell::new(),
+            shown: LocalState::new(0),
             read: crate::device_read::DeviceRead::default(),
         }
     }
 
     /// The model: this device's accounts, or sample ones for a screenshot.
-    pub fn model(&self) -> &Shared<UsersModel> {
+    pub fn model(&self) -> &Rc<RefCell<UsersModel>> {
         self.model.get_or_init(|| {
             let read = self
                 .read
                 .take()
-                .unwrap_or_else(|| self.cx.reaches_devices().then(UsersRead::of_device));
+                .unwrap_or_else(|| self.devices.then(UsersRead::of_device));
             let model = match read {
                 Some(read) => UsersModel::from_read(
-                    self.cx.clone(),
                     read,
                     Rc::new(RemoteIdentityAdmin {
                         remote: self.remote.clone(),
                     }),
                 ),
-                None => UsersModel::sample(self.cx.clone()),
+                None => UsersModel::sample(),
             };
-            Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
-    /// Take in what the host answered about the person's identities, if
-    /// the model exists.
+    /// Take in what the host answered about the person's identities and
+    /// what a change's job read again, if the model exists, and move what
+    /// the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_identities();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        model.poll_identities();
+        if std::mem::take(&mut model.changed) {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
     }
 
@@ -504,7 +515,7 @@ impl UsersArea {
         if self.is_open() {
             return false;
         }
-        let device = self.cx.reaches_devices();
+        let device = self.devices;
         self.read.start(move || device.then(UsersRead::of_device))
     }
 
@@ -644,7 +655,6 @@ impl AccountForm {
 }
 
 pub struct UsersModel {
-    cx: PaneCx,
     users: Vec<DeviceUser>,
     /// Why the accounts could not be read; the list is then not "empty".
     users_error: Option<String>,
@@ -700,10 +710,9 @@ impl Reread {
 impl UsersModel {
     /// The model over what `read` found on this device, asking
     /// `identity_admin` for the person's identities.
-    fn from_read(cx: PaneCx, read: UsersRead, identity_admin: Rc<dyn IdentityAdmin>) -> Self {
+    fn from_read(read: UsersRead, identity_admin: Rc<dyn IdentityAdmin>) -> Self {
         let (users, users_error) = users_and_error(read.users);
         Self {
-            cx,
             users,
             users_error,
             identities: Vec::new(),
@@ -723,7 +732,7 @@ impl UsersModel {
     }
 
     /// Two accounts and one identity, changed by nothing.
-    fn sample(cx: PaneCx) -> Self {
+    fn sample() -> Self {
         let user = |username: &str, full_name: &str, uid, current| DeviceUser {
             username: username.into(),
             full_name: full_name.into(),
@@ -734,7 +743,6 @@ impl UsersModel {
             automatic_login_error: None,
         };
         Self {
-            cx,
             users: vec![
                 user("ada", "Ada Lovelace", 1000, true),
                 user("grace", "Grace Hopper", 1001, false),
@@ -837,7 +845,9 @@ impl UsersModel {
         }
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// The page as the model shows the accounts and identities now.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        let dispatcher = cx.dispatcher();
         let mut sections: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
             sections.push(section(
@@ -853,9 +863,12 @@ impl UsersModel {
         } else if self.users.is_empty() {
             vec![note(&t("settings-users-empty-accounts"))]
         } else {
-            self.users.iter().flat_map(|u| self.user_row(u)).collect()
+            self.users
+                .iter()
+                .flat_map(|u| Self::user_row(&dispatcher, u))
+                .collect()
         };
-        people.push(row(self.add_form()));
+        people.push(row(self.add_form(cx)));
         sections.push(section(&t("settings-users-login-accounts"), rows(people)));
 
         let identity_rows = if let Some(error) = &self.identities_error {
@@ -869,7 +882,7 @@ impl UsersModel {
             rows(
                 self.identities
                     .iter()
-                    .map(|i| self.identity_row(i))
+                    .map(|i| Self::identity_row(&dispatcher, i))
                     .collect(),
             )
         };
@@ -878,15 +891,15 @@ impl UsersModel {
         let identity_rows = if self.identities.is_empty() {
             identity_rows
         } else {
-            identity_rows.push(crate::widgets::setting_row_described(
+            identity_rows.push(provider_settings_ui::widgets::setting_row_described(
                 &t("settings-about-backup-card"),
                 &t("settings-about-backup-caption"),
-                Box::new(self.cx.bind_invocation(
+                Box::new(cx.actions().bind_effect_invocation(
                     ui::widget::Button::new(
                         crate::panes::about::PORTABLE_BACKUP_BUTTON,
                         &t("settings-about-backup-button"),
                     ),
-                    crate::panes::about::AboutEffect::BackUpIdentity,
+                    &SettingsEffect::from(crate::panes::about::AboutEffect::BackUpIdentity),
                 )),
             ))
         };
@@ -911,11 +924,11 @@ impl UsersModel {
             &t("settings-users-identities-title"),
             identity_rows,
         ));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     /// Adding a login account: a row that opens its form in place.
-    fn add_form(&self) -> Box<dyn Widget> {
+    fn add_form(&self, cx: &ViewCx<Settings>) -> Box<dyn Widget> {
         let full = TextInput::local()
             .with_kind(TextInputKind::Name)
             .with_id("users.form.full_name")
@@ -934,7 +947,7 @@ impl UsersModel {
             .with_placeholder(t("settings-users-placeholder-password"));
         let username = Arc::clone(&self.form.username);
         let full_name = Arc::clone(&self.form.full_name);
-        let create = self.cx.bind(
+        let create = cx.actions().bind_effect(
             Button::new("settings.users.save", &t("settings-users-create"))
                 .role(ButtonRole::Primary),
             effect(UsersEffect::CREATE_USER).map(move |()| {
@@ -950,7 +963,7 @@ impl UsersModel {
                 )
             }),
         );
-        let form = crate::widgets::page(vec![untitled(rows(vec![
+        let form = provider_settings_ui::widgets::page(vec![untitled(rows(vec![
             field_row(&t("settings-users-full-name"), Box::new(full)),
             field_row(&t("settings-users-username"), Box::new(user)),
             field_row(&t("settings-users-password"), Box::new(password)),
@@ -964,7 +977,9 @@ impl UsersModel {
                     Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
-                        .with_vertical_padding(crate::widgets::spacing().rhythm.sibling)
+                        .with_vertical_padding(
+                            provider_settings_ui::widgets::spacing().rhythm.sibling,
+                        )
                         .push(form),
                 ),
             )
@@ -975,7 +990,7 @@ impl UsersModel {
 
     /// An account: who it is, its role, and its menu (role, automatic
     /// login, removing it); the signed-in account offers none.
-    fn user_row(&self, user: &DeviceUser) -> Vec<Item> {
+    fn user_row(dispatcher: &ui::framework::Dispatcher<Settings>, user: &DeviceUser) -> Vec<Item> {
         let role = if user.admin {
             t("settings-users-role-administrator")
         } else {
@@ -1008,7 +1023,8 @@ impl UsersModel {
                 } else {
                     "settings-users-make-administrator"
                 }),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     UsersEffect::SetAdministrator {
                         user: name.clone(),
@@ -1024,7 +1040,8 @@ impl UsersModel {
                     } else {
                         "settings-users-enable-autologin"
                     }),
-                    self.cx.row_invocation(
+                    crate::on_row::invocation(
+                        dispatcher,
                         &live,
                         UsersEffect::SetAutomaticLogin {
                             user: name.clone(),
@@ -1035,7 +1052,8 @@ impl UsersModel {
             }
             Box::new(menu.destructive(
                 t("settings-users-remove-ellipsis"),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     UsersEffect::RemoveUser {
                         user: name.clone(),
@@ -1064,7 +1082,10 @@ impl UsersModel {
 
     /// An identity: its name, how its key is protected, whether it is the
     /// one in use, and its menu (use, protect, remove).
-    fn identity_row(&self, id: &IdentitySummary) -> Item {
+    fn identity_row(
+        dispatcher: &ui::framework::Dispatcher<Settings>,
+        id: &IdentitySummary,
+    ) -> Item {
         let live = identity_live_row(id).into_resource();
         let status = if id.active {
             t("settings-users-identity-active")
@@ -1081,7 +1102,8 @@ impl UsersModel {
         if !id.active {
             menu = menu.action(
                 t("settings-users-identity-use"),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     UsersEffect::UseIdentity {
                         identity: id.id.clone(),
@@ -1092,7 +1114,8 @@ impl UsersModel {
         if id.protection == KeyProtection::LegacyPlaintext {
             menu = menu.action(
                 t("settings-users-identity-protect"),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     UsersEffect::ProtectIdentity {
                         identity: id.id.clone(),
@@ -1103,7 +1126,8 @@ impl UsersModel {
         if !id.active {
             menu = menu.destructive(
                 t("settings-users-identity-remove"),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     UsersEffect::RemoveIdentity {
                         identity: id.id.clone(),
@@ -1140,18 +1164,13 @@ impl UsersModel {
     }
 }
 
-impl PaneModel for UsersModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-
-    fn poll(&mut self) -> bool {
-        std::mem::take(&mut self.changed)
-    }
-
-    fn name(&self) -> &'static str {
-        "UsersPane"
-    }
+/// The Users page as view code over what the area reads of the accounts
+/// and the host's identities: built again whenever what it shows changes
+/// ([`UsersArea::poll`]).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
 /// The backends a screenshot and the crate's tests change: they accept
@@ -1274,38 +1293,56 @@ mod tests {
             automatic_login_error: None,
         }
     }
+    /// The window's Users model, changed by `change`, and the page drawn
+    /// again over it.
+    fn change_model(
+        app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
+        change: impl FnOnce(&mut UsersModel) + 'static,
+    ) -> String {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
+            let mut model = area(settings).unwrap().model().borrow_mut();
+            change(&mut model);
+            model.changed = true;
+        })
+        .expect("the Settings window is mounted");
+        app.settle();
+        app.harness().inspection_json().unwrap()
+    }
+
     /// Accounts that could not be read are not "no accounts", and an
     /// unread automatic-login state is reported rather than offered as off.
     #[test]
     fn unreadable_accounts_are_shown_as_errors() {
-        let profile = tempfile::tempdir().unwrap();
-        let mut pane = UsersModel::sample(PaneCx::in_profile(profile.path().to_path_buf()));
-        pane.users.clear();
-        pane.users_error = Some("/etc/passwd: No such file or directory (os error 2)".into());
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Users);
+        let frame = change_model(&mut app, |pane| {
+            pane.users.clear();
+            pane.users_error = Some("/etc/passwd: No such file or directory (os error 2)".into());
+        });
         assert!(
-            text.iter().any(|line| line
-                == "Can't read this device's accounts: /etc/passwd: No such file or directory (os error 2)"),
-            "{text:#?}"
+            frame.contains(
+                "Can't read this device's accounts: /etc/passwd: No such file or directory (os error 2)"
+            ),
+            "{frame}"
         );
         assert!(
-            !text.contains(&t("settings-users-empty-accounts")),
-            "{text:#?}"
+            !frame.contains(&t("settings-users-empty-accounts")),
+            "{frame}"
         );
 
-        let mut bob = user("bob", false);
-        bob.automatic_login_error = Some("AccountsService is unreachable".into());
-        pane.users_error = None;
-        pane.users = vec![user("ada", true), bob];
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let frame = change_model(&mut app, |pane| {
+            let mut bob = user("bob", false);
+            bob.automatic_login_error = Some("AccountsService is unreachable".into());
+            pane.users_error = None;
+            pane.users = vec![user("ada", true), bob];
+        });
         assert!(
-            text.iter()
-                .any(|line| line == "Can't read automatic login: AccountsService is unreachable"),
-            "{text:#?}"
+            frame.contains("Can't read automatic login: AccountsService is unreachable"),
+            "{frame}"
         );
         assert!(
-            !text.contains(&t("settings-users-enable-autologin")),
-            "{text:#?}"
+            !frame.contains(&t("settings-users-enable-autologin")),
+            "{frame}"
         );
     }
 
@@ -1358,8 +1395,7 @@ mod tests {
         ] {
             carry_out(&backends, &people, &effect, none()).unwrap();
         }
-        let profile = tempfile::tempdir().unwrap();
-        let mut pane = UsersModel::sample(PaneCx::in_profile(profile.path().to_path_buf()));
+        let mut pane = UsersModel::sample();
         pane.identity_admin = Some(Rc::clone(&ids) as Rc<dyn IdentityAdmin>);
         for effect in [
             UsersEffect::UseIdentity {
@@ -1498,9 +1534,7 @@ mod tests {
             host.clone(),
             ui::tilo_actions::remote::Caller::local_person("owner"),
         );
-        let profile = tempfile::tempdir().unwrap();
         let mut pane = UsersModel::from_read(
-            PaneCx::in_profile(profile.path().to_path_buf()),
             UsersRead {
                 users: Ok(Vec::new()),
             },
@@ -1605,7 +1639,7 @@ mod tests {
         crate::effects::show_pane(&mut app, crate::categories::Category::Users);
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::users::area(settings)
                 .unwrap()
                 .model()
@@ -1653,23 +1687,21 @@ mod tests {
         use crate::resource::SettingsShell;
         use ui::prelude::TestApp;
 
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         // The accounts as a window has them before it has read them, their
         // read waiting on AccountsService.
-        app.with_widget::<SettingsApp, _>(move |settings| {
-            let held = crate::panes::users::area(settings).unwrap();
-            let area = UsersArea::new(&held.cx, held.remote.clone());
+        crate::area::replace_in_next_window(move |context| {
+            let area = UsersArea::new(context, ui::RemoteActions::current());
             assert!(area.read.start(move || {
                 crate::device_read::off_ui_thread();
                 // The samples, once AccountsService answers.
                 let _ = stalled.wait();
                 None
             }));
-            settings.replace_area(area);
-        })
-        .expect("the Settings window is mounted");
+            area
+        });
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
 
         ui::rt::mark_ui_thread();
         app.start_effect(&SettingsEffect::from(UsersEffect::CreateUser {
@@ -1682,7 +1714,7 @@ mod tests {
             .expect("the window draws its next frame");
         gate.assert_held("the change");
         let open = app
-            .with_widget::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
             })
             .unwrap();
@@ -1696,7 +1728,7 @@ mod tests {
             })
         });
         let open = app
-            .with_widget::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::Inspected, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
             })
             .unwrap();

@@ -5,7 +5,6 @@ use crate::{
     record,
 };
 use record::{StoredPendingEnrollment, StoredRoom};
-use tilo_user_identity::RevocationList;
 
 pub(crate) fn validate_pending(
     room: RoomId,
@@ -369,20 +368,13 @@ impl NativeWorkspaceOwner {
             return Err("native Complete differs from persisted enrollment intent".into());
         }
         let bootstrap = enrollment.bootstrap();
-        let mut revocations = RevocationList::new();
-        for entry in &bootstrap.revocations {
-            revocations
-                .insert(entry.clone())
-                .map_err(|e| e.to_string())?;
-        }
-        let mut peer = StatePeer::joined(
+        let mut peer = StatePeer::from_join(
             &bootstrap.room,
             bootstrap.authority.clone(),
             bootstrap.certified_roster.clone(),
-            revocations,
+            &bootstrap.revocations,
             now,
         )?;
-        peer.select_admission_v5().map_err(|e| e.to_string())?;
         let app_messages = install_governance(&mut peer, bootstrap, now)?;
         tracing::debug!(
             %room,

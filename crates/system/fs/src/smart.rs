@@ -272,11 +272,17 @@ impl Heuristics {
 
     /// Called after a file inode has passed the real open-time ACL check.
     /// `candidates` must likewise come from the mount's filtered directory
-    /// listing. Each tuple is `(manifest_hash, declared_file_size)`.
-    pub fn on_open(&self, _ino: u64, candidates: Vec<(Hash, u64)>) {
+    /// listing. Each tuple is `(manifest_hash, declared_file_size)`. They
+    /// are built only while the person has prefetching on: building them
+    /// walks the folder, and with it off nothing is learned or fetched.
+    pub fn on_open(&self, _ino: u64, candidates: impl FnOnce() -> Vec<(Hash, u64)>) {
         if !self.opened.swap(true, Ordering::AcqRel) {
             self.activity.notify_one();
         }
+        if !self.prefetch_enabled() {
+            return;
+        }
+        let candidates = candidates();
         let policy = self.policy();
         if !policy.permits() {
             return;
@@ -383,7 +389,12 @@ mod tests {
         heuristics.set_policy(PredictivePolicy::default());
         assert!(!heuristics.prefetch_enabled());
         assert!(!heuristics.policy().enabled);
-        heuristics.on_open(1, candidate.clone());
+        let walked = std::cell::Cell::new(false);
+        heuristics.on_open(1, || {
+            walked.set(true);
+            candidate.clone()
+        });
+        assert!(!walked.get(), "the folder is not walked for prediction");
         assert_eq!(heuristics.pending_work(), (0, 0), "nothing is admitted");
 
         heuristics.set_prefetch_enabled(true);
@@ -423,8 +434,8 @@ mod tests {
                 .is_pending(),
             "an idle mount does not wake the monitor"
         );
-        heuristics.on_open(7, Vec::new());
-        heuristics.on_open(8, Vec::new());
+        heuristics.on_open(7, Vec::new);
+        heuristics.on_open(8, Vec::new);
         tilo_test_env::within("the first open wakes the monitor", heuristics.opened()).await;
         assert!(heuristics.take_opened());
         assert!(!heuristics.take_opened(), "reported once");
@@ -451,7 +462,7 @@ mod tests {
             hydrator.sync_state(sibling_hash).await,
             fs_protocol::SyncState::Projected
         );
-        heuristics.on_open(7, vec![(sibling_hash, sibling.len() as u64)]);
+        heuristics.on_open(7, || vec![(sibling_hash, sibling.len() as u64)]);
         assert_eq!(
             heuristics.pending_work(),
             (1, sibling.len() as u64),

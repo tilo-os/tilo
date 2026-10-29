@@ -1326,16 +1326,19 @@ def app_cgroup(table: dict, app_id: str) -> dict:
 
 # -- Terminal: where its shell writes, and what its runtime is doing -----------
 
-# Terminal's shell runs in a `tilo-ush` guest whose `~` is the environment's own
-# home in the ush store, not the session's $HOME (docs/app-model/ush.md, "Storage").
-# A host shell (foot, a legacy terminal) writes to $HOME itself.
-_TERMINAL_HOMES = ('"$HOME" "${XDG_DATA_HOME:-$HOME/.local/share}"/ush/environments/*/home '
+# Terminal's `~` is the workspace's folder: the filesystem daemon's mount at
+# /var/workspace, or $TILO_WORKSPACE_ROOT where a session names another. Where
+# there is none, it is the environment's own home in the ush store
+# (docs/app-model/ush.md, "Home" and "Storage"). A host shell (foot, a legacy
+# terminal) writes to $HOME itself.
+_TERMINAL_HOMES = ('"${TILO_WORKSPACE_ROOT:-/var/workspace}" "$HOME" '
+                   '"${XDG_DATA_HOME:-$HOME/.local/share}"/ush/environments/*/home '
                    '"${XDG_DATA_HOME:-$HOME/.local/share}"/ush/sessions/*/home')
 
 
 def terminal_probe(ctx, name: str) -> list[str]:
-    """Paths of `name` in any home a terminal's `~` can be: the session's and every
-    ush environment's (persistent) or session's (ephemeral)."""
+    """Paths of `name` in any home a terminal's `~` can be: the workspace's folder,
+    the session's, and every ush environment's (persistent) or session's (ephemeral)."""
     out = ctx.vm.exec(f"for h in {_TERMINAL_HOMES}; do [ -e \"$h/{name}\" ] && echo \"$h/{name}\"; "
                       "done; true")
     return [l.strip() for l in out.splitlines() if l.strip() and not l.startswith("receipt:")]
@@ -1360,12 +1363,16 @@ def assert_terminal_shell_performance(seconds: float | None) -> None:
            f"less than {TERMINAL_SHELL_PERFORMANCE_S} s (readiness timeout is "
            f"{TERMINAL_SHELL_S} s)")
 
-# Terminal's shells are not the app's processes: each runs in a guest the
-# `tilo-ush` user service starts, so they are found in its cgroup.
-# A guest's shell is a bash whose ancestors include the `tilo-ush run` that built its guest.
-# It runs as a job of the app that asked for it (the Terminal's cgroup), not in
-# tilo-ush.service's, so it is found by ancestry, not by cgroup.
-_USH_SHELLS = ('for p in $(pgrep -u "$(id -u)" -x bash); do q=$p; '
+# Terminal's shells are not the app's processes: the `tilo-ush` user service
+# starts a `tilo-ush run` for each session. ush's own shell (`--shell ush`, the
+# default) is that process: it reads the terminal itself. A Linux shell
+# (`--shell linux`) is a bash in the session's guest whose ancestors include the
+# `tilo-ush run`; it runs as a job of the app that asked for it (the Terminal's
+# cgroup), not in tilo-ush.service's, so it is found by ancestry, not by cgroup.
+_USH_SHELLS = ('for p in $(pgrep -u "$(id -u)" -x tilo-ush); do '
+               'case " $(tr \'\\0\' \' \' < /proc/$p/cmdline 2>/dev/null)" in '
+               '*" run "*" --shell ush "*) echo "$p";; esac; done; '
+               'for p in $(pgrep -u "$(id -u)" -x bash); do q=$p; '
                'for _ in 1 2 3 4 5 6; do q=$(awk \'/^PPid:/ {print $2}\' /proc/$q/status 2>/dev/null); '
                '[ -n "$q" ] && [ "$q" -gt 1 ] || break; '
                'case "$(tr \'\\0\' \' \' < /proc/$q/cmdline 2>/dev/null)" in *"tilo-ush run"*) echo "$p"; break;; esac; '

@@ -35,3 +35,56 @@ pub fn sidecar_path_for(exe: &Path) -> PathBuf {
     p.set_file_name(format!("{name}{SIDECAR_SUFFIX}"));
     p
 }
+
+/// The shim's own file name: the template `install` copies, never run itself.
+pub const TEMPLATE_NAME: &str = "tilo-cli-shim";
+
+/// What running the shim at `exe` without a readable sidecar says. Run under
+/// its own name it is the template, which has no sidecar by design: say what
+/// it is and what to run instead. A copy whose sidecar went missing names
+/// the file it needs.
+#[must_use]
+pub fn missing_sidecar_message(exe: &Path, error: &str) -> String {
+    if exe.file_name().is_some_and(|name| name == TEMPLATE_NAME) {
+        return format!(
+            "{TEMPLATE_NAME} is the program `tilo-install` copies for each command an \
+             installed app declares; it does nothing run by itself.\n\
+             Run that command by name, or `tilo` for this desktop's apps and actions \
+             (`tilo actions`, `tilo do <action>`, `tilo open <app>`)."
+        );
+    }
+    format!(
+        "{TEMPLATE_NAME}: sidecar {} unreadable: {error}; reinstall the app that \
+         provides this command",
+        sidecar_path_for(exe).display()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_template_run_by_itself_points_at_tilo() {
+        let message = missing_sidecar_message(
+            Path::new("/usr/libexec/tilo-cli-shim"),
+            "No such file or directory",
+        );
+        assert!(message.contains("tilo-install"), "{message}");
+        assert!(message.contains("`tilo actions`"), "{message}");
+        assert!(!message.contains("sidecar"), "{message}");
+    }
+
+    #[test]
+    fn a_copy_missing_its_sidecar_names_the_file() {
+        let message = missing_sidecar_message(
+            Path::new("/usr/lib/tilo-apps/bin/notes"),
+            "No such file or directory",
+        );
+        assert!(
+            message.contains("/usr/lib/tilo-apps/bin/notes.tilo-shim"),
+            "{message}"
+        );
+        assert!(message.contains("reinstall"), "{message}");
+    }
+}

@@ -3,7 +3,7 @@
 
   signin_e2e.py --medium INSTALLER_QCOW2 --out DIR --storage DIR [--variant one-secret|separate-disk-secret]...
 
-The installer medium is dev-installer-medium-x86_64's. Everything runs through the repository's
+The installer medium is dev-installer-medium-<arch>'s. Everything runs through the repository's
 VM harness: os/dev/vm.sh boots the live installer and the installed target in one named cycle
 (disk, swtpm state and firmware persist across its boots and nowhere else), and the installer
 and greeter are driven through their console channel (os/dev/installer-console.py, the same
@@ -38,6 +38,9 @@ and the run fails.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import http.server
 import importlib.util
 import json
 import os
@@ -48,7 +51,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -287,6 +292,52 @@ def quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+CLOCK = re.compile(r"(?<!\d)([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)")
+
+
+def clock_minutes(text: str) -> int | None:
+    """The first time of day the screen's text shows, as minutes on a 12-hour dial, so that a
+    24-hour and a 12-hour clock read alike; differences are taken modulo 12 hours."""
+    match = CLOCK.search(text)
+    return int(match.group(1)) % 12 * 60 + int(match.group(2)) if match else None
+
+
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@contextlib.contextmanager
+def serve_file(path: Path) -> Iterator[int]:
+    """Serve `path` as /archive over HTTP on this host's loopback, on a free port it yields."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+            if self.path != "/archive":
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.end_headers()
+            with path.open("rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 # The test-only unit written into the installed target's /etc. Its port exists only when this
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
@@ -334,7 +385,6 @@ class Run:
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
         self.old_image: str | None = args.pre_pam_tilo_image
-        self.old_archive: str | None = args.pre_pam_tilo_archive
         # The device settings the current boot was started with, and what they replaced.
         self.boot_devices: dict[str, str | None] = {}
 
@@ -1021,6 +1071,43 @@ cryptsetup close e2e-target
         self.lockout_before = self.lockout()
         self.power_off(label)
 
+    def read_clock(self, path: Path | None) -> tuple[int | None, str]:
+        """The time the boot sign-in's clock shows, read from its line alone: the band above the
+        card, at the top middle of the screen. Read with the rest of the screen, its large
+        digits come out wrong (5 as 9)."""
+        if not path:
+            return None, ""
+        crop = self.private / f"clock-{path.stem}.png"
+        subprocess.run(["convert", str(path), "-gravity", "north", "-crop", "70%x36%+0+0", "+repage",
+                        "-gravity", "south", "-crop", "100%x66%+0+0", "+repage",
+                        "-colorspace", "gray", "-negate", str(crop)], check=True, capture_output=True)
+        ocr = subprocess.run(["tesseract", str(crop), "stdout", "--psm", "7"],
+                             capture_output=True, text=True)
+        text = ocr.stdout.strip() if ocr.returncode == 0 else ""
+        return clock_minutes(text), text
+
+    def clock_advances(self, label: str, path: Path | None) -> None:
+        """Item 14: the boot sign-in's clock moves on by itself. Read now, then again after 70 s
+        with no input; the time shown must have advanced by a minute or two."""
+        first, first_text = self.read_clock(path)
+        time.sleep(70)
+        later_path, later_text = self.cycle.screen()
+        self.cycle.keep_screen(f"{label}-clock-later", later_path, later_text)
+        later, later_read = self.read_clock(later_path)
+        evidence = {"first": first_text, "later": later_read, "waited_s": 70}
+        if first is None or later is None:
+            self.item("14", "failed", "the boot sign-in's clock could not be read "
+                      f"(first {first_text!r}, 70 s later {later_read!r})", **evidence)
+            return
+        advanced = (later - first) % (12 * 60)
+        evidence["advanced_min"] = advanced
+        if 1 <= advanced <= 2:
+            self.item("14", "passed", f"the boot sign-in's clock moved on by {advanced} min in 70 s "
+                      f"with no input ({first_text} to {later_read})", **evidence)
+        else:
+            self.item("14", "failed", f"the boot sign-in's clock moved by {advanced} min in 70 s "
+                      f"with no input ({first_text} to {later_read}), not by one", **evidence)
+
     def boot_sign_in(self) -> None:
         """Item 3: the boot sign-in screen instead of the disk prompt, then the session without
         the greeter asking."""
@@ -1035,6 +1122,7 @@ cryptsetup close e2e-target
             self.recover_boot(label, kind)
             return
         self.cycle.keep_screen("boot-sign-in", path, text)
+        self.clock_advances(label, path)
         self.cycle.type(self.account)
         self.cycle.keys("ret")
         time.sleep(1)
@@ -1501,30 +1589,13 @@ cryptsetup close e2e-target
             self.item("12", "failed", "no screenshot of the boot sign-in or of the greeter to compare",
                       boot=boot_shot.is_file(), greeter=greeter_shot.is_file())
 
-        label = "comforts"
-        self.boot(label)
+        # Item 11 with the reader off: while it is on, a tap explores the key under the finger
+        # and only a double tap presses (ui::screen_reader_touch), so taps type nothing.
+        label = "touch"
+        self.boot(label, TILO_VM_INPUT="touch")
         kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
         if kind != "boot-signin":
-            self.recover_boot(label, kind)
-            raise Failed(f"no boot sign-in screen to sign in at ({kind})")
-        self.cycle.type(self.account)
-        self.cycle.keys("ret")
-        try:
-            self.connect(300)
-        except Failed:
-            path, text = self.cycle.screen()
-            self.cycle.keep_screen("comforts-no-shell", path, text)
-            raise
-        self.write_comforts()
-        self.power_off(label)
-
-        label = "speech-touch"
-        wav = self.out / "boot-sign-in-speech.wav"
-        wav.unlink(missing_ok=True)
-        self.boot(label, TILO_VM_INPUT="touch", TILO_VM_AUDIO_WAV=str(wav))
-        kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
-        if kind != "boot-signin":
-            self.cycle.keep_screen("speech-touch-no-boot-sign-in", path, text)
+            self.cycle.keep_screen("touch-no-boot-sign-in", path, text)
             self.item("11", "failed", f"no boot sign-in screen ({kind}) to tap the secret into")
             self.cycle.stop()
             self.cycle.keep_serial(label)
@@ -1540,30 +1611,42 @@ cryptsetup close e2e-target
         for character in self.account + "\n":
             self.cycle.vm("tap", *map(str, keys[character]))
             time.sleep(0.15)
-        connected = True
         try:
             self.connect(300)
             session = self.wait_session(240)
         except Failed:
-            connected, session = False, None
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen("touch-after-taps", path, text)
+            self.item("11", "failed", "tapping the secret on the on-screen keyboard did not reach a "
+                      "session")
+            self.cycle.stop()
+            self.cycle.keep_serial(label)
+            raise
         if session:
             self.item("11", "passed", "the secret tapped on the boot sign-in's on-screen keyboard, "
                       "with no keyboard attached, opened the volume and the session",
                       user_session=session)
         else:
-            path, text = self.cycle.screen()
-            self.cycle.keep_screen("speech-touch-after-taps", path, text)
-            self.item("11", "failed", "tapping the secret on the on-screen keyboard did not reach a "
-                      "session", connected=connected)
-        if connected:
-            self.power_off(label)
-        else:
-            self.cycle.stop()
-            self.cycle.keep_serial(label)
+            self.item("11", "failed", "the volume opened from the taps but no session started")
+        self.write_comforts()
+        self.power_off(label)
+
+        # Item 10: the comforts token turns the reader on before the volume opens; the boot
+        # sign-in speaks what has focus. Nothing is entered: the VM stops at the screen.
+        label = "speech"
+        wav = self.out / "boot-sign-in-speech.wav"
+        wav.unlink(missing_ok=True)
+        self.boot(label, TILO_VM_INPUT="touch", TILO_VM_AUDIO_WAV=str(wav))
+        kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
+        self.cycle.keep_screen("boot-sign-in-speech", path, text)
+        if kind == "boot-signin":
+            time.sleep(15)
+        self.cycle.stop()
+        self.cycle.keep_serial(label)
         samples = wav.read_bytes()[44:] if wav.is_file() else b""
         loud = sum(1 for i in range(0, len(samples) - 1, 2)
                    if abs(int.from_bytes(samples[i:i + 2], "little", signed=True)) > 500)
-        evidence = {"wav": wav.name, "bytes": len(samples), "loud_samples": loud}
+        evidence = {"wav": wav.name, "bytes": len(samples), "loud_samples": loud, "screen": kind}
         if loud > 4410:
             self.item("10", "passed", f"the boot sign-in spoke with the screen reader the comforts "
                       f"token turned on ({loud} loud samples)", **evidence)
@@ -1582,7 +1665,7 @@ cryptsetup close e2e-target
             steps = [("install", self.install, ("1", "2", "3", "4", "5", "8")),
                      ("first boot", self.first_boot, ("1",)),
                      ("migration", self.migrate, ("2", "3", "4", "5")),
-                     ("boot sign-in", self.boot_sign_in, ("3", "13")),
+                     ("boot sign-in", self.boot_sign_in, ("3", "13", "14")),
                      ("wrong entry", self.wrong_entry, ("4", "5")),
                      ("speech and touch", self.comforts_and_touch, ("10", "11", "12"))]
         else:
@@ -1634,20 +1717,27 @@ cryptsetup close e2e-target
         """Item 9: switch to an image from before pam_tilo and back, so it stays the rollback
         deployment; migrate on the new image; roll back and sign in with the old password; roll
         forward and find the hash still kept while the old image can boot."""
-        if not self.old_image and not self.old_archive:
-            raise Failed("the rollback variant needs --pre-pam-tilo-image or --pre-pam-tilo-archive")
-        evidence: dict = {"old_image": self.old_image or self.old_archive}
+        if not self.old_image:
+            raise Failed("the rollback variant needs --pre-pam-tilo-image")
+        evidence: dict = {"old_image": self.old_image}
         label = "rollback-switch"
         self.boot(label)
         self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
         self.connect()
-        switch = f"switch {quote(self.old_image)}" if self.old_image else ""
-        if self.old_archive:
-            archive = "/var/tmp/pre-pam-tilo.ociarchive"
-            code, text = self.guest(f"curl -fsS -o {archive} {quote(self.old_archive)}", 1800)
+        archive = Path(self.old_image)
+        if archive.is_file():
+            # The image's policy takes registry.tilo.so/tilo/tilo signed for release only, and a
+            # local archive from anywhere: the guest fetches this one from the run over the user
+            # network, whose 10.0.2.2 is this host.
+            evidence["old_image_sha256"] = sha256_of(archive)
+            guest_archive = "/var/tmp/pre-pam-tilo.ociarchive"
+            with serve_file(archive) as port:
+                code, text = self.guest(f"curl -fsS -o {guest_archive} http://10.0.2.2:{port}/archive", 1800)
             if code:
                 raise Failed(f"could not fetch the old image's archive: {text.strip()[-200:]}")
-            switch = f"switch --transport oci-archive {archive}"
+            switch = f"switch --transport oci-archive {guest_archive}"
+        else:
+            switch = f"switch {quote(self.old_image)}"
         code, text = self.guest(bootc(switch, 20), 1800)
         evidence["switch"] = {"exit": code, "output": text.strip()[-400:]}
         if code:
@@ -1749,6 +1839,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "11": "With a touch screen and no keyboard, the secret is tapped on the on-screen keyboard",
         "12": "The boot sign-in and the greeter after switch-root show the same card",
         "13": "The boot sign-in's first frame comes within 300 ms of knowing who may sign in",
+        "14": "The boot sign-in's clock moves on by itself, with no input",
     }
     if any(r.variant == "rollback" for r in runs):
         names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"
@@ -1844,13 +1935,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--variant", action="append",
                         choices=["one-secret", "separate-disk-secret", "rollback"])
     parser.add_argument("--pre-pam-tilo-image",
-                        help="for the rollback variant: an image reference from before pam_tilo "
-                             "that the guest can pull")
-    parser.add_argument("--pre-pam-tilo-archive", metavar="URL",
-                        help="for the rollback variant, instead of --pre-pam-tilo-image: an OCI "
-                             "archive of such an image the guest fetches over HTTP. The image's "
-                             "policy takes registry.tilo.so/tilo/tilo signed for release only, and "
-                             "a local archive from anywhere")
+                        help="for the rollback variant: an image from before pam_tilo, as a "
+                             "reference the guest can pull or the path of an OCI archive here, "
+                             "which the run serves the guest. The image's policy takes "
+                             "registry.tilo.so/tilo/tilo signed for release only, and a local "
+                             "archive from anywhere")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     args.storage.mkdir(parents=True, exist_ok=True)

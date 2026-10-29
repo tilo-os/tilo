@@ -16,6 +16,9 @@
 
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -137,7 +140,7 @@ async fn join_late(
     if let Some(cipher) = cipher {
         joiner.install_cipher(route(), cipher).unwrap();
     }
-    joiner.join(workspace()).unwrap();
+    joiner.join_placed(support::ROOM, "Workspace").unwrap();
     let mut replica = AutoCommit::new();
     let mut documents = 0usize;
     settle("the late joiner to converge", || {
@@ -245,7 +248,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
         .map(|device| {
             let peer = start_peer(https(), device.cert, host_device.cert.clone(), device.key);
             peer.install_cipher(route.clone(), keys()).unwrap();
-            peer.join(workspace()).unwrap();
+            peer.join_placed(support::ROOM, "Workspace").unwrap();
             Member {
                 peer,
                 replica: AutoCommit::new(),
@@ -255,7 +258,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
         .collect();
     let c = start_peer(https(), c.cert, host_device.cert.clone(), c.key);
     c.install_cipher(route.clone(), keys()).unwrap();
-    c.join(workspace()).unwrap();
+    c.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&members[0].peer, &members[1].peer, &c]).await;
 
     // A writes a sealed history the host holds only as ciphertext.

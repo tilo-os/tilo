@@ -81,7 +81,7 @@ fn departure(cause: Withdrawal, endpoint: iroh::EndpointId) -> Vec<PeerDeparture
             membership_epoch: None,
             session_handle: 1,
             route: crate::shell::collab_broker::CrdtRoute::cluster("personal"),
-            cause: PeerDepartureCause::LivenessTimedOut,
+            cause: PeerDepartureCause::HostSessionClosed,
             user_public_key: Some([3; 32]),
             participant_name: None,
             observed_at: SystemTime::UNIX_EPOCH,

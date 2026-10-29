@@ -544,7 +544,7 @@ fn app_checkout_branch_through_production_action() {
     let (_d, path) = init_repo();
     repo::create_branch(&path, "feature", None, false).unwrap();
     let mut app = GitClientApp::open_at(&path).unwrap();
-    let original = app.test_head().to_string();
+    let original = app.test_head();
     assert_ne!(original, "feature");
 
     app.test_branch_action(BranchAction::Checkout("feature".into()));
@@ -1342,14 +1342,14 @@ fn app_switch_asks_first_and_honours_the_answer() {
     let (_dir, path) = init_repo();
     repo::create_branch(&path, "feature", None, false).unwrap();
     let app = GitClientApp::open_at(&path).unwrap();
-    let original = app.test_head().to_string();
+    let original = app.test_head();
     assert_ne!(original, "feature");
     fs::write(path.join("file.txt"), "line 1\nuncommitted\nline 3\n").unwrap();
     let mut app = GitClientApp::open_at(&path).unwrap();
 
     app.test_branch_action(BranchAction::Checkout("feature".into()));
     assert_eq!(
-        app.test_pending_switch(),
+        app.test_pending_switch().as_deref(),
         Some("feature"),
         "uncommitted work asks before the branch moves"
     );

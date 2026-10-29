@@ -19,7 +19,7 @@ impl super::ShellOverlayHost {
     /// Whether any menu or flyout is open over the windows.
     pub(crate) fn popover_open(&self) -> bool {
         self.layers.popover_open()
-            || self.bar_popovers.any_open()
+            || self.topbar_shown().modal
             || self.capture_studio.send_menu_open()
             || self.window_bar_popup_open()
     }
@@ -30,8 +30,8 @@ impl super::ShellOverlayHost {
         if self.layers.dismiss_topmost() {
             return true;
         }
-        if self.bar_popovers.any_open() {
-            self.close_bar_popovers_for(None);
+        if self.topbar_shown().modal {
+            self.close_topbar_popovers();
             self.bump_chrome();
             return true;
         }
@@ -46,8 +46,8 @@ impl super::ShellOverlayHost {
     /// about to stand somewhere else. Whether any was open.
     pub(super) fn dismiss_popovers(&mut self) -> bool {
         let mut closed = self.layers.dismiss_popovers();
-        if self.bar_popovers.any_open() {
-            self.close_bar_popovers_for(None);
+        if self.topbar_shown().modal {
+            self.close_topbar_popovers();
             closed = true;
         }
         closed |= self.close_window_bar_popups();

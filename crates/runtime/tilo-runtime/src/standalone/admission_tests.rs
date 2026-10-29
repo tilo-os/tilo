@@ -83,11 +83,12 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
     if crate::standalone::tests::isolated_signing_identity("standalone::joined::admission_tests::admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retired_run").is_none() {
         return;
     }
-    let (joined, directory) = Joined::test_empty().await;
+    let placed = RoomId::new();
+    let (joined, directory) = Joined::test_hosting(placed).await;
     let certificate = joined.custody.device_cert.clone();
     let actor =
         tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key);
-    let mut workspace = TestWorkspace::new(TestWorkspaceId(42), "Runtime doors");
+    let mut workspace = TestWorkspace::in_room(TestWorkspaceId(42), placed, "Runtime doors");
     workspace.set_owner(actor.clone());
     let room = workspace.room().to_string();
     let mut tree = WorkspaceTree {
@@ -176,13 +177,13 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
 /// run ends for good, and the client is told that rather than to retry.
 #[tokio::test]
 async fn custody_the_runtime_no_longer_holds_ends_the_run() {
-    let (joined, _directory) = Joined::test_empty().await;
     let room = RoomId::parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+    let (joined, _directory) = Joined::test_hosting(room).await;
     let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     let run = joined
-        .admit_mcp_execution(&room.to_string(), &room.to_string(), &actor)
+        .admit_mcp_execution(&room.to_string(), &actor)
         .unwrap();
     joined.owner.invalidate_identity(room);
     let refusal = run.check(&joined).unwrap_err();

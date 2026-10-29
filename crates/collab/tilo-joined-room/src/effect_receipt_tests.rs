@@ -1,152 +1,80 @@
 use super::*;
 use crate::application_record::tests::{Fixture, fixture};
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
+use tilo_user_identity::DeviceCert;
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_audit() {
+fn a_member_device_records_its_own_receipts_which_the_governor_admits_as_theirs() {
     let mut fixture = fixture();
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
     let directory = tempfile::tempdir().unwrap();
-    let member = enroll_remote_history_member(&mut fixture, &directory.path().join("member.json"));
-    let frames = fixture
-        .governor
-        .outgoing()
-        .map(|(bytes, _)| bytes.to_vec())
-        .collect::<Vec<_>>();
-    for frame in frames {
-        fixture
-            .owner
-            .receive(
-                room,
-                tilo_peer_state::TransportOrigin::RetainedNativePublication {
-                    publisher: fixture.certificate.device_public_key,
-                },
-                postcard::from_bytes(&frame).unwrap(),
-                fixture.now,
-            )
-            .unwrap();
-    }
-    let mut operation = request(EffectReceiptStatus::Succeeded);
-    let mut effect = decode(&operation).unwrap();
-    effect.actor = blake3::Hash::from_bytes(member.user_public_key)
-        .to_hex()
-        .to_string();
-    if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
-        *redacted = serde_json::to_vec(&effect).unwrap();
-    }
-    let commit =
-        |owner: &NativeWorkspaceOwner, request: &OwnerCommitRequest, caller: &DeviceCert| {
-            owner.commit_member_effect_receipt(
-                request,
-                caller,
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
-        };
-    let original = commit(&fixture.owner, &operation, &member).unwrap();
-    let path = fixture.directory.path().join("owner.json");
+    let path = directory.path().join("member.json");
+    let member = enroll_remote_history_member(&mut fixture, &path);
+    let member_key = SigningKey::from_bytes(&[116; 32]);
+    let owner = crate::open_file(&path).unwrap();
+    let operation = request(&member, EffectReceiptStatus::Succeeded);
+    let original = owner
+        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .unwrap();
+    original.validate_for(&operation).unwrap();
     let committed = std::fs::read(&path).unwrap();
     let reopened = crate::open_file(&path).unwrap();
-    let retry = commit(&reopened, &operation, &member).unwrap();
+    let retry = reopened
+        .commit_effect_receipt(&operation, &member_key, fixture.now)
+        .unwrap();
     assert_eq!(retry.binding, original.binding);
     assert_eq!(retry.generation, original.generation);
     assert_eq!(retry.aggregate_hash, original.aggregate_hash);
     assert_eq!(std::fs::read(&path).unwrap(), committed);
-    fill_member_capacity(&fixture, &reopened, &member);
-    let committed = std::fs::read(&path).unwrap();
-    let archived = commit(&reopened, &operation, &member).unwrap();
-    assert_eq!(archived.binding, original.binding);
-    assert_eq!(archived.generation, original.generation);
-    assert_eq!(archived.aggregate_hash, original.aggregate_hash);
-    assert_eq!(std::fs::read(&path).unwrap(), committed);
-    let mut conflict = operation.clone();
-    effect.status = EffectReceiptStatus::Cancelled;
-    if let CommitOperation::EffectReceipt { redacted, .. } = &mut conflict.operation {
-        *redacted = serde_json::to_vec(&effect).unwrap();
-    }
-    assert!(commit(&reopened, &conflict, &member).is_err());
-    assert!(commit(&reopened, &operation, &fixture.certificate).is_err());
-    let mut stale = member.clone();
-    stale.device_label = "changed certified evidence".into();
-    assert!(commit(&reopened, &operation, &stale).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), committed);
-    let messages = reopened
-        .with_current(room, |view| {
-            let mut peer = view.peer().clone();
-            assert!(peer.governance_mut().remove_member(
-                member.user_public_key,
-                &fixture.key,
-                fixture.now
-            )?);
-            peer.publication_mut().durable_mutation_messages(
-                view.peer(),
-                &fixture.key,
+    assert!(
+        reopened
+            .commit_effect_receipt(
+                &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+                &member_key,
                 fixture.now,
-                view.generation().checked_add(1).unwrap(),
             )
+            .is_err(),
+        "a member records no one else's receipt"
+    );
+    assert!(
+        reopened
+            .commit_effect_receipt(&operation, &fixture.key, fixture.now)
+            .is_err(),
+        "a receipt is signed by the recording device's own key"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), committed);
+    let frames = reopened
+        .with_outgoing(room, fixture.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect::<Vec<_>>())
         })
         .unwrap();
-    for message in messages {
-        reopened
-            .receive(
-                room,
-                tilo_peer_state::TransportOrigin::RetainedNativePublication {
-                    publisher: fixture.certificate.device_public_key,
-                },
-                message,
-                fixture.now,
-            )
-            .unwrap();
-    }
-    let removed = std::fs::read(&path).unwrap();
     assert!(
-        commit(&reopened, &operation, &member).is_err(),
-        "an existing UUID cannot waive current membership"
+        !frames.is_empty(),
+        "the receipt is published as the member's change"
     );
-    assert_eq!(std::fs::read(&path).unwrap(), removed);
-}
-
-fn fill_member_capacity(fixture: &Fixture, owner: &NativeWorkspaceOwner, member: &DeviceCert) {
-    // First archive the original member audit under other valid governor audits.
-    for _ in 0..128 {
-        owner
-            .commit_effect_receipt(
-                &request(EffectReceiptStatus::Succeeded),
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
+    for frame in frames {
+        fixture
+            .governor
+            .receive(
+                tilo_peer_state::TransportOrigin::RetainedRelayDelta(member.device_public_key),
+                postcard::from_bytes(&frame).unwrap(),
             )
             .unwrap();
     }
-    // The signed public index retains the archived original audit. Fill its
-    // remaining per-member capacity with 127 new, admitted requests.
-    for _ in 0..127 {
-        let mut operation = request(EffectReceiptStatus::Succeeded);
-        let mut effect = decode(&operation).unwrap();
-        effect.actor = blake3::Hash::from_bytes(member.user_public_key)
-            .to_hex()
-            .to_string();
-        if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
-            *redacted = serde_json::to_vec(&effect).unwrap();
-        }
-        owner
-            .commit_member_effect_receipt(
-                &operation,
-                member,
-                &fixture.certificate,
-                &fixture.key,
-                fixture.now,
-            )
-            .unwrap();
-    }
+    assert!(
+        tilo_desktop_model::projection::workspace_effect_receipts_of(
+            fixture.governor.peer().admitted_room().unwrap(),
+        )
+        .contains(&decode(&operation).unwrap()),
+        "the governor admits the member's own receipt"
+    );
 }
 
-fn request(status: EffectReceiptStatus) -> OwnerCommitRequest {
+/// A receipt of a new invocation by the person `by` is a device of.
+fn request(by: &DeviceCert, status: EffectReceiptStatus) -> OwnerCommitRequest {
     let invocation = InvocationId::new();
     let mut context = ActionContext::for_resource("workspace", "workspace", "Room");
     context.facets = vec![
@@ -155,7 +83,9 @@ fn request(status: EffectReceiptStatus) -> OwnerCommitRequest {
     ];
     let receipt = tilo_desktop_model::WorkspaceEffectReceipt {
         invocation,
-        actor: "person:test".into(),
+        actor: blake3::Hash::from_bytes(by.user_public_key)
+            .to_hex()
+            .to_string(),
         context,
         status,
         completed_at: 1,
@@ -249,7 +179,11 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     let mut fixture = fixture();
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
     for _ in 0..130 {
-        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+        commit(
+            &fixture,
+            &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+        )
+        .unwrap();
     }
     let frames = fixture
         .owner
@@ -275,7 +209,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         .governor
         .peer()
         .workspace()
-        .workspace_effect_history_root()
+        .workspace_effect_history_root(&fixture.certificate)
         .unwrap();
     assert!(signed_root.is_some());
     let directory = tempfile::tempdir().unwrap();
@@ -288,7 +222,16 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
             assert_ne!(view.device(), view.governor());
             assert_eq!(view.record.effect_history_root, None);
             assert_eq!(
-                view.peer().workspace().workspace_effect_history_root()?,
+                view.peer()
+                    .workspace()
+                    .workspace_effect_history_root(view.device())?,
+                None,
+                "the member archived nothing of their own"
+            );
+            assert_eq!(
+                view.peer()
+                    .workspace()
+                    .workspace_effect_history_root(view.governor())?,
                 signed_root
             );
             assert_eq!(
@@ -301,7 +244,31 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
             Ok(())
         })
         .unwrap();
-    commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+    // The governor's device takes in the member's admission its fixture
+    // wrote, as it would have written it, before it records again.
+    let admitted = fixture
+        .governor
+        .outgoing()
+        .map(|(bytes, _)| bytes.to_vec())
+        .collect::<Vec<_>>();
+    for frame in admitted {
+        fixture
+            .owner
+            .receive(
+                room,
+                tilo_peer_state::TransportOrigin::RetainedNativePublication {
+                    publisher: fixture.certificate.device_public_key,
+                },
+                postcard::from_bytes(&frame).unwrap(),
+                fixture.now,
+            )
+            .unwrap();
+    }
+    commit(
+        &fixture,
+        &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+    )
+    .unwrap();
     let frames = fixture
         .owner
         .with_outgoing(room, fixture.now, |_, outgoing| {
@@ -328,7 +295,9 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
         .with_current(room, |view| {
             assert_eq!(view.record.effect_history_root, None);
             assert_ne!(
-                view.peer().workspace().workspace_effect_history_root()?,
+                view.peer()
+                    .workspace()
+                    .workspace_effect_history_root(view.governor())?,
                 signed_root
             );
             assert_eq!(
@@ -344,29 +313,31 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     assert!(
         reopened
             .commit_effect_receipt(
-                &request(EffectReceiptStatus::Succeeded),
-                &fixture.certificate,
+                &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
                 &fixture.key,
                 fixture.now,
             )
             .is_err(),
-        "remote member cannot claim governor receipt custody"
+        "a member's device does not record with another device's key"
     );
 }
 
 fn commit(fixture: &Fixture, request: &OwnerCommitRequest) -> Result<OwnerCommitReceipt, String> {
     fixture
         .owner
-        .commit_effect_receipt(request, &fixture.certificate, &fixture.key, fixture.now)
+        .commit_effect_receipt(request, &fixture.key, fixture.now)
 }
 
 #[test]
 fn effect_terminal_is_durable_exact_retry_and_signed_room_publication() {
     let mut fixture = fixture();
-    let failed = request(EffectReceiptStatus::Failed {
-        code: "refused".into(),
-    });
-    let succeeded = request(EffectReceiptStatus::Succeeded);
+    let failed = request(
+        &fixture.certificate,
+        EffectReceiptStatus::Failed {
+            code: "refused".into(),
+        },
+    );
+    let succeeded = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     for operation in [failed, succeeded] {
         let receipt = commit(&fixture, &operation).unwrap();
         receipt.validate_for(&operation).unwrap();
@@ -374,7 +345,7 @@ fn effect_terminal_is_durable_exact_retry_and_signed_room_publication() {
         let bytes = std::fs::read(&path).unwrap();
         let reopened = crate::open_file(&path).unwrap();
         let retry = reopened
-            .commit_effect_receipt(&operation, &fixture.certificate, &fixture.key, fixture.now)
+            .commit_effect_receipt(&operation, &fixture.key, fixture.now)
             .unwrap();
         assert_eq!(retry.binding, receipt.binding);
         assert_eq!(retry.generation, receipt.generation);
@@ -418,28 +389,17 @@ fn effect_terminal_is_durable_exact_retry_and_signed_room_publication() {
 }
 
 #[test]
-fn effect_wrong_governor_and_failed_publish_never_ack_or_mutate() {
+fn effect_wrong_key_and_failed_publish_never_ack_or_mutate() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let fixture = fixture();
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
-    let operation = request(EffectReceiptStatus::Succeeded);
+    let operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     let wrong_key = SigningKey::from_bytes(&[119; 32]);
-    let wrong_certificate = crate::testing::certificate(
-        &SigningKey::from_bytes(&[118; 32]),
-        &wrong_key,
-        "Other governor",
-    );
     assert!(
         fixture
             .owner
-            .commit_effect_receipt(&operation, &wrong_certificate, &wrong_key, fixture.now)
-            .is_err()
-    );
-    assert!(
-        fixture
-            .owner
-            .commit_effect_receipt(&operation, &fixture.certificate, &wrong_key, fixture.now)
+            .commit_effect_receipt(&operation, &wrong_key, fixture.now)
             .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
@@ -460,12 +420,12 @@ fn effect_oversized_and_unbound_encoding_refuse_before_mutation() {
     let fixture = fixture();
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
-    let mut operation = request(EffectReceiptStatus::Succeeded);
+    let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     if let CommitOperation::EffectReceipt { redacted, .. } = &mut operation.operation {
         redacted.resize(16 * 1024 + 1, 0);
     }
     assert!(commit(&fixture, &operation).is_err());
-    let mut operation = request(EffectReceiptStatus::Succeeded);
+    let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     if let CommitOperation::EffectReceipt { invocation, .. } = &mut operation.operation {
         *invocation = uuid::Uuid::new_v4();
     }
@@ -479,7 +439,7 @@ fn effect_private_facets_and_unbounded_context_refuse_without_publication() {
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
     for variant in 0..4 {
-        let mut operation = request(EffectReceiptStatus::Succeeded);
+        let mut operation = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
         let mut effect = decode(&operation).unwrap();
         match variant {
             0 => effect
@@ -510,22 +470,30 @@ fn effect_private_facets_and_unbounded_context_refuse_without_publication() {
 #[test]
 fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
     let mut fixture = fixture();
-    let first = request(EffectReceiptStatus::Succeeded);
+    let first = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     let accepted = commit(&fixture, &first).unwrap();
     for _ in 1..128 {
-        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+        commit(
+            &fixture,
+            &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+        )
+        .unwrap();
     }
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
     for _ in 128..160 {
-        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+        commit(
+            &fixture,
+            &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+        )
+        .unwrap();
     }
     assert_archived_file_layout(&path);
     assert_ne!(std::fs::read(&path).unwrap(), bytes);
     let bytes = std::fs::read(&path).unwrap();
     let reopened = crate::open_file(&path).unwrap();
     let retry = reopened
-        .commit_effect_receipt(&first, &fixture.certificate, &fixture.key, fixture.now)
+        .commit_effect_receipt(&first, &fixture.key, fixture.now)
         .unwrap();
     assert_eq!(retry.binding, accepted.binding);
     assert_eq!(retry.generation, accepted.generation);
@@ -551,13 +519,33 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
             );
             assert_eq!(
                 view.record.effect_history_root,
-                view.peer().workspace().workspace_effect_history_root()?
+                view.peer()
+                    .workspace()
+                    .workspace_effect_history_root(view.device())?
             );
             Ok(())
         })
         .unwrap();
+    relay_to_governor_and_compare_roots(&mut fixture, &reopened);
+    let mut conflict = decode(&first).unwrap();
+    conflict.completed_at += 1;
+    let mut changed = first;
+    if let CommitOperation::EffectReceipt { redacted, .. } = &mut changed.operation {
+        *redacted = serde_json::to_vec(&conflict).unwrap();
+    }
+    assert!(
+        reopened
+            .commit_effect_receipt(&changed, &fixture.key, fixture.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+}
+
+/// Hand the governor every frame `owner` has outgoing, and check the effect
+/// history root it admits is the one `owner` keeps.
+fn relay_to_governor_and_compare_roots(fixture: &mut Fixture, owner: &crate::NativeWorkspaceOwner) {
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
-    let frames = reopened
+    let frames = owner
         .with_outgoing(room, fixture.now, |_, outgoing| {
             Ok(outgoing
                 .entries()
@@ -581,25 +569,13 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
         .governor
         .peer()
         .workspace()
-        .workspace_effect_history_root()
+        .workspace_effect_history_root(&fixture.certificate)
         .unwrap();
-    let local_root = reopened
+    let local_root = owner
         .with_current(room, |view| Ok(view.record.effect_history_root))
         .unwrap();
     assert!(admitted_root.is_some());
     assert_eq!(admitted_root, local_root);
-    let mut conflict = decode(&first).unwrap();
-    conflict.completed_at += 1;
-    let mut changed = first;
-    if let CommitOperation::EffectReceipt { redacted, .. } = &mut changed.operation {
-        *redacted = serde_json::to_vec(&conflict).unwrap();
-    }
-    assert!(
-        reopened
-            .commit_effect_receipt(&changed, &fixture.certificate, &fixture.key, fixture.now)
-            .is_err()
-    );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
 
 fn assert_archived_file_layout(path: &std::path::Path) {
@@ -625,16 +601,20 @@ fn assert_archived_file_layout(path: &std::path::Path) {
 fn effect_archive_io_and_root_publication_failure_preserve_active_custody() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let fixture = fixture();
-    let first = request(EffectReceiptStatus::Succeeded);
+    let first = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     let original = commit(&fixture, &first).unwrap();
     for _ in 1..128 {
-        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+        commit(
+            &fixture,
+            &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+        )
+        .unwrap();
     }
     let path = fixture.directory.path().join("owner.json");
     let bytes = std::fs::read(&path).unwrap();
     let content = fixture.directory.path().join("content");
     std::fs::write(&content, b"not a directory").unwrap();
-    let next = request(EffectReceiptStatus::Succeeded);
+    let next = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     assert!(commit(&fixture, &next).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     std::fs::remove_file(&content).unwrap();
@@ -650,10 +630,14 @@ fn effect_archive_io_and_root_publication_failure_preserve_active_custody() {
 #[test]
 fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore() {
     let fixture = fixture();
-    let first = request(EffectReceiptStatus::Succeeded);
+    let first = request(&fixture.certificate, EffectReceiptStatus::Succeeded);
     commit(&fixture, &first).unwrap();
     for _ in 1..129 {
-        commit(&fixture, &request(EffectReceiptStatus::Succeeded)).unwrap();
+        commit(
+            &fixture,
+            &request(&fixture.certificate, EffectReceiptStatus::Succeeded),
+        )
+        .unwrap();
     }
     let room = RoomId::parse(crate::testing::ROOM).unwrap();
     let hash = fixture
@@ -672,7 +656,13 @@ fn missing_or_corrupt_effect_history_is_not_unknown_uuid_or_successful_restore()
     let state_bytes = std::fs::read(&path).unwrap();
     std::fs::remove_file(&block).unwrap();
     assert!(commit(&fixture, &first).is_err());
-    assert!(commit(&fixture, &request(EffectReceiptStatus::Succeeded)).is_err());
+    assert!(
+        commit(
+            &fixture,
+            &request(&fixture.certificate, EffectReceiptStatus::Succeeded)
+        )
+        .is_err()
+    );
     assert!(crate::open_file(&path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), state_bytes);
     std::fs::write(&block, b"corrupt").unwrap();

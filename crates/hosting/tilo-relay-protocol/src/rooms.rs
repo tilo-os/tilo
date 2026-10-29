@@ -445,6 +445,16 @@ pub enum RoomsRequest {
         room: String,
         name: String,
     },
+    /// Have the host govern `room`, a workspace of the calling device's
+    /// person, creating it as `name` (1–80 characters) unless the host
+    /// governs it already, and admit the calling device to it as its owner
+    /// ([`RoomsRequest::Enter`]): answered with the room. Whoever may create
+    /// rooms. A page places its person's workspace before it subscribes, so
+    /// the room has governance like every other.
+    Place {
+        room: String,
+        name: String,
+    },
 }
 
 /// The answer to a [`RoomsRequest`].

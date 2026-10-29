@@ -1119,6 +1119,129 @@ fn brightness_keys_adjust_the_focused_display() {
     }
 }
 
+impl Desk {
+    /// Press `key` while working on display `index`, with `displays`
+    /// dimmable and Shift held when `all`, and paint the readout it raised.
+    /// Returns the readout and the slabs painted, the focused display's
+    /// first.
+    fn press_brightness(
+        &mut self,
+        index: usize,
+        key: crate::shell::media_keys::MediaKey,
+        displays: &[tilo_quick_settings::DisplayBrightness],
+        all: bool,
+    ) -> (crate::shell::osd::Osd, Vec<Rect>) {
+        use crate::shell::media_keys::{BrightnessKeys, Context, DispatcherAudio, Response};
+        self.work_on(index);
+        let focused = self.fb.host().focused_connector();
+        let rec = BrightnessRecorder::default();
+        let (transport_osd, _mailbox) = crate::session_runtime::mailbox(std::sync::Arc::new(|| {}));
+        let response = crate::shell::media_keys::apply(
+            key,
+            &Context {
+                actions: &rec,
+                audio: &DispatcherAudio(&rec),
+                status: None,
+                transport_osd: &transport_osd,
+                airplane_mode: false,
+                brightness: BrightnessKeys {
+                    displays,
+                    focused: focused.as_deref(),
+                    all,
+                },
+            },
+        );
+        let Some(Response::Osd(osd)) = response else {
+            panic!("a readout, not {response:?}");
+        };
+        self.fb.with_chrome(|chrome| chrome.show_osd(osd));
+        self.paint_once();
+        (osd, self.fb.host().osd_rects())
+    }
+}
+
+#[test]
+fn a_brightness_key_on_the_focused_display_shows_one_readout_there() {
+    use crate::shell::media_keys::MediaKey;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let monitor = desk.display(1);
+    let (osd, slabs) = desk.press_brightness(1, MediaKey::BrightnessUp, &dimmable(), false);
+    assert_eq!(osd.caption(), "Brightness 40%, Test Monitor");
+    assert_eq!(
+        slabs.len(),
+        1,
+        "one slab, on the display that changed: {slabs:?}"
+    );
+    assert_on(monitor, slabs[0], "the brightness readout", "the monitor");
+}
+
+/// How many live regions under `node` announce `caption`.
+fn announcing(node: &ui::a11y::AccessNode, caption: &str) -> usize {
+    usize::from(node.live.is_some() && node.value.as_deref() == Some(caption))
+        + node
+            .children
+            .iter()
+            .map(|child| announcing(child, caption))
+            .sum::<usize>()
+}
+
+#[test]
+fn a_brightness_change_to_another_display_shows_there_and_where_the_person_works() {
+    use crate::shell::media_keys::MediaKey;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    // The monitor has no brightness control, so the key dims the panel.
+    let panel_only = &dimmable()[..1];
+    let (osd, slabs) = desk.press_brightness(1, MediaKey::BrightnessDown, panel_only, false);
+    assert_eq!(
+        osd.caption(),
+        "Brightness 40%, Built-in display",
+        "the readout where the person works says which screen changed"
+    );
+    assert_eq!(slabs.len(), 2, "on both displays: {slabs:?}");
+    assert_on(monitor, slabs[0], "the readout", "the monitor in use");
+    assert_on(panel, slabs[1], "the readout", "the panel that changed");
+    assert!(
+        (slabs[0].width() - slabs[1].width()).abs() < 0.5,
+        "the same readout on each: {slabs:?}"
+    );
+    assert_eq!(
+        announcing(&desk.fb.host().chrome_narration_snapshot(), &osd.caption()),
+        1,
+        "one readout, announced once, however many displays show it"
+    );
+}
+
+#[test]
+fn shift_brightness_shows_a_readout_on_every_display() {
+    use crate::shell::media_keys::MediaKey;
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let (panel, monitor) = (desk.display(0), desk.display(1));
+    let (osd, slabs) = desk.press_brightness(0, MediaKey::BrightnessUp, &dimmable(), true);
+    assert!(osd.caption().ends_with("All displays"), "{}", osd.caption());
+    assert_eq!(slabs.len(), 2, "one per display: {slabs:?}");
+    assert_on(panel, slabs[0], "the readout", "the panel in use");
+    assert_on(monitor, slabs[1], "the readout", "the monitor");
+}
+
+#[test]
+fn a_volume_readout_shows_only_on_the_focused_display() {
+    let mut desk = Desk::new("laptop-beside-1080p");
+    let monitor = desk.display(1);
+    desk.work_on(1);
+    desk.fb
+        .with_chrome(|chrome| chrome.show_osd(crate::shell::osd::Osd::volume(0.4, false)));
+    desk.paint_once();
+    let slabs = desk.fb.host().osd_rects();
+    assert_eq!(slabs.len(), 1, "volume is about no display: {slabs:?}");
+    assert_on(
+        monitor,
+        slabs[0],
+        "the volume readout",
+        "the monitor in use",
+    );
+}
+
 #[test]
 fn quick_settings_lists_the_focused_display_first() {
     use crate::shell::quick_settings_refresh::FieldReading;
@@ -1556,6 +1679,55 @@ fn compositor_presses_reach_desk_widgets_on_both_displays_in_both_forms() {
     }
 }
 
+/// Press the calendar at `from`, carry it to `target` checking it follows
+/// the hand at every step, hold it still a moment and let it go a pixel
+/// lower.
+fn drag_calendar(desk: &mut Desk, from: Point, target: Point) {
+    let mut state = compositor_state(desk);
+    through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::cursor_moved(from.x, from.y),
+    );
+    assert!(!through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::mouse_press()
+    ));
+    for k in 1..=24u32 {
+        let p = from.lerp(target, f64::from(k) / 24.0);
+        through_compositor(
+            desk,
+            &mut state,
+            &ui::synthetic_input::cursor_moved(p.x, p.y),
+        );
+        let drawn = desk
+            .fb
+            .host()
+            .desk_test_rects()
+            .into_iter()
+            .find(|(name, _)| name == "desk.calendar")
+            .expect("drawn")
+            .1;
+        assert!(
+            drawn.center().distance(p) < 1.0,
+            "it follows the hand across the seam at step {k}: {drawn:?} {p:?}"
+        );
+    }
+    // Held still a moment: set down, not thrown.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::cursor_moved(target.x, target.y + 1.0),
+    );
+    assert!(!through_compositor(
+        desk,
+        &mut state,
+        &ui::synthetic_input::mouse_release()
+    ));
+}
+
 /// Dragged onto the other display, a widget lives there; with that monitor
 /// unplugged it waits on the panel in the same corner, and plugged back in
 /// it goes home to where it was dropped.
@@ -1579,51 +1751,9 @@ fn a_widget_dragged_to_another_display_stays_there_across_unplug_and_replug() {
         "the calendar",
         "the panel, the primary",
     );
-    let mut state = compositor_state(&desk);
     let from = start.glance.center();
-    through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::cursor_moved(from.x, from.y),
-    );
-    assert!(!through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::mouse_press()
-    ));
     let target = Point::new(monitor.x0 + 700.0, monitor.y0 + 500.0);
-    for k in 1..=24u32 {
-        let p = from + (target - from) * (f64::from(k) / 24.0);
-        through_compositor(
-            &mut desk,
-            &mut state,
-            &ui::synthetic_input::cursor_moved(p.x, p.y),
-        );
-        let drawn = desk
-            .fb
-            .host()
-            .desk_test_rects()
-            .into_iter()
-            .find(|(name, _)| name == "desk.calendar")
-            .expect("drawn")
-            .1;
-        assert!(
-            (drawn.center() - p).hypot() < 1.0,
-            "it follows the hand across the seam at step {k}: {drawn:?} {p:?}"
-        );
-    }
-    // Held still a moment: set down, not thrown.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::cursor_moved(target.x, target.y + 1.0),
-    );
-    assert!(!through_compositor(
-        &mut desk,
-        &mut state,
-        &ui::synthetic_input::mouse_release()
-    ));
+    drag_calendar(&mut desk, from, target);
     desk.fb.host_mut().force_desk_settled(ui::time::now());
     desk.settle();
     let dropped = desk

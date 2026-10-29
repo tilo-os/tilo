@@ -691,7 +691,7 @@ mod tests {
     }
 
     fn details(state: &State) -> serde_json::Value {
-        let mut app = crate::StoreApp::new();
+        let mut app = crate::app::StoreState::new();
         app.set_items(state.base_items.clone());
         app.set_unanswered_repositories(state.unanswered_repositories.clone());
         app.set_expired_repositories(state.expired_repositories.clone());
@@ -1098,7 +1098,7 @@ mod tests {
         );
         assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakOpen);
         assert_eq!(state.remotes.len(), 2);
-        let mut app = crate::StoreApp::new();
+        let mut app = crate::app::StoreState::new();
         app.set_items(state.base_items);
         app.set_flatpak_available(true);
         app.admit(crate::StoreEffect::SetSearch {

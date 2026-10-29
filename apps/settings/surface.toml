@@ -74,8 +74,8 @@ fields = [
   { path = "switch_control", type = "bool" },
   { path = "switch_key_pair", type = "SwitchKeyPair" },
   { path = "switch_scan_ms", type = "u16" },
-  { path = "screen_reader_rate", type = "u16", readonly = true },
-  { path = "screen_reader_voice", type = "ScreenReaderVoice", readonly = true },
+  { path = "screen_reader_rate", type = "u16" },
+  { path = "screen_reader_voice", type = "ScreenReaderVoice" },
   { path = "dictation_language", type = "DictationLanguage" },
   { path = "dictation_literal", type = "bool" },
 ]
@@ -85,6 +85,13 @@ id = "step-magnifier"
 kind = "undoable"
 params = [
   { name = "step", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-screen-reader"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources]]
@@ -142,6 +149,22 @@ params = [
   { name = "layout", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "set-layouts"
+kind = "undoable"
+params = [
+  { name = "layouts", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "active", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-paste-shortcut"
+kind = "undoable"
+params = [
+  { name = "app", required = true, schema = { type = "string" } },
+  { name = "shortcut", required = true, schema = { type = "string" } },
+]
+
 [[resources]]
 kind = "settings.input-device"
 label = "Input on this device"
@@ -157,6 +180,113 @@ fields = [
   { path = "keyboard_preview_level", type = "usize", readonly = true },
   { path = "keyboard_inspected_key", type = "String", readonly = true },
   { path = "tablets", type = "std::collections::BTreeMap<String, settings_store::hardware ::\nTabletConfig>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-keyboard-layouts"
+kind = "undoable"
+params = [
+  { name = "keyboard", required = true, schema = { type = "string" } },
+  { name = "profile", required = true, schema = { type = "object", additionalProperties = false, properties = { active = { type = "string" }, options = { type = "object" }, sources = { type = "array", items = { type = "string" } } }, required = ["sources", "active"] } },
+]
+
+[[resources.verbs]]
+id = "use-shared-layouts"
+kind = "undoable"
+params = [
+  { name = "keyboard", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-keyboard-model"
+kind = "undoable"
+params = [
+  { name = "model", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "show-keyboard-layout"
+kind = "undoable"
+params = [
+  { name = "layout", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "inspect-keyboard"
+kind = "undoable"
+params = [
+  { name = "level", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "extra_levels", required = true, schema = { type = "boolean" } },
+  { name = "key", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-tablet-output"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "output", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-tablet-keep-aspect"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-tablet-left-handed"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-tablet-tip-feel"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "feel", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "set-tablet-button"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "button", required = true, schema = { type = "string" } },
+  { name = "action", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-tablet-eraser"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "action", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-pad-button"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "button", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "action", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-pad-dial"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "dial", required = true, schema = { type = "string" } },
+  { name = "index", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "mode", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+  { name = "action", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]
@@ -248,6 +378,20 @@ fields = [
   { path = "last_checked", type = "String", readonly = true },
 ]
 
+[[resources.verbs]]
+id = "record-automatic-updates"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "record-update-check"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "string" } },
+]
+
 [[resources]]
 kind = "settings.notifications"
 label = "Notifications"
@@ -301,6 +445,20 @@ fields = [
   { path = "echo_cancellation", type = "bool", readonly = true },
 ]
 
+[[resources.verbs]]
+id = "set-mono-output"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-echo-cancellation"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
 [[resources]]
 kind = "settings.audio-device"
 label = "Sound on this device"
@@ -311,6 +469,20 @@ fields = [
   { path = "input_device", type = "Option<String>", readonly = true },
 ]
 
+[[resources.verbs]]
+id = "remember-output-device"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remember-input-device"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+]
+
 [[resources]]
 kind = "settings.display"
 label = "Displays"
@@ -319,6 +491,13 @@ person = true
 fields = [
   { path = "auto_brightness", type = "bool", readonly = true },
   { path = "scale", type = "f64" },
+]
+
+[[resources.verbs]]
+id = "set-automatic-brightness"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources]]
@@ -447,6 +626,20 @@ fields = [
   { path = "config.interaction_models", type = "BTreeMap<String, AgentModel>" },
 ]
 
+[[resources.verbs]]
+id = "set-providers"
+kind = "undoable"
+params = [
+  { name = "config", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "follow-local-models"
+kind = "undoable"
+params = [
+  { name = "profile", required = true, schema = {} },
+]
+
 [[resources]]
 kind = "settings.hosted-agent-providers"
 label = "Hosted agent model providers"
@@ -457,6 +650,13 @@ fields = [
   { path = "hosted.profiles", type = "Vec<ProviderProfile>" },
 ]
 
+[[resources.verbs]]
+id = "set-providers"
+kind = "undoable"
+params = [
+  { name = "hosted", required = true, schema = {} },
+]
+
 [[resources]]
 kind = "settings.default-apps"
 label = "Default apps"
@@ -464,6 +664,14 @@ version = 1
 person = true
 fields = [
   { path = "handlers", type = "BTreeMap<String, String>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-default-app-handler"
+kind = "undoable"
+params = [
+  { name = "kind", required = true, schema = { type = "string" } },
+  { name = "app", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]
@@ -484,6 +692,13 @@ fields = [
   { path = "arrangement", type = "Arrangement", readonly = true },
 ]
 
+[[resources.verbs]]
+id = "arrange-displays"
+kind = "undoable"
+params = [
+  { name = "arrangement", required = true, schema = {} },
+]
+
 [[resources]]
 kind = "settings.automatic-display"
 label = "Automatic display input"
@@ -491,6 +706,28 @@ version = 1
 person = true
 fields = [
   { path = "automatic_display_input", type = "bool", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-automatic-display-input"
+kind = "undoable"
+params = [
+  { name = "on", required = true, schema = { type = "boolean" } },
+]
+
+[[resources]]
+kind = "settings.display-change"
+label = "Display change"
+version = 1
+person = true
+fields = [
+  { path = "id", type = "u64", readonly = true },
+  { path = "state", type = "DisplayTransactionState", readonly = true },
+  { path = "set", type = "DisplaySet", readonly = true },
+  { path = "previous", type = "DisplayConfig", readonly = true },
+  { path = "candidate", type = "DisplayConfig", readonly = true },
+  { path = "deadline_unix_ms", type = "Option<u64>", readonly = true },
+  { path = "message", type = "Option<String>", readonly = true },
 ]
 
 [[resources]]
@@ -501,6 +738,14 @@ person = true
 fields = [
   { path = "layout", type = "String", readonly = true },
   { path = "layouts", type = "Vec<String>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "set-layouts"
+kind = "undoable"
+params = [
+  { name = "layouts", required = true, schema = { type = "array", items = { type = "string" } } },
+  { name = "active", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]
@@ -553,6 +798,33 @@ kind = "undoable"
 params = [
   { name = "profile", required = true, schema = { type = "string" } },
 ]
+
+[[resources]]
+kind = "settings.mobile-data-usage"
+label = "Mobile data used"
+version = 1
+person = true
+fields = [
+  { path = "reset_day", type = "ResetDay" },
+  { path = "period", type = "u32", readonly = true },
+  { path = "period_day", type = "u32", readonly = true },
+  { path = "used", type = "u64", readonly = true },
+  { path = "counter", type = "Option<u64>", readonly = true },
+  { path = "boot", type = "Option<String>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "count-data-used"
+kind = "undoable"
+params = [
+  { name = "total", required = false, schema = { type = ["integer", "null"], minimum = 0 } },
+  { name = "boot", required = false, schema = { type = ["string", "null"] } },
+  { name = "at", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "reset-data-used"
+kind = "undoable"
 
 [[resources]]
 kind = "tilo.accounts"
