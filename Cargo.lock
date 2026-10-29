@@ -10273,6 +10273,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nested-session-bus"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "workspace-hack",
+]
+
+[[package]]
 name = "nested_enum_utils"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -22144,7 +22152,9 @@ dependencies = [
  "tempfile",
  "tilo-app-package",
  "tilo-files",
+ "tilo-render-protocol",
  "tilo-ui",
+ "tilo-ui-host",
  "tilolang",
  "tilolang-tilo",
  "toml 1.0.6+spec-1.1.0",
