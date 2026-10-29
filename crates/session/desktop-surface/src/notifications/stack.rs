@@ -988,11 +988,10 @@ impl NotificationStack {
             }
             if card.closable {
                 let target = BannerTarget::Dismiss(n.id);
-                self.register_target(
-                    target.clone(),
-                    hit.close_rect,
-                    &t("notification-center-dismiss"),
-                );
+                let label = t("notification-center-dismiss");
+                self.register_target(target.clone(), hit.close_rect, &label);
+                self.action_buttons
+                    .push((hit.close_rect, label, target.key()));
                 row.controls.push((target, hit.close_rect, control_radius));
             }
             self.focus_rows.push(row);
