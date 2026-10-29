@@ -8866,7 +8866,7 @@ mod tests {
         for (wifi, displays) in [(false, false), (true, false), (false, true), (true, true)] {
             let policy = roaming_test_policy(wifi, displays);
             let document = serde_json::json!({
-                "display": { "arrangement": { "displays": [] } },
+                "display_person": { "arrangement": { "displays": [] } },
                 "appearance": { "mode": true }
             });
             let records = permitted_roaming_setting_values(document.as_object().unwrap(), policy);
