@@ -14,6 +14,7 @@ use super::layout_cache::{ShapeKeyInput, shape_key};
 use super::text_runs::{block_runs, composed_block};
 use crate::num;
 use std::collections::HashMap;
+use tilo_doc::paging::{Block as PageBlock, Carry, Fragment, Fragmentation, PageFlow};
 use tilo_doc::snapshot::BlockView;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_edit::EditCore;
@@ -127,6 +128,43 @@ pub(super) fn responsive_page_geometry(
     )
 }
 
+impl PageCursor {
+    /// The current page.
+    fn page(&self) -> usize {
+        self.flow.page()
+    }
+
+    /// The running content y, in unscaled content space.
+    fn y(&self, fg: &FrameGeometry) -> f64 {
+        page_content_top(fg, self.flow.page()) + self.flow.y()
+    }
+
+    /// Move the running content y to `y` on the current page.
+    fn set_y(&mut self, fg: &FrameGeometry, y: f64) {
+        self.flow.set_y(y - page_content_top(fg, self.flow.page()));
+    }
+
+    /// Move the `laid` entries of blocks the flow carried to the next page
+    /// along with the block being placed (a heading kept with its text).
+    fn follow_carry(&self, fg: &FrameGeometry, laid: &mut [Laid], carry: Option<Carry>) {
+        let Some(carry) = carry else {
+            return;
+        };
+        let to = carry.from_page.saturating_add(1);
+        let dy = page_content_top(fg, to) - page_content_top(fg, carry.from_page) - carry.from_top;
+        for range in self.flow_laid.iter().skip(carry.block) {
+            for l in laid.get_mut(range.clone()).into_iter().flatten() {
+                l.page = to;
+                l.y_top += dy;
+                l.layout_y += dy;
+                for r in [l.cell_box.as_mut(), l.clip.as_mut()].into_iter().flatten() {
+                    *r = Rect::new(r.x0, r.y0 + dy, r.x1, r.y1 + dy);
+                }
+            }
+        }
+    }
+}
+
 impl WordProcessorWidget {
     /// Pass 1 of [`Self::draw`]: shape blocks top-to-bottom and paginate them
     /// across discrete page sheets. Runs of consecutive `cell` blocks sharing a
@@ -160,12 +198,11 @@ impl WordProcessorWidget {
         self.dbg_layout_hits = 0;
         self.dbg_layout_misses = 0;
         let cell_pad = 8.0f64;
-        // Pagination cursor: current page index, whether anything has landed on
-        // it yet (the first item on a page never breaks, so an over-tall block
-        // simply overflows its own page — acceptable for v1), the running
-        // content y, the currently-active floated image (subsequent paragraphs
-        // on its page are narrowed to flow beside it — coarse wrap, see
-        // `FloatReserve`), and the per-level ordered-list counters.
+        // Pagination cursor: the shared page flow (page breaks, widow/orphan
+        // splits, headings kept with their text), the currently-active
+        // floated image (subsequent paragraphs on its page are narrowed to
+        // flow beside it — coarse wrap, see `FloatReserve`), and the
+        // per-level ordered-list counters.
         let band_h = (page_content_bottom(fg, 0) - page_content_top(fg, 0)).max(1.0);
         let estimated_before = if virtualized {
             num::f64_of_usize(self.body_window_start) * ESTIMATED_BLOCK_EXTENT
@@ -175,10 +212,14 @@ impl WordProcessorWidget {
         let initial_page = num::usize_of_f64((estimated_before / band_h).floor());
         let initial_y = fg.page_top + flow_to_page_stack(estimated_before, fg.letter_h, fg.m);
         let mut cur = PageCursor {
-            cur_page: initial_page,
+            flow: PageFlow::resume(
+                band_h,
+                initial_page,
+                initial_y - page_content_top(fg, initial_page),
+                self.body_window_start > 0,
+            ),
+            flow_laid: Vec::new(),
             max_object_page: 0,
-            placed_on_page: self.body_window_start > 0,
-            y: initial_y,
             active_float: None,
             ol_counts: Vec::new(),
         };
@@ -191,11 +232,10 @@ impl WordProcessorWidget {
             let next_is_paragraph = !b.kind.eq("image") && cell_table(b).is_none();
             if !next_is_paragraph
                 && let Some(f) = cur.active_float.take()
-                && f.page == cur.cur_page
+                && f.page == cur.page()
             {
-                cur.y = cur
-                    .y
-                    .max(f.bottom + f64::from(self.sheet.get("body").space_after));
+                let clear = f.bottom + f64::from(self.sheet.get("body").space_after);
+                cur.set_y(fg, cur.y(fg).max(clear));
             }
             if cell_table(b).is_some() {
                 let mut table_layout = TableLayoutContext {
@@ -247,11 +287,8 @@ impl WordProcessorWidget {
         PaginationResult {
             laid,
             cache: new_cache,
-            cur_page: cur
-                .cur_page
-                .max(cur.max_object_page)
-                .max(estimated_last_page),
-            y: cur.y,
+            cur_page: cur.page().max(cur.max_object_page).max(estimated_last_page),
+            y: cur.y(fg),
             blocks,
         }
     }
@@ -291,12 +328,10 @@ impl WordProcessorWidget {
     }
 
     /// One table (a run of consecutive `cell` blocks sharing a table id):
-    /// measure every row first (so the whole table paginates as one unit,
-    /// never split mid-row across a page boundary), then lay out row by row,
-    /// breaking to a fresh page when a row would cross the bottom margin — the
-    /// first row on a page never breaks, so an over-tall single row overflows
-    /// its page (acceptable for v1). Returns the block index just past the
-    /// table's last cell.
+    /// measure every row first, then place the table as one block that
+    /// splits between rows, never mid-row — an over-tall single row first on
+    /// a page overflows it. Returns the block index just past the table's
+    /// last cell.
     fn paginate_table(
         &mut self,
         blocks: &[BlockView],
@@ -322,36 +357,25 @@ impl WordProcessorWidget {
         let ncols = cells.iter().map(|c| cell_rc(c).1).max().unwrap_or(0) + 1;
         let nrows = cells.iter().map(|c| cell_rc(c).0).max().unwrap_or(0) + 1;
         let col_w = f64::from(fg.content_w) / num::f64_of_usize(ncols);
-        // Measure every row first so the whole table can paginate as one
-        // unit (it is never split mid-row across a page boundary).
+        // Measure every row first: the table breaks between rows, as lines.
         let rows = self.measure_table_rows(cells, ncols, nrows, col_w, layout);
-        let table_h: f64 = rows.iter().map(|(h, _)| *h).sum();
-        // Break to the next page if a manual page break is set on the
-        // first cell, or the whole table would not fit.
-        let force_break = cells.first().is_some_and(block_page_break_before);
-        let item_top = if cur.placed_on_page
-            && (force_break || cur.y + table_h > page_content_bottom(fg, cur.cur_page) + 0.5)
-        {
-            cur.cur_page += 1;
-            page_content_top(fg, cur.cur_page)
-        } else {
-            cur.y
-        };
-        cur.placed_on_page = true;
-        let mut ry = item_top;
-        // Whether the current page already carries a row of this table —
-        // the first row on a page never breaks (so an over-tall single row
-        // overflows its page, acceptable for v1).
-        let mut row_on_page = false;
+        let mut boxes = Vec::with_capacity(rows.len());
+        let mut table_h = 0.0;
+        for (row_h, _) in &rows {
+            boxes.push((table_h, *row_h));
+            table_h += row_h;
+        }
+        // A manual page break on the first cell breaks before the table.
+        let block = PageBlock::new(table_h)
+            .breaking_before(cells.first().is_some_and(block_page_break_before))
+            .fragmented(Fragmentation::ANYWHERE);
+        let placed = cur.flow.place_lines(&block, || boxes.clone());
+        cur.follow_carry(fg, laid, placed.carry);
+        let laid_start = laid.len();
         for (r, (row_h, row_items)) in rows.into_iter().enumerate() {
-            // Split the table at a row boundary: if this whole row would
-            // cross the page's bottom margin, move it to the next page's top
-            // margin (rows that fit stay on this page). No header repeat.
-            if row_on_page && ry + row_h > page_content_bottom(fg, cur.cur_page) + 0.5 {
-                cur.cur_page += 1;
-                ry = page_content_top(fg, cur.cur_page);
-            }
-            row_on_page = true;
+            // No header repeat on a continued page.
+            let (page, top) = placed.locate(&boxes, r);
+            let ry = page_content_top(fg, page) + top;
             for (c, cell_h, cell) in row_items {
                 let cell_x = fg.content_x + num::f64_of_usize(c) * col_w;
                 let cbox = Rect::new(cell_x, ry, cell_x + col_w, ry + row_h);
@@ -371,13 +395,13 @@ impl WordProcessorWidget {
                     image_hash: None,
                     cell_box: Some(cbox),
                     cell_row: Some(r),
-                    page: cur.cur_page,
+                    page,
                     composition: None,
                 });
             }
-            ry += row_h;
         }
-        cur.y = ry + f64::from(self.sheet.get("body").space_after);
+        cur.flow_laid.push(laid_start..laid.len());
+        cur.flow.skip(f64::from(self.sheet.get("body").space_after));
         bi
     }
 
@@ -582,21 +606,18 @@ impl WordProcessorWidget {
         }
         // Break to the next page on a manual page break, or if the image
         // would not fit.
-        let force_break = block_page_break_before(b);
-        let item_top = if cur.placed_on_page
-            && (force_break || cur.y + image.height > page_content_bottom(fg, cur.cur_page) + 0.5)
-        {
-            cur.cur_page += 1;
-            page_content_top(fg, cur.cur_page)
-        } else {
-            cur.y
-        };
-        cur.placed_on_page = true;
+        let placed = cur
+            .flow
+            .place(&PageBlock::new(image.height).breaking_before(block_page_break_before(b)));
+        cur.follow_carry(fg, laid, placed.carry);
+        cur.flow_laid.push(laid.len()..laid.len().saturating_add(1));
+        let page = placed.page;
+        let item_top = page_content_top(fg, page) + placed.top;
         if image_floats(b) {
             // Floated image (anchor=paragraph/page, wrap=left/right): instead
             // of a full-width vertical slot, pin it to the left or right edge
             // of the content column and reserve that column so following
-            // paragraphs flow beside it (coarse wrap — `FloatReserve`). `cur.y`
+            // paragraphs flow beside it (coarse wrap — `FloatReserve`). The flow
             // does NOT advance past the image: the next blocks start level
             // with its top and are narrowed until they clear its bottom.
             let left = image_wrap(b) == "left";
@@ -612,17 +633,17 @@ impl WordProcessorWidget {
                 &ImagePlacement {
                     x: img_x,
                     y: item_top,
-                    page: cur.cur_page,
+                    page,
                 },
             );
             cur.active_float = Some(FloatReserve {
                 left,
                 reserve_w: image.width + FLOAT_GUTTER,
                 bottom: item_top + image.height,
-                page: cur.cur_page,
+                page,
             });
-            // Leave `cur.y` at the image top so following text wraps beside it.
-            cur.y = item_top;
+            // Leave the flow at the image top so following text wraps beside it.
+            cur.flow.set_y(placed.top);
         } else {
             // Inline (default), or anchored with wrap none/both: a full-width
             // vertical slot. A non-inline-anchored image with no one-sided
@@ -640,10 +661,10 @@ impl WordProcessorWidget {
                 &ImagePlacement {
                     x: img_x,
                     y: item_top,
-                    page: cur.cur_page,
+                    page,
                 },
             );
-            cur.y = item_top + image.height + f64::from(self.sheet.get("body").space_after);
+            cur.flow.skip(f64::from(self.sheet.get("body").space_after));
         }
     }
 
@@ -701,8 +722,8 @@ impl WordProcessorWidget {
         // narrowing — draw + hit-test only need the shared x-origin offset.
         let (float_reserve, float_offset) = match cur.active_float {
             Some(f)
-                if f.page == cur.cur_page
-                    && cur.y + f64::from(st.space_before) + 0.5 < f.bottom =>
+                if f.page == cur.page()
+                    && cur.y(fg) + f64::from(st.space_before) + 0.5 < f.bottom =>
             {
                 // Subtract the reserved column from the wrap width; for a
                 // left float, shift the text origin right by the same amount.
@@ -784,30 +805,27 @@ impl WordProcessorWidget {
             context.cursor,
         );
         let cur = &mut *context.cursor;
-        let block_h = f64::from(ps.layout.height());
-        // Place with the style's space-before as the leading gap, breaking
-        // to the next page when the whole block would not fit before the
-        // bottom text margin (the lead is dropped at the top of a fresh
-        // page so the first paragraph hugs the top margin).
-        let top_candidate = cur.y + f64::from(ps.st.space_before);
-        // A manual page break forces a fresh page; otherwise break only
-        // when the whole block would overflow the bottom text margin.
-        let force_break = block_page_break_before(b);
-        let item_top = if cur.placed_on_page
-            && (force_break
-                || top_candidate + block_h > page_content_bottom(fg, cur.cur_page) + 0.5)
-        {
-            cur.cur_page += 1;
-            page_content_top(fg, cur.cur_page)
-        } else {
-            top_candidate
-        };
-        cur.placed_on_page = true;
+        // Place with the style's space-before as the leading gap (dropped at
+        // the top of a fresh page so the first paragraph hugs the top margin).
+        // A manual page break forces a fresh page; a block that does not fit
+        // splits at line boundaries under its layout's widow/orphan policy,
+        // and a heading moves on with the text it introduces.
+        let block = PageBlock::new(f64::from(ps.layout.height()))
+            .with_lead(f64::from(ps.st.space_before))
+            .breaking_before(block_page_break_before(b))
+            .keeping_with_next(b.kind == "heading")
+            .fragmented(ps.layout.fragmentation());
+        let mut lines = Vec::new();
+        let placed = cur.flow.place_lines(&block, || {
+            lines = layout_line_tops(&ps.layout, &b.text);
+            lines.clone()
+        });
+        cur.follow_carry(fg, context.laid, placed.carry);
         // If the page advanced past the float (page-break), the float no
         // longer applies to this block — drop the x-origin offset so the
         // block lays full-width on its new page. (The float only ever
         // narrows blocks on its own page.)
-        let float_offset = if cur.active_float.is_some_and(|f| f.page == cur.cur_page) {
+        let float_offset = if cur.active_float.is_some_and(|f| f.page == placed.page) {
             ps.float_offset
         } else {
             0.0
@@ -818,12 +836,11 @@ impl WordProcessorWidget {
             size: ps.st.size,
             bullet: ps.bullet.clone(),
             ink: Color::from_rgb8(ps.st.color[0], ps.st.color[1], ps.st.color[2]),
-            space_after: ps.st.space_after,
         };
-        // Does the whole block fit on the current page from `item_top`? If
-        // so this is the fast, unchanged single-`Laid` path. Otherwise the
-        // block is split at line boundaries across as many pages as needed.
-        if item_top + block_h <= page_content_bottom(fg, cur.cur_page) + 0.5 {
+        let laid_start = context.laid.len();
+        if placed.fragments.is_empty() {
+            // The whole block fits on one page: one unclipped `Laid`.
+            let item_top = page_content_top(fg, placed.page) + placed.top;
             context.laid.push(Laid {
                 id: b.id.clone(),
                 text: b.text.clone(),
@@ -832,7 +849,7 @@ impl WordProcessorWidget {
                 y_top: item_top,
                 text_x: pl.text_x,
                 width: pl.width,
-                height: block_h,
+                height: block.height,
                 layout_y: item_top,
                 clip: None,
                 bullet: pl.bullet.clone(),
@@ -840,13 +857,14 @@ impl WordProcessorWidget {
                 image_hash: None,
                 cell_box: None,
                 cell_row: None,
-                page: cur.cur_page,
+                page: placed.page,
                 composition: None,
             });
-            cur.y = item_top + block_h + f64::from(pl.space_after);
         } else {
-            Self::emit_paragraph_slices(b, fg, &ps.layout, context.laid, cur, item_top, &pl);
+            Self::emit_paragraph_slices(b, fg, &lines, &placed.fragments, context.laid, &pl);
         }
+        cur.flow_laid.push(laid_start..context.laid.len());
+        cur.flow.skip(f64::from(ps.st.space_after));
         context.new_cache.insert(b.id.clone(), (ps.key, ps.layout));
         // Float bookkeeping: a float only narrows blocks on its own page and
         // only while text is still beside the image. Clear it once the page
@@ -855,73 +873,41 @@ impl WordProcessorWidget {
         // the cursor sits at least at the image bottom so the next full-width
         // block clears the image vertically rather than overlapping it.
         if let Some(f) = cur.active_float {
-            if cur.cur_page > f.page {
+            if cur.page() > f.page {
                 cur.active_float = None;
-            } else if cur.y >= f.bottom {
-                cur.y = cur.y.max(f.bottom + f64::from(ps.st.space_after));
+            } else if cur.y(fg) >= f.bottom {
+                let clear = f.bottom + f64::from(ps.st.space_after);
+                cur.set_y(fg, cur.y(fg).max(clear));
                 cur.active_float = None;
             }
         }
     }
 
-    /// Intra-block pagination for one paragraph-like block that doesn't fit
-    /// on the current page: emit one `Laid` slice per page the block spans.
-    /// Each slice shares the one cached `layout` (one id, one cache entry);
-    /// only the *visual* rendering is split. A slice's `layout_y` maps the
-    /// layout origin so line geometry (`selection_rects`/`caret_geometry`/
-    /// `hit`) still resolves, and its `clip` band keeps lines from other
-    /// slices off this page.
+    /// A paragraph-like block split across pages: one `Laid` slice per
+    /// fragment. Each slice shares the one cached layout (one id, one cache
+    /// entry); only the *visual* rendering is split. A slice's `layout_y`
+    /// maps the layout origin so line geometry (`selection_rects`/
+    /// `caret_geometry`/`hit`) still resolves, and its `clip` band keeps
+    /// lines from other slices off this page.
     fn emit_paragraph_slices(
         b: &BlockView,
         fg: &FrameGeometry,
-        layout: &RichTextLayout,
+        lines: &[(f64, f64)],
+        fragments: &[Fragment],
         laid: &mut Vec<Laid>,
-        cur: &mut PageCursor,
-        item_top: f64,
         pl: &ParagraphPlacement,
     ) {
-        // Intra-block pagination: emit one `Laid` slice per page the
-        // block spans. Each slice shares the one cached layout (one id,
-        // one cache entry); only the *visual* rendering is split. A
-        // slice's `layout_y` maps the layout origin so that line geometry
-        // (`selection_rects`/`caret_geometry`/`hit`) still resolves, and
-        // its `clip` band keeps lines from other slices off this page.
-        let lines = layout_line_tops(layout, &b.text);
-        let mut li = 0usize;
-        let mut slice_top = item_top; // on-screen top of the current slice
-        let mut first_slice = true;
-        while let Some(&(first_line_top, _)) = lines.get(li) {
-            let bottom = page_content_bottom(fg, cur.cur_page);
-            // layout_y maps line `li`'s internal top to `slice_top`.
-            let layout_y = slice_top - first_line_top;
-            let mut last = li;
-            while let Some(&(nt, nh)) = lines.get(last + 1) {
-                if layout_y + nt + nh > bottom + 0.5 {
-                    break;
-                }
-                last += 1;
-            }
-            // Respect the shared paragraph widow/orphan policy. If the
-            // next page would receive too few lines, leave enough there;
-            // if this page cannot retain the minimum, move the paragraph
-            // fragment wholesale instead of producing a one-line stub.
-            let available = last - li + 1;
-            let allowed = layout.fragment_line_count_from(li, available);
-            if allowed == 0 && slice_top > page_content_top(fg, cur.cur_page) + 0.5 {
-                cur.cur_page += 1;
-                slice_top = page_content_top(fg, cur.cur_page);
-                cur.y = slice_top;
+        for (index, fragment) in fragments.iter().enumerate() {
+            let (Some(&(first_top, _)), Some(&(last_top, last_h))) = (
+                lines.get(fragment.lines.start),
+                lines.get(fragment.lines.end.saturating_sub(1)),
+            ) else {
                 continue;
-            }
-            let allowed = allowed.max(1).min(available);
-            last = li + allowed - 1;
-            let Some(&(lt, lh)) = lines.get(last) else {
-                // `last` is bounded above by the loop that grew it from
-                // `li` (already a valid index) one lookahead at a time, so
-                // this is unreachable; break defensively rather than panic.
-                break;
             };
-            let slice_bottom = layout_y + lt + lh;
+            let slice_top = page_content_top(fg, fragment.page) + fragment.top;
+            // layout_y maps the fragment's first line's internal top to `slice_top`.
+            let layout_y = slice_top - first_top;
+            let slice_bottom = layout_y + last_top + last_h;
             let band = Rect::new(pl.text_x, slice_top, pl.text_x + pl.width, slice_bottom);
             laid.push(Laid {
                 id: b.id.clone(),
@@ -935,24 +921,14 @@ impl WordProcessorWidget {
                 layout_y,
                 clip: Some(band),
                 // The bullet/number belongs to the block's first line only.
-                bullet: if first_slice { pl.bullet.clone() } else { None },
+                bullet: if index == 0 { pl.bullet.clone() } else { None },
                 ink: pl.ink,
                 image_hash: None,
                 cell_box: None,
                 cell_row: None,
-                page: cur.cur_page,
+                page: fragment.page,
                 composition: None,
             });
-            li = last + 1;
-            first_slice = false;
-            if li < lines.len() {
-                // More lines remain: spill onto the next page's top margin.
-                cur.cur_page += 1;
-                slice_top = page_content_top(fg, cur.cur_page);
-                cur.y = slice_top;
-            } else {
-                cur.y = slice_bottom + f64::from(pl.space_after);
-            }
         }
     }
 
