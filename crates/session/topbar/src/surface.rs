@@ -816,6 +816,12 @@ impl Widget for TopBarSurface {
             self.hand_over();
             return;
         }
+        let hovered = |bars: &[Bar]| -> Vec<Option<String>> {
+            bars.iter()
+                .map(|bar| bar.widget.hovered_control())
+                .collect()
+        };
+        let hovered_before = hovered(&self.bars);
         let suppressed: Vec<bool> = self.bars.iter().map(|bar| self.suppressed(bar)).collect();
         for ((bar, node), suppressed) in self
             .bars
@@ -833,6 +839,11 @@ impl Widget for TopBarSurface {
             }
         }
         self.dirty = true;
+        if hovered(&self.bars) != hovered_before {
+            // A control lifting or coming to rest is a repaint, not input
+            // taken: the app frames only on what it took, so ask for one.
+            self.link.wake();
+        }
         self.hand_over();
     }
 

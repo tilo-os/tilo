@@ -229,7 +229,7 @@ impl Link {
         self.shared.borrow_mut().wake = Some(wake);
     }
 
-    fn wake(&self) {
+    pub(crate) fn wake(&self) {
         let wake = self.shared.borrow().wake.clone();
         if let Some(wake) = wake {
             wake.wake();

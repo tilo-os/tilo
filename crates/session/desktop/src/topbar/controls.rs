@@ -10,7 +10,7 @@ use super::{
 impl TopBarChrome {
     /// The bar control under the pointer, from the hit rects the last paint
     /// laid down: plain at rest, it lifts while the pointer is over it.
-    pub(super) fn hovered_control(&self) -> Option<String> {
+    pub fn hovered_control(&self) -> Option<String> {
         let point = self.last_cursor?;
         if !self.rect.contains(point) {
             return None;

@@ -257,11 +257,11 @@ fn topbar_chrome_renders_tray_avatars_and_clock_glyph() {
     }
 }
 
-/// The native bar's two popovers, opened the way assistive technology and
-/// a press open them: the workspace name opens the workspace menu (the
-/// workspaces, the shell's workspace commands, the overview, a new strip),
-/// your own avatar opens your profile card, and opening one closes the
-/// other.
+/// The native bar's two popovers, opened the way assistive technology
+/// opens them, through the controls the bar's app publishes: the workspace
+/// name opens the workspace menu (the workspaces, the shell's workspace
+/// commands, the overview, a new strip), your own avatar opens your profile
+/// card, and opening one closes the other.
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
@@ -273,14 +273,23 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     let tree = WorkspaceTree::bootstrap_demo();
     let (host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     let mut frame = FrameHarness::for_root(State::new(), host, (1440, 900), Theme::dark());
+    // The bar lives in its own app: its controls are reached through the
+    // accessibility tree the shell exports, by the names they are read as.
+    let activate = |frame: &mut FrameHarness, suffix: &str| {
+        let node = frame
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label().is_some_and(|label| label.ends_with(suffix)))
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("no bar control read as \"…{suffix}\""));
+        frame.perform_a11y_action(node, &Action::Activate).unwrap();
+    };
     let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../target/topbar-native-popovers");
     std::fs::create_dir_all(&out).unwrap();
     frame.render_png(&out.join("bar.png"));
 
-    frame
-        .perform_semantic_named("topbar:workspace-settings", None, &Action::Activate)
-        .unwrap();
+    activate(&mut frame, ": workspaces, overview and strips");
     frame.relayout();
     let labels: Vec<String> = frame
         .root::<ShellOverlayHost>()
@@ -320,9 +329,7 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
     );
     frame.render_png(&out.join("workspace-menu.png"));
 
-    frame
-        .perform_semantic_named("topbar:profile", None, &Action::Activate)
-        .unwrap();
+    activate(&mut frame, "(you): your profile");
     frame.relayout();
     let host = frame.root::<ShellOverlayHost>();
     assert!(
@@ -347,20 +354,24 @@ fn the_native_bar_opens_the_workspace_menu_and_the_profile_card() {
 #[test]
 fn the_shell_drives_through_the_headless_app_driver() {
     use shell::shell::overlay_host::ShellOverlayHost;
-    use ui::headless::{FrameHarness, SemanticAction, Step, drive};
+    use ui::headless::{FrameHarness, Step, drive};
     use ui::{state::State, theme::Theme};
     let tree = WorkspaceTree::bootstrap_demo();
     let (host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
     let mut frame = FrameHarness::for_root(State::new(), host, (1440, 900), Theme::dark());
-    // Opening the workspace menu is one step, and the drive names it exactly
-    // as the CLI would: no coordinates anywhere.
+    // Opening the workspace menu is one step: a press where the shell says
+    // the bar drew the workspace's name, as the bar's controls live in its
+    // own app.
+    let name = frame
+        .root::<ShellOverlayHost>()
+        .top_bar_workspace_name_rect();
+    assert!(name.area() > 0.0, "the bar has drawn the workspace's name");
     let outcome = drive(
         &mut frame,
-        &[Step::Action(ui::headless::Action::Perform {
-            target: "topbar:workspace-settings".into(),
-            semantic_target: None,
-            action: SemanticAction::Activate,
-        })],
+        &[Step::Action(ui::headless::Action::ClickAt(
+            name.center().x,
+            name.center().y,
+        ))],
     );
     assert!(outcome.is_pass(), "{:?}", outcome.steps);
     // The state the step left is answered as values rather than files: the
@@ -379,6 +390,7 @@ fn the_shell_drives_through_the_headless_app_driver() {
     assert!(!outcome.resources.is_empty());
     assert!(outcome.inspection.is_object());
     assert_eq!(outcome.document, serde_json::json!({}));
+    frame.relayout();
     assert!(
         frame
             .root::<ShellOverlayHost>()
