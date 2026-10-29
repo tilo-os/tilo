@@ -14,10 +14,12 @@
 //!   into the open record (`RecordStore::merge_replica`, Automerge
 //!   semantics, local undo untouched) or, when no mount has it open, into
 //!   the record's stored document so opening it later shows them.
-//! - **The desktop** (tree plus each tab's record) is one small Automerge
-//!   document on its own route whose `desktop` value is the shared JSON.
-//!   Concurrent layouts resolve last-writer-wins, identically everywhere;
-//!   an inbound value reaches the surface through `replace_tree`.
+//! - **The desktop** is the room's shared desktop record
+//!   ([`tilo_desktop_model::shared_record`]) on the route native peers and
+//!   the room host use for it: every strip, group and window is its own
+//!   entry, so concurrent changes to different entries all land. The page
+//!   writes only the entries that differ from what the record holds, and an
+//!   inbound change reaches the surface through `replace_shared_tree`.
 //!
 //! Nothing is published before the host answered `Ready` for the room, so a
 //! page never announces a stale snapshot over what the room already holds.
