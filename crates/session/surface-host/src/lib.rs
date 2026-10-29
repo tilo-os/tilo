@@ -23,7 +23,7 @@ use std::cell::Cell;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
-use tilo_compositor::{HostKey, HostLayer, KeyModifiers, SurfaceHost};
+use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyModifiers, SurfaceHost};
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use ui::device_local_door::SharedDoor;
@@ -39,6 +39,9 @@ use canvas::Canvas;
 
 /// Cores the rasterizer uses for a large damaged region.
 const RASTER_THREADS: u16 = 2;
+
+/// The format files are dragged in.
+const URI_LIST: &str = "text/uri-list";
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -78,6 +81,8 @@ struct Surface {
     size: PhysicalSize<u32>,
     scale: f64,
     redraw: Cell<bool>,
+    /// The pointer shape the app asked for last.
+    cursor: Cell<CursorIcon>,
 }
 
 impl AppSurface for Surface {
@@ -93,7 +98,20 @@ impl AppSurface for Surface {
         self.redraw.set(true);
     }
 
-    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+    fn set_cursor(&self, cursor: winit::window::CursorIcon) {
+        self.cursor.set(cursor);
+    }
+}
+
+/// The files a dropped `text/uri-list` names: its `file:` URIs as paths,
+/// comments and other schemes skipped.
+fn dropped_paths(data: &[u8]) -> Vec<std::path::PathBuf> {
+    String::from_utf8_lossy(data)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
+        .collect()
 }
 
 /// One toolkit app shown on a rectangle of the desktop.
@@ -128,6 +146,7 @@ impl AppHost {
                 size: PhysicalSize::new(width, height),
                 scale: placement.scale,
                 redraw: Cell::new(true),
+                cursor: Cell::new(CursorIcon::Default),
             },
             canvas: Canvas::new((width, height), RASTER_THREADS),
             buffer: buffer_for((width, height)),
@@ -321,6 +340,42 @@ impl SurfaceHost for AppHost {
         self.input(key_event(key));
     }
 
+    fn cursor(&self) -> CursorIcon {
+        self.surface.cursor.get()
+    }
+
+    /// The toolkit takes files dropped on it (as a window of the desktop
+    /// it runs in would), so a drag that offers files is taken.
+    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
+        if !mimes.iter().any(|mime| mime == URI_LIST) {
+            return None;
+        }
+        // Drop zones learn where the drag is from the pointer.
+        self.pointer_motion(x, y);
+        Some(URI_LIST.to_owned())
+    }
+
+    fn drop_left(&mut self) {
+        self.input(WindowEvent::HoveredFileCancelled);
+        self.pointer_leave();
+    }
+
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        if mime != URI_LIST {
+            return;
+        }
+        for path in dropped_paths(&data) {
+            self.input(WindowEvent::HoveredFile(path.clone()));
+            self.input(WindowEvent::DroppedFile(path));
+        }
+    }
+
+    /// The pointer may have moved anywhere while it carried the drag; the
+    /// compositor routes it anew, so the app hears it left.
+    fn drag_ended(&mut self, _dropped: bool) {
+        self.pointer_leave();
+    }
+
     fn prepare_frame(&mut self) {
         if self.door.has_queued() {
             self.serve_door();
@@ -441,5 +496,22 @@ fn key_for(keysym: u32, text: Option<char>) -> (Key, KeyLocation) {
     match typed {
         Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
         None => (key, location),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dropped_paths;
+
+    #[test]
+    fn a_uri_list_drops_its_files_decoded_and_skips_the_rest() {
+        let list = b"# from a file manager\r\nfile:///home/ada/My%20Notes.txt\r\nhttps://tilo.so/\r\n\r\nfile://localhost/tmp/a\n";
+        assert_eq!(
+            dropped_paths(list),
+            vec![
+                std::path::PathBuf::from("/home/ada/My Notes.txt"),
+                std::path::PathBuf::from("/tmp/a"),
+            ]
+        );
     }
 }

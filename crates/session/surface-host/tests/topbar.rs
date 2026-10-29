@@ -79,3 +79,43 @@ fn the_pointer_reaches_the_bar_only_where_it_drew() {
     assert!(!host.accepts_pointer(f64::from(size.0) / 2.0, f64::from(size.1) / 2.0));
     assert!(!host.accepts_pointer(-1.0, 12.0));
 }
+
+#[test]
+fn the_bar_shows_the_pointer_shape_its_controls_ask_for() {
+    let _settled = ui::motion::testing::settled();
+    let size = fixture::viewport(Some("bar"));
+    let mut host = bar(size);
+    host.prepare_frame();
+    assert_eq!(host.cursor(), tilo_compositor::CursorIcon::Default);
+    let shapes: Vec<_> = (0..size.0)
+        .step_by(4)
+        .map(|x| {
+            host.pointer_motion(f64::from(x), 12.0);
+            host.prepare_frame();
+            host.cursor()
+        })
+        .collect();
+    assert!(
+        shapes
+            .iter()
+            .any(|shape| *shape != tilo_compositor::CursorIcon::Default),
+        "some control along the bar asks for its own pointer shape"
+    );
+}
+
+#[test]
+fn files_dragged_over_the_bar_are_taken_and_anything_else_refused() {
+    let _settled = ui::motion::testing::settled();
+    let size = fixture::viewport(Some("bar"));
+    let mut host = bar(size);
+    host.prepare_frame();
+    let text = vec!["text/plain;charset=utf-8".to_owned()];
+    assert_eq!(host.drop_offered(&text, 10.0, 12.0), None);
+    let files = vec!["text/plain".to_owned(), "text/uri-list".to_owned()];
+    assert_eq!(
+        host.drop_offered(&files, 10.0, 12.0).as_deref(),
+        Some("text/uri-list")
+    );
+    host.drop_data("text/uri-list", b"file:///home/ada/notes.txt\r\n".to_vec());
+    host.drag_ended(true);
+}
