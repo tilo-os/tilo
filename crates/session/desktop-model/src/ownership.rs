@@ -262,6 +262,21 @@ pub fn foreign_acts(
                 }
             }
         }
+        // Moving a window on the canvas moves it as much as moving it
+        // along a strip. Placing one that stood nowhere yet (a canvas
+        // finding room for a window someone opened) moves nothing.
+        let later = after.tree.workspaces.iter().find(|w| w.id == workspace.id);
+        for group in workspace.strips.iter().flat_map(|s| &s.window_groups) {
+            let Some(was_at) = workspace.arrangement.place_of(group.id) else {
+                continue;
+            };
+            let now_at = later.and_then(|w| w.arrangement.place_of(group.id));
+            if now_at.is_some_and(|now_at| now_at != was_at) {
+                for tab in group.tabs.iter().filter(|t| foreign(t.id)) {
+                    note(tab.id, Act::Move);
+                }
+            }
+        }
     }
     let live = |id: u64| now.tabs.contains_key(&id) || now.strips.contains_key(&StripId(id));
     let lived = |id: u64| was.tabs.contains_key(&id) || was.strips.contains_key(&StripId(id));

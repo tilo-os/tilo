@@ -302,10 +302,34 @@ impl Checker<'_> {
                     }
                 }
             }
-            Type::List(_) => {
+            Type::List(_) | Type::Set(_) | Type::Map { .. } => {
                 let v = self.expr(value, None);
-                if fits(ty, &v.ty) || v.ty.is_error() {
+                if v.ty.is_error() {
+                    return;
+                }
+                if !fits(ty, &v.ty) {
+                    mismatch(self, &v.ty);
+                } else if offers_actions(ty) {
+                    // Each action is shown by the component and run by an event of its node.
+                    self.emit(host(Imp::UiActions, vec![node, Ex::str(name), v]));
+                } else {
+                    // A collection goes as it is, live: the host follows its inserts and
+                    // removals rather than copying it whole.
                     self.arg_prop(node, name, v);
+                }
+            }
+            Type::Action => {
+                let v = self.expr(value, None);
+                if v.ty.is_error() {
+                    return;
+                }
+                if fits(ty, &v.ty) {
+                    let one = Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(v.ty.clone())));
+                    let tmp = self.fresh(one.ty.clone());
+                    self.emit(Stmt::Set(tmp, one));
+                    let list = Ex::local(tmp, Ty::List(Box::new(v.ty.clone())));
+                    self.emit(host(Imp::ListPushH, vec![list.clone(), v]));
+                    self.emit(host(Imp::UiActions, vec![node, Ex::str(name), list]));
                 } else {
                     mismatch(self, &v.ty);
                 }
@@ -773,6 +797,16 @@ fn passed_as_is(e: &ast::Expr, name: &str) -> bool {
     passed
 }
 
+/// Whether values of `ty` hold actions offered to the person (`List<Action>`).
+fn offers_actions(ty: &Type) -> bool {
+    match ty {
+        Type::Action => true,
+        Type::Option(inner) | Type::List(inner) | Type::Set(inner) => offers_actions(inner),
+        Type::Map { value, .. } => offers_actions(value),
+        _ => false,
+    }
+}
+
 /// The language's type of a description's scalar type, for checking literals against it.
 fn lang_type(ty: &Type) -> Ty {
     match ty {
@@ -784,7 +818,9 @@ fn lang_type(ty: &Type) -> Ty {
         Type::Time => Ty::Time,
         Type::RichText => Ty::RichText,
         Type::Option(inner) => Ty::Option(Box::new(lang_type(inner))),
-        Type::List(inner) => Ty::List(Box::new(lang_type(inner))),
+        Type::List(inner) | Type::Set(inner) => Ty::List(Box::new(lang_type(inner))),
+        Type::Map { value, .. } => Ty::Map(Box::new(lang_type(value))),
+        Type::Action => super::platform::host_ty("Action"),
         Type::Resource | Type::Icon | Type::Choice { .. } => Ty::Error,
     }
 }
@@ -794,7 +830,15 @@ fn lang_type(ty: &Type) -> Ty {
 fn fits(ty: &Type, found: &Ty) -> bool {
     match (ty, found) {
         (Type::Option(inner), found) => fits(inner, found),
-        (Type::List(inner), Ty::List(item)) => fits(inner, item),
+        // A list or a set takes any of the language's: a list, a set, or a collection, whose
+        // items are its resources.
+        (
+            Type::List(inner) | Type::Set(inner),
+            Ty::List(item) | Ty::Set(item) | Ty::Collection(item),
+        ) => fits(inner, item),
+        // The language's maps are keyed by text.
+        (Type::Map { key, value }, Ty::Map(held)) => **key == Type::Text && fits(value, held),
+        (Type::Action, Ty::Record(key)) => key.app == crate::host::HOST_APP && key.name == "Action",
         _ => matches!(
             (ty, found),
             (_, Ty::Error)

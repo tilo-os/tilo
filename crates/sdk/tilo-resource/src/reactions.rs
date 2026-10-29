@@ -297,6 +297,10 @@ impl Model for Reactions {
             "items": {"type": "object"},
         })
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Reactions
+    }
 
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::Array(self.entries.values().map(Model::to_json).collect())

@@ -11,12 +11,15 @@
 //! Shape, at the record's root:
 //!
 //! ```text
-//! workspaces: { <id>: { order: f64, workspace: <Workspace JSON, no strips> } }
+//! workspaces: { <id>: { order: f64, workspace: <Workspace JSON, no strips>, arrangement? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author? } }
-//! groups:     { <id>: { strip: <id>, order: f64 } }
+//! groups:     { <id>: { strip: <id>, order: f64, place? } }
 //! windows:    { <id>: { group: <id>, order: f64, tab: <Tab JSON>, author?, record? } }
 //! ```
 //!
+//! A workspace's `arrangement` is its kind when that is not the strips, and
+//! a group's `place` where it stands on the canvas (as JSON): each its own
+//! field, so people moving different windows at once each keep their move.
 //! What only one device decides (which window is focused, widths,
 //! maximization) is never written. [`read`] tolerates what concurrency
 //! leaves behind: a window whose group was removed meanwhile gets a group
@@ -29,6 +32,7 @@ use tilo_sort::CompactSort as _;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
+use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
@@ -48,6 +52,8 @@ const NAME: &str = "name";
 const AUTHOR: &str = "author";
 const TAB: &str = "tab";
 const RECORD: &str = "record";
+const ARRANGEMENT: &str = "arrangement";
+const PLACE: &str = "place";
 
 /// A document read now or as of some heads.
 struct At<'a, D: ReadDoc> {
@@ -167,6 +173,8 @@ struct Parts {
     groups: HashMap<Option<u64>, Vec<(f64, u64, GroupId)>>,
     /// Windows by the group they name.
     windows: HashMap<u64, Vec<(f64, u64, Tab)>>,
+    /// Where groups stand on their workspace's canvas.
+    places: HashMap<GroupId, CanvasPlace>,
     /// Workspaces and strips written blind ([`At::placed_entries`]).
     blind: HashSet<u64>,
 }
@@ -222,6 +230,14 @@ impl Parts {
             };
             workspace.id = WorkspaceId(id);
             workspace.strips.clear();
+            workspace.arrangement = Arrangement {
+                kind: at
+                    .text(&entry, ARRANGEMENT)
+                    .map_or(ArrangementKind::Strips, |kind| {
+                        ArrangementKind::parse(&kind)
+                    }),
+                places: BTreeMap::new(),
+            };
             workspaces.push((at.number(&entry, ORDER).unwrap_or(0.0), id, workspace));
         }
         parts.workspaces = sorted(workspaces);
@@ -244,6 +260,12 @@ impl Parts {
                 ));
         }
         for (id, entry) in at.entries(GROUPS) {
+            if let Some(place) = at
+                .text(&entry, PLACE)
+                .and_then(|json| serde_json::from_str::<CanvasPlace>(&json).ok())
+            {
+                parts.places.insert(id, place);
+            }
             parts
                 .groups
                 .entry(parse_id(at.text(&entry, STRIP)))
@@ -348,6 +370,19 @@ impl Parts {
                         })
                     })
                     .collect();
+            }
+        }
+        for workspace in &mut self.workspaces {
+            let groups: Vec<GroupId> = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .map(|group| group.id)
+                .collect();
+            for group in groups {
+                if let Some(place) = self.places.get(&group) {
+                    workspace.arrangement.places.insert(group, *place);
+                }
             }
         }
         self.records.compact_sort();
@@ -536,8 +571,12 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
     for (workspace, order) in workspaces.iter().zip(workspace_orders) {
         let mut bare = workspace.clone();
         bare.strips.clear();
+        bare.arrangement = Arrangement::default();
         let json = serde_json::to_string(&bare).unwrap_or_default();
-        let texts = vec![(WORKSPACE, json)];
+        let mut texts = vec![(WORKSPACE, json)];
+        if workspace.arrangement.kind != ArrangementKind::Strips {
+            texts.push((ARRANGEMENT, workspace.arrangement.kind.as_str().to_owned()));
+        }
         want.workspaces.insert(
             workspace.id.0,
             Entry {
@@ -564,12 +603,18 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             let group_orders = orders(&ids, &held_orders(&held.groups, Some(strip.id.0)));
             for (group, order) in strip.window_groups.iter().zip(group_orders) {
                 let parent = Some((STRIP, strip.id.0));
+                let texts = workspace
+                    .arrangement
+                    .place_of(group.id)
+                    .and_then(|place| serde_json::to_string(&place).ok())
+                    .map(|json| vec![(PLACE, json)])
+                    .unwrap_or_default();
                 want.groups.insert(
                     group.id,
                     Entry {
                         parent,
                         order,
-                        texts: Vec::new(),
+                        texts,
                     },
                 );
                 let ids: Vec<u64> = group.tabs.iter().map(|t| t.id).collect();
@@ -631,9 +676,9 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
             .collect()
     };
     Levels {
-        workspaces: level(WORKSPACES, None, &[WORKSPACE]),
+        workspaces: level(WORKSPACES, None, &[WORKSPACE, ARRANGEMENT]),
         strips: level(STRIPS, Some(WORKSPACE), &[NAME, AUTHOR]),
-        groups: level(GROUPS, Some(STRIP), &[]),
+        groups: level(GROUPS, Some(STRIP), &[PLACE]),
         windows: level(WINDOWS, Some(GROUP), &[TAB, AUTHOR, RECORD]),
     }
 }
