@@ -132,6 +132,16 @@ impl<S: Seat> SheetHost<S> {
         self.seat.presentation().gone();
     }
 
+    /// Give `event` to the app, for a sheet the host routes itself rather
+    /// than through the overlay stack.
+    pub(crate) fn route(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let Some(app) = self.app.as_mut() {
+            let node = self.node.unwrap_or(ctx.node_id);
+            let path = ctx.path;
+            app.handle_event(event, &mut ctx.reborrow(path, node));
+        }
+    }
+
     /// Asked to be up, mounted or not yet.
     pub(crate) fn requested(&self) -> bool {
         self.seat.presentation().is_open()

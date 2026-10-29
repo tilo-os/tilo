@@ -609,21 +609,6 @@ impl ShellOverlayHost {
                 }
         );
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && self.overlay_flags().shortcut_help
-        {
-            let dy: f64 = match *delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * 30.0,
-                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
-            };
-            self.shortcut_guide_scroll =
-                (self.shortcut_guide_scroll + dy).clamp(0.0, self.shortcut_guide_max_scroll);
-            if let Some(chrome) = self.chrome.as_ref() {
-                chrome.borrow_mut().bump();
-            }
-            *ctx.handled = true;
-            return true;
-        }
-        if let WindowEvent::MouseWheel { delta, .. } = event
             && self.overlay_flags().ws_settings
             && self
                 .last_cursor

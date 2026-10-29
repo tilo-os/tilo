@@ -413,8 +413,9 @@ impl Widget for ShellOverlayHost {
         if !self.layers.power_menu.is_mounted() {
             self.mount_power_menu();
         }
-        let power_menu_dirty =
-            self.pump_power_menu(doc, path) | self.pump_display_confirmation(doc, path);
+        let power_menu_dirty = self.pump_power_menu(doc, path)
+            | self.pump_display_confirmation(doc, path)
+            | self.pump_shortcut_guide(doc, path);
         let session_action_dirty = self.drain_session_action_results();
         steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
@@ -521,8 +522,9 @@ impl Widget for ShellOverlayHost {
         // them here, where the theme is in hand, so this pass's hit-testing
         // and paint share one answer.
         self.resolve_overview_layout(theme);
-        self.shortcut_navigation_step = shortcut_navigation_step(theme);
         self.onboarding_node = None;
+        // A pass that lays out the guide has it up as the flag asks.
+        self.follow_shortcut_guide();
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
@@ -585,6 +587,13 @@ impl Widget for ShellOverlayHost {
             theme,
             node_map,
             self.rect,
+            self.rect.origin(),
+        );
+        let shortcut_guide_window = self.layers.shortcut_guide.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overlay_area(),
             self.rect.origin(),
         );
         let power_menu_window = self.layers.power_menu.build_layout(
@@ -695,6 +704,7 @@ impl Widget for ShellOverlayHost {
         children.extend(app_sheet_window);
         children.extend(power_menu_window);
         children.extend(display_confirm_window);
+        children.extend(shortcut_guide_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -845,6 +855,9 @@ impl Widget for ShellOverlayHost {
         self.layers
             .display_confirm
             .apply_layout(taffy, self.rect.origin());
+        self.layers
+            .shortcut_guide
+            .apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -969,33 +982,6 @@ impl Widget for ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        // The shortcut guide's rows and its Done: a reader reaches exactly
-        // what the pointer and the keyboard reach.
-        if matches!(action, ui::a11y::Action::Activate) {
-            if let Some(index) = target
-                .strip_prefix("guide:chord:")
-                .and_then(|index| index.parse::<usize>().ok())
-                && let Some((action, _)) = self.shortcut_binding_rects.get(index).copied()
-            {
-                self.shortcut_rebind = Some(action);
-                self.shortcut_rebind_message = None;
-                self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(action));
-                self.bump_chrome();
-                return true;
-            }
-            if target == "guide:done" {
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.overlays.shortcut_help = false;
-                    st.bump();
-                }
-                self.shortcut_rebind = None;
-                self.shortcut_rebind_message = None;
-                self.shortcut_guide_focus = None;
-                self.bump_chrome();
-                return true;
-            }
-        }
         if target.starts_with("desk.widget:") {
             return self.desk_semantic_action(action, target);
         }
@@ -1159,6 +1145,7 @@ impl Widget for ShellOverlayHost {
         }
         out.extend(self.layers.power_menu.widget());
         out.extend(self.layers.display_confirm.widget());
+        out.extend(self.layers.shortcut_guide.widget());
         out
     }
 
@@ -1209,6 +1196,7 @@ impl Widget for ShellOverlayHost {
         }
         out.extend(self.layers.power_menu.widget_mut());
         out.extend(self.layers.display_confirm.widget_mut());
+        out.extend(self.layers.shortcut_guide.widget_mut());
         out
     }
 
@@ -1274,6 +1262,8 @@ impl Widget for ShellOverlayHost {
         let ws_swapped = self.resync_workspace_content();
         self.follow_brought_forward();
         let resynced = self.resync_strips_from_tree() | ws_swapped;
+        // The guide comes up on the frame that asks for it.
+        self.follow_shortcut_guide();
         let workspace_layout = std::mem::take(&mut self.workspace_content_layout_dirty);
         let content = self.content.take_structure_dirty();
         let palette = std::mem::take(&mut self.palette_layout_dirty)
@@ -1298,6 +1288,7 @@ impl Widget for ShellOverlayHost {
             | self.take_app_sheet_changed()
             | self.layers.power_menu.structure_changed()
             | self.layers.display_confirm.structure_changed()
+            | self.layers.shortcut_guide.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
@@ -1492,6 +1483,13 @@ impl ShellOverlayHost {
             event,
             &mut ctx.reborrow(ctx.path, ctx.node_id),
         ) {
+            return;
+        }
+        // The shortcut guide is modal while it is up: it takes every key
+        // and press, and the chord it waits for is the shell's to check.
+        if self.onboarding.is_none()
+            && self.route_shortcut_guide(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
             return;
         }
         // A compositor-owned sheet raised during first-use setup (an

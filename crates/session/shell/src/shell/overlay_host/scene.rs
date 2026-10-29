@@ -563,7 +563,7 @@ impl ShellOverlayHost {
         let flags = self.overlay_flags();
         LayerId::ALL
             .into_iter()
-            .filter(|&id| self.overlay_is_open(id, flags))
+            .filter(|&id| !id.is_app() && self.overlay_is_open(id, flags))
             .collect()
     }
 

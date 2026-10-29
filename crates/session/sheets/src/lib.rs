@@ -10,6 +10,7 @@
 pub mod display_confirm;
 pub mod power;
 mod presentation;
+pub mod shortcut_guide;
 
 pub use presentation::{Phase, Presentation, Seat};
 

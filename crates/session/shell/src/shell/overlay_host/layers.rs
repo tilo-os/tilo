@@ -94,6 +94,15 @@ impl LayerId {
         Self::ShortcutHelp,
     ];
 
+    /// Whether the overlay is an app that publishes its own accessibility
+    /// tree, as a child of the host, rather than a node of the host's own.
+    pub(crate) const fn is_app(self) -> bool {
+        matches!(
+            self,
+            Self::PowerMenu | Self::DisplayConfirmation | Self::ShortcutHelp
+        )
+    }
+
     /// Where a stacked layer's input is routed; `None` while the host still
     /// routes the overlay itself. Never decreases down [`Self::ALL`].
     pub(crate) const fn band(self) -> Option<Band> {
@@ -605,6 +614,9 @@ pub(crate) struct OverlayStack {
     pub(crate) display_confirm: SheetHost<tilo_sheets::display_confirm::ConfirmSeat>,
     /// The transaction that question waits on.
     pub(crate) display_question: DisplayQuestion,
+    /// The shortcut guide, an app ([`tilo_sheets::shortcut_guide`]). The
+    /// host routes it itself: a chord the guide waits for is the shell's.
+    pub(crate) shortcut_guide: SheetHost<tilo_sheets::shortcut_guide::GuideSeat>,
     pub(crate) window_switcher: WindowSwitcher,
     pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,
