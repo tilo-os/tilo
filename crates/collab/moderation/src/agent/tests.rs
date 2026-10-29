@@ -204,7 +204,7 @@ fn vandalised() -> FakeRoom {
         app: None,
         record: None,
         item: None,
-        reason: "deleted all our cards".into(),
+        reason: tilo_resource::NonBlank::parse("deleted all our cards").unwrap(),
     }))
     .unwrap();
     room.moderation.sync_with(&mut ada).unwrap();
@@ -360,7 +360,7 @@ fn a_report_about_someone_who_did_nothing_never_reaches_the_model() {
         app: None,
         record: None,
         item: None,
-        reason: "she is annoying".into(),
+        reason: tilo_resource::NonBlank::parse("she is annoying").unwrap(),
     }))
     .unwrap();
     room.moderation.sync_with(&mut ada).unwrap();

@@ -31,7 +31,7 @@ fn path(mut film: Film, from: u32, steps: u32, (dx, dy): (f64, f64), ease: bool)
         let t = f64::from(k) / f64::from(steps);
         let t = if ease { 1.0 - (1.0 - t) * (1.0 - t) } else { t };
         film = film.then_at(
-            from + k,
+            from.saturating_add(k),
             Step::DeskFrom {
                 dx: dx * t,
                 dy: dy * t,

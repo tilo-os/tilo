@@ -276,7 +276,9 @@ fn apply_step(driver: &mut ShellDriver, step: &Step) {
             None => eprintln!("scenario: {widget:?} shows no '{spot}'"),
         },
         Step::DeskFrom { dx, dy } => match DESK_ORIGIN.with(std::cell::Cell::get) {
-            Some(origin) => driver.move_cursor(origin + vello::kurbo::Vec2::new(*dx, *dy)),
+            Some(origin) => {
+                driver.move_cursor(vello::kurbo::Point::new(origin.x + *dx, origin.y + *dy));
+            }
             None => eprintln!("scenario: a desk move with no spot to move from"),
         },
         Step::LogTargets(label) => {

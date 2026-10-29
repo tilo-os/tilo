@@ -1041,6 +1041,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.set_peer_salt(crate::own_device::SHOWN_SALT);
             crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
+            drop(tree);
         }
         self.with_chrome(ChromeState::bump);
     }
