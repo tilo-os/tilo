@@ -1556,6 +1556,30 @@ impl App {
         }
     }
 
+    /// Activate the control whose test id is `test_id`, as an assistive
+    /// technology activates a hand-hit-tested control: the press a person
+    /// makes on it, through the window's own input path. Whether the window
+    /// shows such a control.
+    pub(super) fn activate_test_id(&mut self, test_id: &str) -> bool {
+        fn find(widget: &dyn Widget, test_id: &str) -> Option<KurboRect> {
+            if widget.test_id() == Some(test_id) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| find(child, test_id))
+        }
+        let Some(rect) = find(self.root_widget.as_ref(), test_id)
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+        else {
+            return false;
+        };
+        let centre = rect.center();
+        self.dispatch_semantic_click(centre.x, centre.y);
+        true
+    }
+
     /// Complete an accessibility activation for legacy hand-hit-tested
     /// controls that do not implement `perform_action` yet. The semantic
     /// target has already resolved to this exact point; routing the usual

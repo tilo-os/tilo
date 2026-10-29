@@ -1046,6 +1046,14 @@ impl App {
                         );
                     }
                 }
+                FloatingSurfaceHostMessage::ActivateTestId { test_id } => {
+                    if self.input.window_focused && !self.activate_test_id(test_id) {
+                        tracing::warn!(
+                            test_id,
+                            "a test control asked to activate a control this window does not show"
+                        );
+                    }
+                }
                 FloatingSurfaceHostMessage::Pick { request, query } => {
                     let answer = crate::pick_wire::answer(self.root_widget.as_ref(), query);
                     if let Some(client) = &mut self.floating.client {

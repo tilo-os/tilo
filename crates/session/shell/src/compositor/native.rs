@@ -2479,6 +2479,21 @@ fn pump_floating_surface_service(
             &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
         );
     }
+    // A development session's test control activates controls of the
+    // focused window by their test ids: each window of the focused app is
+    // asked, and the focused one acts.
+    if let Some((app, test_ids)) = frame_builder.host_mut().take_test_activations() {
+        for connection in appearance.connections_of(&app) {
+            for test_id in &test_ids {
+                service.send(
+                    connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::ActivateTestId {
+                        test_id: test_id.clone(),
+                    },
+                );
+            }
+        }
+    }
     // What the person did with apps' slots in their windows' bars.
     for (connection, event) in frame_builder.host_mut().take_toolbar_outbox() {
         service.send(
@@ -5286,6 +5301,9 @@ fn execute_planned_action(
                     *pressed,
                 )));
         }
+        PlannedAction::ActivateTestId { test_id } => {
+            fb.host_mut().queue_test_activation(test_id.clone());
+        }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -5444,12 +5462,12 @@ fn execute_locked_action(
         // make the lock screen bypassable by a socket client that renders
         // nothing; answering `ok` for an action that never ran would leave a
         // caller who cannot see the screen believing it did.
-        PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
-            Some(InvokeFailure {
-                code: "session_locked".into(),
-                message: test_control::SESSION_LOCKED.into(),
-            })
-        }
+        PlannedAction::Snapshot { .. }
+        | PlannedAction::InvokeAction { .. }
+        | PlannedAction::ActivateTestId { .. } => Some(InvokeFailure {
+            code: "session_locked".into(),
+            message: test_control::SESSION_LOCKED.into(),
+        }),
         // Pointer and modifier input is swallowed while locked.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
