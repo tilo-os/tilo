@@ -20,7 +20,6 @@ required-features = ["service"]
 # the line format and the handoff rules alone.
 default = ["service"]
 service = [
-    "dep:base64",
     "dep:futures-util",
     "dep:image",
     "dep:settings-store",
@@ -32,13 +31,13 @@ service = [
 ]
 
 [dependencies]
+base64.workspace = true
 blake3.workspace = true
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
-base64 = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 image = { workspace = true, features = ["jpeg", "png", "webp"], optional = true }
 settings-store = { path = "../../system/settings-store", features = ["watch"], optional = true }

@@ -11,6 +11,7 @@
 //! the compositor sends those players. The helper stops when its standard
 //! input closes, so it never outlives the compositor that started it.
 
+pub mod client;
 pub mod handoff;
 #[cfg(feature = "service")]
 pub mod mpris;
