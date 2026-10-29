@@ -293,6 +293,16 @@ pub trait WorkspaceMemberships: Send + Sync {
         false
     }
 
+    /// Whether `room`'s membership actions are still to come here: this
+    /// device holds the room, joins it or has it placed on its host, and its
+    /// replica is not projected yet ([`Self::requires_room`] or
+    /// [`Self::grants_authorship_at_host`] turns true once it is, which
+    /// announces a policy change). An app opening in such a room waits for
+    /// them; one opening in any other room unpublished is refused.
+    fn membership_pending(&self, _room: &str) -> bool {
+        false
+    }
+
     /// Whether `room`'s host is this device's own, so the authorship an app
     /// opening there needs is recorded here rather than asked of another
     /// device.

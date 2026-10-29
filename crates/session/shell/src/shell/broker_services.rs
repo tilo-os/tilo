@@ -377,6 +377,17 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
     }
 
+    /// A room this device holds, joins or has placed on its host: its
+    /// membership actions are published once its replica is projected
+    /// ([`super::state::WorkspaceTree::project_native_room`]), which a
+    /// commit installing the room may precede.
+    fn membership_pending(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room).is_some_and(|room| {
+            let tree = self.tree.read();
+            tree.holds_room(room) || tree.documents_unavailable(room).is_some()
+        })
+    }
+
     /// A held room whose admitted governor is this device: its checkpoints
     /// are this device's custody, sealed records or not.
     fn keeps_checkpoints(&self, room: &str) -> bool {

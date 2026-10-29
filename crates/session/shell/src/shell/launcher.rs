@@ -4378,12 +4378,29 @@ pub(crate) fn admit_native_app(
     let delegate = || -> Result<(), String> {
         let opening = opening.settled()?;
         // A room this device just made or joined has its membership actions
-        // published on the broker's next refresh of them: the grant is asked
-        // once the broker's loop has looked, never refused for coming first.
+        // published once its replica is projected here: the grant is asked
+        // once they are, never refused for coming first. Waited for on this
+        // launch's own thread, never the frame loop's.
         let published = opening
             .upgrade()?
             .await_membership_surface(&room.to_string())?;
-        let _ = published.recv();
+        match published.recv() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(
+                    "the workspace's membership actions are not published on this \
+                     device, and it neither holds, joins nor places the workspace's room"
+                        .into(),
+                );
+            }
+            Err(_) => {
+                return Err(
+                    "the session's broker ended before the workspace's membership \
+                 actions were published"
+                        .into(),
+                );
+            }
+        }
         let broker = opening.upgrade()?;
         let job = broker.change_workspace_membership(
             &room.to_string(),
