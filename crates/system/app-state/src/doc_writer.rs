@@ -19,8 +19,7 @@ use std::time::Duration;
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ChangeHash, ROOT};
 use durable_store::{
-    Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, StorageKey,
-    StoreError as SeamError, WriteOp,
+    Durability, DurableStore, Lease, Revision, StorageKey, StoreError as SeamError, WriteOp,
 };
 
 use crate::{
@@ -39,7 +38,7 @@ const MIN_COMPACT_BYTES: usize = 64 * 1024;
 
 /// What a writer knows is durable, and any outstanding failure. Reading it
 /// never commits document operations.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct DurabilitySnapshot {
     pub durable_heads: Option<Vec<ChangeHash>>,
     pub error: Option<String>,
@@ -398,9 +397,6 @@ pub struct DocWriter {
     appends: usize,
     progress: RefCell<Progress>,
     private_history: Result<crate::private_history::PrivateHistory, String>,
-    /// Who hears when what this writer reports durable changes
-    /// ([`Self::wake_on_settle`]).
-    settle_wakes: RefCell<Vec<ReadyWake>>,
 }
 
 /// What the writer knows about submitted writes. Interior so status and
@@ -451,7 +447,6 @@ impl DocWriter {
                 durable,
                 error: None,
             }),
-            settle_wakes: RefCell::default(),
         })
     }
 
@@ -481,7 +476,6 @@ impl DocWriter {
                 error: Some(reason.into()),
                 ..Progress::default()
             }),
-            settle_wakes: RefCell::default(),
         }
     }
 
@@ -673,8 +667,6 @@ impl DocWriter {
     fn refuse(&mut self, error: &StoreError) {
         tracing::error!(document = %self.document_path().display(), %error, "app state write refused");
         self.progress.get_mut().error = Some(error.to_string());
-        // The store said no here and now: who shows "Saving…" hears it.
-        self.call_settle_wakes();
     }
 
     fn send_full(
@@ -717,61 +709,7 @@ impl DocWriter {
             writer,
         });
         self.sent = heads;
-        // Settled already: the store resolved the write before it could be
-        // armed, and calls no one for it.
-        if self.arm_settle_wakes() {
-            self.call_settle_wakes();
-        }
         Ok(())
-    }
-
-    /// Call `wake` from any thread whenever what this writer reports durable
-    /// ([`Self::durability_snapshot`]) may have changed: each time the store
-    /// resolves the writes this writer submitted, a flush made what it read
-    /// durable, or the store refused a write. A window showing "Saving…"
-    /// samples again then, and only then. The same wake ([`durable_store::waiting::same_wake`]) given
-    /// again is kept once.
-    pub fn wake_on_settle(&self, wake: ReadyWake) {
-        let Some(owner) = &self.owner else {
-            // Nothing is ever written: what it reports never changes.
-            return;
-        };
-        {
-            let mut wakes = self.settle_wakes.borrow_mut();
-            if !wakes
-                .iter()
-                .any(|armed| durable_store::waiting::same_wake(armed, &wake))
-            {
-                wakes.push(ReadyWake::clone(&wake));
-            }
-        }
-        // Settled: nothing is outstanding, and the caller's next sample
-        // shows what is durable now.
-        let _ = owner.store.wake_when_settled(&owner.key, wake);
-    }
-
-    /// Hand the store every wake waiting on this writer, for what it has
-    /// outstanding now. Whether it had nothing outstanding left.
-    fn arm_settle_wakes(&self) -> bool {
-        let Some(owner) = &self.owner else {
-            return false;
-        };
-        let mut settled = false;
-        for wake in self.settle_wakes.borrow().iter() {
-            settled |= owner
-                .store
-                .wake_when_settled(&owner.key, ReadyWake::clone(wake))
-                == SettleWatch::Settled;
-        }
-        settled
-    }
-
-    /// Call every wake waiting on this writer now.
-    fn call_settle_wakes(&self) {
-        let wakes = self.settle_wakes.borrow().clone();
-        for wake in wakes {
-            wake();
-        }
     }
 
     /// The heads of the document as it was accepted, once the store has made
@@ -874,15 +812,7 @@ impl DocWriter {
                 .clone()
                 .unwrap_or_else(|| "writer disabled".to_owned()));
         };
-        let before = self.durability_snapshot();
         let flushed = owner.store.flush_where_allowed(&owner.key);
-        // A flush that waited changed what is durable here and now; one that
-        // left the work to the store's thread is heard of when it is done.
-        if self.durability_snapshot() == before {
-            let _ = self.arm_settle_wakes();
-        } else {
-            self.call_settle_wakes();
-        }
         self.settle();
         let progress = self.progress.borrow();
         if let Some(error) = &progress.error {

@@ -446,7 +446,7 @@ mod component_adapter {
         /// Whether the record's last sampled save is still unconfirmed.
         fn saving(&self) -> bool {
             let binding = self.component.callback_binding();
-            binding.enter().is_ok() && self.component.record_saving()
+            binding.enter().is_ok() && self.component.save_status_wake_deadline().is_some()
         }
 
         /// [`Self::in_root`] with the root lent mutably.
@@ -1273,16 +1273,23 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return false;
             };
-            self.component.record_saving()
+            self.component.save_status_wake_deadline().is_some()
                 || self
                     .component
                     .root
                     .as_deref()
                     .is_some_and(Widget::has_transient_feedback)
         }
-        // The component's root serves its own deadlines, inside the
-        // component's scope.
+        // The save status's deadline is the sync's; the component's root
+        // serves its own, inside the component's scope.
         fn serve_deadline(&mut self, now: Instant) -> bool {
+            if self
+                .component
+                .save_status_wake_deadline()
+                .is_some_and(|due| due <= now)
+            {
+                return true;
+            }
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
                 return true;
@@ -1297,7 +1304,12 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return None;
             };
-            self.component.root.as_deref()?.next_wake_deadline()
+            let root = self.component.root.as_deref()?;
+            let saving = self.component.save_status_wake_deadline();
+            match (root.next_wake_deadline(), saving) {
+                (Some(own), Some(saving)) => Some(own.min(saving)),
+                (own, saving) => own.or(saving),
+            }
         }
         fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
             self.in_root(|root| root.modal_capture()).flatten()

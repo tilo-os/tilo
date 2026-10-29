@@ -26,7 +26,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use durable_store::{
-    Durability, DurableStore, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey,
+    Durability, DurableStore, Lease, ReadyWake, Revision, SharedLease, StorageKey,
     StoreError as SeamError, Stored, WriteOp,
 };
 
@@ -107,9 +107,6 @@ struct State {
     cache: BTreeMap<StorageKey, Snapshot>,
     /// Load hints that thread handed over, for the writer thread to keep.
     hints: VecDeque<(StorageKey, Vec<u8>)>,
-    /// Wakes to call, off the lock, once nothing is outstanding for a key
-    /// ([`DurableStore::wake_when_settled`]).
-    settle_wakes: BTreeMap<StorageKey, Vec<ReadyWake>>,
     running: bool,
     stopping: bool,
 }
@@ -117,41 +114,6 @@ struct State {
 impl State {
     fn busy(&self, key: &StorageKey) -> bool {
         self.queue.contains_key(key) || self.writing.contains_key(key)
-    }
-
-    /// Whether a write or a sync is still queued or under way for `key`.
-    fn outstanding(&self, key: &StorageKey) -> bool {
-        self.busy(key) || self.sync_queue.contains(key) || self.syncing.contains(key)
-    }
-
-    /// The wakes armed for `key`, once nothing is outstanding for it: the
-    /// caller calls them after letting go of the lock.
-    fn take_settle_wakes(&mut self, key: &StorageKey) -> Vec<ReadyWake> {
-        if self.outstanding(key) {
-            return Vec::new();
-        }
-        self.settle_wakes.remove(key).unwrap_or_default()
-    }
-}
-
-/// [`DurableStore::wake_when_settled`] under the store's lock.
-fn arm_settle_wake(state: &mut State, key: &StorageKey, wake: ReadyWake) -> SettleWatch {
-    if !state.outstanding(key) {
-        return SettleWatch::Settled;
-    }
-    let waiting = state.settle_wakes.entry(key.clone()).or_default();
-    if !waiting
-        .iter()
-        .any(|armed| durable_store::waiting::same_wake(armed, &wake))
-    {
-        waiting.push(wake);
-    }
-    SettleWatch::Armed
-}
-
-fn call_all(wakes: Vec<ReadyWake>) {
-    for wake in wakes {
-        wake();
     }
 }
 
@@ -826,10 +788,6 @@ impl DurableStore for FsStore {
         settled_in(&lock(&self.shared.state), key)
     }
 
-    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch {
-        arm_settle_wake(&mut lock(&self.shared.state), key, wake)
-    }
-
     fn lease(&self, key: &StorageKey) -> Result<Lease, SeamError> {
         let target = self.target(key)?;
         if let Some(wake) = durable_store::waiting::wake() {
@@ -1351,13 +1309,7 @@ impl Drop for WorkerGuard<'_> {
             status.poisoned = true;
         }
         state.running = false;
-        let keys: Vec<StorageKey> = state.settle_wakes.keys().cloned().collect();
-        let wakes: Vec<ReadyWake> = keys
-            .iter()
-            .flat_map(|key| state.take_settle_wakes(key))
-            .collect();
         drop(state);
-        call_all(wakes);
         self.shared.changed.notify_all();
     }
 }
@@ -1490,12 +1442,6 @@ fn next_work(shared: &Shared) -> Option<Work> {
         if let Some(key) = ready {
             state.sync_queue.remove(&key);
             if state.keys.get(&key).is_some_and(|status| status.synced) {
-                let wakes = state.take_settle_wakes(&key);
-                if !wakes.is_empty() {
-                    drop(state);
-                    call_all(wakes);
-                    state = lock(&shared.state);
-                }
                 shared.changed.notify_all();
                 continue;
             }
@@ -1533,11 +1479,7 @@ fn finish_sync(shared: &Shared, key: &StorageKey, result: &Result<(), StoreError
         // Left unsynced: the next blocking `flush` retries it and reports it.
         Err(error) => tracing::warn!(%key, %error, "could not sync stored bytes in the background"),
     }
-    let wakes = state.take_settle_wakes(key);
     drop(state);
-    // Before a flusher waiting on `changed` returns: whoever it tells the
-    // write landed has been woken by then.
-    call_all(wakes);
     shared.changed.notify_all();
 }
 
@@ -1580,11 +1522,7 @@ fn finish(
             state.cache.remove(key);
         }
     }
-    let wakes = state.take_settle_wakes(key);
     drop(state);
-    // Before a flusher waiting on `changed` returns: whoever it tells the
-    // write landed has been woken by then.
-    call_all(wakes);
     shared.changed.notify_all();
 }
 
@@ -1772,51 +1710,6 @@ mod tests {
     /// tab's record) is told to come back while the store's thread opens
     /// the document, is woken when it is done, and then leases and reads
     /// what that thread opened and read for it, without the disk.
-    /// A window showing "Saving…" hears from the store's thread when the
-    /// write lands, once, and is never woken for a key with nothing
-    /// outstanding.
-    #[test]
-    fn a_write_landing_wakes_who_waits_on_it_once() {
-        let tmp = TempDir::new().unwrap();
-        // Nothing commits unless flushed: the wake cannot come early.
-        let fs = FsStore::with_debounce(tmp.path(), Duration::from_secs(3600));
-        let key = record("saving");
-        let _lease = fs.lease(&key).unwrap();
-        let (wake, notified) = thread_wake();
-        assert_eq!(
-            fs.wake_when_settled(&key, Arc::clone(&wake)),
-            SettleWatch::Settled,
-            "nothing written, nothing to wait for"
-        );
-        let revision = fs
-            .write(&key, WriteOp::Replace(b"draft".to_vec()), Some(b"me"))
-            .unwrap();
-        assert_eq!(
-            fs.wake_when_settled(&key, Arc::clone(&wake)),
-            SettleWatch::Armed
-        );
-        assert_eq!(
-            fs.wake_when_settled(&key, Arc::clone(&wake)),
-            SettleWatch::Armed,
-            "the same wake armed again is called once"
-        );
-        assert!(
-            notified.try_recv().is_err(),
-            "woken before the write landed"
-        );
-        fs.flush(Some(&key)).unwrap();
-        // Woken before the flush returned.
-        let worker = notified.try_recv().expect("the landed write's wake");
-        assert_ne!(
-            worker,
-            thread::current().id(),
-            "the store's thread wakes it"
-        );
-        assert_eq!(fs.durability(&key, revision), Durability::Durable);
-        assert!(notified.try_recv().is_err(), "woken once");
-        assert_eq!(fs.wake_when_settled(&key, wake), SettleWatch::Settled);
-    }
-
     #[test]
     fn a_thread_that_declined_waiting_leases_what_the_stores_thread_opened() {
         let tmp = TempDir::new().unwrap();

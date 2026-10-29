@@ -1285,8 +1285,13 @@ mod saving_record_wake_tests {
         panic!("the tile must come to rest");
     }
 
+    fn due(tile: &EmbeddedApp, now: crate::time::Instant) -> bool {
+        tile.next_wake_deadline()
+            .is_some_and(|deadline| deadline <= now)
+    }
+
     #[test]
-    fn a_record_saving_at_the_last_frame_is_resampled_when_its_store_wakes_the_pump() {
+    fn a_record_saving_at_the_last_frame_is_resampled_by_the_pump_not_a_paint() {
         let host = ProbeHost::new();
         let component = runner_probe_definition()
             .instantiate(
@@ -1318,29 +1323,37 @@ mod saving_record_wake_tests {
             .unwrap();
         sample(&mut tile);
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
-        assert_eq!(
-            tile.next_wake_deadline(),
-            None,
-            "the record's store wakes the tile once the write lands: no deadline polls for it"
-        );
+        assert!(tile.next_wake_deadline().is_some());
 
-        // Nothing has landed and nothing woke the tile: the pump runs nothing
-        // and asks for no frame, however often the host pumps.
-        for _ in 0..100 {
-            assert!(!pump(&mut tile), "a save still under way paints nothing");
-        }
+        // Still being written when the deadline comes due: the pump samples
+        // it again and the deadline moves on. Nothing changed on screen, so
+        // no frame is asked for.
+        bound(&mut tile).age_record_save_sample();
+        assert!(due(&tile, crate::time::now()));
+        assert!(
+            !pump(&mut tile),
+            "a resample that changed nothing paints nothing"
+        );
         assert!(!tile.needs_redraw());
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saving));
+        assert!(
+            !due(&tile, crate::time::now()),
+            "the resample re-arms the deadline from itself"
+        );
 
-        // The writer finishes off the event loop and its store wakes the tile.
+        // The writer finishes off the event loop and wakes nobody: the stale
+        // deadline is all that is left of the save.
         binding.records.try_flush_record(&id).unwrap();
         binding.records.await_submitted(&id).unwrap();
         assert_eq!(
             binding.records.save_status(&id).unwrap(),
             RecordSaveStatus::Saved
         );
+        bound(&mut tile).age_record_save_sample();
+        let now = crate::time::now();
+        assert!(due(&tile, now));
 
-        // The pump, with no draw, takes up the wake and finds it saved: one
+        // The pump, with no draw, finds it saved: the deadline is gone and one
         // frame shows the change.
         assert!(pump(&mut tile), "the finished save is shown");
         assert_eq!(sampled(&mut tile), Some(RecordSaveStatus::Saved));

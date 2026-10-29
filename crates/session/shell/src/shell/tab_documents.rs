@@ -419,13 +419,6 @@ mod tests {
         fn is_settled(&self, key: &durable_store::StorageKey) -> bool {
             self.inner.is_settled(key)
         }
-        fn wake_when_settled(
-            &self,
-            key: &durable_store::StorageKey,
-            wake: durable_store::ReadyWake,
-        ) -> durable_store::SettleWatch {
-            self.inner.wake_when_settled(key, wake)
-        }
         fn lease(
             &self,
             key: &durable_store::StorageKey,

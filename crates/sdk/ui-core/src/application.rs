@@ -1212,15 +1212,18 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
-    /// The record durability last delivered to the root.
-    record_save: Option<crate::record::RecordSaveStatus>,
+    /// The record durability last delivered to the root, and when it was
+    /// sampled.
+    record_save: Option<(crate::record::RecordSaveStatus, crate::time::Instant)>,
     /// Whether a change to the delivered durability has yet to be presented.
     save_status_changed: bool,
-    /// What the record's store calls, from its own thread, when the writes
-    /// a "Saving…" waits on have resolved: this component's wake, so the
-    /// window syncs and samples the record's durability again then.
-    save_wake: Option<durable_store::ReadyWake>,
 }
+
+/// How soon a component whose record is still being written samples its
+/// durability again. The writer settles off the event loop and nothing wakes
+/// the window when it does, so a "Saving…" would otherwise stay on screen,
+/// and in the accessibility tree, until the next unrelated event.
+const SAVING_RESAMPLE: crate::time::Duration = crate::time::Duration::from_millis(100);
 
 impl AppComponent {
     /// The component the app built to show another record in this one's
@@ -1393,11 +1396,6 @@ impl AppComponent {
     /// arrived.
     pub(crate) fn project_record_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
-        let context = &self.context;
-        let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
-            let handle = context.wake_handle();
-            std::sync::Arc::new(move || handle.wake())
-        }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
                 if root.take_save_retry()
@@ -1418,17 +1416,7 @@ impl AppComponent {
                 for text in &said {
                     root.record_said(text);
                 }
-                let mut status = binding.records.save_status(&binding.checkout.id).ok()?;
-                if status == crate::record::RecordSaveStatus::Saving {
-                    // Still being written: the record's store wakes this
-                    // component once the write lands; nothing samples it
-                    // again on a timer. Sampled again once armed, so a write
-                    // that landed in between is shown now.
-                    binding
-                        .records
-                        .wake_on_save_progress(&binding.checkout.id, wake);
-                    status = binding.records.save_status(&binding.checkout.id).ok()?;
-                }
+                let status = binding.records.save_status(&binding.checkout.id).ok()?;
                 root.record_save_status(status.clone());
                 Some((status, !refusals.is_empty() || !said.is_empty()))
             })
@@ -1442,8 +1430,8 @@ impl AppComponent {
             || self
                 .record_save
                 .as_ref()
-                .is_some_and(|previous| *previous != status);
-        self.record_save = Some(status);
+                .is_some_and(|(previous, _)| *previous != status);
+        self.record_save = Some((status, crate::time::now()));
         if changed {
             // The caller syncs the root again with the new state; a frame
             // shows it. An `App` asks for that frame through
@@ -1455,12 +1443,17 @@ impl AppComponent {
         changed
     }
 
-    /// Whether the record's last sampled durability is still being written.
-    pub(crate) fn record_saving(&self) -> bool {
-        matches!(
-            &self.record_save,
-            Some(crate::record::RecordSaveStatus::Saving)
-        )
+    /// When the window must sync again without input: shortly after the
+    /// last sample while the record is still being written, so the moment
+    /// it becomes durable is shown. The deadline is fixed to the sample: one
+    /// computed from the time it is asked for would never come due.
+    pub(crate) fn save_status_wake_deadline(&self) -> Option<crate::time::Instant> {
+        match &self.record_save {
+            Some((crate::record::RecordSaveStatus::Saving, sampled)) => {
+                sampled.checked_add(SAVING_RESAMPLE)
+            }
+            _ => None,
+        }
     }
 
     /// Whether the delivered durability changed since this was last asked,
@@ -1472,7 +1465,18 @@ impl AppComponent {
     /// The durability last delivered, as sampled.
     #[cfg(test)]
     pub(crate) fn sampled_record_save(&self) -> Option<&crate::record::RecordSaveStatus> {
-        self.record_save.as_ref()
+        self.record_save.as_ref().map(|(status, _)| status)
+    }
+
+    /// Move the last durability sample back past its resample interval, so a
+    /// test reaches the moment its deadline comes due without waiting for it.
+    #[cfg(test)]
+    pub(crate) fn age_record_save_sample(&mut self) {
+        if let Some((_, sampled)) = &mut self.record_save {
+            *sampled = sampled
+                .checked_sub(SAVING_RESAMPLE * 2)
+                .expect("the monotonic clock started before the sample's resample interval");
+        }
     }
 
     pub fn new(
@@ -1515,7 +1519,6 @@ impl AppComponent {
             registry_owner,
             record_save: None,
             save_status_changed: false,
-            save_wake: None,
             host_owner_wakes: None,
         }
     }

@@ -815,9 +815,9 @@ fn report(what: &str, samples: &[ui::profiling::FrameTiming], shapes: (u64, u64,
 /// window idles.
 fn assert_idle(bench: &mut Bench, what: &str) {
     // What the input left runs out in a few wakes, each a frame of the live
-    // window: the woken component taken up, and the save status moving
-    // along once the record's store says the edit the gesture wrote has
-    // landed. Then nothing wakes the window.
+    // window: the save status moving along after the edit the gesture
+    // wrote (a step a tenth of a second), the woken component taken up.
+    // Then nothing wakes the window.
     let mut wakes = Vec::new();
     for _ in 0..12 {
         bench.app.idle();
@@ -843,17 +843,11 @@ fn assert_idle(bench: &mut Bench, what: &str) {
         ));
         if let Some(due) = schedule.next_wake_deadline {
             let wait = due.saturating_duration_since(ui::time::now());
-            if wait < std::time::Duration::from_secs(1) {
-                std::thread::sleep(wait);
-            } else {
-                // A far timer (the save status's stall notice) only stands
-                // by: the window parks on it, and what it waits for (the
-                // record's store saying the write landed) wakes it first.
-                assert!(
-                    bench.app.harness().park_until(due),
-                    "{what}: the window slept through to a far timer, nothing woke it: {schedule:?}"
-                );
-            }
+            assert!(
+                wait < std::time::Duration::from_secs(1),
+                "{what}: a timer is due soon, not an idle wake: {schedule:?}"
+            );
+            std::thread::sleep(wait);
         }
     }
     panic!("{what}: the window keeps waking: {wakes:?}");

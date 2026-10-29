@@ -1002,16 +1002,6 @@ impl FrameHarness {
         }
     }
 
-    /// Park as an idle live window does, until one of its components is
-    /// woken from another thread (a worker's answer, a store's write
-    /// landing) or `deadline` passes. Whether one was woken; `false` at once
-    /// for a harness whose components queue no wakes.
-    pub fn park_until(&self, deadline: crate::time::Instant) -> bool {
-        self.owner_wake_queue
-            .as_ref()
-            .is_some_and(|queue| queue.wait_pending_until(deadline))
-    }
-
     /// Queue presence is scheduling metadata, never a service/authority proof.
     pub fn has_pending_owner_models(&self) -> bool {
         self.owner_wake_queue

@@ -1493,12 +1493,12 @@ mod save_status_fixture {
                     .unwrap(),
                 pending
             );
-            // While the record is being written its store wakes the component
-            // once the write lands, so it sets no deadline to resample it.
+            // While the record is being written nothing else wakes the window,
+            // so the component asks to sync again on its own.
             let _ = self.tile.take_structure_dirty();
             assert!(
-                self.tile.next_wake_deadline().is_none(),
-                "a component showing Saving… is woken by its store, not a resample deadline"
+                self.tile.next_wake_deadline().is_some(),
+                "a component showing Saving… must resample its durability"
             );
             self.host.records.try_flush().unwrap();
             self.pump();

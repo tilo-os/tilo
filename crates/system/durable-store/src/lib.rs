@@ -178,17 +178,6 @@ pub enum Durability {
     Failed(String),
 }
 
-/// What [`DurableStore::wake_when_settled`] did with its wake.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettleWatch {
-    /// Writes or a sync were outstanding for the key: the wake is called
-    /// once, from any thread, when they have all resolved.
-    Armed,
-    /// Nothing was outstanding for the key: the wake was dropped, and its
-    /// durability is what [`DurableStore::durability`] says now.
-    Settled,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
     #[error("another writer holds {0}")]
@@ -305,17 +294,6 @@ pub trait DurableStore {
     fn is_settled(&self, key: &StorageKey) -> bool {
         self.flush(Some(key)).is_ok()
     }
-
-    /// Call `wake` once, from any thread, when every write accepted for `key`
-    /// and every sync asked for it before this call has committed or failed:
-    /// how a window still showing "Saving…" hears that it is done without
-    /// asking again and again. Never called at once: when nothing is
-    /// outstanding the answer is [`SettleWatch::Settled`]. The same wake
-    /// ([`waiting::same_wake`]) armed twice is called once.
-    ///
-    /// Every store answers it: a window showing "Saving…" has no other way
-    /// to learn the write landed, and never polls for it.
-    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch;
 
     /// Become the key's only writer until the returned lease is dropped.
     ///

@@ -257,10 +257,10 @@ fn bound_scroll_app(
         .unwrap();
     let binding = component.callback_binding();
     // The new record's first write lands only after its writer's debounce.
-    // Until then the component reports it Saving, and the store's wake once
-    // it lands brings a full model sync, so a loaded runner whose wheel and
-    // frame straddle that wake sees a sync no scroll caused. Measure from
-    // the durable record a settled window shows.
+    // Until then the component reports it Saving and resamples that every
+    // `SAVING_RESAMPLE` of wall time through a full model sync, so a loaded
+    // runner whose wheel and frame straddle a resample sees a sync no scroll
+    // caused. Measure from the durable record a settled window shows.
     binding
         .records
         .try_flush_record(&binding.checkout.id)
@@ -548,9 +548,8 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
         let syncs = fixture.syncs.get();
         let declarations = fixture.declarations.get();
         fixture.wheel();
-        // A saved record is never sampled again on a timer: however long a
-        // loaded runner takes between the wheel and its frame, only the
-        // wheel syncs.
+        // A loaded runner: a durability resample interval passes between the
+        // wheel and its frame. Only a record still being written resamples.
         let component = &mut fixture
             .app
             .root_widget
@@ -558,6 +557,7 @@ fn bound_view_only_native_scroll_carries_owner_without_hiding_record_edits() {
             .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
             .expect("a bound component")
             .component;
+        component.age_record_save_sample();
         assert_eq!(
             component.sampled_record_save(),
             Some(&crate::record::RecordSaveStatus::Saved)

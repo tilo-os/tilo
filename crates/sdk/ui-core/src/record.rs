@@ -3598,23 +3598,6 @@ impl RecordStore {
         })
     }
 
-    /// Have `wake` called whenever [`Self::save_status`] of `id` may change
-    /// without input: its store resolving its writer's writes, or a host
-    /// acknowledging a portable cache. A memory-only record never changes.
-    /// Sample again once armed: a write that landed before is not heard of.
-    pub fn wake_on_save_progress(&self, id: &RecordId, wake: durable_store::ReadyWake) {
-        let Ok(set) = self.0.try_borrow() else {
-            return;
-        };
-        if let Some(cache) = &set.portable {
-            cache.watch_durability(&portable::key(&set.package_id, &set.home, id), wake);
-            return;
-        }
-        if let Some(saver) = set.open.get(id).and_then(|slot| slot.autosave.as_ref()) {
-            saver.wake_on_settle(wake);
-        }
-    }
-
     /// Block until the store has committed or refused every write `id`'s
     /// writer already submitted, without submitting its pending edits: the
     /// acknowledgement [`Self::save_status`] reports, awaited instead of

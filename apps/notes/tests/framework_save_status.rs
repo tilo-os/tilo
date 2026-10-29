@@ -56,7 +56,7 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     // Bytes that were only read count as durable once the store's thread has
     // synced them, so a reopened note can read "Saving…" for a moment. It
     // must turn "Saved" by itself: run frames only as the live host would
-    // (the store's wake once its thread is done) until it does.
+    // (the status's own wake deadline) until it does.
     let saved = idle(&mut app, tilo_test_env::hang_bound(), |app| {
         save_labels(app) == ["Saved"]
     });
@@ -67,10 +67,9 @@ fn a_hosted_note_reports_saved_and_survives_a_reopen() {
     );
 }
 
-/// Run frames only when the live host would: for queued work (a wake the
-/// record's store raised once a write landed among it), an animation or a
-/// due wake deadline, each followed by the idle pass that hands edits to the
-/// record's writer. Returns once `until` holds or `budget` runs out.
+/// Run frames only when the live host would: for queued work, an animation
+/// or a due wake deadline, each followed by the idle pass that hands edits to
+/// the record's writer. Returns once `until` holds or `budget` runs out.
 fn idle(
     app: &mut TestApp<NotesShell>,
     budget: std::time::Duration,

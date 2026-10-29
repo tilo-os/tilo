@@ -777,9 +777,6 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
             .acknowledge(write.revision, Err("quota".into()))
             .unwrap();
     }
-    // The refused write is a durability change the store wakes the
-    // component for: its window takes that up and shows the failure.
-    let shown = frame.service_pending_owner_models();
     let failed = host.records.save_status(&checkout.id).unwrap();
     let callbacks = seen.syncs.get();
     let empty = frame.service_pending_owner_models();
@@ -796,7 +793,6 @@ fn background_failed_ack_retries_checkpoint_on_real_new_wake_without_pending_cal
     let reopened = reopened_body(mirror.clone(), &checkout);
     close_memory(&mut frame, 1, &backend, &mirror);
     assert_eq!(first.unwrap(), 1);
-    assert_eq!(shown.unwrap(), 1);
     assert_eq!(
         offered_count, 1,
         "only already-offered bytes reach the host ACK subject"
@@ -858,13 +854,6 @@ impl durable_store::DurableStore for RefusingStore {
         key: Option<&durable_store::StorageKey>,
     ) -> Result<(), durable_store::StoreError> {
         self.inner.flush(key)
-    }
-    fn wake_when_settled(
-        &self,
-        key: &durable_store::StorageKey,
-        wake: durable_store::ReadyWake,
-    ) -> durable_store::SettleWatch {
-        self.inner.wake_when_settled(key, wake)
     }
     fn lease(
         &self,
@@ -951,10 +940,6 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
     commit_accepted(&backend, &mirror);
-    // Both records' first writes land, and their stores' wakes are taken up,
-    // before the batch under test.
-    other.records.try_flush().unwrap();
-    frame.service_pending_owner_models().unwrap();
     sa.write_next.set(true);
     sa.wake.borrow().as_ref().unwrap().wake();
     sb.wake.borrow().as_ref().unwrap().wake();
@@ -978,9 +963,7 @@ fn background_partial_batch_report_keeps_accepted_peer_bytes_before_later_busy_r
     assert_eq!(accepted.len(), 1);
     assert_eq!(reopened, "background model write");
     assert!(retry.attempted);
-    // The peer refused as busy, and the owner whose accepted bytes the
-    // store just acknowledged: its store wakes it to show them saved.
-    assert_eq!(retry.completed, 2);
+    assert_eq!(retry.completed, 1);
     assert!(retry.result.is_ok());
     assert!(!empty.attempted);
     assert_eq!(empty.completed, 0);
@@ -998,9 +981,6 @@ fn background_exact_offer_never_settles_unrelated_same_store_typing() {
     let bid = b.component.record().id.clone();
     let (mut frame, _, _) = frame(&queue, vec![a, b]);
     commit_accepted(&backend, &mirror);
-    // The records' first writes landed: their store's wakes are taken up
-    // before the offer under test.
-    frame.service_pending_owner_models().unwrap();
     host.records
         .with(&bid, |doc| {
             doc.put(ROOT, "body", "unrelated unfinished typing")
