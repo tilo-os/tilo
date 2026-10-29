@@ -1824,7 +1824,6 @@ mod wake_deadline_tests {
 mod semantic_target_tests {
     use super::theme_repaint_tests::{layout, paint};
     use super::*;
-    use crate::host_core::HostCore as _;
     use std::rc::Rc;
 
     /// The node under `node` whose action target is `name`.
