@@ -16,19 +16,21 @@ use crate::meta::PackageMeta;
 use crate::package::parse_package_files;
 use crate::print::print_file;
 use crate::source::{
-    BuildError, BuiltPackage, PackageSource, Stamp, WASM_FILE, compile_dirs, dependency_order,
-    read_ids, write_ids,
+    BuildError, BuiltPackage, PackageSource, Stamp, compile_dirs, dependency_order, read_ids,
+    write_ids,
 };
 
 pub const USAGE: &str = "usage:
-  tilolangc check [dir] [--json] [--watch] [--path <dir>]... [--import <app.wasm>]...
-  tilolangc build [dir] [--path <dir>]... [--import <app.wasm>]...
+  tilolangc check [dir] [--json] [--watch] [--write-ids] [--path <dir>]... [--import <app.wasm>]...
+  tilolangc build [dir] [--out <dir>] [--path <dir>]... [--import <app.wasm>]...
   tilolangc fmt [dir] [--check]
   tilolangc ids [dir] [--rename <old> <new>]
 
 [dir] is a package directory (default: the current directory). Every .tl file in it is part of
 the package. `use` imports are found among the package's sibling directories and in each
---path, which names a package directory or a directory of packages.";
+--path, which names a package directory or a directory of packages. `check` fails while the
+package's ids lock (app.ids) is out of date and says what changed; --write-ids writes it.
+`build` writes the lock and the module, <app id>.wasm, to --out (default target/tilolang).";
 
 /// The commands this module handles: a host binary dispatches to [`main`] when its first
 /// argument is one of them.
@@ -44,6 +46,8 @@ struct Options {
     json: bool,
     watch: bool,
     check: bool,
+    write_ids: bool,
+    out: Option<PathBuf>,
     imports: Vec<PathBuf>,
     search: Vec<PathBuf>,
     rename: Option<(String, String)>,
@@ -57,6 +61,8 @@ fn parse_options(args: &[String]) -> Result<Options, String> {
             "--json" => o.json = true,
             "--watch" => o.watch = true,
             "--check" => o.check = true,
+            "--write-ids" => o.write_ids = true,
+            "--out" => o.out = Some(PathBuf::from(it.next().ok_or("--out needs a directory")?)),
             "--import" => o.imports.push(PathBuf::from(
                 it.next().ok_or("--import needs a path to an app.wasm")?,
             )),
@@ -129,14 +135,77 @@ fn failed(error: BuildError, json: bool) -> Result<bool, String> {
 }
 
 fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
-    match build_all(dir, o, &mut SeededEntropy(0)) {
-        Ok(_) => {
+    // Ids written to a lock are drawn at random, so two packages never share one; a check that
+    // writes nothing draws them reproducibly.
+    let built = if o.write_ids {
+        build_all(dir, o, &mut OsEntropy::default())
+    } else {
+        build_all(dir, o, &mut SeededEntropy(0))
+    };
+    match built {
+        Ok(built) => {
             if o.json {
                 println!("[]");
             }
-            Ok(true)
+            let mut current = true;
+            for b in &built {
+                let changes = lock_changes(b);
+                if changes.is_empty() {
+                    continue;
+                }
+                if o.write_ids {
+                    write_ids(b)?;
+                    explain(b, &changes, "updated");
+                } else {
+                    explain(b, &changes, "is out of date");
+                    eprintln!(
+                        "  write it with `tilolangc check --write-ids` (or `build`), and commit it with the sources"
+                    );
+                    current = false;
+                }
+            }
+            Ok(current)
         }
         Err(error) => failed(error, o.json),
+    }
+}
+
+/// What compiling a package changed in its ids lock: `(+ or -, entry)`.
+fn lock_changes(b: &BuiltPackage) -> Vec<(char, String)> {
+    let old = crate::source::read_ids(&b.dir).unwrap_or_default();
+    let new = &b.compiled.ids;
+    let mut out = Vec::new();
+    for (name, _) in new.entries() {
+        if old.get(name).is_none() {
+            out.push(('+', name.to_owned()));
+        }
+    }
+    for (name, _) in old.entries() {
+        if new.get(name).is_none() {
+            out.push(('-', name.to_owned()));
+        }
+    }
+    out
+}
+
+/// Says what changed in a package's ids lock and why each new entry is there.
+fn explain(b: &BuiltPackage, changes: &[(char, String)], what: &str) {
+    eprintln!("{}: the ids lock {what}:", b.dir.display());
+    for (sign, name) in changes {
+        let why = if *sign == '-' {
+            "no longer declared; kept as retired, so its id is never reused"
+        } else if name.ends_with(crate::ids::PRESENT_SUFFIX) {
+            "the view that presents an action on its subject (its `require`, `on:`, or a label or icon that follows the subject)"
+        } else if name.starts_with("scenario ") {
+            "a scenario's hidden action"
+        } else if name.contains('#') {
+            "an anchor (`as name`)"
+        } else if name.contains('.') {
+            "a field, case or view state"
+        } else {
+            "a declaration"
+        };
+        eprintln!("  {sign} {name}: {why}");
     }
 }
 
@@ -166,14 +235,22 @@ fn build(dir: &Path, o: &Options) -> Result<bool, String> {
         Err(error) => return failed(error, o.json),
     };
     for b in &built {
+        let changes = lock_changes(b);
         if write_ids(b)? {
-            eprintln!("{}: ids lock updated", b.dir.display());
+            explain(b, &changes, "updated");
         }
     }
     if let Some(root) = built.last() {
-        let path = root.dir.join(WASM_FILE);
+        // Outside the package: a package directory holds sources and its lock only.
+        let out = o
+            .out
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("target").join("tilolang"));
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        let path = out.join(format!("{}.wasm", root.compiled.meta.app));
         std::fs::write(&path, &root.compiled.wasm)
             .map_err(|e| format!("{}: {e}", path.display()))?;
+        eprintln!("wrote {}", path.display());
     }
     Ok(true)
 }

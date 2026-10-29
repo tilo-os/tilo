@@ -13,6 +13,7 @@
 mod bundle;
 mod collab;
 mod columns;
+mod composer;
 mod engines;
 mod fixtures;
 mod incremental;

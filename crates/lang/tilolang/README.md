@@ -138,8 +138,10 @@ view board(b: Board) {
 A template's `Option<View>` parameter placed as a statement shows what it was given, and nothing
 when it was left out.
 
-**Key paths.** Where a lambda would only read a field, `.field` is that lambda:
-`items.sort_by(.due)`, `items.count(.done)`, `items.remove_where(.done)`.
+**Key paths.** Where a lambda would only read a field, `.field` (or `.a.b`) is that lambda:
+`items.sort_by(.due)`, `items.count(.done)`, `items.remove_where(.done)`. `sort_by` takes
+Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest first:
+`items.sort_by(.due, desc)`.
 
 **Reflection.** The log records who made every change, when and by which action, so code reads
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
@@ -264,7 +266,12 @@ chips show them (`host.Filter`).
 - An enum case takes an icon: `all (icon: .file_text)`.
 - An action's `label:` and `icon:` may be an `if` over its subject, and `on:` is a Bool over
   the subject. The `else` branch is the static fallback:
-  `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`.
+  `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`. A label
+  may interpolate its arguments, `label: "Move to {col.title}"`: over the subject it follows
+  the subject as an `if` does; over another argument it is read where the action is applied
+  with it, `button(move_to(b, card, col))`.
+- A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
+  package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
   on its subject. Where it would be offered on the subject (`actions(r)`: `std`'s headers and
   menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
@@ -297,7 +304,9 @@ The compiler crate has the commands that need nothing but the compiler under two
 `tilolangc` and the short `tlc` (`cargo run -p tilolang --bin tlc --`).
 
 ```
-tilolang check [dir] [--json] [--watch]   every error of the package and its imports
+tilolang check [dir] [--json] [--watch] [--write-ids]
+                                          every error of the package and its imports, and an
+                                          ids lock that is out of date (written with --write-ids)
 tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: OUT/<name>.tapp
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock

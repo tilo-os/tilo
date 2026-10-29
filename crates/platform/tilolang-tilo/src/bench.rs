@@ -219,9 +219,10 @@ struct Shape {
     list: Option<List>,
     /// The root's first counter.
     counter: Option<String>,
-    /// The roots of other packages the root refers to, by the field that holds the reference:
-    /// a board over notes and todos. Each is seeded too.
-    links: Vec<(String, Shape)>,
+    /// The roots of other packages the root shows, by the field that holds the reference when
+    /// one does, or reached by name (`notes.notes`): a day's view over notes and todos. Each is
+    /// seeded too.
+    links: Vec<(Option<String>, Shape)>,
 }
 
 /// A collection of a root and its items.
@@ -320,7 +321,15 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
             if let Ok(theirs) = root_type(other)
                 && ty == format!("{}.{}", other.app, theirs.name)
             {
-                links.push((field.id.clone(), shape_of(other, &[])?));
+                links.push((Some(field.id.clone()), shape_of(other, &[])?));
+            }
+        }
+    }
+    // A root that holds nothing of its own reads the roots of the packages it uses by name.
+    if list.is_none() && counter.is_none() && links.is_empty() {
+        for other in others {
+            if let Ok(shape) = shape_of(other, &[]) {
+                links.push((None, shape));
             }
         }
     }
@@ -373,6 +382,7 @@ fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
         }
     }
     for (field, linked) in &shape.links {
+        let Some(field) = field else { continue };
         let target = ResourceRef::root(root_id(linked), linked.root_ty.clone());
         let value = tilolang_runtime::value::to_json(&Value::some(Value::resource(&target)))?;
         match root.get_mut(field) {
@@ -1649,6 +1659,17 @@ fn text_input(host: &Host, node: &UiNode) -> Option<(String, String)> {
     node.children.iter().find_map(|c| text_input(host, c))
 }
 
+/// The key and text of the first input of `node` bound to the view's own state: the text a
+/// person composes (a conversation's composer).
+pub(crate) fn composer_input(view: &ViewInstance, node: &UiNode) -> Option<(String, String)> {
+    if node.binding.as_ref().is_some_and(|b| b.field().is_none())
+        && let Some(Value::Text(text)) = view.bound_value(&node.key)
+    {
+        return Some((node.key.clone(), text));
+    }
+    node.children.iter().find_map(|c| composer_input(view, c))
+}
+
 /// Where a person types in the window `main` of `host` shows.
 fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, String), String> {
     if let Some((root, list)) = sized.shape.subject()
@@ -1666,7 +1687,9 @@ fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, Stri
         let title = list.texts.first().cloned().unwrap_or_default();
         let (input, text) = match bound_input(editor.tree(), &title) {
             Some(input) => (input, format!("Item {target}")),
-            None => text_input(host, editor.tree()).ok_or("the item's window has no text input")?,
+            None => text_input(host, editor.tree())
+                .or_else(|| composer_input(&editor, editor.tree()))
+                .ok_or("the item's window has no text input")?,
         };
         return Ok((Typing::Item(Box::new(editor), input), text));
     }

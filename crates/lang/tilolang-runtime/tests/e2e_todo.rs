@@ -114,7 +114,7 @@ mod cases {
     #[test]
     fn moving_an_item_moves_its_row_and_touches_nothing_else() {
         let t = Todo::new();
-        t.add("a");
+        let a = t.add("a");
         t.add("b");
         let c = t.add("c");
         let mut view = t.view();
@@ -128,8 +128,12 @@ mod cases {
             .collect();
 
         t.call(
-            "move_to",
-            vec![Value::resource(&t.list), Value::resource(&c), Value::Int(0)],
+            "move_before",
+            vec![
+                Value::resource(&t.list),
+                Value::resource(&c),
+                Value::resource(&a),
+            ],
         );
         let patches = view.poll_patches().unwrap();
         assert_eq!(

@@ -2113,6 +2113,10 @@ impl Store for TiloStore {
         self.create_with_id(record, &id)
     }
 
+    fn create_with_id(&mut self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
+        Self::create_with_id(self, record, id)
+    }
+
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
         let inner = self.inner.borrow();
         let (app, ty) = inner.locate(at)?;

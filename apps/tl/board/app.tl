@@ -37,15 +37,15 @@ action new_card(b: Board, col: Column) -> Card (icon: .plus, label: "New card") 
 }
 
 /// Moves a card to the foot of a column.
-action move_to(b: Board, card: Card, col: Column) (icon: .arrow_right) {
+action move_to(b: Board, card: Card, col: Column) (icon: .arrow_right, label: "Move to {col.title}") {
     card.column = col
-    b.cards.move(card, b.cards.len())
+    if let last = b.cards.last() { b.cards.move(card, after: last) }
 }
 
 /// Moves a card to just above another, into that card's column.
 action move_before(b: Board, card: Card, next: Card) {
     card.column = next.column
-    b.cards.move(card, place_of(b, card, next))
+    b.cards.move(card, before: next)
 }
 
 /// Deletes a card.
@@ -56,22 +56,6 @@ destructive action delete_card(b: Board, card: Card) (icon: .trash, label: "Dele
 /// Renames a column.
 action rename_column(col: Column, title: Text) {
     col.title = title
-}
-
-/// Where `next` is among the cards other than `card`: the place `card` takes to be just above
-/// it.
-fn place_of(b: Board, card: Card, next: Card) -> Int {
-    let at = 0
-    let seen = false
-    for c in b.cards {
-        if c == next {
-            seen = true
-        }
-        if not seen and c != card {
-            at += 1
-        }
-    }
-    at
 }
 
 /// The cards of a column, in order.
@@ -92,31 +76,37 @@ view board(b: Board) {
                         on act: new_card(b, col)
                         on drop(moved: Card): move_to(b, moved, col)
                         for card in cards {
-                            ui.BoardCard(card, title: card.title) {
-                                on activate: open(card)
-                                on drop(moved: Card): move_before(b, moved, card)
-                                menu: {
-                                    for other in b.columns {
-                                        if other != card.column {
-                                            ui.MenuItem("Move to {other.title}", icon: .arrow_right) {
-                                                on choose: move_to(b, card, other)
-                                            }
-                                        }
-                                    }
-                                    for a in actions(card) {
-                                        ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
-                                            on choose: a.run
-                                        }
-                                    }
-                                }
-                                if card.notes != "" {
-                                    text(card.notes, role: .caption)
-                                }
-                            }
+                            card_tile(b, card)
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+/// A card on the board: its title and the start of its notes. It opens in a page, takes a card
+/// dropped on it to just above it, and its menu moves it to another column or runs its actions.
+view card_tile(b: Board, card: Card) {
+    ui.BoardCard(card, title: card.title) {
+        on activate: open(card)
+        on drop(moved: Card): move_before(b, moved, card)
+        menu: {
+            for other in b.columns {
+                if other != card.column {
+                    ui.MenuItem("Move to {other.title}", icon: .arrow_right) {
+                        on choose: move_to(b, card, other)
+                    }
+                }
+            }
+            for a in actions(card) {
+                ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                    on choose: a.run
+                }
+            }
+        }
+        if card.notes != "" {
+            text(card.notes, role: .caption)
         }
     }
 }

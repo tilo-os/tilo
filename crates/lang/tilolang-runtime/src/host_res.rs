@@ -16,7 +16,7 @@ use crate::engine::Wasm;
 use crate::handles::FrameKind;
 use crate::ids::ModuleHash;
 use crate::meta::{FieldKind, Ty};
-use crate::num::{counter_to_float, float_to_counter, to_usize};
+use crate::num::{counter_to_float, float_to_counter};
 use crate::registry::{FieldInfo, TypeInfo};
 use crate::store::{Applied, FieldSpec, FieldValue, Mutation, Scalar, Txn};
 use crate::value::{CollRef, RecordInit, RefValue, ResourceRef, Value, from_json, to_json};
@@ -698,6 +698,29 @@ impl Core {
         Ok(())
     }
 
+    /// `@app.Type:id` or a root: the reference, checked against the store; a root nobody
+    /// opened yet is still the root and reads as it would start.
+    fn ref_lit(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let (_app, ty, id) = (
+            self.text(a.h(0)?)?,
+            self.text(a.h(1)?)?,
+            self.text(a.h(2)?)?,
+        );
+        let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
+            return trap(format!("`{id}` is not a reference id"));
+        };
+        self.type_of_ref(&ty)?;
+        // A root nobody opened yet is still the root: it reads as it would start.
+        if !target.is_unmade_root() || self.store.borrow().type_of(&target).is_ok() {
+            self.verify_ref(&target)?;
+        }
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Ref(RefValue {
+            target: Rc::new(target),
+            author,
+        }))
+    }
+
     pub(crate) fn resource_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ResGetI => {
@@ -736,9 +759,24 @@ impl Core {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
                 self.coll_field(&ctx)?;
                 let item = self.item_arg(&ctx, a.h(2)?)?;
-                let Some(index) = to_usize(a.long(3)?) else {
-                    return trap("move to a negative index");
+                let neighbour = self.item_arg(&ctx, a.h(3)?)?;
+                let after = a.h(4)? != 0;
+                // Next to itself, it is where it was asked to be.
+                if neighbour == item {
+                    return ret_void();
+                }
+                // The neighbour's place among the other items, as this change sees them.
+                let listing = self
+                    .store
+                    .borrow()
+                    .listing(&ctx.target, &spec(&ctx.field))
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                let others: Vec<Rc<str>> =
+                    listing.iter().filter(|id| **id != *item.as_str()).collect();
+                let Some(at) = others.iter().position(|id| **id == *neighbour.as_str()) else {
+                    return trap("the neighbour is not in this collection");
                 };
+                let index = if after { at.saturating_add(1) } else { at };
                 let field = ctx.field.id.clone();
                 self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
                 ret_void()
@@ -748,23 +786,7 @@ impl Core {
             }
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
-            Imp::RefLit => {
-                let (_app, ty, id) = (
-                    self.text(a.h(0)?)?,
-                    self.text(a.h(1)?)?,
-                    self.text(a.h(2)?)?,
-                );
-                let Some(target) = ResourceRef::parse_id(&id, ty.clone()) else {
-                    return trap(format!("`{id}` is not a reference id"));
-                };
-                self.type_of_ref(&ty)?;
-                self.verify_ref(&target)?;
-                let author = Some(self.module_of_frame()?);
-                self.ret_h(Value::Ref(RefValue {
-                    target: Rc::new(target),
-                    author,
-                }))
-            }
+            Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {
                 let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
                 ret_i32(i32::from(x.target == y.target))

@@ -908,6 +908,20 @@ impl Checker<'_> {
             )));
             return Some(state.ty);
         }
+        if self.st.ui.composer
+            && let ExprKind::Field { name, .. } = &value.kind
+        {
+            let field = &name.name;
+            self.err(
+                "E108",
+                value.span,
+                format!(
+                    "a composer's text is one person's until they send it, and `{}` is shared by everyone looking, so two people typing here overwrite each other; declare `lens {field}: Text` in the view, write `bind: {field}`, and pass it to the action: `send(c, {field}).then(set({field}, \"\"))`",
+                    crate::print::expr_source(value)
+                ),
+            );
+            return None;
+        }
         let ExprKind::Field { base, name } = &value.kind else {
             self.err(
                 "E062",
