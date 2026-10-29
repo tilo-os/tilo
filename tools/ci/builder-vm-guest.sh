@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The half of tools/ci/builder-vm.sh that runs inside its VM host container on the rcargo
+# The half of tools/ci/builder-vm.sh that runs inside its VM host container on the remote
 # builder (Fedora with tools/ci/packages/vm-acceptance.txt, /dev/kvm passed through):
 #
 #   builder-vm-guest.sh worker       the worker VM the disks are installed in, booted from

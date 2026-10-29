@@ -26,8 +26,9 @@
 #   --no-build         use the last build in target/nested-session (or in
 #                      $TILO_NESTED_SESSION_BUILD, where a check hands its
 #                      build over in a read-only tree)
-#   --builder WHERE    where to build: rcargo or t (default: rcargo when it is
-#                      on PATH, t otherwise; also TILO_NESTED_BUILDER)
+#   --builder WHERE    where to build: remote or t (default: remote when
+#                      TILO_REMOTE_CARGO names a program on PATH, t
+#                      otherwise; also TILO_NESTED_BUILDER)
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
@@ -56,11 +57,13 @@
 # asks for a snapshot.
 #
 # Everything is built remotely by dist/dev/nested-session-build.sh, so the
-# machine running the session needs no Rust toolchain. With rcargo it runs on
-# the builder rcargo's configuration names (RCARGO_CONFIG), which must be of
-# this machine's architecture, as one `rcargo exec` whose output is fetched
-# into target/nested-session; an unchanged tree rebuilds nothing there and
-# fetches nothing. With t it runs as t.toml's `nested-session` check (or
+# machine running the session needs no Rust toolchain. Remote, it runs on the
+# builder of the remote cargo drop-in TILO_REMOTE_CARGO names (a cargo
+# replacement that also runs `PROGRAM --fetch DIR exec SCRIPT` on its builder
+# and copies DIR of the target directory back), which must be of this
+# machine's architecture, as one `exec` whose output is fetched into
+# target/nested-session; an unchanged tree rebuilds nothing there and fetches
+# nothing. With t it runs as t.toml's `nested-session` check (or
 # `nested-session-arm64`) and is downloaded with `t outputs`; an unchanged
 # tree returns the stored build at once. Re-running repackages only apps
 # whose binary, manifest or surface changed. A changed shared runtime
@@ -73,6 +76,7 @@ apps=$built_apps
 state=${XDG_STATE_HOME:-$HOME/.local/state}/tilo-nested
 build=1
 builder=${TILO_NESTED_BUILDER:-}
+remote_cargo=${TILO_REMOTE_CARGO:-}
 prepare_only=0
 reset_identity=0
 fresh_desktop=0
@@ -93,7 +97,7 @@ while (($#)); do
         --ready) ready_out=$(realpath -m "${2:?--ready needs a file}"); shift 2 ;;
         --state) state=${2:?--state needs a directory}; shift 2 ;;
         --no-build) build=0; shift ;;
-        --builder) builder=${2:?--builder needs rcargo or t}; shift 2 ;;
+        --builder) builder=${2:?--builder needs remote or t}; shift 2 ;;
         --prepare-only) prepare_only=1; shift ;;
         --reset-identity) reset_identity=1; shift ;;
         --fresh-desktop) fresh_desktop=1; shift ;;
@@ -109,12 +113,15 @@ done
 if ((build)); then
     if [[ -z $builder ]]; then
         builder=t
-        command -v rcargo >/dev/null && builder=rcargo
+        [[ -n $remote_cargo ]] && command -v "$remote_cargo" >/dev/null && builder=remote
     fi
     case $builder in
-        rcargo|t) command -v "$builder" >/dev/null \
-            || die "$builder is required on PATH to build, or pass --no-build" ;;
-        *) die "unknown builder $builder (rcargo or t)" ;;
+        remote) [[ -n $remote_cargo ]] || die "the remote builder needs TILO_REMOTE_CARGO"
+            command -v "$remote_cargo" >/dev/null \
+            || die "$remote_cargo is required on PATH to build, or pass --no-build" ;;
+        t) command -v t >/dev/null \
+            || die "t is required on PATH to build, or pass --no-build" ;;
+        *) die "unknown builder $builder (remote or t)" ;;
     esac
 fi
 for tool in jq bwrap readelf python3 sha256sum; do
@@ -171,13 +178,13 @@ build_out=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}
 bin=$build_out/bin
 thin=$build_out/thin-app
 if ((build)); then
-    if [[ $builder == rcargo ]]; then
+    if [[ $builder == remote ]]; then
         # One builder command for all of it: the script's builds share one
         # jobserver there, and only the files that changed come back.
-        say "building the nested session on the rcargo builder (rcargo exec)"
+        say "building the nested session on the remote builder ($remote_cargo exec)"
         [[ $build_out == "$repo_root/target/nested-session" ]] \
-            || die "rcargo builds into target/nested-session; unset TILO_NESTED_SESSION_BUILD or pass --no-build"
-        (cd "$repo_root" && rcargo --fetch nested-session exec dist/dev/nested-session-build.sh) \
+            || die "the remote builder builds into target/nested-session; unset TILO_NESTED_SESSION_BUILD or pass --no-build"
+        (cd "$repo_root" && "$remote_cargo" --fetch nested-session exec dist/dev/nested-session-build.sh) \
             || die "the nested-session build failed (see above)"
     else
         # The build runs on a node of this machine's architecture.
@@ -200,7 +207,7 @@ case $(uname -m) in
     *) machine= ;;
 esac
 if [[ -n $machine ]] && ! readelf -hW "$bin/shell" | grep -q "Machine:.*$machine"; then
-    die "$bin/shell is not built for $(uname -m): build on a builder of this architecture (RCARGO_CONFIG)"
+    die "$bin/shell is not built for $(uname -m): build on a builder of this architecture"
 fi
 [[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
     || die "no thin-app build in $thin (run without --no-build)"
