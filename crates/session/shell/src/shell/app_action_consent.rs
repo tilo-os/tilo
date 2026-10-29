@@ -23,7 +23,8 @@ use tokio::sync::oneshot;
 
 use crate::shell::portal_dialog::PortalDialogQueue;
 pub use tilo_action_broker::app_actions::{
-    AnswerLater, AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
+    AnswerLater, AppActionAnswer, AppActionConsent, AppActionConsentPrompter,
+    AppActionConsentRequest,
 };
 use tilo_desktop::notifications::Notification;
 
@@ -129,7 +130,7 @@ impl SheetPrompter {
 }
 
 impl AppActionConsentPrompter for SheetPrompter {
-    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>> {
+    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionAnswer>> {
         if !(self.present)(&request) {
             return None;
         }
@@ -327,7 +328,7 @@ mod tests {
                 Err(oneshot::error::TryRecvError::Empty)
             ));
             assert!(sheet.confirm(), "separate explicit final approval");
-            assert_eq!(answer.try_recv().unwrap(), AppActionConsent::Once);
+            assert_eq!(answer.try_recv().unwrap(), AppActionConsent::Once.into());
         }
     }
 
@@ -346,7 +347,7 @@ mod tests {
         assert!(choices[1].contains("Prepare release notes"), "{choices:?}");
         assert!(sheet.select_next(false));
         assert!(sheet.confirm());
-        assert_eq!(answer.try_recv(), Ok(AppActionConsent::Always));
+        assert_eq!(answer.try_recv(), Ok(AppActionConsent::Always.into()));
     }
 
     #[test]
@@ -368,6 +369,6 @@ mod tests {
         let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
         assert!(sheet.pump());
         assert!(sheet.cancel(), "dismissing the sheet answers it");
-        assert_eq!(answer.try_recv(), Ok(AppActionConsent::Deny));
+        assert_eq!(answer.try_recv(), Ok(AppActionAnswer::DENY));
     }
 }

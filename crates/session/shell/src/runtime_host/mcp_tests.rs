@@ -619,6 +619,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         fixture.broker.set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
             asked: std::sync::Arc::clone(&asked),
             answer: AppActionConsent::Deny,
+            edits: Vec::new(),
         }));
         let server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         fixture.set_confirmation_required(true);
@@ -630,6 +631,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         fixture.broker.set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
             asked: std::sync::Arc::clone(&asked),
             answer: AppActionConsent::Once,
+            edits: Vec::new(),
         }));
         // Resolved twice: asked, then started on the person's answer.
         let invoke=server.handle(call("tilo_invoke",&args));
@@ -681,22 +683,126 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
     })).await;
 }
 
+/// An agent's ask through the door, its draft changed by the person on the
+/// sheet: the door invokes again with exactly the person's arguments, under
+/// their confirmation, tells the agent what ran, and the app runs exactly
+/// that. Allowed as it is, the same ask runs the agent's own arguments, as
+/// it always did.
+#[tokio::test(flavor = "current_thread")]
+async fn an_ask_edited_on_the_sheet_runs_the_persons_arguments_through_the_door() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let (fixture, room, actor) = fixture();
+            let contract = tilo_actions::ActionContract {
+                execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                result: tilo_actions::ResultSpec::Job,
+                confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                ..Default::default()
+            };
+            let (_app, notes) = fixture
+                .publish_surface_action(
+                    ("notes:list", "append"),
+                    &[tilo_actions::ActionParam::required(
+                        "text",
+                        tilo_actions::ParamType::Text,
+                        "What to append",
+                    )],
+                    &contract,
+                )
+                .await;
+            let server = McpServer::new(
+                BrokerActionHost::new(fixture.broker.clone()),
+                room.clone(),
+                actor,
+            );
+            let args = json!({"peer_id":71,"resource":"notes:list","action":"append","arguments":{"text":"Buy milk"},"wait_ms":0});
+            for (edits, ran) in [
+                (
+                    vec![tilo_actions::DraftEdit {
+                        path: vec!["text".into()],
+                        text: "Buy oat milk".into(),
+                    }],
+                    "Buy oat milk",
+                ),
+                (Vec::new(), "Buy milk"),
+            ] {
+                let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let edited = !edits.is_empty();
+                fixture
+                    .broker
+                    .set_app_action_consent(std::sync::Arc::new(AnsweringPerson {
+                        asked: std::sync::Arc::clone(&asked),
+                        answer: AppActionConsent::Once,
+                        edits,
+                    }));
+                let invoke = server.handle(call("tilo_invoke", &args));
+                tokio::pin!(invoke);
+                let reply = loop {
+                    tokio::select! {
+                        reply = &mut invoke => break reply,
+                        () = async {
+                            tokio::task::yield_now().await;
+                            drain_directory_bridge(&fixture).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        } => {}
+                    }
+                };
+                let reply = reply.unwrap();
+                assert_eq!(reply["result"]["isError"], false, "{reply}");
+                {
+                    let asked = asked.lock().unwrap();
+                    let draft = asked[0].draft.as_ref().expect("the sheet shows the draft");
+                    assert_eq!(draft.fields[0].value.line(), "Buy milk");
+                    assert!(draft.fields[0].editable);
+                }
+                let told = &reply["result"]["structuredContent"]["edited_by_person"];
+                if edited {
+                    assert_eq!(*told, json!({"text": ran}), "the agent is told what ran");
+                } else {
+                    assert!(told.is_null(), "nothing was changed: {reply}");
+                }
+                let delivered = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    notes.read_request().send().promise,
+                )
+                .await
+                .expect("the app runs it")
+                .unwrap();
+                let wire = delivered.get().unwrap();
+                let text = wire.get_argument().unwrap().to_str().unwrap();
+                let delivered: Value = serde_json::from_str(
+                    text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                        .unwrap_or(text),
+                )
+                .unwrap();
+                assert_eq!(delivered, json!({"text": ran}), "the app ran exactly that");
+            }
+        }))
+        .await;
+}
+
 /// The person at their device, answering every confirmation `answer`.
 struct AnsweringPerson {
     asked: std::sync::Arc<
         std::sync::Mutex<Vec<tilo_action_broker::app_actions::AppActionConsentRequest>>,
     >,
     answer: AppActionConsent,
+    /// What the person changes on the draft before answering.
+    edits: Vec<tilo_actions::DraftEdit>,
 }
 
 impl tilo_action_broker::app_actions::AppActionConsentPrompter for AnsweringPerson {
     fn ask(
         &self,
         request: tilo_action_broker::app_actions::AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<AppActionConsent>> {
+    ) -> Option<tokio::sync::oneshot::Receiver<tilo_action_broker::app_actions::AppActionAnswer>>
+    {
         self.asked.lock().unwrap().push(request);
         let (answer, asked) = tokio::sync::oneshot::channel();
-        let _ = answer.send(self.answer);
+        let _ = answer.send(tilo_action_broker::app_actions::AppActionAnswer {
+            consent: self.answer,
+            edits: self.edits.clone(),
+        });
         Some(asked)
     }
 }

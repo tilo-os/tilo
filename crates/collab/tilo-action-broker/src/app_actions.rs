@@ -201,11 +201,56 @@ impl AppActionConsent {
     }
 }
 
+/// What the person answered on the sheet: their choice, and the fields of
+/// the request's [`draft`](AppActionConsentRequest::draft) they changed
+/// before allowing it.
+///
+/// Edits name only fields the draft offers for editing; the host applies
+/// them with [`tilo_actions::Draft::apply_edits`], which refuses any other,
+/// and what the person allowed is bound to the arguments they make. A denial
+/// carries none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppActionAnswer {
+    pub consent: AppActionConsent,
+    pub edits: Vec<tilo_actions::DraftEdit>,
+}
+
+impl AppActionAnswer {
+    /// `consent`, changing nothing.
+    #[must_use]
+    pub const fn unedited(consent: AppActionConsent) -> Self {
+        Self {
+            consent,
+            edits: Vec::new(),
+        }
+    }
+
+    /// The person declined; nothing they typed is kept.
+    pub const DENY: Self = Self::unedited(AppActionConsent::Deny);
+
+    #[must_use]
+    pub fn allowed(&self) -> bool {
+        self.consent != AppActionConsent::Deny
+    }
+
+    /// The person's edits where they allowed it; none where they declined.
+    #[must_use]
+    pub fn allowed_edits(&self) -> &[tilo_actions::DraftEdit] {
+        if self.allowed() { &self.edits } else { &[] }
+    }
+}
+
+impl From<AppActionConsent> for AppActionAnswer {
+    fn from(consent: AppActionConsent) -> Self {
+        Self::unedited(consent)
+    }
+}
+
 /// Whoever can answer for the person using an application.
 pub trait AppActionConsentPrompter: Send + Sync {
     /// Put `request` to the person. `None` when nobody is there to answer,
     /// which refuses the request without asking.
-    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>>;
+    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionAnswer>>;
 
     /// Tell the person about `request` without interrupting them, as an
     /// ordinary notice; when they choose to answer it, `answer` is handed
@@ -222,7 +267,7 @@ pub trait AppActionConsentPrompter: Send + Sync {
 }
 
 /// What a notified request does with the person's answer on the sheet.
-pub type AnswerLater = Box<dyn FnOnce(oneshot::Receiver<AppActionConsent>) + Send>;
+pub type AnswerLater = Box<dyn FnOnce(oneshot::Receiver<AppActionAnswer>) + Send>;
 
 #[cfg(test)]
 mod tests {

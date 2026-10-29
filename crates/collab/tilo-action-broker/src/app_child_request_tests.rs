@@ -139,14 +139,14 @@ fn unconfirmed(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
 struct PersonSheet(
     tokio::sync::mpsc::UnboundedSender<(
         crate::app_actions::AppActionConsentRequest,
-        tokio::sync::oneshot::Sender<crate::app_actions::AppActionConsent>,
+        tokio::sync::oneshot::Sender<crate::app_actions::AppActionAnswer>,
     )>,
 );
 impl crate::app_actions::AppActionConsentPrompter for PersonSheet {
     fn ask(
         &self,
         request: crate::app_actions::AppActionConsentRequest,
-    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionConsent>> {
+    ) -> Option<tokio::sync::oneshot::Receiver<crate::app_actions::AppActionAnswer>> {
         let (answer, receive) = tokio::sync::oneshot::channel();
         self.0.send((request, answer)).ok()?;
         Some(receive)
@@ -376,7 +376,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
                 "nothing runs while the person decides"
             );
             answer
-                .send(crate::app_actions::AppActionConsent::Once)
+                .send(crate::app_actions::AppActionConsent::Once.into())
                 .unwrap();
             let answered = asking.await;
             ran(notes, &confirmed, &answered);

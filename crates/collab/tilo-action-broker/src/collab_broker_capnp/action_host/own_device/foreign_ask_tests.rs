@@ -188,7 +188,7 @@ fn a_person_at_a_foreign_device_is_asked_on_one_of_their_own() {
     own_devices.answer(Ok(Confirmation::Witnessed("allowed".into())));
     let answered = waiting.wait_timeout(Duration::from_secs(30));
     assert!(
-        matches!(answered, Ok(Some(Ok(Confirmation::Witnessed(ref token)))) if token != "allowed"),
+        matches!(answered, Ok(Some(Ok(tilo_actions::remote::ConfirmedInvocation { confirmation: Confirmation::Witnessed(ref token), arguments: None }))) if token != "allowed"),
         "the host answers with its own witness, not the device's word"
     );
     drop(fixture);

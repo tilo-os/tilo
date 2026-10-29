@@ -28,6 +28,8 @@ enum Part {
     /// The launcher title, or a shortcut step's answer.
     Name,
     Icon(usize),
+    /// A field of a confirmation's draft, by its row.
+    Draft(usize),
     Cancel,
     Confirm,
 }
@@ -39,6 +41,7 @@ impl Part {
             Self::Remember => "remember".into(),
             Self::Name => "name".into(),
             Self::Icon(index) => format!("icon/{index}"),
+            Self::Draft(index) => format!("draft/{index}"),
             Self::Cancel => "cancel".into(),
             Self::Confirm => "confirm".into(),
         }
@@ -54,6 +57,8 @@ impl Part {
             _ => {
                 if let Some(index) = indexed("choice/") {
                     Self::Choice(index)
+                } else if let Some(index) = indexed("draft/") {
+                    Self::Draft(index)
                 } else {
                     Self::Icon(indexed("icon/")?)
                 }
@@ -159,7 +164,15 @@ impl PortalDialogController {
 
         // Typing goes to a text field whenever one is up; the highlighted
         // row only has the keyboard on a sheet without one.
-        let text_focus = self.is_text_entry() || self.launcher_name_focused();
+        let draft_focus = self
+            .draft
+            .as_ref()
+            .map(|draft| (draft.focus, draft.rows.len()));
+        let text_focus = match draft_focus {
+            // On a draft the keyboard is on a row or on an answer.
+            Some((focus, rows)) => focus < rows,
+            None => self.is_text_entry() || self.launcher_name_focused(),
+        };
         let icon_focus = view
             .launcher_editor()
             .is_some_and(|editor| editor.editable_icon && !self.launcher_name_focused());
@@ -195,6 +208,46 @@ impl PortalDialogController {
                 node = node.with_bounds(*rect);
             }
             children.push(node);
+        }
+
+        if let Some(draft) = &self.draft {
+            for placed in &layout.draft_rows {
+                let Some(row) = draft.rows.get(placed.index) else {
+                    continue;
+                };
+                let focused = focusable(draft.focus == placed.index);
+                let read_only = !row.field.editable;
+                children.push(match &row.control {
+                    super::draft_sheet::Control::Text(input) => field_node(
+                        input,
+                        row.field.label.clone(),
+                        target(Part::Draft(placed.index)),
+                        Some(placed.control),
+                        AccessState {
+                            read_only,
+                            multiline: row.field.multiline,
+                            invalid: self.entry_error.is_some(),
+                            ..focused
+                        },
+                    ),
+                    super::draft_sheet::Control::Flag { on } => AccessNode::new(Role::Checkbox)
+                        .with_name(row.field.label.clone())
+                        .with_action_target(target(Part::Draft(placed.index)))
+                        .with_bounds(placed.control)
+                        .with_state(AccessState {
+                            checked: Some(*on),
+                            read_only,
+                            ..focused
+                        }),
+                });
+            }
+            if let Some(error) = self.entry_error() {
+                children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(error.to_owned())
+                        .with_live(Politeness::Assertive),
+                );
+            }
         }
 
         let usb_start = self.visible_selection_start();
@@ -418,6 +471,18 @@ impl PortalDialogController {
                 self.launcher_icon = index;
                 self.launcher_field = 1;
                 true
+            }
+            (Part::Draft(index), Action::Focus) => self.focus_draft_row(index),
+            (Part::Draft(index), Action::Activate | Action::ToggleCheck) => {
+                self.press_draft_row(index)
+            }
+            (Part::Draft(index), Action::SetValue(value)) => {
+                self.entry_error = None;
+                self.focus_draft_row(index)
+                    && self
+                        .draft
+                        .as_mut()
+                        .is_some_and(|draft| draft.set_text(index, value))
             }
             (Part::Name, Action::Focus | Action::Activate) => self.focus_name(&view),
             (Part::Name, Action::SetValue(value)) => {

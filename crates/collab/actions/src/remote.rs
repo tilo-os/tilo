@@ -55,7 +55,9 @@ mod wait;
 mod within;
 pub mod workspace_activity;
 
-pub use confirmation::{Confirmation, ConfirmationQuestion, ConfirmationReply};
+pub use confirmation::{
+    Confirmation, ConfirmationQuestion, ConfirmationReply, ConfirmedInvocation,
+};
 pub use providers::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, OWN_PROVIDER,
     WORKSPACE_PROVIDER,
@@ -1306,15 +1308,17 @@ pub trait ActionHost {
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionHostError>>;
 
     /// Ask the person `caller` acts for to confirm `request` on their own
-    /// device, as the host shows it to them. The answer is a
+    /// device, as the host shows it to them. The answer carries a
     /// [`Confirmation::Witnessed`] that `caller` invokes `request` again
-    /// with; a caller never confirms by its own word. A host with nobody to
-    /// ask answers [`ActionHostError::ConfirmationRequired`].
+    /// with, and the arguments as the person changed them, if they did
+    /// ([`ConfirmedInvocation::apply`]); a caller never confirms by its own
+    /// word. A host with nobody to ask answers
+    /// [`ActionHostError::ConfirmationRequired`].
     fn confirm(
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         let _ = (caller, request);
         Pending::ready(Err(ActionHostError::ConfirmationRequired))
     }
@@ -1365,7 +1369,7 @@ impl<H: ActionHost + ?Sized> ActionHost for std::sync::Arc<H> {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         (**self).confirm(caller, request)
     }
 
