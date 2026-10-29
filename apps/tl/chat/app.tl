@@ -33,6 +33,12 @@ type Message {
     thread: Option<Thread>
     /// What a message said before messages were rich text, kept as it was written.
     parts: Collection<Part>
+    /// Whether it is pinned to its channel, which search finds.
+    pinned: Bool = false
+
+    search {
+        filter pinned (icon: .pin)
+    }
 }
 
 /// A side conversation branched off one message.
@@ -78,6 +84,19 @@ action send(to: TextChannel | Thread, body: RichText, reply_to: Option<Message> 
         c: TextChannel => c.messages.insert(m),
         t: Thread => t.messages.insert(m),
     }
+}
+
+/// Changes what a message says; the message shows it was edited.
+/// TODO(language): only its author may, a requirement that reads `invoker`, which requirements
+/// cannot yet.
+action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
+    require not body.is_empty() "Type a message first"
+    m.body = body
+}
+
+/// Pins a message to its channel, or unpins it.
+action pin(m: Message, pinned: Bool = not m.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: m.pinned) {
+    m.pinned = pinned
 }
 
 /// Starts a thread from a message of a channel, named after what the message says.
@@ -134,8 +153,10 @@ view sidebar(all: Channels) {
 view channel(c: TextChannel) {
     lens draft: RichText = RichText("")
     lens replying: Option<Message> = .none
+    lens editing: Option<Message> = .none
+    lens revised: RichText = RichText("")
     std.transcript(c, c.messages) { m ->
-        channel_message(c, m, replying)
+        channel_message(c, m, replying, editing, revised)
         composer: {
             composer(c, draft, replying, "Message #{c.name}")
         }
@@ -143,8 +164,8 @@ view channel(c: TextChannel) {
 }
 
 /// A message of a channel, with what can be done to it on hover.
-view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>>) {
-    message(m)
+view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+    message(m, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
@@ -152,6 +173,10 @@ view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>
         if m.thread == .none {
             button(start_thread(c, m), icon_only: true)
         }
+        ui.Button("Edit", icon: .pencil, icon_only: true) {
+            on press: set(revised, m.body).then(set(editing, m))
+        }
+        button(pin(m), icon_only: true)
     }
 }
 
@@ -159,8 +184,10 @@ view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>
 view thread(t: Thread) {
     lens draft: RichText = RichText("")
     lens replying: Option<Message> = .none
+    lens editing: Option<Message> = .none
+    lens revised: RichText = RichText("")
     std.transcript(t, t.messages) { m ->
-        thread_message(m, replying)
+        thread_message(m, replying, editing, revised)
         composer: {
             composer(t, draft, replying, "Message {t.name}")
         }
@@ -168,12 +195,16 @@ view thread(t: Thread) {
 }
 
 /// A message of a thread, with what can be done to it on hover.
-view thread_message(m: Message, replying: State<Option<Message>>) {
-    message(m)
+view thread_message(m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+    message(m, editing, revised)
     ui.HoverToolbar {
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
         }
+        ui.Button("Edit", icon: .pencil, icon_only: true) {
+            on press: set(revised, m.body).then(set(editing, m))
+        }
+        button(pin(m), icon_only: true)
     }
 }
 
@@ -190,19 +221,52 @@ view composer(to: TextChannel | Thread, draft: State<RichText>, replying: State<
     }
 }
 
-/// What one message says: the message it answers, its text, and the thread it started.
-view message(m: Message) {
+/// What one message says: the message it answers, its text (or, while it is being edited, the
+/// editor in its place), and the thread it started.
+view message(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
     if let r = m.reply_to {
         std.quote(r)
     }
+    if m.pinned {
+        ui.Text("Pinned", role: .caption, secondary: true)
+    }
+    if let e = editing {
+        if e == m {
+            revision(m, editing, revised)
+        } else {
+            said(m)
+        }
+    } else {
+        said(m)
+    }
+    if let t = m.thread {
+        std.thread_chip(t, count: t.messages.len())
+    }
+}
+
+/// What a message says, and that it was edited when its last change was an edit.
+view said(m: Message) {
     if not m.body.is_empty() {
         rich_text(m.body)
     }
     for p in m.parts {
         text(p.body)
     }
-    if let t = m.thread {
-        std.thread_chip(t, count: t.messages.len())
+    if (updated(m)?.what ?? "") == "Edit" {
+        ui.Text("edited", role: .caption, secondary: true)
+    }
+}
+
+/// A message being edited in place: its text in an editor, saved or left as it was.
+view revision(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
+    rich_input(bind: revised, placeholder: "Edit message")
+    row {
+        ui.Button("Cancel") {
+            on press: set(editing, .none)
+        }
+        ui.Button("Save", role: .primary) {
+            on press: edit(m, revised).then(set(editing, .none))
+        }
     }
 }
 

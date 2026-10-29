@@ -240,6 +240,79 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     }
 }
 
+/// Every text `row` shows.
+fn shown_in(row: &UiNode) -> Vec<String> {
+    let mut out = Vec::new();
+    texts(row, &mut out);
+    out
+}
+
+#[test]
+fn a_message_is_edited_in_place_and_pinned_and_both_show_for_everyone() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
+    let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
+    post(&mut ada, &ada_design, "The bulid is on the test machines.");
+
+    // Edit on Ada's message puts an editor holding what it says in its place; Save keeps the
+    // new text, which both see, marked as edited.
+    let row = rows(&mut ada_design).remove(0);
+    let edit = button(&row, "Edit").expect("Edit on a message");
+    ada_design.press(&edit).unwrap();
+    let row = rows(&mut ada_design).remove(0);
+    let editor = find(&row, "ui.RichInput")
+        .expect("the editor in the message's place")
+        .key
+        .clone();
+    assert!(
+        matches!(ada_design.bound_value(&editor), Some(Value::Rich(r)) if r.written_text() == "The bulid is on the test machines."),
+        "the editor starts from what the message says"
+    );
+    ada_design
+        .edit(&editor, &rich("The build is on the test machines."))
+        .unwrap();
+    let save = button(&row, "Save").expect("Save beside the editor");
+    let outcome = ada_design.press(&save).unwrap();
+    assert!(
+        matches!(outcome, InvokeOutcome::Done(_)),
+        "saved: {outcome:?}"
+    );
+    ada.commit();
+    ada.sync_with(&mut ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        assert_eq!(said(view), ["The build is on the test machines."]);
+        let row = rows(view).remove(0);
+        assert!(find(&row, "ui.RichInput").is_none(), "the editor is gone");
+        assert!(
+            shown_in(&row).contains(&"edited".to_owned()),
+            "{:?}",
+            shown_in(&row)
+        );
+    }
+
+    // Ben pins it; both see it pinned.
+    let row = rows(&mut ben_design).remove(0);
+    let pin = button(&row, "Pin").expect("Pin on a message");
+    ben_design.press(&pin).unwrap();
+    ben.commit();
+    ada.sync_with(&mut ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        let row = rows(view).remove(0);
+        assert!(
+            shown_in(&row).contains(&"Pinned".to_owned()),
+            "{:?}",
+            shown_in(&row)
+        );
+        assert!(button(&row, "Unpin").is_some(), "Pin turns into Unpin");
+    }
+}
+
 /// Chat as it was before channels: conversations of messages made of parts.
 const BEFORE: &str = include_str!("chat_before_channels/app.tl");
 const BEFORE_IDS: &str = include_str!("chat_before_channels/app.ids");
