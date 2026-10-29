@@ -8,11 +8,15 @@
 //! from its own storage service.
 
 use runtime_fs::storage::WorkspaceResidency;
+use ui::framework::Actions;
 use ui::widget::{ChipStyle, RowMenu};
 
-use crate::host::PaneCx;
+use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
-use crate::widgets::{SettingsSection, StatusTone, note, row, rows, section, thing_row};
+use crate::resource::Settings;
+use provider_settings_ui::widgets::{
+    SettingsSection, StatusTone, note, row, rows, section, thing_row,
+};
 
 use super::StorageEffect;
 
@@ -64,7 +68,7 @@ impl Fleet {
 /// of it and what losing this device would cost, and which of the person's
 /// devices keep it. This device's rows free its cache and keep a workspace
 /// here.
-pub fn page(cx: &PaneCx, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
+pub fn page(actions: &Actions<Settings>, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
     if fleet.devices().is_empty() {
         return Vec::new();
     }
@@ -78,7 +82,7 @@ pub fn page(cx: &PaneCx, fleet: &Fleet, busy: bool) -> Vec<SettingsSection> {
     }
     let mut items: Vec<_> = names
         .into_iter()
-        .map(|name| workspace_row(cx, fleet, name, busy))
+        .map(|name| workspace_row(actions, fleet, name, busy))
         .collect();
     if items.is_empty() {
         items.push(note(&t("settings-storage-no-workspaces")));
@@ -100,7 +104,12 @@ fn device_name(device: &DeviceResidency) -> String {
     }
 }
 
-fn workspace_row(cx: &PaneCx, fleet: &Fleet, name: &str, busy: bool) -> crate::widgets::Item {
+fn workspace_row(
+    actions: &Actions<Settings>,
+    fleet: &Fleet,
+    name: &str,
+    busy: bool,
+) -> provider_settings_ui::widgets::Item {
     fn held_by<'a>(device: &'a DeviceResidency, name: &str) -> Option<&'a WorkspaceResidency> {
         device
             .summary
@@ -169,9 +178,9 @@ fn workspace_row(cx: &PaneCx, fleet: &Fleet, name: &str, busy: bool) -> crate::w
                     "settings-storage-free-cache",
                     &[("size", size(split.cache_bytes).into())],
                 ),
-                cx.invocation_binding(StorageEffect::FreeCache {
+                actions.effect(&SettingsEffect::from(StorageEffect::FreeCache {
                     workspace: name.to_owned(),
-                }),
+                })),
             );
         }
         let (key, keep) = if workspace.kept_here {
@@ -181,10 +190,10 @@ fn workspace_row(cx: &PaneCx, fleet: &Fleet, name: &str, busy: bool) -> crate::w
         };
         Box::new(menu.action(
             t(key),
-            cx.invocation_binding(StorageEffect::KeepHere {
+            actions.effect(&SettingsEffect::from(StorageEffect::KeepHere {
                 workspace: name.to_owned(),
                 keep,
-            }),
+            })),
         )) as Box<dyn ui::widget::Widget>
     });
     let tags: Vec<(&str, ChipStyle)> = tags

@@ -8,8 +8,6 @@ use settings::categories::Category;
 use ui::widget::{LabelPlacement, LayoutInfo, Widget};
 use vello::kurbo::Rect;
 
-use crate::composition_balance::lay_out_at;
-
 const WIDE: (f32, f32) = (1200.0, 760.0);
 const NARROW: (f32, f32) = (440.0, 820.0);
 /// The toolkit's readable width, which bounds the form on a wide window.
@@ -47,11 +45,15 @@ fn collect(
 fn every_pane_keeps_one_label_column_and_fits_at_wide_and_narrow_widths() {
     for (width, height) in [WIDE, NARROW] {
         for &category in Category::ALL {
-            let config = crate::support::ScratchConfig::new();
-            let app = lay_out_at(config.app().with_category(category), width, height);
+            let mut app = crate::support::window_on(category, (width, height));
             let mut fields = Vec::new();
             let mut overflow = Vec::new();
-            collect(&*app, &mut fields, &mut overflow, f64::from(width));
+            collect(
+                app.harness().root_widget(),
+                &mut fields,
+                &mut overflow,
+                f64::from(width),
+            );
             let at = format!("{category:?} at {width}x{height}");
             assert!(
                 overflow.is_empty(),

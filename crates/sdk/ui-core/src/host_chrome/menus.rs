@@ -57,25 +57,12 @@ pub(crate) fn entries(commands: &[HostCommand], menu: MenuKind) -> Vec<Entry> {
 
 #[cfg(test)]
 mod tests {
-    use automerge::ROOT;
-    use automerge::transaction::Transactable;
-
     use super::{Entry, MenuKind, entries};
     use crate::host_chrome::model::CommandGroup;
 
     #[test]
     fn each_menu_holds_its_groups_in_model_order_with_separators_between() {
-        let mut state = crate::State::new();
-        for title in ["first", "second"] {
-            state.doc.put(ROOT, "title", title).unwrap();
-            state.commit_action(None, None);
-        }
-        let mut app = crate::app::App::new_with_controlled_inputs(
-            state,
-            Box::new(crate::widget::Text::new("Document")),
-        );
-        app.enable_document_history_chrome();
-        app.init_layout();
+        let mut app = crate::app::framework_history_tests::native_chrome_app();
         let commands = app.host_commands(true);
         let group = |entry: &Entry| match entry {
             Entry::Command(index) => Some(commands[*index].group),

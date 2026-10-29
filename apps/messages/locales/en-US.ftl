@@ -186,4 +186,4 @@ messages-person-account-tint = The colour of { $item }
 messages-person-accounts-active = The account in use for a service
 messages-message-drafts-drafts = The unsent words kept for each conversation
 
-messages-conversation-with = Conversation with {$person}
+messages-conversation-with = Conversation with { $person }

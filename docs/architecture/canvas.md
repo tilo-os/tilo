@@ -56,9 +56,13 @@ incrementally:
   `ground` (colour + texture: `paper`, `cold-press`, `linen`, `none`).
 - `layers.<id>`: name, fractional `order`, `medium` (preset id or empty for
   plain), opacity, visible, locked.
-- `marks.<id>`: layer id, fractional `order`, kind (`path`, `rect`,
-  `ellipse`, `text`, `stroke`), name, geometry (compact JSON), style (fill,
-  stroke, opacity, blend), transform.
+- `marks.<id>`: layer id, fractional `order`, name, shape, style (fill,
+  stroke, opacity, blend, adjustments), transform. The shape stores its
+  variant (`rect`, `ellipse`, `polygon`, `line`, `path`, `text`, `stroke`,
+  `image`) and each of its fields on its own, as the style does its fields,
+  so two people moving and restyling one mark keep both changes. Colours,
+  names, path data and point lists are stored whole: set at once, one of
+  the two values wins, never a mix.
 - `media.<id>`: user presets (JSON).
 
 ## Vocabulary

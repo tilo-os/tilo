@@ -279,33 +279,236 @@ fn durable_and_import_governance_count_as_governance() {
     );
 }
 
+/// A receipt `actor` recorded for invocation `invocation`, as a member's
+/// device records it.
+fn effect(invocation: u128, actor: &str) -> tilo_desktop_model::WorkspaceEffectReceipt {
+    tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
+        actor,
+        tilo_actions::ActionContext::for_resource("resource", "kind", "Resource"),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        1,
+    )
+}
+
+/// The changes recording `receipts` in `person`'s slice make on `before`.
+fn recording(
+    before: &AutoCommit,
+    person: [u8; 32],
+    receipts: &[tilo_desktop_model::WorkspaceEffectReceipt],
+) -> Vec<Vec<u8>> {
+    changes_after(before, |doc| {
+        tilo_desktop_model::projection::project_effect_receipts(doc, &person_id(person), receipts)
+            .unwrap();
+    })
+}
+
 #[test]
 fn effect_receipts_are_immutable_even_for_the_governor() {
     let mut before = governed();
-    let receipts = before
-        .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
-        .unwrap();
-    before
-        .put(
-            &receipts,
-            "invocation",
-            ScalarValue::Bytes(br#"{"outcome":"done"}"#.to_vec()),
-        )
-        .unwrap();
+    tilo_desktop_model::projection::project_effect_receipts(
+        &mut before,
+        &person_id(OWNER),
+        &[effect(1, &person_id(OWNER))],
+    )
+    .unwrap();
     before.commit();
-    let rewrite = changes_after(&before, |doc| {
-        let (_, receipts) = doc.get(ROOT, "effect_receipts_v1").unwrap().unwrap();
-        doc.put(
-            &receipts,
-            "invocation",
-            ScalarValue::Bytes(br#"{"outcome":"undone"}"#.to_vec()),
-        )
-        .unwrap();
-    });
+    let mut rewritten = effect(1, &person_id(OWNER));
+    rewritten.status = tilo_actions::EffectReceiptStatus::Cancelled;
+    let rewrite = recording(&before, OWNER, &[rewritten]);
     let authority = key(0xA0);
     assert_eq!(
         admit(Some(&before), member(&authority, OWNER), &OWNER, &rewrite,).unwrap_err(),
         RoomRefusal::ReceiptImmutable
+    );
+}
+
+#[test]
+fn a_member_records_only_their_own_effect_receipts() {
+    let before = governed();
+    let editor = key(0x02);
+    let own = recording(
+        &before,
+        EDITOR,
+        &[effect(1, &person_id(EDITOR)), effect(2, "agent:scribe")],
+    );
+    assert!(
+        admit(Some(&before), member(&editor, EDITOR), &OWNER, &own).is_ok(),
+        "their own receipts and their agents', in their own slice"
+    );
+    for (slice, actor) in [(VIEWER, person_id(EDITOR)), (EDITOR, person_id(VIEWER))] {
+        let foreign = recording(&before, slice, &[effect(3, &actor)]);
+        assert_eq!(
+            admit(Some(&before), member(&editor, EDITOR), &OWNER, &foreign).unwrap_err(),
+            RoomRefusal::ReceiptWriter,
+            "another's slice, or another's actor"
+        );
+    }
+    let anchor = |person: [u8; 32]| {
+        changes_after(&before, |doc| {
+            let history = doc
+                .put_object(ROOT, "effect_history_root_v1", ObjType::Map)
+                .unwrap();
+            let slice = doc
+                .put_object(&history, person_id(person), ObjType::Map)
+                .unwrap();
+            doc.put(&slice, key(0x02), ScalarValue::Bytes(vec![7; 32]))
+                .unwrap();
+        })
+    };
+    assert!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            &OWNER,
+            &anchor(EDITOR)
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            &OWNER,
+            &anchor(VIEWER)
+        )
+        .unwrap_err(),
+        RoomRefusal::ReceiptWriter,
+        "only their own archive's anchor"
+    );
+    let viewer = key(0x03);
+    assert!(
+        admit(
+            Some(&before),
+            member(&viewer, VIEWER),
+            &OWNER,
+            &recording(&before, VIEWER, &[effect(5, &person_id(VIEWER))]),
+        )
+        .is_ok(),
+        "one who only reads the room records their own receipts"
+    );
+    let relayed = recording(&before, EDITOR, &[effect(4, &person_id(EDITOR))]);
+    let authority = key(0xA0);
+    assert!(
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &relayed).is_ok(),
+        "the owner's devices relay what members recorded"
+    );
+}
+
+/// The grants of `person`'s share `m1` of a note, giving `access`.
+fn share_of_note(
+    person: [u8; 32],
+    access: tilo_action_policy::share::ShareAccess,
+) -> Vec<tilo_action_policy::Grant> {
+    let note = tilo_action_policy::TreePath::room(ROOM)
+        .app("so.tilo.notes")
+        .kind("notes.notebook")
+        .any(tilo_action_policy::Level::Resource)
+        .item("p1");
+    tilo_action_policy::share::share_grants(ROOM, &person_id(person), "m1", &note, access).unwrap()
+}
+
+/// The changes writing `grants` into the room, and taking `ended` out,
+/// make on `before`.
+fn regranting(
+    before: &AutoCommit,
+    grants: &[tilo_action_policy::Grant],
+    ended: &[tilo_action_policy::Grant],
+) -> Vec<Vec<u8>> {
+    changes_after(before, |doc| {
+        let (_, map) = doc.get(ROOT, "grants").unwrap().unwrap();
+        for grant in grants {
+            doc.put(
+                &map,
+                grant.id.as_str(),
+                ScalarValue::Bytes(serde_json::to_vec(grant).unwrap()),
+            )
+            .unwrap();
+        }
+        for grant in ended {
+            doc.delete(&map, grant.id.as_str()).unwrap();
+        }
+    })
+}
+
+#[test]
+fn a_member_shares_only_what_they_hold_and_ends_only_their_own_shares() {
+    use tilo_action_policy::share::ShareAccess;
+    let before = governed();
+    let (editor, viewer) = (key(0x02), key(0x03));
+    let edit = share_of_note(EDITOR, ShareAccess::Edit);
+    assert!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            &OWNER,
+            &regranting(&before, &edit, &[])
+        )
+        .is_ok(),
+        "an Editor shares a note to edit as theirs"
+    );
+    assert!(
+        matches!(
+            admit(
+                Some(&before),
+                member(&viewer, VIEWER),
+                &OWNER,
+                &regranting(&before, &share_of_note(VIEWER, ShareAccess::Edit), &[]),
+            ),
+            Err(RoomRefusal::Membership(_))
+        ),
+        "a Viewer hands out no edit"
+    );
+    assert!(
+        admit(
+            Some(&before),
+            member(&viewer, VIEWER),
+            &OWNER,
+            &regranting(&before, &share_of_note(VIEWER, ShareAccess::View), &[]),
+        )
+        .is_ok(),
+        "but shares what they see"
+    );
+    assert!(
+        matches!(
+            admit(
+                Some(&before),
+                member(&viewer, VIEWER),
+                &OWNER,
+                &regranting(&before, &edit, &[])
+            ),
+            Err(RoomRefusal::Membership(_))
+        ),
+        "nobody shares as someone else"
+    );
+
+    let mut shared = before.clone();
+    let changes: Vec<_> = regranting(&before, &edit, &[])
+        .into_iter()
+        .map(|bytes| automerge::Change::from_bytes(bytes).unwrap())
+        .collect();
+    tilo_automerge::ApplyIncoming::apply_incoming(&mut shared, changes).unwrap();
+    assert!(
+        matches!(
+            admit(
+                Some(&shared),
+                member(&viewer, VIEWER),
+                &OWNER,
+                &regranting(&shared, &[], &edit)
+            ),
+            Err(RoomRefusal::Membership(_))
+        ),
+        "only its sharer ends a share"
+    );
+    assert!(
+        admit(
+            Some(&shared),
+            member(&editor, EDITOR),
+            &OWNER,
+            &regranting(&shared, &[], &edit)
+        )
+        .is_ok(),
+        "its sharer ends it"
     );
 }
 
@@ -385,6 +588,10 @@ fn refusals_keep_the_peer_state_messages() {
             "governance writer is not the owner's device",
         ),
         (RoomRefusal::ReceiptImmutable, "effect receipt is immutable"),
+        (
+            RoomRefusal::ReceiptWriter,
+            "effect receipt is not its writer's own",
+        ),
     ] {
         assert_eq!(refusal.to_string(), message);
     }

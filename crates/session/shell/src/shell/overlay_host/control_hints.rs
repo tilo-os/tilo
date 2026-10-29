@@ -43,7 +43,7 @@ impl ShellOverlayHost {
                     .chord_keys(chord.modifiers.iter().map(String::as_str), &chord.key)
             })
             .unwrap_or_default();
-        let avatar = self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::own_avatar_rect);
+        let avatar = self.topbar_shown().own_avatar;
         let colour = self
             .chrome
             .as_ref()
@@ -87,8 +87,7 @@ impl ShellOverlayHost {
             || flags.desktop_tour
             || flags.capture
             || flags.projection
-            || self.bar_popovers.profile.is_open()
-            || self.bar_popovers.workspace_menu.is_open()
+            || self.topbar_shown().modal
             || self.onboarding_active()
             || self.modal_sheet_owns_keyboard()
             || self

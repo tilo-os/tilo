@@ -1,203 +1,12 @@
-//! Getting a workbook in and out of the app: the chooser and its bounds, the tables a file decodes into, the import that becomes a durable action stream, and the export that writes one back.
+//! Getting a workbook in and out of the app: the bounds of a file, the tables it decodes into, the import that becomes a durable action stream, and the bytes an export writes back.
 
 use super::{
-    CellFormat, Interchange, Invoke, MAX_CSV_MATERIALIZED_SLOTS, MAX_IMPORT_CELLS,
-    MAX_IMPORT_FILE_BYTES, PendingReveal, SheetsApp, Workbook, file_label, import_source,
-    infer_entry, sheet_name_from_path, spreadsheet_export_request, spreadsheet_import_request,
+    CellFormat, Currency, Interchange, Invoke, MAX_CSV_MATERIALIZED_SLOTS, MAX_IMPORT_CELLS,
+    MAX_IMPORT_FILE_BYTES, SheetsApp, Workbook, file_label, infer_entry, sheet_name_from_path,
     verbs,
 };
 
 impl SheetsApp {
-    /// Import a spreadsheet file into new sheets: the one at `path`, or the
-    /// one the person chooses. A file the workbook already holds is shown
-    /// instead of imported again.
-    pub(super) fn import(
-        &mut self,
-        format: Interchange,
-        path: Option<ui::tilo_resource::AbsolutePath>,
-        cx: &mut ui::framework::EffectCx<Workbook, Self>,
-    ) -> ui::framework::Effected {
-        let Some(path) = path else {
-            self.status = format!("Choose a .{} file to import…", format.ext());
-            return cx.choose_file(
-                spreadsheet_import_request(format),
-                move |app: &mut Self, chosen, cx| {
-                    let Some(file) = chosen else {
-                        app.status = "Import cancelled".into();
-                        return Ok(ui::framework::Effected::done());
-                    };
-                    if u64::try_from(file.bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
-                        return app.failed(format!(
-                            "{} is larger than the {} import limit",
-                            file.name,
-                            ui::format::memory(MAX_IMPORT_FILE_BYTES)
-                        ));
-                    }
-                    // The same file chosen again is shown, not imported twice.
-                    let source = file.identity.as_ref().map(ToString::to_string);
-                    if let Some(source) = &source
-                        && app.show_imported(source, &file.name, cx)
-                    {
-                        return Ok(ui::framework::Effected::done());
-                    }
-                    app.status = format!("Importing .{}…", format.ext());
-                    let name = file.name;
-                    let sheet = sheet_name_from_path(std::path::Path::new(&name));
-                    Ok(cx.thread(
-                        move |_| Self::read_tables(format, &file.bytes, &sheet),
-                        move |app: &mut Self, tables, cx| {
-                            app.finish_import(tables, &name, source, cx)
-                        },
-                    ))
-                },
-            );
-        };
-        let path = path.into_path_buf();
-        let source = import_source(&path);
-        if self.show_imported(&source, &file_label(&path), cx) {
-            return ui::framework::Effected::done();
-        }
-        self.status = format!("Importing .{}…", format.ext());
-        cx.thread(
-            move |_| Self::read_tables_at(format, &path).map(|tables| (tables, path)),
-            move |app: &mut Self, read, cx| match read {
-                Ok((tables, path)) => {
-                    app.finish_import(Ok(tables), &file_label(&path), Some(source), cx)
-                }
-                Err(error) => app.failed(error),
-            },
-        )
-    }
-
-    /// Show the sheet the file `source` was already imported as, if any:
-    /// whether there was one.
-    pub(super) fn show_imported(
-        &mut self,
-        source: &str,
-        label: &str,
-        _cx: &ui::framework::EffectCx<Workbook, Self>,
-    ) -> bool {
-        let open = self
-            .workbook
-            .sheets
-            .iter()
-            .find(|(_, sheet)| {
-                sheet.source.as_ref().map(|source| source.0.as_str()) == Some(source)
-            })
-            .map(|(id, sheet)| (id.clone(), sheet.name.0.clone()));
-        let Some((sheet_id, name)) = open else {
-            return false;
-        };
-        self.pending_reveal = Some(PendingReveal {
-            sheet_id: Some(sheet_id),
-            addr: (0, 0),
-            status: Some(format!("{label} is already open as {name}")),
-            arriving: false,
-        });
-        true
-    }
-
-    /// Add the sheets a file was read into as one action, and show the last
-    /// of them once it is applied.
-    pub(super) fn finish_import(
-        &mut self,
-        tables: Result<Vec<crate::xlsx::SheetTable>, String>,
-        label: &str,
-        source: Option<String>,
-        cx: &ui::framework::EffectCx<Workbook, Self>,
-    ) -> ui::framework::EffectAnswer {
-        let built = tables.and_then(|tables| self.import_action(tables, source, None));
-        let (invoke, total) = match built {
-            Ok(built) => built,
-            Err(error) => return self.failed(error),
-        };
-        cx.submit(invoke);
-        self.status = format!("Imported {total} cells from {label}");
-        self.pending_reveal = Some(PendingReveal {
-            sheet_id: None,
-            addr: (0, 0),
-            status: Some(self.status.clone()),
-            arriving: true,
-        });
-        Ok(ui::framework::Effected::done())
-    }
-
-    /// Write the workbook as a spreadsheet file (a CSV holds the active sheet
-    /// only): to `path`, or where the person chooses. Encoding runs off the UI
-    /// thread; the file is written only when the job was not cancelled.
-    pub(super) fn export(
-        &mut self,
-        format: Interchange,
-        path: Option<ui::tilo_resource::AbsolutePath>,
-        cx: &mut ui::framework::EffectCx<Workbook, Self>,
-    ) -> ui::framework::EffectAnswer {
-        let active = self.active_sheet_id();
-        let sheets: Vec<crate::workbook::SheetSnapshot> = match format {
-            // A workbook exports as itself; there is no file to write a
-            // Notion export into.
-            Interchange::Notion => Vec::new(),
-            Interchange::Csv => active
-                .as_ref()
-                .and_then(|id| self.workbook.snapshot_of(id))
-                .into_iter()
-                .collect(),
-            Interchange::Xlsx | Interchange::Ods => self.workbook_snapshots(),
-        };
-        let Some(name) = active
-            .as_ref()
-            .and_then(|id| self.workbook.sheet(id))
-            .map(|sheet| sheet.name.0.clone())
-            .or_else(|| sheets.first().map(|sheet| sheet.name.clone()))
-        else {
-            return self.failed("there is no sheet to export".into());
-        };
-        let _ = cx;
-        self.status = format!("Exporting .{}…", format.ext());
-        let encode = move |_| Self::encode_tables(format, &sheets);
-        let Some(path) = path else {
-            let suggested = format!("{name}.{}", format.ext());
-            return Ok(cx.thread(encode, move |app: &mut Self, bytes, cx| {
-                let bytes = match bytes {
-                    Ok(bytes) => bytes,
-                    Err(error) => return app.failed(error),
-                };
-                app.status = "Choose where to save…".into();
-                Ok(cx.save_file(
-                    spreadsheet_export_request(format, &suggested),
-                    bytes,
-                    move |app: &mut Self, saved, _| {
-                        app.status = if saved {
-                            format!("Exported .{}", format.ext())
-                        } else {
-                            "Export cancelled".into()
-                        };
-                        Ok(ui::framework::Effected::done())
-                    },
-                ))
-            }));
-        };
-        let path = path.into_path_buf();
-        Ok(cx.thread(encode, move |app: &mut Self, bytes, _| {
-            let written = bytes.and_then(|bytes| {
-                crate::xlsx::write_file(&path, &bytes).map_err(|error| error.to_string())
-            });
-            match written {
-                Ok(()) => {
-                    app.status = format!("Exported .{} to {}", format.ext(), file_label(&path));
-                    Ok(ui::framework::Effected::done())
-                }
-                Err(error) => app.failed(error),
-            }
-        }))
-    }
-
-    /// Report a failed import or export, and fail its effect.
-    pub(super) fn failed(&mut self, error: String) -> ui::framework::EffectAnswer {
-        self.status = format!("Spreadsheet operation failed: {error}");
-        self.pending.redraw = true;
-        Err(error)
-    }
-
     /// The one verb that adds a parsed set of tables as new sheets, running
     /// smart inference where a source cell carried no explicit format, with
     /// how many cells it writes. Into a workbook that is still blank, the
@@ -205,13 +14,12 @@ impl SheetsApp {
     /// before anything is written, so collaborators never observe a
     /// half-import; history and undo see one operation.
     pub(super) fn import_action(
-        &self,
         tables: Vec<crate::xlsx::SheetTable>,
         source: Option<String>,
         title: Option<String>,
+        cur: Currency,
     ) -> Result<(Invoke<Workbook>, usize), String> {
         use crate::resource::{CellWrite, ImportedSheet};
-        let cur = self.default_currency();
         let mut total: usize = 0;
         let mut sheets = Vec::new();
         for table in tables {
@@ -425,7 +233,7 @@ impl SheetsApp {
         doc: &mut ui::widget::Edits<'_>,
         tables: Vec<crate::xlsx::SheetTable>,
     ) -> Result<usize, String> {
-        let (invoke, total) = self.import_action(tables, None, None)?;
+        let (invoke, total) = Self::import_action(tables, None, None, self.default_currency())?;
         if !self.submit(doc, invoke) {
             return Err(self.status.clone());
         }

@@ -115,6 +115,7 @@ const fn state_frame_room(frame: &Envelope) -> Option<(u64, bool)> {
     match frame {
         Envelope::Delta { workspace_id, .. }
         | Envelope::Ready { workspace_id, .. }
+        | Envelope::RoomBootstrap { workspace_id, .. }
         | Envelope::Presence { workspace_id, .. } => Some((*workspace_id, true)),
         Envelope::SyncResponse { workspace_id, .. } => Some((*workspace_id, false)),
         _ => None,
@@ -152,6 +153,51 @@ pub(super) async fn authorize_state_recipient(
     }
     Ok(())
 }
+/// Write the room's bootstrap for `peer` ahead of its replay
+/// ([`Envelope::RoomBootstrap`]), in a room this relay governs or hosts for
+/// its governor: what a member device builds its replica from before it
+/// admits the replay. A peer relay federating the room keeps its own
+/// replica and gets none.
+async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
+    workspace_id: u64,
+    ws: &SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    write: &mut W,
+) -> Result<(), PeerError> {
+    if peer.role == crate::auth::PeerRole::PeerRelay {
+        return Ok(());
+    }
+    let (authority, hosted) = {
+        let runtime = ws.lock().await;
+        (
+            runtime.room_authority.clone(),
+            runtime.hosted_replica.clone(),
+        )
+    };
+    let bootstrap =
+        match authority.and_then(|authority| authority.rooms().map(|rooms| (rooms, authority))) {
+            Some((rooms, authority)) => {
+                rooms
+                    .subscriber_bootstrap(authority.room(), &peer.cert)
+                    .await
+            }
+            None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
+        };
+    let Some(bootstrap) = bootstrap else {
+        return Ok(());
+    };
+    let envelope = Envelope::RoomBootstrap {
+        workspace_id,
+        bootstrap,
+    };
+    authorize_state_frame(&envelope, peer, session).await?;
+    write
+        .write_all(&encode_charged(&envelope, session, false)?)
+        .await?;
+    Ok(())
+}
+
 /// One subscription's replay as [`finish_replay_write`] drives it: the room,
 /// its persistence owner, and the replay ticket's authority and catch-up.
 #[derive(Clone, Copy)]
@@ -193,6 +239,7 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             authority: &ticket.authority,
             catchup: &catchup,
         };
+        write_bootstrap(workspace_id, &ws, peer, session, write).await?;
         let replaying = crate::timing::start();
         let replayed_frames = drive_replay(run, handle, peer, session, private_rx, write).await?;
         crate::timing::event("join.replay_total", replaying, replayed_frames);

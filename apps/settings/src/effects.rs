@@ -42,11 +42,8 @@ pub type DecodeEffect =
     fn(&str, &serde_json::Map<String, serde_json::Value>) -> Result<Box<dyn AreaEffect>, String>;
 
 /// [`EffectFamily::answer`].
-pub type AnswerEffect = fn(
-    &mut SettingsApp,
-    Box<dyn std::any::Any>,
-    &mut EffectCx<Settings, SettingsApp>,
-) -> EffectAnswer;
+pub type AnswerEffect =
+    fn(&SettingsApp, Box<dyn std::any::Any>, &mut EffectCx<Settings>) -> EffectAnswer;
 
 /// An area's effect vocabulary: the `#[derive(Effect)]` enum and the family
 /// that answers it.
@@ -231,9 +228,9 @@ impl Effect for SettingsEffect {
 
 /// Answer `effect` on `app`, in the module of its area.
 pub fn answer(
-    app: &mut SettingsApp,
+    app: &SettingsApp,
     effect: SettingsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if let Some(waiting) = after_area_read(app, &effect, cx) {
         return Ok(waiting);
@@ -251,7 +248,7 @@ pub fn answer(
 fn after_area_read(
     app: &SettingsApp,
     effect: &SettingsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> Option<ui::framework::Effected> {
     let id = effect.id();
     let read = crate::area::registry()
@@ -267,9 +264,7 @@ fn after_area_read(
     (read.start)(app);
     let wait = (read.wait)(app)?;
     let effect = effect.clone();
-    Some(crate::device_read::job(cx, wait, move |app, (), cx| {
-        answer(app, effect, cx)
-    }))
+    Some(app.job(cx, wait, move |app, (), cx| answer(app, effect, cx)))
 }
 
 effect_family!(NavigationEffect => answer_navigation);
@@ -277,7 +272,6 @@ effect_family!(NavigationEffect => answer_navigation);
 /// Settings' own part: moving between the panes.
 pub const PART: crate::area::Part = crate::area::Part {
     areas: &[],
-    panes: &[],
     families: &[(10, NavigationEffect::FAMILY)],
     live_areas: &[],
     settings: &[],
@@ -369,12 +363,13 @@ pub fn defer_area_reads_in_tests(deferred: bool) {
 }
 
 impl AreaReads {
-    /// The reads of a window attached through `cx`.
-    pub fn of(cx: &crate::host::PaneCx) -> Self {
+    /// The reads of a window whose areas reach this device's hardware
+    /// and services when `devices`.
+    pub fn of(devices: bool) -> Self {
         #[cfg(test)]
-        let deferred = cx.reaches_devices() || DEFERRED_IN_TESTS.with(std::cell::Cell::get);
+        let deferred = devices || DEFERRED_IN_TESTS.with(std::cell::Cell::get);
         #[cfg(not(test))]
-        let deferred = cx.reaches_devices();
+        let deferred = devices;
         Self {
             deferred: std::cell::Cell::new(deferred),
             ..Self::default()
@@ -493,6 +488,40 @@ pub fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
     rows(app).into_iter().find(|row| row.id() == id)
 }
 
+/// An area's live rows, kept while what they were made from holds. Every
+/// publication asks each area for its rows; an area listing every installed
+/// app made hundreds of action declarations each time, on every click and
+/// keystroke, though nothing they show had changed.
+pub struct RowsMemo<K> {
+    kept: std::cell::RefCell<Option<(K, Vec<ui::framework::LiveRow>)>>,
+}
+
+impl<K> Default for RowsMemo<K> {
+    fn default() -> Self {
+        Self {
+            kept: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl<K: PartialEq> RowsMemo<K> {
+    /// The rows made from `key`: those kept when they were made from it,
+    /// else what `make` makes now.
+    pub fn rows(
+        &self,
+        key: K,
+        make: impl FnOnce() -> Vec<ui::framework::LiveRow>,
+    ) -> Vec<ui::framework::LiveRow> {
+        let mut kept = self.kept.borrow_mut();
+        if let Some((_, rows)) = kept.as_ref().filter(|(was, _)| *was == key) {
+            return rows.clone();
+        }
+        let rows = make();
+        *kept = Some((key, rows.clone()));
+        rows
+    }
+}
+
 /// Whether row `id`, which no area read so far shows, may be one of an area
 /// not read yet: that area's read is started, and the agent addressing the
 /// row is answered once it lands.
@@ -554,6 +583,30 @@ pub fn show_pane(
 ) {
     app.effect_on(&pane_row_id(category), &open_pane(category))
         .expect("the pane opens");
+}
+
+/// The page a Settings window `root` shows: what its content scroller (the
+/// right-most one) holds.
+#[cfg(test)]
+pub fn page_of(root: &dyn ui::widget::Widget) -> &dyn ui::widget::Widget {
+    fn scrollers<'a>(
+        widget: &'a dyn ui::widget::Widget,
+        out: &mut Vec<&'a dyn ui::widget::Widget>,
+    ) {
+        if widget.name() == "Scrollable" {
+            out.push(widget);
+            return;
+        }
+        for child in widget.children() {
+            scrollers(child, out);
+        }
+    }
+    let mut found = Vec::new();
+    scrollers(root, &mut found);
+    found
+        .into_iter()
+        .max_by(|a, b| a.get_rect().x0.total_cmp(&b.get_rect().x0))
+        .expect("the window's content scroller")
 }
 
 /// The pane whose live row is `row` ([`pane_row_id`]).
@@ -621,7 +674,7 @@ pub enum NavigationEffect {
 fn answer_navigation(
     app: &SettingsApp,
     effect: NavigationEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         NavigationEffect::OpenPane { pane } => {
@@ -647,7 +700,7 @@ mod tests {
     fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let (rows, phases) = app
-            .surface::<SettingsApp, _>(|app| {
+            .with_widget::<crate::window::Inspected, _>(|app| {
                 ui::tilo_resource::profiling::observe(|| super::rows(app))
             })
             .unwrap();
@@ -667,7 +720,7 @@ mod tests {
     fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_custody() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let rows = app
-            .surface::<SettingsApp, _>(|app| super::rows(app))
+            .with_widget::<crate::window::Inspected, _>(|app| super::rows(app))
             .unwrap();
         let row = rows
             .into_iter()
@@ -760,7 +813,9 @@ mod tests {
     #[test]
     fn mounted_live_row_bindings_preserve_flattened_metadata_and_payloads() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let resource_rows = app.surface::<SettingsApp, _>(|app| rows(app)).unwrap();
+        let resource_rows = app
+            .with_widget::<crate::window::Inspected, _>(|app| rows(app))
+            .unwrap();
         let mut compared = 0;
         for row in resource_rows {
             for spec in row.into_resource().actions {

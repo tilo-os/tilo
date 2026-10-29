@@ -529,11 +529,9 @@ fn remote_failure_is_reported_to_the_caller_and_visible_status() {
     };
     assert!(message.contains("authentication failed"), "{message}");
     assert_eq!(
-        app.with_surface::<git_client::GitClientApp, _>(|app| {
-            app.test_last_error().map(str::to_owned)
-        })
-        .unwrap()
-        .as_deref(),
+        app.with_surface::<git_client::GitClientApp, _>(|app| app.test_last_error())
+            .unwrap()
+            .as_deref(),
         Some(message.as_str()),
         "the failure shows where the person looks"
     );

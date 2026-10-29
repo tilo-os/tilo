@@ -9,9 +9,7 @@ use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 use agent_provider_config::local::hub::{HubFormat, HubSearchResult};
 use ui::widget::{InPlace, SearchDriver};
 
-use crate::panes::model::PaneModel as _;
-
-use super::super::tests::{mock, model_over, rendered_names, snapshot};
+use super::super::tests::{announced, mock, model_over, rendered_names, snapshot};
 use super::super::{AgentModelsEffect, LocalModelPhase, ModelAction, model_actions};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -49,7 +47,7 @@ fn a_hub_model_downloads_only_a_fitting_variant_it_showed() {
     let control = mock(snapshot(None));
     let mut pane = model_over(control.clone());
     pane.hub.offer = Some(Ok(hub_offer()));
-    let names = rendered_names(&pane);
+    let names = rendered_names(&mut pane);
     assert!(
         names.iter().any(|name| name == "Open model page"),
         "{names:?}"
@@ -95,7 +93,7 @@ fn a_model_without_a_signed_runtime_is_not_offered_start() {
         endpoint: None,
     }));
     stopped.models[0].package.no_runtime = true;
-    let pane = model_over(mock(stopped.clone()));
+    let mut pane = model_over(mock(stopped.clone()));
     assert_eq!(model_actions(&stopped.models[0]), [ModelAction::Remove]);
     assert!(
         pane.manager_work(&AgentModelsEffect::StartModel {
@@ -103,7 +101,7 @@ fn a_model_without_a_signed_runtime_is_not_offered_start() {
         })
         .is_err()
     );
-    let names = rendered_names(&pane);
+    let names = rendered_names(&mut pane);
     assert!(!names.iter().any(|name| name == "Start"), "{names:?}");
 }
 
@@ -156,7 +154,7 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
     );
     pane.opener = browser.clone();
     pane.hub_userinfo = format!("{}/oauth/userinfo", people.url());
-    let names = rendered_names(&pane);
+    let names = rendered_names(&mut pane);
     assert!(
         names.iter().any(|name| name == "Sign in with Hugging Face"),
         "{names:?}"
@@ -198,7 +196,7 @@ fn a_hugging_face_sign_in_is_stored_where_a_token_goes_and_shows_who() {
             }
         })
     );
-    let names = rendered_names(&pane);
+    let names = rendered_names(&mut pane);
     for shown in ["Sign out", "Save token", "Sign in with a code"] {
         assert!(names.iter().any(|name| name == shown), "{shown}: {names:?}");
     }
@@ -214,7 +212,7 @@ fn an_ended_sign_in_asks_to_sign_in_again() {
             name: None,
         },
     });
-    let text = crate::widgets::announced_text(pane.compose().as_ref());
+    let text = announced(&mut pane);
     assert!(
         text.iter()
             .any(|line| line.contains("sign-in of ada has ended")),
@@ -230,7 +228,6 @@ fn an_ended_sign_in_asks_to_sign_in_again() {
 #[test]
 fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     use crate::categories::Category;
-    use crate::settings_app::SettingsApp;
 
     let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new()
         .expect("settings opens headlessly");
@@ -249,8 +246,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     assert!(app.harness().a11y_node_named("Format").is_some());
 
     let mut driver = SearchDriver::default();
-    {
-        let settings = app.surface_mut::<SettingsApp>();
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         let offer = InPlace::of(settings);
         assert_eq!(
             offer,
@@ -265,7 +261,8 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
             None,
             false
         ));
-    }
+    })
+    .expect("the Settings window is mounted");
     assert!(
         app.harness()
             .wait_until(tilo_test_env::hang_bound(), |harness| {
@@ -278,8 +275,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
         "the search looks for the chosen file family only"
     );
 
-    {
-        let settings = app.surface_mut::<SettingsApp>();
+    app.with_widget::<crate::window::Inspected, _>(|settings| {
         driver.drive(
             settings,
             "helpful",
@@ -287,7 +283,8 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
             None,
             true,
         );
-    }
+    })
+    .expect("the Settings window is mounted");
     app.settle();
     assert!(
         app.harness()
@@ -298,9 +295,11 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
 
     crate::effects::show_pane(&mut app, Category::DEFAULT);
     app.settle();
-    let settings = app.surface_mut::<SettingsApp>();
+    let offer = app
+        .with_widget::<crate::window::Inspected, _>(|settings| InPlace::of(settings))
+        .expect("the Settings window is mounted");
     assert_eq!(
-        InPlace::of(settings),
+        offer,
         InPlace::List,
         "on a pane without a query the window's search narrows the sidebar"
     );
@@ -361,7 +360,7 @@ fn a_result_states_downloads_and_likes_as_separate_facts() {
         license: None,
         formats: vec![HubFormat::Gguf],
     }]));
-    let said = crate::widgets::announced_text(pane.compose().as_ref());
+    let said = announced(&mut pane);
     let row = said
         .iter()
         .find(|text| text.lines().any(|fact| fact.trim() == "1 download"))

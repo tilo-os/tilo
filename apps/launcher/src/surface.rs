@@ -1,16 +1,18 @@
-//! The launcher's surface: the toolkit's palette card with its filter band,
+//! The launcher's window: the toolkit's palette card with its filter band,
 //! showing what the source answers and putting to it what the person does.
 //!
-//! The surface keeps what the person is doing (the query typed, the kinds
+//! The window keeps what the person is doing (the query typed, the kinds
 //! chosen, the row selected) and sends every change of it to the source as
 //! an [`Ask`]; what the source answers (the rows, the step on screen, the
 //! scope) replaces what the card shows. A source lent by the host answers
-//! on the host's next frame; without one, the surface answers itself from
-//! [`FixtureSource`] as soon as it asks.
+//! on the host's next frame; without one, the window answers itself from
+//! [`FixtureSource`] as soon as it asks. The view answers the launcher's
+//! effects on the window and publishes the results it shows.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ResourceSurface, SurfaceCx};
+use ui::framework::{EffectAnswer, Effected, LiveRow, Publishes, ViewCx};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::search::system::filters::{
@@ -21,14 +23,16 @@ use ui::theme::Theme;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::widget::command_palette::CommandPalette;
-use ui::widget::{AppModel, Decorator, EventCtx, ModelPath, Widget};
+use ui::widget::{AppModel, Decorator, Element, EventCtx, ModelPath, Widget};
 use ui::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
 use crate::fixture::FixtureSource;
 use crate::i18n::{t, t_args};
 use crate::resource::{Launcher, LauncherEffect};
-use crate::source::{ActivationModifier, Answer, Ask, Link, ResourceKind, Search, SearchScope};
+use crate::source::{
+    ActivationModifier, Answer, Ask, CardFit, Link, ResourceKind, Search, SearchScope,
+};
 
 /// The card's width on its own: the desktop's search card at its widest.
 const CARD_WIDTH: f64 = 640.0; // allow-breakpoint: a size, not a layout decision
@@ -67,6 +71,10 @@ pub struct LauncherSurface {
     /// The room the host gives the card: its width and the tallest its
     /// list may grow.
     room: Option<(f64, f64)>,
+    /// The scenario to stage on the next sync.
+    staged: Rc<RefCell<Option<Scenario>>>,
+    /// The results on screen as the view publishes them.
+    rows: Rc<RefCell<Vec<LiveRow>>>,
 }
 
 impl LauncherSurface {
@@ -103,6 +111,8 @@ impl LauncherSurface {
             cursor: Point::ZERO,
             structure_dirty: true,
             room: None,
+            staged: Rc::default(),
+            rows: Rc::default(),
         }
     }
 
@@ -265,7 +275,9 @@ impl LauncherSurface {
             .filter(|id| Some(*id) != self.auto_selected.as_deref())
             .map(str::to_owned);
         self.palette.set_entries(answer.rows);
-        let select = kept.or(answer.select);
+        // The source's choice is the person's when it keeps it; else the
+        // row the person chose stays, as long as it is listed.
+        let select = answer.select.or(kept);
         let cursor = select.and_then(|id| {
             self.palette
                 .visible_entries()
@@ -334,6 +346,26 @@ impl LauncherSurface {
         }
     }
 
+    /// Tell the host what the card makes of its room.
+    fn tell_fit(&self) {
+        let shown = if self.open {
+            self.palette
+                .visible_entries()
+                .iter()
+                .enumerate()
+                .filter_map(|(at, entry)| Some((entry.id.clone(), self.palette.row_rect(at)?)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.link.set_fit(CardFit {
+            card: self.palette.get_rect(),
+            chrome_height: self.palette.chrome_height(),
+            rows: self.palette.entry_row_capacity(),
+            shown,
+        });
+    }
+
     fn shows_band(&self) -> bool {
         self.band && !self.palette.shows_field_only()
     }
@@ -400,7 +432,16 @@ impl LauncherSurface {
         let last = i64::try_from(count.saturating_sub(1)).unwrap_or(0);
         let to = at.saturating_add(by).clamp(0, last);
         self.palette.set_cursor(usize::try_from(to).unwrap_or(0));
+        self.selection_moved();
+    }
+
+    /// The person moved the selection: it is theirs now, and the source is
+    /// told, so rows changing under it keep it on the same result.
+    fn selection_moved(&mut self) {
         self.auto_selected = None;
+        if let Some(row) = self.palette.selected_id().map(str::to_owned) {
+            self.ask(Ask::Select { row });
+        }
     }
 
     /// Stage `scenario`, as the person would get there.
@@ -481,6 +522,10 @@ impl Decorator for LauncherSurface {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let staged = self.staged.borrow_mut().take();
+        if let Some(Scenario(scenario)) = staged {
+            self.stage_scenario(scenario.as_deref());
+        }
         if let Some(own) = &mut self.own
             && self.link.has_asks()
         {
@@ -491,7 +536,12 @@ impl Decorator for LauncherSurface {
         }
         self.take_open_request();
         self.take_answer();
+        if self.palette.set_held_modifiers(self.link.held_modifiers()) {
+            self.structure_dirty = true;
+        }
         self.palette.sync(state, path);
+        self.publish_rows();
+        self.tell_fit();
     }
 
     /// The card is as wide as the room the host gives it, or the
@@ -534,6 +584,7 @@ impl Decorator for LauncherSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.tell_fit();
         if !self.open {
             return;
         }
@@ -633,7 +684,7 @@ impl Decorator for LauncherSurface {
         let cursor_before = self.palette.cursor();
         self.palette.handle_event(event, ctx);
         if self.palette.cursor() != cursor_before {
-            self.auto_selected = None;
+            self.selection_moved();
         }
         self.take_requests(&query_before);
     }
@@ -705,26 +756,34 @@ impl Decorator for LauncherSurface {
     }
 }
 
-impl ResourceSurface<Launcher, LauncherEffect> for LauncherSurface {
-    fn present(&mut self, _state: &Rc<Launcher>) {}
+/// A screenshot scenario to stage, `None` for a plain capture.
+struct Scenario(Option<String>);
 
-    fn attach(&mut self, cx: SurfaceCx<Launcher>) {
-        // On its own (its own window, a capture) the launcher is the window:
-        // it opens at once. A host opens it when the person asks.
-        if self.own.is_some() && cx.mode().is_live() {
-            self.open(SearchScope::Workspace, None);
-        }
+/// The launcher window of `cx`'s view, over the host's `link` or over the
+/// fixed desktop when no host lends one: it answers the launcher's effects
+/// and publishes the results on screen.
+pub(crate) fn window(cx: &ViewCx<Launcher>, link: Option<Link>) -> Element {
+    let mut window = LauncherSurface::new(link);
+    window.link().wake_with(cx.waker());
+    // On its own (its own window, a capture) the launcher is the window: it
+    // opens at once. A host opens it when the person asks.
+    if window.own.is_some() && cx.mode().is_live() {
+        window.open(SearchScope::Workspace, None);
     }
+    let staged = Rc::clone(&window.staged);
+    cx.on_stage(move |scenario| *staged.borrow_mut() = Some(Scenario(scenario.map(str::to_owned))));
+    cx.window_effects(
+        |window: &mut LauncherSurface, effect: LauncherEffect, _cx| window.answer(effect),
+    );
+    let rows = Rc::clone(&window.rows);
+    cx.publishing(
+        Publishes::new().live_rows(move || rows.borrow().clone()),
+        Box::new(window),
+    )
+}
 
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: LauncherEffect,
-        _cx: &mut EffectCx<Launcher, Self>,
-    ) -> EffectAnswer {
+impl LauncherSurface {
+    fn answer(&mut self, effect: LauncherEffect) -> EffectAnswer {
         let closed = || Err("search is not open".to_owned());
         match effect {
             LauncherEffect::Open { scope, query } => {
@@ -809,16 +868,20 @@ impl ResourceSurface<Launcher, LauncherEffect> for LauncherSurface {
             LauncherEffect::Dismiss => self.dismiss(),
         }
         self.take_answer();
+        self.publish_rows();
         Ok(Effected::done())
     }
 
-    /// The results on screen, each chosen through [`LauncherEffect::Choose`]:
-    /// what an agent reads to find the row to choose.
-    fn live_rows(&self) -> Vec<LiveRow> {
+    /// Publish the results on screen, each chosen through
+    /// [`LauncherEffect::Choose`]: what an agent reads to find the row to
+    /// choose.
+    fn publish_rows(&self) {
         if !self.open {
-            return Vec::new();
+            self.rows.borrow_mut().clear();
+            return;
         }
-        self.palette
+        *self.rows.borrow_mut() = self
+            .palette
             .visible_entries()
             .into_iter()
             .map(|entry| {
@@ -832,7 +895,7 @@ impl ResourceSurface<Launcher, LauncherEffect> for LauncherSurface {
                     how: None,
                 })
             })
-            .collect()
+            .collect();
     }
 }
 

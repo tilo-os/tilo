@@ -120,8 +120,7 @@ fn draw_frame_content_with(
     let app_live = app
         .history
         .as_ref()
-        .is_none_or(|history| history.live_visible())
-        && app.history_layout.is_none_or(|layout| layout.app_visible);
+        .is_none_or(|history| history.live_visible());
     // History mode that hides the live app is a layer over all of it; one
     // that shows it and paints nothing of its own (or paints in a part)
     // leaves the widgets' damage the whole change.
@@ -175,26 +174,6 @@ fn draw_frame_content_with(
     if tracked {
         crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.layers", ()));
     }
-    if app.history_chrome_enabled {
-        let context = crate::standalone_history::HistoryReadContext::of(
-            &app.state,
-            app.persistence.records.as_ref(),
-            &app.permission_ctx,
-        );
-        if let Err(error) = app.document_history.draw(
-            &context,
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        ) {
-            tracing::debug!(?error, "history frame refused");
-            app.layout.request_rebuild();
-            app.layout.layout_dirty = true;
-        }
-    }
-    painted(scene, "the document history bar", &mut drawn);
     // The window's top layer, after the app and the window's own chrome:
     // open menus, popovers and modals composite above everything drawn so
     // far, so a modal's scrim covers the History bar and every region. The
@@ -203,7 +182,6 @@ fn draw_frame_content_with(
         .history
         .as_ref()
         .is_none_or(|history| history.live_visible())
-        && app.history_layout.is_none_or(|layout| layout.app_visible)
     {
         app.root_widget.draw_overlay(
             scene,
@@ -216,15 +194,6 @@ fn draw_frame_content_with(
     painted(scene, "an overlay of the app's widgets", &mut drawn);
     if let Some(history) = &mut app.history {
         history.draw_overlay(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
-        );
-    }
-    if app.history_chrome_enabled {
-        app.document_history.draw_overlay(
             scene,
             transform,
             &mut app.text_renderer,
@@ -674,14 +643,6 @@ fn lay_out_window(
     #[cfg(test)]
     drop(history_probe);
     let viewport_changed = app.layout.last_layout_logical != Some(logical);
-    if app.history_chrome_enabled {
-        if (app.history_viewport_width >= 900.0) != (logical.0 >= 900.0) {
-            app.layout.request_rebuild();
-        }
-        app.history_viewport_width = logical.0;
-        let _ = app.history_local_resources();
-        app.document_history.sync(&app.state.doc, &app.state.root);
-    }
     if !app.layout.layout_dirty && !viewport_changed {
         // A sync that moved nothing (a worker's answer, a timer) can still
         // have changed what the app publishes.
@@ -694,11 +655,9 @@ fn lay_out_window(
     // widgets as it was, so their damage is the whole change. Typing into a
     // fixed-size field relayouts on every key; repainting the whole window
     // for it made per-key work scale with the display instead of the field.
-    let geometry_before = (!structure_rebuilt
-        && !app.layout.structure_dirty
-        && app.history.is_none()
-        && app.history_layout.is_none())
-    .then(|| crate::pointer_replay::widget_geometry(app.root_widget.as_ref()));
+    let geometry_before =
+        (!structure_rebuilt && !app.layout.structure_dirty && app.history.is_none())
+            .then(|| crate::pointer_replay::widget_geometry(app.root_widget.as_ref()));
     let mut t_compute_us = 0u128;
     let mut t_apply_us = 0u128;
     let mut current_root = root_node;
@@ -731,8 +690,7 @@ fn lay_out_window(
     // its allocation asks for the composition to be repeated against it.
     // History's own chrome picks its presentation from the window's width.
     let recompose_for_viewport = viewport_changed
-        && (app.history_chrome_enabled
-            || app.history.is_some()
+        && (app.history.is_some()
             || crate::widget::layout::tree_composition_follows_allocation(
                 app.root_widget.as_ref(),
             ));
@@ -842,8 +800,7 @@ fn lay_out_window(
                 == Some(runtime::PlacedAll {
                     focus: app.focused_node,
                 })
-            && app.history.is_none()
-            && app.history_layout.is_none();
+            && app.history.is_none();
         if again {
             let tree = crate::widget::layout::TreeId::of(&app.layout.taffy);
             crate::widget::layout::placing_again_in(tree, || {
@@ -911,7 +868,6 @@ fn lay_out_window(
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
     }
-    app.restore_history_focus();
     app.restore_ordinary_palette_focus();
     if app
         .focused_node

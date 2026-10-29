@@ -589,8 +589,6 @@ struct ReplyLimitDiagnostics {
 fn reply_limit_diagnostics(reply: &DirectedAction) -> ReplyLimitDiagnostics {
     let message = &reply.message;
     let message_kind = match message {
-        ActionMessage::RecordEffectReceipt { .. } => "record_effect_receipt",
-        ActionMessage::EffectReceiptCommitted { .. } => "effect_receipt_committed",
         ActionMessage::CatalogueRefresh { .. } => "catalogue_refresh",
         ActionMessage::CommittedDesktop { .. } => "committed_desktop",
         ActionMessage::BrokerCatalogue { .. } => "broker_catalogue",

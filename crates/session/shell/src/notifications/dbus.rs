@@ -262,8 +262,8 @@ impl From<NotifyArgs> for NotifyRequest {
     }
 }
 
-/// The interface's introspection, byte-identical to what zbus's
-/// `#[interface]` macro wrote for the former macro-dispatched service.
+/// The interface's introspection, as zbus's `#[interface]` macro wrote it
+/// for the former macro-dispatched service, with the inline reply's signal.
 #[cfg(target_os = "linux")]
 pub(super) const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.Notifications">
   <!--
@@ -345,6 +345,14 @@ pub(super) const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.fre
   <signal name="ActionInvoked">
     <arg name="id" type="u"/>
     <arg name="action_key" type="s"/>
+  </signal>
+  <!--
+   `NotificationReplied(id, text)` — emitted when the person replies to a toast
+   inline, for a sender that offered the `inline-reply` action.
+   -->
+  <signal name="NotificationReplied">
+    <arg name="id" type="u"/>
+    <arg name="text" type="s"/>
   </signal>
   <!--
    `ActivationToken(id, activation_token)` — emitted just before `ActionInvoked`
@@ -568,7 +576,8 @@ impl NotificationService {
     }
 
     /// `GetCapabilities` — advertise the optional features we honour:
-    /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed).
+    /// `body` (multi-line text), `actions` (default-action activate), `persistence` (critical toasts stay until closed),
+    /// `inline-reply` (a sender offering the `inline-reply` action gets the text back as `NotificationReplied`).
     #[allow(
         clippy::unused_self,
         reason = "D-Bus methods dispatch on the service instance, even though this fixed capability list doesn't depend on self"
@@ -578,6 +587,7 @@ impl NotificationService {
             "body".to_string(),
             "actions".to_string(),
             "persistence".to_string(),
+            "inline-reply".to_string(),
         ]
     }
 
@@ -613,6 +623,17 @@ impl NotificationService {
         activation_token: String,
     ) -> zbus::Result<()> {
         ctxt.emit(Self::name(), "ActivationToken", &(id, activation_token))
+            .await
+    }
+
+    /// `NotificationReplied(id, text)` — emitted when the person replies to
+    /// a toast inline.
+    async fn notification_replied(
+        ctxt: &SignalEmitter<'_>,
+        id: u32,
+        text: String,
+    ) -> zbus::Result<()> {
+        ctxt.emit(Self::name(), "NotificationReplied", &(id, text))
             .await
     }
 
@@ -685,9 +706,14 @@ pub fn spawn_signal_emitter(
         loop {
             let closed = bridge.drain_closed_events();
             let actions = bridge.drain_action_events();
-            if closed.is_empty() && actions.is_empty() {
+            let replies = bridge.drain_reply_events();
+            if closed.is_empty() && actions.is_empty() && replies.is_empty() {
                 bridge.signal_wake.wait().await;
                 continue;
+            }
+            // A reply goes before the close that follows it.
+            for (id, text) in replies {
+                let _ = NotificationService::notification_replied(&ctxt, id, text).await;
             }
             for (id, reason) in closed {
                 let _ = NotificationService::notification_closed(&ctxt, id, reason.code()).await;

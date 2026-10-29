@@ -86,6 +86,47 @@ impl<R: Resource> Bindings<R> {
     }
 }
 
+/// Mounts parts of a view while it runs ([`ViewCx::mounts`]): a child view
+/// a window builds once some work finished, with its own effects, rows and
+/// bindings, as a part of the view that handed out the handle. Clones
+/// mount into the same view.
+pub struct Mounts<R: Resource, T: 'static = <R as Resource>::State> {
+    /// The scope of the view that handed out the handle.
+    parent: Weak<()>,
+    scope: Rc<PartScope<R, T>>,
+}
+
+/// What builds a scope for a part retired with the `Rc` it is handed.
+type PartScope<R, T> = dyn Fn(&Rc<()>) -> ViewCx<R, T>;
+
+impl<R: Resource, T: 'static> Clone for Mounts<R, T> {
+    fn clone(&self) -> Self {
+        Self {
+            parent: self.parent.clone(),
+            scope: Rc::clone(&self.scope),
+        }
+    }
+}
+
+impl<R: Resource, T: 'static> Mounts<R, T> {
+    /// The part `build` lays out, for the window to show where it likes.
+    /// What the part registers lasts as long as the element does.
+    ///
+    /// # Errors
+    /// Refuses once the view that handed out the handle was retired.
+    pub fn mount(
+        &self,
+        build: impl FnOnce(&mut ViewCx<R, T>) -> Element,
+    ) -> Result<Element, &'static str> {
+        if self.parent.strong_count() == 0 {
+            return Err("the view that mounts it has been retired");
+        }
+        let alive = Rc::new(());
+        let part = build(&mut (self.scope)(&alive));
+        Ok(Switch::mounted(alive, part))
+    }
+}
+
 /// Projects the resource state onto the value a view scope reads: the whole
 /// state at the root, one item inside an [`Each`] row.
 pub(crate) type Focus<R, T> = Rc<dyn for<'a> Fn(&'a <R as Resource>::State) -> Option<&'a T>>;
@@ -634,6 +675,16 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         )
     }
 
+    /// What mounts parts of this view later, while it runs: a window that
+    /// shows a child window once work finished keeps it and builds the
+    /// child through it. See [`Mounts`].
+    pub fn mounts(&self) -> Mounts<R, T> {
+        Mounts {
+            parent: self.env.alive.clone(),
+            scope: Rc::new(self.part_scope()),
+        }
+    }
+
     /// What builds a part of this scope with its own bindings, retired
     /// with the part (`alive`).
     fn part_scope(&self) -> impl Fn(&Rc<()>) -> ViewCx<R, T> + 'static {
@@ -691,6 +742,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         super::publishing::publishing(publishes, content, wake)
     }
 
+    /// `content`, kept up as [`Upkeep`](super::Upkeep) says: the work the
+    /// view takes in on every sync, the frames and wakes it owes the
+    /// window, what a capture waits for, what it asks of the host and the
+    /// presentation it keeps with the window. It lasts as long as `content`
+    /// stands in the view.
+    pub fn upkeep(&self, upkeep: super::Upkeep, content: Element) -> Element {
+        super::upkeep::upkeep(upkeep, content)
+    }
+
     /// Answer the effect vocabulary `E` — work with no document delta that a
     /// button, the palette, an agent or a script invokes — with `handle`,
     /// and publish `E` on the resource while this part of the view lives.
@@ -714,12 +774,25 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// the call, so an effect answers at once from what the window shows
     /// (the page, the caret). The window is found by its type in the view's
     /// tree when the effect starts; an effect invoked while it is not open
-    /// is refused. What finishes later reaches state the window shares.
+    /// is refused. What finishes later reaches state the window shares, or
+    /// the window itself with [`Self::window_host_effects`].
     pub fn window_effects<E: Effect, W: ui_core::widget::Widget + 'static>(
         &self,
         handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
         self.answer_effects::<E>(|effects, alive| effects.handle_in_window(alive, handle))
+    }
+
+    /// [`Self::window_effects`] for a window that hosts its work, as a
+    /// hosted surface does: the completions of the jobs its effects start
+    /// get the window `W` too (`EffectCx<R, W>`). Work whose window is not
+    /// in the view waits for it to show again; what is still running when
+    /// this part of the view goes is stopped.
+    pub fn window_host_effects<E: Effect, W: ui_core::widget::Widget + 'static>(
+        &self,
+        handle: impl FnMut(&mut W, E, &mut EffectCx<R, W>) -> EffectAnswer + 'static,
+    ) -> EffectsHandle {
+        self.answer_effects::<E>(|effects, alive| effects.handle_hosted_in_window(alive, handle))
     }
 
     /// Publish `E` while this part of the view lives, and `register` its
@@ -751,6 +824,15 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// fetch when what it shows changes. See [`Jobs`](super::Jobs).
     pub fn jobs(&self) -> super::Jobs<R> {
         self.effects.view_jobs()
+    }
+
+    /// Jobs the window `W` the view laid out starts on its own, whose
+    /// completions get the window (`jobs.start::<W>(…)`), as a hosted
+    /// surface's get the surface. They finish before the view syncs, wait
+    /// while the window is not in the view, and stop once this part of the
+    /// view goes. See [`Jobs`](super::Jobs).
+    pub fn window_jobs<W: ui_core::widget::Widget + 'static>(&self) -> super::Jobs<R> {
+        self.effects.window_jobs::<W>(self.alive.clone())
     }
 
     /// A button that invokes one effect, through the same door (and the

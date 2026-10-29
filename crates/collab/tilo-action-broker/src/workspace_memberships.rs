@@ -104,6 +104,10 @@ impl CapnpBrokerState {
                         .into(),
                 );
             }
+            WorkspaceMembershipCommand::Share { .. }
+            | WorkspaceMembershipCommand::Unshare { .. } => {
+                return Err("a share is its sharer's own, made at their device".into());
+            }
             WorkspaceMembershipCommand::InstallApp(_)
             | WorkspaceMembershipCommand::UninstallApp { .. } => {
                 return Err(

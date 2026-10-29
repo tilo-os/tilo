@@ -13,8 +13,8 @@ use tilo_peer_state::join::{JoinBootstrap, JoinProof, VerifiedRedemption};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
 pub use tilo_peer_state::join_ledger::{JoinError as CollaborationError, Redeeming};
 use tilo_relay_session::rooms::{
-    CancelInvitationRequest, GrantAppAuthorshipRequest, IssueInvitationRequest, IssuedInvitation,
-    PendingInvitation, RemoveMemberRequest, SetMemberRoleRequest,
+    CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
+    RemoveMemberRequest, SetMemberRoleRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -664,9 +664,8 @@ impl Rooms {
     /// to take in at once (none when the room carried it already).
     ///
     /// # Errors
-    /// Refuses a command that is not a member's own membership change, one
-    /// the room's policy does not let `device` make, and a change that
-    /// could not commit.
+    /// Refuses a device other than this host's own, a change the room's
+    /// rules do not let `device` make, and a change that could not commit.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its change is committed and published"
@@ -677,20 +676,6 @@ impl Rooms {
         device: &DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> Result<(GovernanceCompletion, Vec<Vec<u8>>), CollaborationError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        if !matches!(
-            command,
-            Command::Member { .. }
-                | Command::Settings(_)
-                | Command::Grant { .. }
-                | Command::Revoke { .. }
-                | Command::AddAgent { .. }
-                | Command::RemoveAgent { .. }
-        ) {
-            return Err(CollaborationError::new(
-                "only a member's own membership change is committed for its device",
-            ));
-        }
         if device.device_public_key != self.inner.host.cert.device_public_key {
             return Err(CollaborationError::new(
                 "a membership change is committed here only for this host's own device",
@@ -745,64 +730,6 @@ impl Rooms {
             neighbour_wire::NeighbourMsg::SyncResp { changes, .. } => Ok(changes),
             _ => Err(CollaborationError::new("room governance missing")),
         }
-    }
-
-    /// Commit application authorship under the current owner's authority.
-    ///
-    /// # Errors
-    /// Refuses non-administrators, stale admission, invalid applications and
-    /// conflicting retries; returns only after governance is durable and published.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room remains locked through the committed and published administration decision"
-    )]
-    pub async fn grant_app_authorship(
-        &self,
-        room: &str,
-        administrator: &DeviceCert,
-        request: GrantAppAuthorshipRequest,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        self.authorize(
-            administrator,
-            None,
-            RoomOp::Host(HostOperation::GrantAppAuthorship),
-            now,
-        )?;
-        if request.request_id == [0; 32] {
-            return Err(CollaborationError::new(
-                "request identifier must be nonzero",
-            ));
-        }
-        let command =
-            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                app: request.app.clone(),
-            };
-        command.validate()?;
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
-        // Validate retries against today's exact certificate, admission,
-        // administration and governor custody through the same typed command.
-        let key = self.inner.host.key.clone();
-        room.peer()
-            .clone()
-            .workspace_mut()
-            .apply_workspace_membership_command(administrator, &command, &key, system_time(now))?;
-        self.administer(
-            &mut room,
-            request.request_id,
-            request_digest(&("app.authorship.grant", &request))?,
-            |peer| {
-                peer.workspace_mut().apply_workspace_membership_command(
-                    administrator,
-                    &command,
-                    &key,
-                    system_time(now),
-                )
-            },
-            now,
-        )
-        .await
     }
 
     /// Install a bot as a governed member of `room`, update its program,
@@ -1037,87 +964,6 @@ impl Rooms {
             .peer()
             .governance()
             .installation(id, now))
-    }
-
-    /// Persist and publish an admitted person's own bounded terminal receipt.
-    /// All room administration commands keep their separate owner-only checks.
-    ///
-    /// # Errors
-    /// Rejects stale admission, impersonation, malformed or conflicting receipts,
-    /// and failed durable publication.
-    pub async fn record_member_effect_receipt(
-        &self,
-        room: &str,
-        caller: &DeviceCert,
-        invocation: uuid::Uuid,
-        redacted: &[u8],
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        tilo_user_identity::verify_device_cert_at(caller, now)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if self.revocations().is_revoked(&caller.device_public_key) {
-            return Err(CollaborationError::new("device revoked"));
-        }
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
-        let mut candidate = room.peer().clone();
-        let changed = candidate.workspace_mut().apply_member_effect_receipt(
-            caller,
-            invocation,
-            redacted,
-            &self.inner.host.key,
-            system_time(now),
-        )?;
-        let collaboration = room.collaboration().clone();
-        let generation = if changed {
-            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(collaboration)
-            })?
-        } else {
-            room.record.generation
-        };
-        self.settle(&mut room).await?;
-        Ok(GovernanceCompletion { generation })
-    }
-
-    /// Save or remove one shortcut of `room` for the member whose device
-    /// `caller` asked: the governor's own write of the room, under the rule
-    /// admission holds every writer to ([`tilo_peer_state::room::proven_saver`]).
-    ///
-    /// # Errors
-    /// An invalid or revoked caller, a room not governed here, or the room's
-    /// refusal of the change.
-    pub async fn save_member_shortcut(
-        &self,
-        room: &str,
-        caller: &DeviceCert,
-        change: &tilo_automation::ShortcutChange,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        tilo_user_identity::verify_device_cert_at(caller, now)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if self.revocations().is_revoked(&caller.device_public_key) {
-            return Err(CollaborationError::new("device revoked"));
-        }
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
-        let mut candidate = room.peer().clone();
-        let changed = candidate.workspace_mut().apply_shortcut_change(
-            caller,
-            change,
-            &self.inner.host.key,
-            system_time(now),
-        )?;
-        let collaboration = room.collaboration().clone();
-        let generation = if changed {
-            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(collaboration)
-            })?
-        } else {
-            room.record.generation
-        };
-        self.settle(&mut room).await?;
-        Ok(GovernanceCompletion { generation })
     }
 
     pub(super) async fn administer(

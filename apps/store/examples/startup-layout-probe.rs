@@ -31,15 +31,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let start = ui::time::now();
-    let mut root = store::StoreApp::new();
+    let root = store::StoreApp::new();
     if condition == "fixture" {
-        root.set_items(store::fixture::fixture_catalog());
+        root.state().set_items(store::fixture::fixture_catalog());
     } else if condition == "full-page" {
         let catalogue = store::fixture::fixture_catalog();
         if catalogue.is_empty() {
             return Err("screenshot catalogue unavailable".into());
         }
-        root.set_items(
+        root.state().set_items(
             catalogue
                 .iter()
                 .cycle()
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .collect(),
         );
     }
-    let items = root.items().len();
+    let items = root.state().items().len();
     let construct_ms = start.elapsed().as_secs_f64() * 1000.0;
     let start = ui::time::now();
     let mut frame = FrameHarness::new_with_controlled_inputs(

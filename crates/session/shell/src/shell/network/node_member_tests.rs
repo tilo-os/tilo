@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 use automerge::transaction::Transactable as _;
 use collab_types::{
     ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, OpKind, SignedOp,
-    document_artifact_id, document_attestation_id, document_channel_id,
+    document_artifact_id, document_attestation_id,
 };
 use ed25519_dalek::SigningKey;
 use tilo_browser_peer::{DocumentRoute, Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
@@ -264,11 +264,11 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
 
     // The relay admits the session to the plan's channel.
     let keys_for = |channels: &mut ChannelEncryption, record: &str| {
-        let channel = document_channel_id(NOTES, &acme.room, record);
+        let route = collab_types::ChannelRoute::new(NOTES, record);
         until("the relay to admit the session", || {
             net.tick();
             channels.pump(&*net, Instant::now(), tilo_clock::try_unix_now().unwrap());
-            match channels.access(room, channel, Instant::now()) {
+            match channels.access_record(room, &route, Instant::now()).1 {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
                 other => panic!("the session cannot be admitted: {other:?}"),

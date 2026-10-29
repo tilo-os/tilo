@@ -17,12 +17,14 @@ mod agent_markers;
 mod app_chooser;
 mod ask_agent;
 mod axis_navigation;
+mod banners;
 mod bar_popovers;
 mod canvas;
 mod control_hints;
 mod cursor_chat;
 mod feedback_pick;
 mod feedback_point;
+mod topbar_host;
 pub(crate) use cursor_chat::ChatOut;
 mod arrival;
 mod person_markers;
@@ -34,7 +36,7 @@ pub(crate) use agent_markers::AccessibleAgentMarker;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
-use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_f64, usize_of_isize};
+use ui::num::f32_of_f64;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -48,7 +50,7 @@ use vello::Scene;
 use vello::kurbo::RoundedRect;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings_refresh::QsField;
@@ -81,7 +83,6 @@ mod launcher_host;
 pub(crate) mod layers;
 mod live_shares;
 mod now_playing;
-mod overview_grid;
 mod palette_flow;
 mod parked_workspaces;
 mod peer_sync_dispatch;
@@ -122,8 +123,8 @@ use device_fabric::{
     media_handoff_failure_key, sentence_case, speaker_group_summary,
 };
 use history::{
-    HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
-    clipboard_history_source_label, history_target_address,
+    HistoryTargetAddress, clipboard_history_relative_time, clipboard_history_source_label,
+    history_target_address,
 };
 #[cfg(test)]
 use shortcuts::configured_shortcut_matches;
@@ -136,18 +137,15 @@ use shortcuts::{
 #[cfg(test)]
 use std::path::PathBuf;
 
+use ui::CommandEntry;
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::search::system::filters::{
-    FilterStripSlot, FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip,
-    toggle_kind,
-};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::search::system::filters::draw_filter_chip;
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
-    PermissionPrompt, PromptChoice, SecretPrompt, TextInput, Widget, WindowGroup as UiWindowGroup,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
-use ui::{CommandEntry, CommandPalette};
 
 #[cfg(test)]
 use crate::shell::capture_surface::CaptureSurfaceKind;
@@ -166,28 +164,17 @@ pub use crate::shell::peer_sync_overlay::{
 };
 use crate::shell::peer_sync_overlay::{InviteContext, PeerSyncOverlay};
 use crate::shell::portal_dialog::PortalDialogController;
-use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
 use crate::shell::window_menu::WindowMenuAction;
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
-#[cfg(test)]
-use tilo_desktop::drill_in as qs;
-use tilo_desktop::drill_in::DrillInList;
-use tilo_desktop::notifications::{
-    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost as _,
-    NotificationStack,
-};
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
     AgentAccessKey, EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey,
     WorkspaceSettingsOverlay,
-};
-use tilo_quick_settings::root::{
-    BluetoothIntent, QuickSettingsRoot, RootAction, SliderCommit, WifiIntent,
 };
 use ui::widget::ButtonRole;
 
@@ -258,26 +245,25 @@ mod foreign_surfaces;
 mod keyboard;
 mod launches;
 mod overlay_routing;
-mod overview_input;
-mod overview_layout;
-mod overview_paint;
+mod overview_app;
 mod paint_desktop;
 mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
 mod people_overlay;
+mod search_state;
 use palette_search::LaunchpadMark;
+mod directory_sheet_app;
 mod display_confirm_sheet;
+mod display_sheet;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
 mod power_sheet;
-mod projection;
 mod qs_device_input;
 mod qs_device_rows;
 mod qs_input;
-mod qs_paint;
 mod qs_state;
 #[cfg(test)]
 #[allow(
@@ -287,6 +273,7 @@ mod qs_state;
 #[path = "qs_wifi_radio_tests.rs"]
 mod qs_wifi_radio_tests;
 mod queries;
+mod quick_settings;
 mod room_activity;
 mod scene;
 mod shortcut_guide_sheet;
@@ -302,7 +289,7 @@ mod tab_rename;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
-mod wifi_password;
+mod window_flight;
 mod window_focus;
 mod workspace_content;
 mod ws_emoji;
@@ -310,19 +297,12 @@ mod ws_settings;
 
 use capture::{instant_screen_capture, instant_window_capture, magnifier_step};
 use collaborators::{CollaborationPreferences, collaborators_screen_exposure};
-#[cfg(test)]
-use overview_layout::OVERVIEW_PANEL_START_SCALE;
-use overview_layout::{
-    OVERVIEW_FACE_AWAY_ALPHA, OVERVIEW_FACES_MAX, OVERVIEW_PANEL_RISE_PX, OVERVIEW_SHARES_MAX_ROWS,
-    OverviewMetrics, overview_panel_curve,
-};
-use overview_paint::OverviewPanelCache;
 pub(crate) use portal_prompts::{prompt_choice_to_outcome, prompt_label};
 use qs_state::{
-    QS_CLIPBOARD_ROWS, QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics,
-    focus_quick_settings_accessibility, quick_settings_settled_bounds, radio_field,
+    QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics, quick_settings_settled_bounds, radio_field,
     scanned_wifi_security, sound_outputs_of,
 };
+pub(crate) use quick_settings::QUICK_SETTINGS_WINDOW;
 use room_activity::ActivityRefreshGate;
 #[cfg(test)]
 use room_activity::{
@@ -389,12 +369,12 @@ struct OverlayInputs {
     shortcut_config: settings_store::hardware::ShortcutConfig,
     shortcut_triggers: crate::shell::automation_triggers::TriggerHost,
     desktop_controls: DesktopControlsSource,
-    qs_root: QuickSettingsRoot,
+    quick_settings: quick_settings::QuickSettingsPanel,
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
-    qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
+    qs_action_slot: crate::shell::quick_settings_dispatch::SharedQsActions,
     room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
-    projection_overlay: Box<ProjectionOverlay>,
+    display_sheet: Box<crate::shell::display_layouts::DisplaySheetModel>,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
     status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
     history_describer: crate::shell::history_narrative::HistoryDescriber,
@@ -525,13 +505,14 @@ pub struct ShellOverlayHost {
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
     outputs: Vec<OutputGeometry>,
-    palette: CommandPalette,
+    /// What search shows; the launcher draws it.
+    search: search_state::SearchState,
     palette_visible: bool,
     /// Search as the launcher app shows it, once the session lends the apps
-    /// it mounts in its own process; until then (and in a host without
-    /// them) the palette above draws itself.
+    /// it mounts in its own process. A host without them (a bare test host)
+    /// keeps search's state and shows no card.
     launcher: Option<launcher_host::LauncherHost>,
-    /// The launcher cannot be mounted here: the palette draws itself.
+    /// The launcher cannot be mounted here.
     launcher_unavailable: bool,
     /// Search providers the palette fans out to. Built once at
     /// construction — providers are stateful (own background indexers),
@@ -615,12 +596,6 @@ pub struct ShellOverlayHost {
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
     /// The app chooser an app asked for, while the palette shows it.
     app_chooser: Option<app_chooser::PendingAppChooser>,
-    /// The palette's filter band: chips, scope switch, their pointer
-    /// targets and semantics, laid out and cached at draw.
-    search_filters: SearchFilters,
-    /// What [`Self::search_filters`] was last configured with, so an
-    /// unchanged band is not rebuilt every frame.
-    search_filter_inputs: Option<SearchFilterInputs>,
     /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set whenever [`Self::refresh_search_results`] rewrites the
@@ -643,43 +618,19 @@ pub struct ShellOverlayHost {
     /// picture of the workspace. A re-toggle mid-flight reverses from where
     /// the windows are drawn.
     overview_zoom: ui::motion::Presence,
-    /// A strip's name being typed in the overview.
-    overview_naming: Option<Box<overview_grid::OverviewNaming>>,
+    /// The shell took the overview down (its flag went off) and it has not
+    /// finished leaving: told apart from the overview taking itself down.
+    overview_closing: bool,
+    /// The chrome revision (and whether the switcher was up) the overview
+    /// was last lent the desktop at.
+    overview_desk_revision: Option<(u64, bool)>,
     /// The overview's live pictures of shell-drawn windows, painted once and
     /// kept while nothing they show changes, so every frame of the zoom
     /// draws the same paint instead of painting each window again.
     overview_thumbnails: Option<(u64, crate::shell::window_previews::LiveThumbnails)>,
-    /// Scroll offset (px) for the overview's room list, clamped each
-    /// frame so a workspace deletion can't strand it past the tail.
-    overview_scroll_y: f64,
-    /// Keyboard target in the overview switcher: arrows walk it, Enter
-    /// goes there, Esc leaves it alone. `None` while closed; re-seeded
-    /// from the current room each time it opens.
-    overview_selection: Option<usize>,
-    /// The window in the current room's preview row the keyboard is on:
-    /// Left and Right walk it, Enter goes there. `None` while the keyboard
-    /// is on the room list.
-    overview_window_selection: Option<crate::shell::state::TabId>,
-    /// One interrupted activation is consumed after its target disappears.
-    overview_window_interrupted: bool,
-    /// A press on the overview until it is let go: a click or tap on a
-    /// window preview goes to that window, a drag carries it to another
-    /// room.
-    overview_press: Option<tilo_desktop::overview::OverviewPress>,
-    /// Settled overview panel recording. Animation frames reuse it and only
-    /// change the transform, instead of re-encoding every room row.
-    overview_panel_cache: Option<OverviewPanelCache>,
-    /// How many times the panel recording was built. Tests use this to prove
-    /// a transition does not rebuild it per frame.
-    overview_panel_cache_fills: u32,
-    /// Overview panel density for the current theme, refreshed each
-    /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
-    /// helpers hit-testing calls (no theme in hand) read the same numbers
-    /// paint does.
-    overview_metrics: OverviewMetrics,
-    /// Layout-only theme snapshot for the shared compact-modal rule.
-    overview_layout_theme: Theme,
-    overview_layout_viewport: Rect,
+    /// The theme the host was last laid out with, for what is decided
+    /// with no theme in hand (motion, the compact-modal rule).
+    layout_theme: Theme,
     /// Quick Settings' appear, drill and height motion (`ui::motion`).
     qs_motion: qs_motion::QsMotion,
     /// The input the person last used, which the next surface that opens
@@ -697,37 +648,11 @@ pub struct ShellOverlayHost {
     workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
-    /// The notification centre's viewer-local state: scroll position,
-    /// keyboard selection and folded groups. The notifications themselves
-    /// stay owned by `ChromeState`.
-    notification_center: NotificationCenter,
-    /// The resolved caption (`xs`) and label (`sm`) sizes the Quick Settings
-    /// pages paint with, captured from the theme at the top of each frame so
-    /// the notification-history geometry — resolved before a frame has a
-    /// theme, like the root's — measures the type it actually draws, with
-    /// the ui scale and the text scale both included.
-    qs_type_lines: CenterMetrics,
     /// The quick settings panel's width and window margin, from the theme
     /// at the top of each frame (HIG 9.6: a utility Panel is
     /// `panel_width_utility`, grown with the text; it stays the floating
     /// Panel margin inside its display).
     qs_panel: QsPanelMetrics,
-    /// Offset into the separate clipboard history. Clipboard and notification
-    /// panes retain independent positions when the person switches between
-    /// them.
-    qs_clipboard_history_start: usize,
-    qs_clipboard_wheel_remainder: f64,
-    /// Stable keyboard target for clipboard history. The content hash is
-    /// retained instead of an index so concurrent fabric merges cannot make
-    /// Enter activate a different item than the highlighted one.
-    qs_selected_clipboard: Option<[u8; 32]>,
-    /// Ephemeral, metadata-only clipboard manager filter. It is never synced
-    /// and never causes a retained payload to become the live clipboard.
-    qs_clipboard_query: String,
-    /// Offset into the complete media/output/device list. Unlike the initial
-    /// compact implementation, no enrolled device disappears after row seven.
-    qs_device_fabric_start: usize,
-    qs_device_fabric_wheel_remainder: f64,
     /// The local source the next device click routes to. This is private
     /// view state, never convergent fabric state.
     qs_selected_source: Option<QsDeviceSource>,
@@ -819,9 +744,6 @@ pub struct ShellOverlayHost {
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
     axis_gather_pending: Option<axis_navigation::Gather>,
-    /// Hit rect for the "+ Add workspace" affordance at the tail of the
-    /// overview's list. `Rect::ZERO` when not painted.
-    add_workspace_rect: Rect,
     /// Top of the band below the top bar that sheets, the permission prompt
     /// and the notification stack lay out under. Defaults to
     /// [`CHROME_TOP_OFFSET_PX`]; `with_chrome_top` overrides it.
@@ -898,23 +820,18 @@ pub struct ShellOverlayHost {
     /// The faces the bar pulses for an arrival, until the frame bounces
     /// them (`arrival::say_arrived`).
     arrival_pulses: Vec<String>,
-    /// Top-right notification stack, above content but below the
-    /// permission prompt and modals.
-    notification_stack: NotificationStack,
+    /// The notification banners, an app hosted above content but below
+    /// the permission prompt and modals.
+    banners: banners::BannerHost,
     /// The theme's reduced-motion choice at the last paint, so wakes and
     /// animation frames for the acknowledgement skip a fade it won't show.
     acknowledgement_reduce_motion: std::cell::Cell<bool>,
-    /// Where the hardware-key readout was last painted, `None` while none is.
-    osd_painted: std::cell::Cell<Option<Rect>>,
+    /// Where the hardware-key readout's slabs were last painted, the one on
+    /// the display it is pinned to first; empty while none is up.
+    osd_painted: std::cell::RefCell<Vec<Rect>>,
     /// The display the readout was raised on, kept while it is up
     /// ([`crate::shell::osd::pin_display`]).
     osd_pin: std::cell::Cell<Option<crate::shell::osd::OsdPin>>,
-    /// Where the last paint repeated banners about the whole machine on the
-    /// displays other than the one in use.
-    machine_banners: Vec<Rect>,
-    /// The displays the last paint edged for a ringing call, every display
-    /// but the one whose banner shows the call.
-    call_edges: Vec<Rect>,
     /// The motion the chrome may play as last drawn (`Theme::motion`), for
     /// transitions started outside a draw.
     motion: std::cell::Cell<ui::tokens::EffectiveMotion>,
@@ -936,13 +853,8 @@ pub struct ShellOverlayHost {
     /// Wakes the compositor loop when a peer stream's picture finishes
     /// decoding; handed to every peer view this host mounts.
     peer_picture_wake: Option<media::realtime::PictureWake>,
-    /// Quick-settings root-page presentation, geometry and input state.
-    qs_root: QuickSettingsRoot,
-    // Navigation can shrink the panel before the matching release arrives.
-    qs_navigation_release_pending: bool,
-    /// The finger holding a Quick Settings slider, read as the pointer held
-    /// down by the toolkit's [`ui::widget::SliderTouch`].
-    qs_slider_touch: ui::widget::SliderTouch,
+    /// Quick Settings: the app, mounted here and shown in the popover.
+    quick_settings: quick_settings::QuickSettingsPanel,
     /// Where the now-playing card beside the root page reads players and
     /// sends transport commands.
     now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
@@ -961,15 +873,10 @@ pub struct ShellOverlayHost {
     /// Mutable provider handle shared with the shell action catalogue. Replacing
     /// a test dispatcher updates the existing provider rather than registering
     /// a duplicate action source.
-    qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
-    /// Shared drill-in chrome for host-owned pages (Bluetooth details).
-    qs_aux_drill_in: DrillInList,
+    qs_action_slot: crate::shell::quick_settings_dispatch::SharedQsActions,
     /// When the open Wi-Fi section last asked for a scan: it scans again
     /// while it stays open, so the list follows the room.
     qs_wifi_scanned_at: Option<Instant>,
-    /// The section whose host-described rows were last read, so opening the
-    /// Clipboard afresh starts at the newest copy with no search.
-    qs_hosted_section: Option<tilo_quick_settings::QsSection>,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -1084,8 +991,9 @@ pub struct ShellOverlayHost {
     tracker: Option<std::sync::Arc<crate::shell::broker_services::NativeTrackerRuns>>,
     agent_quick_composer: Box<crate::shell::agent_quick_composer::AgentQuickComposer>,
     agent_quick_composer_node: Option<NodeId>,
-    /// The workspace menu and the profile card the top bar opens.
-    bar_popovers: Box<bar_popovers::BarPopovers>,
+    /// The top bar, an app hosted over the desktop: its bars on every
+    /// display and the menus they open.
+    topbar: Box<topbar_host::TopBarHost>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// Controls a development session's test control asked to activate in
@@ -1131,20 +1039,15 @@ pub struct ShellOverlayHost {
     shared_desk: Option<crate::shell::peer_presence::SharedDesk>,
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
-    projection_overlay: Box<ProjectionOverlay>,
-    /// The Wi-Fi join prompt — its passphrase field is the only place the
-    /// passphrase lives — and the prompt (`WifiPasswordPrompt::id`) it is
-    /// typed for.
-    wifi_prompt: Box<SecretPrompt>,
-    wifi_password_prompt: Option<u64>,
+    display_sheet: Box<crate::shell::display_layouts::DisplaySheetModel>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
-    /// Each window the overview's row last drew, in order, and whether its
-    /// well showed its live picture: what the panel on screen holds.
+    /// Each window picture the overview's flight last drew, in order, and
+    /// whether it showed its live picture.
     overview_row_drawn: Vec<(u64, tilo_desktop::window_switcher::PreviewState)>,
     /// The focused text field's caret in desktop coordinates, as the
     /// compositor last reported it; the emoji picker and clipboard history
@@ -1435,16 +1338,6 @@ const STRIP_TRAILING_GUTTER_PX: f64 = STRIP_EDGE_GUTTER_PX;
 /// desktop.
 pub use crate::shell::output_scene::OutputGeometry;
 
-/// What the palette's filter band shows: each registered kind with its
-/// label, the chosen kinds, and each scope with its label.
-#[derive(Clone, Debug, PartialEq)]
-struct SearchFilterInputs {
-    kinds: Vec<(crate::shell::search::ResourceKind, String)>,
-    selected: Vec<crate::shell::search::ResourceKind>,
-    scopes: Vec<(crate::shell::chrome_state::SearchScope, String)>,
-    active_scope: crate::shell::chrome_state::SearchScope,
-}
-
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
@@ -1496,13 +1389,6 @@ fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersStat
         } if character.as_str() == "/"
     ) && !(modifiers.control_key() || modifiers.alt_key() || modifiers.super_key())
 }
-
-// Overview layout constants. Module-level so the draw path,
-// `hit_test_overview` and the unit tests share one geometry oracle.
-
-/// The semantic target of the open palette's query field, as the palette
-/// widget publishes it.
-const PALETTE_QUERY_TARGET: &str = "command-palette:query";
 
 /// Where one `update` of the host spent its time, reported as
 /// `SLOW-HOST-UPDATE` when the whole of it took long enough to hold up input:
@@ -1765,16 +1651,6 @@ fn draw_check_row(
     }
 }
 
-/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
-/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
-/// its panel rather than reading as raised cards. The palette's own body is
-/// the floating material.
-fn palette_surface_theme(theme: &Theme) -> Theme {
-    let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);
-    themed
-}
-
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
@@ -1805,15 +1681,11 @@ mod empty_workspace_tests;
 
 #[cfg(test)]
 #[allow(
-    clippy::float_cmp,
-    reason = "exact overview layout geometry is the behavior under test"
-)]
-#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
-#[path = "overview_panel_tests.rs"]
-mod overview_panel_tests;
+#[path = "workspace_settings_tests.rs"]
+mod workspace_settings_tests;
 
 #[cfg(test)]
 #[allow(
@@ -1826,10 +1698,6 @@ mod overview_panel_tests;
 )]
 #[path = "overview_transition_tests.rs"]
 mod overview_transition_tests;
-
-#[cfg(test)]
-#[path = "wifi_password_tests.rs"]
-mod wifi_password_tests;
 
 #[cfg(test)]
 #[path = "open_window_rows_tests.rs"]

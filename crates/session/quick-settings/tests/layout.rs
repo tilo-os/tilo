@@ -95,6 +95,8 @@ fn the_controls_page_has_the_sliders_then_the_tiles_two_to_a_row_then_the_rows_a
 
 #[test]
 fn a_tiles_chevron_opens_its_section_under_its_row_and_the_page_tells_the_host() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("controls");
     open_details(&mut app, "qs-tile-wifi");
     let wifi = target(&mut app, "qs-tile-wifi");
@@ -114,6 +116,34 @@ fn a_tiles_chevron_opens_its_section_under_its_row_and_the_page_tells_the_host()
     assert!(
         !has(&mut app, "qs-section-wifi"),
         "the chevron closes it again"
+    );
+}
+
+#[test]
+fn a_section_opens_in_place_on_the_disclosure_motion() {
+    let (mut app, _host) = hosted("controls");
+    let shut = target(&mut app, "qs-tile-vpn");
+    // The clock stands still where the section starts to open.
+    let frozen = ui::motion::testing::frozen();
+    open_details(&mut app, "qs-tile-wifi");
+    let wifi = target(&mut app, "qs-tile-wifi");
+    let section = target(&mut app, "qs-section-wifi");
+    let vpn = target(&mut app, "qs-tile-vpn");
+    assert!(
+        section.y0 >= wifi.y1,
+        "it unrolls from under its row: {section:?}"
+    );
+    assert!(
+        (vpn.y0 - shut.y0).abs() < 0.5,
+        "what follows moves with its edge, not to its end at once: {vpn:?}"
+    );
+    drop(frozen);
+    let _settled = ui::motion::testing::settled();
+    app.settle();
+    let section = target(&mut app, "qs-section-wifi");
+    assert!(
+        target(&mut app, "qs-tile-vpn").y0 >= section.y1,
+        "open, it takes its place in the page"
     );
 }
 
@@ -160,6 +190,8 @@ fn the_effects_are_published_for_the_palette_scripts_and_agents() {
 
 #[test]
 fn a_protected_network_never_joined_asks_for_its_password_under_it() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("wifi");
     click(&mut app, "qs-network-Cafe guest");
     assert_eq!(
@@ -184,6 +216,8 @@ fn a_protected_network_never_joined_asks_for_its_password_under_it() {
 
 #[test]
 fn typing_the_password_and_pressing_connect_joins_with_it() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("wifi-password");
     let field = app
         .harness()
@@ -222,6 +256,8 @@ fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
 
 #[test]
 fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("clipboard");
     click(&mut app, "qs-copy-b2-pin");
     click(&mut app, "qs-copy-a1-remove");
@@ -239,6 +275,8 @@ fn a_copy_is_pinned_and_removed_from_its_own_buttons() {
 
 #[test]
 fn a_devices_row_says_which_of_its_buttons_was_pressed() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("devices");
     click(&mut app, "qs-device-speaker-request-allow");
     click(&mut app, "qs-device-phone-control");
@@ -281,6 +319,8 @@ fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list(
 
 #[test]
 fn an_accessory_moves_only_to_a_device_that_is_online_and_not_this_one() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let (mut app, host) = hosted("accessory");
     // Offline, and this one: nothing to move to.
     let _ = app.harness().click_named("qs-accessory-to-tablet");
@@ -332,6 +372,113 @@ fn arranging_hides_adds_and_moves_controls_but_never_wifi() {
     assert!(has(&mut app, "qs-tile-bluetooth") && !has(&mut app, "qs-tile-vpn"));
 }
 
+/// The control the keyboard is on, as assistive technology reads it.
+fn focused(app: &mut HeadlessApp<QuickSettingsApp>) -> Option<ui::a11y::AccessNode> {
+    app.harness().focused_access_node()
+}
+
+/// Tab until the keyboard is on the arranged row named `name`.
+fn tab_to_row(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) {
+    for _ in 0..40 {
+        app.harness().tab(false);
+        if focused(app).is_some_and(|node| {
+            node.role == ui::a11y::Role::ListItem && node.name.as_deref() == Some(name)
+        }) {
+            return;
+        }
+    }
+    panic!("Tab never reaches the {name} row");
+}
+
+/// Press `key` with Ctrl held, and let the panel answer.
+fn ctrl(app: &mut HeadlessApp<QuickSettingsApp>, key: &str) {
+    app.harness().set_modifiers(&["ctrl".to_owned()]);
+    app.harness().key(key);
+    app.harness().set_modifiers(&[]);
+    app.settle();
+}
+
+#[test]
+fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
+    let (mut app, host) = hosted("edit");
+    tab_to_row(&mut app, "Bluetooth");
+    assert!(
+        focused(&mut app)
+            .and_then(|node| node.description)
+            .is_some_and(|description| description.contains("Control plus Arrow keys")),
+        "the row says how to move it"
+    );
+    ctrl(&mut app, "ArrowUp");
+    assert_eq!(
+        host.ran(),
+        [QsEffect::MoveControl {
+            control: "bluetooth".into(),
+            to: 0,
+        }]
+    );
+    let bluetooth = target(&mut app, "qs-edit-bluetooth");
+    let wifi = target(&mut app, "qs-edit-wifi");
+    assert!(bluetooth.y1 <= wifi.y0, "moved to the top");
+    assert_eq!(
+        focused(&mut app).and_then(|node| node.name).as_deref(),
+        Some("Bluetooth"),
+        "the keyboard stays on the control it moved"
+    );
+    ctrl(&mut app, "ArrowUp");
+    assert_eq!(
+        host.ran().len(),
+        1,
+        "the first control has nowhere up to go"
+    );
+    ctrl(&mut app, "ArrowDown");
+    assert_eq!(
+        host.ran().last(),
+        Some(&QsEffect::MoveControl {
+            control: "bluetooth".into(),
+            to: 1,
+        })
+    );
+    let bluetooth = target(&mut app, "qs-edit-bluetooth");
+    let wifi = target(&mut app, "qs-edit-wifi");
+    assert!(wifi.y1 <= bluetooth.y0, "back under Wi-Fi");
+    assert_eq!(
+        focused(&mut app).and_then(|node| node.name).as_deref(),
+        Some("Bluetooth")
+    );
+}
+
+#[test]
+fn a_control_dragged_part_way_waits_for_the_release_and_lands_there() {
+    let (mut app, host) = hosted("edit");
+    let bluetooth = target(&mut app, "qs-edit-bluetooth");
+    let (x, y) = (bluetooth.x0 + 20.0, bluetooth.center().y);
+    let travel = bluetooth.height() * 1.6;
+    let harness = app.harness();
+    harness.send(&ui::synthetic_input::cursor_moved(x, y));
+    harness.send(&ui::synthetic_input::mouse_press());
+    for step in 1..=4_u8 {
+        harness.send(&ui::synthetic_input::cursor_moved(
+            x,
+            y + travel * f64::from(step) / 4.0,
+        ));
+    }
+    app.settle();
+    assert!(
+        host.ran().is_empty(),
+        "nothing moves while the control is held"
+    );
+    app.harness().send(&ui::synthetic_input::mouse_release());
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::MoveControl {
+            control: "bluetooth".into(),
+            to: 2,
+        }],
+        "let go past the next control, it lands after it"
+    );
+}
+
 #[test]
 fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     let mut panel = QuickSettings::default();
@@ -359,6 +506,8 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
 
 #[test]
 fn a_panel_taller_than_its_room_scrolls_rather_than_dropping_a_control() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
     let mut app = HeadlessApp::<QuickSettingsApp>::capture_at(Some("battery"), (360, 420)).unwrap();
     assert!(has(&mut app, "qs-power"), "the footer is still on the page");
     let power = target(&mut app, "qs-power");
@@ -377,4 +526,22 @@ fn every_scenario_renders() {
             "{scenario} shows nothing"
         );
     }
+}
+
+#[test]
+fn tab_walks_the_controls_from_brightness() {
+    let mut app = staged("controls");
+    let d = app.harness();
+    assert!(
+        d.focus_order().len() > 10,
+        "every control takes the keyboard"
+    );
+    d.tab(false);
+    assert_eq!(
+        d.focused_access_node()
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Brightness"),
+        "the first Tab reaches brightness"
+    );
 }

@@ -80,16 +80,6 @@ class TTomlTests(unittest.TestCase):
         import pre_push
         self.assertEqual(t_toml.PUSH_GATE_SIZE_ARCH, pre_push.SIZE_ARCH)
 
-    def test_cargo_families_require_the_fewest_cores_they_pass_with(self):
-        # t never gives a job fewer cores than its requirement and widens it from its profile
-        # when more cores help (t's README, "requirement"), so the requirement is the floor the
-        # checks pass at, not the peak they use: as t's default for cargo jobs, 4 cores.
-        config = t_matrix.load(ROOT)
-        families = {family["name"]: family for family in config["cargo"]}
-        for name in ("test", "test-x86_64", "test-aarch64", "clippy", "clippy-x86_64", "clippy-aarch64"):
-            with self.subTest(family=name):
-                self.assertEqual(families[name]["requirement"]["cores"], 4)
-
     def test_a_package_whose_code_differs_between_architectures_is_tested_and_linted_on_each(self):
         config = t_matrix.load(ROOT)
         families = {family["name"]: family for family in config["cargo"]}

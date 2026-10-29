@@ -14,41 +14,11 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use settings::SettingsApp;
 use settings::categories::Category;
-use ui::headless::{Framed, viewport};
-use ui::widget::Widget;
-use vello::kurbo::Point;
 
-const W: f32 = 1200.0;
 // Wide navigation tests address every category directly; keep each target
 // visible. Short-viewport sidebar scrolling is exercised separately.
 const H: f32 = 1800.0;
-
-/// Mount `app` in the production frame host at `(w, h)` and run its first
-/// frame.
-fn lay_out_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
-    Framed::new(ui::State::new(), app, viewport((w, h)), ui::Theme::dark())
-}
-
-/// Rebuild and re-lay-out exactly as the host does on structure-dirty.
-fn relayout(app: &mut Framed<SettingsApp>, (w, h): (f32, f32)) {
-    Framed::harness_mut(app)
-        .relayout_themed(viewport((w, h)), ui::Theme::dark())
-        .expect("settings frame lays out");
-}
-
-/// Drive a full left-click (cursor move → press → release) at `p` through
-/// the production event path.
-fn click_at(app: &mut Framed<SettingsApp>, p: Point) {
-    Framed::harness_mut(app).click_at(p.x, p.y);
-}
-
-/// The host's `sync` against the live document.
-fn sync(app: &mut Framed<SettingsApp>) {
-    let (app, state) = Framed::split(app);
-    app.sync(&state.doc, &state.root);
-}
 
 /// The back button returns to the list and the Wi-Fi toggle stays pane-local.
 #[test]
@@ -59,32 +29,29 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
     {
         const NW: f32 = 440.0;
         const NH: f32 = 820.0;
-        let config = crate::support::ScratchConfig::new();
         // Start drilled into a category's content screen (narrow layout).
-        let app = config.app().with_category(Category::Network);
-        let mut app = lay_out_at(app, NW, NH);
-        sync(&mut app);
-        assert!(app.is_narrow(), "440px resolves to the narrow layout");
+        let mut app = crate::support::window_on(Category::Network, (NW, NH));
+        let shell = crate::support::shell(&mut app);
+        assert!(shell.narrow, "440px resolves to the narrow layout");
         assert!(
-            !app.sidebar_open(),
+            !shell.sidebar_open,
             "starts on the content screen (list hidden)"
         );
 
         // The back arrow is drawn by the shell (not a child widget of the
         // app), so hit-test it by its resolved rect and click it through the
         // real path.
-        let back = app.back_button_rect();
+        let back = shell.back;
         assert!(back.width() > 0.0, "the back arrow has a resolved rect");
-        click_at(&mut app, back.center());
-        sync(&mut app);
-        let _ = app.take_structure_dirty();
-        relayout(&mut app, (NW, NH));
+        app.harness().click_at(back.center().x, back.center().y);
+        app.settle();
+        let shell = crate::support::shell(&mut app);
         assert!(
-            app.sidebar_open(),
+            shell.sidebar_open,
             "back navigates to the standalone list screen"
         );
         assert!(
-            app.back_button_rect().width() <= 0.0,
+            shell.back.width() <= 0.0,
             "the list screen has no back button"
         );
     }
@@ -93,15 +60,15 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
     // Network hardware state is pane-local. Neither initialisation nor a hostile
     // remote scalar may turn the collaborative document into a radio command.
     {
-        let config = crate::support::ScratchConfig::new();
-        let mut app = lay_out_at(config.app(), W, H);
-        assert_eq!(app.selected(), Category::Network, "opens on Network");
-        let heads = Framed::harness_mut(&mut app).state_mut().doc.get_heads();
-        sync(&mut app);
+        let mut app = crate::support::window((1200, 1800));
         assert_eq!(
-            Framed::harness_mut(&mut app).state_mut().doc.get_heads(),
-            heads
+            crate::support::selected(&mut app),
+            Category::Network,
+            "opens on Network"
         );
+        let heads = app.read_document(ui::tilo_resource::heads_of);
+        app.settle();
+        assert_eq!(app.read_document(ui::tilo_resource::heads_of), heads);
     }
 }
 

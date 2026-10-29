@@ -122,10 +122,6 @@ pub(crate) trait TypedRoot {
         action: &tilo_actions::EncodedAction,
     );
 
-    /// Note that `action` was applied here, through any door, for the
-    /// surfaces that follow what is applied ([`Live::follow_applied`]).
-    fn note_applied_here(&self, action: &tilo_actions::EncodedAction);
-
     /// [`Resource::publication_cache_epoch`] of `state`.
     fn cache_epoch(&self, state: &dyn Any) -> Option<String>;
 
@@ -149,14 +145,13 @@ pub(crate) trait TypedRoot {
     /// [`Resource::children_parts`] of `state`.
     fn children_parts(&self, state: &dyn Any) -> ChildrenParts;
 
-    /// The edits the views bound over `state`, which surfaces add theirs to
-    /// ([`SurfacePublication::bound_declarations`](super::super::surface::SurfacePublication::bound_declarations)).
+    /// The edits the views bound over `state`.
     fn declarations(&self, state: &dyn Any) -> Box<dyn Any>;
 
     /// The ids of `declarations` (from [`Self::declarations`]).
     fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str>;
 
-    /// No edits yet, which surfaces add theirs to
+    /// No edits yet, which views add theirs to
     /// ([`SurfacePublication::row_declarations`](super::super::surface::SurfacePublication::row_declarations)).
     fn no_declarations(&self) -> Box<dyn Any>;
 
@@ -254,7 +249,11 @@ pub(crate) trait TypedRoot {
         &self,
         invocation: tilo_actions::InvocationId,
         cancel: bool,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Option<tilo_actions::InvocationUpdate>;
+
+    /// Finish the jobs the view's windows started.
+    fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget);
 
     /// Apply what finished effects settle.
     fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>);
@@ -398,16 +397,6 @@ impl<R: Resource> TypedRoot for Typed<R> {
     ) {
         for applied in own_actions::<R>(action) {
             self.live.note_applied(participant.clone(), applied);
-        }
-    }
-
-    fn note_applied_here(&self, action: &tilo_actions::EncodedAction) {
-        // Decoded only for a surface that follows it.
-        if !self.live.follows_applied() {
-            return;
-        }
-        for applied in own_actions::<R>(action) {
-            self.live.note_applied_here(applied);
         }
     }
 
@@ -580,8 +569,13 @@ impl<R: Resource> TypedRoot for Typed<R> {
         &self,
         invocation: tilo_actions::InvocationId,
         cancel: bool,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        self.effects.poll(invocation, cancel)
+        self.effects.poll(invocation, cancel, view)
+    }
+
+    fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget) {
+        self.effects.poll_window_jobs(view);
     }
 
     fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {

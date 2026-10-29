@@ -14,7 +14,7 @@ use ui_core::search::{
 };
 
 use super::SearchCache;
-use crate::framework::surface::SearchQueries;
+use crate::framework::publishing::SearchQueries;
 
 pub(crate) struct BodyText(pub(crate) Arc<dyn tilo_resource::SearchText>);
 

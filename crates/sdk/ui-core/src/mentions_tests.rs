@@ -155,6 +155,29 @@ fn a_mention_edited_away_is_withdrawn_and_one_already_seen_is_not_told() {
 
 #[test]
 fn a_message_in_a_chat_part_opens_the_message_in_the_chat() {
+    chat_part_mention(&|part, span| {
+        tilo_resource::write_key(
+            part,
+            span,
+            "value",
+            &tilo_doc::document::MarkValue::Str(BEA.to_owned()),
+        )
+        .unwrap();
+    });
+}
+
+#[test]
+fn a_mark_value_of_the_older_flat_layout_still_names_its_person() {
+    chat_part_mention(&|part, span| {
+        let value = part.put_object(span, "value", ObjType::Map).unwrap();
+        part.put(&value, VARIANT_KEY, "str").unwrap();
+        part.put(&value, "0", BEA).unwrap();
+    });
+}
+
+/// A chat part whose message mentions Bea, its mark's value written by
+/// `write_value` into the span.
+fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     // The chat record names its channels; its messages are in a part.
     // The app's own record of the workspace names no identity of its own.
     let mut chat = AutoCommit::new();
@@ -180,9 +203,7 @@ fn a_message_in_a_chat_part_opens_the_message_in_the_chat() {
     part.put(&span, "start", 0_i64).unwrap();
     part.put(&span, "end", 4_i64).unwrap();
     part.put(&span, "name", MARK).unwrap();
-    let value = part.put_object(&span, "value", ObjType::Map).unwrap();
-    part.put(&value, VARIANT_KEY, "Str").unwrap();
-    part.put(&value, "0", BEA).unwrap();
+    write_value(&mut part, &span);
 
     let mut bea = MentionInbox::new([BEA.to_owned()]);
     let told = bea.look(

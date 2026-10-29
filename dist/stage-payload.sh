@@ -18,7 +18,7 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-bins=(shell tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
+bins=(shell tilo tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
 (( ! primary_files )) || bins+=(fs tilo-relay-admin tilo-enroll)
 for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
@@ -32,6 +32,9 @@ fi
 
 mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,applications,portal,pipewire,systemd-user,license}
 install -pm 0755 "$bin_dir/shell"             "$stage/bin/tilo-shell"
+# `tilo`: the desktop's apps and actions from any terminal (`tilo actions`,
+# `tilo do`, `tilo open`). Every host package ships it, as the OS image does.
+install -pm 0755 "$bin_dir/tilo"              "$stage/bin/tilo"
 if (( primary_files )); then
     install -pm 0755 "$bin_dir/fs" "$stage/bin/fs"
     install -pm 0755 "$bin_dir/tilo-relay-admin" "$stage/bin/tilo-relay-admin"

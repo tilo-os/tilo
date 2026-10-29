@@ -143,9 +143,9 @@ impl Backend for LinuxBackend {
 
     fn save(&mut self, record: &Record) -> Result<(), String> {
         let bytes = serde_json::to_vec(record).map_err(|error| error.to_string())?;
-        write_atomic(&self.config.record, &bytes)?;
+        write_record(&self.config.record, &bytes)?;
         if record.dns_set() {
-            write_atomic(&self.config.dns_marker, b"")?;
+            write_record(&self.config.dns_marker, b"")?;
         } else {
             match fs::remove_file(&self.config.dns_marker) {
                 Ok(()) => {}
@@ -157,12 +157,9 @@ impl Backend for LinuxBackend {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path.parent().ok_or("a record needs a directory")?;
-    fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
-    let staged = path.with_extension("staged");
-    fs::write(&staged, bytes).map_err(|error| format!("{}: {error}", staged.display()))?;
-    fs::rename(&staged, path).map_err(|error| format!("{}: {error}", path.display()))
+fn write_record(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    tilo_files::native::atomic::write_creating_parent(path, bytes)
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
 /// Create the TUN `name` (IPv4/IPv6 packets with no extra header) and

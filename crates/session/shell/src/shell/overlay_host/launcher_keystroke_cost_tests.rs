@@ -94,7 +94,6 @@ fn warm_palette() -> (tilo_test_env::TestHome, AbsorbHarness) {
     seed_home(home.home());
     let mut h = build_harness_sized(1600.0, 1000.0);
     h.host.set_palette_visible(true);
-    h.host.set_palette_focus(true);
     h.host.force_palette_settled();
     // The palette opens on a warm desktop: the file walk and the retained
     // indexes are built before a person types, off this thread.
@@ -112,21 +111,31 @@ fn warm_palette() -> (tilo_test_env::TestHome, AbsorbHarness) {
     (home, h)
 }
 
-/// Type every word one keystroke at a time, painting after each, and clear
-/// it with Escape; `each` sees every keystroke's thread CPU time.
+/// Search for `query` as the launcher asks on a keystroke.
+fn search_as_launcher(h: &mut AbsorbHarness, query: &str) {
+    h.host.ask_as_launcher(launcher_app::source::Ask::Search(
+        launcher_app::source::Search {
+            query: query.into(),
+            kinds: Vec::new(),
+        },
+    ));
+}
+
+/// Type every word one keystroke at a time, as the launcher searches on
+/// each, painting after each, and clear it as Escape does; `each` sees
+/// every keystroke's thread CPU time.
 fn type_every_word(h: &mut AbsorbHarness, mut each: impl FnMut(Duration, &str)) {
     for word in WORDS {
-        for scalar in word.chars() {
-            let typed = scalar.to_string();
+        for (at, _) in word.char_indices().skip(1).chain([(word.len(), ' ')]) {
             let started = thread_cpu();
-            pump(h, &ui::synthetic_input::char_key(&typed));
+            search_as_launcher(h, &word[..at]);
             paint(h);
-            each(thread_cpu().saturating_sub(started), h.host.palette.query());
+            each(thread_cpu().saturating_sub(started), h.host.search.query());
         }
-        assert_eq!(h.host.palette.query(), word, "typing reaches the field");
+        assert_eq!(h.host.search.query(), word, "typing reaches search");
         assert!(!h.host.search_results.is_empty(), "{word:?} found nothing");
-        pump(h, &ui::synthetic_input::named_key(NamedKey::Escape));
-        assert!(h.host.palette.query().is_empty(), "Escape clears the query");
+        search_as_launcher(h, "");
+        assert!(h.host.search.query().is_empty(), "Escape clears the query");
     }
 }
 

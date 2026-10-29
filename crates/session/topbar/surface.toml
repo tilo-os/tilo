@@ -1,0 +1,6 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "desktop.topbar"
+label = "Top bar"
+version = 1

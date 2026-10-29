@@ -19,6 +19,9 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::time::Duration;
 
 use collab_types::DocumentMutation;
@@ -113,14 +116,15 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         host_cert.clone(),
         browser_key.clone(),
     );
+    support::place(&host.relay, &laptop.cert).await;
     let laptop_peer = start_peer(
         host.iroh(),
         laptop.cert.clone(),
         host_cert,
         laptop.key.clone(),
     );
-    browser.join(workspace()).unwrap();
-    laptop_peer.join(workspace()).unwrap();
+    browser.join_placed(support::ROOM, "Workspace").unwrap();
+    laptop_peer.join_placed(support::ROOM, "Workspace").unwrap();
     laptop_peer.live_join(workspace()).unwrap();
     ready(&[&browser, &laptop_peer]).await;
 
@@ -207,7 +211,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         host_device.cert.clone(),
         tablet.key.clone(),
     );
-    tablet_peer.join(workspace()).unwrap();
+    tablet_peer.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&tablet_peer]).await;
     let (grant_tx, grant_rx) = tokio::sync::oneshot::channel();
     tablet_peer

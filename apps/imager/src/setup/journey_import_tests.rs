@@ -8,7 +8,8 @@ impl ui::framework::ResourceApp for JourneyImportFlow {
     const ID: &'static str = "so.tilo.imager";
     const TITLE: &'static str = "Disk Imager";
     fn view(cx: &mut ViewCx<Imager>) -> Element {
-        cx.surface(
+        import_window(
+            cx,
             NEXT_JOURNEY_IMPORT
                 .with(|slot| slot.borrow_mut().take().expect("private fixture imports")),
         )

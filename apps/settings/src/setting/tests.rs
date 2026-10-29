@@ -6,9 +6,9 @@ use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
 
+use crate::SettingsShell;
 use crate::categories::Category;
 use crate::prefs::AppearancePrefs;
-use crate::{SettingsShell, settings_app::SettingsApp};
 
 const VIEWPORT: (u32, u32) = (1472, 920);
 
@@ -49,7 +49,7 @@ fn searching(query: &str) -> TestApp<SettingsShell> {
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     app.harness().resize(VIEWPORT).unwrap();
     settle(&mut app);
-    app.surface::<SettingsApp, _>(|settings| settings.narrow_sidebar(query))
+    app.with_widget::<crate::window::Inspected, _>(|settings| settings.narrow_sidebar(query))
         .expect("the window is Settings");
     settle(&mut app);
     app
@@ -61,7 +61,7 @@ fn content_left() -> f64 {
 }
 
 fn found(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
-    app.with_widget::<SettingsApp, _>(|settings| settings.found_settings())
+    app.with_widget::<crate::window::Inspected, _>(|settings| settings.found_settings())
         .unwrap_or_default()
 }
 
@@ -80,7 +80,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             found(&mut app)
         );
         match entry.shown {
-            super::Shown::Row(_) => assert!(
+            super::Shown::Bound(_) => assert!(
                 control(app.harness().root_widget(), setting, content_left()).is_some(),
                 "{}: its row is shown with its control",
                 entry.id
@@ -94,7 +94,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
                 "{}: it is listed by name",
                 entry.id
             ),
-            super::Shown::Switch(..) => assert!(
+            super::Shown::BoundSwitch(..) | super::Shown::ViewSwitch(..) => assert!(
                 control(app.harness().root_widget(), setting, content_left())
                     .is_some_and(|(_, checked)| checked.is_some())
                     || widget(
@@ -204,7 +204,7 @@ fn toggling_a_setting_found_by_search_applies_it_as_its_pane_does() {
     .expect("the setting opens in its pane");
     settle(&mut app);
     assert_eq!(
-        app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+        app.with_widget::<crate::window::Inspected, _>(|settings| settings.selected()),
         Some(Category::Accessibility)
     );
     assert!(
@@ -376,7 +376,7 @@ fn every_indexed_choice_names_the_field_its_row_shows() {
             let holds = match super::entry(setting.id).map(|entry| &entry.shown) {
                 // Listed by name with what it is set to, as its pane reads it.
                 Some(super::Shown::Value(read)) => app
-                    .surface::<SettingsApp, _>(|settings| {
+                    .with_widget::<crate::window::Inspected, _>(|settings| {
                         read(settings, &super::Follows::default())
                     })
                     .flatten()

@@ -162,10 +162,10 @@ mod tests {
             assert!(sizing.min < sizing.regular_at && sizing.regular_at < sizing.large_at);
             assert!(sizing.large_at < sizing.max);
             assert!((sizing.min..=sizing.max).contains(&sizing.default));
-            let mut width = sizing.min;
-            let mut last = height(id, width, stepped);
+            let mut last = height(id, sizing.min, stepped);
             let mut seen = std::collections::BTreeSet::new();
-            while width <= sizing.max {
+            let widths = std::iter::successors(Some(sizing.min), |width| Some(width + 0.25));
+            for width in widths.take_while(|width| *width <= sizing.max) {
                 let h = height(id, width, stepped);
                 // A quarter-pixel step never moves the height more than a
                 // couple of pixels: no jump anywhere.
@@ -178,7 +178,6 @@ mod tests {
                 seen.insert(lo);
                 seen.insert(hi);
                 last = h;
-                width += 0.25;
             }
             assert_eq!(seen.len(), 3, "{id:?} passes all three stages");
         }

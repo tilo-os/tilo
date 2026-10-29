@@ -33,8 +33,8 @@
 //!
 //! The app runs on the app framework ([`VideoEditor`]): the live window and
 //! every capture mode host the same editor, and a `--shots` scenario stages
-//! its project through the host and the editor's view state through
-//! `ResourceSurface::stage`.
+//! its project through the host and the editor's view state through the
+//! view's stage.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot

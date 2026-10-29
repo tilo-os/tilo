@@ -2,16 +2,18 @@
 //! read them, and the radios' switches: nothing until the area has read
 //! the device.
 
+use provider_settings_ui::bound::SettingRows as _;
 use ui::LocalState;
+use ui::framework::ViewCx;
 use ui::tilo_resource::ActionRef;
 
 use super::{NetworkEffect, NetworkModel, area};
 use crate::effects::effect;
-use crate::host::PaneCx;
 use crate::i18n::t;
+use crate::resource::Settings;
 use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
-use crate::widgets::Item;
+use provider_settings_ui::widgets::Item;
 
 fn read<V>(app: &SettingsApp, read: impl FnOnce(&NetworkModel) -> Option<V>) -> Option<V> {
     let model = area(app)?.read()?;
@@ -22,15 +24,15 @@ fn read<V>(app: &SettingsApp, read: impl FnOnce(&NetworkModel) -> Option<V>) -> 
 /// A switch the page shows on a card of its own, as a row: labelled
 /// `label`, setting the radio through `set` as the card's switch does.
 fn switch(
-    cx: &PaneCx,
+    cx: &ViewCx<Settings>,
     label: &str,
     id: &str,
     on: bool,
     set: ActionRef<NetworkEffect, bool>,
 ) -> Item {
-    cx.row(t(label))
+    cx.setting(t(label))
         .id(id)
-        .toggle_effect(&LocalState::new(on), effect(set))
+        .toggle_effect(&LocalState::new(on), &cx.actions(), effect(set))
 }
 
 /// Wi-Fi, a switch while the radio's state was read and nothing holds it
@@ -50,7 +52,7 @@ pub(crate) fn wifi(app: &SettingsApp, _: &Follows) -> Read {
     .unwrap_or(Read::Value(None))
 }
 
-pub(crate) fn wifi_switch(cx: &PaneCx, on: bool) -> Item {
+pub(crate) fn wifi_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
     switch(cx, "net-wifi", "network.wifi", on, NetworkEffect::SET_WIFI)
 }
 
@@ -66,7 +68,7 @@ pub(crate) fn wired(app: &SettingsApp, _: &Follows) -> Read {
     .map_or(Read::Value(None), Read::Switch)
 }
 
-pub(crate) fn wired_switch(cx: &PaneCx, on: bool) -> Item {
+pub(crate) fn wired_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
     switch(
         cx,
         "net-wired",
@@ -88,7 +90,7 @@ pub(crate) fn airplane(app: &SettingsApp, _: &Follows) -> Read {
     .map_or(Read::Value(None), Read::Switch)
 }
 
-pub(crate) fn airplane_switch(cx: &PaneCx, on: bool) -> Item {
+pub(crate) fn airplane_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
     switch(
         cx,
         "net-airplane",
@@ -106,7 +108,7 @@ pub(crate) fn hotspot(app: &SettingsApp, _: &Follows) -> Read {
     .map_or(Read::Value(None), Read::Switch)
 }
 
-pub(crate) fn hotspot_switch(cx: &PaneCx, on: bool) -> Item {
+pub(crate) fn hotspot_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
     switch(
         cx,
         "net-hotspot",

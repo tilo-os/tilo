@@ -14,8 +14,7 @@ use std::rc::Rc;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, ResourceApp, ViewCx,
 };
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -194,6 +193,7 @@ pub struct PowerSeat {
     offers: Rc<Cell<Offers>>,
     asked: Rc<RefCell<Vec<PowerEffect>>>,
     rows: Rc<RefCell<Vec<(PowerEffect, Rect)>>>,
+    panel: Rc<Cell<Rect>>,
 }
 
 impl crate::Seat for PowerSeat {
@@ -222,10 +222,19 @@ impl PowerSeat {
         self.rows.borrow().clone()
     }
 
+    /// The open menu's panel, its title and rows inside it, in the sheet's
+    /// own coordinates; empty while nothing is open.
+    pub fn panel(&self) -> Rect {
+        self.panel.get()
+    }
+
     fn ask(&self, effect: PowerEffect) {
         self.asked.borrow_mut().push(effect);
     }
 }
+
+/// A screenshot scenario to stage, `None` for the plain capture.
+struct Staged(Option<String>);
 
 /// The menu over the sheet: a toolkit menu anchored under the top bar's
 /// trailing end, opened when the shell puts the sheet up.
@@ -247,6 +256,8 @@ struct PowerMenu {
     /// Each effect's address on the published resource, so a row names the
     /// action it runs.
     addresses: HashMap<PowerEffect, ui::tilo_actions::ActionAddress>,
+    /// A screenshot scenario to stage on the next sync.
+    staged: Rc<RefCell<Option<Staged>>>,
 }
 
 impl PowerMenu {
@@ -262,6 +273,49 @@ impl PowerMenu {
             chosen: Rc::default(),
             dispatch: None,
             addresses: HashMap::new(),
+            staged: Rc::default(),
+        }
+    }
+
+    /// Run through the view's door: rows name the actions they run, and
+    /// a press that is not the person's own goes through `dispatch`.
+    fn attach(&mut self, cx: &ViewCx<Power>) {
+        let actions = cx.actions();
+        self.addresses = PowerEffect::ALL
+            .into_iter()
+            .filter_map(|effect| {
+                actions
+                    .effect(&effect)
+                    .map(|binding| (effect, binding.address().clone()))
+            })
+            .collect();
+        self.dispatch = Some(cx.dispatcher());
+        if let Some(seat) = &self.seat {
+            seat.presentation().wake_with(cx.waker());
+        }
+    }
+
+    /// What the menu offers now: the shell's say, else its own.
+    fn offered_now(&self) -> Offers {
+        self.seat.as_ref().map_or(self.offers, PowerSeat::offers)
+    }
+
+    fn effect(&mut self, effect: PowerEffect, _cx: &mut EffectCx<Power>) -> EffectAnswer {
+        if !self.offered_now().offers(effect) {
+            return Err(format!("{} is not offered here", effect.label()));
+        }
+        if self.seat.is_none() {
+            return Err("no session to act on here".to_owned());
+        }
+        self.choose(effect);
+        Ok(Effected::done())
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        if scenario == Some("keyboard") {
+            // On the last row, as a person driving the menu from the
+            // keyboard is after arrowing down to Shut down.
+            let _ = self.menu.focus_item(self.shown.len());
         }
     }
 
@@ -376,6 +430,11 @@ impl PowerMenu {
             Vec::new()
         };
         *seat.rows.borrow_mut() = rows;
+        seat.panel.set(if self.menu.is_open() {
+            self.menu.get_rect()
+        } else {
+            Rect::ZERO
+        });
         if !self.menu.is_drawn() && seat.presentation().phase() == Phase::Leaving {
             seat.presentation().gone();
         }
@@ -408,6 +467,25 @@ impl Widget for PowerMenu {
     }
 
     ui::rect_geometry!();
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.staged.borrow().is_some()
+    }
+
+    fn sync(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) {
+        let staged = self.staged.borrow_mut().take();
+        if let Some(Staged(scenario)) = staged {
+            self.stage(scenario.as_deref());
+        }
+    }
 
     fn draw(
         &mut self,
@@ -548,79 +626,37 @@ impl Widget for PowerMenu {
     }
 }
 
-impl ResourceSurface<Power, PowerEffect> for PowerMenu {
-    fn present(&mut self, _state: &Rc<Power>) {}
-
-    fn attach(&mut self, cx: SurfaceCx<Power>) {
-        let actions = cx.actions();
-        self.addresses = PowerEffect::ALL
-            .into_iter()
-            .filter_map(|effect| {
-                actions
-                    .effect(&effect)
-                    .map(|binding| (effect, binding.address().clone()))
-            })
-            .collect();
-        self.dispatch = Some(cx.dispatcher());
-        if let Some(seat) = &self.seat {
-            seat.presentation().wake_with(cx.waker());
-        }
-    }
-
-    fn effect(&mut self, effect: PowerEffect, _cx: &mut EffectCx<Power, Self>) -> EffectAnswer {
-        let offers = self.seat.as_ref().map_or(self.offers, PowerSeat::offers);
-        if !offers.offers(effect) {
-            return Err(format!("{} is not offered here", effect.label()));
-        }
-        if self.seat.is_none() {
-            return Err("no session to act on here".to_owned());
-        }
-        self.choose(effect);
-        Ok(Effected::done())
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        let offers = self.seat.as_ref().map_or(self.offers, PowerSeat::offers);
-        let unavailable = |effect: PowerEffect| match effect {
-            PowerEffect::Lock => EffectStatus::unavailable(PowerEffect::LOCK, "not-offered", ""),
-            PowerEffect::LogOut => {
-                EffectStatus::unavailable(PowerEffect::LOG_OUT, "not-offered", "")
-            }
-            PowerEffect::SwitchUser => EffectStatus::unavailable(
-                PowerEffect::SWITCH_USER,
-                "not-offered",
-                "This session cannot switch user",
-            ),
-            PowerEffect::Suspend => EffectStatus::unavailable(
-                PowerEffect::SUSPEND,
-                "not-offered",
-                "This session does not own the computer's power",
-            ),
-            PowerEffect::Restart => EffectStatus::unavailable(
-                PowerEffect::RESTART,
-                "not-offered",
-                "This session does not own the computer's power",
-            ),
-            PowerEffect::ShutDown => EffectStatus::unavailable(
-                PowerEffect::SHUT_DOWN,
-                "not-offered",
-                "This session does not own the computer's power",
-            ),
-        };
-        PowerEffect::ALL
-            .into_iter()
-            .filter(|effect| !offers.offers(*effect))
-            .map(unavailable)
-            .collect()
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if scenario == Some("keyboard") {
-            // On the last row, as a person driving the menu from the
-            // keyboard is after arrowing down to Shut down.
-            let _ = self.menu.focus_item(self.shown.len());
-        }
-    }
+/// What is not offered under `offers`, and why.
+fn unavailable(offers: Offers) -> Vec<EffectStatus> {
+    let unavailable = |effect: PowerEffect| match effect {
+        PowerEffect::Lock => EffectStatus::unavailable(PowerEffect::LOCK, "not-offered", ""),
+        PowerEffect::LogOut => EffectStatus::unavailable(PowerEffect::LOG_OUT, "not-offered", ""),
+        PowerEffect::SwitchUser => EffectStatus::unavailable(
+            PowerEffect::SWITCH_USER,
+            "not-offered",
+            "This session cannot switch user",
+        ),
+        PowerEffect::Suspend => EffectStatus::unavailable(
+            PowerEffect::SUSPEND,
+            "not-offered",
+            "This session does not own the computer's power",
+        ),
+        PowerEffect::Restart => EffectStatus::unavailable(
+            PowerEffect::RESTART,
+            "not-offered",
+            "This session does not own the computer's power",
+        ),
+        PowerEffect::ShutDown => EffectStatus::unavailable(
+            PowerEffect::SHUT_DOWN,
+            "not-offered",
+            "This session does not own the computer's power",
+        ),
+    };
+    PowerEffect::ALL
+        .into_iter()
+        .filter(|effect| !offers.offers(*effect))
+        .map(unavailable)
+        .collect()
 }
 
 /// The power menu as an app.
@@ -645,8 +681,19 @@ impl ResourceApp for PowerApp {
 
     fn view(cx: &mut ViewCx<Power>) -> Element {
         let seat = cx.take_lent::<PowerSeat>();
-        let offers = cx.fixture::<Offers>().map(|offers| *offers);
-        cx.surface(PowerMenu::new(seat, offers.unwrap_or_default()))
+        let offers = cx
+            .fixture::<Offers>()
+            .map(|offers| *offers)
+            .unwrap_or_default();
+        let mut menu = PowerMenu::new(seat.clone(), offers);
+        menu.attach(cx);
+        cx.window_effects(PowerMenu::effect)
+            .status(move || unavailable(seat.as_ref().map_or(offers, PowerSeat::offers)));
+        let staged = Rc::clone(&menu.staged);
+        cx.on_stage(move |scenario| {
+            *staged.borrow_mut() = Some(Staged(scenario.map(str::to_owned)));
+        });
+        Box::new(menu)
     }
 
     fn scenarios() -> &'static [&'static str] {

@@ -1,35 +1,32 @@
 //! First-login continuation for separately selected browser domains.
 //! The canonical helper authenticates the carrier and independently verifies the
 //! projection. A saved public choice never substitutes for those proofs.
+use crate::onboarding_continuation::{self as continuation, Context, Continuation, Kind, Settled};
 use crate::onboarding_prepared::{BrowserDeclaration, Pending as Prepared};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::OpenOptions,
-    io::{self, Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    io,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
-use zeroize::{Zeroize, Zeroizing};
+
+pub(crate) type Pending = Continuation<Browser>;
+
+/// Browser data carried over by a prepared setup.
+pub(crate) enum Browser {}
 
 fn failure() -> io::Error {
-    io::Error::other("Browser data are pending or unavailable")
+    continuation::failure::<Browser>()
 }
 fn root(home: &Path) -> PathBuf {
-    home.join(".local/state/tilo/prepared-browser")
+    continuation::root::<Browser>(home)
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Choice {
-    schema: u32,
-    setup_digest: [u8; 32],
-    declaration: BrowserDeclaration,
-    outcome: String,
+fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
+    continuation::private_file::<Browser>(path, bound)
 }
 #[derive(serde::Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
-enum Event {
+pub(crate) enum Event {
     #[serde(rename = "ready-to-activate")]
     Ready { profiles: usize },
     #[serde(rename = "complete")]
@@ -41,45 +38,7 @@ enum Event {
         profiles: usize,
     },
 }
-struct Worker {
-    command: bounded_command::AsyncCommand,
-    _scratch: tempfile::TempDir,
-}
-pub(crate) struct Pending {
-    home: PathBuf,
-    identity: PathBuf,
-    declaration: BrowserDeclaration,
-    digest: [u8; 32],
-    state: &'static str,
-    result: serde_json::Value,
-    worker: Option<Worker>,
-    password: Zeroizing<Vec<u8>>,
-    automatic: bool,
-    projection: Option<PathBuf>,
-}
-fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
-    let parent = crate::onboarding_migration::directory(path.parent().ok_or_else(failure)?)?;
-    crate::onboarding_migration::private(&parent)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file()
-        || metadata.uid() != rustix::process::geteuid().as_raw()
-        || metadata.mode() & 0o077 != 0
-        || metadata.len() > bound
-    {
-        return Err(failure());
-    }
-    let mut bytes = Vec::new();
-    file.take(bound.checked_add(1).ok_or_else(failure)?)
-        .read_to_end(&mut bytes)?;
-    if u64::try_from(bytes.len()).map_err(|_| failure())? > bound {
-        return Err(failure());
-    }
-    Ok(bytes)
-}
+
 /// Authorize the certificate the proof carries against the current person's
 /// enrolled device. Returns the person and device public keys; never a key read
 /// from the proof itself.
@@ -293,379 +252,90 @@ pub(crate) fn validate_published_projection(path: &Path) -> bool {
     completion_projection(&home, identity, &declaration, prepared.digest())
         .is_ok_and(|verified| verified.as_deref() == Some(path))
 }
-impl Pending {
-    pub(crate) fn open(
-        home: PathBuf,
-        identity: PathBuf,
-        declaration: BrowserDeclaration,
-    ) -> io::Result<Self> {
-        if !declaration.valid() {
-            return Err(failure());
-        }
-        let prepared = Prepared::open(&home)?;
-        if prepared.browser(&identity)?.as_ref() != Some(&declaration) {
-            return Err(failure());
-        }
-        let state = match private_file(&root(&home).join("choice.json"), 24576) {
-            Ok(bytes) => {
-                let receipt: Choice = serde_json::from_slice(&bytes).map_err(|_| failure())?;
-                if receipt.schema != 1
-                    || receipt.setup_digest != prepared.digest()
-                    || receipt.declaration != declaration
-                    || !["complete", "deferred"].contains(&receipt.outcome.as_str())
-                {
-                    return Err(failure());
-                }
-                if receipt.outcome == "complete" {
-                    "pending"
-                } else {
-                    "deferred"
-                }
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => "pending",
-            Err(error) => return Err(error),
-        };
-        let projection = if state == "deferred" {
-            None
-        } else {
-            completion_projection(&home, &identity, &declaration, prepared.digest())?
-        };
-        let state = if projection.is_some() {
-            "complete"
-        } else {
-            state
-        };
-        Ok(Self {
-            home,
-            identity,
-            declaration,
-            digest: prepared.digest(),
-            state,
-            result: serde_json::Value::Null,
-            worker: None,
-            password: Zeroizing::new(Vec::new()),
-            automatic: false,
-            projection,
-        })
+impl Kind for Browser {
+    type Declaration = BrowserDeclaration;
+    type Event = Event;
+    const FAILURE: &'static str = "Browser data are pending or unavailable";
+    const ROOT: &'static str = "prepared-browser";
+    const RECEIPT_BOUND: u64 = 24576;
+    const LINE_BOUND: usize = 24576;
+    const HELPER_FLAG: &'static str = "--browser-transfer";
+    const WORKSPACE: &'static str = "browser-continuity";
+    const WORKSPACE_NAMESPACE: bool = true;
+    const OUTPUT_BOUND: usize = 64 * 1024;
+    const TIMEOUT: Duration = Duration::from_secs(1800);
+    const READY: &'static str = "reviewed";
+    const PROCEED: &'static str = "start";
+    const PROCEED_ACTION: &'static str = "activate";
+    const PROCEEDING: &'static str = "activating-browser";
+    const CONTINUES_WHEN_COMPLETE: bool = true;
+    const FORGETS_PASSWORD_ON_FAILURE: bool = false;
+    const FAILURE_CLEARS_RESULT: bool = true;
+    const MONOTONIC_RECEIPTS: bool = false;
+    const COMPLETION_NEEDS_PROOF: bool = true;
+
+    fn declared(prepared: &Prepared, identity: &Path) -> io::Result<Option<BrowserDeclaration>> {
+        prepared.browser(identity)
     }
-    pub(crate) fn receive_prepared_password(
-        &mut self,
-        digest: [u8; 32],
-        password: Zeroizing<Vec<u8>>,
-    ) -> io::Result<()> {
-        self.validate()?;
-        if digest != self.digest
-            || password.is_empty()
-            || password.len() > 4096
-            || std::str::from_utf8(&password).is_err()
-            || self.busy()
-        {
-            return Err(failure());
-        }
-        self.password = password;
-        self.automatic = true;
-        Ok(())
+    fn valid(declaration: &BrowserDeclaration) -> bool {
+        declaration.valid()
     }
-    fn validate(&self) -> io::Result<()> {
-        let prepared = Prepared::open(&self.home)?;
-        if prepared.digest() != self.digest
-            || prepared.browser(&self.identity)?.as_ref() != Some(&self.declaration)
-        {
-            return Err(failure());
-        }
-        Ok(())
+    fn operation(declaration: &BrowserDeclaration) -> &str {
+        &declaration.payload.operation
     }
-    pub(crate) fn continue_automatic(&mut self) -> bool {
-        if self.automatic && self.state == "pending" && !self.password.is_empty() && !self.busy() {
-            if self.invoke("review", b"").is_err() {
-                self.automatic = false;
-            }
-            return true;
-        }
-        false
+    fn mark(_: &BrowserDeclaration, status: &mut serde_json::Map<String, serde_json::Value>) {
+        status.insert("browser".to_owned(), true.into());
     }
-    pub(crate) fn deferred(&self) -> bool {
-        self.state == "deferred"
-    }
-    pub(crate) fn pending(&self) -> bool {
-        !["complete", "deferred"].contains(&self.state)
-    }
-    pub(crate) fn needs_password(&self) -> bool {
-        self.password.is_empty() && !self.busy() && self.pending()
-    }
-    pub(crate) fn busy(&self) -> bool {
-        self.worker.is_some()
-    }
-    pub(crate) fn operation(&self) -> &str {
-        &self.declaration.payload.operation
-    }
-    pub(crate) fn status(&self) -> serde_json::Value {
-        serde_json::json!({"state":self.state,"browser":true,"operations":[self.operation()],"selected":self.operation(),"result":self.result,"can_review":!self.busy(),"requires_password":self.password.is_empty()&&!self.busy(),"complete":self.state=="complete","deferred":self.state=="deferred"})
-    }
-    pub(crate) fn next_action(&self) -> &'static str {
-        if self.state == "reviewed" {
-            "start"
-        } else {
-            "review"
-        }
-    }
-    pub(crate) fn invoke(&mut self, op: &str, password: &[u8]) -> io::Result<()> {
-        if op == "cancel" && self.busy() {
-            self.worker = None;
-            self.password.zeroize();
-            self.state = "cancelled";
-            return Ok(());
-        }
-        if self.busy() {
-            return Err(failure());
-        }
-        if op == "resume" && self.deferred() {
-            self.validate()?;
-            self.state = "pending";
-            return Ok(());
-        }
-        if op == "later" {
-            self.acknowledge("deferred")?;
-            self.state = "deferred";
-            self.password.zeroize();
-            return Ok(());
-        }
-        if op == "continue" && self.state == "complete" {
-            self.validate()?;
-            return Ok(());
-        }
-        let action = match op {
-            "review" | "retry" => "review",
-            "start" if self.state == "reviewed" => "activate",
-            _ => return Err(failure()),
-        };
-        if !password.is_empty() {
-            if password.len() > 4096 || std::str::from_utf8(password).is_err() {
-                return Err(failure());
-            }
-            self.password = Zeroizing::new(password.to_vec());
-        }
-        if self.password.is_empty() {
-            return Err(failure());
-        }
-        match self.start(action) {
-            Ok(worker) => {
-                self.worker = Some(worker);
-                self.state = if action == "review" {
-                    "reviewing"
-                } else {
-                    "activating-browser"
-                };
-                Ok(())
-            }
-            Err(error) => {
-                self.state = "unavailable";
-                Err(error)
-            }
-        }
-    }
-    fn start(&self, action: &str) -> io::Result<Worker> {
-        self.start_with(
-            action,
-            crate::onboarding_portable_home::helper_executable()?,
-        )
-    }
-    fn start_with(&self, action: &str, executable: &Path) -> io::Result<Worker> {
-        self.validate()?;
-        let directory = root(&self.home);
+    fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
         let expected: crate::onboarding_prepared::BrowserPayload =
             serde_json::from_slice(&private_file(&directory.join("expectation.json"), 24576)?)
                 .map_err(|_| failure())?;
-        if expected != self.declaration.payload {
+        if expected != cx.declaration.payload {
             return Err(failure());
         }
-        let package = directory.join(&self.declaration.payload.filename);
-        // Check private literal file custody; large hashing/authentication belongs to the helper.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(&package)?;
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o077 != 0
-            || metadata.len() != self.declaration.payload.sealed_bytes
-        {
-            return Err(failure());
-        }
-        let mut pin = crate::onboarding_migration::directory(&self.home)?;
-        for segment in [
-            ".local",
-            "state",
-            "tilo",
-            "browser-continuity",
-            self.operation(),
-        ] {
-            pin = crate::onboarding_migration::create(&pin, segment)?;
-            if [".local", "state", "tilo"].contains(&segment) {
-                tilo_files::native::atomic::StorageDirectory::from_file(pin.try_clone()?)?
-                    .validate_namespace_control()?;
-            } else {
-                crate::onboarding_migration::private(&pin)?;
-            }
-        }
-        let scratch = tempfile::Builder::new()
-            .prefix(".setup-review-")
-            .tempdir_in(&directory)?;
-        let mut command = Command::new(executable);
-        command
-            .arg("--browser-transfer")
-            .arg("--package")
-            .arg(package)
-            .arg("--receipt")
-            .arg(directory.join("expectation.json"))
-            .arg("--setup-package")
-            .arg(
-                self.home
-                    .join(".local/state/tilo/prepared-setup/prepared-setup.sealed"),
-            )
-            .arg("--setup-quarantine")
-            .arg(scratch.path().join("contents"))
-            .arg("--home")
-            .arg(&self.home)
-            .arg("--workspace")
-            .arg(
-                self.home
-                    .join(".local/state/tilo/browser-continuity")
-                    .join(self.operation()),
-            )
-            .arg("--action")
-            .arg(action);
-        let command = bounded_command::spawn_prepared(
-            command,
-            Some(&self.password),
-            64 * 1024,
-            Duration::from_secs(1800),
-        )
-        .map_err(|_| failure())?;
-        Ok(Worker {
-            command,
-            _scratch: scratch,
-        })
+        let package = directory.join(&cx.declaration.payload.filename);
+        continuation::private_package::<Self>(&package, Some(cx.declaration.payload.sealed_bytes))?;
+        Ok((package, cx.declaration.payload.operation.clone()))
     }
-    fn acknowledge(&self, outcome: &str) -> io::Result<()> {
-        self.validate()?;
-        let directory = root(&self.home);
-        let pin = crate::onboarding_migration::directory(&directory)?;
-        crate::onboarding_migration::private(&pin)?;
-        let choice = Choice {
-            schema: 1,
-            setup_digest: self.digest,
-            declaration: self.declaration.clone(),
-            outcome: outcome.into(),
-        };
-        let bytes = serde_json::to_vec(&choice).map_err(|_| failure())?;
-        if bytes.len() > 24576 {
-            return Err(failure());
-        }
-        let mut staged = tempfile::NamedTempFile::new_in(&directory)?;
-        staged.write_all(&bytes)?;
-        staged.as_file().sync_all()?;
-        self.validate()?;
-        let destination = directory.join("choice.json");
-        match private_file(&destination, 24576) {
-            Ok(previous) => {
-                let previous: Choice = serde_json::from_slice(&previous).map_err(|_| failure())?;
-                if previous.schema != 1
-                    || previous.setup_digest != self.digest
-                    || previous.declaration != self.declaration
-                {
-                    return Err(failure());
-                }
-                staged.persist(&destination).map_err(|_| failure())?;
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                staged
-                    .persist_noclobber(&destination)
-                    .map_err(|_| failure())?;
-            }
-            Err(error) => return Err(error),
-        }
-        pin.sync_all()
-    }
-    pub(crate) fn poll(&mut self) -> bool {
-        let Some(worker) = &mut self.worker else {
-            return false;
-        };
-        let Some(result) = worker.command.try_wait() else {
-            return false;
-        };
-        self.worker = None;
-        let result = result.map_err(|_| failure()).and_then(|output| {
-            if !output.status.success() {
-                return Err(failure());
-            }
-            let last = output
-                .stdout
-                .split(|byte| *byte == b'\n')
-                .rfind(|line| !line.is_empty())
-                .ok_or_else(failure)?;
-            if last.len() > 24576 {
-                return Err(failure());
-            }
-            serde_json::from_slice::<Event>(last).map_err(|_| failure())
-        });
-        match result {
-            Ok(Event::Ready { profiles }) if profiles == self.declaration.plan.profiles.len() => {
-                self.state = "reviewed";
-                self.result = serde_json::json!({"profiles": profiles});
-                if self.automatic && self.invoke("start", b"").is_err() {
-                    self.automatic = false;
-                }
-            }
-            Ok(Event::Complete {
+    fn settle(cx: &Context<Self>, event: Event) -> Settled {
+        let declared_profiles = cx.declaration.plan.profiles.len();
+        match event {
+            Event::Ready { profiles } if profiles == declared_profiles => Settled::Ready {
+                result: serde_json::json!({"profiles": profiles}),
+                proceed: true,
+            },
+            Event::Complete {
                 verified: true,
                 projection,
                 identity_public_key,
                 operation,
                 profiles,
-            }) if identity_public_key == self.declaration.plan.identity_public_key
-                && operation == self.operation()
-                && profiles == self.declaration.plan.profiles.len()
-                && self.valid_projection(&projection) =>
+            } if identity_public_key == cx.declaration.plan.identity_public_key
+                && operation == cx.declaration.payload.operation
+                && profiles == declared_profiles
+                && valid_projection(&cx.home, &operation, &projection)
+                && completion_projection(&cx.home, &cx.identity, &cx.declaration, cx.digest)
+                    .is_ok_and(|verified| verified.as_deref() == Some(projection.as_path())) =>
             {
-                if !completion_projection(
-                    &self.home,
-                    &self.identity,
-                    &self.declaration,
-                    self.digest,
-                )
-                .is_ok_and(|verified| verified.as_deref() == Some(projection.as_path()))
-                {
-                    self.state = "failed";
-                    self.result = serde_json::Value::Null;
-                    return true;
+                Settled::Complete {
+                    result: serde_json::json!({"profiles":profiles,"verified":true}),
+                    projection: Some(projection),
                 }
-                self.result = serde_json::json!({"profiles":profiles,"verified":true});
-                self.state = if self.acknowledge("complete").is_ok() {
-                    "complete"
-                } else {
-                    "incomplete"
-                };
-                if self.state == "complete" {
-                    self.projection = Some(projection);
-                }
-                self.password.zeroize();
             }
-            _ => {
-                self.state = "failed";
-                self.result = serde_json::Value::Null;
-            }
+            _ => Settled::Failed,
         }
-        true
     }
-    fn valid_projection(&self, path: &Path) -> bool {
-        valid_projection(&self.home, self.operation(), path)
+    fn verified_completion(cx: &Context<Self>) -> io::Result<Option<PathBuf>> {
+        completion_projection(&cx.home, &cx.identity, &cx.declaration, cx.digest)
     }
+}
+
+impl Pending {
     pub(crate) fn verified_projection(&self) -> Option<&Path> {
-        self.projection
-            .as_deref()
-            .filter(|path| self.state == "complete" && self.valid_projection(path))
+        self.projection().filter(|path| {
+            self.state() == "complete"
+                && valid_projection(&self.context().home, self.operation(), path)
+        })
     }
 }
 
@@ -674,6 +344,7 @@ pub(crate) mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
+    use zeroize::Zeroizing;
 
     pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, BrowserDeclaration) {
         let (home, identity, _) = crate::onboarding_portable_home::tests::fixture();
@@ -947,11 +618,11 @@ pub(crate) mod tests {
                 Zeroizing::new(b"private password".to_vec()),
             )
             .unwrap();
-        pending.automatic = false;
+        pending.manual();
         let helper = home.path().join("inert-browser-helper");
         std::fs::write(&helper,b"#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"event\":\"ready-to-activate\",\"profiles\":1}'\n").unwrap();
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
-        pending.worker = Some(pending.start_with("review", &helper).unwrap());
+        pending.run_with("review", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(pending.status()["state"], "reviewed");
         assert!(pending.verified_projection().is_none());
@@ -980,14 +651,14 @@ pub(crate) mod tests {
             .unwrap();
         };
         emit(&result);
-        pending.worker = Some(pending.start_with("activate", &helper).unwrap());
+        pending.run_with("activate", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(pending.status()["state"], "failed");
         assert!(pending.verified_projection().is_none());
         assert!(!root(home.path()).join("choice.json").exists());
         result["identity_public_key"] = serde_json::json!(declaration.plan.identity_public_key);
         emit(&result);
-        pending.worker = Some(pending.start_with("activate", &helper).unwrap());
+        pending.run_with("activate", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(
             pending.status()["state"],
@@ -1000,15 +671,16 @@ pub(crate) mod tests {
             projection
         );
         emit(&result);
-        pending.worker = Some(pending.start_with("activate", &helper).unwrap());
+        pending.run_with("activate", &helper).unwrap();
         wait(&mut pending);
         assert_eq!(pending.verified_projection(), Some(projection.as_path()));
-        assert!(pending.password.is_empty());
+        assert!(!pending.holds_password());
         let reopened = Pending::open(home.path().into(), identity, declaration).unwrap();
         assert!(!reopened.pending());
         assert_eq!(reopened.verified_projection(), Some(projection.as_path()));
         assert_eq!(
-            std::fs::read(root(home.path()).join(&pending.declaration.payload.filename)).unwrap(),
+            std::fs::read(root(home.path()).join(&pending.context().declaration.payload.filename))
+                .unwrap(),
             b"fixture ciphertext"
         );
     }

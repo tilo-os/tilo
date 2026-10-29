@@ -19,13 +19,16 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{enrol, ready, route, start_host, start_peer, wait_for};
 
 async fn durable(peer: &PeerHandle) {
     let receipt = peer.barrier().unwrap();
@@ -63,8 +66,8 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     let https = || Host::Https(host.https());
     let a = start_peer(https(), a.cert, host_device.cert.clone(), a.key);
     let b = start_peer(https(), b.cert, host_device.cert.clone(), b.key);
-    a.join(workspace()).unwrap();
-    b.join(workspace()).unwrap();
+    a.join_placed(support::ROOM, "Workspace").unwrap();
+    b.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&a, &b]).await;
 
     let mut base = AutoCommit::new();
@@ -93,7 +96,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     durable(&a).await;
 
     let joiner = start_peer(https(), c.cert, host_device.cert.clone(), c.key);
-    joiner.join(workspace()).unwrap();
+    joiner.join_placed(support::ROOM, "Workspace").unwrap();
     let mut doc = AutoCommit::new();
     wait_for("the late joiner to converge", || {
         for event in joiner.drain() {

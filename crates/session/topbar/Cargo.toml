@@ -1,0 +1,23 @@
+[package]
+name = "tilo-topbar"
+description = "The desktop's top bar as an app: workspace and strip navigation, the people here, the time, the tray and status, the bar's menus, their actions, and the feed the desktop lends them."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+durable-store = { path = "../../system/durable-store" }
+tilo-desktop = { path = "../desktop" }
+tilo-desktop-model = { path = "../desktop-model" }
+# A framework app: the bar's resource, effects and surface.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+vello.workspace = true
+winit.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -88,7 +88,8 @@ impl ContextMenu {
         self.pinned_top = None;
         self.asked = None;
         self.ask_at = at;
-        self.query = (self.owner_asks || CONTEXT_GESTURE.with(Cell::get)).then(MenuQuery::default);
+        self.query =
+            (self.owner_asks || CONTEXT_GESTURE.with(Cell::get)).then(Box::<MenuQuery>::default);
         if self.query.is_some() && self.can_ask() {
             self.own_rows = Some(self.items.len());
             self.items

@@ -937,107 +937,100 @@ mod tests {
     }
 
     #[test]
-    fn identity_files_round_trip_privately_and_refuse_symlinks() {
-        fn save_and_load_round_trip_on_disk() {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
-            assert!(store.load().unwrap().is_none());
-            let rec = fixture_record();
-            store.save(&rec).unwrap();
-            assert!(store.identity_present());
-            let back = store.load().unwrap().unwrap();
-            assert_eq!(back.display_name, rec.display_name);
-            assert_eq!(back.public_key(), rec.public_key());
-            assert_eq!(back.schema_version, 2);
-            assert!(back.threshold_identity.secret_bytes.is_empty());
-            assert!(back.secret_ref.is_some());
-        }
+    fn save_and_load_round_trip_on_disk() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
+        assert!(store.load().unwrap().is_none());
+        let rec = fixture_record();
+        store.save(&rec).unwrap();
+        assert!(store.identity_present());
+        let back = store.load().unwrap().unwrap();
+        assert_eq!(back.display_name, rec.display_name);
+        assert_eq!(back.public_key(), rec.public_key());
+        assert_eq!(back.schema_version, 2);
+        assert!(back.threshold_identity.secret_bytes.is_empty());
+        assert!(back.secret_ref.is_some());
+    }
 
-        fn save_sets_0600_mode_on_unix() {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
-            store.save(&fixture_record()).unwrap();
-            #[cfg(unix)]
-            {
-                let meta = fs::metadata(store.path()).unwrap();
-                let mode = meta.permissions().mode() & 0o777;
-                assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
-            }
-        }
-
+    #[test]
+    fn save_sets_0600_mode_on_unix() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
+        store.save(&fixture_record()).unwrap();
         #[cfg(unix)]
-        fn load_refuses_an_identity_path_symlink() {
-            use std::os::unix::fs::symlink;
-
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let target = tmp.path().join("elsewhere.json");
-            let bytes = fixture_record().to_json_bytes().unwrap();
-            fs::write(&target, bytes).unwrap();
-            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-            let path = tmp.path().join("primary.json");
-            symlink(&target, &path).unwrap();
-
-            let store = DiskIdentityStore::at(path);
-            assert!(store.load().is_err());
+        {
+            let meta = fs::metadata(store.path()).unwrap();
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "primary.json must be 0600, got {mode:o}");
         }
+    }
 
-        fn load_on_missing_file_returns_none() {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let store = DiskIdentityStore::at(tmp.path().join("does-not-exist.json"));
-            assert!(store.load().unwrap().is_none());
-            assert!(!store.identity_present());
-        }
+    #[cfg(unix)]
+    #[test]
+    #[cfg(unix)]
+    fn load_refuses_an_identity_path_symlink() {
+        use std::os::unix::fs::symlink;
 
-        fn host_identity_root_uses_the_xdg_data_contract() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("elsewhere.json");
+        let bytes = fixture_record().to_json_bytes().unwrap();
+        fs::write(&target, bytes).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let path = tmp.path().join("primary.json");
+        symlink(&target, &path).unwrap();
+
+        let store = DiskIdentityStore::at(path);
+        assert!(store.load().is_err());
+    }
+
+    #[test]
+    fn load_on_missing_file_returns_none() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = DiskIdentityStore::at(tmp.path().join("does-not-exist.json"));
+        assert!(store.load().unwrap().is_none());
+        assert!(!store.identity_present());
+    }
+
+    #[test]
+    fn host_identity_root_uses_the_xdg_data_contract() {
+        assert_eq!(
+            host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into())).unwrap(),
+            PathBuf::from("/home/alice/.data/tilo")
+        );
+        assert_eq!(
+            host_identity_root(None, Some("/home/alice".into())).unwrap(),
+            PathBuf::from("/home/alice/.local/share/tilo")
+        );
+    }
+
+    #[test]
+    fn host_identity_root_never_depends_on_the_working_directory() {
+        assert!(host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err());
+        assert!(host_identity_root(None, Some("relative".into())).is_err());
+        assert!(host_identity_root(None, None).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[cfg(unix)]
+    fn host_identity_tree_is_private_and_refuses_a_symlink_root() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("data/tilo");
+        prepare_private_host_identity_tree(&root).unwrap();
+        for directory in [&root, &root.join("user-identity"), &root.join("device")] {
             assert_eq!(
-                host_identity_root(Some("/home/alice/.data".into()), Some("/ignored".into()))
-                    .unwrap(),
-                PathBuf::from("/home/alice/.data/tilo")
-            );
-            assert_eq!(
-                host_identity_root(None, Some("/home/alice".into())).unwrap(),
-                PathBuf::from("/home/alice/.local/share/tilo")
+                fs::metadata(directory).unwrap().permissions().mode() & 0o777,
+                0o700
             );
         }
 
-        fn host_identity_root_never_depends_on_the_working_directory() {
-            assert!(
-                host_identity_root(Some("relative".into()), Some("/home/alice".into())).is_err()
-            );
-            assert!(host_identity_root(None, Some("relative".into())).is_err());
-            assert!(host_identity_root(None, None).is_err());
-        }
-
-        #[cfg(unix)]
-        fn host_identity_tree_is_private_and_refuses_a_symlink_root() {
-            use std::os::unix::fs::{PermissionsExt, symlink};
-
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let root = tmp.path().join("data/tilo");
-            prepare_private_host_identity_tree(&root).unwrap();
-            for directory in [&root, &root.join("user-identity"), &root.join("device")] {
-                assert_eq!(
-                    fs::metadata(directory).unwrap().permissions().mode() & 0o777,
-                    0o700
-                );
-            }
-
-            let target = tmp.path().join("target");
-            fs::create_dir(&target).unwrap();
-            let linked = tmp.path().join("linked");
-            symlink(&target, &linked).unwrap();
-            assert!(prepare_private_host_identity_tree(&linked).is_err());
-        }
-
-        save_and_load_round_trip_on_disk();
-        save_sets_0600_mode_on_unix();
-        #[cfg(unix)]
-        load_refuses_an_identity_path_symlink();
-        load_on_missing_file_returns_none();
-        host_identity_root_uses_the_xdg_data_contract();
-        host_identity_root_never_depends_on_the_working_directory();
-        #[cfg(unix)]
-        host_identity_tree_is_private_and_refuses_a_symlink_root();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let linked = tmp.path().join("linked");
+        symlink(&target, &linked).unwrap();
+        assert!(prepare_private_host_identity_tree(&linked).is_err());
     }
 
     #[test]
@@ -1075,45 +1068,41 @@ mod tests {
     }
 
     #[test]
-    fn first_run_and_recovery_trigger_only_for_missing_or_unavailable_identity() {
-        fn first_run_flow_triggers_only_on_missing_identity() {
-            let store = MemoryIdentityStore::new();
-            assert!(needs_first_run_flow(&store));
-            store.save(&fixture_record()).unwrap();
-            assert!(!needs_first_run_flow(&store));
-        }
+    fn first_run_flow_triggers_only_on_missing_identity() {
+        let store = MemoryIdentityStore::new();
+        assert!(needs_first_run_flow(&store));
+        store.save(&fixture_record()).unwrap();
+        assert!(!needs_first_run_flow(&store));
+    }
 
-        fn only_the_secret_service_unavailable_error_enters_recovery() {
-            assert!(is_secret_service_unavailable(
-                &runtime_identity::secret_service_unavailable_error()
-            ));
-            assert!(!is_secret_service_unavailable(&io::Error::new(
-                io::ErrorKind::InvalidData,
-                "identity JSON malformed",
-            )));
-            assert!(!is_secret_service_unavailable(&io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "identity directory is not private",
-            )));
-        }
+    #[test]
+    fn only_the_secret_service_unavailable_error_enters_recovery() {
+        assert!(is_secret_service_unavailable(
+            &runtime_identity::secret_service_unavailable_error()
+        ));
+        assert!(!is_secret_service_unavailable(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity JSON malformed",
+        )));
+        assert!(!is_secret_service_unavailable(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity directory is not private",
+        )));
+    }
 
-        #[cfg(unix)]
-        fn invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop() {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let path = tmp.path().join("primary.json");
-            fs::write(&path, b"not an identity").unwrap();
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-            let store = DiskIdentityStore::at(path);
-            assert!(
-                needs_first_run_flow(&store),
-                "an invalid identity must not let an identity-less desktop start"
-            );
-        }
-
-        first_run_flow_triggers_only_on_missing_identity();
-        only_the_secret_service_unavailable_error_enters_recovery();
-        #[cfg(unix)]
-        invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop();
+    #[cfg(unix)]
+    #[test]
+    #[cfg(unix)]
+    fn invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("primary.json");
+        fs::write(&path, b"not an identity").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let store = DiskIdentityStore::at(path);
+        assert!(
+            needs_first_run_flow(&store),
+            "an invalid identity must not let an identity-less desktop start"
+        );
     }
 
     #[test]

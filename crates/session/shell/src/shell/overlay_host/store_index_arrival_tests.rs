@@ -50,7 +50,7 @@ fn flathub_with_spotify() -> StoreCatalogueTestState {
 
 fn store_pages(host: &ShellOverlayHost) -> Vec<String> {
     let heading = crate::shell::search::in_the_store().localized_label();
-    host.palette
+    host.search
         .visible_entries()
         .iter()
         .filter(|entry| entry.group.as_deref() == Some(heading.as_str()))
@@ -116,7 +116,7 @@ fn store_pages_join_an_open_search_when_the_store_index_lands() {
 
     let building = source.hold();
     host.open_global_search(&doc, &root);
-    host.palette.set_query("spotify");
+    host.search.set_query("spotify");
     host.refresh_search_results(&doc, &root);
     host.update(&doc, &root);
     assert!(
@@ -131,7 +131,7 @@ fn store_pages_join_an_open_search_when_the_store_index_lands() {
     drop(building);
     settle_on_wakes(&mut host, &wakes, &doc);
     assert_eq!(store_pages(&host), ["Spotify"]);
-    assert_eq!(host.palette.query(), "spotify");
+    assert_eq!(host.search.query(), "spotify");
     drop(host);
 }
 
@@ -152,7 +152,7 @@ fn store_pages_are_under_the_apps_chip() {
 
     let building = source.hold();
     host.open_global_search(&doc, &root);
-    host.palette.set_query("spotify");
+    host.search.set_query("spotify");
     host.refresh_search_results(&doc, &root);
     host.update(&doc, &root);
     drop(building);

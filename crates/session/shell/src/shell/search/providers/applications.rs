@@ -1566,306 +1566,290 @@ mod tests {
     }
 
     #[test]
-    fn activating_an_app_is_idempotent_and_reports_failures() {
-        // Phase `repeated_activation_while_opening_is_idempotent`.
-        {
-            let chrome = chrome_rc();
-            let package_id = "so.tilo.repeated-open-fixture";
-            catalogue::note_pending_launch(package_id);
+    fn repeated_activation_while_opening_is_idempotent() {
+        let chrome = chrome_rc();
+        let package_id = "so.tilo.repeated-open-fixture";
+        catalogue::note_pending_launch(package_id);
 
-            assert!(launch_installed_app(&chrome, package_id, "Fixture").is_ok());
-            assert!(
-                chrome.borrow().notifications().is_empty(),
-                "a second activation must not start another worker or say anything"
-            );
-            assert!(catalogue::take_pending_launch(package_id));
-        }
+        assert!(launch_installed_app(&chrome, package_id, "Fixture").is_ok());
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "a second activation must not start another worker or say anything"
+        );
+        assert!(catalogue::take_pending_launch(package_id));
+    }
 
-        // Phase `a_failed_launch_notifies_the_user_and_refuses_the_caller`.
-        // A launch that cannot start must reach both audiences: a notification
-        // for the screen, and a refusal for the caller that invoked the row by
-        // address — without it, a script is told the app opened and waits for
-        // a window that never arrives. Drives the real `on_open` closure.
-        {
-            use crate::shell::search::action_api::ActionError;
+    // A launch that cannot start must reach both audiences: a notification
+    // for the screen, and a refusal for the caller that invoked the row by
+    // address — without it, a script is told the app opened and waits for
+    // a window that never arrives. Drives the real `on_open` closure.
+    #[test]
+    fn a_failed_launch_notifies_the_user_and_refuses_the_caller() {
+        use crate::shell::search::action_api::ActionError;
 
-            let p = ApplicationsProvider::new();
-            let c = chrome_rc();
-            let mut doc = AutoCommit::new();
-            // The registry does not actually contain this app, so launch refuses it.
-            let out = p.results_for("ghost", vec![app("so.tilo.ghost", "Ghost")]);
-            let row = out.first().expect("a row for the ghost app");
-            assert!(c.borrow().notifications().is_empty());
-            let outcome = (row.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &c,
-                &crate::shell::search::action_api::ActionArgs::none(),
-            );
+        let p = ApplicationsProvider::new();
+        let c = chrome_rc();
+        let mut doc = AutoCommit::new();
+        // The registry does not actually contain this app, so launch refuses it.
+        let out = p.results_for("ghost", vec![app("so.tilo.ghost", "Ghost")]);
+        let row = out.first().expect("a row for the ghost app");
+        assert!(c.borrow().notifications().is_empty());
+        let outcome = (row.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &c,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        );
 
-            let err = outcome.expect_err("a launch that cannot start must not report success");
-            assert!(
-                matches!(err, ActionError::Refused(_)),
-                "a launch failure is a refusal, not an argument error: {err:?}"
-            );
-            assert_eq!(
-                err.code(),
-                "action_failed",
-                "the wire code must say the action ran and could not do its job"
-            );
-            assert!(
-                err.to_string().contains("Ghost"),
-                "the refusal must name what failed to open: {err}"
-            );
+        let err = outcome.expect_err("a launch that cannot start must not report success");
+        assert!(
+            matches!(err, ActionError::Refused(_)),
+            "a launch failure is a refusal, not an argument error: {err:?}"
+        );
+        assert_eq!(
+            err.code(),
+            "action_failed",
+            "the wire code must say the action ran and could not do its job"
+        );
+        assert!(
+            err.to_string().contains("Ghost"),
+            "the refusal must name what failed to open: {err}"
+        );
 
-            let st = c.borrow();
-            let n = st
-                .notifications()
-                .last()
-                .expect("a failed launch must notify the user");
-            assert_eq!(n.title, "Couldn't open Ghost");
-            assert_eq!(n.severity, NotificationSeverity::Error);
-            assert!(
-                !n.body.is_empty(),
-                "the notification must say why the launch failed"
-            );
-        }
+        let st = c.borrow();
+        let n = st
+            .notifications()
+            .last()
+            .expect("a failed launch must notify the user");
+        assert_eq!(n.title, "Couldn't open Ghost");
+        assert_eq!(n.severity, NotificationSeverity::Error);
+        assert!(
+            !n.body.is_empty(),
+            "the notification must say why the launch failed"
+        );
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn application_matching_ranks_name_then_id_then_category() {
-        // Phase `matching_app_offers_an_open_row`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for("hel", vec![app("so.tilo.hello", "Hello")]);
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].title, "Hello", "the title is the app's name");
-            assert_eq!(out[0].id, "so.tilo.hello");
-            assert_eq!(out[0].score, 100, "prefix match on the display name");
-            assert_eq!(
-                out[0].subtitle.as_deref(),
-                None,
-                "no vendor, package id or version under an app's name"
-            );
-        }
+    fn matching_app_offers_an_open_row() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for("hel", vec![app("so.tilo.hello", "Hello")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "Hello", "the title is the app's name");
+        assert_eq!(out[0].id, "so.tilo.hello");
+        assert_eq!(out[0].score, 100, "prefix match on the display name");
+        assert_eq!(
+            out[0].subtitle.as_deref(),
+            None,
+            "no vendor, package id or version under an app's name"
+        );
+    }
 
-        // Phase `declared_category_is_matchable_and_replaces_the_version_subtitle`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for(
-                "office",
-                vec![
-                    app_in("so.example.ledger", "Ledger", Some("Office")),
-                    app_in("so.example.abacus", "Abacus", Some("Utility")),
-                ],
-            );
-            assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
-            assert_eq!(out[0].id, "so.example.ledger");
-            assert_eq!(out[0].score, 34, "category ranks below name and id matches");
-            assert_eq!(
-                out[0].subtitle.as_deref(),
-                Some("Office"),
-                "with no tag line, the declared category is the only metadata a row shows"
-            );
-        }
+    #[test]
+    fn declared_category_is_matchable_and_replaces_the_version_subtitle() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "office",
+            vec![
+                app_in("so.example.ledger", "Ledger", Some("Office")),
+                app_in("so.example.abacus", "Abacus", Some("Utility")),
+            ],
+        );
+        assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
+        assert_eq!(out[0].id, "so.example.ledger");
+        assert_eq!(out[0].score, 34, "category ranks below name and id matches");
+        assert_eq!(
+            out[0].subtitle.as_deref(),
+            Some("Office"),
+            "with no tag line, the declared category is the only metadata a row shows"
+        );
+    }
 
-        // Phase `a_tilo_apps_tag_line_is_its_second_line`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for(
-                "sheets",
-                vec![app_in("so.tilo.sheets", "Sheets", Some("Office"))],
-            );
-            let tagline = app_fleet::metadata("so.tilo.sheets")
-                .map(|app| app.tagline)
-                .expect("Sheets is in the fleet");
-            assert_eq!(
-                out[0].subtitle.as_deref(),
-                Some(tagline),
-                "every app row shows its tag line as the second line"
-            );
-        }
+    #[test]
+    fn a_tilo_apps_tag_line_is_its_second_line() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "sheets",
+            vec![app_in("so.tilo.sheets", "Sheets", Some("Office"))],
+        );
+        let tagline = app_fleet::metadata("so.tilo.sheets")
+            .map(|app| app.tagline)
+            .expect("Sheets is in the fleet");
+        assert_eq!(
+            out[0].subtitle.as_deref(),
+            Some(tagline),
+            "every app row shows its tag line as the second line"
+        );
+    }
 
-        // Phase `category_never_outranks_a_name_or_id_match`.
-        {
-            let p = ApplicationsProvider::new();
-            // "system" is Monitor's category AND a substring of the other
-            // app's display name. The name match has to win.
-            let out = p.results_for(
-                "system",
-                vec![
-                    app_in("so.example.monitor", "Monitor", Some("System")),
-                    app_in("so.example.sysinfo", "System Info", Some("Utility")),
-                ],
-            );
-            assert_eq!(out.len(), 2);
-            let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
-            assert_eq!(
-                score("so.example.sysinfo"),
-                100,
-                "prefix on the display name"
-            );
-            assert_eq!(score("so.example.monitor"), 34, "category-only match");
-            assert!(score("so.example.sysinfo") > score("so.example.monitor"));
-        }
+    #[test]
+    fn category_never_outranks_a_name_or_id_match() {
+        let p = ApplicationsProvider::new();
+        // "system" is Monitor's category AND a substring of the other
+        // app's display name. The name match has to win.
+        let out = p.results_for(
+            "system",
+            vec![
+                app_in("so.example.monitor", "Monitor", Some("System")),
+                app_in("so.example.sysinfo", "System Info", Some("Utility")),
+            ],
+        );
+        assert_eq!(out.len(), 2);
+        let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
+        assert_eq!(
+            score("so.example.sysinfo"),
+            100,
+            "prefix on the display name"
+        );
+        assert_eq!(score("so.example.monitor"), 34, "category-only match");
+        assert!(score("so.example.sysinfo") > score("so.example.monitor"));
+    }
 
-        // Phase `package_id_matches_score_below_name_matches`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for(
-                "so.tilo",
-                vec![app("so.tilo.hello", "Hello"), app("org.x.zed", "Zed")],
-            );
-            assert_eq!(out.len(), 1, "only the matching package: {out:?}");
-            // A shared id *prefix* names a publisher, not an app, so it
-            // stays below a name match.
-            assert_eq!(out[0].score, 93);
-            let by_name = p.results_for("hello", vec![app("so.tilo.hello", "Hello")]);
-            assert!(
-                by_name[0].score > out[0].score,
-                "naming the app must still beat naming its publisher"
-            );
-        }
+    #[test]
+    fn package_id_matches_score_below_name_matches() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "so.tilo",
+            vec![app("so.tilo.hello", "Hello"), app("org.x.zed", "Zed")],
+        );
+        assert_eq!(out.len(), 1, "only the matching package: {out:?}");
+        // A shared id *prefix* names a publisher, not an app, so it
+        // stays below a name match.
+        assert_eq!(out[0].score, 93);
+        let by_name = p.results_for("hello", vec![app("so.tilo.hello", "Hello")]);
+        assert!(
+            by_name[0].score > out[0].score,
+            "naming the app must still beat naming its publisher"
+        );
+    }
 
-        // Phase `the_id_last_segment_is_an_identity_match`.
-        // The display name is "Hex Editor", which never prefix-matches the id.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for("hex-editor", vec![app("so.tilo.hex-editor", "Hex Editor")]);
-            assert_eq!(out.len(), 1, "the app must match at all: {out:?}");
-            assert_eq!(
-                out[0].score, 100,
-                "naming an app's id segment identifies it as exactly as \
-                 naming the app does"
-            );
-            let full = p.results_for(
-                "so.tilo.hex-editor",
-                vec![app("so.tilo.hex-editor", "Hex Editor")],
-            );
-            assert_eq!(full[0].score, 100);
-        }
+    // The display name is "Hex Editor", which never prefix-matches the id.
+    #[test]
+    fn the_id_last_segment_is_an_identity_match() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for("hex-editor", vec![app("so.tilo.hex-editor", "Hex Editor")]);
+        assert_eq!(out.len(), 1, "the app must match at all: {out:?}");
+        assert_eq!(
+            out[0].score, 100,
+            "naming an app's id segment identifies it as exactly as \
+             naming the app does"
+        );
+        let full = p.results_for(
+            "so.tilo.hex-editor",
+            vec![app("so.tilo.hex-editor", "Hex Editor")],
+        );
+        assert_eq!(full[0].score, 100);
+    }
 
-        // Phase `non_matching_needle_returns_nothing`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for("zzzqqq", vec![app("so.tilo.hello", "Hello")]);
-            assert!(out.is_empty());
-        }
+    #[test]
+    fn non_matching_needle_returns_nothing() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for("zzzqqq", vec![app("so.tilo.hello", "Hello")]);
+        assert!(out.is_empty());
+    }
 
-        // Phase `unrequested_kind_returns_empty`.
-        {
-            let p = ApplicationsProvider::new();
-            let c = chrome_rc();
-            let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let out = p.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "hello",
-                wanted: &[ResourceKind::File],
-                chrome: &cs,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            assert!(out.is_empty());
-        }
+    #[test]
+    fn unrequested_kind_returns_empty() {
+        let p = ApplicationsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "hello",
+            wanted: &[ResourceKind::File],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert!(out.is_empty());
     }
 
     #[test]
     fn reviewed_shortcuts_are_searchable_and_malformed_records_are_hidden() {
-        // Phase `reviewed_web_shortcut_is_searchable_but_malformed_records_are_hidden`.
-        {
-            let p = ApplicationsProvider::new();
-            let record = |id: &str, target: Option<&str>| DynamicLauncherRecord {
-                id: id.into(),
-                owner_app_id: "org.example.creator".into(),
-                name: "Project board".into(),
-                launcher_type: 2,
-                target: target.map(str::to_string),
-                icon_kind: "tilo-web".into(),
-                icon_bytes: None,
-            };
-            let out = p.dynamic_results_for(
-                "project",
-                vec![
-                    record("portal-valid", Some("https://example.test/board")),
-                    record("portal-invalid", Some("javascript:alert(1)")),
-                ],
-                &[],
-            );
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].id, "portal-valid");
-            assert_eq!(out[0].title, "Project board");
-            assert!(out[0].subtitle.as_deref().unwrap().contains("Shortcut"));
-        }
+        let p = ApplicationsProvider::new();
+        let record = |id: &str, target: Option<&str>| DynamicLauncherRecord {
+            id: id.into(),
+            owner_app_id: "org.example.creator".into(),
+            name: "Project board".into(),
+            launcher_type: 2,
+            target: target.map(str::to_string),
+            icon_kind: "tilo-web".into(),
+            icon_bytes: None,
+        };
+        let out = p.dynamic_results_for(
+            "project",
+            vec![
+                record("portal-valid", Some("https://example.test/board")),
+                record("portal-invalid", Some("javascript:alert(1)")),
+            ],
+            &[],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "portal-valid");
+        assert_eq!(out[0].title, "Project board");
+        assert!(out[0].subtitle.as_deref().unwrap().contains("Shortcut"));
     }
 
     #[test]
-    fn empty_and_typed_queries_list_apps_in_a_useful_order() {
-        // Phase `empty_needle_lists_every_app_with_a_useful_fresh_system_order`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for(
-                "",
-                vec![
-                    app("so.tilo.monitor", "System Monitor"),
-                    app("so.tilo.browser", "Browser"),
-                    app("so.tilo.notes", "Notes"),
-                    app("so.tilo.hello", "Hello"),
-                    app("so.tilo.api-tester", "API Tester"),
-                    app("dev.tilo.file-explorer", "Files"),
-                ],
-            );
-            assert_eq!(out.len(), 6);
-            let score = |id: &str| out.iter().find(|row| row.id == id).unwrap().score;
-            assert!(score("so.tilo.browser") > score("so.tilo.notes"));
-            assert!(score("so.tilo.notes") > score("so.tilo.monitor"));
-            assert!(score("so.tilo.monitor") > score("so.tilo.hello"));
-            assert!(
-                score("so.tilo.hello") > score("so.tilo.api-tester"),
-                "developer tools never lead a fresh palette"
-            );
-            assert!(
-                score("dev.tilo.file-explorer") > score("so.tilo.notes"),
-                "a local build's apps keep their place"
-            );
-            assert!(
-                out.iter()
-                    .filter_map(|row| row.subtitle.as_deref())
-                    .all(|subtitle| !subtitle.contains("so.tilo") && !subtitle.contains("0.1.0")),
-                "no package id or version on a row"
-            );
-        }
+    fn empty_needle_lists_every_app_with_a_useful_fresh_system_order() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "",
+            vec![
+                app("so.tilo.monitor", "System Monitor"),
+                app("so.tilo.browser", "Browser"),
+                app("so.tilo.notes", "Notes"),
+                app("so.tilo.hello", "Hello"),
+                app("so.tilo.api-tester", "API Tester"),
+                app("dev.tilo.file-explorer", "Files"),
+            ],
+        );
+        assert_eq!(out.len(), 6);
+        let score = |id: &str| out.iter().find(|row| row.id == id).unwrap().score;
+        assert!(score("so.tilo.browser") > score("so.tilo.notes"));
+        assert!(score("so.tilo.notes") > score("so.tilo.monitor"));
+        assert!(score("so.tilo.monitor") > score("so.tilo.hello"));
+        assert!(
+            score("so.tilo.hello") > score("so.tilo.api-tester"),
+            "developer tools never lead a fresh palette"
+        );
+        assert!(
+            score("dev.tilo.file-explorer") > score("so.tilo.notes"),
+            "a local build's apps keep their place"
+        );
+        assert!(
+            out.iter()
+                .filter_map(|row| row.subtitle.as_deref())
+                .all(|subtitle| !subtitle.contains("so.tilo") && !subtitle.contains("0.1.0")),
+            "no package id or version on a row"
+        );
+    }
 
-        // Phase `typed_search_ignores_default_presentation_tiers`.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for(
-                "monitor",
-                vec![
-                    app("so.tilo.browser", "Browser"),
-                    app("so.tilo.monitor", "System Monitor"),
-                ],
-            );
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].id, "so.tilo.monitor");
-            assert_eq!(
-                out[0].score, 100,
-                "normal match scoring remains authoritative"
-            );
-            assert!(
-                !out[0]
-                    .subtitle
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("System tools"),
-                "presentation bands are not search metadata or query noise"
-            );
-        }
+    #[test]
+    fn typed_search_ignores_default_presentation_tiers() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "monitor",
+            vec![
+                app("so.tilo.browser", "Browser"),
+                app("so.tilo.monitor", "System Monitor"),
+            ],
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "so.tilo.monitor");
+        assert_eq!(
+            out[0].score, 100,
+            "normal match scoring remains authoritative"
+        );
+        assert!(
+            !out[0]
+                .subtitle
+                .as_deref()
+                .unwrap_or_default()
+                .contains("System tools"),
+            "presentation bands are not search metadata or query noise"
+        );
     }
 
     /// An app is found by its name in any language its manifest gives, so a
@@ -1955,20 +1939,17 @@ mod tests {
         assert!(missing.is_err(), "the list is required");
     }
 
+    // A state that flashes for a hundred milliseconds is noise, not feedback.
     #[test]
     fn an_app_that_is_here_is_just_opened() {
-        // Phase `an_app_that_is_already_here_does_not_raise_a_loading_state`.
-        // A state that flashes for a hundred milliseconds is noise, not feedback.
-        {
-            let p = ApplicationsProvider::new();
-            let out = p.results_for("she", vec![app("so.tilo.sheets", "Sheets")]);
-            let row = out.first().expect("a row for the installed app");
-            assert!(
-                !row.title.to_lowercase().contains("load"),
-                "an app that is here is just opened: {:?}",
-                row.title
-            );
-        }
+        let p = ApplicationsProvider::new();
+        let out = p.results_for("she", vec![app("so.tilo.sheets", "Sheets")]);
+        let row = out.first().expect("a row for the installed app");
+        assert!(
+            !row.title.to_lowercase().contains("load"),
+            "an app that is here is just opened: {:?}",
+            row.title
+        );
     }
 
     #[test]
@@ -2381,159 +2362,151 @@ mod native_application_tests {
     };
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_app_search_opens_the_real_hosted_app_in_the_right_place() {
-        // Phase `native_files_search_opens_the_real_hosted_app_and_revalidates_availability`.
+    fn native_files_search_opens_the_real_hosted_app_and_revalidates_availability() {
+        let directory = tempfile::tempdir().unwrap();
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        chrome.borrow_mut().hosted_inputs =
+            HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
+        let mut doc = automerge::AutoCommit::new();
+        let results = NativeApplicationsProvider::default().query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "Files",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
+        (results[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+        assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
+        assert!(
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .unwrap()
+                .strips
+                .iter()
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .any(|tab| matches!(
+                    &tab.tile,
+                    crate::shell::state::TileContent::AppPlaceholder {
+                        kind: AppKind::FileExplorer,
+                        ..
+                    }
+                ))
+        );
+        chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
+        assert!(
+            (results[0].on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_app_search_opens_beside_the_focused_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        for title in ["second", "third", "fourth"] {
+            crate::shell::tab_binding::open_hosted_app(
+                &mut tree,
+                AppKind::Terminal,
+                title,
+                crate::shell::tab_binding::Placement::NewGroup,
+            );
+        }
+        let strip_id = tree.desktop.workspaces[0].strips[0].id;
+        let ids = tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect::<Vec<_>>();
+        tree.desktop.set_active_group(strip_id, ids[0]);
+
+        let chrome = ChromeState::new(tree);
         {
-            let directory = tempfile::tempdir().unwrap();
-            let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-            chrome.borrow_mut().hosted_inputs =
+            let mut state = chrome.borrow_mut();
+            state.hosted_inputs =
                 HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
-            let mut doc = automerge::AutoCommit::new();
-            let results = NativeApplicationsProvider::default().query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "Files",
-                wanted: &[ResourceKind::Application],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            assert_eq!(results.len(), 1);
-            assert_eq!(results[0].id, crate::shell::hosted_inputs::FILES_PACKAGE_ID);
-            (results[0].on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            )
-            .unwrap();
-            assert_eq!(chrome.borrow().active_app_title().as_deref(), Some("Files"));
-            assert!(
-                chrome
-                    .borrow()
-                    .tree()
-                    .desktop
-                    .active_workspace()
-                    .unwrap()
-                    .strips
+            state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
+                strip: strip_id,
+                groups: ids
                     .iter()
-                    .flat_map(|s| &s.window_groups)
-                    .flat_map(|g| &g.tabs)
-                    .any(|tab| matches!(
-                        &tab.tile,
-                        crate::shell::state::TileContent::AppPlaceholder {
-                            kind: AppKind::FileExplorer,
-                            ..
+                    .enumerate()
+                    .map(|(index, id)| {
+                        let index = f64::from(u32::try_from(index).expect("fixture group index"));
+                        tilo_desktop_model::commands::GroupSpan {
+                            id: *id,
+                            x0: index * 100.0,
+                            x1: index.mul_add(100.0, 100.0),
                         }
-                    ))
-            );
-            chrome.borrow_mut().hosted_inputs = HostedTileInputs::default();
-            assert!(
-                (results[0].on_open)(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &chrome,
-                    &ActionArgs::none()
+                    })
+                    .collect(),
+                visible_x0: 0.0,
+                visible_x1: 350.0,
+            }));
+        }
+
+        let mut doc = automerge::AutoCommit::new();
+        let results = NativeApplicationsProvider::default().query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "Files",
+            wanted: &[ResourceKind::Application],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        (results[0].on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .unwrap();
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let groups = &tree.desktop.active_workspace().unwrap().strips[0].window_groups;
+        let files_group = groups
+            .iter()
+            .find(|group| !ids.contains(&group.id))
+            .expect("Files search result created a group");
+        assert!(
+            files_group.tabs.iter().any(|tab| {
+                matches!(
+                    &tab.tile,
+                    crate::shell::state::TileContent::AppPlaceholder {
+                        kind: AppKind::FileExplorer,
+                        ..
+                    }
                 )
-                .is_err()
-            );
-        }
-
-        // Phase `native_app_search_opens_beside_the_focused_window`.
-        {
-            let directory = tempfile::tempdir().unwrap();
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            for title in ["second", "third", "fourth"] {
-                crate::shell::tab_binding::open_hosted_app(
-                    &mut tree,
-                    AppKind::Terminal,
-                    title,
-                    crate::shell::tab_binding::Placement::NewGroup,
-                );
-            }
-            let strip_id = tree.desktop.workspaces[0].strips[0].id;
-            let ids = tree.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .map(|group| group.id)
-                .collect::<Vec<_>>();
-            tree.desktop.set_active_group(strip_id, ids[0]);
-
-            let chrome = ChromeState::new(tree);
-            {
-                let mut state = chrome.borrow_mut();
-                state.hosted_inputs =
-                    HostedTileInputs::for_host_directory_privately(directory.path()).unwrap();
-                state.set_strip_viewport(Some(tilo_desktop_model::commands::StripViewport {
-                    strip: strip_id,
-                    groups: ids
-                        .iter()
-                        .enumerate()
-                        .map(|(index, id)| {
-                            let index =
-                                f64::from(u32::try_from(index).expect("fixture group index"));
-                            tilo_desktop_model::commands::GroupSpan {
-                                id: *id,
-                                x0: index * 100.0,
-                                x1: index.mul_add(100.0, 100.0),
-                            }
-                        })
-                        .collect(),
-                    visible_x0: 0.0,
-                    visible_x1: 350.0,
-                }));
-            }
-
-            let mut doc = automerge::AutoCommit::new();
-            let results = NativeApplicationsProvider::default().query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "Files",
-                wanted: &[ResourceKind::Application],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            (results[0].on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &ActionArgs::none(),
-            )
-            .unwrap();
-
-            let state = chrome.borrow();
-            let tree = state.tree();
-            let groups = &tree.desktop.active_workspace().unwrap().strips[0].window_groups;
-            let files_group = groups
-                .iter()
-                .find(|group| !ids.contains(&group.id))
-                .expect("Files search result created a group");
-            assert!(
-                files_group.tabs.iter().any(|tab| {
-                    matches!(
-                        &tab.tile,
-                        crate::shell::state::TileContent::AppPlaceholder {
-                            kind: AppKind::FileExplorer,
-                            ..
-                        }
-                    )
-                }),
-                "the new group contains the real hosted Files app",
-            );
-            let files_group = files_group.id;
-            assert_eq!(
-                groups.iter().map(|group| group.id).collect::<Vec<_>>(),
-                vec![ids[0], files_group, ids[1], ids[2], ids[3]],
-                "the native search provider opens beside the focused window, like every other search result",
-            );
-            drop(tree);
-            drop(state);
-        }
+            }),
+            "the new group contains the real hosted Files app",
+        );
+        let files_group = files_group.id;
+        assert_eq!(
+            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+            vec![ids[0], files_group, ids[1], ids[2], ids[3]],
+            "the native search provider opens beside the focused window, like every other search result",
+        );
+        drop(tree);
+        drop(state);
     }
 }
 

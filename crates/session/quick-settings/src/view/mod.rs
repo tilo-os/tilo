@@ -12,12 +12,15 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
+use ui::PresenceCtx;
 use ui::framework::{Effected, ViewCx};
 use ui::taffy::{NodeId, TaffyTree};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
-use ui::vello::kurbo::Point;
-use ui::widget::{Column, Decorator, Element, Scrollable, Widget};
+use ui::vello::Scene;
+use ui::vello::kurbo::{Affine, Point};
+use ui::widget::{Column, Decorator, Disclosing, Element, Scrollable, Widget};
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
@@ -127,7 +130,7 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let host = host_of(cx);
     let readings = Readings::new(QuickSettingsState::fixture());
     host.attach(readings.feed());
-    answer_effects(cx, &host);
+    answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);
     let told = Rc::clone(&host);
@@ -168,21 +171,40 @@ fn page(cx: &ViewCx<QuickSettings>, showing: &Showing, parts: &Parts) -> Element
     }
 }
 
-/// Every effect goes to the host, which carries it out on the device.
-fn answer_effects(cx: &ViewCx<QuickSettings>, host: &Rc<dyn PanelHost>) {
+/// Every effect goes to the host, which carries it out on the device; the
+/// readings say which ones the device can do now and what each is called
+/// ([`crate::effect::statuses`]).
+fn answer_effects(cx: &ViewCx<QuickSettings>, host: &Rc<dyn PanelHost>, readings: &Readings) {
     let host = Rc::clone(host);
+    let readings = readings.clone();
     cx.effects(move |effect: QsEffect, _| {
         host.run(effect)?;
         Ok(Effected::done())
-    });
+    })
+    .status(move || readings.read(crate::effect::statuses));
 }
 
 /// The panel's content, telling the host how tall it lays out: the host
-/// draws the popover's surface that tall.
+/// draws the popover's surface that tall. While a section opens or closes
+/// the content is drawn taller or shorter than it is laid out, and the
+/// surface follows it frame by frame.
 struct Measured {
     content: Column,
     host: Rc<dyn PanelHost>,
     reported: Option<f64>,
+}
+
+impl Measured {
+    /// Tell the host the card is `height` tall, when that changed.
+    fn report(&mut self, height: f64) {
+        if self
+            .reported
+            .is_none_or(|reported| (reported - height).abs() > 0.5)
+        {
+            self.reported = Some(height);
+            self.host.laid_out(height);
+        }
+    }
 }
 
 impl Decorator for Measured {
@@ -208,12 +230,22 @@ impl Decorator for Measured {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.content.apply_layout(tree, node, origin);
         let height = Widget::get_rect(&self.content).height();
-        if self
-            .reported
-            .is_none_or(|reported| (reported - height).abs() > 0.5)
-        {
-            self.reported = Some(height);
-            self.host.laid_out(height);
-        }
+        self.report(height);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.content.draw(scene, transform, text, theme, presence);
+        let grows = match Widget::disclosing(&self.content) {
+            Some(Disclosing::Grows(by)) => by,
+            _ => 0.0,
+        };
+        self.report(Widget::get_rect(&self.content).height() + grows);
     }
 }
