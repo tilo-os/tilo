@@ -42,8 +42,12 @@ app gets on a real system:
   host       in the synced Lounge every app is told so and shows the room
              (synced-*.png), native Notes' "New note" lands, and each launch's time
              to its first frame is recorded
-  host-edit  tilolang Notes' "New note" lands in the Lounge too, in a second
-             window of it and in the app started again
+  host-edit  tilolang Notes' "New note" lands in the Lounge too; so does a press
+             of its button in a second window of it, which that window makes
+             itself (activated by its test id), and the app started again
+  host-undo  tilolang Notes' Undo, which its host publishes as every app's is,
+             takes the person's last step in the Lounge back: History lists it
+             undone
   routes     the broker's route access, as the attested launch of an app: the
              collaboration probe (crates/dev/collab-probe) is installed as
              Board, whose surface declares that it reads Notes' kinds, and as
@@ -599,6 +603,16 @@ def check_host_again(session: Session, room: str) -> dict:
     return {"connect_to_sync_ms": sync_times(session)}
 
 
+def history_now(session: Session, app: str):
+    """How many versions `app`'s History lists now; None while it does not answer."""
+    action = next((a for a in session.actions("History") if a.get("application") == app
+                   and a.get("title") == "History" and a.get("operation_kind") == "View"), None)
+    try:
+        return action and value_of(session.invoke("app-actions", action["id"]))["total"]
+    except Failed:
+        return None
+
+
 def new_note_in(session: Session, app: str, args: dict | None = None) -> list[int]:
     """Invoke `app`'s "New note" edit and wait for it in the app's history: [before, after]."""
     # Out of focus, an app lists its actions under directory ids, which move on as the
@@ -613,12 +627,7 @@ def new_note_in(session: Session, app: str, args: dict | None = None) -> list[in
         return None
 
     def history():
-        action = next((a for a in session.actions("History") if a.get("application") == app
-                       and a.get("title") == "History" and a.get("operation_kind") == "View"), None)
-        try:
-            return action and value_of(session.invoke("app-actions", action["id"]))["total"]
-        except Failed:
-            return None
+        return history_now(session, app)
 
     until(f"{app}'s 'New note'", listed)
     before = until(f"{app}'s history", lambda: (lambda t: None if t is None else (t,))(history()))[0]
@@ -670,9 +679,20 @@ def windows_of(session: Session, app: str, workspace: str) -> list:
     return [w for w in session.windows() if w.get("app_id") == app and w.get("workspace") == workspace]
 
 
+# The "New note" button of tilolang Notes' notebook, by its test id: its component's key, which
+# the notebook's id (apps/tl/notes/app.ids) and the standard notebook view's parts make.
+NOTES_NEW_NOTE_BUTTON = "akcqjax3.t34.t15.52/0"
+
+
+def activate(session: Session, test_id: str) -> None:
+    """The focused window activates its control `test_id`, as assistive technology would."""
+    session.control_cmd("raw", json.dumps({"op": "activate_test_id", "test_id": test_id}))
+
+
 def check_host_edit(session: Session, pids_of) -> dict:
-    """tilolang Notes' "New note" changes the Lounge, as native Notes' does; so does it in a
-    second window of the app beside the first, and in the app started again."""
+    """tilolang Notes' "New note" changes the Lounge, as native Notes' does; so does a press of
+    its button in a second window of the app beside the first, made by that window itself;
+    and the app started again edits too."""
     notes = app_id("notes")
     out = {"history": new_note_in(session, notes)}
     # A second window: the first duplicated, as Super+T does.
@@ -683,7 +703,15 @@ def check_host_edit(session: Session, pids_of) -> dict:
     until("a frame of the second window", lambda: sum(
         1 for f in session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
         if f["app_id"] == notes and f["presented"] and f["pixels_ready"]) == 2, 30)
-    out["second_window"] = new_note_in(session, notes)
+    # The second window, in front, presses its own "New note".
+    second = next(w for w in windows_of(session, notes, "Lounge")
+                  if (w["group"], w["tab"]) != (first["group"], first["tab"]))
+    session.invoke("desktop-windows", f"tab.focus:{second['group']}:{second['tab']}")
+    before = until("Notes' history", lambda: (lambda t: None if t is None else (t,))(history_now(session, notes)))[0]
+    activate(session, NOTES_NEW_NOTE_BUTTON)
+    after = until("the second window's 'New note' in Notes' history",
+                  lambda: (lambda t: t if t is not None and t > before else None)(history_now(session, notes)), 15)
+    out["second_window"] = [before, after]
     if len(windows_of(session, notes, "Lounge")) != 2:
         raise Failed("a window of Notes closed after its second window edited")
     # Started again: every window closed, the app gone, and opened anew.
@@ -693,6 +721,28 @@ def check_host_edit(session: Session, pids_of) -> dict:
     open_in_workspace(session, [notes], "Lounge")
     out["relaunched"] = new_note_in(session, notes)
     return out
+
+
+def check_host_undo(session: Session) -> dict:
+    """In the Lounge, tilolang Notes' Undo, published by its host as every app publishes it,
+    takes back the person's last step as a step of its own: History lists that step undone."""
+    notes = app_id("notes")
+    edit = new_note_in(session, notes)
+    undo = until("Notes' Undo", lambda: next(
+        (a for a in session.actions("Undo") if a.get("application") == notes and a.get("title") == "Undo"),
+        None))
+    answer = value_of(session.invoke("app-actions", undo["id"]))
+    undone = answer.get("undone") or []
+    if len(undone) != 1:
+        raise Failed(f"Notes' Undo took back {len(undone)} steps, not the last one: {answer}")
+    change = undone[0]["change"]
+    history = next(a for a in session.actions("History") if a.get("application") == notes
+                   and a.get("title") == "History" and a.get("operation_kind") == "View")
+    versions = value_of(session.invoke("app-actions", history["id"]))["versions"]
+    listed = next((v for v in versions if v.get("change") == change), None)
+    if not listed or not listed.get("undone"):
+        raise Failed(f"History does not list {change} undone: {listed}")
+    return {"history": edit, "undone": change, "now": answer.get("now")}
 
 
 def check_spinner(session: Session, room: str, pid_of) -> dict:
@@ -1016,6 +1066,7 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
         ("reconnect", lambda: check_reconnect(session, site.room)),
         ("host", lambda: check_host(session, site.room, out)),
         ("host-edit", lambda: check_host_edit(session, pids_of)),
+        ("host-undo", lambda: check_host_undo(session)),
     ])
     stop("host")
 

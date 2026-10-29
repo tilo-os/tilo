@@ -86,15 +86,20 @@ Board. The session installs them (`--install-tapp`) beside native Notes
   native Chat, opened now, presents its first frame (`synced-*.png`). The time
   from each launch to its first presented frame is recorded.
 - **host-edit**: tilolang Notes' "New note" lands in the Lounge as native
-  Notes' does; so does it in a second window of the app (the first
-  duplicated, as Super+T does), and in the app started again after every
-  window of it closed.
+  Notes' does; so does a press of its button in a second window of the app
+  (the first duplicated, as Super+T does), which that window makes itself:
+  the test control's `activate_test_id` asks the focused window to activate
+  the button by its test id. So does "New note" in the app started again
+  after every window of it closed.
+- **host-undo**: tilolang Notes' Undo, which its tilolang host publishes as
+  every app publishes it, takes back the person's last step in the Lounge as
+  a step of its own, and History lists that step undone.
 
 Each app opens once in the Lounge: these three starts open none before the
 third, so every app is first opened there.
 
 `--host-only` runs only the checks of a workspace with a host (host-join to
-host-edit).
+host-undo).
 
 ## Output
 
