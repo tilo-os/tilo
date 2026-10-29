@@ -173,7 +173,7 @@ impl ChatApp {
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 
-    /// Run what the person did in the window's bar as the window's own self.bar_entries.
+    /// Run what the person did in the window's bar as the window's own hits.
     pub(crate) fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
             // A thread that fills the window: its Back returns to the
