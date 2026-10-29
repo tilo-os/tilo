@@ -116,7 +116,7 @@
 "crates/session/shell/src/compositor/backend/drm/runtime.rs" = 9500
 "crates/session/shell/src/compositor/backend/drm/scanout.rs" = 5500
 "crates/session/shell/src/compositor/client_input.rs" = 4000
-"crates/session/shell/src/compositor/native.rs" = 22000
+"crates/session/shell/src/compositor/native.rs" = 21500
 "crates/session/shell/src/compositor/selection.rs" = 3500
 "crates/session/shell/src/compositor/state.rs" = 10500
 "crates/session/shell/src/onboarding_view.rs" = 7500

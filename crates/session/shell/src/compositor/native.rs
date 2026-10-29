@@ -846,6 +846,7 @@ mod bus_services;
 mod listing;
 mod lock_media;
 mod lock_view;
+mod paint_stats;
 mod wakes;
 use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
 use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
@@ -10179,15 +10180,6 @@ pub fn run() {
     let legacy_share_config = crate::config::load_config().flatpak_share;
     let mut hosted_legacy_checked = Instant::now();
     let mut legacy_shares = LegacySharePlan::default();
-    // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
-    let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
-    // `TILO_PAINT_STATS=ticks` also prints a `paint-tick:` line on every
-    // iteration, so a reader can tell when each one ran: a summary covers
-    // everything since the previous one, which may lie long before the
-    // period the reader measures (the idle gate counts only its window).
-    let paint_ticks = std::env::var("TILO_PAINT_STATS").is_ok_and(|value| value.trim() == "ticks");
-    // What ended the park before this iteration, for `paint-tick:`.
-    let mut last_wake: &'static str = "start";
     // The last park ended on the frame cadence and no client request came
     // in after the frame: nothing outside an animation asked for this tick.
     let mut woke_for_cadence_only = false;
@@ -10277,18 +10269,7 @@ pub fn run() {
         );
         Instant::now().checked_add(d)
     });
-    let mut stats_since = Instant::now();
-    // Report windows in which nothing painted, folded into the next report
-    // that has something to say: an idle session must not write two lines
-    // every two seconds into a bounded session log.
-    let mut paint_stats_idle = Duration::ZERO;
-    let (mut frames_total, mut frames_painted) = (0u32, 0u32);
-    let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
-    let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
-    let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
-    let mut animating_content_leaves: Vec<String> = Vec::new();
-    let mut wakes_seen = WakeTally::default();
-    let mut widget_wake_owner: Option<String> = None;
+    let mut paint_stats = paint_stats::PaintStats::from_env();
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
@@ -13775,103 +13756,26 @@ pub fn run() {
                     || (session.is_locked() && !display_dark && retained_lock.feedback_frame_due()),
             );
 
-        // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
-        // vs idled and why, confirming the loop actually idles without guessing.
-        if paint_stats {
-            frames_total = frames_total.saturating_add(1);
-            if paint_ticks {
-                crate::stderr_guard::write_line(format_args!(
-                    "paint-tick: painted={should_paint} woke={last_wake}"
-                ));
-            }
-            if should_paint {
-                frames_painted = frames_painted.saturating_add(1);
-                if redraw_reasons.backend_event {
-                    cause_events = cause_events.saturating_add(1);
-                }
-                if session_changed {
-                    cause_session = cause_session.saturating_add(1);
-                }
-                if revision_changed {
-                    cause_revision = cause_revision.saturating_add(1);
-                }
-                if animating {
-                    cause_anim = cause_anim.saturating_add(1);
-                    animation_sources_seen.host |= animation_demand.host;
-                    animation_sources_seen.floating |= animation_demand.floating;
-                    animation_sources_seen.transient |= animation_demand.transient;
-                    animation_sources_seen.osk |= animation_demand.osk;
-                    if animation_demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0
-                        && animating_content_leaves.is_empty()
-                    {
-                        animating_content_leaves = frame_builder.content_animating_leaves();
-                    }
-                }
-                if keepalive_due
-                    && !(redraw_reasons.backend_event
-                        || session_changed
-                        || revision_changed
-                        || animating)
-                {
-                    cause_keepalive = cause_keepalive.saturating_add(1);
-                }
-            }
-            if stats_since.elapsed() >= Duration::from_secs(2) && frames_painted == 0 {
-                // Idle: keep tallying wakes, report once painting resumes.
-                paint_stats_idle = paint_stats_idle.saturating_add(stats_since.elapsed());
-                frames_total = 0;
-                stats_since = Instant::now();
-            } else if stats_since.elapsed() >= Duration::from_secs(2) {
-                if !paint_stats_idle.is_zero() {
-                    crate::stderr_guard::write_line(format_args!(
-                        "paint-stats: idle {:.0}s before this, nothing painted",
-                        paint_stats_idle.as_secs_f64()
-                    ));
-                    paint_stats_idle = Duration::ZERO;
-                }
-                let animation_host_labels =
-                    crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
-                        .collect::<Vec<_>>()
-                        .join(",");
-                crate::stderr_guard::write_line(format_args!(
-                    "paint-stats: {frames_painted}/{frames_total} painted | \
-                     events={cause_events} revision={cause_revision} anim={cause_anim} \
-                     session={cause_session} keepalive={cause_keepalive} | \
-                     locked={} blanked={} | \
-                     anim_sources host=0x{:04x} host_labels={:?} content={:?} floating={} transient={} osk={} | \
-                     {:.3} Hz target | present={} backpressure={}",
-                    session.is_locked(),
-                    session.is_blanked(),
-                    animation_sources_seen.host,
-                    animation_host_labels,
-                    animating_content_leaves.join(","),
-                    animation_sources_seen.floating,
-                    animation_sources_seen.transient,
-                    animation_sources_seen.osk,
-                    1.0 / frame_clock.interval().as_secs_f64(),
-                    present_pipe
-                        .as_ref()
-                        .map_or_else(|| "inline".to_string(), |p| p.presented().to_string()),
-                    present_pipe
-                        .as_ref()
-                        .map_or(0, crate::shell::present::PresentPipe::backpressured),
-                ));
-                frames_total = 0;
-                frames_painted = 0;
-                cause_events = 0;
-                cause_revision = 0;
-                cause_anim = 0;
-                cause_session = 0;
-                cause_keepalive = 0;
-                crate::stderr_guard::write_line(format_args!(
-                    "paint-stats: wakes {} | widget-deadline owner {:?}",
-                    wakes_seen.take_summary(),
-                    widget_wake_owner.take().unwrap_or_default(),
-                ));
-                animation_sources_seen = crate::shell::frame::AnimationDemand::default();
-                animating_content_leaves.clear();
-                stats_since = Instant::now();
-            }
+        if let Some(stats) = paint_stats.as_mut() {
+            stats.note_tick(
+                &paint_stats::TickCauses {
+                    should_paint,
+                    causes: paint_stats::Causes::default()
+                        .with(
+                            paint_stats::Causes::BACKEND_EVENT,
+                            redraw_reasons.backend_event,
+                        )
+                        .with(paint_stats::Causes::SESSION, session_changed)
+                        .with(paint_stats::Causes::REVISION, revision_changed)
+                        .with(paint_stats::Causes::ANIMATION, animating)
+                        .with(paint_stats::Causes::KEEPALIVE, keepalive_due),
+                    animation_demand: &animation_demand,
+                },
+                &frame_builder,
+                &session,
+                frame_clock.interval(),
+                present_pipe.as_ref(),
+            );
         }
 
         if should_paint && metrics.is_enabled() {
@@ -14919,12 +14823,8 @@ pub fn run() {
         let wake = park_wake_reason(park, park_deadline, slept);
         metrics.mark_wake(wake);
         woke_for_cadence_only = wake == "cadence" && !clients_dispatched;
-        if paint_stats {
-            wakes_seen.note(wake);
-            last_wake = wake;
-            if wake == "widget" && widget_wake_owner.is_none() {
-                widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
-            }
+        if let Some(stats) = paint_stats.as_mut() {
+            stats.note_wake(wake, &frame_builder);
         }
         metrics.end_tick();
         if let Some(deadline) = run_deadline
