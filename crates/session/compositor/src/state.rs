@@ -592,12 +592,19 @@ impl State {
             state
                 .space
                 .elements()
-                .find(|window| window.toplevel().is_some_and(|t| window_info(t).id == id))
+                .find(|window| describe(window).is_some_and(|info| info.id == id))
                 .cloned()
         };
         for id in self.policy.take_close_requests() {
-            if let Some(toplevel) = window_of(self, id).as_ref().and_then(Window::toplevel) {
+            let Some(window) = window_of(self, id) else {
+                continue;
+            };
+            if let Some(toplevel) = window.toplevel() {
                 toplevel.send_close();
+            } else if let Some(x11) = window.x11_surface()
+                && let Err(error) = x11.close()
+            {
+                tracing::warn!(?error, "X11 window: close not sent");
             }
         }
         let Some(id) = self.policy.focused() else {
