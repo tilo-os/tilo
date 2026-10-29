@@ -1290,3 +1290,42 @@ fn account_roots_follow_each_mode() {
         );
     }
 }
+
+#[test]
+fn trusted_senders_are_a_record_both_ways() {
+    use crate::trusted_senders::TrustedSenders;
+
+    let mut host = ui::framework::testing::TestApp::<crate::resource::MailShell>::new().unwrap();
+    let record = host.person::<TrustedSenders>().unwrap();
+    let mut mail = MailApp::new_first_run();
+    mail.follow_trusted_senders(record.clone());
+    let doc = TestMail::doc();
+
+    // Another window or device trusts a sender: this window adopts it.
+    record
+        .invoke(&TrustedSenders::TRUST.with("lena@fischer.example".to_owned()))
+        .unwrap();
+    mail.sync(&doc, &automerge::ROOT);
+    assert!(
+        mail.shared
+            .borrow()
+            .remote_senders
+            .contains("lena@fischer.example")
+    );
+
+    // This window trusts one and stops trusting the other: both are the
+    // person's edits of the record.
+    {
+        let mut shared = mail.shared.borrow_mut();
+        shared.remote_senders.remove("lena@fischer.example");
+        shared
+            .remote_senders
+            .insert("hello@fieldnotes.example".to_owned());
+    }
+    mail.sync(&doc, &automerge::ROOT);
+    assert_eq!(
+        record.with(TrustedSenders::addresses),
+        std::collections::BTreeSet::from(["hello@fieldnotes.example".to_owned()])
+    );
+    assert!(record.undo(), "trusting is an undo step of the person's");
+}
