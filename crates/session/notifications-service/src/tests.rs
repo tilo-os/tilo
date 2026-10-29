@@ -398,8 +398,18 @@ async fn invoking_through_the_resource_sends_token_action_and_close() {
     notifications.mint_activation_tokens(|| Some("token-1".into()));
     let tapped = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tap = Arc::clone(&tapped);
-    notifications.on_action(move |id, key| {
-        tap.lock().expect("tap").push((id, key.to_owned()));
+    notifications.on_taken(move |id, taken| {
+        if let Taken::Action {
+            key,
+            activation_token,
+        } = taken
+        {
+            tap.lock().expect("tap").push((
+                id,
+                key.to_owned(),
+                activation_token.map(str::to_owned),
+            ));
+        }
     });
     let (_server, client) = pair(&notifications, Arc::new(NoCallers)).await;
     let proxy = proxy(&client).await;
@@ -449,7 +459,10 @@ async fn invoking_through_the_resource_sends_token_action_and_close() {
     );
     assert_eq!(next_signal::<(u32, u32)>(&mut closed).await, (id, 2));
     assert_eq!(notifications.drain(), vec![Arrival::Close(id)]);
-    assert_eq!(*tapped.lock().expect("tap"), [(id, "default".to_owned())]);
+    assert_eq!(
+        *tapped.lock().expect("tap"),
+        [(id, "default".to_owned(), Some("token-1".to_owned()))]
+    );
 }
 
 #[tokio::test]
@@ -784,4 +797,260 @@ async fn the_interface_introspects_its_methods_and_signals() {
     ] {
         assert!(xml.contains(&format!("name=\"{name}\"")), "{name}");
     }
+}
+
+/// Attributes every sender to the app `app_id` launched.
+struct LaunchedAs(&'static str);
+
+impl Callers for LaunchedAs {
+    fn caller(&self, _sender: Sender<'_>) -> Option<Caller> {
+        Some(Caller {
+            app_id: self.0.into(),
+            workspace: Some("room".into()),
+        })
+    }
+}
+
+type Contacts = Vec<(String, String, Vec<String>)>;
+
+fn contacts(id: &str, endpoint: &str) -> Contacts {
+    vec![(id.into(), id.into(), vec![endpoint.into()])]
+}
+
+#[tokio::test]
+async fn only_contacts_names_the_priority_contacts_and_a_message_from_one_is_marked() {
+    let notifications = Notifications::new();
+    let (_stranger_server, stranger) = pair(&notifications, Arc::new(Launched)).await;
+    let refused = proxy(&stranger)
+        .await
+        .call_method(
+            "XTiloReplacePriorityContacts",
+            &(contacts("ada", "ada@example.com"),),
+        )
+        .await;
+    assert!(refused.is_err(), "another app may not name them");
+    assert_eq!(notifications.priority_contacts().count(), 0);
+
+    let (_server, client) =
+        pair(&notifications, Arc::new(LaunchedAs(priority::CONTACTS_APP))).await;
+    let kept: u32 = proxy(&client)
+        .await
+        .call_method(
+            "XTiloReplacePriorityContacts",
+            &(contacts("ada", "Ada@Example.com"),),
+        )
+        .await
+        .expect("Contacts names them")
+        .body()
+        .deserialize()
+        .expect("a count");
+    assert_eq!(kept, 1);
+
+    let proxy = proxy(&stranger).await;
+    let message = |handle: &str| {
+        let mut hints = HashMap::new();
+        hints.insert(
+            "x-tilo-contact-handle".to_owned(),
+            OwnedValue::from(Str::from(handle)),
+        );
+        ("Chat", 0, "", "Hi", "", Vec::new(), hints, -1)
+    };
+    notify(&proxy, message("ada@example.com")).await;
+    notify(&proxy, message("eve@example.com")).await;
+    let marked: Vec<bool> = arrived(&notifications)
+        .iter()
+        .map(|notification| notification.priority_contact)
+        .collect();
+    assert_eq!(marked, [true, false]);
+}
+
+#[tokio::test]
+async fn an_app_schedules_reads_and_cancels_its_own_deadlines() {
+    let notifications = Notifications::new();
+    let (_server, client) = pair(&notifications, Arc::new(Launched)).await;
+    let proxy = proxy(&client).await;
+    let far = 4_102_444_800_000_i64; // 2100-01-01
+    proxy
+        .call_method(
+            "XTiloScheduleNotification",
+            &(
+                "standup",
+                "Standup",
+                "In the small room",
+                "example:standup",
+                far,
+                Vec::<(u8, u8, u8, i64, String)>::new(),
+            ),
+        )
+        .await
+        .expect("scheduled");
+    let pending: Vec<(String, i64)> = proxy
+        .call_method("XTiloScheduledNotifications", &())
+        .await
+        .expect("read")
+        .body()
+        .deserialize()
+        .expect("pending");
+    assert_eq!(pending, [("standup".to_owned(), far)]);
+    let [deadline] = notifications
+        .schedules()
+        .deadlines()
+        .try_into()
+        .expect("one");
+    assert_eq!(deadline.app_id, "org.example.app");
+    assert_eq!(deadline.room, "7");
+    proxy
+        .call_method("XTiloCancelScheduledNotification", &("standup",))
+        .await
+        .expect("cancelled");
+    assert!(notifications.schedules().deadlines().is_empty());
+
+    let (_other_server, unattributed) = pair(&notifications, Arc::new(NoCallers)).await;
+    let refused = self::proxy(&unattributed)
+        .await
+        .call_method(
+            "XTiloScheduleNotification",
+            &(
+                "t",
+                "T",
+                "",
+                "",
+                far,
+                Vec::<(u8, u8, u8, i64, String)>::new(),
+            ),
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "an unknown sender keeps no deadlines here"
+    );
+}
+
+#[test]
+fn deadlines_are_scheduled_delivered_snoozed_and_cancelled_through_their_resources() {
+    let notifications = Notifications::new();
+    let mut services = services(&notifications);
+    let due = chrono::DateTime::parse_from_rfc3339("2026-04-14T12:00:00+00:00").expect("instant");
+    let done = services
+        .invoke(
+            SCHEDULES_RESOURCE,
+            "schedule",
+            &arguments(json!({
+                "app_id": "so.tilo.clocks",
+                "tag": "wake",
+                "title": "Wake up",
+                "activation": "tilo-clocks:alarm/1",
+                "at_ms": due.timestamp_millis(),
+                "alarm_hour": 12,
+            })),
+        )
+        .expect("published");
+    assert!(done.is_ok(), "{done:?}");
+    assert!(services.poll(), "the deadline is news");
+    let [deadline] = notifications
+        .schedules()
+        .deadlines()
+        .try_into()
+        .expect("one");
+    let resource = schedule_resource(&deadline.token);
+    assert!(
+        services
+            .read(&resource)
+            .is_some_and(|reading| reading["tag"] == "wake"),
+        "each deadline reads as itself"
+    );
+
+    notifications.deliver_due(&due);
+    let [rung] = arrived(&notifications).try_into().expect("it rings");
+    let occurrence = rung.scheduled.clone().expect("its deadline");
+    assert!(occurrence.calendar_alarm);
+    assert_eq!(occurrence.uri, "tilo-clocks:alarm/1");
+    let snoozed = services
+        .invoke(
+            &notification_resource(rung.id),
+            "invoke",
+            &arguments(json!({ "action": scheduled::SNOOZE })),
+        )
+        .expect("published");
+    assert!(snoozed.is_ok(), "{snoozed:?}");
+    let reading = services.read(&resource).expect("still scheduled");
+    assert!(reading["snoozed_until"].is_i64(), "{reading}");
+    let actions: Vec<String> = notifications.resources()[1].children[0]
+        .actions
+        .iter()
+        .map(|action| action.id.clone())
+        .collect();
+    assert_eq!(actions, ["cancel", "dismiss-snooze"]);
+    let cancelled = services
+        .invoke(&resource, "cancel", &serde_json::Map::new())
+        .expect("published");
+    assert!(cancelled.is_ok(), "{cancelled:?}");
+    assert!(services.read(&resource).is_none());
+}
+
+#[test]
+fn priority_contacts_are_marked_and_unmarked_through_their_resources() {
+    let notifications = Notifications::new();
+    let mut services = services(&notifications);
+    let marked = services
+        .invoke(
+            PRIORITY_CONTACTS_RESOURCE,
+            "mark",
+            &arguments(json!({
+                "id": "ada",
+                "name": "Ada Lovelace",
+                "endpoints": ["ada@example.com"],
+            })),
+        )
+        .expect("published");
+    assert!(marked.is_ok(), "{marked:?}");
+    assert!(notifications.priority_contacts().matches("ada@example.com"));
+    let reading = services.read(PRIORITY_CONTACTS_RESOURCE).expect("read");
+    assert_eq!(reading, json!([{ "id": "ada", "name": "Ada Lovelace" }]));
+    assert!(
+        !reading.to_string().contains("example.com"),
+        "an endpoint is never published"
+    );
+    let resource = priority_contact_resource("ada");
+    assert_eq!(
+        notifications.resources()[2].children[0].id.as_str(),
+        resource
+    );
+    let unmarked = services
+        .invoke(&resource, "unmark", &serde_json::Map::new())
+        .expect("published");
+    assert!(unmarked.is_ok(), "{unmarked:?}");
+    assert!(!notifications.priority_contacts().matches("ada@example.com"));
+    let refused = services
+        .invoke(
+            PRIORITY_CONTACTS_RESOURCE,
+            "mark",
+            &arguments(json!({ "id": "x", "name": "X", "endpoints": ["nope"] })),
+        )
+        .expect("published");
+    assert!(refused.is_err(), "no endpoint to match");
+}
+
+#[tokio::test]
+async fn an_image_path_hint_arrives_as_pixels() {
+    let dir = tempfile::tempdir().expect("directory");
+    let path = dir.path().join("avatar.png");
+    let image = image::RgbaImage::from_pixel(4, 2, image::Rgba([0, 0, 255, 255]));
+    image.save(&path).expect("written");
+    let notifications = Notifications::new();
+    let (_server, client) = pair(&notifications, Arc::new(NoCallers)).await;
+    let proxy = proxy(&client).await;
+    let mut hints = HashMap::new();
+    hints.insert(
+        "image-path".to_owned(),
+        OwnedValue::from(Str::from(path.to_str().expect("utf-8"))),
+    );
+    notify(&proxy, ("App", 0, "", "Sum", "", Vec::new(), hints, -1)).await;
+    let [notification] = arrived(&notifications).try_into().expect("exactly one");
+    let pixels = notification.image_data.expect("decoded");
+    assert_eq!((pixels.width, pixels.height), (4, 2));
+    assert!(
+        notifications.live()[0].image_data.is_none(),
+        "the published notification keeps no pixels"
+    );
 }

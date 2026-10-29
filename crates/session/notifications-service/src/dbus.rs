@@ -15,6 +15,8 @@ use zbus::zvariant::OwnedValue;
 use zbus::{Connection, fdo};
 
 use crate::hints::{self, Hints};
+use crate::priority::ContactProjection;
+use crate::scheduled::{self, Owner, ScheduleRequest};
 use crate::{BUS_NAME, Caller, Callers, Notification, Notifications, OBJECT_PATH, Sender, Signal};
 
 /// The capabilities the daemon advertises: a multi-line body, actions,
@@ -109,6 +111,27 @@ pub(crate) const INTROSPECTION: &str = r#"<interface name="org.freedesktop.Notif
     <arg name="version" type="s" direction="out"/>
     <arg name="spec_version" type="s" direction="out"/>
   </method>
+  <method name="XTiloReplacePriorityContacts">
+    <arg name="contacts" type="a(ssas)" direction="in"/>
+    <arg name="count" type="u" direction="out"/>
+  </method>
+  <method name="XTiloScheduleNotification">
+    <arg name="tag" type="s" direction="in"/>
+    <arg name="title" type="s" direction="in"/>
+    <arg name="body" type="s" direction="in"/>
+    <arg name="activation" type="s" direction="in"/>
+    <arg name="at_ms" type="x" direction="in"/>
+    <arg name="calendar" type="a(yyyxs)" direction="in"/>
+  </method>
+  <method name="XTiloScheduledNotifications">
+    <arg name="pending" type="a(sx)" direction="out"/>
+  </method>
+  <method name="XTiloScheduledAlarms">
+    <arg name="alarms" type="a(s(yyyx)axaxs)" direction="out"/>
+  </method>
+  <method name="XTiloCancelScheduledNotification">
+    <arg name="tag" type="s" direction="in"/>
+  </method>
   <signal name="NotificationClosed">
     <arg name="id" type="u"/>
     <arg name="reason" type="u"/>
@@ -146,7 +169,17 @@ impl Interface {
         let ongoing_owner = (caller.is_some() && !foreign && hints::parse_ongoing(&hints))
             .then_some(sender)
             .flatten();
-        let notification = notification(
+        // Where the artwork may be a file, best first: the `image-path`
+        // hint, then the icon the sender named.
+        let locations: Vec<String> = hints::parse_icon_hint(&hints, "image-path")
+            .into_iter()
+            .chain(
+                Some(app_icon.trim())
+                    .filter(|icon| !icon.is_empty())
+                    .map(ToOwned::to_owned),
+            )
+            .collect();
+        let mut notification = notification(
             id,
             Request {
                 app_name,
@@ -164,6 +197,16 @@ impl Interface {
             caller,
             foreign,
         );
+        if notification.image_data.is_none() && !locations.is_empty() {
+            notification.image_data = tokio::task::spawn_blocking(move || {
+                locations
+                    .iter()
+                    .find_map(|location| crate::artwork::from_location(location))
+            })
+            .await
+            .ok()
+            .flatten();
+        }
         tracing::debug!(
             target: "notifications",
             id,
@@ -186,6 +229,62 @@ impl Interface {
         Ok(())
     }
 
+    /// The owner of what the sender schedules: only an app the session
+    /// launched (not one only its sandbox names) keeps deadlines here.
+    async fn schedule_owner(
+        &self,
+        header: &Header<'_>,
+        connection: &Connection,
+    ) -> fdo::Result<Owner> {
+        let sender = header.sender().map(zbus::names::UniqueName::as_str);
+        match self.attribute(connection, sender).await {
+            Attribution {
+                caller: Some(caller),
+                foreign: false,
+            } => Ok(Owner::of(&caller)),
+            _ => Err(fdo::Error::AccessDenied(
+                "scheduled notifications need an app the session launched".into(),
+            )),
+        }
+    }
+
+    /// Replace the priority contacts, for the verified Contacts app only.
+    async fn replace_priority_contacts(
+        &self,
+        header: &Header<'_>,
+        connection: &Connection,
+        contacts: Vec<(String, String, Vec<String>)>,
+    ) -> fdo::Result<u32> {
+        let sender = header.sender().map(zbus::names::UniqueName::as_str);
+        let attribution = self.attribute(connection, sender).await;
+        if attribution.foreign
+            || attribution
+                .caller
+                .as_ref()
+                .map(|caller| caller.app_id.as_str())
+                != Some(crate::priority::CONTACTS_APP)
+        {
+            return Err(fdo::Error::AccessDenied(
+                "only the verified Contacts app may replace priority contacts".into(),
+            ));
+        }
+        let contacts: Vec<ContactProjection> = contacts
+            .into_iter()
+            .map(|(id, name, endpoints)| ContactProjection {
+                id,
+                name,
+                endpoints,
+            })
+            .collect();
+        let count = self
+            .notifications
+            .priority_contacts()
+            .replace_verified(&contacts)
+            .map_err(fdo::Error::Failed)?;
+        self.notifications.changed();
+        Ok(u32::try_from(count).unwrap_or(u32::MAX))
+    }
+
     /// Route one method call.
     fn dispatch<'call>(
         &'call self,
@@ -201,6 +300,50 @@ impl Interface {
             "CloseNotification" => reply_to(connection, message, async move {
                 let id: u32 = message.body().deserialize()?;
                 self.close_notification(&message.header(), id)
+            }),
+            "XTiloReplacePriorityContacts" => reply_to(connection, message, async move {
+                let contacts: Vec<(String, String, Vec<String>)> = message.body().deserialize()?;
+                self.replace_priority_contacts(&message.header(), connection, contacts)
+                    .await
+            }),
+            "XTiloScheduleNotification" => reply_to(connection, message, async move {
+                let args: scheduled::ScheduleArgs = message.body().deserialize()?;
+                let owner = self.schedule_owner(&message.header(), connection).await?;
+                let request = ScheduleRequest::from_wire(args).map_err(fdo::Error::InvalidArgs)?;
+                self.notifications
+                    .schedules()
+                    .schedule(&owner, request)
+                    .map_err(fdo::Error::Failed)?;
+                self.notifications.changed();
+                Ok(())
+            }),
+            "XTiloScheduledNotifications" => reply_to(connection, message, async move {
+                let owner = self.schedule_owner(&message.header(), connection).await?;
+                // What is due now is delivered first, so the answer is
+                // what is still to come.
+                self.notifications.deliver_due(&chrono::Local::now());
+                self.notifications
+                    .schedules()
+                    .pending(&owner)
+                    .map_err(fdo::Error::Failed)
+            }),
+            "XTiloScheduledAlarms" => reply_to(connection, message, async move {
+                let owner = self.schedule_owner(&message.header(), connection).await?;
+                self.notifications.deliver_due(&chrono::Local::now());
+                self.notifications
+                    .schedules()
+                    .alarm_states(&owner)
+                    .map_err(fdo::Error::Failed)
+            }),
+            "XTiloCancelScheduledNotification" => reply_to(connection, message, async move {
+                let tag: String = message.body().deserialize()?;
+                let owner = self.schedule_owner(&message.header(), connection).await?;
+                self.notifications
+                    .schedules()
+                    .cancel(&owner, &tag)
+                    .map_err(fdo::Error::Failed)?;
+                self.notifications.changed();
+                Ok(())
             }),
             "GetCapabilities" => reply_to(connection, message, async move {
                 Ok(CAPABILITIES.map(ToOwned::to_owned).to_vec())
@@ -371,6 +514,9 @@ fn notification(id: u32, request: Request, caller: Option<Caller>, foreign: bool
         suppress_sound: hints::parse_suppress_sound(&hints),
         incoming_call: hints::parse_incoming_call(&hints),
         machine_wide: false,
+        priority_contact: false,
+        scheduled: None,
+        transient: false,
     }
 }
 
@@ -456,6 +602,7 @@ pub async fn serve_on(
     let (signals, receiver) = mpsc::unbounded_channel();
     notifications.attach(signals);
     tasks.push(tokio::spawn(emit(connection.clone(), receiver)));
+    tasks.push(tokio::spawn(deliver(notifications.clone())));
     Ok(Server {
         connection,
         notifications,
@@ -476,6 +623,30 @@ pub async fn serve(
     let server = serve_on(connection, notifications, callers).await?;
     server.connection.request_name(BUS_NAME).await?;
     Ok(server)
+}
+
+/// Deliver each deadline as it falls due, until the server goes. The wall
+/// clock is read again at least every half minute, so a suspend, a clock
+/// correction or a time zone change is caught up on; with nothing
+/// scheduled it waits for a deadline to be added.
+async fn deliver(notifications: Notifications) {
+    loop {
+        let next = notifications.deliver_due(&chrono::Local::now());
+        let changed = notifications.schedules().changed();
+        match next {
+            Some(next) => {
+                let millis = next
+                    .saturating_sub(tilo_clock::unix_now_ms_i64())
+                    .clamp(1000, 30_000);
+                let delay = std::time::Duration::from_millis(u64::try_from(millis).unwrap_or(1000));
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = changed => {}
+                }
+            }
+            None => changed.await,
+        }
+    }
 }
 
 /// Send each signal the handle queues, in order, until the server goes.

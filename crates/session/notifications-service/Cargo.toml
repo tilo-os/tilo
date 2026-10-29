@@ -11,19 +11,36 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-service = { path = "../service" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# Alarms' local wall-clock times, as apps hand them over.
+tilo-notify = { version = "0.1.0", path = "../../platform/tilo-notify" }
+# The deadlines and priority contacts are kept privately, written atomically.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
+blake3.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
+getrandom.workspace = true
+hex.workspace = true
+# A notification's own artwork, decoded into pixels.
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+libc.workspace = true
+resvg = { version = "0.47", default-features = false }
+url.workspace = true
 # The installed Flatpaks a sender's sandbox metadata is checked against.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 # Ends an ongoing notification when its sender leaves the bus.
 futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing.workspace = true
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "time"] }
 zbus = { workspace = true, features = ["p2p", "tokio"] }

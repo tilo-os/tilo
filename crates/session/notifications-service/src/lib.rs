@@ -18,6 +18,12 @@
 //! sandboxed sender, by its Flatpak runtime metadata
 //! ([`verified_flatpak_app_id`]); nothing the sender says about itself is
 //! believed.
+//!
+//! The daemon also keeps what outlives a notification: the deadlines apps
+//! hand it to deliver while they are not running ([`scheduled`]), and the
+//! person's priority contacts, whose messages may break through focus and
+//! Do Not Disturb ([`priority`]). Both are published as resources with
+//! their actions and kept in the person's private state.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -26,17 +32,25 @@ use std::sync::{Arc, Mutex};
 use tilo_lock::MutexRecover as _;
 use tokio::sync::mpsc;
 
+pub mod artwork;
 mod dbus;
 mod flatpak;
 mod hints;
+pub mod priority;
+pub mod scheduled;
 mod service;
 
 pub use dbus::{Server, serve, serve_on};
 pub use flatpak::verified_flatpak_app_id;
 pub use hints::ImageData;
+pub use priority::{ContactProjection, PriorityContacts};
+pub use scheduled::{Occurrence, ScheduleRequest, Schedules};
 pub use service::{
     NOTIFICATION_KIND, NOTIFICATIONS_KIND, NOTIFICATIONS_RESOURCE, NotificationEffect,
-    notification_resource,
+    PRIORITY_CONTACT_KIND, PRIORITY_CONTACTS_KIND, PRIORITY_CONTACTS_RESOURCE,
+    PriorityContactEffect, PriorityContactsEffect, SCHEDULE_KIND, SCHEDULES_KIND,
+    SCHEDULES_RESOURCE, ScheduleEffect, SchedulesEffect, notification_resource,
+    priority_contact_resource, schedule_resource,
 };
 
 /// Bus name the freedesktop notification specification reserves for the
@@ -111,6 +125,10 @@ impl Callers for NoCallers {
 }
 
 /// One notification an app sent.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact the sender or the daemon states on its own"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Notification {
     /// Its id: freshly allocated, or the one the sender replaces. A
@@ -165,6 +183,18 @@ pub struct Notification {
     /// Says something about the whole machine: shown on every display.
     /// Never from the wire; only a producer inside the session sets it.
     pub machine_wide: bool,
+    /// The person it is from ([`Self::contact_endpoint`]) is one of their
+    /// priority contacts, whose messages may break through focus and Do
+    /// Not Disturb. Never from the wire: the daemon matches the endpoint
+    /// against [`PriorityContacts`].
+    pub priority_contact: bool,
+    /// The deadline it rings for, when the daemon's scheduler delivered it
+    /// ([`Schedules`]). Never from the wire.
+    pub scheduled: Option<Occurrence>,
+    /// Gone once its banner leaves rather than kept in the notification
+    /// centre: the sender asked for it (the portal's `transient` display
+    /// hint).
+    pub transient: bool,
 }
 
 impl Notification {
@@ -191,6 +221,9 @@ impl Notification {
             suppress_sound: false,
             incoming_call: false,
             machine_wide: false,
+            priority_contact: false,
+            scheduled: None,
+            transient: false,
         }
     }
 
@@ -217,6 +250,20 @@ pub enum Arrival {
     Close(u32),
 }
 
+/// What the person did with a notification, as [`Notifications::on_taken`]
+/// tells a producer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taken<'a> {
+    /// They invoked the action `key`, with the token that lets the app
+    /// bring its window forward when the session minted one.
+    Action {
+        key: &'a str,
+        activation_token: Option<&'a str>,
+    },
+    /// They replied `text` inline.
+    Reply { text: &'a str },
+}
+
 /// A signal on its way to the apps.
 #[derive(Debug)]
 enum Signal {
@@ -230,7 +277,7 @@ enum Signal {
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
-type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync>;
+type Tap = Arc<dyn Fn(u32, Taken<'_>) + Send + Sync>;
 type Mint = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 #[derive(Default)]
@@ -247,7 +294,7 @@ struct State {
     /// Where signals go while the daemon is served.
     signals: Option<mpsc::UnboundedSender<Signal>>,
     wake: Option<Wake>,
-    action_taps: Vec<ActionTap>,
+    taps: Vec<Tap>,
     mint: Option<Mint>,
 }
 
@@ -262,6 +309,10 @@ pub struct Notifications {
     /// The generation this handle's [`tilo_service::Service::poll`] last
     /// saw; each clone polls for itself.
     seen: u64,
+    /// The person's priority contacts, matched against each arrival.
+    priority: PriorityContacts,
+    /// The deadlines apps handed over, delivered as notifications.
+    schedules: Schedules,
 }
 
 impl Default for Notifications {
@@ -282,13 +333,68 @@ impl std::fmt::Debug for Notifications {
 }
 
 impl Notifications {
+    /// Notifications keeping their priority contacts and deadlines in
+    /// memory only.
     #[must_use]
     pub fn new() -> Self {
+        Self::with(PriorityContacts::in_memory(), Schedules::in_memory())
+    }
+
+    /// Notifications keeping their priority contacts and deadlines where the
+    /// person's private state is: what the session runs.
+    #[must_use]
+    pub fn for_session() -> Self {
+        Self::with(PriorityContacts::open_default(), Schedules::open_default())
+    }
+
+    /// Notifications over `priority` and `schedules`.
+    #[must_use]
+    pub fn with(priority: PriorityContacts, schedules: Schedules) -> Self {
         Self {
             state: Arc::default(),
             next_id: Arc::new(AtomicU32::new(1)),
             seen: 0,
+            priority,
+            schedules,
         }
+    }
+
+    /// The person's priority contacts.
+    #[must_use]
+    pub const fn priority_contacts(&self) -> &PriorityContacts {
+        &self.priority
+    }
+
+    /// The deadlines apps handed over.
+    #[must_use]
+    pub const fn schedules(&self) -> &Schedules {
+        &self.schedules
+    }
+
+    /// Something published changed: the next poll reports it.
+    pub(crate) fn changed(&self) {
+        let mut state = self.state.lock_recover();
+        state.generation = state.generation.wrapping_add(1);
+    }
+
+    /// Deliver every deadline due at `now` as a notification. When the next
+    /// one falls due, if any.
+    pub fn deliver_due<Tz: chrono::TimeZone>(&self, now: &chrono::DateTime<Tz>) -> Option<i64> {
+        match self.schedules.take_due(now, || self.alloc_id()) {
+            Ok(due) => {
+                let delivered = !due.is_empty();
+                for notification in due {
+                    self.push(notification);
+                }
+                if delivered {
+                    self.changed();
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: "notifications", %error, "scheduled delivery failed");
+            }
+        }
+        self.schedules.next_at_ms()
     }
 
     /// Call `wake` whenever something arrives to drain, from whichever
@@ -297,11 +403,11 @@ impl Notifications {
         self.state.lock_recover().wake = Some(Arc::new(wake));
     }
 
-    /// Also tell `tap` of every action invoked on a notification, as it is
-    /// sent: for a producer of its own (the notification portal) that
-    /// routes its notifications' actions itself.
-    pub fn on_action(&self, tap: impl Fn(u32, &str) + Send + Sync + 'static) {
-        self.state.lock_recover().action_taps.push(Arc::new(tap));
+    /// Also tell `tap` of every action invoked on a notification and every
+    /// inline reply, as it is sent: for a producer of its own (the
+    /// notification portal) that answers its notifications itself.
+    pub fn on_taken(&self, tap: impl Fn(u32, Taken<'_>) + Send + Sync + 'static) {
+        self.state.lock_recover().taps.push(Arc::new(tap));
     }
 
     /// Mint an activation token for each action invoked through a
@@ -330,7 +436,11 @@ impl Notifications {
         self.arrive(notification, None);
     }
 
-    fn arrive(&self, notification: Notification, ongoing_owner: Option<String>) {
+    fn arrive(&self, mut notification: Notification, ongoing_owner: Option<String>) {
+        notification.priority_contact = notification
+            .contact_endpoint
+            .as_deref()
+            .is_some_and(|endpoint| self.priority.matches(endpoint));
         let wake = {
             let mut state = self.state.lock_recover();
             state.ongoing_owners.remove(&notification.id);
@@ -408,10 +518,19 @@ impl Notifications {
     pub fn action_invoked(&self, id: u32, key: &str, activation_token: Option<String>) {
         let (taps, signals) = {
             let state = self.state.lock_recover();
-            (state.action_taps.clone(), state.signals.clone())
+            (state.taps.clone(), state.signals.clone())
         };
         for tap in &taps {
-            tap(id, key);
+            tap(
+                id,
+                Taken::Action {
+                    key,
+                    activation_token: activation_token.as_deref(),
+                },
+            );
+        }
+        if self.schedules.alarm_action(id, key) {
+            self.changed();
         }
         if let Some(signals) = signals {
             let _ = signals.send(Signal::Action {
@@ -426,10 +545,14 @@ impl Notifications {
     /// `NotificationReplied`. Closing it is the caller's [`Self::closed`]
     /// after this.
     pub fn replied(&self, id: u32, text: &str) {
-        send(
-            &self.state.lock_recover(),
-            Signal::Replied(id, text.to_owned()),
-        );
+        let taps = {
+            let state = self.state.lock_recover();
+            send(&state, Signal::Replied(id, text.to_owned()));
+            state.taps.clone()
+        };
+        for tap in &taps {
+            tap(id, Taken::Reply { text });
+        }
     }
 
     /// Close notification `id` for its app or producer: the app is told
