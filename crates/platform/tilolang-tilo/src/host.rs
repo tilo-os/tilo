@@ -76,12 +76,12 @@ pub(crate) struct HostInner {
     packages: RefCell<Vec<Package>>,
     /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
-    /// The program sessions of the callers that run programs on the door, by caller and
-    /// session name: the `let`s each keeps between programs.
-    pub(crate) programs: RefCell<HashMap<String, tilolang_runtime::program::Session>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
+    /// The resource the last action planned returned, whoever invoked it, with the action:
+    /// what its invocation answers.
+    returned: RefCell<Option<(String, ResourceRef)>>,
 }
 
 thread_local! {
@@ -320,6 +320,16 @@ impl HostInner {
         planned
     }
 
+    /// What `action` returned, for its invocation's answer.
+    fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
+        *self.returned.borrow_mut() = match outcome {
+            InvokeOutcome::Done(Value::Ref(made)) => {
+                Some((action.to_owned(), ResourceRef::clone(&made.target)))
+            }
+            _ => None,
+        };
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
@@ -381,6 +391,7 @@ impl HostInner {
             .runtime
             .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
+        self.returned_by(request.action_id, &outcome);
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
                 if request.caller.is_none_or(|caller| !caller.agent) =>
@@ -509,8 +520,8 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
-            programs: RefCell::default(),
             produced: RefCell::default(),
+            returned: RefCell::default(),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -626,6 +637,17 @@ impl Host {
         let mut produced = self.inner.produced.borrow_mut();
         match produced.as_ref() {
             Some((made_by, _)) if made_by == action => produced.take().map(|(_, made)| made),
+            _ => None,
+        }
+    }
+
+    /// The resource `action` returned when it was last planned here, for whoever invoked it,
+    /// once: what its invocation answers.
+    #[must_use]
+    pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
+        let mut returned = self.inner.returned.borrow_mut();
+        match returned.as_ref() {
+            Some((made_by, _)) if made_by == action => returned.take().map(|(_, made)| made),
             _ => None,
         }
     }
@@ -792,11 +814,12 @@ impl Host {
     /// Run each loaded package's migrations (`migration action`) on the resources an earlier
     /// version of it wrote: once on each resource of the migration's subject type that holds
     /// something in a field the type now keeps `(previously)` (or, for a type without such a
-    /// field, that the migration has not run on), as an ordinary action of the viewer's, which
-    /// records in the same change that it ran. Returns how many ran. A migration that is
+    /// field, that the migration has not run on), as an action of the package version
+    /// ([`crate::authority::migration_principal`]), which records in the same change that it
+    /// ran. Only the room's origin calls it (`Instance::set_origin`). Returns how many ran. A migration that is
     /// refused or fails leaves its resource as it was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
-        let mut ran = 0;
+        let mut ran: usize = 0;
         for package in self.packages() {
             for migration in package.meta.migrations() {
                 let Some(ty) = migration
@@ -826,13 +849,19 @@ impl Host {
                     self.inner
                         .store
                         .set_migrating(Some((migration.id.clone(), doc.clone())));
+                    // The package updating its own records, not the person at the window: the
+                    // change is the package version's, under the platform's migration principal.
+                    let by = crate::authority::migration_principal(
+                        &package.meta.app,
+                        &package.meta.module_hash,
+                    );
                     let outcome = self
                         .inner
                         .runtime
-                        .invoke_action(&self.inner.viewer, (migration.id.as_str(), vec![subject]));
+                        .invoke_action(&by, (migration.id.as_str(), vec![subject]));
                     self.inner.store.set_migrating(None);
                     match outcome {
-                        Ok(InvokeOutcome::Done(_)) => ran += 1,
+                        Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
                         other => tracing::warn!(
                             app = package.meta.app,
                             migration = migration.name,

@@ -26,6 +26,7 @@ pub mod instance;
 pub mod items;
 pub mod members;
 pub mod meta;
+pub mod names;
 pub mod origin;
 pub mod publish;
 pub mod reading;
@@ -36,6 +37,7 @@ pub mod search;
 pub mod sink;
 pub mod store;
 pub mod surface;
+pub mod task;
 pub mod upgrade;
 
 pub use action::{Authorship, DynAction, DynEdit, register_actions};

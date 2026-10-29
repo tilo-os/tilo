@@ -447,15 +447,32 @@ fn apply_one(
                 doc.put(&held, "settled", outcome.as_str())?;
             }
         }
-        DynEdit::Migrated { id, migration } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
-            };
-            let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
-            doc.put(&done, migration.as_str(), true)?;
-        }
+        DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::In { .. } => {}
     }
+    Ok(())
+}
+
+/// Record in the resource `id` (in the app's records map `app`) that the migration `migration`
+/// ran on it.
+fn mark_migrated(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    migration: &str,
+) -> Result<(), ActionError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+    };
+    // `require not migrated`: where actions are applied in order (the origin), a second run of
+    // the same migration on the resource is refused, not applied twice.
+    if migrated(doc, &obj, migration) {
+        return Err(ActionError::Refused(format!(
+            "the migration `{migration}` already ran on `{id}`"
+        )));
+    }
+    let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+    doc.put(&done, migration, true)?;
     Ok(())
 }
 
@@ -718,7 +735,8 @@ impl DynAction {
                     .and_then(Json::as_str)
                     .and_then(crate::schema::lookup)?;
                 let title = own_text(schema, |field| {
-                    record.get(field).and_then(Json::as_str).map(str::to_owned)
+                    self.written_text(id, None, field)
+                        .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
                 return Some((id.clone(), schema, title));
             }
@@ -730,7 +748,8 @@ impl DynAction {
                     .and_then(Json::as_str)
                     .and_then(crate::schema::lookup)?;
                 let title = own_text(schema, |field| {
-                    record.get(field).and_then(Json::as_str).map(str::to_owned)
+                    self.written_text(id, Some(item), field)
+                        .or_else(|| record.get(field).and_then(Json::as_str).map(str::to_owned))
                 });
                 return Some((format!("{id}/{item}"), schema, title));
             }
@@ -769,6 +788,41 @@ impl DynAction {
             })
         });
         Some((at.id_string(), located.schema, title))
+    }
+}
+
+impl DynAction {
+    /// The text this action writes into the `field` of the resource `id` (of its item `item`),
+    /// the last write winning: what a resource it makes is titled once it applies, since a new
+    /// item is stored empty and its fields are written after it.
+    fn written_text(&self, id: &str, item: Option<&str>, field: &str) -> Option<String> {
+        self.edits.iter().rev().find_map(|edit| {
+            let DynEdit::Edit { id: edited, edit } = edit else {
+                return None;
+            };
+            if edited != id {
+                return None;
+            }
+            let (Segment::Field(written), holder) = edit.path().split_last()? else {
+                return None;
+            };
+            if written != field {
+                return None;
+            }
+            let held = match holder.last() {
+                Some(Segment::Item(held)) => Some(held.as_str()),
+                Some(_) => return None,
+                None => None,
+            };
+            if held != item {
+                return None;
+            }
+            match edit.op() {
+                tilo_resource::EditOp::Replace { text } => Some(text.clone()),
+                tilo_resource::EditOp::Set { value } => value.as_str().map(str::to_owned),
+                _ => None,
+            }
+        })
     }
 }
 

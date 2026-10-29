@@ -25,8 +25,7 @@ use ui::tokens::{MotionSource, Rhythm, TextRole};
 use ui::widget::arrange::{Fit, Row, Slot, Stack};
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    Absent, AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavPane, NavShell,
-    Text, Widget,
+    Absent, Button, ButtonRole, DescribedList, Element, NavPane, NavShell, Text, Widget,
 };
 
 use crate::i18n::{t, t_args};
@@ -45,6 +44,25 @@ struct View {
     target: ResourceRef,
     /// Its tree, without the rows of its virtual lists.
     tree: UiNode,
+}
+
+/// What the person typed after a press the app has not run yet: held, not sent, until it did,
+/// then sent to the field focused then (the press may have opened another note, whose first
+/// field takes the keyboard).
+struct Typed {
+    /// How many presses the window had sent when the person typed it: it waits until the app
+    /// ran them.
+    after: u64,
+    /// The field, by key in the composed tree: none while no field had the keyboard (the press
+    /// took it).
+    key: Option<String>,
+    /// What it showed when the person started typing.
+    base: String,
+    /// What it shows now, with their typing.
+    now: String,
+    /// What the app sent for the field since (it showed something else meanwhile, such as the
+    /// note the press opened).
+    sent: Option<String>,
 }
 
 fn slot(element: Element, fit: Fit) -> Slot {
@@ -97,6 +115,15 @@ pub struct AppWindow {
     composing: bool,
     /// How often the app asked for the window to come forward since the window last did.
     activations: u32,
+    /// How many presses the window sent the app (`ToApp::Fire`), and how many of them the app
+    /// said it ran (`ToUi::Took`).
+    fired: u64,
+    took: u64,
+    /// What the person typed after presses the app has not run yet, oldest first.
+    typed: std::collections::VecDeque<Typed>,
+    /// The control to take the keyboard once the window's tree is laid out, by key in the
+    /// composed tree ([`Widget::take_focus_request`]).
+    focus_request: Option<String>,
 }
 
 impl AppWindow {
@@ -153,6 +180,10 @@ impl AppWindow {
             focus: None,
             composing: false,
             activations: 0,
+            fired: 0,
+            took: 0,
+            typed: std::collections::VecDeque::new(),
+            focus_request: None,
         }
     }
 
@@ -227,6 +258,8 @@ impl AppWindow {
     fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
         let mut content = false;
         let mut front = None;
+        // A view a person's press opened: its first field takes the keyboard.
+        let mut opened_for_input = false;
         for message in messages {
             if self.refuses_while_failed(&message) {
                 continue;
@@ -251,6 +284,7 @@ impl AppWindow {
                     }
                     self.track_rows();
                     content = true;
+                    opened_for_input |= lane == Lane::Detail && brought == Some(wire::Front::Input);
                     front = brought.or(front);
                 }
                 ToUi::Close => {
@@ -305,12 +339,19 @@ impl AppWindow {
                 }
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
+                ToUi::Took { fired } => {
+                    self.took = self.took.max(fired);
+                    // What was typed after the presses it ran goes to what they opened, before
+                    // what a later press opened (further on in this batch) takes its place.
+                    self.send_typed_into(std::mem::take(&mut opened_for_input));
+                }
             }
         }
         self.check_budget()?;
         if content {
             self.compose();
         }
+        self.send_typed_into(opened_for_input);
         if let Some(front) = front {
             self.show_content(match front {
                 wire::Front::Input => by_input(),
@@ -413,6 +454,17 @@ impl AppWindow {
     /// person typed into it since what the app took (`acked`).
     fn take_bound(&mut self, lane: Lane, key: &str, value: Value, acked: u64) {
         let key = composed_key(lane, key);
+        // The field keeps what the person typed into it while a press was running.
+        if let Some(typed) = self
+            .typed
+            .iter_mut()
+            .find(|typed| typed.key.as_deref() == Some(key.as_str()))
+        {
+            if let Value::Text(text) = &value {
+                typed.sent = Some(text.clone());
+            }
+            return;
+        }
         if self.seqs.get(&key).is_some_and(|sent| *sent > acked) {
             return;
         }
@@ -606,11 +658,7 @@ impl AppWindow {
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
             self.out.push(ToApp::Answer(answer));
         }
-        let mut events: Vec<UiEvent> = std::mem::take(&mut *self.events.borrow_mut());
-        events.extend(self.reconciler.borrow().adapter().take_events());
-        for event in events {
-            self.event(event);
-        }
+        self.take_events();
         if self.shell().and_then(NavShell::take_toast_action).is_some() {
             self.out.push(ToApp::Undo);
         }
@@ -642,6 +690,16 @@ impl AppWindow {
                 }
             }
             Err(error) => tracing::error!(%error, "a frame's batch did not encode"),
+        }
+    }
+
+    /// What the person did with the window's controls since it was last taken, for the next
+    /// batch.
+    fn take_events(&mut self) {
+        let mut events: Vec<UiEvent> = std::mem::take(&mut *self.events.borrow_mut());
+        events.extend(self.reconciler.borrow().adapter().take_events());
+        for event in events {
+            self.event(event);
         }
     }
 
@@ -678,6 +736,9 @@ impl AppWindow {
             self.out.push(ToApp::Back);
             return;
         }
+        if matches!(event, UiEvent::Press(_) | UiEvent::Fire(..)) {
+            self.fired = self.fired.saturating_add(1);
+        }
         let message = match event {
             UiEvent::Press(key) => {
                 let (lane, key) = lane_of(&key);
@@ -697,18 +758,37 @@ impl AppWindow {
                     value,
                 }
             }
-            UiEvent::Edit(composed, text) => self.edit(&composed, text),
+            UiEvent::Edit(composed, text) => match self.edit(&composed, text) {
+                Some(message) => message,
+                None => return,
+            },
             UiEvent::EditRich(composed, rich) => {
                 // What the field shows is what the person typed, until the app takes it.
                 self.bound
                     .borrow_mut()
                     .insert(composed.clone(), Value::Rich(rich.clone()));
                 let (lane, key) = lane_of(&composed);
-                ToApp::EditRich { lane, key, rich }
+                let Some(target) = self.target(lane) else {
+                    return;
+                };
+                ToApp::EditRich {
+                    lane,
+                    target,
+                    key,
+                    rich,
+                }
             }
             UiEvent::Toggle(key, checked) => {
                 let (lane, key) = lane_of(&key);
-                ToApp::Toggle { lane, key, checked }
+                let Some(target) = self.target(lane) else {
+                    return;
+                };
+                ToApp::Toggle {
+                    lane,
+                    target,
+                    key,
+                    checked,
+                }
             }
             UiEvent::Resolve(key, approve) => {
                 let (lane, key) = lane_of(&key);
@@ -722,7 +802,7 @@ impl AppWindow {
 
     /// The bound control `composed` now holds `text`: a splice of what it showed when it edits
     /// text, the new text when it edits another value (a number, a date).
-    fn edit(&mut self, composed: &str, text: String) -> ToApp {
+    fn edit(&mut self, composed: &str, text: String) -> Option<ToApp> {
         let (lane, key) = lane_of(composed);
         let edits_text = match self.bound.borrow().get(composed) {
             Some(Value::Text(_)) | None => true,
@@ -730,10 +810,193 @@ impl AppWindow {
             Some(_) => false,
         };
         if !edits_text {
-            return ToApp::Edit { lane, key, text };
+            let target = self.target(lane)?;
+            return Some(ToApp::Edit {
+                lane,
+                target,
+                key,
+                text,
+            });
         }
         let before = self.texts.get(composed).cloned().unwrap_or_default();
-        let (at, delete, insert) = splice_between(&before, &text);
+        // Typing after a press the app has not run yet waits for it: the press may open
+        // something else into the field the person types into.
+        if self.fired > self.took {
+            let fired = self.fired;
+            // The person moved on to another field meanwhile: what they typed before stays
+            // where they typed it.
+            if self.typed.back().is_some_and(|typed| {
+                typed.after == fired
+                    && typed.key.is_some()
+                    && typed.key.as_deref() != Some(composed)
+            }) && let Some(typed) = self.typed.pop_back()
+            {
+                self.send_typed_now(typed);
+            }
+            if !self
+                .typed
+                .back()
+                .is_some_and(|typed| typed.after == fired && typed.key.as_deref() == Some(composed))
+            {
+                self.typed.push_back(Typed {
+                    after: fired,
+                    key: Some(composed.to_owned()),
+                    base: before,
+                    now: String::new(),
+                    sent: None,
+                });
+            }
+            if let Some(typed) = self.typed.back_mut() {
+                typed.now.clone_from(&text);
+            }
+            self.bound
+                .borrow_mut()
+                .insert(composed.to_owned(), Value::Text(text.clone()));
+            self.texts.insert(composed.to_owned(), text);
+            return None;
+        }
+        self.splice(composed, &before, text)
+    }
+
+    /// The view a person's press opened takes the keyboard in its first text field, and what
+    /// they typed while the press ran goes there, unless they typed it into a field of the root
+    /// view, which the open left in place.
+    fn focus_opened(&mut self) {
+        fn first_field(node: &UiNode) -> Option<&UiNode> {
+            if node.kind == crate::adapter::kind("TextInput") && node.binding.is_some() {
+                return Some(node);
+            }
+            node.children.iter().find_map(first_field)
+        }
+        let Some(field) = self
+            .detail
+            .as_ref()
+            .and_then(|detail| first_field(&detail.tree))
+            .map(|field| composed_key(Lane::Detail, &field.key))
+        else {
+            return;
+        };
+        // What was typed after the press the app just ran, not after a later one.
+        let took = self.took;
+        for typed in &mut self.typed {
+            if typed.after <= took
+                && typed
+                    .key
+                    .as_deref()
+                    .is_none_or(|key| key.starts_with(DETAIL) && key != field)
+            {
+                typed.sent = Some(self.texts.get(&field).cloned().unwrap_or_default());
+                typed.key = Some(field.clone());
+            }
+        }
+        self.focus_request = Some(field);
+    }
+
+    /// Hold `event` when it types text while a press runs and no field has the keyboard (the
+    /// press took it): it goes to the field the press leaves the keyboard in. Whether it was
+    /// held.
+    fn hold_typing(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
+        fn types_text(widget: &dyn Widget) -> bool {
+            (widget.is_focused() && widget.ime_content().is_some())
+                || widget.children().into_iter().any(types_text)
+        }
+        let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let Some(text) = key
+            .text
+            .as_deref()
+            .filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
+        else {
+            return false;
+        };
+        // A press the window's controls reported since the last event counts: the key may
+        // follow it in the same frame.
+        self.take_events();
+        if self.fired <= self.took
+            || key.state != ui::winit::event::ElementState::Pressed
+            || types_text(self.body.as_ref())
+        {
+            return false;
+        }
+        let fired = self.fired;
+        match self
+            .typed
+            .back_mut()
+            .filter(|typed| typed.after == fired && typed.key.is_none())
+        {
+            Some(typed) => typed.now.push_str(text),
+            None => self.typed.push_back(Typed {
+                after: fired,
+                key: None,
+                base: String::new(),
+                now: text.to_owned(),
+                sent: None,
+            }),
+        }
+        true
+    }
+
+    /// Send what the person typed after each press the app ran since, into the view a press
+    /// opened for them when `opened` (its first field takes the keyboard).
+    fn send_typed_into(&mut self, opened: bool) {
+        if opened {
+            self.focus_opened();
+        }
+        self.send_typed();
+    }
+
+    /// Send what the person typed after each press the app ran since.
+    fn send_typed(&mut self) {
+        let mut sent = false;
+        while self
+            .typed
+            .front()
+            .is_some_and(|typed| typed.after <= self.took)
+        {
+            if let Some(typed) = self.typed.pop_front() {
+                self.send_typed_now(typed);
+                sent = true;
+            }
+        }
+        if sent {
+            self.refresh_bound();
+        }
+    }
+
+    /// Send what the person typed while a press was running into the field it went into,
+    /// against what the field shows now: what they typed keeps its place from the field's end.
+    /// Typed while no field had the keyboard, and no field took it since: nowhere to go.
+    fn send_typed_now(&mut self, typed: Typed) {
+        let Some(key) = typed.key else {
+            return;
+        };
+        let shown = typed.sent.clone().unwrap_or_else(|| typed.base.clone());
+        let (at, delete, insert) = splice_between(&typed.base, &typed.now);
+        let after = typed.base.len().saturating_sub(at.saturating_add(delete));
+        let mut at = shown.len().saturating_sub(after.saturating_add(delete));
+        while !shown.is_char_boundary(at) {
+            at = at.saturating_sub(1);
+        }
+        let mut end = at.saturating_add(delete).min(shown.len());
+        while !shown.is_char_boundary(end) {
+            end = end.saturating_add(1);
+        }
+        let mut text = shown.clone();
+        text.replace_range(at..end, &insert);
+        if let Some(message) = self.splice(&key, &shown, text) {
+            self.out.push(message);
+        }
+    }
+
+    /// The splice of the bound text control `composed` from `before` to `text`, which it now
+    /// shows.
+    fn splice(&mut self, composed: &str, before: &str, text: String) -> Option<ToApp> {
+        let (lane, key) = lane_of(composed);
+        // Of the resource the lane shows now: the app applies it there, whatever it shows by
+        // the time it takes it.
+        let target = self.target(lane)?;
+        let (at, delete, insert) = splice_between(before, &text);
         let seq = self.seqs.entry(composed.to_owned()).or_default();
         *seq = seq.saturating_add(1);
         let seq = *seq;
@@ -743,14 +1006,24 @@ impl AppWindow {
             .borrow_mut()
             .insert(composed.to_owned(), Value::Text(text.clone()));
         self.texts.insert(composed.to_owned(), text);
-        ToApp::Splice {
+        Some(ToApp::Splice {
             lane,
+            target,
             key,
             seq,
             at: u32::try_from(at).unwrap_or(u32::MAX),
             delete: u32::try_from(delete).unwrap_or(u32::MAX),
             insert,
+        })
+    }
+
+    /// The resource the view of `lane` shows.
+    fn target(&self, lane: Lane) -> Option<ResourceRef> {
+        match lane {
+            Lane::Root => self.root.as_ref(),
+            Lane::Detail => self.detail.as_ref(),
         }
+        .map(|view| view.target.clone())
     }
 
     // ----- for embedders and tests ---------------------------------------------------------
@@ -819,6 +1092,12 @@ impl AppWindow {
     /// Answer the Ask bar, as the person does with its buttons.
     pub fn answer(&self, answer: Answer) {
         self.answers.borrow_mut().push(answer);
+    }
+
+    /// Tell the app `message` with the next batch: what the embedder knows that the app does
+    /// not, such as the names of the room's participants.
+    pub fn tell(&mut self, message: ToApp) {
+        self.out.push(message);
     }
 
     /// Report what a person did: an event of a control of the composed shell, by its key
@@ -952,25 +1231,22 @@ pub fn show_bound<S: std::hash::BuildHasher>(
     }
 }
 
-impl Widget for AppWindow {
+/// The window stands for its body in the layout and in every walk of the widgets (it adds no
+/// node of its own, so a walk that pairs widgets with layout nodes meets the body's children
+/// under it), taking the person's input and its own changes on the way.
+impl ui::widget::Decorator for AppWindow {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.body.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.body.as_mut()
+    }
+
     fn name(&self) -> &'static str {
         "TilolangWindow"
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.body.as_ref()]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![self.body.as_mut()]
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.body.sync(state, path);
-    }
-
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.body.update(state, path)
     }
 
     fn handle_event(
@@ -997,45 +1273,17 @@ impl Widget for AppWindow {
                 self.out.push(ToApp::Composing(composing));
             }
         }
+        if self.hold_typing(event) {
+            *ctx.handled = true;
+            return;
+        }
         self.body.handle_event(event, ctx);
     }
 
-    fn build_layout(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        self.body.build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(
-        &mut self,
-        tree: &ui::taffy::TaffyTree<()>,
-        node: ui::taffy::NodeId,
-        origin: ui::kurbo::Point,
-    ) {
-        self.body.apply_layout(tree, node, origin);
-    }
-
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        self.body.get_rect()
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        self.body.draw(scene, transform, text, theme, presence);
-    }
-
-    /// The window paints nothing of its own: what changed is what its body repaints.
-    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
-        self.body.collect_damage(regions);
+    fn take_focus_request(&mut self) -> Option<String> {
+        self.focus_request
+            .take()
+            .or_else(|| self.body.take_focus_request())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1087,6 +1335,14 @@ mod tests {
         out
     }
 
+    /// The note the page shows.
+    fn doc() -> ResourceRef {
+        ResourceRef {
+            id: "doc".to_owned(),
+            ty: "notes.Note".to_owned(),
+        }
+    }
+
     /// A page with one text field bound to a note's title.
     fn titled_page() -> Vec<ToUi> {
         let mut input = UiNode::empty("ui.TextInput", "title");
@@ -1099,10 +1355,7 @@ mod tests {
         vec![
             ToUi::Open {
                 lane: Lane::Root,
-                target: ResourceRef {
-                    id: "doc".to_owned(),
-                    ty: "notes.Note".to_owned(),
-                },
+                target: doc(),
                 tree: page,
                 front: None,
             },
@@ -1130,6 +1383,7 @@ mod tests {
             sent(&mut app),
             [ToApp::Splice {
                 lane: Lane::Root,
+                target: doc(),
                 key: "title".to_owned(),
                 seq: 1,
                 at: 2,
@@ -1171,6 +1425,60 @@ mod tests {
         );
         window.receive();
         assert_eq!(window.bound_value("title"), Some(Value::text("Q3 plans")));
+    }
+
+    #[test]
+    fn typing_after_a_press_goes_to_the_field_as_the_press_left_it_once_the_app_ran_it() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &titled_page());
+        window.receive();
+        // A press, and typing at once into the field focused: the typing waits for the press.
+        window.act(UiEvent::Press("new".to_owned()));
+        window.act(UiEvent::Edit("title".to_owned(), "Q3 x".to_owned()));
+        window.flush();
+        assert!(
+            matches!(&sent(&mut app)[..], [ToApp::Fire { key, .. }] if key == "new"),
+            "the press goes at once, the typing waits"
+        );
+        window.act(UiEvent::Edit("title".to_owned(), "Q3 xy".to_owned()));
+        window.flush();
+        assert!(sent(&mut app).is_empty(), "still waiting for the press");
+        // The press opened another note into the field, and the app says it ran it: what was
+        // typed goes to that note's title, at its end.
+        let mut opened = titled_page();
+        opened[1] = ToUi::Bound {
+            lane: Lane::Root,
+            key: "title".to_owned(),
+            value: Value::text("Untitled"),
+            acked: 0,
+        };
+        opened.push(ToUi::Took { fired: 1 });
+        send(&mut app, &opened);
+        window.receive();
+        window.flush();
+        assert_eq!(
+            sent(&mut app),
+            [ToApp::Splice {
+                lane: Lane::Root,
+                target: doc(),
+                key: "title".to_owned(),
+                seq: 1,
+                at: 8,
+                delete: 0,
+                insert: " xy".to_owned(),
+            }]
+        );
+        assert_eq!(
+            window.bound_value("title"),
+            Some(Value::text("Untitled xy"))
+        );
+        // From here on typing goes as it is typed.
+        window.act(UiEvent::Edit("title".to_owned(), "Untitled xyz".to_owned()));
+        window.flush();
+        assert!(
+            matches!(&sent(&mut app)[..], [ToApp::Splice { seq: 2, at: 11, insert, .. }] if insert == "z")
+        );
     }
 
     #[test]

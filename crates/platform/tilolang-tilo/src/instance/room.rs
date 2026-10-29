@@ -47,9 +47,6 @@ pub enum RoomError {
     /// The action could not be applied to the room record.
     #[error("the action was refused: {0}")]
     Refused(String),
-    /// The collab client did not take the change.
-    #[error("the room did not take the change")]
-    Unsent,
     /// The record could not be opened: no route, an unreadable copy, or a committed read that
     /// failed.
     #[error("the room record could not be opened: {0}")]
@@ -82,12 +79,21 @@ pub struct RoomRecord {
     manager: CollaborationManager,
     route: RouteSpec,
     person: String,
-    /// The heads of what the room was handed: a commit sends what follows them.
+    /// The heads of what the room was handed: a commit sends what follows them. They move only
+    /// once the collab client took the change; what it could not take yet (its queue full, the
+    /// route still connecting) stays in the record past them and goes with the next send.
     sent: Vec<ChangeHash>,
+    /// Why the record's changes past [`Self::sent`] stay on this device: the collab client
+    /// refused them for good (a change above its size limit). They are kept in the record and
+    /// its on-disk copy, never dropped.
+    unshared: Option<String>,
     /// The words its history verbs speak in.
     words: HostWords,
     /// The writer of the record's on-disk copy; `None` keeps it in memory only.
     writer: Option<DocWriter>,
+    /// Whether this device governs the room: the record's origin (convergence.md §1), whose
+    /// copy needs no committed read from another host.
+    governs: bool,
 }
 
 impl RoomRecord {
@@ -116,9 +122,19 @@ impl RoomRecord {
             route,
             person,
             sent,
+            unshared: None,
             words: HostWords::new("en-US"),
             writer,
+            governs: true,
         }
+    }
+
+    /// Whether this device governs the room, as the record's origin: a record another host
+    /// governs is read from it first ([`Self::open`]). What the origin alone does (a package's
+    /// migrations) runs where this holds.
+    #[must_use]
+    pub const fn governs(&self) -> bool {
+        self.governs
     }
 
     /// The record, its history verbs speaking `locale` (`en-US`, `de-DE`).
@@ -200,7 +216,9 @@ impl RoomRecord {
             Read::Here => NativeConstruction::enter(manager),
         }
         .map_err(RoomError::Open)?;
-        let opened = match native_initial::primary(&route.app_id, Some(&room)) {
+        let primary = native_initial::primary(&route.app_id, Some(&room));
+        let governs = primary.is_none();
+        let opened = match primary {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
             None => Ok(open_stored(store)),
         };
@@ -216,7 +234,9 @@ impl RoomRecord {
             .ok_or_else(|| RoomError::Open("the connection was not handed back".to_owned()))?;
         drop(construction);
         let person = person.into();
-        Ok(Self::holding(doc, Some(writer), manager, route, person))
+        let mut record = Self::holding(doc, Some(writer), manager, route, person);
+        record.governs = governs;
+        Ok(record)
     }
 
     /// The record as this replica holds it.
@@ -253,6 +273,20 @@ impl RoomRecord {
             })
     }
 
+    /// Whether the record holds changes the room was not handed yet: they go with the next
+    /// send ([`Self::share`]).
+    #[must_use]
+    pub fn unsent(&mut self) -> bool {
+        !heads_equal(&self.doc.get_heads(), &self.sent)
+    }
+
+    /// Why the record's changes stay on this device, when the collab client refused them for
+    /// good: they are kept, in the record and on disk, but no longer shared.
+    #[must_use]
+    pub fn unshared(&self) -> Option<&str> {
+        self.unshared.as_deref()
+    }
+
     /// Write what the record holds to its on-disk copy now, as a window does before it closes.
     pub fn flush(&mut self) {
         if let Some(writer) = &mut self.writer {
@@ -284,8 +318,7 @@ impl RoomRecord {
     /// instance is brought up to date. Whether there was one.
     ///
     /// # Errors
-    /// The undo was refused (somebody else changed what the step touched since), or the room
-    /// did not take the change.
+    /// The undo was refused: somebody else changed what the step touched since.
     pub fn undo(
         &mut self,
         instance: &mut Instance,
@@ -331,7 +364,7 @@ impl RoomRecord {
     /// is answered ([`verbs::result`]).
     ///
     /// # Errors
-    /// The verb was refused, said in the record's words, or the room did not take the change.
+    /// The verb was refused, said in the record's words.
     pub fn history(
         &mut self,
         instance: &mut Instance,
@@ -355,6 +388,9 @@ impl RoomRecord {
         self.apply_with(&action, encoded, context, invoker, ambient)?;
         let after = self.doc.get_heads();
         let patches = self.doc.diff(&before, &after);
+        if let Some(why) = self.share() {
+            instance.unshared(why);
+        }
         instance.sync(Some(&self.doc));
         Ok(verbs::result(edit.verb(), &self.doc, &patches, &self.words))
     }
@@ -367,33 +403,70 @@ impl RoomRecord {
         verbs::answer(&self.doc, payload, &self.words)
     }
 
-    /// Hand the room what the record holds past what it was handed, and keep it on disk.
-    fn send_since_sent(&mut self) -> Result<(), RoomError> {
-        let change = self.doc.save_after(&self.sent);
-        if !change.is_empty()
-            && !self
-                .manager
-                .send(CollabRequest::document_incremental(change))
-        {
-            return Err(RoomError::Unsent);
+    /// Keep the record on disk, and hand the room what it holds past what it was handed, as one
+    /// change. What the collab client cannot take yet (its queue is full, or the route is still
+    /// connecting) stays in the record and goes with the next send: a frame sends again while
+    /// any is left ([`Self::unsent`]), and the client wakes its owner once it has room. A change
+    /// it refuses for good (above its size limit) stays on this device, kept in the record and
+    /// on disk: the reason is returned the first time, for the window to say so.
+    pub fn share(&mut self) -> Option<String> {
+        if !self.unsent() {
+            return None;
         }
-        self.sent = self.doc.get_heads();
         if let Some(writer) = &mut self.writer {
             writer.request(&mut self.doc);
         }
-        Ok(())
+        if self.unshared.is_some() {
+            return None;
+        }
+        let change = self.doc.save_after(&self.sent);
+        if change.is_empty() {
+            // The room holds all of it already, by heads named apart.
+            self.sent = self.doc.get_heads();
+            return None;
+        }
+        let sent = match self
+            .manager
+            .try_send(CollabRequest::document_incremental(change))
+        {
+            Ok(()) => true,
+            Err(error @ collaboration::CollabSendError::TooLarge { .. }) => {
+                tracing::warn!(%error, "room: the record's changes stay on this device");
+                self.unshared = Some(error.to_string());
+                return self.unshared.clone();
+            }
+            Err(error) => {
+                tracing::debug!(%error, "room: the change goes with the next send");
+                false
+            }
+        };
+        if sent {
+            self.sent = self.doc.get_heads();
+        }
+        None
     }
 
-    /// Commit every change `instance` queued for the room, in order, and send each on the
-    /// record's route; the instance hears each answered. Returns the tickets committed.
+    /// Commit every change `instance` queued for the room, in order, as a step each, and send
+    /// them on the record's route ([`Self::share`]); the instance hears each answered. Returns
+    /// the tickets committed.
     ///
-    /// An invocation of anything but the host's `commit` is answered refused: this path runs
-    /// only what the instance planned itself.
+    /// A change is the room's once it is in the record: the collab client not taking it yet
+    /// never refuses it. An invocation of anything but the host's `commit` is answered refused:
+    /// this path runs only what the instance planned itself.
     ///
     /// # Errors
-    /// The first change that could not be committed or sent; it is answered refused, and what
-    /// is still queued stays queued.
+    /// The first change that could not be applied to the record; it is answered refused, and
+    /// what is still queued stays queued.
     pub fn commit(&mut self, instance: &mut Instance) -> Result<Vec<u64>, RoomError> {
+        let committed = self.commit_queued(instance);
+        if let Some(why) = self.share() {
+            instance.unshared(why);
+        }
+        instance.sync(Some(&self.doc));
+        committed
+    }
+
+    fn commit_queued(&mut self, instance: &mut Instance) -> Result<Vec<u64>, RoomError> {
         let mut committed = Vec::new();
         while let Some((invocation, _origin)) = instance.take_invocation() {
             let address = invocation.address.clone();
@@ -420,7 +493,6 @@ impl RoomRecord {
                 }
             }
         }
-        instance.sync(Some(&self.doc));
         Ok(committed)
     }
 
@@ -439,7 +511,7 @@ impl RoomRecord {
     /// `ambient` is the task or run it was invoked in. The instance is brought up to date.
     ///
     /// # Errors
-    /// The action could not be applied, or the room did not take the change.
+    /// The action could not be applied.
     pub fn apply_invoked(
         &mut self,
         instance: &mut Instance,
@@ -448,6 +520,9 @@ impl RoomRecord {
         ambient: Option<&ActionContext>,
     ) -> Result<(), RoomError> {
         self.apply(action, invoker, ambient)?;
+        if let Some(why) = self.share() {
+            instance.unshared(why);
+        }
         instance.sync(Some(&self.doc));
         Ok(())
     }
@@ -470,7 +545,7 @@ impl RoomRecord {
     }
 
     /// Apply `action`, encoded as `encoded`, for `invoker` in `ambient` as one step of its own,
-    /// recorded with `context`, and send it on the record's route.
+    /// recorded with `context`. The caller sends it on the record's route ([`Self::share`]).
     fn apply_with(
         &mut self,
         action: &dyn tilo_actions::Action,
@@ -495,7 +570,7 @@ impl RoomRecord {
         // The change is a step of whoever made it, by the invoker its entry names: their Undo
         // takes it back.
         self.doc.commit();
-        self.send_since_sent()
+        Ok(())
     }
 
     /// Take in what the record's route brought and bring `instance` up to date with the
@@ -512,6 +587,7 @@ impl RoomRecord {
         mut other: impl FnMut(CollabEvent),
     ) -> bool {
         let mut changed = false;
+        let before = self.doc.get_heads();
         for event in self.manager.poll() {
             let CollabEvent::Document {
                 envelope,
@@ -544,8 +620,17 @@ impl RoomRecord {
             }
         }
         if changed {
-            // What arrived is the room's already: nothing of it is sent back.
-            self.sent = self.doc.get_heads();
+            // What arrived is the room's already: nothing of it is sent back. What this replica
+            // made and the room was not handed yet still goes with the next send.
+            if heads_equal(&before, &self.sent) {
+                self.sent = self.doc.get_heads();
+            } else {
+                for head in self.doc.get_heads() {
+                    if !before.contains(&head) && !self.sent.contains(&head) {
+                        self.sent.push(head);
+                    }
+                }
+            }
             if let Some(writer) = &mut self.writer {
                 writer.request(&mut self.doc);
             }
@@ -553,6 +638,11 @@ impl RoomRecord {
         }
         changed
     }
+}
+
+/// Whether `a` and `b` name the same heads, in whatever order.
+fn heads_equal(a: &[ChangeHash], b: &[ChangeHash]) -> bool {
+    a.len() == b.len() && a.iter().all(|head| b.contains(head))
 }
 
 /// What a tilolang host's history verbs say, without the toolkit: a step as the platform's

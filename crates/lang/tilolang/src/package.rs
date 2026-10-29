@@ -373,11 +373,17 @@ fn build_meta(
     let type_id =
         |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
     meta.roots = env.roots.iter().map(type_id).collect();
+    // The apps it imports by their ids now: a `use` of an id a package had before names it.
     meta.uses = module
         .items
         .iter()
         .filter_map(|item| match item {
-            Item::Use(u) => Some(u.app.clone()),
+            Item::Use(u) => Some(
+                env.imports
+                    .iter()
+                    .find(|i| i.app == u.app || i.previously.contains(&u.app))
+                    .map_or_else(|| u.app.clone(), |i| i.app.clone()),
+            ),
             _ => None,
         })
         .collect();

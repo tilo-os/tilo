@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::sync::{PoisonError, RwLock};
 
+use tilo_action_policy::EarlierIds;
+
 /// The key holding a resource's type id.
 pub const TYPE_KEY: &str = "$type";
 /// The key holding a resource's app id.
@@ -271,52 +273,32 @@ pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
         .find(|schema| schema.app == app && schema.name == name)
 }
 
-/// The ids each app was published under before (`app ... (previously: so.tilo.old)`), by app.
-fn successions() -> &'static RwLock<BTreeMap<String, Vec<String>>> {
-    static SUCCESSIONS: RwLock<BTreeMap<String, Vec<String>>> = RwLock::new(BTreeMap::new());
-    &SUCCESSIONS
-}
-
 /// Record that `app` was published under the ids `before` earlier: the records the room holds
-/// under them are `app`'s, where they are and under the ids they have. That the same publisher
+/// under them are `app`'s, where they are and under the ids they have, and grants written under
+/// them are its (the process's one table, `tilo_action_policy::earlier`). That the same publisher
 /// signed both is checked where the package is installed; a package loaded here is trusted.
 pub fn register_previously(app: &str, before: &[String]) {
-    let mut held = successions()
-        .write()
-        .unwrap_or_else(PoisonError::into_inner);
-    let ids: Vec<String> = before
-        .iter()
-        .filter(|old| old.as_str() != app)
-        .cloned()
-        .collect();
-    if ids.is_empty() {
-        held.remove(app);
-    } else {
-        held.insert(app.to_owned(), ids);
-    }
+    tilo_action_policy::earlier::register(app, before.iter().cloned());
 }
 
 /// The ids `app` was published under before.
 #[must_use]
 pub fn previously(app: &str) -> Vec<String> {
-    successions()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(app)
-        .cloned()
-        .unwrap_or_default()
+    tilo_action_policy::earlier::held_of(app)
 }
 
 /// The app the records stored under `stored` belong to: the app that was published as `stored`
 /// before, else `stored` itself.
 #[must_use]
 pub fn successor(stored: &str) -> String {
-    successions()
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .find(|(_, before)| before.iter().any(|old| old == stored))
-        .map_or_else(|| stored.to_owned(), |(app, _)| app.clone())
+    tilo_action_policy::earlier::held_current(stored)
+}
+
+/// The ids every app loaded or installed here was published under before, as grants are decided
+/// with them (`Context::with_earlier_ids`).
+#[must_use]
+pub fn earlier_ids() -> EarlierIds {
+    tilo_action_policy::earlier::held()
 }
 
 /// The keys the records of `app` may be stored under: its own id, then each it had before.

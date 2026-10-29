@@ -35,6 +35,7 @@ async fn checkout_channel(
         .unwrap()
     });
     let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+        as_app: None,
         person_chat_views: RefCell::default(),
         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
         state: room.state.clone(),
@@ -216,6 +217,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 .unwrap()
                 .clone();
             let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: room.state.clone(),

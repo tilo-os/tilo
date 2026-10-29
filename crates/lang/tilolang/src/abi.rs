@@ -135,6 +135,7 @@ imports! {
     ReadText = "read_text" ([H] -> [H]);
     OfType = "of_type" ([H, H] -> [H]);
     Keep = "keep" ([H, H] -> []);
+    EditField = "edit_field" ([H, H, H] -> []);
     Grep = "grep" ([H, H, H] -> [H]);
     Describe = "describe" ([H] -> [H]);
     DescribeRef = "describe_ref" ([H] -> [H]);

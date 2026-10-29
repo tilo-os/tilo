@@ -281,7 +281,7 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
     let packages = vec![app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
-    let app = "so.tilo.lang.todo";
+    let app = "so.tilo.lang.tasks";
     let list = root(&replica, app);
     let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let before = listed(&replica, &list, &items_field);
@@ -430,6 +430,18 @@ fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_
         .find(|a| a.name == "place_cards")
         .unwrap();
     assert_eq!(committed[0].action.action_id, place_cards.id);
+    // It is the package version's change, not the viewer's: history names Board updating.
+    let authorship = &committed[0].action.authorship;
+    assert_eq!(
+        authorship.invoker,
+        tilolang_tilo::authority::migration_principal(app, &meta.module_hash).0
+    );
+    assert!(
+        tilolang_tilo::names::unnamed(&authorship.invoker)
+            .starts_with("Board, updating to version "),
+        "{}",
+        tilolang_tilo::names::unnamed(&authorship.invoker)
+    );
     for done in &committed {
         replica.apply(&done.action);
     }
@@ -566,16 +578,17 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     let _ = id;
 }
 
-/// Todo's package, published as Tasks: the same declarations and ids lock, under the id
-/// `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before.
+/// Tasks, published as `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before: the
+/// id Todo's records were written under.
 fn todo_as_tasks() -> (String, &'static str) {
     let (source, ids) = app!("tasks");
-    let (header, rest) = source.split_once('\n').unwrap();
-    assert!(header.starts_with("app so.tilo.lang.todo "), "{header}");
-    let renamed = format!(
-        "app so.tilo.lang.tasks \"Tasks\" (icon: .list_checks, category: .office, previously: so.tilo.lang.todo)\n{rest}"
+    let header = source.lines().next().unwrap();
+    assert!(
+        header.starts_with("app so.tilo.lang.tasks ")
+            && header.contains("previously: so.tilo.lang.todo"),
+        "{header}"
     );
-    (renamed, ids)
+    (source.to_owned(), ids)
 }
 
 #[test]
@@ -644,4 +657,38 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
         listed(&fresh, &root(&fresh, app), &items_field),
         listed(&replica, &list, &items_field)
     );
+}
+
+#[test]
+fn mail_leaves_the_records_letters_wrote_where_they_are() {
+    let packages = vec![app!("mail")];
+    let mut replica = open(include_str!("legacy/letters.hex"), &packages);
+    let heads = replica.doc.get_heads();
+    let stored = |replica: &Replica| -> Vec<(String, String)> {
+        records(&replica.doc)
+            .into_iter()
+            .map(|(app, id, _)| (app, id))
+            .collect()
+    };
+    let before = stored(&replica);
+    assert!(
+        !before.is_empty()
+            && before
+                .iter()
+                .all(|(held, _)| held == "so.tilo.lang.letters"),
+        "{before:?}"
+    );
+    // Mail never was Letters: Letters' records are not Mail's, and opening the room beside them
+    // changes nothing of them.
+    let mail = replica
+        .host
+        .store()
+        .index_contents("so.tilo.lang.mail")
+        .expect("Mail's index");
+    for (_, id) in &before {
+        assert!(!mail.docs.contains_key(id), "{id} is not Mail's");
+    }
+    assert_eq!(replica.doc.get_heads(), heads);
+    assert!(replica.host.take_committed().is_empty());
+    assert_eq!(stored(&replica), before);
 }

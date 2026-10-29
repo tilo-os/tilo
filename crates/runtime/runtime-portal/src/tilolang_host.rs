@@ -17,7 +17,13 @@
 //!
 //! A message is one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
 //! [`INSTANCE_VERB`] and the request ([`InstanceRequest`], JSON), with the four
-//! descriptors in that order. The host never names an app to the session: the
+//! descriptors in that order.
+//!
+//! A host whose author is an agent task runs no app instance: the session hands it
+//! the task instead ([`TASK_VERB`], [`TaskRequest`]), with the task's program
+//! connection to the agent door and the verified modules of every installed
+//! tilolang app, which its programs are compiled against
+//! (`docs/designs/app-language/agents.md`, "How a program runs"). The host never names an app to the session: the
 //! broker and the compositor attribute each connection from the session's own
 //! records. An instance ends when its window's connection closes.
 
@@ -40,6 +46,9 @@ pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 
 pub const INSTANCE_VERB: &[u8] = b"instance";
+
+/// The verb of a task handed to a task's host.
+pub const TASK_VERB: &[u8] = b"task";
 
 /// The verb the host says on its door when an instance ended (its window closed, or it never
 /// opened): the window's instance, in decimal. The session stops a host once its last instance
@@ -66,6 +75,76 @@ pub struct InstanceRequest {
     pub person: String,
     /// The length of the module in its memfd.
     pub module_len: u64,
+    /// The id whose room record the instance opens, when it is not the app's own: an app renamed
+    /// keeps using the record of its earliest id, as the installed catalogue believes the same
+    /// publisher signed it. The broker admits the instance's connection to that record only on
+    /// the same belief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub records_under: Option<String>,
+}
+
+/// The session's request to run an agent task's programs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRequest {
+    /// The task: the agent run whose programs the host runs, their code's author.
+    pub task: String,
+    /// The room the task works in.
+    pub room: String,
+    /// The person the task acts for, as its programs' `me`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person: Option<String>,
+    /// The length of the modules in their memfd ([`encode_modules`]).
+    pub modules_len: u64,
+}
+
+/// The descriptors a task arrives with, in the order the door carries them.
+#[derive(Debug)]
+pub struct TaskFds {
+    /// The program connection to the agent door: the task's programs come in on it, and what
+    /// they read and invoke goes out on it, as the task.
+    pub program: Descriptor,
+    /// Every installed tilolang app's module, in a sealed memfd.
+    pub modules: Descriptor,
+}
+
+/// What the session hands a host.
+#[derive(Debug)]
+pub enum Handed {
+    Instance(InstanceRequest, InstanceFds),
+    Task(TaskRequest, TaskFds),
+}
+
+const MODULES_MAGIC: &[u8; 8] = b"tlmodls1";
+
+/// `modules` as the bytes a task's memfd holds.
+#[must_use]
+pub fn encode_modules(modules: &[Module]) -> Vec<u8> {
+    let mut out = MODULES_MAGIC.to_vec();
+    for module in modules {
+        let encoded = module.encode();
+        out.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
+        out.extend_from_slice(&encoded);
+    }
+    out
+}
+
+/// The modules `bytes` hold.
+///
+/// # Errors
+/// The bytes are no list of modules.
+pub fn decode_modules(bytes: &[u8]) -> io::Result<Vec<Module>> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a list of tilolang modules");
+    let mut rest = bytes.strip_prefix(MODULES_MAGIC).ok_or_else(invalid)?;
+    let mut modules = Vec::new();
+    while !rest.is_empty() {
+        let (len, after) = rest.split_at_checked(8).ok_or_else(invalid)?;
+        let len = u64::from_le_bytes(len.try_into().map_err(|_| invalid())?);
+        let len = usize::try_from(len).map_err(|_| invalid())?;
+        let (module, after) = after.split_at_checked(len).ok_or_else(invalid)?;
+        modules.push(Module::decode(module)?);
+        rest = after;
+    }
+    Ok(modules)
 }
 
 /// What one instance runs: the package's compiled module, its ids lock and the
@@ -238,6 +317,33 @@ pub fn send_instance(
     }
 }
 
+/// Hand the host behind `door` the task `request`: its program connection and the modules
+/// its programs are compiled against.
+///
+/// # Errors
+/// The socket's error, a request that does not encode, or
+/// [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_task(door: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io::Result<()> {
+    let encoded = serde_json::to_vec(request).map_err(io::Error::other)?;
+    if encoded.len() > MAX_MESSAGE {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        crate::jobs::send(
+            door.as_fd(),
+            &[TASK_VERB, &encoded],
+            &[fds.program.as_fd(), fds.modules.as_fd()],
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (door, fds);
+        Err(unsupported())
+    }
+}
+
 /// The next instance on `door` and its descriptors; `None` at end of file,
 /// when the session closed its end.
 ///
@@ -245,6 +351,23 @@ pub fn send_instance(
 /// The socket's error; a message that is no instance request or does not
 /// carry exactly its four descriptors.
 pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest, InstanceFds)>> {
+    match receive(door)? {
+        None => Ok(None),
+        Some(Handed::Instance(request, fds)) => Ok(Some((request, fds))),
+        Some(Handed::Task(..)) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the door carried something other than an instance",
+        )),
+    }
+}
+
+/// The next instance or task on `door`, with its descriptors; `None` at end of
+/// file, when the session closed its end.
+///
+/// # Errors
+/// The socket's error; a message that is neither, or does not carry exactly
+/// its descriptors.
+pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
@@ -263,6 +386,16 @@ pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest
         let [verb, request] = crate::jobs::decode(message)[..] else {
             return Err(invalid("the door carried something other than an instance"));
         };
+        if verb == TASK_VERB {
+            let request: TaskRequest = serde_json::from_slice(request)
+                .map_err(|_| invalid("a task request that does not decode"))?;
+            let [program, modules] = <[Descriptor; 2]>::try_from(fds)
+                .map_err(|_| invalid("a task without its two connections"))?;
+            if request.modules_len > MAX_MODULE {
+                return Err(invalid("modules over the door's limit"));
+            }
+            return Ok(Some(Handed::Task(request, TaskFds { program, modules })));
+        }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));
         }
@@ -273,7 +406,7 @@ pub fn receive_instance(door: &Descriptor) -> io::Result<Option<(InstanceRequest
         if request.module_len > MAX_MODULE {
             return Err(invalid("a module over the door's limit"));
         }
-        Ok(Some((
+        Ok(Some(Handed::Instance(
             request,
             InstanceFds {
                 broker,
@@ -360,6 +493,7 @@ mod tests {
             instance: 7,
             person: "ada".into(),
             module_len: 12,
+            records_under: Some("so.tilo.lang.older-notes".into()),
         };
         let fds = InstanceFds {
             broker: connection(),
@@ -396,6 +530,44 @@ mod tests {
         assert!(receive_instance(&host).is_err());
         crate::jobs::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
         assert!(receive_instance(&host).is_err());
+    }
+
+    #[test]
+    fn a_task_crosses_the_door_with_its_program_connection_and_modules() {
+        let (shell, host) = pair().unwrap();
+        let request = TaskRequest {
+            task: "door:1".into(),
+            room: "7a110d00-0000-4000-8000-000000000001".into(),
+            person: Some("ada".into()),
+            modules_len: 3,
+        };
+        let fds = TaskFds {
+            program: connection(),
+            modules: connection(),
+        };
+        send_task(&shell, &request, &fds).unwrap();
+        let Some(Handed::Task(received, _fds)) = receive(&host).unwrap() else {
+            panic!("a task arrives as a task");
+        };
+        assert_eq!(received, request);
+    }
+
+    #[test]
+    fn modules_are_their_bytes_again() {
+        let modules = vec![
+            Module {
+                wasm: vec![0, 97, 115, 109, 1],
+                ids: "Note = 1\n".into(),
+                imports: Vec::new(),
+            },
+            Module {
+                wasm: vec![0, 97, 115, 109, 2],
+                ids: String::new(),
+                imports: vec![vec![1, 2]],
+            },
+        ];
+        assert_eq!(decode_modules(&encode_modules(&modules)).unwrap(), modules);
+        assert!(decode_modules(b"garbage").is_err());
     }
 
     #[test]

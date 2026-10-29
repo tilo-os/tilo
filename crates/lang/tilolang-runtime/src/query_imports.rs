@@ -125,6 +125,13 @@ impl Core {
     /// The answer to `req`: read here when this runtime holds its app, else what the platform
     /// brought, else asked for.
     fn answered(&self, req: &ReadRequest, inputs: &ProgramInputs) -> HResult<Answered> {
+        // A task's host holds no records: each app answers while the program runs.
+        if let Some(reader) = self.reader.borrow().as_ref() {
+            return Ok(match reader(req) {
+                Ok(answer) => Answered::Here(answer),
+                Err(why) => Answered::Unavailable(why),
+            });
+        }
         if self.holds(req.app(), inputs) {
             return Ok(Answered::Here(self.answer_local(req)?));
         }

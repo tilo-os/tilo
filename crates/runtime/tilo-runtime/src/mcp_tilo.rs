@@ -1,26 +1,86 @@
-//! The `tilo` tool: an agent's task writes tilolang programs (`docs/designs/app-language/agents.md`).
+//! The `tilo` tool: an agent's task writes tilolang programs
+//! (`docs/designs/app-language/agents.md`, "How a program runs").
 //!
-//! A program runs in the tilolang host of the app it names, as this task's code: the host's
-//! `run-program` (`crates/platform/tilolang-tilo/src/effects.rs`), invoked through the same
-//! path, gate and attribution as every other action of the door. Each call is one step, committed
-//! whole or not at all, and one that would change many resources or destroy something answers
-//! with a preview until it is sent again with `confirm`. The program's `let`s stay in the host's
-//! session of this task for its next program.
+//! A program runs as the task, in the task's own tilolang host: one per task, its code author the
+//! task, started by the session ([`TaskHosts`]) on the task's first `tilo` call and living as long
+//! as this connection. The host holds the task's `let`s and no records. It compiles each program
+//! against every installed app and runs it; what the program reads and changes comes back here on
+//! the task's program connection, and this door does it as the task, with the gate, attribution
+//! and grants of every other call:
+//!
+//! - a read is the app's `read-values`, a read of the resource as the task;
+//! - a change is an invocation of the action's own app: a method its type's declared action, an
+//!   assignment the resource's field edit. Each is decided at that action's node, asked about or
+//!   refused as the workspace's policy says, never done silently. A program never writes a record.
+//!
+//! One call is one step: every invocation it makes carries the call's undo step and the task's
+//! run, so `undo` takes back the last step, in every app it changed, and `undo task` every step of
+//! this task; `history task` lists them. A program that fails takes back what it changed. One that
+//! would change many resources or destroy something answers with a preview, from a provisional run
+//! that sends nothing, until it is sent again with `confirm`.
 //!
 //! What goes back is tilolang text. Every resource it shows is named by a short reference (`n3`,
 //! `t91`) at the start of its line, which later programs of this session take; a reference the
-//! session never showed is refused, so none can be invented. `undo` takes back the last step,
-//! `undo task` every step of this task, and `history task` lists them.
+//! session never showed is refused, so none can be invented.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionHost, Done, LsArgs, McpServer, Reply, app_names, outcome};
+use super::{ActionHost, Addressed, Done, LsArgs, McpServer, OneCall, Reply, app_names};
+
+/// Where a door starts the tilolang host of a task: the session, which launches it as every
+/// tilolang host is launched, its author the task.
+pub trait TaskHosts: Send + Sync {
+    /// Start the host of the task `task` (the agent run) in `room`: the door's end of the task's
+    /// program connection.
+    ///
+    /// # Errors
+    /// The host could not be started.
+    fn start(&self, room: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd>;
+}
+
+/// The program connection to a task's host, one JSON object per line.
+pub(crate) struct TaskLink {
+    reader: tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: tokio::net::unix::OwnedWriteHalf,
+}
+
+impl TaskLink {
+    fn new(fd: std::os::fd::OwnedFd) -> std::io::Result<Self> {
+        let stream = std::os::unix::net::UnixStream::from(fd);
+        stream.set_nonblocking(true)?;
+        let (reader, writer) = tokio::net::UnixStream::from_std(stream)?.into_split();
+        Ok(Self {
+            reader: tokio::io::BufReader::new(reader),
+            writer,
+        })
+    }
+
+    async fn send(&mut self, message: &Value) -> Result<(), String> {
+        let mut line = serde_json::to_vec(message).map_err(|error| error.to_string())?;
+        line.push(b'\n');
+        self.writer
+            .write_all(&line)
+            .await
+            .map_err(|error| format!("the task's host went away: {error}"))
+    }
+
+    async fn next(&mut self) -> Result<Value, String> {
+        let mut line = String::new();
+        match self.reader.read_line(&mut line).await {
+            Ok(0) => Err("the task's host ended".to_owned()),
+            Ok(_) => serde_json::from_str(&line)
+                .map_err(|error| format!("the task's host said something unreadable: {error}")),
+            Err(error) => Err(format!("the task's host went away: {error}")),
+        }
+    }
+}
 
 /// What the `tilo` tool takes.
 #[derive(Deserialize)]
@@ -36,7 +96,8 @@ pub(super) struct TiloArgs {
 struct Step {
     /// Its number in `history task`, from 1.
     number: usize,
-    app: String,
+    /// The apps it changed, by id, in the order it first changed each.
+    apps: Vec<String>,
     /// The program's first line, as `history task` names the step.
     program: String,
     changed: u64,
@@ -52,8 +113,6 @@ pub(crate) struct Programs {
     counters: BTreeMap<char, usize>,
     /// The names the task's programs bound.
     lets: Vec<String>,
-    /// The app the last program ran in: where one that names none runs.
-    current: Option<String>,
     steps: Vec<Step>,
 }
 
@@ -91,10 +150,6 @@ enum Piece {
         text: String,
         /// It follows a dot, `@` or `:`: a member, or a part of a literal.
         member: bool,
-        /// A dot follows it: an app or a value whose member is read.
-        dotted: bool,
-        /// It follows `@`: the app of a resource literal.
-        literal: bool,
     },
     Other(String),
 }
@@ -154,15 +209,9 @@ fn pieces(source: &str) -> Vec<Piece> {
                 text.push(next);
             }
             let member = matches!(previous, Some('.' | '@' | ':'));
-            let literal = previous == Some('@');
             previous = text.chars().last();
             significant = previous;
-            found.push(Piece::Word {
-                text,
-                member,
-                dotted: chars.peek() == Some(&'.'),
-                literal,
-            });
+            found.push(Piece::Word { text, member });
             continue;
         }
         let mut text = String::from(character);
@@ -206,7 +255,6 @@ fn resolve_refs(source: &str, programs: &Programs) -> Result<String, String> {
             Piece::Word {
                 text,
                 member: false,
-                ..
             } => {
                 if let Some(literal) = programs.by_ref.get(&text) {
                     out.push_str(literal);
@@ -224,27 +272,6 @@ fn resolve_refs(source: &str, programs: &Programs) -> Result<String, String> {
         }
     }
     Ok(out)
-}
-
-/// The apps a program names (`notes` in `notes.notes`, or in a resource literal), among
-/// `apps`, in order.
-fn apps_named(source: &str, apps: &[String]) -> Vec<String> {
-    let mut named: Vec<String> = Vec::new();
-    for piece in pieces(source) {
-        if let Piece::Word {
-            text,
-            member,
-            dotted: true,
-            literal,
-        } = piece
-            && (literal || !member)
-            && apps.contains(&text)
-            && !named.contains(&text)
-        {
-            named.push(text);
-        }
-    }
-    named
 }
 
 /// `source` without the text of its strings and regular expressions.
@@ -341,6 +368,16 @@ fn preview(answer: &Value) -> String {
             text.push_str("  destroys");
         }
     }
+    if answer["complete"] == false {
+        text.push_str(
+            "\nthe program goes on with what these answer, so more may follow; it stopped here: ",
+        );
+        text.push_str(
+            answer["detail"]
+                .as_str()
+                .unwrap_or("its preview cannot go on"),
+        );
+    }
     text.push_str("\nnothing changed; send the same program with confirm: true to apply it");
     text
 }
@@ -356,137 +393,208 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             "history task" => return Ok(Reply::ok(self.history())),
             _ => {}
         }
-        let ids = self.tilolang_ids().await?;
-        let running: Vec<String> = ids.keys().cloned().collect();
-        let (source, current) = {
-            let programs = self.programs.lock_recover();
-            (resolve_refs(program, &programs)?, programs.current.clone())
-        };
-        let app = {
-            let named = apps_named(&source, &running);
-            match named.as_slice() {
-                // A program that names no app reads (`grep`, `find`): it runs where the last
-                // one ran, or in any app, and reads the others through each one's host.
-                [] => current
-                    .filter(|current| running.contains(current))
-                    .or_else(|| running.first().cloned())
-                    .ok_or_else(|| "no app this task may use is running".to_owned())?,
-                [one] => one.clone(),
-                several => {
-                    return Err(format!(
-                        "a program changes one app for now; this one uses {}: send one program per app (it reads the others with grep, find, read and describe)",
-                        several.join(" and ")
-                    ));
-                }
-            }
-        };
-        let mut sources = Map::new();
-        for (name, id) in &ids {
-            sources.insert(name.clone(), json!(id));
-        }
-        let sources = Value::Object(sources).to_string();
-        // What the program read of other apps, by request: it runs again with each round's
-        // answers until it needs none it was not given.
-        let mut reads: Vec<(Value, Value)> = Vec::new();
-        loop {
-            let mut arguments = Map::new();
-            arguments.insert("source".to_owned(), json!(source));
-            arguments.insert(
-                "session".to_owned(),
-                json!(self.agent_run().map(|run| run.id).unwrap_or_default()),
-            );
-            arguments.insert("confirm".to_owned(), json!(args.confirm));
-            arguments.insert("apps".to_owned(), json!(sources));
-            arguments.insert(
-                "reads".to_owned(),
-                json!(
-                    Value::Array(
-                        reads
-                            .iter()
-                            .map(|(request, answer)| json!([request, answer]))
-                            .collect()
-                    )
-                    .to_string()
-                ),
-            );
-            let path = format!("{app}/tilolang#run-program");
-            let value = match Box::pin(self.do_one_value(&path, arguments, None, None)).await? {
-                Done::Launched(_) => {
-                    return Err(format!(
-                        "{app} was not running; it is open now, send the program again"
-                    ));
-                }
-                Done::Invoked { value, .. } => value,
-            };
-            if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
-                let failed = outcome(&value);
-                if failed.text.contains("no action run-program") {
-                    return Err(format!("{app} runs no tilolang programs"));
-                }
-                return Ok(failed);
-            }
-            let answer = value
-                .pointer("/update/output/value")
-                .cloned()
-                .unwrap_or(Value::Null);
-            if answer.get("state").and_then(Value::as_str) != Some("reads") {
-                return Ok(self.answered(&app, program, &answer));
-            }
-            let asked: Vec<Value> = answer
-                .get("requests")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            let fresh: Vec<Value> = asked
-                .into_iter()
-                .filter(|request| !reads.iter().any(|(known, _)| known == request))
-                .collect();
-            if fresh.is_empty() {
-                return Err(
-                    "the program asked again for what it was given to read; nothing ran".to_owned(),
+        let source = resolve_refs(program, &self.programs.lock_recover())?;
+        let answer = self.run_in_task(&source, args.confirm).await?;
+        let failed = !matches!(
+            answer["state"].as_str(),
+            Some("done" | "preview" | "suspended")
+        );
+        let apps: Vec<String> = answer["apps"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        if failed && !apps.is_empty() {
+            // One step is all or nothing: what it changed before it failed is taken back.
+            if let Err(why) = self.undo_in(&apps).await {
+                let mut reply = self.answered(program, &answer);
+                let _ = write!(
+                    reply.text,
+                    "\nwhat it changed could not be taken back: {why}"
                 );
+                return Ok(reply);
             }
-            for request in fresh {
-                let answer = self.read_for_program(&ids, &request).await;
-                reads.push((request, answer));
+        }
+        Ok(self.answered(program, &answer))
+    }
+
+    /// Run `source` in the task's host, doing what it reads and invokes as the task, until it
+    /// answers. The host is started on the task's first program.
+    async fn run_in_task(&self, source: &str, confirm: bool) -> Result<Value, String> {
+        let mut link = self.task.lock().await;
+        if link.is_none() {
+            *link = Some(self.start_task().await?);
+        }
+        let Some(task) = link.as_mut() else {
+            return Err("the task's host did not start".to_owned());
+        };
+        let ran = Box::pin(self.serve_run(task, source, confirm)).await;
+        if ran.is_err() {
+            // A host that went away takes the task's `let`s with it; the next program starts
+            // another.
+            *link = None;
+        }
+        ran
+    }
+
+    async fn serve_run(
+        &self,
+        task: &mut TaskLink,
+        source: &str,
+        confirm: bool,
+    ) -> Result<Value, String> {
+        task.send(&json!({"run": {"source": source, "confirm": confirm}}))
+            .await?;
+        // Which instance answers for each app, found once per program.
+        let mut providers: Providers = BTreeMap::new();
+        loop {
+            let message = task.next().await?;
+            if let Some(answer) = message.get("answer") {
+                return Ok(answer.clone());
             }
+            let reply = if let Some(read) = message.get("read") {
+                Box::pin(self.task_read(read, &mut providers)).await
+            } else if let Some(query) = message.get("query") {
+                Box::pin(self.task_query(query, &mut providers)).await
+            } else if let Some(call) = message.get("invoke") {
+                Box::pin(self.task_invoke(call, &mut providers)).await
+            } else {
+                json!({"err": "the door answers reads and invocations"})
+            };
+            task.send(&reply).await?;
         }
     }
 
-    /// The answer of the app `request` names to what a program asks to read of it, or why
-    /// there is none (`{"unavailable": why}`).
-    async fn read_for_program(&self, ids: &BTreeMap<String, String>, request: &Value) -> Value {
-        let app = request["app"].as_str().unwrap_or_default();
-        let Some(name) = ids
+    /// Start this task's host.
+    async fn start_task(&self) -> Result<TaskLink, String> {
+        let hosts = self.task_hosts.clone().ok_or(
+            "this door runs no programs: it is no desktop session's, which starts a task's host",
+        )?;
+        let task = self
+            .agent_run()
+            .map(|run| run.id)
+            .ok_or("this door's agent works in no run, which a task's programs are")?;
+        let room = self.room.clone();
+        let fd = tokio::task::spawn_blocking(move || hosts.start(&room, &task))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("the task's host did not start: {error}"))?;
+        TaskLink::new(fd).map_err(|error| error.to_string())
+    }
+
+    /// The running instance of the app `app` (an id), to ask.
+    async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
+        if let Some(found) = known.get(app) {
+            return Ok(found.clone());
+        }
+        let (_, running) = self.instances().await?;
+        let found = running
             .iter()
-            .find(|(_, id)| id.as_str() == app)
-            .map(|(name, _)| name.clone())
-        else {
-            return json!({"unavailable": "this task may not read it"});
+            .rev()
+            .find(|(_, instance)| instance["app_id"].as_str() == Some(app))
+            .map(|(peer, _)| Addressed {
+                provider: peer.to_string(),
+                app_id: Some(app.to_owned()),
+            })
+            .ok_or_else(|| {
+                let name = app_names(&[app.to_owned()]).join("");
+                format!("{name} is not open; open it with tilo_do {{path: \"{name}#open\"}}")
+            })?;
+        known.insert(app.to_owned(), found.clone());
+        Ok(found)
+    }
+
+    /// The task's read of `read` (`{app, item}`): the app's `read-values`, as the task.
+    async fn task_read(&self, read: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(item)) = (read["app"].as_str(), read["item"].as_str()) else {
+            return json!({"err": "a read names its app and item"});
         };
+        if let Err(why) = self.provider_of(app, providers).await {
+            return json!({"err": why});
+        }
+        let mut arguments = Map::new();
+        arguments.insert("item".to_owned(), json!(item));
+        self.host_read(app, READ_VALUES, arguments).await
+    }
+
+    /// The task's query `query` (`{app, request}`: a program's `grep`, `find`, `read` or
+    /// `describe` of an app): the app's `read-for-program`, as the task.
+    async fn task_query(&self, query: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(request)) = (query["app"].as_str(), query.get("request")) else {
+            return json!({"err": "a query names its app and request"});
+        };
+        if let Err(why) = self.provider_of(app, providers).await {
+            return json!({"err": why});
+        }
         let mut arguments = Map::new();
         arguments.insert("request".to_owned(), json!(request.to_string()));
-        let path = format!("{name}/tilolang#read-for-program");
+        self.host_read(app, READ_FOR_PROGRAM, arguments).await
+    }
+
+    /// The read `action` of an app's tilolang host, as the task: `{"ok": answer}` or `{"err":
+    /// why}`.
+    async fn host_read(&self, app: &str, action: &str, arguments: Map<String, Value>) -> Value {
+        // The app's tilolang host resource, as the app publishes it to this caller.
+        let name = app_names(&[app.to_owned()]).join("");
+        let path = format!("{name}/{HOST_NAME}#{action}");
         match Box::pin(self.do_one_value(&path, arguments, None, None)).await {
             Ok(Done::Invoked { value, .. })
                 if value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded") =>
             {
-                value
-                    .pointer("/update/output/value")
-                    .cloned()
-                    .unwrap_or(Value::Null)
+                json!({"ok": value.pointer("/update/output/value").cloned().unwrap_or(Value::Null)})
             }
-            Ok(Done::Invoked { value, .. }) => {
-                json!({"unavailable": outcome(&value).text})
-            }
-            Ok(Done::Launched(_)) => json!({"unavailable": "it was not running; it is open now"}),
-            Err(why) => json!({"unavailable": why}),
+            Ok(Done::Invoked { value, .. }) => json!({"err": super::outcome(&value).text}),
+            Ok(Done::Launched(_)) => json!({"err": format!("{name} was not open; it is opening")}),
+            Err(why) => json!({"err": why}),
+        }
+    }
+
+    /// The task's invocation `call` (`{app, resource, action, arguments}`): invoked at the
+    /// action's own app as the task, in this call's step, decided there.
+    async fn task_invoke(&self, call: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(resource), Some(action)) = (
+            call["app"].as_str(),
+            call["resource"].as_str(),
+            call["action"].as_str(),
+        ) else {
+            return json!({"failed": "an invocation names its app, resource and action"});
+        };
+        let provider = match self.provider_of(app, providers).await {
+            Ok(provider) => provider,
+            Err(why) => return json!({"failed": why}),
+        };
+        let arguments = call["arguments"].as_object().cloned().unwrap_or_default();
+        let value = Box::pin(self.invoke_one(OneCall {
+            provider,
+            workspace: false,
+            revision: None,
+            resource: resource.to_owned(),
+            action: action.to_owned(),
+            arguments,
+            invocation_id: None,
+            wait_ms: None,
+        }))
+        .await;
+        match value {
+            Ok(value) => match value.pointer("/update/state").and_then(Value::as_str) {
+                Some("succeeded") => json!({
+                    "ok": value.pointer("/update/output").cloned().unwrap_or(Value::Null)
+                }),
+                Some("failed" | "cancelled") => json!({"failed": super::outcome(&value).text}),
+                // Not finished in time: it may still run, so the program cannot go on as if
+                // it had not.
+                _ => json!({"failed": super::outcome(&value).text}),
+            },
+            Err(why) if refusal(&why) => json!({"refused": format!("{action}: {why}")}),
+            Err(why) => json!({"failed": why}),
         }
     }
 
     /// The text of a program's answer, its resources named by references.
-    fn answered(&self, app: &str, program: &str, answer: &Value) -> Reply {
-        let (text, failed) = answer_text(&mut self.programs.lock_recover(), app, program, answer);
+    fn answered(&self, program: &str, answer: &Value) -> Reply {
+        let (text, failed) = answer_text(&mut self.programs.lock_recover(), program, answer);
         if failed {
             Reply::failed(text)
         } else {
@@ -499,15 +607,30 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
+/// The instance that answers for each app, by app id.
+type Providers = BTreeMap<String, Addressed>;
+
+/// The resource every tilolang app answers a task's reads on, by its name, and the reads.
+const HOST_NAME: &str = "tilolang";
+const READ_VALUES: &str = "read-values";
+const READ_FOR_PROGRAM: &str = "read-for-program";
+
+/// Whether the door's error `why` is the policy's refusal, not a failure of the action.
+fn refusal(why: &str) -> bool {
+    [
+        "may not invoke",
+        "refused:",
+        "requires confirmation",
+        "ConfirmationRequired",
+        "no such action is offered",
+    ]
+    .iter()
+    .any(|said| why.contains(said))
+}
+
 /// The text of a program's answer in `programs`' session, and whether it is an error.
-fn answer_text(
-    programs: &mut Programs,
-    app: &str,
-    program: &str,
-    answer: &Value,
-) -> (String, bool) {
+fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (String, bool) {
     {
-        programs.current = Some(app.to_owned());
         programs.lets = answer["lets"]
             .as_array()
             .into_iter()
@@ -528,18 +651,25 @@ fn answer_text(
             "done" => {
                 if changed > 0 {
                     let number = programs.steps.len().saturating_add(1);
+                    let apps: Vec<String> = answer["apps"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect();
+                    lines.push(format!(
+                        "step {number}: {changed} {} in {}; `undo` takes it back",
+                        if changed == 1 { "change" } else { "changes" },
+                        app_names(&apps).join(" and ")
+                    ));
                     programs.steps.push(Step {
                         number,
-                        app: app.to_owned(),
+                        apps,
                         program: program.lines().next().unwrap_or_default().to_owned(),
                         changed,
                         undone: false,
                     });
-                    lines.push(format!(
-                        "step {}: {changed} {} in {app}; `undo` takes it back",
-                        programs.steps.len(),
-                        if changed == 1 { "change" } else { "changes" }
-                    ));
                 }
                 false
             }
@@ -570,11 +700,16 @@ fn answer_text(
                 true
             }
             _ => {
+                let kept = if answer["changed"].as_u64().unwrap_or(0) > 0 {
+                    "what it changed is taken back"
+                } else {
+                    "it changed nothing"
+                };
                 let detail = answer["detail"].as_str().unwrap_or("the program failed");
                 let mut shown = detail.lines().map(|line| shown_line(line, programs));
                 lines.push(format!("error: {}", shown.next().unwrap_or_default()));
                 lines.extend(shown);
-                lines.push("nothing it did is kept".to_owned());
+                lines.push(kept.to_owned());
                 true
             }
         };
@@ -598,7 +733,7 @@ fn history_text(programs: &Programs) -> String {
             text,
             "\n{}  {}  {} {}  {}{}",
             step.number,
-            step.app,
+            app_names(&step.apps).join(" and "),
             step.changed,
             if step.changed == 1 {
                 "change"
@@ -613,36 +748,19 @@ fn history_text(programs: &Programs) -> String {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
-    /// The running apps the task may run programs in, by the names programs call them, each
-    /// with its id.
-    async fn tilolang_ids(&self) -> Result<BTreeMap<String, String>, String> {
-        let (_, running) = self.instances().await?;
-        let mut ids: Vec<String> = running
-            .iter()
-            .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
-            .collect();
-        ids.sort();
-        ids.dedup();
-        Ok(ids
-            .iter()
-            .map(|id| (app_names(std::slice::from_ref(id)).join(""), id.clone()))
-            .collect())
-    }
-
-    /// The room resource of `app`, whose `undo` takes back this task's steps there.
-    async fn room_of(&self, app: &str) -> Result<String, String> {
-        let listed = Box::pin(self.agent_ls(LsArgs {
-            path: Some(app.to_owned()),
-            ..LsArgs::default()
-        }))
-        .await?;
-        listed
-            .text
-            .lines()
-            .find(|line| line.trim_end().ends_with("tilolang.room"))
-            .and_then(|line| line.split_whitespace().next())
-            .map(|room| room.trim_end_matches('/').to_owned())
-            .ok_or_else(|| format!("{app} offers no undo"))
+    /// Take back this task's last step in each of `apps` (ids), the last changed first.
+    async fn undo_in(&self, apps: &[String]) -> Result<(), String> {
+        for app in apps.iter().rev() {
+            let name = app_names(std::slice::from_ref(app)).join("");
+            let mut arguments = Map::new();
+            arguments.insert("steps".to_owned(), json!(1));
+            let reply =
+                Box::pin(self.do_one(&format!("{name}#undo"), arguments, None, None)).await?;
+            if reply.failed {
+                return Err(format!("in {name}: {}", reply.text));
+            }
+        }
+        Ok(())
     }
 
     /// Take back the last step that is in effect, or with `all` every step of this task, newest
@@ -666,19 +784,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 break;
             };
-            let room = self.room_of(&step.app).await?;
-            let mut arguments = Map::new();
-            arguments.insert("steps".to_owned(), json!(1));
-            let reply =
-                Box::pin(self.do_one(&format!("{}/{room}#undo", step.app), arguments, None, None))
-                    .await?;
-            if reply.failed {
+            if let Err(why) = self.undo_in(&step.apps).await {
                 let _ = write!(
                     text,
-                    "{}undoing step {}: {}",
+                    "{}undoing step {}: {why}",
                     if text.is_empty() { "" } else { "\n" },
                     step.number,
-                    reply.text
                 );
                 return Ok(Reply::failed(text));
             }
@@ -690,7 +801,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 "{}undone: step {} in {} ({})",
                 if text.is_empty() { "" } else { "\n" },
                 step.number,
-                step.app,
+                app_names(&step.apps).join(" and "),
                 step.program
             );
             if !all {
@@ -750,5 +861,47 @@ mod tests {
             preview(&answer),
             "preview: 3 actions on 4 resources\n  pin ×2\n  delete_card ×1  destroys\nnothing changed; send the same program with confirm: true to apply it"
         );
+    }
+
+    #[test]
+    fn a_step_in_two_apps_is_one_step_of_the_task() {
+        let mut programs = Programs::default();
+        let answer = json!({
+            "state": "done",
+            "output": ["@notes.Note:root-a/n1 \"Q3 plan\""],
+            "changed": 2,
+            "apps": ["so.tilo.lang.notes", "so.tilo.lang.todo"],
+            "lets": [{"name": "plan", "type": "so.tilo.lang.notes.Note"}],
+        });
+        let (text, failed) =
+            answer_text(&mut programs, "notes.pin(n1)\ntodo.add(t1, \"x\")", &answer);
+        assert!(!failed, "{text}");
+        assert_eq!(
+            text,
+            "n1 \"Q3 plan\"\nstep 1: 2 changes in notes and todo; `undo` takes it back"
+        );
+        assert_eq!(programs.lets, ["plan"]);
+        assert_eq!(
+            history_text(&programs),
+            "steps of this task, oldest first\n1  notes and todo  2 changes  notes.pin(n1)"
+        );
+    }
+
+    #[test]
+    fn a_failed_step_says_what_became_of_its_changes() {
+        let mut programs = Programs::default();
+        let answer = json!({"state": "failed", "detail": "trap: no", "changed": 1, "apps": ["so.tilo.lang.todo"]});
+        let (text, failed) = answer_text(&mut programs, "x", &answer);
+        assert!(failed);
+        assert_eq!(text, "error: trap: no\nwhat it changed is taken back");
+        assert!(programs.steps.is_empty(), "a failed program is no step");
+    }
+
+    #[test]
+    fn the_policys_refusals_are_told_from_failures() {
+        assert!(refusal("the caller may not invoke this action"));
+        assert!(refusal("refused: asks the person first"));
+        assert!(refusal("no such action is offered"));
+        assert!(!refusal("the action failed: no such note"));
     }
 }

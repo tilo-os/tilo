@@ -1,4 +1,4 @@
-app so.tilo.lang.todo "Tasks" (icon: .list_checks, category: .office)
+app so.tilo.lang.tasks "Tasks" (icon: .list_checks, category: .office, previously: so.tilo.lang.todo)
 
 /// How much a task matters, most urgent last.
 enum Priority {

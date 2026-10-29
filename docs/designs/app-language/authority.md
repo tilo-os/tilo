@@ -42,7 +42,11 @@ are decided against that list, shown in plain words, so nobody has to read code 
   which keeps their ids.
 - An app renamed keeps what it had: `app so.tilo.lang.tasks "Tasks" (previously:
   so.tilo.lang.todo)` reads the records under the old id as its own, where they are. The old id
-  is signed into the app, and only the same publisher's app can take it over.
+  is signed into the app, and only the same publisher's app can take it over. The renamed app
+  keeps opening the room record of its earliest id (`<room>#app:so.tilo.lang.todo`): nothing is
+  copied to a record of the new id. It works on that record as itself: its grants, publications
+  and windows name the new id, and the session admits it there only once the takeover is
+  verified.
 
 ## Not yet
 

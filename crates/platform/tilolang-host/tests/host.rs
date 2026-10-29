@@ -16,7 +16,13 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::action_directory::{
+    ActionDirectoryPage, ActionDirectoryQuery, ActionDirectoryResolution,
+};
+use collaboration::{
+    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PeerTransport,
+    RouteSpec,
+};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Lane, ToApp, ToUi, Transport as _};
@@ -44,6 +50,14 @@ fn counter() -> Bundle {
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
 
+/// The instance's action directory as the broker holds it: the apps it was offered under, and
+/// what the test asks of it.
+#[derive(Default)]
+struct Directory {
+    offered: Vec<String>,
+    asked: Vec<ActionDirectoryRequest>,
+}
+
 /// The broker's end of the instance's connection: what the instance sent, and what the test
 /// delivers.
 struct Broker {
@@ -51,6 +65,7 @@ struct Broker {
     sent: Sent,
     inbox: Inbox,
     joined: Option<RouteSpec>,
+    directory: Rc<RefCell<Directory>>,
 }
 
 impl PeerTransport for Broker {
@@ -73,6 +88,15 @@ impl PeerTransport for Broker {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
     }
+
+    fn publish_action_directory(&mut self, app_id: String) -> Result<(), String> {
+        self.directory.borrow_mut().offered.push(app_id);
+        Ok(())
+    }
+
+    fn take_action_directory_requests(&mut self) -> Vec<ActionDirectoryRequest> {
+        std::mem::take(&mut self.directory.borrow_mut().asked)
+    }
 }
 
 /// The window, as the test drives it from the far end of the patch connection.
@@ -81,6 +105,8 @@ struct Window {
     root: Option<patch::Node>,
     /// The tree of the lane beside the root: the item the window shows.
     detail: Option<patch::Node>,
+    /// The resource the detail lane shows.
+    detail_target: Option<patch::ResourceRef>,
     /// The instance asked the window to come forward.
     activated: bool,
 }
@@ -107,9 +133,13 @@ impl Window {
                     }
                     ToUi::Open {
                         lane: Lane::Detail,
+                        target,
                         tree,
                         ..
-                    } => self.detail = Some(tree),
+                    } => {
+                        self.detail = Some(tree);
+                        self.detail_target = Some(target);
+                    }
                     ToUi::Patch {
                         lane: Lane::Detail,
                         patches,
@@ -177,6 +207,16 @@ fn running_app(
     app: &str,
     bundle: Bundle,
 ) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
+    running_with(person, app, bundle, Rc::default())
+}
+
+/// [`running_app`], the broker holding the instance's action directory in `directory`.
+fn running_with(
+    person: &str,
+    app: &str,
+    bundle: Bundle,
+    directory: Rc<RefCell<Directory>>,
+) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
     let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
@@ -185,6 +225,7 @@ fn running_app(
         sent: Rc::clone(&sent),
         inbox: Rc::clone(&inbox),
         joined: None,
+        directory,
     });
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
@@ -218,6 +259,7 @@ fn running_app(
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
         detail: None,
+        detail_target: None,
         activated: false,
     };
     (host, window, sent, inbox, route)
@@ -624,6 +666,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
         detail: None,
+        detail_target: None,
         activated: false,
     };
 
@@ -666,6 +709,138 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     assert_eq!(host.instances().count(), 2);
 }
 
+/// Ask the instance's directory `query`, as the broker does, and take its answer.
+fn page(
+    host: &mut TilolangHost,
+    window: &mut Window,
+    directory: &Rc<RefCell<Directory>>,
+    query: ActionDirectoryQuery,
+) -> ActionDirectoryPage {
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    directory
+        .borrow_mut()
+        .asked
+        .push(ActionDirectoryRequest::Query { query, reply });
+    host.turn();
+    settle(host, window);
+    answer.try_recv().expect("the instance answered the query")
+}
+
+fn query() -> ActionDirectoryQuery {
+    ActionDirectoryQuery {
+        peer_id: 1,
+        revision: String::new(),
+        cursor: Vec::new(),
+        needle: String::new(),
+        parent_resource: String::new(),
+        max_results: 64,
+        max_bytes: 64 * 1024,
+        max_work: 512,
+        max_depth: 4,
+        resource_name: String::new(),
+    }
+}
+
+#[test]
+fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::clone(&directory));
+    settle(&mut host, &mut window);
+    assert_eq!(
+        directory.borrow().offered,
+        [APP],
+        "the instance offers its directory on its connection, under its app, once"
+    );
+    let published = host.instances().next().unwrap().published().to_vec();
+
+    // The top level names the app's resources: what makes the instance browsable.
+    let top = page(&mut host, &mut window, &directory, query());
+    assert!(top.exhausted && !top.revision.is_empty(), "{top:?}");
+    let app = format!("tl:{APP}");
+    let root = top
+        .rows
+        .iter()
+        .find(|row| row.resource == app)
+        .unwrap_or_else(|| panic!("the app's resource is at the top: {:?}", top.rows))
+        .clone();
+    assert!(root.action.is_none() && root.has_children);
+
+    // Its level lists its actions, each as published.
+    let level = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            parent_resource: app.clone(),
+            ..query()
+        },
+    );
+    let read = level
+        .rows
+        .iter()
+        .find(|row| row.resource == app && row.action.as_deref() == Some("read"))
+        .unwrap_or_else(|| panic!("read is on the app's level: {:?}", level.rows));
+    assert!(read.descriptor.is_some());
+
+    // A name finds the app's resource by its kind.
+    let named = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            resource_name: root.resource_kind,
+            ..query()
+        },
+    );
+    assert!(
+        named.rows.iter().any(|row| row.resource == app),
+        "{named:?}"
+    );
+
+    // A search finds the counter's Increment, and it resolves at the page's revision.
+    let found = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            needle: "increment".into(),
+            ..query()
+        },
+    );
+    let increment = found
+        .rows
+        .iter()
+        .find(|row| {
+            row.descriptor
+                .as_ref()
+                .is_some_and(|action| action.action_label == "Increment")
+        })
+        .unwrap_or_else(|| panic!("the search finds Increment: {:?}", found.rows));
+    assert!(published.iter().any(|action| {
+        action.address.resource == increment.resource
+            && Some(action.address.action.as_str()) == increment.action.as_deref()
+    }));
+    let (reply, mut answer) = tokio::sync::oneshot::channel();
+    directory
+        .borrow_mut()
+        .asked
+        .push(ActionDirectoryRequest::Resolve {
+            revision: found.revision.clone(),
+            resource: increment.resource.clone(),
+            action: increment.action.clone().unwrap(),
+            reply,
+        });
+    host.turn();
+    match answer.try_recv().expect("the instance resolved it") {
+        ActionDirectoryResolution::Found { row, revision } => {
+            assert_eq!(row.action, increment.action);
+            assert_eq!(revision.as_deref(), Some(found.revision.as_str()));
+        }
+        other => panic!("Increment resolves: {other:?}"),
+    }
+}
+
 const NOTES: &str = "so.tilo.lang.notes";
 
 /// The shipped Notes package, built with the packages it uses.
@@ -692,20 +867,52 @@ fn node_with<'a>(tree: &'a patch::Node, name: &str, value: &str) -> Option<&'a p
         .find_map(|child| node_with(child, name, value))
 }
 
-/// How often the instance built its surface to publish it.
-fn publications(phases: &[tilo_resource::profiling::Sample]) -> usize {
+/// How often the phase `name` ran.
+fn calls(phases: &[tilo_resource::profiling::Sample], name: &str) -> usize {
     phases
         .iter()
-        .find(|phase| phase.phase == "tl.host.publish")
+        .find(|phase| phase.phase == name)
         .map_or(0, |phase| phase.calls)
 }
 
-/// A notebook of `held` notes, the first of them open in the window as the person made it; how
-/// often the instance built its surface while the person typed `typed` into the open note's
-/// field whose placeholder is `field`, a key at a time, each followed by the host's frames until
-/// it is quiet, as its loop runs them; and the resource labels it publishes then.
-fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
-    let (mut host, mut window, sent, inbox, _route) = running_app("ada", NOTES, notes());
+/// What the instance did while the person typed into a note, and what it publishes then.
+struct Typed {
+    /// How often it built its whole surface to publish it.
+    built: usize,
+    /// How often it published only the labels that moved.
+    relabeled: usize,
+    /// The resource labels it publishes, as it holds them.
+    labels: Vec<String>,
+    /// The resource labels the broker holds, from every delta the instance sent it.
+    broker: Vec<String>,
+    /// The resource labels the instance's directory finds for what was typed, asked after.
+    found: Vec<String>,
+}
+
+/// The resource labels of the surface the broker holds once it applied every delta the
+/// instance sent.
+fn broker_labels(sent: &Sent) -> Vec<String> {
+    let mut table = collaboration::SurfaceTable::default();
+    for request in sent.borrow().iter() {
+        if let CollabRequest::PublishActionSurface { delta, .. } = request {
+            table.apply(delta).expect("the broker takes every delta");
+        }
+    }
+    table
+        .actions()
+        .into_iter()
+        .map(|action| action.resource_label)
+        .collect()
+}
+
+/// A notebook of `held` notes, the first of them open in the window as the person made it; what
+/// the instance did while the person typed `typed` into the open note's field whose placeholder
+/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
+/// runs them.
+fn typing(held: usize, field: &str, typed: &str) -> Typed {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, sent, inbox, _route) =
+        running_with("ada", NOTES, notes(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     // The person starts a note from the empty notebook: it opens beside the list.
     let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
@@ -736,7 +943,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
         .address
         .clone();
     for id in 1..held {
-        deliver(&inbox, 100 + id as u64, &new_note, "ada");
+        deliver(&inbox, (id as u64).saturating_add(100), &new_note, "ada");
     }
     settle(&mut host, &mut window);
     let input = node_with(
@@ -747,15 +954,17 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
     .unwrap_or_else(|| panic!("the open note has a field `{field}`"))
     .key
     .clone();
+    let target = window.detail_target.clone().expect("the note is open");
     let documents = documents_sent(&sent);
-    let mut built = 0;
+    let (mut built, mut relabeled) = (0, 0);
     let mut shown = String::new();
     for (seq, key) in typed.chars().enumerate() {
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[ToApp::Splice {
                 lane: Lane::Detail,
+                target: target.clone(),
                 key: input.clone(),
-                seq: seq as u64 + 1,
+                seq: (seq as u64).saturating_add(1),
                 at: u32::try_from(shown.len()).unwrap(),
                 delete: 0,
                 insert: key.to_string(),
@@ -763,7 +972,8 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
             settle(&mut host, &mut window);
         });
         shown.push(key);
-        built += publications(&phases);
+        built = calls(&phases, "tl.host.publish").saturating_add(built);
+        relabeled = calls(&phases, "tl.host.relabel").saturating_add(relabeled);
     }
     assert!(
         documents_sent(&sent) > documents,
@@ -777,32 +987,146 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
         .iter()
         .map(|action| action.resource_label.clone())
         .collect();
-    (built, labels)
+    let found = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            needle: typed.to_owned(),
+            ..query()
+        },
+    )
+    .rows
+    .into_iter()
+    .map(|row| row.resource_label)
+    .collect();
+    Typed {
+        built,
+        relabeled,
+        labels,
+        broker: broker_labels(&sent),
+        found,
+    }
 }
 
 #[test]
 fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook() {
     // A note's body is read by no label: typing it publishes nothing, with one note or with
     // two hundred, rather than the whole notebook's surface on every frame.
-    let (one, _) = typing(1, "Write something", "draft");
-    let (many, _) = typing(200, "Write something", "draft");
+    for held in [1, 200] {
+        let body = typing(held, "Write something", "draft");
+        assert_eq!(
+            (body.built, body.relabeled),
+            (0, 0),
+            "typing a body published the surface (whole, labels) with {held} notes"
+        );
+    }
+    // A note's title is its label: each key publishes that label alone, the same work with one
+    // note as with two hundred, and never the whole surface. Typed at the start of the title
+    // the note was made with.
+    for held in [1, 200] {
+        let title = typing(held, "Title", "abc");
+        assert_eq!(
+            title.built, 0,
+            "typing a title built the whole surface with {held} notes"
+        );
+        assert_eq!(
+            title.relabeled, 3,
+            "typing a title published its label {} times for 3 keys with {held} notes",
+            title.relabeled
+        );
+        assert!(
+            title.labels.iter().any(|label| label == "abcUntitled"),
+            "the instance names the note by its new title with {held} notes: {:?}",
+            title.labels
+        );
+        assert!(
+            title.broker.iter().any(|label| label == "abcUntitled"),
+            "the broker's copy names the note by its new title with {held} notes"
+        );
+        assert!(
+            title.found.iter().any(|label| label == "abcUntitled"),
+            "the instance's directory finds the note by its new title with {held} notes: {:?}",
+            title.found
+        );
+        assert!(
+            !title
+                .broker
+                .iter()
+                .any(|label| label == "aUntitled" || label == "abUntitled"),
+            "the broker's copy still names the note by an earlier title with {held} notes"
+        );
+    }
+}
+
+/// The title of the note `target` names, as the instance's runtime reads it.
+fn title_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
+    let instance = host.instances().next().unwrap().instance();
+    let resource = tilolang_tilo::instance::wire::runtime_resource(target).unwrap();
+    match instance
+        .host()
+        .unwrap()
+        .runtime()
+        .read(&resource, "title")
+        .unwrap()
+    {
+        Value::Text(title) => title,
+        other => panic!("a note's title is {other:?}"),
+    }
+}
+
+#[test]
+fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it_arrives() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", NOTES, notes());
+    settle(&mut host, &mut window);
+    let new_note = |window: &mut Window| {
+        let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
+            .expect("the notebook offers a new note")
+            .clone();
+        let event = button.events.keys().next().unwrap().clone();
+        window.send(&[ToApp::Fire {
+            lane: Lane::Root,
+            key: button.key,
+            event,
+            value: None,
+        }]);
+    };
+    new_note(&mut window);
+    settle(&mut host, &mut window);
+    let first = window
+        .detail_target
+        .clone()
+        .expect("the first note is open");
+    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Title")
+        .expect("the note has its title field")
+        .key
+        .clone();
+    // The person typed into the first note's title; the window sent it just as their next
+    // press made a second note, which the instance shows by the time the typing arrives.
+    new_note(&mut window);
+    window.send(&[ToApp::Splice {
+        lane: Lane::Detail,
+        target: first.clone(),
+        key: title,
+        seq: 1,
+        at: 0,
+        delete: 0,
+        insert: "Plan ".to_owned(),
+    }]);
+    settle(&mut host, &mut window);
+    let second = window
+        .detail_target
+        .clone()
+        .expect("the second note is open");
+    assert_ne!(first, second, "the press opened the second note");
     assert_eq!(
-        one, 0,
-        "typing a body built the surface {one} times with one note"
+        title_of(&host, &first),
+        "Plan Untitled",
+        "the typing landed in the note it was typed into"
     );
     assert_eq!(
-        many, 0,
-        "typing a body built the surface {many} times with 200 notes"
-    );
-    // A note's title is its label: each key that changes it publishes it, once. Typed at
-    // the start of the title the note was made with.
-    let (titled, labels) = typing(3, "Title", "abc");
-    assert!(
-        (1..=3).contains(&titled),
-        "typing a title built the surface {titled} times for 3 keys"
-    );
-    assert!(
-        labels.iter().any(|label| label == "abcUntitled"),
-        "the published surface names the note by its new title: {labels:?}"
+        title_of(&host, &second),
+        "Untitled",
+        "and none of it in the note shown when it arrived"
     );
 }

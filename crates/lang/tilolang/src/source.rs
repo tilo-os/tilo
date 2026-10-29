@@ -79,12 +79,23 @@ impl PackageSource {
     /// files that do not parse contribute what they could.
     #[must_use]
     pub fn header(&self) -> (Option<String>, Vec<String>) {
+        let (app, _, uses) = self.header_with_previously();
+        (app, uses)
+    }
+
+    /// [`Self::header`], with the ids the app was published under before (`previously:`).
+    #[must_use]
+    pub fn header_with_previously(&self) -> (Option<String>, Vec<String>, Vec<String>) {
         let mut app = None;
+        let mut previously = Vec::new();
         let mut uses = Vec::new();
         for f in &self.files {
             let (parsed, _) = parse_file_at(&f.text, 0, 0);
-            if app.is_none() {
-                app = parsed.header.map(|h| h.id);
+            if app.is_none()
+                && let Some(header) = parsed.header
+            {
+                app = Some(header.id);
+                previously = header.previously;
             }
             for item in parsed.items {
                 if let Item::Use(u) = item
@@ -94,7 +105,7 @@ impl PackageSource {
                 }
             }
         }
-        (app, uses)
+        (app, previously, uses)
     }
 }
 
@@ -186,15 +197,21 @@ pub fn dependency_order_with(
 ) -> Result<Vec<PathBuf>, String> {
     let search = &search_of(root, search);
     let mut index: HashMap<String, PathBuf> = HashMap::new();
+    // The ids packages were published under before: `use` of one finds the package, unless a
+    // package still has it as its own id.
+    let mut earlier: HashMap<String, PathBuf> = HashMap::new();
     let mut headers: HashMap<PathBuf, Vec<String>> = HashMap::new();
-    let known = |dir: &Path,
-                 index: &mut HashMap<String, PathBuf>,
-                 headers: &mut HashMap<PathBuf, Vec<String>>|
+    let mut known = |dir: &Path,
+                     index: &mut HashMap<String, PathBuf>,
+                     headers: &mut HashMap<PathBuf, Vec<String>>|
      -> Result<(), String> {
         let source = PackageSource::read_dir(dir)?;
-        let (app, uses) = source.header();
+        let (app, previously, uses) = source.header_with_previously();
         if let Some(app) = app {
             index.entry(app).or_insert_with(|| dir.to_path_buf());
+            for old in previously {
+                earlier.entry(old).or_insert_with(|| dir.to_path_buf());
+            }
         }
         headers.insert(dir.to_path_buf(), uses);
         Ok(())
@@ -218,6 +235,9 @@ pub fn dependency_order_with(
                 known(&dir, &mut index, &mut headers)?;
             }
         }
+    }
+    for (old, dir) in earlier {
+        index.entry(old).or_insert(dir);
     }
     let mut order = Vec::new();
     let mut state: BTreeMap<PathBuf, bool> = BTreeMap::new();

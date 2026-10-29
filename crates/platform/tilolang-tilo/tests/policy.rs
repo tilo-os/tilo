@@ -15,7 +15,7 @@ const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
 const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
-const APP: &str = "so.tilo.lang.todo";
+const APP: &str = "so.tilo.lang.tasks";
 const ROOM: &str = "room";
 
 fn agent() -> Caller {
@@ -39,7 +39,7 @@ fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
 /// The block that adds `title` to the todo list.
 fn add_block(replica: &Replica, title: &str) -> String {
     let list = replica.host.root_of(APP).unwrap();
-    format!("todo.add(@todo.Tasks:{}, \"{title}\")", list.id_string())
+    format!("tasks.add(@tasks.Tasks:{}, \"{title}\")", list.id_string())
 }
 
 fn state(block: AgentBlock) -> String {
