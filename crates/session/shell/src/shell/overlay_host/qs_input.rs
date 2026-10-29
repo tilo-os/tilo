@@ -690,8 +690,8 @@ impl ShellOverlayHost {
             }
             RootAction::ToggleMute => self.toggle_quick_settings_mute(chrome),
             RootAction::OpenPowerMenu => {
+                self.open_power_menu();
                 let mut st = chrome.borrow_mut();
-                self.layers.power_menu.open();
                 st.overlays.quick_settings = false;
                 st.quick_settings.nav_stack = vec![tilo_quick_settings::QsLevel::Root];
                 st.bump();

@@ -332,21 +332,9 @@ impl SwipeRow {
         } else {
             Rect::new(row.x1 + offset, row.y0, row.x1, row.y1)
         };
-        let colors = &theme.tokens.colors;
         let armed = self.past_threshold(offset);
-        let fill = if side.destructive {
-            colors.semantic.danger
-        } else if armed {
-            colors.intent.accent
-        } else {
-            colors.lift_on(colors.surfaces.content, 1.0)
-        };
+        let (fill, ink) = uncovered_colors(theme, side.destructive, armed);
         scene.fill(Fill::NonZero, transform, fill, None, &uncovered);
-        let ink = if side.destructive || armed {
-            crate::widget::avatar::initial_ink(fill, theme)
-        } else {
-            theme.text_primary
-        };
         let inset = f64::from(theme.tokens.spacing.s4);
         // Armed, the glyph grows: what letting go now does is told at a glance.
         let icon = if armed {
@@ -515,6 +503,34 @@ impl Decorator for SwipeRow {
             self.content.collect_damage(regions);
         }
     }
+}
+
+/// The fill a swipe uncovers and the ink of its glyph and label: quiet until armed, then the
+/// accent (the danger colour for a destructive command), with the ink made for a filled control
+/// stepped out until the label reads at body-text contrast.
+pub(crate) fn uncovered_colors(
+    theme: &Theme,
+    destructive: bool,
+    armed: bool,
+) -> (vello::peniko::Color, vello::peniko::Color) {
+    let colors = &theme.tokens.colors;
+    if !destructive && !armed {
+        return (
+            colors.lift_on(colors.surfaces.content, 1.0),
+            theme.text_primary,
+        );
+    }
+    let fill = if destructive {
+        colors.semantic.danger
+    } else {
+        colors.intent.accent
+    };
+    let ink = colors.ink_on(
+        fill,
+        colors.intent.on_accent,
+        crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+    );
+    (fill, ink)
 }
 
 #[cfg(test)]

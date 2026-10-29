@@ -62,6 +62,7 @@
 pub mod approved_checks;
 pub mod audit;
 pub mod broker;
+pub mod content;
 pub mod editor;
 pub mod file_actions;
 pub mod fleet;
@@ -69,6 +70,7 @@ pub mod guard;
 pub mod guest;
 pub mod guest_exec;
 pub mod helper_runtime;
+pub mod home;
 pub mod host;
 pub mod images;
 pub mod legacy_relay;

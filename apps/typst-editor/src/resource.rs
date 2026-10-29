@@ -6,19 +6,16 @@
 //! the methods below are the operations that are more than setting a field.
 //! Compile, open, save, export and zoom are effects and views of the app
 //! ([`crate::actions::TypstEffect`]); live diagnostics and preview pages are
-//! rows the surface publishes.
-
-use std::rc::Rc;
+//! rows the view publishes.
 
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{LaunchInput, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::record::RecordId;
 use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
-use crate::app::TypstApp;
 #[cfg(feature = "samples")]
 use crate::samples::{DEFAULT_INDEX, SAMPLES};
 
@@ -175,7 +172,7 @@ pub(crate) fn sample_id(index: usize) -> Id {
     Id::from_raw(format!("sample-{index}"))
 }
 
-/// Framework app: the typst widget is the surface over [`Workspace`].
+/// Framework app: the typst window is the view of [`Workspace`].
 pub struct TypstEditorShell;
 
 impl ResourceApp for TypstEditorShell {
@@ -194,7 +191,7 @@ impl ResourceApp for TypstEditorShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
-        cx.surface(TypstApp::new())
+        crate::app::window(cx)
     }
 
     /// A `.typ` path on the command line opens that file's own workspace.
@@ -265,43 +262,6 @@ impl ResourceApp for TypstEditorShell {
 /// The file a capture shows first.
 #[cfg(feature = "samples")]
 pub(crate) struct CaptureFile(pub(crate) Id);
-
-impl ResourceSurface<Workspace, crate::actions::TypstEffect> for TypstApp {
-    fn effect(
-        &mut self,
-        effect: crate::actions::TypstEffect,
-        cx: &mut ui::framework::EffectCx<Workspace, Self>,
-    ) -> ui::framework::EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn present(&mut self, state: &Rc<Workspace>) {
-        self.present_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
-        self.attach_surface(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_rows()
-            .into_iter()
-            .flat_map(|row| {
-                let resource = row.into_resource();
-                std::iter::once(resource.clone()).chain(resource.children)
-            })
-            .find(|resource| resource.id.as_str() == id)
-            .map(ui::framework::LiveRow::from_resource)
-    }
-}
 
 #[cfg(test)]
 mod tests;

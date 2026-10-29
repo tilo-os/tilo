@@ -92,6 +92,23 @@ impl Core {
         self.ret_h(Value::State { key, scalar })
     }
 
+    /// An argument of an action reference computed from view state, as a function of the
+    /// module the runtime runs when the event fires ([`Value::AtEvent`]).
+    fn arg_at(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let id = self.text(a.h(0)?)?;
+        let Value::List(args) = self.val(a.h(1)?)? else {
+            return trap("arg_at expects the arguments as a list");
+        };
+        let scalar = a.h(2)? != 0;
+        let module = self.module_of_frame()?;
+        self.ret_h(Value::AtEvent {
+            module,
+            id,
+            args,
+            scalar,
+        })
+    }
+
     fn bind_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let node = self.node_index(a.h(0)?)?;
         let key = self.state_key(a.h(1)?, a.h(2)?)?;
@@ -283,6 +300,7 @@ impl Core {
             Imp::SpaceI | Imp::SpaceF => self.space_import(imp, a),
             Imp::StateGet => self.state_get(a),
             Imp::StateAt => self.state_at(a),
+            Imp::ArgAt => self.arg_at(a),
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),

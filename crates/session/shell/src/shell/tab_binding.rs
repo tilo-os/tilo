@@ -355,11 +355,17 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// First-party apps the session draws itself in every session: feedback,
+/// the shell's own surface, and the apps that borrow what only the session
+/// holds (Messages its messaging accounts, Passwords its credential owner).
+const DRAWN_BY_THE_SESSION: [&str; 3] = [tilo_desktop::feedback::KIND, "Messages", "Passwords"];
+
 /// The package a first-party app tab of `kind` is, when the session runs its
-/// apps as their own processes: every packaged built-in but feedback, which
-/// is the shell's own surface.
+/// apps as their own processes: every packaged built-in but those
+/// [`DRAWN_BY_THE_SESSION`].
 pub(crate) fn own_process_package(kind: &AppKind) -> Option<String> {
-    if matches!(kind, AppKind::Other(label) if label.eq_ignore_ascii_case(tilo_desktop::feedback::KIND))
+    if matches!(kind, AppKind::Other(label)
+        if DRAWN_BY_THE_SESSION.iter().any(|drawn| label.eq_ignore_ascii_case(drawn)))
     {
         return None;
     }

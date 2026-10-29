@@ -25,6 +25,8 @@ pub mod room_hold;
 #[cfg(test)]
 mod room_hold_tests;
 #[cfg(target_os = "linux")]
+mod tilolang_hosts;
+#[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 #[cfg(test)]
 use launch_records::register_trusted_service_launch;
@@ -35,7 +37,8 @@ pub use launch_records::{
     consume_trusted_service_launch_identity, register_in_process_launch,
 };
 pub(crate) use launch_records::{
-    authenticated_window_launch, register_in_process_window, withdraw_in_process_launch,
+    authenticated_window_launch, register_in_process_window, register_tilolang_instance,
+    withdraw_in_process_launch,
 };
 
 use crate::shell::action_authority;
@@ -3852,7 +3855,7 @@ fn launch_fitting(
         capabilities_file.as_ref(),
         (document, uri),
     )?;
-    stage_continuity(&app, room, &mut command);
+    stage_window(&app, room, door.is_some(), &mut command);
     apply_launch_context(context, (document, uri), &mut command)?;
     if let Some(handoff) = media_handoff {
         attach_media_handoff(&mut command, handoff);
@@ -4006,6 +4009,17 @@ fn launch_capabilities(
     }
     let capabilities_file = stage_launch_capabilities(&app.package_id, &mut capabilities);
     (capabilities, capabilities_file)
+}
+
+/// Stage the launch's window: its continuity ([`stage_continuity`]) and, for a tilolang app
+/// whose process serves a window door (`served`), presentation alone: a tilolang host runs its
+/// instance.
+fn stage_window(app: &InstalledApp, room: RoomId, served: bool, command: &mut LaunchCommand) {
+    stage_continuity(app, room, command);
+    #[cfg(target_os = "linux")]
+    tilolang_hosts::present_only(app, room, served, command);
+    #[cfg(not(target_os = "linux"))]
+    let _ = served;
 }
 
 /// Give the launch its continuity instance: the record a restored tab
@@ -4303,19 +4317,16 @@ pub(crate) fn queue_native_authoring_launch(
     let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
-    let owner = native_owner
-        .as_ref()
-        .ok_or_else(|| LaunchError::IdentityUnavailable {
-            detail: crate::shell::i18n::t("launch-error-identity-unavailable"),
-        })?;
     // Who the person asked as: the device the room is held under now. A room
     // whose enrollment has not committed yet (placed on this device's own
-    // host, or joined, as the session starts) has none so far; the opening
-    // takes the one its commit installs.
-    let asked_as = owner
-        .rooms()
-        .contains(&room)
-        .then(|| owner.with_current(room, |view| Ok(view.device().clone())))
+    // host, or joined, as the session starts) has none so far, and neither
+    // has a session whose native owner is not installed yet (an app opened
+    // in its first moments): the opening takes the device the room's commit
+    // installs, once launches run.
+    let asked_as = native_owner
+        .as_ref()
+        .filter(|owner| owner.rooms().contains(&room))
+        .map(|owner| owner.with_current(room, |view| Ok(view.device().clone())))
         .transpose()
         .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;
     queue_prepared_launch(
@@ -5519,11 +5530,14 @@ fn start_launch(
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
         #[cfg(target_os = "linux")]
+        let mut tilolang = None;
+        #[cfg(target_os = "linux")]
         let door_end = window_door.as_mut().and_then(|door| {
-            let (end, waiting) = door.serve(child.id());
+            let (end, waiting, hosted) = door.serve(child.id());
             for token in waiting {
                 events.startup.started(Some(token), child.id());
             }
+            tilolang = hosted;
             end
         });
         let local_gate = matches!(launch_gate, SupervisedLaunchGate::Local(_));
@@ -5576,6 +5590,20 @@ fn start_launch(
                 },
             });
             return;
+        }
+
+        // A tilolang app's window: its instance runs in the host of its workspace and author.
+        #[cfg(target_os = "linux")]
+        if let Some(hosted) = &tilolang
+            && let Some(identity) = &command.service_identity
+            && let Some(room) = RoomId::parse(&identity.workspace_id)
+            && let Some(instance) = command
+                .env
+                .iter()
+                .find(|(key, _)| key == "TILO_CONTINUITY_INSTANCE")
+                .and_then(|(_, value)| value.parse::<u64>().ok())
+        {
+            tilolang_hosts::first_window(hosted, room, instance, child.id());
         }
 
         // Drain both pipes concurrently. A GUI normally keeps both streams

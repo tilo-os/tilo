@@ -469,6 +469,19 @@ impl AppearanceDelivery {
         self.told.remove(&connection);
     }
 
+    /// The connections of `app_id`'s windows.
+    #[must_use]
+    pub fn connections_of(&self, app_id: &str) -> Vec<u64> {
+        let mut connections: Vec<u64> = self
+            .told
+            .iter()
+            .filter(|(_, (app, _, _))| app == app_id)
+            .map(|(connection, _)| *connection)
+            .collect();
+        connections.sort_unstable();
+        connections
+    }
+
     /// Tell every connection whose window's appearance (`appearance_of` its
     /// app id) differs from what it was last told.
     pub fn publish(

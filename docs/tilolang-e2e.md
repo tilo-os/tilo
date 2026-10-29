@@ -10,9 +10,11 @@ scripts/headless-examples/tilolang-e2e.py --no-build # reuses target/nested-sess
 
 Without `--no-build` it builds the nested session through
 `dist/dev/nested-session.sh`
-and the `tilolang` tool and `tilo-collab-probe` with cargo. `--no-build` needs
-`target/nested-session`, `target/debug/tilolang` and
-`target/debug/tilo-collab-probe` to exist already.
+and the `tilolang` tool, `tilo-collab-probe` and tilolang-host's `components`
+example (which names the test ids of an app's components) with cargo.
+`--no-build` needs `target/nested-session`, `target/debug/tilolang`,
+`target/debug/tilo-collab-probe` and `target/debug/examples/components` to
+exist already.
 
 The session is headless and runs with `--software`: the shell, its render
 service and every app render on lavapipe, and the shell probes no GPU. It
@@ -35,13 +37,15 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **processes**: each app is its own `tilolang-app` process from the tilolang
   runtime bundle, in its own user, mount and pid namespaces. No process loads
   a Vulkan driver except lavapipe.
-- **actions**: each app publishes its actions. Invoking "New note", "New
+- **actions**: each app publishes its actions; a tilolang app's are its
+  host's instance's, with the history verbs, `read` and "Show this window"
+  every app publishes. Invoking "New note", "New
   chat" and "New item" each adds an entry to that app's history.
 - **hosted-here**: one PNG of the session per app as first opened, with that
   app in front (`first-*.png`). The session's own workspace is a room this
-  device governs and hosts itself, so the shell dials no host for it and
-  tells its apps nothing about one (`room_sync` in `state-dump` is `null`):
-  each shows its own state at once, as native Notes does.
+  device governs and hosts itself, so its apps wait on no other host
+  (`room_sync` in `state-dump` is `null`, or `synced` with this device's own
+  workspace host): each shows its own state at once, as native Notes does.
 - **snapshots**: one PNG of the session per app, with that app in front.
 - **native**: native Notes (`so.tilo.notes`) opens beside them, presents a
   frame and publishes its actions. Both apps are called Notes; they are told
@@ -59,7 +63,9 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **routes**: a second start of the same session installs the collaboration
   probe in place of Today and Todo. Today's surface declares that it reads
   Notes' kinds; Todo's declares no read. The broker lets Today join Notes'
-  route read-only and refuses its write. Todo cannot join at all.
+  route read-only and refuses its write. Todo cannot join at all. The probe
+  runs as each app's own launched process (its entrypoint names the probe's
+  runtime, not tilolang's), with that app's launch custody.
 
 - **host-join**: a local site, as `dist/dev/nested-pair.sh` runs one (the
   room service in persistent mode and its workspace host, `tilo-relay`, with
@@ -86,15 +92,20 @@ Today. The session installs them (`--install-tapp`) beside native Notes
   native Chat, opened now, presents its first frame (`synced-*.png`). The time
   from each launch to its first presented frame is recorded.
 - **host-edit**: tilolang Notes' "New note" lands in the Lounge as native
-  Notes' does; so does it in a second window of the app (the first
-  duplicated, as Super+T does), and in the app started again after every
-  window of it closed.
+  Notes' does; so does a press of its button in a second window of the app
+  (the first duplicated, as Super+T does), which that window makes itself:
+  the test control's `activate_test_id` asks the focused window to activate
+  the button by its test id. So does "New note" in the app started again
+  after every window of it closed.
+- **host-undo**: tilolang Notes' Undo, which its tilolang host publishes as
+  every app publishes it, takes back the person's last step in the Lounge as
+  a step of its own, and History lists that step undone.
 
 Each app opens once in the Lounge: these three starts open none before the
 third, so every app is first opened there.
 
 `--host-only` runs only the checks of a workspace with a host (host-join to
-host-edit).
+host-undo).
 
 ## Output
 

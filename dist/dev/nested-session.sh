@@ -313,6 +313,10 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # as a launch is, so `tilolang dev` swaps a new build in without a restart
 # (crates/packaging/launcher/src/live_module.rs). A shipped launcher ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
+# A development session logs warnings and errors unless RUST_LOG says
+# otherwise: a shipped shell logs errors only, and a watch that could not
+# start or a catalogue that did not settle would leave no trace here.
+export RUST_LOG=${RUST_LOG:-warn}
 # The interfaces this build of the system provides, not the host's: on a Tilo
 # host /usr/share/tilo/system-interfaces.toml is that image's, which may be
 # newer or older than the apps built here.
@@ -377,8 +381,11 @@ while IFS=$'\t' read -r name binary id version manifest; do
     fi
     say "packaging and installing $id"
     tapp=$work/$name.tapp
+    # A build for speed, larger than the distribution limit allows: the
+    # session's store installs it, signed with the session's key, under the
+    # local-build ceiling (package_store::size_limit).
     "$bin/tilo-app-package" pack --manifest "$staged" --payload "$work/payload" \
-        --identity "$identity" --output "$tapp" >/dev/null
+        --identity "$identity" --output "$tapp" --local-build >/dev/null
     # --force replaces the package of the same version; app data stays. The
     # main runtime is installed above; an optional one (Browser's Chromium
     # engine) is offered for download by the app itself.

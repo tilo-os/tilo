@@ -40,6 +40,18 @@ fn a_packaged_app_opens_as_a_window_waiting_to_be_launched() {
         .is_none(),
         "feedback is the shell's own surface",
     );
+    for borrowing in ["Messages", "Passwords"] {
+        assert!(
+            open_app_process(
+                &mut tree,
+                &AppKind::Other(borrowing.into()),
+                borrowing,
+                Placement::NewGroup,
+            )
+            .is_none(),
+            "{borrowing} borrows what only the session holds",
+        );
+    }
 }
 
 #[test]

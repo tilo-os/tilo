@@ -14,7 +14,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{OPEN_ACTION, SET_ACTION, THEN_ACTION};
-use crate::ids::{DocId, Principal};
+use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
 use crate::meta::{EffectClass, FieldKind};
 use crate::meta::{Ty, parse_ty};
@@ -313,24 +313,28 @@ impl ViewInstance {
         self.run(&aref)
     }
 
-    /// Read the view state the arguments of `aref` take (`send(c, draft)`) as it is now, at
-    /// the event: what was typed up to the press, whether or not the view ran again since.
+    /// Evaluate the arguments of `aref` that read view state (`send(c, draft)`, `set(open, not
+    /// open)`) now, at the event, on the view state as it is: what was typed up to the press,
+    /// and what an earlier press set, whether or not the view ran again since.
     fn read_states(&self, aref: &mut ActionRef) -> Result<(), RuntimeError> {
         // `set` puts the value in a slot, boxed as slots hold it; an action takes it plain.
         let unbox = aref.action != SET_ACTION;
         for arg in &mut aref.args {
             match arg {
                 Value::State { key, scalar } => {
-                    let stored = self.core.view_states.borrow().get(key).cloned();
-                    let Some(value) = stored.or_else(|| self.live.state_seen(key)) else {
-                        return Err(RuntimeError::NotFound(format!(
-                            "the view state `{}`",
-                            key.state
-                        )));
-                    };
-                    *arg = match value {
-                        Value::Opt(Some(held)) if *scalar && unbox => *held,
-                        other => other,
+                    *arg = self.state_now(key, *scalar && unbox)?;
+                }
+                Value::AtEvent {
+                    module,
+                    id,
+                    args,
+                    scalar,
+                } => {
+                    let value = self.at_event(module, id, args)?;
+                    *arg = if *scalar && !unbox {
+                        Value::some(value)
+                    } else {
+                        value
                     };
                 }
                 Value::Action(inner) => self.read_states(inner)?,
@@ -338,6 +342,57 @@ impl ViewInstance {
             }
         }
         Ok(())
+    }
+
+    /// The view state slot `key` as it is now; with `unbox`, a scalar's value plain.
+    fn state_now(&self, key: &StateKey, unbox: bool) -> Result<Value, RuntimeError> {
+        let stored = self.core.view_states.borrow().get(key).cloned();
+        let Some(value) = stored.or_else(|| self.live.state_seen(key)) else {
+            return Err(RuntimeError::NotFound(format!(
+                "the view state `{}`",
+                key.state
+            )));
+        };
+        Ok(match value {
+            Value::Opt(Some(held)) if unbox => *held,
+            other => other,
+        })
+    }
+
+    /// Run the argument function `id` of `module` over `args`, its view state read now.
+    fn at_event(
+        &self,
+        module: &ModuleHash,
+        id: &str,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let mut given = Vec::with_capacity(args.len());
+        for arg in args {
+            given.push(match arg {
+                Value::State { key, scalar } => self.state_now(key, *scalar)?,
+                other => other.clone(),
+            });
+        }
+        let pkg = self
+            .core
+            .registry
+            .borrow()
+            .package(module)
+            .ok_or_else(|| RuntimeError::NotFound(format!("module {module}")))?;
+        let meta = pkg
+            .meta
+            .at_event
+            .iter()
+            .find(|f| f.id == id)
+            .cloned()
+            .ok_or_else(|| RuntimeError::NotFound(format!("the argument `{id}`")))?;
+        self.core.call_pure(
+            &pkg,
+            &tilolang::ir::at_event_export(id),
+            &meta.params,
+            &given,
+            &meta.result,
+        )
     }
 
     /// Run an action reference a control applies: a platform action, an action of a package,
@@ -425,6 +480,8 @@ impl ViewInstance {
         let bad = || RuntimeError::BadArgs(format!("a {} does not fit {ty}", value.kind_name()));
         let stored = match (&ty, value) {
             (Ty::Text, Value::Text(t)) => Value::Text(t.clone()),
+            // A rich input's draft: its paragraphs and the references marked in them.
+            (Ty::RichText, Value::Rich(r)) => Value::Rich(r.clone()),
             (Ty::Int, Value::Int(i)) => Value::some(Value::Int(*i)),
             (Ty::Int, Value::Text(t)) => {
                 Value::some(Value::Int(t.trim().parse().map_err(|_| bad())?))

@@ -100,7 +100,8 @@ fn exercise_app(root: &Path) {
     let mut app = TestApp::<VideoPlayerShell>::launched(&[&sample.display().to_string()])
         .expect("the app launches on the sample");
     let sink = player(&mut app, |player| {
-        let engine = player.player().engine().expect("production engine");
+        let shown = player.player();
+        let engine = shown.engine().expect("production engine");
         assert!(
             engine.is_real_decode(),
             "GStreamer is required; no synthesized fallback"
@@ -134,7 +135,8 @@ fn exercise_app(root: &Path) {
             && app.player().duration_ms() >= 3_900
     });
     player(&mut app, |app| {
-        let frame = app.player().latest_frame().unwrap();
+        let shown = app.player();
+        let frame = shown.latest_frame().unwrap();
         assert_eq!((frame.width, frame.height), (160, 120));
         assert_eq!(
             app.player()

@@ -13,9 +13,9 @@ const WAYS: [(f64, bool); 2] = [(1280.0, false), (420.0, true)];
 
 fn harness_in(dir: &std::path::Path) -> ui::headless::FrameHarness {
     ui::attention::clear();
-    let mut files = FileExplorerWidget::with_persistence(None, None);
-    files.navigate(dir.to_path_buf());
-    files.wait_for_archive();
+    let files = FileExplorerWidget::with_persistence(None, None);
+    files.state().navigate(dir.to_path_buf());
+    files.state().wait_for_archive();
     let mut harness =
         ui::headless::FrameHarness::for_app(ui::State::new(), files, (1280, 720), Theme::dark());
     harness.present_in_window_bar();
@@ -43,6 +43,7 @@ fn buttons(harness: &mut ui::headless::FrameHarness, _width: f64) -> Vec<String>
 fn press(harness: &mut ui::headless::FrameHarness, _width: f64, _semantic: bool) {
     let item = files_waiting().expect("a row waits for the person");
     files(harness)
+        .state()
         .needs
         .pressed(ui::attention::Press::Act(item.id()));
     harness.recompose().unwrap();
@@ -57,7 +58,7 @@ fn files_waiting() -> Option<ui::attention::Item> {
 fn wait_for_failure(harness: &mut ui::headless::FrameHarness) -> String {
     tilo_test_env::wait_for("the failure to wait for the person", || {
         harness.recompose().unwrap();
-        files(harness).notice_line()
+        files(harness).state().notice_line()
     })
 }
 
@@ -70,12 +71,14 @@ fn a_shared_file_that_was_not_received_tries_again() {
     let mut harness = harness_in(dir.path());
     let link = "tilo://share/example".to_owned();
     for (width, semantic) in WAYS {
-        files(&mut harness).admit_received_share(link.clone());
+        files(&mut harness)
+            .state()
+            .admit_received_share(link.clone());
         let first = wait_for_failure(&mut harness);
         assert_eq!(buttons(&mut harness, width), [t("files-notice-try-again")]);
         press(&mut harness, width, semantic);
         assert_eq!(
-            files(&mut harness).received_share_link.as_deref(),
+            files(&mut harness).state().received_share_link.as_deref(),
             Some(link.as_str()),
             "the same link"
         );
@@ -83,7 +86,7 @@ fn a_shared_file_that_was_not_received_tries_again() {
         // the link handed to it again brings it back.
         let again = wait_for_failure(&mut harness);
         assert_eq!(again, first, "asked again, and answered the same");
-        files(&mut harness).notice.dismiss();
+        files(&mut harness).state().notice.dismiss();
     }
 }
 
@@ -99,10 +102,11 @@ fn a_failed_history_change_opens_version_history() {
     let plan = dir.path().join("plan.txt");
     for (width, semantic) in WAYS {
         {
-            let mut w = files(&mut harness);
-            w.selection.clear();
-            w.history_pending_path = Some(plan.clone());
-            *w.history_result.lock().unwrap() = Some(Err(t("files-conflict-request-too-large")));
+            let w = files(&mut harness);
+            w.state().selection.clear();
+            w.state().history_pending_path = Some(plan.clone());
+            *w.state().history_result.lock().unwrap() =
+                Some(Err(t("files-conflict-request-too-large")));
         }
         let said = wait_for_failure(&mut harness);
         assert_eq!(said, t("files-conflict-request-too-large"));
@@ -112,15 +116,23 @@ fn a_failed_history_change_opens_version_history() {
         );
         press(&mut harness, width, semantic);
         let w = files(&mut harness);
-        let selected = w
-            .selection
-            .primary()
-            .and_then(|i| w.displayed_entries().get(i).map(|entry| entry.path.clone()));
+        let selected = {
+            let state = w.state();
+            state.selection.primary().and_then(|i| {
+                state
+                    .displayed_entries()
+                    .get(i)
+                    .map(|entry| entry.path.clone())
+            })
+        };
         assert_eq!(
             selected.as_ref(),
             Some(&plan),
             "the file whose change failed"
         );
-        assert!(w.notice_line().is_none(), "the press took the failure down");
+        assert!(
+            w.state().notice_line().is_none(),
+            "the press took the failure down"
+        );
     }
 }

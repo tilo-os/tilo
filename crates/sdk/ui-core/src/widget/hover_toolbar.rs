@@ -1,8 +1,8 @@
 //! [`HoverToolbar`]: controls shown over the trailing top corner of a row while it is hovered
 //! or holds focus: a message's quick reactions and Reply.
 //!
-//! The toolbar is laid out with the row (a layer over it at the top trailing corner), so
-//! showing it moves nothing. It comes the moment the pointer is over the row
+//! The toolbar is laid out with the row (a layer straddling the row's top edge at its trailing
+//! corner, so a one-line message's text stays clear), so showing it moves nothing. It comes the moment the pointer is over the row
 //! ([`crate::motion::Transient::CONFIRMATION`]) and fades when it leaves; while hidden it takes
 //! no pointer input, but it stays in the focus order: Tab from the row reaches its controls,
 //! and focus in them keeps it shown. Showing and hiding it damages only the toolbar.
@@ -63,7 +63,8 @@ impl HoverToolbar {
         };
         let layers = Layers::layers()
             .push(row)
-            .push_at(Box::new(face), At::TopTrailing);
+            // Over the row's top edge, half above it: a one-line message keeps its text clear.
+            .push_straddling(Box::new(face), At::TopTrailing);
         Self {
             layers,
             shown,

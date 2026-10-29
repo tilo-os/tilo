@@ -1,11 +1,11 @@
 //! Window-local selection through the same typed door as pointer and keyboard work.
 
-use super::{FileExplorerWidget, MAX_ANSWERED_ENTRIES};
+use super::{FilesState, MAX_ANSWERED_ENTRIES};
 use crate::i18n::t;
 use crate::resource::MAX_MOVE_ENTRIES;
 use std::collections::HashMap;
 
-impl FileExplorerWidget {
+impl FilesState {
     /// Resolve the whole request before changing anything. Paths and names are
     /// not accepted here: a caller names the rows this window publishes now.
     pub(super) fn select_published_entries(&mut self, wanted: &[String]) -> Result<(), String> {
@@ -55,6 +55,7 @@ impl FileExplorerWidget {
 
 #[cfg(test)]
 mod tests {
+    use super::super::FileExplorerWidget;
     use super::*;
     use crate::effects::FilesEffect;
     use ui::tilo_actions::{ActionKind, door};
@@ -83,8 +84,8 @@ mod tests {
     }
 
     fn files(root: &std::path::Path) -> FileExplorerWidget {
-        let mut files = FileExplorerWidget::with_persistence(None, Some(root.into()));
-        files.navigate(root.into());
+        let files = FileExplorerWidget::with_persistence(None, Some(root.into()));
+        files.state().navigate(root.into());
         files
     }
 
@@ -106,13 +107,13 @@ mod tests {
             &serde_json::json!({"entries": ids}),
         )
         .unwrap();
-        assert_eq!(files.selection_answer()["count"], 2);
+        assert_eq!(files.state().selection_answer()["count"], 2);
         invoke(&mut files, "sort-size", &serde_json::json!({})).unwrap();
         invoke(&mut files, "copy-selection", &serde_json::json!({})).unwrap();
         invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
-        assert!(files.selection.is_empty());
+        assert!(files.state().selection.is_empty());
         assert!(invoke(&mut files, "copy-selection", &serde_json::json!({})).is_err());
-        files.navigate(dest.path().into());
+        files.state().navigate(dest.path().into());
         invoke(&mut files, "paste", &serde_json::json!({})).unwrap();
         assert_eq!(std::fs::read(dest.path().join("a.txt")).unwrap(), b"aa");
         assert_eq!(std::fs::read(dest.path().join("c.txt")).unwrap(), b"ccc");
@@ -125,7 +126,7 @@ mod tests {
         std::fs::write(root.path().join("a.txt"), b"a").unwrap();
         let mut files = files(root.path());
         invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
-        let before = files.selection.clone();
+        let before = files.state().selection.clone();
         let id = crate::search_provider::entry_resource_id(&root.path().join("a.txt"));
         for entries in [
             vec![id.clone(), "missing".into()],
@@ -140,10 +141,10 @@ mod tests {
                 )
                 .is_err()
             );
-            assert_eq!(files.selection, before);
+            assert_eq!(files.state().selection, before);
         }
         std::fs::rename(root.path().join("a.txt"), root.path().join("renamed.txt")).unwrap();
-        files.refresh();
+        files.state().refresh();
         assert!(
             invoke(
                 &mut files,
@@ -158,8 +159,8 @@ mod tests {
             &serde_json::json!({"entries": []}),
         )
         .unwrap();
-        assert!(files.selection.is_empty());
-        assert!(files.last_click.is_none());
+        assert!(files.state().selection.is_empty());
+        assert!(files.state().last_click.is_none());
     }
 
     #[test]
@@ -191,28 +192,34 @@ mod tests {
         std::fs::write(&path, b"shown").unwrap();
         let mut files = files(root.path());
         invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
-        let retained = files.shown_selection.objects[&path].1.clone().unwrap();
+        let retained = files.state().shown_selection.objects[&path]
+            .1
+            .clone()
+            .unwrap();
         let before = retained.observed();
         std::fs::rename(&path, root.path().join("original.txt")).unwrap();
         std::fs::write(&path, b"replacement").unwrap();
         // Selecting the same published row again cannot silently reopen its
         // pathname. The selection and retained descriptor still name "shown".
-        let id = FileExplorerWidget::entry_resource_id(&files.entries[0]);
+        let id = FilesState::entry_resource_id(&files.state().entries[0]);
         invoke(
             &mut files,
             "select-entries",
             &serde_json::json!({"entries": [id]}),
         )
         .unwrap();
-        let current = files.shown_selection.objects[&path].1.as_ref().unwrap();
-        assert!(std::sync::Arc::ptr_eq(&retained, current));
+        let current = files.state().shown_selection.objects[&path]
+            .1
+            .clone()
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&retained, &current));
         assert!(current.retains(before));
         let replacement =
             host_fs::ObservedObject::from_metadata(&std::fs::symlink_metadata(&path).unwrap())
                 .unwrap();
         assert!(!current.retains(replacement));
         invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
-        assert!(files.shown_selection.objects.is_empty());
+        assert!(files.state().shown_selection.objects.is_empty());
     }
 
     #[test]
@@ -224,9 +231,9 @@ mod tests {
         std::fs::rename(&path, root.path().join("original.txt")).unwrap();
         std::fs::write(&path, b"replacement").unwrap();
         invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
-        assert!(files.shown_selection.objects[&path].1.is_none());
+        assert!(files.state().shown_selection.objects[&path].1.is_none());
         invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
-        assert!(files.shown_selection.objects[&path].1.is_none());
+        assert!(files.state().shown_selection.objects[&path].1.is_none());
         assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
     }
 
@@ -239,18 +246,20 @@ mod tests {
         invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
         std::fs::rename(&path, root.path().join("original.txt")).unwrap();
         std::fs::write(&path, b"replacement").unwrap();
-        assert!(files.refresh_metadata_preserving_view());
-        assert_eq!(files.selection.selected().len(), 1);
-        assert!(files.shown_selection.objects[&path].1.is_none());
+        assert!(files.state().refresh_metadata_preserving_view());
+        assert_eq!(files.state().selection.selected().len(), 1);
+        assert!(files.state().shown_selection.objects[&path].1.is_none());
         // An explicit deselection and selection of the new listing may retain
         // the replacement: this is a new user selection, not a passive update.
         invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
         let entry = files
+            .state()
             .entries
             .iter()
             .find(|entry| entry.path == path)
-            .unwrap();
-        let id = FileExplorerWidget::entry_resource_id(entry);
+            .unwrap()
+            .clone();
+        let id = FilesState::entry_resource_id(&entry);
         invoke(
             &mut files,
             "select-entries",
@@ -258,6 +267,7 @@ mod tests {
         )
         .unwrap();
         let observed = files
+            .state()
             .entries
             .iter()
             .find(|entry| entry.path == path)
@@ -265,7 +275,7 @@ mod tests {
             .observed
             .unwrap();
         assert!(
-            files.shown_selection.objects[&path]
+            files.state().shown_selection.objects[&path]
                 .1
                 .as_ref()
                 .unwrap()
@@ -284,13 +294,17 @@ mod tests {
         }
         let mut files = files(root.path());
         invoke(&mut files, "select-all", &serde_json::json!({})).unwrap();
-        assert_eq!(files.selection.selected().len(), MAX_MOVE_ENTRIES + 1);
-        assert!(files.shown_selection.objects.is_empty());
+        assert_eq!(
+            files.state().selection.selected().len(),
+            MAX_MOVE_ENTRIES + 1
+        );
+        assert!(files.state().shown_selection.objects.is_empty());
         let ids = files
+            .state()
             .entries
             .iter()
             .take(MAX_MOVE_ENTRIES)
-            .map(FileExplorerWidget::entry_resource_id)
+            .map(FilesState::entry_resource_id)
             .collect::<Vec<_>>();
         invoke(
             &mut files,
@@ -298,16 +312,20 @@ mod tests {
             &serde_json::json!({"entries": ids}),
         )
         .unwrap();
-        assert_eq!(files.shown_selection.objects.len(), MAX_MOVE_ENTRIES);
+        assert_eq!(
+            files.state().shown_selection.objects.len(),
+            MAX_MOVE_ENTRIES
+        );
         assert!(
             files
+                .state()
                 .shown_selection
                 .objects
                 .values()
                 .all(|(_, retained)| retained.is_some())
         );
         invoke(&mut files, "clear-selection", &serde_json::json!({})).unwrap();
-        assert!(files.shown_selection.objects.is_empty());
+        assert!(files.state().shown_selection.objects.is_empty());
     }
 
     #[test]
@@ -315,8 +333,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("destination");
         std::fs::create_dir(&path).unwrap();
-        let mut files = files(&path);
-        let retained = files.shown_folder.clone().unwrap();
+        let files = files(&path);
+        let retained = files.state().shown_folder.clone().unwrap();
         std::fs::rename(&path, root.path().join("original")).unwrap();
         std::fs::create_dir(&path).unwrap();
         let replacement =
@@ -325,10 +343,10 @@ mod tests {
         assert!(!retained.retains(replacement));
         assert!(std::sync::Arc::ptr_eq(
             &retained,
-            files.shown_folder.as_ref().unwrap()
+            files.state().shown_folder.as_ref().unwrap()
         ));
-        files.navigate(crate::recent::location());
-        assert!(files.shown_folder.is_none());
+        files.state().navigate(crate::recent::location());
+        assert!(files.state().shown_folder.is_none());
     }
 
     #[test]
@@ -337,28 +355,50 @@ mod tests {
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(root.path().join(name), name).unwrap();
         }
-        let mut files = files(root.path());
-        assert!(files.apply_command(crate::command::FileCommand::Click {
-            index: 0,
-            ctrl: false,
-            shift: false,
-        }));
-        assert!(files.apply_command(crate::command::FileCommand::Click {
-            index: 2,
-            ctrl: true,
-            shift: false,
-        }));
+        let files = files(root.path());
+        assert!(
+            files
+                .state()
+                .apply_command(crate::command::FileCommand::Click {
+                    index: 0,
+                    ctrl: false,
+                    shift: false,
+                })
+        );
+        assert!(
+            files
+                .state()
+                .apply_command(crate::command::FileCommand::Click {
+                    index: 2,
+                    ctrl: true,
+                    shift: false,
+                })
+        );
         let path = root.path().join("a.txt");
-        let retained = files.shown_selection.objects[&path].1.clone().unwrap();
+        let retained = files.state().shown_selection.objects[&path]
+            .1
+            .clone()
+            .unwrap();
         std::fs::rename(&path, root.path().join("original.txt")).unwrap();
         std::fs::write(&path, b"replacement").unwrap();
-        assert!(files.apply_command(crate::command::FileCommand::ContextSelect(Some(0))));
-        assert_eq!(files.selection.selected(), vec![0, 2]);
+        assert!(
+            files
+                .state()
+                .apply_command(crate::command::FileCommand::ContextSelect(Some(0)))
+        );
+        assert_eq!(files.state().selection.selected(), vec![0, 2]);
         assert!(std::sync::Arc::ptr_eq(
             &retained,
-            files.shown_selection.objects[&path].1.as_ref().unwrap()
+            files.state().shown_selection.objects[&path]
+                .1
+                .as_ref()
+                .unwrap()
         ));
-        assert!(files.apply_command(crate::command::FileCommand::ContextSelect(None)));
-        assert!(files.shown_selection.objects.is_empty());
+        assert!(
+            files
+                .state()
+                .apply_command(crate::command::FileCommand::ContextSelect(None))
+        );
+        assert!(files.state().shown_selection.objects.is_empty());
     }
 }

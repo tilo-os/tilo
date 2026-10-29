@@ -10,14 +10,14 @@
 //! - **An external effect on the engine**: start / stop / restart / pause /
 //!   remove a container, remove an image or volume, attach a shell, enter a
 //!   distrobox. These change rootless podman, not a shared document, so they
-//!   are effect operations on the live rows the surface publishes
-//!   ([`ResourceSurface::live_rows`](ui::framework::ResourceSurface::live_rows)).
+//!   are effect operations on the live rows the view publishes
+//!   ([`Publishes::live_rows`](ui::framework::Publishes::live_rows)).
 //!   Lifecycle buttons ask the host for the same typed effects on their
 //!   rows; the host resolves permission and availability, records the
-//!   outcome in activity history, then the surface answers the effect. No container control
+//!   outcome in activity history, then the view answers the effect. No container control
 //!   shells out before that authority boundary.
 //! - **Where the window is**: the section, the selected container and its
-//!   detail tab are the surface's own state, never written to the document;
+//!   detail tab are the window's own state, never written to the document;
 //!   other callers move the window with the
 //!   [`ContainersEffect`](crate::resource::ContainersEffect) vocabulary.
 
@@ -40,6 +40,7 @@ mod tests {
             ui::tilo_resource::publish::<Containers>(Containers::KIND, Containers::LABEL, &state);
         root.children.extend(
             ContainersApp::sample()
+                .state()
                 .engine_rows()
                 .into_iter()
                 .map(LiveRow::into_resource),
@@ -68,7 +69,7 @@ mod tests {
         host.settle();
         let heads = host.peer_document().get_heads();
         let expected = host
-            .with_widget::<ContainersApp, _>(|app| app.engine.containers[0].id.clone())
+            .with_widget::<ContainersApp, _>(|app| app.state().engine.containers[0].id.clone())
             .unwrap();
         host.effect_on(
             &format!("container:{expected}"),
@@ -78,6 +79,7 @@ mod tests {
         )
         .unwrap();
         host.with_widget::<ContainersApp, _>(|app| {
+            let mut app = app.state();
             assert_eq!(app.view.selected.as_deref(), Some(expected.as_str()));
             // The sample engine exercises the same lifecycle implementation,
             // while the public offline row correctly refuses machine effects.
@@ -115,6 +117,7 @@ mod tests {
     #[test]
     fn engine_rows_are_effects_unavailable_offline() {
         let rows: Vec<_> = ContainersApp::sample()
+            .state()
             .engine_rows()
             .into_iter()
             .map(LiveRow::into_resource)

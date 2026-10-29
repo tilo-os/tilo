@@ -15770,6 +15770,7 @@ dependencies = [
  "tilo-secret-service",
  "tilo-secret-vault",
  "tilo-secrets",
+ "tilo-sheets",
  "tilo-startup-metrics",
  "tilo-system-stats",
  "tilo-test-env",
@@ -18714,6 +18715,7 @@ dependencies = [
 name = "tilo-document"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "tilo-actions",
@@ -21169,6 +21171,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-sheets"
+version = "0.1.0"
+dependencies = [
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sibling-unlock"
 version = "0.1.0"
 dependencies = [
@@ -22085,6 +22095,7 @@ name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "runtime-dylib",
  "serde_json",
  "thiserror 2.0.21",
@@ -22092,6 +22103,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-files",
  "tilo-render-protocol",
+ "tilo-startup-metrics",
  "tilo-ui-host",
  "tilolang",
  "tilolang-tilo",
@@ -22143,6 +22155,7 @@ dependencies = [
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-startup-metrics",
  "tilo-wake",
  "tilolang",
  "tilolang-tilo",
@@ -23586,6 +23599,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-app-state",
  "tilo-clock",
+ "tilo-content",
  "tilo-egress",
  "tilo-environment",
  "tilo-files",
@@ -23618,6 +23632,7 @@ dependencies = [
 name = "ush-tilo"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "collab-types",
  "tempfile",
  "tilo-environment",
@@ -27553,6 +27568,7 @@ dependencies = [
  "tilo-selector",
  "tilo-session-record",
  "tilo-settings-records",
+ "tilo-sheets",
  "tilo-sibling-unlock",
  "tilo-sort",
  "tilo-spellcheck",

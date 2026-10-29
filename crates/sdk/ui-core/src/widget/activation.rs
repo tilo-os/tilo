@@ -247,6 +247,16 @@ impl Activation {
             .collect()
     }
 
+    /// The operation type this surface handles itself, as a widget's
+    /// [`local_resource_operation_handlers`](crate::widget::ResourceOperations::local_resource_operation_handlers).
+    pub(crate) fn native_handler(&self) -> &'static [&'static str] {
+        if self.native.is_some() {
+            &[NATIVE_INVOKE]
+        } else {
+            &[]
+        }
+    }
+
     /// The operation types this surface handles itself.
     pub(crate) fn native_handlers(&self) -> std::collections::HashSet<String> {
         self.native

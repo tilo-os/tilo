@@ -191,8 +191,10 @@ enum ShellAsk {
     /// Close the sidebar when it covers the content.
     DismissOverlayRail,
     /// Show the sidebar now, without its motion (the narrow still).
+    #[cfg(feature = "samples")]
     OpenSidebar,
     /// The sidebar dragged out to this width (the sidebar-list still).
+    #[cfg(feature = "samples")]
     SidebarWidth(f64),
 }
 
@@ -317,10 +319,12 @@ impl TubeApp {
                         self.shell.toggle_sidebar();
                     }
                 }
+                #[cfg(feature = "samples")]
                 ShellAsk::OpenSidebar => {
                     self.shell.open_sidebar();
                     self.shell.snap();
                 }
+                #[cfg(feature = "samples")]
                 ShellAsk::SidebarWidth(width) => self.shell.stage_sidebar_width(width),
             }
         }

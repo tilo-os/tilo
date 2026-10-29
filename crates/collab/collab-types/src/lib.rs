@@ -142,6 +142,7 @@ pub use redaction::{
 };
 pub use role::{ArtifactKind, OpKind, Role};
 pub use space::{Space, SpaceId};
+pub use tilo_action_policy::{member_record, member_record_id};
 pub use validator::{
     ChannelState, DEFAULT_ROOM, ValidationError, document_node, named_record_of_channel,
     named_records, pattern_read_witnesses, validate_admitted_inbound_op, validate_inbound_op,

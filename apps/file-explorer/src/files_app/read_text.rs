@@ -8,12 +8,12 @@
 
 use std::path::PathBuf;
 
-use super::FileExplorerWidget;
+use super::FilesState;
 
 /// The most characters one read answers with.
 pub const MAX_READ_CHARS: usize = 64 * 1024;
 
-impl FileExplorerWidget {
+impl FilesState {
     /// The file `file` names: an absolute path, a name in the folder shown,
     /// or the row id of an entry this window publishes.
     pub(super) fn named_file(&self, file: &str) -> Result<PathBuf, String> {

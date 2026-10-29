@@ -55,6 +55,9 @@ struct Door {
     serves: Serves,
     /// Windows asked for before the app said whether it opens them.
     queued: Vec<Queued>,
+    /// A tilolang app whose instances a tilolang host runs (`tilolang_hosts`): its process is
+    /// its windows alone, each shown over a patch connection the door carries.
+    tilolang: Option<InstalledApp>,
 }
 
 /// Whether the app behind a door opens the windows the shell asks for.
@@ -137,6 +140,7 @@ pub(super) fn reserve(package_id: &str, room: RoomId) -> Option<Reservation> {
             waiting: Vec::new(),
             serves: Serves::Unknown,
             queued: Vec::new(),
+            tilolang: None,
         },
     );
     Some(Reservation {
@@ -209,10 +213,15 @@ impl HeldDoor {
     }
 
     /// The launcher `launcher_pid` serves the door: hand it its end, which
-    /// it takes with its release, and the launch attempts routed to it so
-    /// far, which its windows settle.
-    pub(super) fn serve(&mut self, launcher_pid: u32) -> (Option<OwnedFd>, Vec<u64>) {
+    /// it takes with its release, the launch attempts routed to it so far,
+    /// which its windows settle, and the tilolang app whose instances a
+    /// tilolang host runs, when it is one.
+    pub(super) fn serve(
+        &mut self,
+        launcher_pid: u32,
+    ) -> (Option<OwnedFd>, Vec<u64>, Option<InstalledApp>) {
         let mut waiting = Vec::new();
+        let mut tilolang = None;
         if let Some(door) = lock(&DOORS)
             .as_mut()
             .and_then(|doors| doors.get_mut(&self.key))
@@ -220,8 +229,22 @@ impl HeldDoor {
         {
             door.launcher_pid = Some(launcher_pid);
             waiting = std::mem::take(&mut door.waiting);
+            tilolang.clone_from(&door.tilolang);
+            // A window whose instance a tilolang host runs is presentation over its door by
+            // construction (`--tilolang-hosted` takes its patch connection there), so its
+            // process opens the app's later windows too, from now on: a later window never
+            // starts a process of its own, which would hold no instance. What is sent before
+            // it reads its door waits there.
+            if door.tilolang.is_some() {
+                door.serves = Serves::Yes;
+                for queued in std::mem::take(&mut door.queued) {
+                    if let Err(error) = send_window(door, &queued.app, queued.room, queued.token) {
+                        tracing::warn!(%error, "a window of a tilolang app was not opened");
+                    }
+                }
+            }
         }
-        (self.theirs.take(), waiting)
+        (self.theirs.take(), waiting, tilolang)
     }
 }
 
@@ -384,6 +407,37 @@ fn start_alone(queued: Vec<Queued>) {
     }
 }
 
+/// The process about to start for `app` in `room`, whose door is reserved, is a tilolang app's
+/// windows alone: a tilolang host runs their instances (`tilolang_hosts`).
+pub(super) fn host_instances(app: &InstalledApp, room: RoomId) {
+    if let Some(door) = lock(&DOORS)
+        .as_mut()
+        .and_then(|doors| doors.get_mut(&key(&app.package_id, room)))
+    {
+        door.tilolang = Some(app.clone());
+    }
+}
+
+/// Send the window `instance` of the process serving `package_id` in `room` its patch
+/// connection `patch`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the door is sent on in the hold it was looked up in, so it is not retired in between"
+)]
+pub(super) fn send_patch(
+    package_id: &str,
+    room: &str,
+    instance: u64,
+    patch: &OwnedFd,
+) -> std::io::Result<()> {
+    let doors = lock(&DOORS);
+    let door = doors
+        .as_ref()
+        .and_then(|doors| doors.get(&(package_id.to_owned(), room.to_owned())))
+        .ok_or(std::io::ErrorKind::NotConnected)?;
+    runtime_portal::windows::send_patch(&door.ours, instance, patch)
+}
+
 /// Ask the process behind `door` for a window of `app` in `room`.
 fn send_window(
     door: &mut Door,
@@ -393,9 +447,23 @@ fn send_window(
 ) -> std::io::Result<()> {
     let instance = super::window_instance(app, room);
     let room_id = room.to_string();
-    let collaboration = window_collaboration(&app.package_id, &room_id, instance)
-        .map_err(|error| tracing::warn!(%error, "a routed window has no collaboration"))
-        .ok();
+    // A tilolang host runs the window's instance: the window gets its patch connection, sent
+    // before it is asked for, and no collaboration connection of its own.
+    let hosted = match (&door.tilolang, door.launcher_pid) {
+        (Some(tilolang), Some(launched)) => {
+            let (window, host) = super::tilolang_hosts::patch_pair()?;
+            runtime_portal::windows::send_patch(&door.ours, instance, &window)?;
+            Some((tilolang.clone(), launched, host))
+        }
+        _ => None,
+    };
+    let collaboration = if hosted.is_some() {
+        None
+    } else {
+        window_collaboration(&app.package_id, &room_id, instance)
+            .map_err(|error| tracing::warn!(%error, "a routed window has no collaboration"))
+            .ok()
+    };
     let shell_ui = door.launcher_pid.and_then(|pid| {
         window_shell_ui(&app.package_id, pid)
             .map_err(|error| tracing::warn!(%error, "a routed window has no shell-ui"))
@@ -413,6 +481,9 @@ fn send_window(
         shell_ui.as_ref(),
     )?;
     tracing::info!(package_id = %app.package_id, instance, "window opened in the running app");
+    if let Some((tilolang, launched, host)) = hosted {
+        super::tilolang_hosts::hand_over(&tilolang, room, instance, launched, host);
+    }
     // Whoever waits for this launch sees it settled when the process maps
     // the window, as a process's first window settles its own.
     if let Some(token) = token {
@@ -712,6 +783,36 @@ mod tests {
                 .expect("a request")
                 .is_some(),
             "the window that waited opens in the app"
+        );
+    }
+
+    /// A tilolang app whose instances a tilolang host runs: another window of it gets its
+    /// patch connection on the door before it is asked for, and no collaboration connection
+    /// of its own.
+    #[test]
+    fn a_hosted_tilolang_window_gets_its_patch_connection_and_no_collaboration() {
+        let package = "so.tilo.window-door-tilolang";
+        let app = app(package);
+        let room = RoomId::parse("7a110d00-0000-4000-8000-000000000008").unwrap();
+        let (_held, launcher_end) = running(package, room, 4_100_004);
+        host_instances(&app, room);
+        runtime_portal::windows::send_serves(&launcher_end).unwrap();
+        assert_eq!(open_in_running(&app, room, &never_alone), Routed::Opened);
+        let Some(runtime_portal::windows::Message::Patch(patched, _)) =
+            runtime_portal::windows::receive_message(&launcher_end).unwrap()
+        else {
+            panic!("the window's patch connection comes first");
+        };
+        let opening = ui::window_door::receive(&launcher_end)
+            .expect("a request")
+            .expect("open");
+        assert_eq!(
+            opening.request.instance, patched,
+            "for the window asked for"
+        );
+        assert!(
+            !opening.request.collaboration && opening.collaboration.is_none(),
+            "the window holds none of the app's data"
         );
     }
 

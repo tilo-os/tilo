@@ -442,6 +442,7 @@ fn a_text_is_found_by_what_it_refers_to_as_that_is_called_now() {
         !titles(&query(&provider, "fix build", &chrome)).contains(&"Plan for Monday"),
         "the old name is not what it is found by"
     );
+    drop(provider);
 
     // Which texts refer to the task: the system's backlinks, in any app.
     let links = index.backlinks(&room, TASKS, "tasks.task:t1");

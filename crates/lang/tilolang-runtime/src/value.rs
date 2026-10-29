@@ -358,6 +358,16 @@ pub enum Value {
         key: crate::view_state::StateKey,
         scalar: bool,
     },
+    /// An argument of an action reference computed from view state (`set(open, not open)`,
+    /// `send(c, "{draft}!")`): the function `e_<id>` of `module` over `args`, run when the
+    /// event fires, after the view state among `args` is read. A `scalar` result is boxed
+    /// where a slot takes it.
+    AtEvent {
+        module: ModuleHash,
+        id: String,
+        args: Vec<Value>,
+        scalar: bool,
+    },
 }
 
 impl Value {
@@ -418,6 +428,7 @@ impl Value {
             Self::Error(_) => "error",
             Self::Event => "event value",
             Self::State { .. } => "view state",
+            Self::AtEvent { .. } => "argument computed at the event",
         }
     }
 }
@@ -475,7 +486,12 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         }
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
-        Value::Node(_) | Value::Rec(_) | Value::Coll(_) | Value::Event | Value::State { .. } => {
+        Value::Node(_)
+        | Value::Rec(_)
+        | Value::Coll(_)
+        | Value::Event
+        | Value::State { .. }
+        | Value::AtEvent { .. } => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })

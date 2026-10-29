@@ -28,7 +28,6 @@ pub(in crate::state) enum ImportError {
     LedgerShape,
     ReceiptShape,
     ReceiptKey,
-    ReceiptConflict,
     IdentityKey,
     CertificateConflict,
     MissingAdmission,
@@ -45,9 +44,6 @@ impl std::fmt::Display for ImportError {
             Self::LedgerShape => f.write_str("governed invitation receipt ledger is not a map"),
             Self::ReceiptShape => f.write_str("governed invitation receipt is not bytes"),
             Self::ReceiptKey => f.write_str("governed invitation receipt key mismatch"),
-            Self::ReceiptConflict => {
-                f.write_str("governed invitation has conflicting redemption receipts")
-            }
             Self::IdentityKey => f.write_str("governed identity key mismatch"),
             Self::CertificateConflict => f.write_str("certificate conflict"),
             Self::MissingAdmission => {
@@ -95,6 +91,8 @@ impl Decode for Bounded {
 
 struct Inputs {
     identities: BTreeMap<String, GovernedIdentity>,
+    /// The room's members, by person key.
+    members: std::collections::BTreeSet<String>,
 }
 fn inputs<R: RoomRead, D: Decode>(
     room: &R,
@@ -102,14 +100,24 @@ fn inputs<R: RoomRead, D: Decode>(
     work: &mut Work,
 ) -> Result<Inputs, ImportError> {
     let mut identities = BTreeMap::new();
+    let mut members = std::collections::BTreeSet::new();
     read::visit_governance_entries(room, |entry| {
-        if let GovernanceEntry::Identity { key, bytes } = entry {
-            // Exact historical winner/ignore traversal. Decode every identity
-            // before checking any receipt, key, certificate or revocation.
-            let value = decoder.identity(bytes)?;
-            let key = work.text(key)?;
-            work.tree::<String, GovernedIdentity>()?;
-            identities.insert(key, value);
+        match entry {
+            GovernanceEntry::Identity { key, bytes } => {
+                // Exact historical winner/ignore traversal. Decode every
+                // identity before checking any receipt, key, certificate or
+                // revocation.
+                let value = decoder.identity(bytes)?;
+                let key = work.text(key)?;
+                work.tree::<String, GovernedIdentity>()?;
+                identities.insert(key, value);
+            }
+            GovernanceEntry::Member { key, .. } => {
+                let key = work.text(key)?;
+                work.tree::<String, ()>()?;
+                members.insert(key);
+            }
+            _ => {}
         }
         Ok(())
     })
@@ -175,36 +183,21 @@ fn inputs<R: RoomRead, D: Decode>(
         },
     )
     .map_err(read_error)?;
-    let mut redemptions = BTreeMap::new();
+    // Two participants may admit through one invitation at once, each
+    // before it holds the other's receipt: both receipts stay, as every
+    // receiver holds them alike.
     for (key, values) in &receipts {
         for bytes in values {
             let receipt = decoder.receipt(bytes)?;
             if !is_key(key, &receipt.invite_id) {
                 return Err(ImportError::ReceiptKey);
             }
-            insert_receipt(&mut redemptions, &receipt, work)?;
         }
     }
-    for identity in identities.values() {
-        for receipt in identity.admission.iter().chain(&identity.admissions) {
-            insert_receipt(&mut redemptions, receipt, work)?;
-        }
-    }
-    Ok(Inputs { identities })
-}
-fn insert_receipt(
-    redemptions: &mut BTreeMap<[u8; 32], RedemptionReceipt>,
-    receipt: &RedemptionReceipt,
-    work: &mut Work,
-) -> Result<(), ImportError> {
-    // All receipt fields are fixed arrays and an enum; clone has no backing.
-    work.tree::<[u8; 32], RedemptionReceipt>()?;
-    if let Some(existing) = redemptions.insert(receipt.invite_id, receipt.clone())
-        && existing != *receipt
-    {
-        return Err(ImportError::ReceiptConflict);
-    }
-    Ok(())
+    Ok(Inputs {
+        identities,
+        members,
+    })
 }
 fn is_key(text: &str, key: &[u8; 32]) -> bool {
     let mut encoded = [0; 64];
@@ -244,6 +237,7 @@ fn apply(
         if !original.contains_key(&cert.device_public_key)
             && cert.user_public_key != authority.user_public_key
             && !identity.has_admission()
+            && !inputs.members.contains(&hex::encode(cert.user_public_key))
         {
             return Err(ImportError::MissingAdmission);
         }

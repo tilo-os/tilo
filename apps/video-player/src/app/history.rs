@@ -1,11 +1,11 @@
 //! What the player remembers: the recent list and the position a clip was left at, the queue entry a finished clip advances past, and the source that is open now.
 
 use super::{
-    LocalMediaEntry, PlayerApp, RESUME_END_MARGIN_MS, RESUME_WRITE_INTERVAL_MS, RecentMedia,
+    LocalMediaEntry, PlayerState, RESUME_END_MARGIN_MS, RESUME_WRITE_INTERVAL_MS, RecentMedia,
     ResumeWrite, Widget, configured_player, local_source_token, resume_key, unix_now_ms,
 };
 
-impl PlayerApp {
+impl PlayerState {
     pub(super) fn record_current_history(&mut self) {
         let Some(queue_id) = self.current_queue_id.as_deref() else {
             return;

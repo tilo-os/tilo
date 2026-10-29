@@ -3,6 +3,8 @@
 //! through a headless driver in `tests/a11y.rs`.
 
 use super::*;
+use crate::http::Outgoing;
+use crate::model::HttpMethod;
 use crate::resource::ApiTesterShell;
 use automerge::{AutoCommit, ROOT};
 use ui::Theme;
@@ -68,7 +70,7 @@ fn as_applied(edit: &Edit<Workspace>) -> serde_json::Value {
 
 fn outgoing(app: &mut ApiTesterApp, doc: &AutoCommit) -> Outgoing {
     app.present_workspace(&record(doc));
-    app.outgoing()
+    crate::http::build_outgoing(&app.request, &app.env_vars())
 }
 
 /// Apply `submit` to `doc` as the window would submit it.
@@ -93,14 +95,14 @@ fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
     assert!(!a.collections.is_empty());
     assert!(!a.environments.is_empty());
     assert!(a.active_env.is_some());
-    assert!(a.response.is_some());
+    assert!(a.state().response.is_some());
 
     let live = ApiTesterApp::new();
     assert!(live.collections.is_empty(), "no fabricated collections");
     assert!(live.environments.is_empty(), "no fabricated environments");
     assert!(live.history.is_empty(), "no fabricated history");
     assert!(
-        live.response.is_none(),
+        live.state().response.is_none(),
         "no canned response before a real Send"
     );
 
@@ -151,7 +153,7 @@ fn replaying_history_fills_the_builder_without_sending() {
     drain(&mut a, &mut doc);
     assert_eq!(a.request.method, HttpMethod::Post);
     assert_eq!(record(&doc).request.url, "https://api.example.com/v2/users");
-    assert!(!a.sending);
+    assert!(!a.state().sending);
     assert_eq!(a.selected, None);
 }
 
@@ -782,7 +784,7 @@ fn resource_send_performs_a_real_http_round_trip() {
         "admitted HTTP invocation {admitted:?} has not completed at queue time"
     );
     assert!(
-        app.with_surface::<ApiTesterApp, _>(|surface| surface.sending)
+        app.with_surface::<ApiTesterApp, _>(|surface| surface.state().sending)
             .unwrap(),
         "the backend has not answered the displayed HTTP job"
     );
@@ -819,7 +821,7 @@ fn resource_send_performs_a_real_http_round_trip() {
     );
     server.join().unwrap();
     let response = app
-        .with_surface::<ApiTesterApp, _>(|surface| surface.response.clone())
+        .with_surface::<ApiTesterApp, _>(|surface| surface.state().response.clone())
         .unwrap()
         .expect("the response is displayed");
     assert_eq!(response.status, 200);
@@ -834,7 +836,7 @@ fn resource_send_performs_a_real_http_round_trip() {
         format!("http://{address}/probe?name=Gr%C3%BCn")
     );
     assert!(
-        !app.with_surface::<ApiTesterApp, _>(|surface| surface.sending)
+        !app.with_surface::<ApiTesterApp, _>(|surface| surface.state().sending)
             .unwrap()
     );
     for _ in 0..3 {
@@ -922,10 +924,10 @@ fn send_without_a_url_asks_for_one() {
     let _ = app.start_effect(&ApiTesterEffect::Send);
     app.settle();
     app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert!(!surface.sending, "nothing was sent");
-        assert!(surface.response.is_none());
+        assert!(!surface.state().sending, "nothing was sent");
+        assert!(surface.state().response.is_none());
         assert_eq!(
-            surface.error.as_deref(),
+            surface.state().error.as_deref(),
             Some("Enter a URL to send the request to.")
         );
         assert!(!surface.stale.response, "the pane shows it");
@@ -984,8 +986,10 @@ fn escape_closes_a_guests_ask_without_leaving_a_search() {
         !fields.iter().any(|name| name == "Search"),
         "no palette search is left open: {fields:?}"
     );
-    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent"))
-        .unwrap();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert!(surface.state().error.is_none(), "not sent");
+    })
+    .unwrap();
 }
 
 /// A guest (an Editor) pressing Send reaches a server outside the room, so
@@ -1013,12 +1017,14 @@ fn a_guests_send_is_asked_in_the_window_saying_who_decides() {
         "the ask says who decides: {:?}",
         app.harness().asking_why()
     );
-    app.with_surface::<ApiTesterApp, _>(|surface| assert!(surface.error.is_none(), "not sent yet"))
-        .unwrap();
+    app.with_surface::<ApiTesterApp, _>(|surface| {
+        assert!(surface.state().error.is_none(), "not sent yet");
+    })
+    .unwrap();
     app.confirm_asked();
     app.with_surface::<ApiTesterApp, _>(|surface| {
         assert_eq!(
-            surface.error.as_deref(),
+            surface.state().error.as_deref(),
             Some("Enter a URL to send the request to."),
             "the confirmed Send ran"
         );
@@ -1079,7 +1085,7 @@ fn sent_response(url: String) -> ResponseData {
             )
         })
     });
-    app.with_surface::<ApiTesterApp, _>(|surface| surface.response.clone())
+    app.with_surface::<ApiTesterApp, _>(|surface| surface.state().response.clone())
         .unwrap()
         .expect("the response is displayed")
 }
@@ -1240,8 +1246,8 @@ fn a_failed_request_is_shown_in_the_response_pane() {
         })
         .expect("the worker reported why it failed");
     app.with_surface::<ApiTesterApp, _>(|surface| {
-        assert!(surface.response.is_none());
-        assert_eq!(surface.error.as_deref(), Some(failure.as_str()));
+        assert!(surface.state().response.is_none());
+        assert_eq!(surface.state().error.as_deref(), Some(failure.as_str()));
         assert!(!surface.stale.response, "the pane was rebuilt");
     })
     .unwrap();
@@ -1555,13 +1561,13 @@ fn a_history_entry_keeps_the_whole_request_it_sent() {
 #[test]
 fn cancelling_a_request_in_flight_stops_waiting_for_it() {
     let (mut a, mut doc) = demo();
-    a.sending = true;
-    let flag = std::sync::Arc::clone(&a.send_cancel);
-    a.cancel_send();
-    assert!(!a.sending, "the app is no longer waiting");
+    a.state().sending = true;
+    let flag = std::sync::Arc::clone(&a.state().send_cancel);
+    a.state().cancel_send();
+    assert!(!a.state().sending, "the app is no longer waiting");
     assert!(flag.load(std::sync::atomic::Ordering::Acquire));
     assert_eq!(
-        a.error.as_deref(),
+        a.state().error.as_deref(),
         Some("The request was cancelled."),
         "the pane says what happened"
     );
@@ -1572,12 +1578,16 @@ fn cancelling_a_request_in_flight_stops_waiting_for_it() {
 /// not a silent no-op; and a part that does not exist is refused by name.
 #[test]
 fn copying_part_of_a_response_that_is_not_there_is_refused() {
-    let mut a = ApiTesterApp::new_demo();
-    a.response = None;
-    a.error = None;
-    assert!(a.copy_body().is_err());
-    assert!(a.copy_headers().is_err());
-    assert!(a.error.is_some(), "the pane says why nothing was copied");
+    let a = ApiTesterApp::new_demo();
+    let mut state = a.state();
+    state.response = None;
+    state.error = None;
+    assert!(state.copy_body().is_err());
+    assert!(state.copy_headers().is_err());
+    assert!(
+        state.error.is_some(),
+        "the pane says why nothing was copied"
+    );
 }
 
 /// The window bar's sidebar button flips the sidebar on every click, in a

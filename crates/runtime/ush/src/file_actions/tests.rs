@@ -12,12 +12,12 @@ fn store(dir: &Path) -> Recoverable {
 
 /// Carry `action` out and take it back, the two halves of a task.
 fn done(action: &FileAction, policy: &Policy, store: &Recoverable) -> Vec<UndoEntry> {
-    perform(action, policy, store, Some(1_000))
+    perform(action, policy, store, &ContentStore::memory(), Some(1_000))
         .unwrap_or_else(|(error, _)| panic!("{} was refused: {error}", action.verb()))
 }
 
 fn refused(action: &FileAction, policy: &Policy, store: &Recoverable) -> String {
-    match perform(action, policy, store, Some(1_000)) {
+    match perform(action, policy, store, &ContentStore::memory(), Some(1_000)) {
         Ok(done) => panic!("{} was carried out: {done:?}", action.verb()),
         Err((error, partial)) => {
             assert!(partial.is_empty(), "a refusal does nothing first");
@@ -187,6 +187,7 @@ fn an_append_adds_to_the_end_and_undo_puts_the_previous_text_back() {
         &FileAction::Append(AppendFileOp {
             files: vec![root.join("today.md")],
             text: "- bought milk\n".into(),
+            content: None,
         }),
         &policy,
         &store,
@@ -216,6 +217,7 @@ fn an_append_to_a_file_that_is_not_there_makes_it() {
         &FileAction::Append(AppendFileOp {
             files: vec![root.join("new.md")],
             text: "first line\n".into(),
+            content: None,
         }),
         &policy,
         &store,
@@ -311,6 +313,7 @@ fn touch_keeps_the_text_a_file_already_has() {
         &FileAction::Touch(AppendFileOp {
             files: vec![root.join("draft.md"), root.join("empty.md")],
             text: String::new(),
+            content: None,
         }),
         &policy,
         &store,
@@ -346,6 +349,7 @@ fn touching_a_directory_is_refused_and_changes_nothing() {
         &FileAction::Touch(AppendFileOp {
             files: vec![root.join("notes")],
             text: String::new(),
+            content: None,
         }),
         &policy,
         &store,
@@ -792,6 +796,7 @@ fn an_agents_direct_move_is_the_same_action_attributed_to_the_agent_for_the_pers
         ),
         &state.device,
         &Recoverable::at(store_in(&state.environment)),
+        &content_in(&state.environment),
     )
     .unwrap();
     assert!(answer.settled.as_ref().is_some_and(Settled::is_done));
@@ -872,6 +877,7 @@ fn a_forty_operand_copy_beyond_a_grant_is_refused_whole() {
         )),
         &state.device,
         &Recoverable::at(store_in(&state.environment)),
+        &content_in(&state.environment),
     );
     assert!(matches!(direct, Err(RecordError::Refused(_))), "{direct:?}");
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);

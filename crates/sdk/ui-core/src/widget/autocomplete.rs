@@ -61,6 +61,36 @@ pub struct Suggestion {
     /// A participant this row names: painted as their avatar (or, for
     /// software acting in the room, the agent mark) in place of an icon.
     pub person: Option<SuggestionPerson>,
+    /// What the row is: a pickable item (the default), a group's header or a
+    /// notice ("No matches").
+    pub role: RowRole,
+    /// Byte ranges of the label the typed query matched, painted bold.
+    pub matched: Vec<std::ops::Range<usize>>,
+    /// Dim text right after the label on the same line: a handle, a topic,
+    /// a command's parameters.
+    pub aside: Option<String>,
+}
+
+/// What a row of a [`SuggestionList`] is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RowRole {
+    /// A suggestion that can be armed and accepted.
+    #[default]
+    Item,
+    /// The header of the group of rows under it; `busy` while that group is
+    /// on its way, with a progress indicator beside it.
+    Header { busy: bool },
+    /// A line that says something about the list ("No matches"), never
+    /// armed.
+    Notice,
+}
+
+impl Suggestion {
+    /// Whether the row can be armed and accepted.
+    #[must_use]
+    pub fn is_pickable(&self) -> bool {
+        self.role == RowRole::Item
+    }
 }
 
 /// Who a [`Suggestion`] names, for its leading avatar.
@@ -85,6 +115,9 @@ impl Suggestion {
             subtitle: None,
             icon: None,
             person: None,
+            role: RowRole::Item,
+            matched: Vec::new(),
+            aside: None,
         }
     }
 
@@ -97,6 +130,9 @@ impl Suggestion {
             subtitle: None,
             icon: None,
             person: None,
+            role: RowRole::Item,
+            matched: Vec::new(),
+            aside: None,
         }
     }
 
@@ -246,6 +282,15 @@ pub struct SuggestionList {
     /// A band its owner paints at the top of the panel, above the rows (a
     /// picker's own filter field).
     header: f64,
+    /// The side of the anchor the panel opens on when there is room there.
+    side: crate::widget::PopoverSide,
+    /// The panel spans the viewport's width right above its anchor: a phone's
+    /// drawer docked above the keyboard, its rows a finger tall.
+    docked: bool,
+    /// The panel's height, following its rows on the platform's spring.
+    height: crate::motion::Extent,
+    /// Turns beside a header whose rows are on their way.
+    spinner: crate::widget::spinner::Spinner,
 }
 
 impl Default for SuggestionList {
@@ -273,7 +318,40 @@ impl SuggestionList {
             content_width: 0.0,
             min_width: 0.0,
             header: 0.0,
+            side: crate::widget::PopoverSide::Below,
+            docked: false,
+            height: crate::motion::Extent::default(),
+            spinner: crate::widget::spinner::Spinner::new(),
         }
+    }
+
+    /// Open on `side` of the anchor when there is room there: above a
+    /// composer at the bottom of a window, below a field near its top.
+    pub fn set_side(&mut self, side: crate::widget::PopoverSide) {
+        self.side = side;
+    }
+
+    /// Span the viewport's width right above the anchor, rows a finger tall:
+    /// a phone's drawer docked above the keyboard.
+    pub fn set_docked(&mut self, docked: bool) {
+        self.docked = docked;
+    }
+
+    /// Whether the panel is docked across the viewport.
+    #[must_use]
+    pub fn is_docked(&self) -> bool {
+        self.docked
+    }
+
+    /// Whether the panel's height is still moving, or a header's progress
+    /// turns: the list asks for frames until it rests.
+    #[must_use]
+    pub fn is_animating(&self, now: crate::time::Instant) -> bool {
+        self.height.is_moving(now)
+            || self
+                .suggestions
+                .iter()
+                .any(|s| matches!(s.role, RowRole::Header { busy: true }))
     }
 
     /// Never narrower than `width`, so a picker over short labels keeps
@@ -338,7 +416,10 @@ impl SuggestionList {
             self.status = None;
             self.arriving = None;
         }
-        if self.highlight.is_some_and(|h| h >= self.suggestions.len()) {
+        if self
+            .highlight
+            .is_some_and(|h| self.suggestions.get(h).is_none_or(|s| !s.is_pickable()))
+        {
             self.highlight = None;
         }
         self.first = self
@@ -362,28 +443,68 @@ impl SuggestionList {
 
     /// Arm row `index` (clamped; `None` disarms) and scroll it into view.
     pub fn set_highlight(&mut self, index: Option<usize>) {
-        self.highlight = index.filter(|&i| i < self.suggestions.len());
+        self.highlight =
+            index.filter(|&i| self.suggestions.get(i).is_some_and(Suggestion::is_pickable));
         self.reveal();
+    }
+
+    /// The pickable rows' indices, in order.
+    fn pickable(&self) -> Vec<usize> {
+        self.suggestions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_pickable())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Arm the row a page (the rows in view) further on or back, stopping at
+    /// the ends: Page Down and Page Up.
+    pub fn page(&mut self, forward: bool) {
+        let pickable = self.pickable();
+        let (Some(&first), Some(&last)) = (pickable.first(), pickable.last()) else {
+            return;
+        };
+        let step = self.max_visible.saturating_sub(1).max(1);
+        let from = self.highlight.unwrap_or(if forward { first } else { last });
+        let target = if forward {
+            from.saturating_add(step)
+        } else {
+            from.saturating_sub(step)
+        };
+        let next = if forward {
+            pickable
+                .iter()
+                .copied()
+                .find(|&i| i >= target)
+                .unwrap_or(last)
+        } else {
+            pickable
+                .iter()
+                .rev()
+                .copied()
+                .find(|&i| i <= target)
+                .unwrap_or(first)
+        };
+        self.set_highlight(Some(next));
     }
 
     /// Arm the next (or previous) row, wrapping at both ends.
     pub fn move_highlight(&mut self, forward: bool) {
-        let len = self.suggestions.len();
-        if len == 0 {
+        let pickable = self.pickable();
+        let (Some(&first), Some(&last)) = (pickable.first(), pickable.last()) else {
             return;
-        }
-        let last = len.saturating_sub(1);
+        };
         let next = match self.highlight {
-            None if forward => 0,
+            None if forward => first,
             None => last,
-            Some(cur) if forward => {
-                if cur >= last {
-                    0
-                } else {
-                    cur.saturating_add(1)
-                }
-            }
-            Some(cur) => cur.checked_sub(1).unwrap_or(last),
+            Some(cur) if forward => pickable.iter().copied().find(|&i| i > cur).unwrap_or(first),
+            Some(cur) => pickable
+                .iter()
+                .rev()
+                .copied()
+                .find(|&i| i < cur)
+                .unwrap_or(last),
         };
         self.set_highlight(Some(next));
     }
@@ -496,6 +617,13 @@ impl SuggestionList {
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
+        if self.docked {
+            // Across the viewport, its bottom on the anchor's top: the
+            // keyboard and the field stay where they are, the drawer above.
+            let y1 = self.anchor.y0 - m.gap;
+            let y0 = (y1 - height).max(viewport.y0);
+            return Some(Rect::new(viewport.x0, y0, viewport.x1, y1));
+        }
         let width = self
             .anchor
             .width()
@@ -506,7 +634,7 @@ impl SuggestionList {
             crate::widget::floating_surface::place_anchored(
                 self.anchor,
                 (width, height),
-                crate::widget::PopoverSide::Below,
+                self.side,
                 m.gap,
                 viewport,
             )
@@ -535,6 +663,11 @@ impl SuggestionList {
         (0..self.visible_count())
             .find(|&visible| self.row_in(panel, visible).contains(point))
             .map(|visible| visible.saturating_add(self.first))
+            .filter(|&index| {
+                self.suggestions
+                    .get(index)
+                    .is_some_and(Suggestion::is_pickable)
+            })
     }
 
     /// Track the pointer for the hover lift; returns whether it changed.
@@ -566,6 +699,9 @@ impl SuggestionList {
             .iter()
             .map(|s| {
                 let mut w = f64::from(text.measure_style(&s.label, None, &label_style).0);
+                if let Some(aside) = &s.aside {
+                    w += m.spacing + f64::from(text.measure_style(aside, None, &detail_style).0);
+                }
                 if let Some(subtitle) = &s.subtitle {
                     w = w.max(f64::from(
                         text.measure_style(subtitle, None, &detail_style).0,
@@ -599,10 +735,36 @@ impl SuggestionList {
     ) {
         let two_line = self.suggestions.iter().any(|s| s.subtitle.is_some());
         self.metrics = ListMetrics::of(theme, self.role, two_line);
+        if self.docked {
+            // A finger's row: the panel row every touch list has.
+            self.metrics.row = self
+                .metrics
+                .row
+                .max(f64::from(theme.tokens.metrics.panel_row_height));
+        }
         self.content_width = self.content_width_in(text, theme);
-        let Some(panel) = self.rect() else {
+        let Some(target) = self.rect() else {
             return;
         };
+        // The height follows the rows on the platform's spring, growing from
+        // the edge that faces the anchor; the rows stay where they will be.
+        let now = crate::motion::frame_now();
+        self.height.follow(
+            target.height(),
+            theme.motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        let shown = self.height.get(now).clamp(0.0, target.height());
+        let above = target.y1 <= self.anchor.y0 + 0.5;
+        let panel = if above {
+            Rect::new(target.x0, target.y1 - shown, target.x1, target.y1)
+        } else {
+            Rect::new(target.x0, target.y0, target.x1, target.y0 + shown)
+        };
+        if let Some(settles) = self.height.settles_at() {
+            crate::motion::want_frames_until(settles);
+        }
         let radius = f64::from(theme.tokens.radii.panel);
         crate::surface::shadow(
             scene,
@@ -657,19 +819,52 @@ impl SuggestionList {
         }
         let rows = Rect::new(
             panel.x0 + m.inset,
-            panel.y0 + m.inset + self.header,
+            (panel.y0 + m.inset + self.header).max(panel.y0),
             panel.x1 - m.inset,
-            panel.y1 - m.inset,
+            (panel.y1 - m.inset).max(panel.y0),
         );
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
-        let mut ctx = PaintCtx::new(scene, transform, text, theme);
-        for visible in 0..self.visible_count() {
-            let index = visible.saturating_add(self.first);
-            let Some(s) = self.suggestions.get(index) else {
-                continue;
-            };
-            let row = self.row_in(panel, visible);
-            self.paint_row(&mut ctx, row, index, s);
+        let mut busy_at = None;
+        {
+            let mut ctx = PaintCtx::new(scene, transform, text, theme);
+            for visible in 0..self.visible_count() {
+                let index = visible.saturating_add(self.first);
+                let Some(s) = self.suggestions.get(index) else {
+                    continue;
+                };
+                let row = self.row_in(target, visible);
+                match s.role {
+                    RowRole::Item => self.paint_row(&mut ctx, row, index, s),
+                    RowRole::Header { busy } => {
+                        let end = self.paint_header(&mut ctx, row, s);
+                        if busy {
+                            busy_at = Some((row, end));
+                        }
+                    }
+                    RowRole::Notice => self.paint_notice(&mut ctx, row, s),
+                }
+            }
+        }
+        if let Some((row, end)) = busy_at {
+            let side = f64::from(theme.text(TextRole::Caption).line_height_px());
+            let x = end + m.spacing;
+            self.spinner.set_rect(Rect::new(
+                x,
+                row.center().y - side / 2.0,
+                x + side,
+                row.center().y + side / 2.0,
+            ));
+            crate::widget::Widget::draw(
+                &mut self.spinner,
+                scene,
+                transform,
+                text,
+                theme,
+                &crate::presence::PresenceCtx::default(),
+            );
+            if theme.motion().loops() {
+                crate::motion::want_frames_until(now + crate::time::Duration::from_millis(100));
+            }
         }
         scene.pop_layer();
     }
@@ -768,7 +963,7 @@ impl SuggestionList {
         };
         let room = f32_of_f64((label_x1 - x).max(0.0));
         let label = text.elide_to_width_style(&s.label, room, &label_style);
-        let (_, lh) = text.measure_style(&label, None, &label_style);
+        let (lw, lh) = text.measure_style(&label, None, &label_style);
         let subtitle = s.subtitle.as_ref().map(|subtitle| {
             let shown = text.elide_to_width_style(subtitle, room, &detail_style);
             let (_, sh) = text.measure_style(&shown, None, &detail_style);
@@ -777,14 +972,53 @@ impl SuggestionList {
         // The label and its subtitle stand as one block, centred in the row.
         let block = f64::from(lh) + subtitle.as_ref().map_or(0.0, |(_, sh)| *sh);
         let top = row.center().y - block / 2.0;
-        text.draw_style(
-            scene,
-            &label,
-            ink,
-            transform.pre_translate(Vec2::new(x, top)),
-            None,
-            &label_style,
-        );
+        if s.matched.is_empty() || label != s.label {
+            text.draw_style(
+                scene,
+                &label,
+                ink,
+                transform.pre_translate(Vec2::new(x, top)),
+                None,
+                &label_style,
+            );
+        } else {
+            // The letters the query matched, bold, between the rest.
+            let bold = label_style
+                .clone()
+                .with_weight(crate::text_render::TextWeight::Bold);
+            let mut pen = x;
+            for (run, strong) in matched_runs(&label, &s.matched) {
+                let style = if strong { &bold } else { &label_style };
+                text.draw_style(
+                    scene,
+                    run,
+                    ink,
+                    transform.pre_translate(Vec2::new(pen, top)),
+                    None,
+                    style,
+                );
+                pen += f64::from(text.measure_style(run, None, style).0);
+            }
+        }
+        if let Some(aside) = &s.aside {
+            let ax = x + f64::from(lw) + m.spacing;
+            let room = f32_of_f64((label_x1 - ax).max(0.0));
+            if room > 8.0 {
+                let shown = text.elide_to_width_style(aside, room, &detail_style);
+                let (_, ah) = text.measure_style(&shown, None, &detail_style);
+                text.draw_style(
+                    scene,
+                    &shown,
+                    if armed { ink } else { dim },
+                    transform.pre_translate(Vec2::new(
+                        ax,
+                        top + f64::from(lh) / 2.0 - f64::from(ah) / 2.0,
+                    )),
+                    None,
+                    &detail_style,
+                );
+            }
+        }
         if let Some((shown, _)) = subtitle {
             text.draw_style(
                 scene,
@@ -795,6 +1029,66 @@ impl SuggestionList {
                 &detail_style,
             );
         }
+    }
+
+    /// A group's header: its title small and dim, like a menu's section.
+    /// Returns where the title ends, for a progress indicator beside it.
+    fn paint_header(&self, ctx: &mut PaintCtx<'_>, row: Rect, s: &Suggestion) -> f64 {
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = ctx.reborrow();
+        let m = &self.metrics;
+        let style = theme.text(TextRole::Caption);
+        let dim = theme.tokens.colors.ink_on_any(
+            &[crate::chrome::panel_ground(theme)],
+            theme.text_dim,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        let x = row.x0 + m.pad;
+        let shown =
+            text.elide_to_width_style(&s.label, f32_of_f64((row.x1 - m.pad - x).max(0.0)), &style);
+        let (w, h) = text.measure_style(&shown, None, &style);
+        text.draw_style(
+            scene,
+            &shown,
+            dim,
+            transform.pre_translate(Vec2::new(x, row.y1 - f64::from(h) - m.inset.min(4.0))),
+            None,
+            &style,
+        );
+        x + f64::from(w)
+    }
+
+    /// A line about the list ("No matches"), dim, never armed.
+    fn paint_notice(&self, ctx: &mut PaintCtx<'_>, row: Rect, s: &Suggestion) {
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = ctx.reborrow();
+        let m = &self.metrics;
+        let style = theme.text(self.role);
+        let dim = theme.tokens.colors.ink_on_any(
+            &[crate::chrome::panel_ground(theme)],
+            theme.text_dim,
+            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        );
+        let x = row.x0 + m.pad;
+        let shown =
+            text.elide_to_width_style(&s.label, f32_of_f64((row.x1 - m.pad - x).max(0.0)), &style);
+        let (_, h) = text.measure_style(&shown, None, &style);
+        text.draw_style(
+            scene,
+            &shown,
+            dim,
+            transform.pre_translate(Vec2::new(x, row.center().y - f64::from(h) / 2.0)),
+            None,
+            &style,
+        );
     }
 
     /// Accessibility rows for the suggestions in view, keyed by `key`.
@@ -834,6 +1128,20 @@ impl SuggestionList {
             .filter_map(|visible| {
                 let index = visible.saturating_add(self.first);
                 let s = self.suggestions.get(index)?;
+                if !s.is_pickable() {
+                    let busy = matches!(s.role, RowRole::Header { busy: true });
+                    return Some(
+                        AccessNode::new(if busy || s.role == RowRole::Notice {
+                            Role::StaticText
+                        } else {
+                            Role::Heading { level: 3 }
+                        })
+                        .with_name(&s.label)
+                        .with_key(key(s))
+                        .with_bounds(self.row_in(panel, visible))
+                        .with_state(AccessState::new().busy(busy)),
+                    );
+                }
                 let mut row = AccessNode::new(Role::Button)
                     .with_name(&s.label)
                     .with_key(key(s))
@@ -850,6 +1158,37 @@ impl SuggestionList {
             })
             .collect()
     }
+}
+
+/// `label` cut into runs, each marked whether a range of `matched` covers it.
+fn matched_runs<'a>(label: &'a str, matched: &[std::ops::Range<usize>]) -> Vec<(&'a str, bool)> {
+    let mut runs = Vec::new();
+    let mut at = 0usize;
+    let mut ranges: Vec<std::ops::Range<usize>> = matched
+        .iter()
+        .map(|range| {
+            label.floor_char_boundary(range.start.min(label.len()))
+                ..label.floor_char_boundary(range.end.min(label.len()))
+        })
+        .filter(|range| range.start < range.end)
+        .collect();
+    ranges.sort_by_key(|range| range.start);
+    for range in ranges {
+        if range.start < at {
+            continue;
+        }
+        if let Some(plain) = label.get(at..range.start).filter(|run| !run.is_empty()) {
+            runs.push((plain, false));
+        }
+        if let Some(strong) = label.get(range.clone()) {
+            runs.push((strong, true));
+        }
+        at = range.end;
+    }
+    if let Some(rest) = label.get(at..).filter(|run| !run.is_empty()) {
+        runs.push((rest, false));
+    }
+    runs
 }
 
 pub struct Autocomplete {

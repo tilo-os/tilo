@@ -120,9 +120,17 @@ fn act(
                     .map(|()| 1)
                     .map_err(|error| error.to_string())
             }),
-        action => perform(action, &policy, &store, None)
-            .map(|done| done.len())
-            .map_err(|(error, _)| error.to_string()),
+        // The host's own shell names no content by reference: its verbs
+        // carry what they write.
+        action => perform(
+            action,
+            &policy,
+            &store,
+            &tilo_content::ContentStore::memory(),
+            None,
+        )
+        .map(|done| done.len())
+        .map_err(|(error, _)| error.to_string()),
     };
     match result {
         Ok(operations) => done(io, json, verb, None, operations),

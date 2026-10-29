@@ -228,9 +228,11 @@ The options and their values: `gap:`/`padding:` `.tight .related .sibling .secti
 person's own in that window. The view reads them like variables; they change only through a
 control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or the platform
 action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
-too: they go to the window of `r`. An action a view applies takes view state as itself
-(`send(c, draft)`, `set(n, other)`) and reads it when the control fires, so a press right after
-a keystroke sends that keystroke; an argument that reads view state any other way is E111.
+too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on
+what the invoker sees, as its parameter defaults are: an action a view applies reads the view
+state its arguments use when the control fires (`send(c, draft)`, `set(open, not open)`,
+`send(c, "{draft}!")`), so a press right after a keystroke sends that keystroke and a toggle
+pressed twice before the view draws again toggles twice.
 
 **Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.
