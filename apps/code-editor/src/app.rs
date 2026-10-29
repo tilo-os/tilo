@@ -176,7 +176,7 @@ pub struct CodeApp {
     /// The caret / language / diagnostics readout, drawn in the status bar
     /// band under the editor.
     status: StatusModel,
-    panel: BottomPanel,
+    panel: Box<BottomPanel>,
 
     /// What a test runs with the document at the start of the next sync.
     #[cfg(test)]
@@ -599,7 +599,7 @@ impl CodeApp {
             panel_entry: ui::framework::BarCommands::new(),
             editor: EditorView::new(),
             status: StatusModel::new(),
-            panel: BottomPanel::new(),
+            panel: Box::new(BottomPanel::new()),
             #[cfg(test)]
             test_hook: None,
             dispatch: None,
@@ -2763,7 +2763,7 @@ impl Widget for CodeApp {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = vec![&self.editor];
         if self.panel_visible {
-            out.push(&self.panel);
+            out.push(&*self.panel);
         }
         out
     }
@@ -2771,7 +2771,7 @@ impl Widget for CodeApp {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.editor];
         if self.panel_visible {
-            out.push(&mut self.panel);
+            out.push(&mut *self.panel);
         }
         out
     }

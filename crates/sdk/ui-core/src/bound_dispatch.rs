@@ -2961,7 +2961,7 @@ pub(crate) fn invoke_resource_action(
                         .as_ref()
                         .map_or(binding.app_id.as_str(), |route| route.app_id.as_str());
                     let ambient = ambient
-                        .unwrap_or(&binding.operation_context)
+                        .unwrap_or(&*binding.operation_context)
                         .clone()
                         .with_app(owner_app, owner_app);
                     let encoded = encode_resource_action(
@@ -3271,7 +3271,7 @@ pub struct CallbackBinding {
     pub(crate) checkout: RecordCheckout,
     pub(crate) permissions: SharedPermissions,
     pub(crate) author: UserId,
-    pub(crate) operation_context: tilo_actions::ActionContext,
+    pub(crate) operation_context: Rc<tilo_actions::ActionContext>,
     /// Edits commit as the author's own writer on the record
     /// ([`crate::application::HostContext::write_as_author`]).
     pub(crate) writes_as_author: bool,
@@ -4292,7 +4292,7 @@ impl CallbackBinding {
     /// The entry of edits this binding makes: its operation context, by its
     /// author unless the context names someone.
     pub(crate) fn authored_context(&self) -> tilo_actions::ActionContext {
-        let mut context = self.operation_context.clone();
+        let mut context = (*self.operation_context).clone();
         if context.invoker.is_none() {
             context.invoker = Some(tilo_actions::ActionInvoker::actor(self.author.0.clone()));
         }

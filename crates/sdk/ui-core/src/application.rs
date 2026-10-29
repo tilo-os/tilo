@@ -1052,7 +1052,7 @@ impl HostContext {
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             host_person: self.host_person.clone(),
-            operation_context: self.action_context.clone(),
+            operation_context: std::rc::Rc::new(self.action_context.clone()),
             writes_as_author: self.writes_as_author,
         }
     }

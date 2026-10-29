@@ -334,7 +334,7 @@ pub struct FrameHarness {
     /// Pen samples on their way to the pointer events they describe.
     pen: crate::pen::PenInput,
     caller_palette: Box<caller_palette::CallerPalette>,
-    component_wake: Option<ComponentRunnerWakeState>,
+    component_wake: Option<Box<ComponentRunnerWakeState>>,
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
@@ -455,8 +455,8 @@ pub struct FrameHarness {
     /// make one quiet. A host that only calls [`Self::relayout`] never reads
     /// one and does not pay for taking it.
     polls_frames: bool,
-    text: TextRenderer,
-    theme: Theme,
+    text: Box<TextRenderer>,
+    theme: Box<Theme>,
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`FrameHarness::relayout`] for why it is drawn at all.
     scene: Scene,
@@ -469,7 +469,7 @@ pub struct FrameHarness {
     /// The backdrops the scene's floating surfaces were drawn over, which
     /// the capture renderer blurs under the material as a live window does.
     backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
-    presence: PresenceCtx,
+    presence: Box<PresenceCtx>,
     /// Presence changed through [`Self::update_presence`]: the next frame
     /// redraws (the collaborator overlays read presence at draw time) without
     /// an extra synchronous relayout.
@@ -503,8 +503,7 @@ pub struct FrameHarness {
     /// index instead of the record it checked out, testing something the
     /// user never runs.
     records: Option<crate::record::RecordSet>,
-    record_persistence: Option<(crate::record::RecordSet, automerge::AutoCommit)>,
-    room_index: Option<automerge::AutoCommit>,
+    room_index: Option<Box<automerge::AutoCommit>>,
     /// The taffy node holding keyboard focus, or `None`. Mirrors
     /// [`crate::app::App::focused_node`] — focus is App-level, not
     /// something the root widget's `handle_event` does. Remapped across
@@ -909,7 +908,7 @@ impl FrameHarness {
         );
         control_domain.finish_initial_installation();
         self.control_domain = control_domain;
-        self.component_wake = Some(wake);
+        self.component_wake = Some(Box::new(wake));
         self.history = None;
         self.pending_history = None;
         self.discard_layout_tree();
@@ -1567,7 +1566,7 @@ impl FrameHarness {
             bound_publication: Default::default(),
             pen: crate::pen::PenInput::default(),
             caller_palette: Default::default(),
-            component_wake,
+            component_wake: component_wake.map(Box::new),
             root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
             owner_service_layout_retired: false,
@@ -1618,17 +1617,16 @@ impl FrameHarness {
             pan_replay_allowed: true,
             pan_frames: 0,
             polls_frames: false,
-            text,
-            theme,
+            text: Box::new(text),
+            theme: Box::new(theme),
             scene: Scene::new(),
             track_scene_parts: false,
             scene_parts: None,
             scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
             records: None,
-            record_persistence: None,
             room_index: None,
-            presence: PresenceCtx::empty(),
+            presence: Box::new(PresenceCtx::empty()),
             presence_redraw: false,
             placed_pointers: Vec::new(),
             tooltips: tooltip_layer::TooltipLayer::default(),
@@ -1724,7 +1722,7 @@ impl FrameHarness {
         theme: Theme,
     ) -> Result<(), crate::widget::WidgetLayoutError> {
         self.invalidate_local();
-        self.theme = theme;
+        *self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
         self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
@@ -2167,7 +2165,6 @@ impl FrameHarness {
             && !self.framework_input.get()
             && self.history_hosts_rest()
             && self.records.is_none()
-            && self.record_persistence.is_none()
             && self
                 .action_palette
                 .as_deref()
@@ -2250,7 +2247,7 @@ impl FrameHarness {
             } else {
                 "ui.loud.history_chrome"
             }
-        } else if self.records.is_some() || self.record_persistence.is_some() {
+        } else if self.records.is_some() {
             "ui.loud.records"
         } else {
             "ui.loud.palette_or_search"
@@ -2555,7 +2552,7 @@ impl FrameHarness {
     pub fn set_theme(&mut self, theme: Theme) {
         self.invalidate_local();
         self.pump_component_wakes();
-        self.theme = theme;
+        *self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
         self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
@@ -2950,21 +2947,18 @@ impl FrameHarness {
     ) {
         records.discover_room(&room_index);
         self.records = Some(records);
-        self.room_index = Some(room_index);
+        self.room_index = Some(Box::new(room_index));
         self.relayout();
     }
 
     fn tick_records(&mut self) {
-        if self.records.is_none()
-            && crate::record::capability::record_intent(self.root.as_ref()).is_some()
-            && let Some((mut records, room_index)) = self.record_persistence.take()
-        {
-            records.discover_room(&room_index);
-            self.records = Some(records);
-            self.room_index = Some(room_index);
-        }
         if let Some(set) = self.records.as_mut() {
-            crate::record::tick(set, &mut self.state, self.room_index.as_mut(), &*self.root);
+            crate::record::tick(
+                set,
+                &mut self.state,
+                self.room_index.as_deref_mut(),
+                &*self.root,
+            );
         }
     }
 
@@ -8043,7 +8037,7 @@ impl FrameHarness {
     /// rendering that a live broker frame supplies, without a broker process.
     pub fn set_presence_context(&mut self, presence: PresenceCtx) {
         self.invalidate_local();
-        self.presence = presence;
+        *self.presence = presence;
         self.relayout();
     }
 

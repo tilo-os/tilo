@@ -187,7 +187,7 @@ pub struct ChatApp {
     pub(crate) last_post: Option<(Id, String)>,
     /// The open sheet that makes a channel or a category, or changes a
     /// channel.
-    pub(crate) channel_sheet: Option<crate::channel_sheet::ChannelSheet>,
+    pub(crate) channel_sheet: Option<Box<crate::channel_sheet::ChannelSheet>>,
     /// The detail drawer shows the open channel's pinned messages.
     pub(crate) pins_open: bool,
     /// The top of the main composer as last drawn, `None` when none was. A
@@ -240,7 +240,7 @@ pub struct ChatApp {
     pub(crate) emoji_anchor: Rect,
     /// The toolkit's shared picker, placed at `emoji_anchor` while
     /// `emoji_open`.
-    pub(crate) emoji_picker: ui::widget::EmojiPicker,
+    pub(crate) emoji_picker: Box<ui::widget::EmojiPicker>,
     /// Each message's reaction pills, in the timeline (`false`) and the
     /// thread (`true`), with their arrival and count motion.
     pub(crate) reaction_strips:
@@ -551,7 +551,7 @@ pub struct ChatApp {
     /// id: what its accessible row's children are read and picked by.
     pub(crate) painted_messages: HashMap<Id, PaintedMessage>,
     /// The conversation's rows, measured and painted, kept between frames.
-    pub(crate) timeline: std::cell::RefCell<crate::timeline::Timeline>,
+    pub(crate) timeline: Box<std::cell::RefCell<crate::timeline::Timeline>>,
     /// Counts each load of [`Self::messages`], so what is kept of them knows
     /// when to look again.
     pub(crate) messages_revision: u64,
@@ -707,7 +707,7 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Rect::ZERO,
-            emoji_picker: ui::widget::EmojiPicker::framed(),
+            emoji_picker: Box::new(ui::widget::EmojiPicker::framed()),
             reaction_strips: std::cell::RefCell::default(),
             history_open: None,
             history_anchor: Point::ZERO,
@@ -835,7 +835,7 @@ impl ChatApp {
             call_pictures: ui::call_pictures::CallPictures::new(),
             picture_tiles: std::cell::RefCell::new(Vec::new()),
             painted_messages: HashMap::new(),
-            timeline: std::cell::RefCell::default(),
+            timeline: Box::default(),
             messages_revision: 0,
             camera_on_live: false,
             media_error: None,
@@ -2088,7 +2088,7 @@ impl Widget for ChatApp {
             .find(|(rect, _)| rect.contains(point))?;
         match hit {
             Hit::Dismiss => None,
-            Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&self.emoji_picker, point),
+            Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&*self.emoji_picker, point),
             Hit::AgentDragHandle | Hit::CallDragHandle => Some(CursorIcon::Grab),
             hit if self.text_field_access(hit).is_some() => Some(CursorIcon::Text),
             _ => Some(CursorIcon::Pointer),

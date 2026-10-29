@@ -4171,7 +4171,7 @@ fn component_control_root(
                 crate::permissions::PermissionContext::permissive(),
             ),
             author: crate::permissions::UserId("component-control-author".into()),
-            operation_context: tilo_actions::ActionContext::default(),
+            operation_context: std::rc::Rc::default(),
             writes_as_author: false,
         };
         let live = ComponentControlOwner::new(

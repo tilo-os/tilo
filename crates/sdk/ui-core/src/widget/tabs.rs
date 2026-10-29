@@ -516,7 +516,7 @@ pub struct TabBar {
     location_images: HashMap<u64, icons::AppImage>,
     /// The active tab's slots: in the title's row while the window shows
     /// one tab, in a row of their own under the tabs while it shows several.
-    toolbar_row: super::window_toolbar_row::ToolbarRow,
+    toolbar_row: Box<super::window_toolbar_row::ToolbarRow>,
     /// The motion the person allows, from the last layout's theme.
     motion: EffectiveMotion,
     /// A tab being named in place ([`TabBar::begin_rename`]).
@@ -680,7 +680,7 @@ impl TabBar {
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
             location_images: HashMap::new(),
-            toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
+            toolbar_row: Box::new(super::window_toolbar_row::ToolbarRow::new()),
             motion: EffectiveMotion::default(),
             rename: None,
             pending_rename: None,

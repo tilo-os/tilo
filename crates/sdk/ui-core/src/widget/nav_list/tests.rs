@@ -70,7 +70,7 @@ fn focus(h: &mut FrameHarness) {
 
 impl NavList {
     fn inner_focus(&mut self) {
-        crate::widget::Widget::set_focus(&mut self.tree, true);
+        crate::widget::Widget::set_focus(&mut *self.tree, true);
     }
 }
 

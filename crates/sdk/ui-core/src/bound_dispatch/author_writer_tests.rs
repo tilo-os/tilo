@@ -88,7 +88,7 @@ pub(super) fn mount(
         checkout: checkout.clone(),
         permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),
         author: UserId(author.into()),
-        operation_context: tilo_actions::ActionContext::default(),
+        operation_context: std::rc::Rc::default(),
         writes_as_author,
     };
     (binding, scope, owner)
@@ -105,7 +105,8 @@ fn trusted_host_person_scope_rejects_reattribution_and_restores_after_nested_cal
     records.create_record(&checkout).unwrap();
     let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
     binding.author = UserId("agent".into());
-    binding.operation_context.invoker = Some(ActionInvoker::actor("person"));
+    std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
+        Some(ActionInvoker::actor("person"));
     let mut outer = AutoCommit::new();
     assert_eq!(executing_host_person(), None);
     assert!(!host_person_invocation_permitted());
@@ -157,7 +158,8 @@ fn checked_record_preview_attribution_uses_admitted_actor_and_restores_on_unwind
     records.create_record(&checkout).unwrap();
     let (mut binding, _scope, _owner) = mount(&records, &checkout, "person", 1, true);
     // Descriptive context is not the identity lent by the checked callback.
-    binding.operation_context.invoker = Some(ActionInvoker::actor("untrusted-label"));
+    std::rc::Rc::make_mut(&mut binding.operation_context).invoker =
+        Some(ActionInvoker::actor("untrusted-label"));
     let mut outer = AutoCommit::new();
     assert_eq!(ActionCx::for_apply(&outer, b"preview", 0).author(), None);
     binding
