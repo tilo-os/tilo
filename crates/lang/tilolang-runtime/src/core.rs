@@ -86,6 +86,15 @@ pub struct Core {
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
     pub text_search: RefCell<Option<Box<crate::program::TextSearch>>>,
+    /// Where a task's programs send what they change, in a host that runs no app's code
+    /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
+    pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
+    /// Where a task's programs ask each app what they read of it (`grep`, `find`, `read`,
+    /// `describe`), while they run: a host that holds no records; `None` where the runtime
+    /// answers what it holds itself.
+    pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
+    /// Whether the invocation being made is a `try`'s, whose failure the program handles.
+    pub trying: std::cell::Cell<bool>,
     /// The resources of apps this runtime does not hold that programs read, as they print.
     pub foreign: RefCell<crate::reads::Foreign>,
 }
@@ -188,6 +197,9 @@ impl Core {
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
+            invoker: RefCell::new(None),
+            reader: RefCell::new(None),
+            trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::reads::Foreign::default()),
         });
         // The types the host provides to every module, such as `Invocation`.
@@ -329,6 +341,7 @@ impl Core {
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
+            Imp::EditField => self.flow_edit(a),
             Imp::Print
             | Imp::Find
             | Imp::ReadText

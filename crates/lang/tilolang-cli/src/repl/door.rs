@@ -129,7 +129,7 @@ impl Control {
     /// The tilolang apps running in the session: those publishing the tilolang host.
     fn tilolang_apps(&self) -> Result<Vec<String>, String> {
         let listed = self.request(&json!({
-            "op": "actions_enumerate", "query": "run program", "detail": "compact", "limit": 2000
+            "op": "actions_enumerate", "query": "read", "detail": "compact", "limit": 2000
         }))?;
         // An app's action row is named `<app>␟<kind>␟<resource kind>␟…␟<action>`.
         let mut apps: Vec<String> = listed
@@ -139,7 +139,7 @@ impl Control {
             .flatten()
             .filter(|row| row["provider"] == "app-actions")
             .filter_map(|row| row["id"].as_str())
-            .filter(|id| id.ends_with("\u{1f}run-program"))
+            .filter(|id| id.ends_with("\u{1f}read-values"))
             .filter_map(|id| id.split('\u{1f}').next())
             .map(str::to_owned)
             .collect();

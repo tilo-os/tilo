@@ -140,6 +140,52 @@ impl Checker<'_> {
         })
     }
 
+    /// `r.f = v` in a program: the resource's field edit, which the host invokes at the app
+    /// that holds `r` as the program's change (agents.md, "How a program runs"). Only a whole
+    /// value is set: a collection changes through the app's actions, a counter by what an
+    /// action adds.
+    pub(super) fn program_edit(
+        &mut self,
+        base: Ex,
+        key: &TypeKey,
+        f: &crate::resolve::FieldInfo,
+        op: ast::AssignOp,
+        value: &ast::Expr,
+        span: Span,
+    ) {
+        use crate::types::MergeKind;
+        let app = key.app.rsplit('.').next().unwrap_or(&key.app);
+        let refused = match (op, f.merge) {
+            (_, MergeKind::Structural) => Some(format!(
+                "`{}.{}` is a {}; a program changes it with {app}'s actions",
+                key.name,
+                f.name,
+                f.ty.display(&self.env.app),
+            )),
+            (ast::AssignOp::Add | ast::AssignOp::Sub, _) => Some(format!(
+                "a program sets `{}` to a whole value: `x.{} = ...`",
+                f.name, f.name
+            )),
+            (ast::AssignOp::Set, MergeKind::Counter) => Some(format!(
+                "`{}` is a counter; a program changes it with {app}'s actions",
+                f.name
+            )),
+            _ => None,
+        };
+        if let Some(why) = refused {
+            self.err("E042", span, why);
+            let _ = self.expr(value, None);
+            return;
+        }
+        let v = self.expr_as(value, &f.ty);
+        let v = Checker::handle_of(v);
+        self.emit(Stmt::Eval(Ex::host(
+            Imp::EditField,
+            vec![base, Ex::str(&f.id), v],
+            Ty::Unit,
+        )));
+    }
+
     /// A tuple of values already checked, as `print` hands them to the host.
     fn tuple_of(&mut self, items: Vec<Ex>) -> Ex {
         let tmp = self.fresh(Ty::Error);
