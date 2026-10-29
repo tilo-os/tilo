@@ -140,6 +140,10 @@ pub(crate) struct RunProgress {
     pub streamed: String,
     /// What the run reported so far, oldest first: the last few steps.
     pub steps: Vec<String>,
+    /// The programs the run ran so far, oldest first, with their answers.
+    pub programs: Vec<tilo_reference::ProgramStep>,
+    /// The view the run answered with, once it did: the resource keeping it.
+    pub answer: Option<tilo_reference::ResourceAt>,
 }
 
 /// What the person does with a text answer about their selection.

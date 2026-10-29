@@ -1,0 +1,43 @@
+{
+  "request": "what's left for the release?",
+  "title": "What's left for the release",
+  "turns": [
+    {
+      "blocks": [
+        {"type": "text", "text": "I'll look at the board, the release list and the release chat."},
+        {"type": "tool_use", "name": "tilo", "input": {
+          "program": "(root board.Board).cards.filter(c -> c.column.title != \"Done\")"
+        }}
+      ]
+    },
+    {
+      "expect": ["Write the release notes"],
+      "blocks": [
+        {"type": "tool_use", "name": "tilo", "input": {
+          "program": "todo.todos.items.filter(t -> not t.done)"
+        }}
+      ]
+    },
+    {
+      "expect": ["Record the demo video"],
+      "blocks": [
+        {"type": "tool_use", "name": "tilo", "input": {
+          "program": "chat.conversations.filter(c -> c.title == \"Release checklist\")"
+        }}
+      ]
+    },
+    {
+      "expect": ["Release checklist"],
+      "blocks": [
+        {"type": "tool_use", "name": "plan", "input": {
+          "reply": "Six cards are open on the board and three items are left on the release list; the chat is waiting on the docs screenshots.",
+          "done": true,
+          "view": {
+            "title": "Left for the release",
+            "source": "grid(min: 22rem) {\n    card(root board.Board, count: (root board.Board).cards.count(c -> c.column.title != \"Done\")) {\n        list((root board.Board).cards.filter(c -> c.column.title != \"Done\")) { c ->\n            row(c)\n        }\n    }\n    card(todo.todos, count: todo.todos.items.count(t -> not t.done)) {\n        list(todo.todos.items.filter(t -> not t.done)) { t ->\n            row(t)\n        }\n    }\n    card(chat.conversations, count: 1) {\n        list(chat.conversations.filter(c -> c.title == \"Release checklist\")) { c ->\n            row(c)\n        }\n    }\n}"
+          }
+        }}
+      ]
+    }
+  ]
+}

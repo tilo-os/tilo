@@ -37,6 +37,11 @@ path = "tests/interaction.rs"
 name = "mentions"
 path = "tests/mentions.rs"
 
+# Views: an agent's answer drawn live over other apps' resources, in a package of its own.
+[[test]]
+name = "views"
+path = "tests/views.rs"
+
 # The Board package with cards on it: its window's bindings, actions and card menus.
 [[test]]
 name = "board"

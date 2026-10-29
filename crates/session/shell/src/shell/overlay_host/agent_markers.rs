@@ -482,6 +482,7 @@ impl super::ShellOverlayHost {
             progress: crate::shell::agent_quick_composer::RunProgress {
                 streamed: t("agent-quick-shots-streamed"),
                 steps: vec![t("agent-quick-shots-step-1"), t("agent-quick-shots-step-2")],
+                ..Default::default()
             },
         };
         let (draft, conversation, followed) = match phase {

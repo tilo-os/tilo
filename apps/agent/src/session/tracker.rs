@@ -219,6 +219,40 @@ impl Session {
         )
     }
 
+    /// Record on the run's issue a step it took: the program and its answer.
+    pub(super) fn record_step(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        step: &ui::tilo_reference::ProgramStep,
+    ) -> Result<()> {
+        let Some(issue) = issue_of(run) else {
+            return Ok(());
+        };
+        let arguments = json!({ "issue": issue, "step": step });
+        self.tracker_step(
+            run,
+            "record-step",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Record on the run's issue its answer as a view: the resource keeping it.
+    pub(super) fn record_answer(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        view: &ui::tilo_reference::ResourceAt,
+    ) -> Result<()> {
+        let Some(issue) = issue_of(run) else {
+            return Ok(());
+        };
+        let arguments = json!({ "issue": issue, "view": view });
+        self.tracker_step(
+            run,
+            "record-answer",
+            &arguments.as_object().cloned().unwrap_or_default(),
+        )
+    }
+
     /// Hold what the next model turn is expected to cost on the run's issue,
     /// before it starts: the issue's budget is what the turn may spend.
     ///

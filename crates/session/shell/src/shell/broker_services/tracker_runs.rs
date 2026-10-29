@@ -78,7 +78,17 @@ pub(crate) struct FollowedRun {
     /// What its agent reported in the run so far, oldest first: its steps,
     /// the last few of them.
     pub steps: Vec<String>,
+    /// The programs it ran so far, oldest first, with what each answered:
+    /// the last [`SHOWN_PROGRAMS`] of them.
+    pub programs: Vec<tilo_reference::ProgramStep>,
+    /// The view it answered with, when it answered with one: the resource
+    /// keeping it.
+    pub answer: Option<tilo_reference::ResourceAt>,
 }
+
+/// How many of a run's programs a follower is shown: enough to follow a
+/// task's work, bounded so a long task does not grow the composer without end.
+const SHOWN_PROGRAMS: usize = 24;
 
 /// Every issue's latest run in `tracker`, as it is followed.
 #[must_use]
@@ -119,6 +129,16 @@ fn followed_runs(tracker: &Tracker) -> Vec<FollowedRun> {
                     let skip = reported.len().saturating_sub(SHOWN_STEPS);
                     reported.into_iter().skip(skip).collect()
                 },
+                programs: {
+                    let ran: Vec<tilo_reference::ProgramStep> = of_run(MessageKind::Step)
+                        .filter_map(|message| serde_json::from_str(&message.step).ok())
+                        .collect();
+                    let skip = ran.len().saturating_sub(SHOWN_PROGRAMS);
+                    ran.into_iter().skip(skip).collect()
+                },
+                answer: of_run(MessageKind::Answer)
+                    .next_back()
+                    .and_then(|message| serde_json::from_str(&message.lookup).ok()),
             })
         })
         .collect()

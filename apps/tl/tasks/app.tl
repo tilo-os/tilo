@@ -389,6 +389,16 @@ scenario "a busy week" -> Task {
     call
 }
 
+/// A team's project for a release a week out: what is left, and what is done.
+scenario "a release list" {
+    let r24 = tasks.projects.insert(Project(name: "Release 2.4"))
+    tasks.items.insert(Task(title: "Freeze the strings for translation", project: r24, done: true, due: 2026-10-26))
+    tasks.items.insert(Task(title: "Record the demo video", project: r24, due: 2026-10-30))
+    tasks.items.insert(Task(title: "Update the changelog", project: r24, notes: "Group the fixes by app.", due: 2026-10-31))
+    tasks.items.insert(Task(title: "Send the beta to the testers", project: r24, done: true))
+    tasks.items.insert(Task(title: "Check the upgrade from 2.3", project: r24, due: 2026-11-01))
+}
+
 /// A week everyone has finished.
 scenario "all done" {
     tasks.items.insert(Task(title: "Passports", done: true))

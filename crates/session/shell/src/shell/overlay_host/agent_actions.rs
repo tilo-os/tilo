@@ -174,6 +174,12 @@ impl Followed {
                     .as_ref()
                     .map(|run| run.steps.clone())
                     .unwrap_or_default(),
+                programs: self
+                    .run
+                    .as_ref()
+                    .map(|run| run.programs.clone())
+                    .unwrap_or_default(),
+                answer: self.run.as_ref().and_then(|run| run.answer.clone()),
             },
         }
     }
@@ -1631,6 +1637,8 @@ mod tests {
             incorporated: 0,
             said: None,
             steps: Vec::new(),
+            programs: Vec::new(),
+            answer: None,
         }
     }
 
