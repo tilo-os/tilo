@@ -23,6 +23,7 @@ pub mod host;
 pub mod identity;
 pub mod identity_provisioning;
 pub mod nearby;
+pub mod view;
 
 #[cfg(target_os = "linux")]
 pub mod browser;

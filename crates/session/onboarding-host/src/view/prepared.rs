@@ -4,25 +4,25 @@ use super::{
     KEY_PREPARED_IMPORT, OnboardingContext, OnboardingView, PersistedStage, clear_secret,
     typed_passphrase,
 };
-use crate::onboarding::MintedIdentity;
-use crate::shell::i18n::t;
+use crate::identity::MintedIdentity;
 use std::path::Path;
+use tilo_onboarding::t;
 use zeroize::{Zeroize, Zeroizing};
 
 impl OnboardingView {
     pub(super) fn load_prepared_setup(&mut self, identity_dir: &Path) {
         #[cfg(target_os = "linux")]
         if let Some(home) = self.session.home.clone()
-            && crate::onboarding_peer::Peer::pending_at(&home)
+            && crate::peer::Peer::pending_at(&home)
         {
             self.load_peer_setup(&home, identity_dir);
             return;
         }
         if let Some(home) = self.session.home.clone()
-            && crate::onboarding_prepared::pending_at(&home)
+            && crate::prepared::pending_at(&home)
         {
             self.prepared_pending = true;
-            match crate::onboarding_prepared::Pending::open(&home) {
+            match crate::prepared::Pending::open(&home) {
                 Ok(pending) => match pending.completed(identity_dir) {
                     Ok(true) => {
                         self.prepared_pending = false;
@@ -49,13 +49,13 @@ impl OnboardingView {
         let Some(system) = self.session.identity.clone() else {
             return;
         };
-        match crate::onboarding_peer::Peer::open_at(home, &system.root, identity_dir) {
+        match crate::peer::Peer::open_at(home, &system.root, identity_dir) {
             Ok(Some(peer)) => {
                 self.peer = Some(peer);
                 self.prepared_pending = true;
             }
             Ok(None) if active.is_none() => {
-                match crate::onboarding_peer::Peer::join(
+                match crate::peer::Peer::join(
                     home,
                     &system.root,
                     identity_dir,
@@ -88,7 +88,7 @@ impl OnboardingView {
         let unrelated = active
             .and_then(|path| runtime_identity::load_metadata_from_path(path).ok())
             .is_some_and(|metadata| {
-                crate::onboarding_peer::Peer::descriptor_identity_at(home)
+                crate::peer::Peer::descriptor_identity_at(home)
                     .ok()
                     .flatten()
                     .is_some_and(|person| metadata.group_public_key != person)
@@ -107,11 +107,11 @@ impl OnboardingView {
         &mut self,
         home: &Path,
         identity_dir: &Path,
-        pending: &crate::onboarding_prepared::Pending,
+        pending: &crate::prepared::Pending,
     ) {
         match pending.portable_home(identity_dir) {
             Ok(Some(declaration)) => {
-                if let Ok(portable) = crate::onboarding_portable_home::Pending::open(
+                if let Ok(portable) = crate::portable_home::Pending::open(
                     home.to_path_buf(),
                     identity_dir.to_path_buf(),
                     declaration,
@@ -127,7 +127,7 @@ impl OnboardingView {
         }
         match pending.portable_applications(identity_dir) {
             Ok(Some(declaration)) => {
-                if let Ok(applications) = crate::onboarding_portable_applications::Pending::open(
+                if let Ok(applications) = crate::portable_applications::Pending::open(
                     home.to_path_buf(),
                     identity_dir.to_path_buf(),
                     declaration,
@@ -143,8 +143,8 @@ impl OnboardingView {
         }
         match pending.browser(identity_dir) {
             Ok(Some(declaration)) => {
-                crate::shell::launcher::set_browser_continuity(None);
-                self.browser = crate::onboarding_browser::Pending::open(
+                crate::host::set_browser_continuity(None);
+                self.browser = crate::browser::Pending::open(
                     home.to_path_buf(),
                     identity_dir.to_path_buf(),
                     declaration,
@@ -165,37 +165,19 @@ impl OnboardingView {
         self.prepared_worker.is_some()
     }
 
-    pub(crate) fn prepared_setup_status(&self) -> Option<&'static str> {
-        self.prepared_pending.then_some(
-            if self.prepared_worker.is_some() || self.prepared_secret_queued {
+    pub fn prepared_setup_status(&self) -> Option<&'static str> {
+        self.prepared_pending
+            .then_some(if self.prepared_worker.is_some() {
                 "busy"
             } else if self.prepared_review.is_some() {
                 "ready"
             } else {
                 "unavailable"
-            },
-        )
-    }
-    pub(crate) fn submit_prepared_setup_secret(&mut self, password: &[u8]) -> Result<(), ()> {
-        if self.prepared_setup_status() != Some("ready") {
-            return Err(());
-        }
-        let text = std::str::from_utf8(password).map_err(|_| ())?;
-        if text.is_empty() || text.len() > 4096 {
-            return Err(());
-        }
-        let mut secret = self.connect_passphrase.lock().map_err(|_| ())?;
-        secret.zeroize();
-        secret.push_str(text);
-        drop(secret);
-        self.prepared_secret_queued = true;
-        self.press(KEY_PREPARED_IMPORT);
-        self.invalidation.both();
-        Ok(())
+            })
     }
     fn activate_prepared(
         &self,
-        mut imported: crate::onboarding_prepared::Imported,
+        mut imported: crate::prepared::Imported,
     ) -> Result<ActivatedPrepared, ()> {
         self.prepared_review
             .as_ref()
@@ -212,7 +194,7 @@ impl OnboardingView {
                 return Err(());
             }
             let signer = resolved.load().map_err(|_| ())?;
-            let registry = crate::identity_registry::IdentityRegistryStore::at(directory)
+            let registry = tilo_identity_host::registry::IdentityRegistryStore::at(directory)
                 .load()
                 .map_err(|_| ())?;
             let profile = registry
@@ -247,7 +229,7 @@ impl OnboardingView {
         if signer.group_public_key() != imported.identity_public_key {
             return Err(());
         }
-        let store = crate::identity_registry::IdentityRegistryStore::at(directory);
+        let store = tilo_identity_host::registry::IdentityRegistryStore::at(directory);
         let mut registry = store.load_reconciled().map_err(|_| ())?;
         let profile = registry.register_record(&primary).map_err(|_| ())?.clone();
         store.save(&registry).map_err(|_| ())?;
@@ -268,7 +250,7 @@ impl OnboardingView {
             )
         }
         .map_err(|_| ())?;
-        crate::device_fleet::DeviceFleetStore::at(directory, paths)
+        tilo_identity_host::device_fleet::DeviceFleetStore::at(directory, paths)
             .register_current_device(&profile.id)
             .map_err(|_| ())?;
         Ok((
@@ -285,14 +267,11 @@ impl OnboardingView {
         ))
     }
 
-    fn load_browser_declaration(
-        &mut self,
-        declaration: crate::onboarding_prepared::BrowserDeclaration,
-    ) {
-        crate::shell::launcher::set_browser_continuity(None);
+    fn load_browser_declaration(&mut self, declaration: crate::prepared::BrowserDeclaration) {
+        crate::host::set_browser_continuity(None);
         self.browser = self.session.home.clone().and_then(|home| {
             self.identity_dir.clone().and_then(|identity| {
-                crate::onboarding_browser::Pending::open(home, identity, declaration).ok()
+                crate::browser::Pending::open(home, identity, declaration).ok()
             })
         });
         if self.browser.is_none() {
@@ -300,16 +279,15 @@ impl OnboardingView {
             self.error = Some(t("onboarding-browser-unavailable"));
         }
     }
-    pub(crate) fn verified_browser_projection(&self) -> Option<&Path> {
+    pub fn verified_browser_projection(&self) -> Option<&Path> {
         self.browser.as_ref()?.verified_projection()
     }
     /// Start importing the prepared setup with the passphrase typed: its
     /// targets made ready, then its worker started.
     fn start_prepared_import(&mut self) {
-        self.prepared_secret_queued = false;
         let result = (|| {
             let home = self.session.home.clone().ok_or(())?;
-            let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
+            let pending = crate::prepared::Pending::open(&home).map_err(|_| ())?;
             let password = typed_passphrase(&self.connect_passphrase)?;
             let directory = self.identity_dir.clone().ok_or(())?;
             pending.prepare_targets(&directory).map_err(|_| ())?;
@@ -349,8 +327,7 @@ impl OnboardingView {
         if let Some(declaration) = portable_home {
             self.portable_home = self.session.home.clone().and_then(|home| {
                 self.identity_dir.clone().and_then(|directory| {
-                    crate::onboarding_portable_home::Pending::open(home, directory, declaration)
-                        .ok()
+                    crate::portable_home::Pending::open(home, directory, declaration).ok()
                 })
             });
             if let (Some(portable), Some((digest, password))) =
@@ -370,12 +347,7 @@ impl OnboardingView {
         if let Some(declaration) = portable_applications {
             self.portable_applications = self.session.home.clone().and_then(|home| {
                 self.identity_dir.clone().and_then(|directory| {
-                    crate::onboarding_portable_applications::Pending::open(
-                        home,
-                        directory,
-                        declaration,
-                    )
-                    .ok()
+                    crate::portable_applications::Pending::open(home, directory, declaration).ok()
                 })
             });
             if let (Some(applications), Some((digest, password))) = (
@@ -431,7 +403,7 @@ impl OnboardingView {
         else {
             return;
         };
-        match crate::onboarding_peer::Peer::open_at(&home, &system.root, &directory) {
+        match crate::peer::Peer::open_at(&home, &system.root, &directory) {
             Ok(Some(peer)) => {
                 self.peer_attempted = true;
                 self.peer = Some(peer);
@@ -463,8 +435,7 @@ impl OnboardingView {
             Some(Ok(received)) => {
                 let result = (|| {
                     let home = self.session.home.clone().ok_or(())?;
-                    let pending =
-                        crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
+                    let pending = crate::prepared::Pending::open(&home).map_err(|_| ())?;
                     let directory = self.identity_dir.clone().ok_or(())?;
                     pending.prepare_targets(&directory).map_err(|_| ())?;
                     let worker = pending
@@ -509,14 +480,14 @@ impl OnboardingView {
         let Some(home) = self.session.home.clone() else {
             return;
         };
-        if !crate::onboarding_prepared::pending_at(&home) {
+        if !crate::prepared::pending_at(&home) {
             return;
         }
-        let Some(secret) = crate::onboarding_prepared::take_tpm_secret() else {
+        let Some(secret) = crate::prepared::take_tpm_secret() else {
             return;
         };
         let result = (|| {
-            let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
+            let pending = crate::prepared::Pending::open(&home).map_err(|_| ())?;
             let directory = self.identity_dir.clone().ok_or(())?;
             pending.prepare_targets(&directory).map_err(|_| ())?;
             if !self.persist_progress(PersistedStage::AcquiringIdentity) {
@@ -547,7 +518,7 @@ impl OnboardingView {
         let Some(outcome) = self
             .prepared_worker
             .as_mut()
-            .and_then(crate::onboarding_prepared::Worker::poll)
+            .and_then(crate::prepared::Worker::poll)
         else {
             return;
         };
@@ -623,9 +594,9 @@ impl OnboardingView {
 /// The parts a prepared setup may bring along: a home, applications and a
 /// browser.
 type PreparedParts = (
-    Option<crate::onboarding_prepared::PortableHome>,
-    Option<crate::onboarding_prepared::PortableApplications>,
-    Option<crate::onboarding_prepared::BrowserDeclaration>,
+    Option<crate::prepared::PortableHome>,
+    Option<crate::prepared::PortableApplications>,
+    Option<crate::prepared::BrowserDeclaration>,
 );
 
 /// What activating a prepared identity yields: the identity, its device
@@ -633,9 +604,9 @@ type PreparedParts = (
 type ActivatedPrepared = (
     MintedIdentity,
     [u8; 32],
-    Option<crate::onboarding_prepared::PortableHome>,
-    Option<crate::onboarding_prepared::PortableApplications>,
-    Option<crate::onboarding_prepared::BrowserDeclaration>,
-    Option<crate::onboarding_prepared::ServiceSessions>,
+    Option<crate::prepared::PortableHome>,
+    Option<crate::prepared::PortableApplications>,
+    Option<crate::prepared::BrowserDeclaration>,
+    Option<crate::prepared::ServiceSessions>,
     Option<tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity>,
 );

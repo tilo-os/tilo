@@ -15653,6 +15653,7 @@ dependencies = [
  "tilo-doc",
  "tilo-doc-codecs",
  "tilo-documents",
+ "tilo-durable-writer",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-frame-metrics",
@@ -18760,6 +18761,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-durable-writer"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "tilo-test-env",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-egress"
 version = "0.1.0"
 dependencies = [
@@ -20146,11 +20157,13 @@ dependencies = [
  "bounded-command",
  "browser-continuity",
  "collab-types",
+ "durable-store",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
  "launcher",
  "libc",
+ "os-actions",
  "postcard",
  "rand_core 0.10.0",
  "rcgen",
@@ -20161,9 +20174,14 @@ dependencies = [
  "serde_json",
  "settings-store",
  "sha2 0.11.0",
+ "taffy",
  "tempfile",
  "threshold-identity",
+ "tilo-actions",
+ "tilo-automerge-fork",
  "tilo-clock",
+ "tilo-desktop",
+ "tilo-durable-writer",
  "tilo-files",
  "tilo-handoff",
  "tilo-identity-ceremony",
@@ -20171,8 +20189,12 @@ dependencies = [
  "tilo-onboarding",
  "tilo-paths",
  "tilo-relay-protocol",
+ "tilo-resource",
  "tilo-test-env",
+ "tilo-ui",
  "tilo-user-identity",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "uuid",
  "wire-frame",

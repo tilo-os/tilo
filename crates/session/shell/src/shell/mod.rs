@@ -81,7 +81,7 @@ pub mod document_import;
 pub mod downloaded_apps;
 #[cfg(target_os = "linux")]
 pub mod drives;
-pub mod durable_writer;
+pub use tilo_durable_writer as durable_writer;
 pub mod emoji_recents;
 pub(crate) mod feedback_entry;
 pub(crate) mod feedback_pick;

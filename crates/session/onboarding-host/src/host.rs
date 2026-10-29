@@ -22,7 +22,24 @@ pub trait SessionHost: Send + Sync {
     fn browser_continuity(&self, projection: Option<PathBuf>) {
         let _ = projection;
     }
+
+    /// Wake the session loop from any thread: the setup app has something
+    /// to show.
+    fn wake(&self) {}
+
+    /// Who setup acts as: the session's person, the owner of the setup app.
+    fn person(&self) -> String {
+        std::env::var("TILO_USER_ID")
+            .ok()
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "local".to_owned())
+    }
 }
+
+/// The session's host, or one that lends nothing.
+struct Nothing;
+
+impl SessionHost for Nothing {}
 
 static HOST: OnceLock<&'static dyn SessionHost> = OnceLock::new();
 
@@ -31,19 +48,28 @@ pub fn install(host: &'static dyn SessionHost) {
     let _ = HOST.set(host);
 }
 
-fn host() -> Option<&'static dyn SessionHost> {
-    HOST.get().copied()
+fn host() -> &'static dyn SessionHost {
+    HOST.get().copied().unwrap_or(&Nothing)
 }
 
 /// See [`SessionHost::loop_waker`].
 #[must_use]
 pub fn loop_waker() -> Waker {
-    host().map_or_else(|| Waker::noop().clone(), SessionHost::loop_waker)
+    host().loop_waker()
 }
 
 /// See [`SessionHost::browser_continuity`].
 pub fn set_browser_continuity(projection: Option<PathBuf>) {
-    if let Some(host) = host() {
-        host.browser_continuity(projection);
-    }
+    host().browser_continuity(projection);
+}
+
+/// See [`SessionHost::wake`].
+pub fn wake() {
+    host().wake();
+}
+
+/// See [`SessionHost::person`].
+#[must_use]
+pub fn person() -> String {
+    host().person()
 }

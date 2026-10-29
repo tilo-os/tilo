@@ -12,16 +12,16 @@ impl OnboardingView {
         false
     }
 
-    pub(crate) fn prepared_setup_status(&self) -> Option<&'static str> {
+    pub fn prepared_setup_status(&self) -> Option<&'static str> {
         self.prepared_pending.then_some("unavailable")
     }
 
-    pub(crate) fn submit_prepared_setup_secret(&mut self, _password: &[u8]) -> Result<(), ()> {
+    pub fn submit_prepared_setup_secret(&mut self, _password: &[u8]) -> Result<(), ()> {
         Err(())
     }
 
     #[allow(clippy::unused_self, reason = "the same call as on Linux")]
-    pub(crate) fn verified_browser_projection(&self) -> Option<&Path> {
+    pub fn verified_browser_projection(&self) -> Option<&Path> {
         None
     }
 
