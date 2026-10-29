@@ -193,7 +193,9 @@ def workspaces(ctx, res):
     n0 = len(st["workspace_tree"]["workspaces"])
     if n0 < 2:
         ctx.vm.key("super+Tab")
-        ctx.wait_state(lambda s: core.overlays(s)["overview"], 5, "overview open")
+        # The overview's windows fly in after the key; a press is refused until they rest.
+        ctx.wait_state(lambda s: core.overlays(s)["overview"] and s["chrome"].get("in_transition") is False,
+                       5, "overview open and settled")
         names = [t["name"] for t in ctx.vm.targets()]
         add = [n for n in names if re.search(r"(new|add)[_-]?workspace", n, re.I)]
         res.metrics["add_workspace_targets"] = add
