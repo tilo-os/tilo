@@ -346,8 +346,8 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
         let tab_rename_dirty = self.harvest_tab_renames();
-        let hosted_windows_dirty = self.sync_hosted_windows();
-        let hosted_windows_dirty = self.sync_window_shares() | hosted_windows_dirty;
+        self.sync_window_toolbars();
+        let hosted_windows_dirty = self.sync_window_shares();
         let chips_dirty = self.sync_desktop_control_chips()
             | self.sync_dev_build_chips()
             | self.sync_window_share_controls();

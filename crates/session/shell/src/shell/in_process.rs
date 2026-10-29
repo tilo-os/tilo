@@ -61,9 +61,6 @@ pub struct InProcessApps {
     person_records: crate::shell::settings_records::Holder,
     session_wake: Option<crate::session_runtime::Wake>,
     native_broker_socket: Option<std::path::PathBuf>,
-    /// The window each mounted tab is shown in, as lent to its app: the
-    /// slots it declares for its bar and its asks to close its tab.
-    windows: HashMap<u64, ui::hosted_window::HostedWindow>,
     /// The records the session's windows hold, by the window instance the
     /// launcher started each for: what a report about a window records.
     window_routes: Option<WindowRoutes>,
@@ -136,37 +133,9 @@ impl InProcessApps {
             person_records,
             session_wake: None,
             native_broker_socket: None,
-            windows: HashMap::new(),
             window_routes: None,
             capture_protected: DeclaredProtected::default(),
         }
-    }
-
-    /// The window tab `tab` is shown in, to lend its app: the same one for
-    /// every mount of the tab, until the tab is gone.
-    #[cfg(test)]
-    pub(crate) fn hosted_window(&mut self, tab: u64) -> ui::hosted_window::HostedWindow {
-        let window = self.windows.entry(tab).or_default().clone();
-        // An app asking from its own thread (a shell that exited) wakes the
-        // loop, which looks at its window.
-        if let Some(wake) = self.session_wake.clone() {
-            window.set_wake(move || wake());
-        }
-        window
-    }
-
-    /// Every mounted tab's window, by tab.
-    pub(crate) fn hosted_windows(&self) -> Vec<(u64, ui::hosted_window::HostedWindow)> {
-        self.windows
-            .iter()
-            .map(|(tab, window)| (*tab, window.clone()))
-            .collect()
-    }
-
-    /// Tab `tab` is gone: its window goes with it, and a tab that comes
-    /// back gets a fresh one.
-    pub(crate) fn forget_hosted_window(&mut self, tab: u64) {
-        self.windows.remove(&tab);
     }
 
     /// Bind the session loop's wake once, and start the messaging service
