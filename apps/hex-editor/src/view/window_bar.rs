@@ -6,7 +6,7 @@
 
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
-use super::HexView;
+use super::Editor;
 use crate::model::EditMode;
 
 /// The bar's views: how a typed byte lands.
@@ -20,7 +20,7 @@ fn mode_id(mode: EditMode) -> &'static str {
     }
 }
 
-impl HexView {
+impl Editor {
     /// The window bar's slots for what the view shows now; none of its own
     /// while no file is open.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {

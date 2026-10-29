@@ -12,7 +12,7 @@
 use ui::widget::{FindMatch, FindMode, FindOptions, Findable};
 use ui::window_toolbar::SearchOpening;
 
-use super::{HexView, byte_edit};
+use super::{Editor, HexView, byte_edit};
 use crate::model::ChangesLength;
 use crate::search::{self, MatchRules, SearchKind};
 
@@ -24,7 +24,7 @@ pub(super) struct FindQuery {
     mode: FindMode,
 }
 
-impl Findable for HexView {
+impl Findable for Editor {
     fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
         let (kind, rules) = match options.mode {
             FindMode::Hex => (SearchKind::Hex, MatchRules::EXACT),
@@ -121,7 +121,42 @@ impl Findable for HexView {
     }
 }
 
-impl HexView {
+/// The window's search runs on the editor it hosts.
+impl Findable for HexView {
+    fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+        self.state().find(query, options)
+    }
+
+    fn content_revision(&self) -> u64 {
+        self.state().content_revision()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        self.state().reveal(index);
+    }
+
+    fn clear_find(&mut self) {
+        self.state().clear_find();
+    }
+
+    fn supports_replace(&self) -> bool {
+        self.state().supports_replace()
+    }
+
+    fn replace(&mut self, index: usize, with: &str) -> bool {
+        self.state().replace(index, with)
+    }
+
+    fn replace_all(&mut self, with: &str) -> usize {
+        self.state().replace_all(with)
+    }
+
+    fn supports_hex(&self) -> bool {
+        true
+    }
+}
+
+impl Editor {
     /// Open the window bar's search on the buffer: on its query for Find,
     /// on its replacement for Replace.
     pub(super) fn open_find(opening: SearchOpening) {

@@ -13,7 +13,7 @@ use ui::widget::scrollbar::ScrollMetrics;
 use ui::widget::{ControlSize, SegmentedFace};
 use vello::kurbo::{Point, Rect};
 
-use super::HexView;
+use super::Editor;
 use crate::model::Endian;
 
 /// Most bytes a row ever shows, and the fewest.
@@ -218,7 +218,7 @@ impl Geo {
     }
 }
 
-impl HexView {
+impl Editor {
     /// Recompute [`Geo`] for the window rect and `theme`, adopting the
     /// bytes-per-row that fills the content width. `tick` advances the
     /// inspector's slide (once per painted frame).
