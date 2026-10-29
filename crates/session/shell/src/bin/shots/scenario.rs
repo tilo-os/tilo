@@ -1078,6 +1078,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ClickAt(p) => driver.click_at(*p),
         Action::ClickNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.click_at(p),
+            // A control the semantic tree names but places nowhere a click
+            // reaches is activated as assistive technology activates it.
+            None if driver.activate_named(name) => {}
             None => eprintln!(
                 "scenario: could not resolve named target '{name}' (rect not populated yet — paint first?)"
             ),

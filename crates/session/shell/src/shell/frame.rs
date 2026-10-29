@@ -5928,6 +5928,47 @@ impl FrameBuilder {
         ui::accesskit_bridge::build_tree_update(self.host.as_ref(), &self.node_map, focus, scale)
     }
 
+    /// Perform `action` on the control the shell's semantic tree names
+    /// `target`: a control of the chrome's own or one inside a surface the
+    /// shell hosts as an app (the top bar, the launcher, Quick Settings, the
+    /// banners, a sheet, the overview), as an assistive technology performs
+    /// it, wherever it is drawn. Returns `true` only when a widget on screen
+    /// publishes `target` and took the action.
+    pub fn perform_semantic_named(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let Some(owner) = semantic_target_owner(self.host.as_ref(), target) else {
+            return false;
+        };
+        let Some((&taffy_id, &widget)) = self
+            .node_map
+            .iter()
+            .find(|(_, widget)| widget.cast::<()>().cast_const() == owner)
+        else {
+            return false;
+        };
+        // SAFETY: the live map's pointer is owned by the host, which this
+        // borrow keeps alive and unaliased for the call, as in
+        // `dispatch_a11y_action`.
+        let handled = unsafe { (*widget).perform_semantic_action(target, action, state, root_obj) };
+        if handled {
+            self.host.flush_active_tab_writeback();
+            if matches!(action, ui::a11y::Action::Focus) {
+                self.set_native_focus(focus, Some(taffy_id));
+            }
+            if self.host.take_focus_reset() {
+                self.relayout();
+                self.focus_first(focus);
+            }
+        }
+        handled
+    }
+
     /// Route an assistive-technology action back through the live compositor
     /// widget tree. Returns `true` only when the request addressed a current
     /// semantic node and was handled (directly or through the standard pointer
@@ -6301,6 +6342,7 @@ impl FrameBuilder {
         let mut sibling_counts: HashMap<String, usize> = HashMap::new();
         walk_widget(self.host.as_ref(), "", &mut sibling_counts, &mut out);
         self.register_chrome_rects(&mut out);
+        register_semantic_targets(self.host.as_ref(), &mut out);
         out
     }
 
@@ -6483,6 +6525,75 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for child in w.children() {
         walk_widget(child, &path, &mut child_counts, out);
+    }
+}
+
+/// Whether `node` or a node under it publishes `target` as its action
+/// target.
+fn publishes_target(node: &ui::a11y::AccessNode, target: &str) -> bool {
+    node.action_target.as_deref() == Some(target)
+        || node
+            .children
+            .iter()
+            .any(|child| publishes_target(child, target))
+}
+
+/// The widget under `root` whose semantics publish `target`; of a widget
+/// and one inside it that both do (a container showing its child's node as
+/// its own), the inner one, which is the one that performs it.
+fn semantic_target_owner(root: &dyn ui::widget::Widget, target: &str) -> Option<*const ()> {
+    fn visit(
+        widget: &dyn ui::widget::Widget,
+        target: &str,
+        depth: usize,
+        found: &mut Option<(usize, *const ())>,
+    ) {
+        if widget
+            .accessibility()
+            .is_some_and(|node| publishes_target(&node, target))
+            && found.is_none_or(|(deepest, _)| depth > deepest)
+        {
+            *found = Some((depth, std::ptr::from_ref(widget).cast::<()>()));
+        }
+        for child in widget.children() {
+            visit(child, target, depth.saturating_add(1), found);
+        }
+    }
+    let mut found = None;
+    visit(root, target, 0, &mut found);
+    found.map(|(_, widget)| widget)
+}
+
+/// Add every control the shell's semantic tree names and places on screen
+/// (the controls of the surfaces it hosts as apps among them) under its
+/// name, unless a widget already answers to it. Route targets
+/// (`tilo.child:`, `tilo.key-action:`) name nothing a person would.
+fn register_semantic_targets<S: std::hash::BuildHasher>(
+    root: &dyn ui::widget::Widget,
+    out: &mut HashMap<String, vello::kurbo::Rect, S>,
+) {
+    fn nodes<S: std::hash::BuildHasher>(
+        node: &ui::a11y::AccessNode,
+        out: &mut HashMap<String, vello::kurbo::Rect, S>,
+    ) {
+        if let (Some(target), Some(bounds)) = (&node.action_target, node.bounds) {
+            let rect = bounds.to_rect();
+            if rect.area() > 0.0
+                && !target.starts_with("tilo.")
+                && crate::shell::trusted_ui::widget_may_publish(target)
+            {
+                out.entry(target.clone()).or_insert(rect);
+            }
+        }
+        for child in &node.children {
+            nodes(child, out);
+        }
+    }
+    if let Some(node) = root.accessibility() {
+        nodes(&node, out);
+    }
+    for child in root.children() {
+        register_semantic_targets(child, out);
     }
 }
 

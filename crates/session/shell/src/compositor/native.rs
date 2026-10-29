@@ -5308,7 +5308,19 @@ fn execute_planned_action(
                 )));
         }
         PlannedAction::ActivateTestId { test_id } => {
-            fb.host_mut().queue_test_activation(test_id.clone());
+            // A control of the shell's own, or of a surface it hosts as an
+            // app, is activated where it is; any other name is a control of
+            // the focused app window.
+            let activated = fb.perform_semantic_named(
+                test_id,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut ctx.doc),
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+            if !activated {
+                fb.host_mut().queue_test_activation(test_id.clone());
+            }
         }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {

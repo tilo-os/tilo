@@ -1365,6 +1365,18 @@ impl ShellOverlayHost {
         self.quick_settings.app()?.accessibility()
     }
 
+    /// Whether the open panel names one of its controls `target`.
+    pub(super) fn quick_settings_publishes(&self, target: &str) -> bool {
+        fn has(node: &ui::a11y::AccessNode, target: &str) -> bool {
+            node.action_target.as_deref() == Some(target)
+                || node.children.iter().any(|child| has(child, target))
+        }
+        self.overlay_flags().quick_settings
+            && self
+                .quick_settings_accessibility()
+                .is_some_and(|panel| has(&panel, target))
+    }
+
     /// Where the panel's accessible node at `path` is, for activation by a
     /// press there.
     pub(super) fn quick_settings_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {

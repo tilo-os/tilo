@@ -26,9 +26,34 @@ fn route_file_picker(node: &mut AccessNode, parent: &[u64]) {
 /// Give every node of the Quick Settings panel's tree an action target
 /// carrying its key path, which is what the panel resolves actions by: a
 /// screen reader sets a slider or turns a switch through the panel's own
-/// controls.
+/// controls. A control the panel names keeps its name, so it is reached by
+/// it as it is in the panel's own window.
 pub(super) fn route_quick_settings(node: &mut AccessNode) {
-    route_keyed(node, &[], QUICK_SETTINGS_PREFIX);
+    route_keyed_unnamed(node, &[], QUICK_SETTINGS_PREFIX);
+}
+
+fn route_keyed_unnamed(node: &mut AccessNode, parent: &[u64], prefix: &str) {
+    let mut path = parent.to_vec();
+    if let Some(key) = node.key {
+        path.push(key);
+    }
+    let named = node
+        .action_target
+        .as_deref()
+        .is_some_and(|target| !target.starts_with("tilo.key-action:"));
+    if !named && !path.is_empty() {
+        let encoded = path
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("/");
+        let target = format!("{prefix}{encoded}");
+        node.semantic_key = Some(target.clone());
+        node.action_target = Some(target);
+    }
+    for child in &mut node.children {
+        route_keyed_unnamed(child, &path, prefix);
+    }
 }
 
 fn route_keyed(node: &mut AccessNode, parent: &[u64], prefix: &str) {
@@ -199,6 +224,16 @@ impl ShellOverlayHost {
                 Action::ScrollIntoView => true,
                 _ => ui::widget::Widget::perform_action(picker, action, &keys, state, path),
             });
+        }
+        if self.quick_settings_publishes(target) {
+            let app = self.quick_settings.app_mut()?;
+            return Some(ui::widget::Widget::perform_semantic_action(
+                app.as_mut(),
+                target,
+                action,
+                state,
+                path,
+            ));
         }
         let encoded = target.strip_prefix(QUICK_SETTINGS_PREFIX)?;
         let Ok(keys) = encoded

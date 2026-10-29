@@ -515,6 +515,19 @@ impl ShellDriver {
         self.release();
     }
 
+    /// Activate the control the shell's semantic tree names `name`, a
+    /// control of the chrome or of a surface it hosts as an app, as
+    /// assistive technology activates it. Whether one on screen took it.
+    pub fn activate_named(&mut self, name: &str) -> bool {
+        self.fb.perform_semantic_named(
+            name,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut self.state),
+            &self.root_obj,
+            &mut self.focus,
+        )
+    }
+
     /// Synthesise a `MouseWheel` event at the cursor's current position
     /// (the host's wheel handlers gate on `last_cursor`, which is the
     /// last `CursorMoved` value the driver dispatched). `dx`/`dy` are

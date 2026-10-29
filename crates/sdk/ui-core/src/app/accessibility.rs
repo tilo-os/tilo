@@ -1844,103 +1844,119 @@ impl App {
                     }
                     other => other,
                 };
-                let Some((taffy_raw, semantic_target, bounds)) =
-                    self.accessibility.semantic_tree.node(id).and_then(|n| {
-                        n.widget_taffy_id
-                            .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
-                    })
-                else {
-                    return Ok(false);
-                };
-                if let Some(semantic_target) = semantic_target {
-                    if semantic_target.starts_with("ordinary-confirmation:") {
-                        self.bindings.clear();
-                        self.layout.node_map.clear();
-                        self.focused_node = None;
-                        let handled =
-                            self.actions
-                                .action_palette
-                                .as_deref_mut()
-                                .is_some_and(|palette| {
-                                    palette.perform_semantic_action(
-                                        &semantic_target,
-                                        &verb,
-                                        &mut crate::widget::Edits::lend(&mut self.state.doc),
-                                        &self.state.root,
-                                    )
-                                });
-                        self.finish_action_palette_input(handled);
-                        return Ok(handled);
-                    }
-                    // Semantic owners use the same lifetime-scoped aliases as
-                    // native accessibility. Resolve only current admissions;
-                    // an expired alias must never fall back to a raw layout id.
-                    let exported = self.bindings.exported_nodes(&self.layout.node_map);
-                    let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
-                        .resolve(
-                            self.root_widget.as_ref(),
-                            accesskit::NodeId(taffy_raw.saturating_add(1)),
-                        )
-                    else {
-                        return Ok(false);
-                    };
-                    let keyed_path = semantic_target
-                        .strip_prefix("tilo.key-action:")
-                        .and_then(|target| target.rsplit_once(':'))
-                        .map(|(_, path)| {
-                            path.split('/')
-                                .map(str::parse::<u64>)
-                                .collect::<Result<Vec<_>, _>>()
-                        })
-                        .transpose()
-                        .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
-                    let handled = self
-                        .dispatch_node(taffy_id, |widget, doc, root| {
-                            if let Some(key_path) = keyed_path {
-                                widget.perform_action(
-                                    &verb,
-                                    &key_path,
-                                    &mut crate::widget::Edits::lend(doc),
-                                    root,
-                                )
-                            } else {
-                                crate::a11y_child_route::perform(
-                                    widget,
-                                    &semantic_target,
-                                    &verb,
-                                    &mut crate::widget::Edits::lend(doc),
-                                    root,
-                                )
-                            }
-                        })
-                        .map_err(|error| format!("component dispatch refused: {error:?}"))?;
-                    if handled {
-                        if matches!(verb, crate::a11y::Action::Focus) {
-                            self.set_focused_node(Some(taffy_id));
-                        }
-                        self.invalidate_widget_resource_cache();
-                        self.needs_sync = true;
-                        self.layout.layout_dirty = true;
-                        return Ok(true);
-                    }
-                    // A custom-painted widget may expose stable semantic
-                    // targets and geometry while intentionally reusing its
-                    // production pointer hit-testing instead of duplicating a
-                    // `perform_semantic_action` switch. Route the action back
-                    // through that exact event path.
-                    if let Some(bounds) = bounds {
-                        let center = bounds.center();
-                        return Ok(self.dispatch_semantic_click(center.x, center.y));
-                    }
-                    return Ok(false);
-                }
-                let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
-                if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {
-                    return Ok(self.dispatch_semantic_click(x, y));
-                }
-                Ok(true)
+                self.perform_semantic_verb(id, verb, true)
             }
         }
+    }
+
+    /// Perform `verb` on the semantic node `id`, whether or not the node
+    /// offers it as one of its actions: the verb goes to the widget that owns
+    /// the node, as an assistive technology's request does. A verb the
+    /// widget does not take on a node it paints itself is pressed where the
+    /// node stands only with `press_unhandled`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the owning widget's component refuses dispatch.
+    pub(crate) fn perform_semantic_verb(
+        &mut self,
+        id: &crate::a11y_tree::SemanticId,
+        verb: crate::a11y::Action,
+        press_unhandled: bool,
+    ) -> Result<bool, String> {
+        let Some((taffy_raw, semantic_target, bounds)) =
+            self.accessibility.semantic_tree.node(id).and_then(|n| {
+                n.widget_taffy_id
+                    .map(|taffy| (taffy, n.semantic_target.clone(), n.bounds))
+            })
+        else {
+            return Ok(false);
+        };
+        if let Some(semantic_target) = semantic_target {
+            if semantic_target.starts_with("ordinary-confirmation:") {
+                self.bindings.clear();
+                self.layout.node_map.clear();
+                self.focused_node = None;
+                let handled = self
+                    .actions
+                    .action_palette
+                    .as_deref_mut()
+                    .is_some_and(|palette| {
+                        palette.perform_semantic_action(
+                            &semantic_target,
+                            &verb,
+                            &mut crate::widget::Edits::lend(&mut self.state.doc),
+                            &self.state.root,
+                        )
+                    });
+                self.finish_action_palette_input(handled);
+                return Ok(handled);
+            }
+            // Semantic owners use the same lifetime-scoped aliases as
+            // native accessibility. Resolve only current admissions;
+            // an expired alias must never fall back to a raw layout id.
+            let exported = self.bindings.exported_nodes(&self.layout.node_map);
+            let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported.resolve(
+                self.root_widget.as_ref(),
+                accesskit::NodeId(taffy_raw.saturating_add(1)),
+            ) else {
+                return Ok(false);
+            };
+            let keyed_path = semantic_target
+                .strip_prefix("tilo.key-action:")
+                .and_then(|target| target.rsplit_once(':'))
+                .map(|(_, path)| {
+                    path.split('/')
+                        .map(str::parse::<u64>)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()
+                .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
+            let handled = self
+                .dispatch_node(taffy_id, |widget, doc, root| {
+                    if let Some(key_path) = keyed_path {
+                        widget.perform_action(
+                            &verb,
+                            &key_path,
+                            &mut crate::widget::Edits::lend(doc),
+                            root,
+                        )
+                    } else {
+                        crate::a11y_child_route::perform(
+                            widget,
+                            &semantic_target,
+                            &verb,
+                            &mut crate::widget::Edits::lend(doc),
+                            root,
+                        )
+                    }
+                })
+                .map_err(|error| format!("component dispatch refused: {error:?}"))?;
+            if handled {
+                if matches!(verb, crate::a11y::Action::Focus) {
+                    self.set_focused_node(Some(taffy_id));
+                }
+                self.invalidate_widget_resource_cache();
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
+                return Ok(true);
+            }
+            // A custom-painted widget may expose stable semantic
+            // targets and geometry while intentionally reusing its
+            // production pointer hit-testing instead of duplicating a
+            // `perform_semantic_action` switch. Route the action back
+            // through that exact event path.
+            if let Some(bounds) = bounds.filter(|_| press_unhandled) {
+                let center = bounds.center();
+                return Ok(self.dispatch_semantic_click(center.x, center.y));
+            }
+            return Ok(false);
+        }
+        let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
+        if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {
+            return Ok(self.dispatch_semantic_click(x, y));
+        }
+        Ok(true)
     }
 
     /// Byte-for-byte the same path as a Ctrl+K palette selection
