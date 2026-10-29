@@ -23,6 +23,13 @@ The ids lock gives every declaration its stable id. The compiler adds new declar
 retires removed ones; commit it with the sources. Rename a declaration with
 `tilolang ids --rename old new`, so it keeps its id and with it the data stored under it.
 
+Rename the app itself by giving it its new id and naming the old one in the header:
+`app so.tilo.lang.tasks "Tasks" (previously: so.tilo.lang.todo)` (several in brackets). The
+records stored under the old id are the app's: they open in it where they are, with the ids they
+have, and its actions change them there; what it creates goes under the new id. The id it had
+before is signed into the app's manifest, and installing it over an app of that id from another
+publisher is refused; from the same publisher it takes that app's place.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -319,7 +326,7 @@ apps:
 ```
 grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
 grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
-    .each(t -> todo.add(todo.todos, t.group(1)))
+    .each(t -> todo.add(todo.tasks, t.group(1)))
 find("standup chen")                                   // the palette's words, every app
 find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
 find("groceries").single()                             // one, or an error listing them
@@ -370,6 +377,8 @@ print(xs, fields: [.title, .due])
   it as mia's at that time.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
+- An item block names a template's other slots beside the item's view; they do not see the
+  item: `std.transcript(c, c.messages) { m -> message(m, replying) composer: { ... } }`.
 - `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.

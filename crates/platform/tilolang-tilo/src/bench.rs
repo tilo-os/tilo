@@ -456,11 +456,16 @@ fn seeded_room(shape: &Shape, n: usize) -> Result<Doc, String> {
 /// The room record a window of the last of `packages` opens with `n` items, as the bench seeds
 /// it: what a measurement of the real window installs as the room's document.
 ///
+/// With no items it is the room before anything was made, whatever the root holds.
+///
 /// # Errors
 /// The package's root has nothing to seed, or seeding fails.
 pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
     for compiled in packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
+    }
+    if n == 0 {
+        return Ok(Doc::new());
     }
     let main = packages.last().ok_or("no package")?;
     let others: Vec<&Meta> = packages
@@ -1962,7 +1967,7 @@ fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
 }
 
 /// The keys of the places of the main window's sidebar: `std.list`'s, the item type's filters,
-/// after all of the items (`all`).
+/// after all of the items (`all`), or those a window lists of its own.
 fn places(node: &UiNode, out: &mut Vec<(String, String)>) {
     if node.kind == "ui.NavItem"
         && let Some(tilolang_runtime::Value::Text(key)) = node.props.get("key")
@@ -1974,15 +1979,27 @@ fn places(node: &UiNode, out: &mut Vec<(String, String)>) {
     }
 }
 
-/// Choosing a place of the main window's sidebar, the first of the item type's filters, and
-/// back to all of the items: the first page of a filtered query, as the window shows it, and
-/// the list again. Only for a package whose main view lists places.
+/// The key of the place a sidebar's list has chosen.
+fn chosen(node: &UiNode) -> Option<String> {
+    if node.kind == "ui.NavList"
+        && let Some(tilolang_runtime::Value::Text(key)) = node.props.get("selected")
+    {
+        return Some(key.clone());
+    }
+    node.children.iter().find_map(chosen)
+}
+
+/// Choosing a place of the main window's sidebar, the first of the item type's filters
+/// besides the one it starts on, and back to that one (all of the items, for `std.list`): the
+/// first page of a filtered query, as the window shows it, and the list again. Only for a
+/// package whose main view lists places.
 fn filter(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
     let mut found = Vec::new();
     places(room.list.tree(), &mut found);
+    let start = chosen(room.list.tree()).unwrap_or_else(|| "all".to_owned());
     let (Some((_, all)), Some((_, place))) = (
-        found.iter().find(|(key, _)| key == "all").cloned(),
-        found.iter().find(|(key, _)| key != "all").cloned(),
+        found.iter().find(|(key, _)| *key == start).cloned(),
+        found.iter().find(|(key, _)| *key != start).cloned(),
     ) else {
         return Ok(None);
     };

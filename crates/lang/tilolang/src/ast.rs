@@ -27,6 +27,10 @@ pub struct AppHeader {
     pub icon: Option<String>,
     /// `(category: .office)`: the launcher category the app is listed under.
     pub category: Option<String>,
+    /// `(previously: so.tilo.old)`: the ids the app was published under before. Its records,
+    /// grants and windows under them are the app's (the platform checks that the same publisher
+    /// signed both).
+    pub previously: Vec<String>,
     /// `(records: .own)`: each member of a workspace keeps the app's records in their own
     /// record there, which only that person's devices read; `false` (`.shared`, the default)
     /// keeps them in the workspace's record of the app, which every member reads.

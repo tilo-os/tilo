@@ -10,7 +10,8 @@ starts with `.name` (a method call continuing the previous line) don't end anyth
 ```
 file       = [ header ] { item } ;                    (* one file of the package has the header *)
 header     = "app" app_id string [ "(" app_opt { "," app_opt } ")" ] ;
-app_opt    = ( "icon" | "category" ) ":" "." ident ;
+app_opt    = ( "icon" | "category" ) ":" "." ident
+           | "previously" ":" ( app_id | "[" app_id { "," app_id } "]" ) ;
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view

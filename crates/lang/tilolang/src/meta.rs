@@ -20,6 +20,10 @@ pub struct PackageMeta {
     /// The launcher category (`app ... (category: .office)`), lower case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// The ids the app was published under before (`app ... (previously: so.tilo.old)`): the
+    /// platform reads its records, grants and windows under them as the app's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previously: Vec<String>,
     /// Each member keeps the app's records in their own record of the workspace
     /// (`app ... (records: .own)`), which only that person's devices read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

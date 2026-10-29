@@ -270,3 +270,59 @@ pub fn lookup_in(app: &str, name: &str) -> Option<&'static TypeSchema> {
         .copied()
         .find(|schema| schema.app == app && schema.name == name)
 }
+
+/// The ids each app was published under before (`app ... (previously: so.tilo.old)`), by app.
+fn successions() -> &'static RwLock<BTreeMap<String, Vec<String>>> {
+    static SUCCESSIONS: RwLock<BTreeMap<String, Vec<String>>> = RwLock::new(BTreeMap::new());
+    &SUCCESSIONS
+}
+
+/// Record that `app` was published under the ids `before` earlier: the records the room holds
+/// under them are `app`'s, where they are and under the ids they have. That the same publisher
+/// signed both is checked where the package is installed; a package loaded here is trusted.
+pub fn register_previously(app: &str, before: &[String]) {
+    let mut held = successions()
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    let ids: Vec<String> = before
+        .iter()
+        .filter(|old| old.as_str() != app)
+        .cloned()
+        .collect();
+    if ids.is_empty() {
+        held.remove(app);
+    } else {
+        held.insert(app.to_owned(), ids);
+    }
+}
+
+/// The ids `app` was published under before.
+#[must_use]
+pub fn previously(app: &str) -> Vec<String> {
+    successions()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(app)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The app the records stored under `stored` belong to: the app that was published as `stored`
+/// before, else `stored` itself.
+#[must_use]
+pub fn successor(stored: &str) -> String {
+    successions()
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .find(|(_, before)| before.iter().any(|old| old == stored))
+        .map_or_else(|| stored.to_owned(), |(app, _)| app.clone())
+}
+
+/// The keys the records of `app` may be stored under: its own id, then each it had before.
+#[must_use]
+pub fn stored_under(app: &str) -> Vec<String> {
+    let mut out = vec![app.to_owned()];
+    out.extend(previously(app));
+    out
+}
