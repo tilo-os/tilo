@@ -197,6 +197,20 @@ impl Backend for HeadlessBackend {
         Ok(())
     }
 
+    fn backdrop(
+        &mut self,
+        state: &mut State,
+        region: (usize, usize),
+        request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        crate::backdrop::draw::<_, Image<'static, 'static>>(
+            &mut self.renderer,
+            state,
+            region,
+            request,
+        )
+    }
+
     fn capture(
         &mut self,
         state: &mut State,

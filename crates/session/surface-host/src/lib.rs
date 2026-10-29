@@ -16,7 +16,10 @@ use std::cell::Cell;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Buffer, Rectangle, Transform};
-use tilo_compositor::{CursorIcon, HostKey, HostLayer, KeyModifiers, SurfaceHost};
+use tilo_compositor::{
+    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
+    SurfaceHost,
+};
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
@@ -121,12 +124,21 @@ pub struct AppHost {
     keyboard: bool,
     /// The modifiers the app last heard of.
     modifiers: ModifiersState,
+    /// The regions the app drew translucent material in last frame, in
+    /// its physical pixels: bounds, blur deviation, texel size.
+    backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
+    /// The blurred backdrops the compositor made, by region.
+    provided: Vec<Option<vello::peniko::ImageData>>,
+    /// The next frame is rasterized whole (its backdrops changed).
+    full: bool,
 }
 
 impl AppHost {
     /// Show `app` at `placement`. Nothing is drawn before the first
     /// [`SurfaceHost::prepare_frame`].
     pub fn new(app: App, placement: Placement) -> Self {
+        // Drags the app starts come to the compositor through this host.
+        ui::dnd::host_drags_in_process();
         let (width, height) = placement.physical_size();
         Self {
             app,
@@ -144,6 +156,9 @@ impl AppHost {
             wants: true,
             keyboard: false,
             modifiers: ModifiersState::empty(),
+            backdrops: Vec::new(),
+            provided: Vec::new(),
+            full: false,
         }
     }
 
@@ -328,6 +343,44 @@ impl SurfaceHost for AppHost {
         }
     }
 
+    fn backdrops(&self) -> Vec<BackdropRequest> {
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        self.backdrops
+            .iter()
+            .map(|(bounds, blur_px, texels)| BackdropRequest {
+                rect: (
+                    f64::from(ox) + bounds.x0 / scale,
+                    f64::from(oy) + bounds.y0 / scale,
+                    bounds.width() / scale,
+                    bounds.height() / scale,
+                ),
+                texels: *texels,
+                blur: blur_px * f64::from(texels.0) / bounds.width().max(1.0),
+            })
+            .collect()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
+        self.provided.resize(images.len(), None);
+        self.provided.truncate(images.len());
+        for (slot, image) in images.into_iter().enumerate() {
+            if let (Some(image), Some(provided)) = (image, self.provided.get_mut(slot)) {
+                *provided = Some(ui::raster::rgba8_premultiplied(
+                    image.rgba,
+                    image.texels.0,
+                    image.texels.1,
+                ));
+            }
+        }
+        self.wants = true;
+        self.full = true;
+    }
+
+    fn take_drag(&mut self) -> Option<HostDrag> {
+        ui::dnd::take_hosted_drag().map(|offer| HostDrag { offer, icon: None })
+    }
+
     /// The pointer may have moved anywhere while it carried the drag; the
     /// compositor routes it anew, so the app hears it left.
     fn drag_ended(&mut self, _dropped: bool) {
@@ -342,10 +395,39 @@ impl SurfaceHost for AppHost {
         }
         self.app.surface_accessibility();
         self.scene.reset();
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`).
+        // The images are this app's: every host on the thread provides its
+        // own before it draws.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
+        let recording = ui::backdrop::BackdropRecording::begin();
+        ui::backdrop::layer_scene(&self.scene, 0);
         self.wants =
             self.app
                 .surface_frame_with_damage(&self.surface, &mut self.scene, &mut self.damage);
+        self.backdrops = recording
+            .finish()
+            .iter()
+            .map(|surface| {
+                (
+                    surface.bounds,
+                    surface.blur_px,
+                    ui::backdrop::backdrop_texels(surface.bounds),
+                )
+            })
+            .collect();
         let changed = self.damage.take();
+        let changed = if std::mem::take(&mut self.full) {
+            None
+        } else {
+            changed
+        };
         let regions = self.canvas.draw(&self.scene, changed.as_deref());
         if regions.is_empty() {
             return;

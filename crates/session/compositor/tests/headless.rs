@@ -22,9 +22,9 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Arrangement, Compositor, GestureEvent, HostKey, HostLayer, InputEvent, OutputConfig, PadAction,
-    StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent, TabletPhase, WindowEffect,
-    WindowInfo, WindowPicture, WindowPolicy,
+    Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostKey, HostLayer,
+    InputEvent, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent,
+    TabletPadEvent, TabletPhase, WindowEffect, WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -1445,6 +1445,81 @@ fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
     compositor.render().unwrap();
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(60, 60), Some([0, 255, 0, 255]));
+}
+
+/// A hosted surface of translucent material over (200, 180, 80, 40),
+/// keeping the backdrops it is handed.
+struct Frosted(Rc<RefCell<Vec<Option<BackdropImage>>>>);
+
+impl SurfaceHost for Frosted {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn backdrops(&self) -> Vec<BackdropRequest> {
+        vec![BackdropRequest {
+            rect: (200.0, 180.0, 80.0, 40.0),
+            texels: (40, 20),
+            blur: 3.0,
+        }]
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
+        self.0.borrow_mut().extend(images);
+    }
+}
+
+#[test]
+fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
+    // The window covers 220..420 x 190..290: the region's right and lower
+    // part is red, the rest background.
+    let handed = Rc::new(RefCell::new(Vec::new()));
+    compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
+    compositor.render().unwrap();
+    let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
+    assert_eq!(first.texels, (40, 20));
+    assert_eq!(first.rgba.len(), 40 * 20 * 4);
+    let at = |image: &BackdropImage, x: usize, y: usize| {
+        let i = (y * 40 + x) * 4;
+        [
+            image.rgba[i],
+            image.rgba[i + 1],
+            image.rgba[i + 2],
+            image.rgba[i + 3],
+        ]
+    };
+    let red_corner = at(&first, 39, 19);
+    let background_corner = at(&first, 0, 0);
+    assert!(red_corner[0] > 200 && red_corner[1] < 60, "{red_corner:?}");
+    assert!(background_corner[0] < 60, "{background_corner:?}");
+    let edge = at(&first, 10, 15);
+    assert!(
+        edge[0] > background_corner[0] + 20 && edge[0] < red_corner[0] - 20,
+        "the window's edge is blurred: {edge:?}"
+    );
+
+    compositor.render().unwrap();
+    assert!(
+        handed.borrow().iter().all(Option::is_none),
+        "nothing below changed, nothing is drawn again"
+    );
+    handed.borrow_mut().clear();
+
+    client.show(200, 100, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    compositor.render().unwrap();
+    let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
+    assert!(at(&again, 39, 19)[2] > 200, "now blue");
 }
 
 #[test]

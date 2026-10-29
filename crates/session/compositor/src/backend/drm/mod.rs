@@ -365,6 +365,29 @@ impl Backend for DrmBackend {
         Ok(())
     }
 
+    fn backdrop(
+        &mut self,
+        state: &mut State,
+        region: (usize, usize),
+        request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.active {
+            return Ok(None);
+        }
+        let primary = inner.primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = inner
+            .renderers
+            .single_renderer(&primary)
+            .map_err(|error| failed("renderer", error))?;
+        crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut renderer,
+            state,
+            region,
+            request,
+        )
+    }
+
     fn capture(
         &mut self,
         state: &mut State,

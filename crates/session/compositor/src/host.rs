@@ -75,6 +75,17 @@ pub trait SurfaceHost {
         Vec::new()
     }
 
+    /// The regions this surface draws translucent material in, which take
+    /// a blur of what lies below them ([`crate::backdrop`]).
+    fn backdrops(&self) -> Vec<crate::BackdropRequest> {
+        Vec::new()
+    }
+
+    /// Blurred images of what lies below [`SurfaceHost::backdrops`]'
+    /// regions, in their order; `None` where nothing changed since the
+    /// last.
+    fn set_backdrops(&mut self, _images: Vec<Option<crate::BackdropImage>>) {}
+
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}
 

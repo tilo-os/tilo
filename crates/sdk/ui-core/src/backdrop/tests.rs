@@ -677,3 +677,44 @@ fn frost_cost_at_1080p() {
         info.name, info.device_type,
     );
 }
+
+#[test]
+fn a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder() {
+    let theme = Theme::dark();
+    let (width, height) = backdrop_texels(PANEL);
+    assert_eq!((width, height), (64, 48));
+    let blurred = crate::raster::rgba8_premultiplied(
+        [200_u8, 10, 10, 255].repeat((width * height) as usize),
+        width,
+        height,
+    );
+    provide_backdrops(vec![(0, blurred.clone())]);
+    let mut scene = Scene::new();
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(
+        surfaces[0].image.data.id(),
+        blurred.data.id(),
+        "the provided image, not the opaque placeholder"
+    );
+
+    // One of another size is not used.
+    provide_backdrops(vec![(
+        0,
+        crate::raster::rgba8_premultiplied(vec![0; 4], 1, 1),
+    )]);
+    let mut scene = Scene::new();
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let surfaces = recording.finish();
+    assert_ne!(surfaces[0].image.data.id(), blurred.data.id());
+    assert_eq!(
+        (surfaces[0].image.width, surfaces[0].image.height),
+        (64, 48)
+    );
+    provide_backdrops(Vec::new());
+}

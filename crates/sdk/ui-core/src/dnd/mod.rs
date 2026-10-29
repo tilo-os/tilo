@@ -160,11 +160,45 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     )
 }
 
+/// Whether apps in this process are hosted by a compositor in the same
+/// process ([`host_drags_in_process`]).
+static HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The drag a hosted app asked for and its host has not taken yet.
+static HOSTED_DRAG: Mutex<Option<Vec<(String, Vec<u8>)>>> = Mutex::new(None);
+
+/// The compositor hosts this process's apps itself (no window): a drag an
+/// app starts is kept for the host to carry ([`take_hosted_drag`]).
+pub fn host_drags_in_process() {
+    HOSTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The drag a hosted app asked for since the last call: bytes per format.
+/// A file offered under its own content type is left out (the host would
+/// have to read it whole); the `text/uri-list` naming it stays.
+pub fn take_hosted_drag() -> Option<Vec<(String, Vec<u8>)>> {
+    HOSTED_DRAG.lock_recover().take()
+}
+
 fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
     let window = {
         let slot = DRAG_WINDOW.lock_recover();
         slot.as_ref().and_then(Weak::upgrade)
     };
+    if window.is_none() && HOSTED.load(std::sync::atomic::Ordering::Relaxed) {
+        let bytes: Vec<(String, Vec<u8>)> = offers
+            .into_iter()
+            .filter_map(|(mime, offer)| match offer {
+                Offer::Bytes(bytes) => Some((mime, bytes)),
+                Offer::File(_) => None,
+            })
+            .collect();
+        if bytes.is_empty() {
+            return false;
+        }
+        *HOSTED_DRAG.lock_recover() = Some(bytes);
+        return true;
+    }
     let Some(window) = window else {
         // Not an error: the compositor hosts several of these widgets in its
         // own process with no `App` and no window; reporting "no" is how it
@@ -205,6 +239,22 @@ fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
 #[cfg(test)]
 mod outgoing_tests {
     use super::*;
+
+    #[test]
+    fn a_drag_in_a_hosted_process_waits_for_its_host() {
+        host_drags_in_process();
+        let files = file_offers(&[PathBuf::from("/a.png")]);
+        assert!(start_drag_with(files), "the host takes it");
+        assert_eq!(
+            take_hosted_drag(),
+            Some(vec![(
+                URI_LIST_MIME.to_owned(),
+                b"file:///a.png\r\n".to_vec()
+            )]),
+            "files travel as their URI list"
+        );
+        assert_eq!(take_hosted_drag(), None, "taken once");
+    }
 
     #[test]
     fn outgoing_drags_encode_uri_lists_and_content_types() {
