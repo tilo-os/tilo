@@ -22,7 +22,7 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::store::{FieldKey, Store as _};
-use tilolang_tilo::runtime::{ResourceRef, Value};
+use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use super::connector::{Changes, Event, ImapMessage, MailConnector, Outgoing, Request};
 
@@ -100,6 +100,8 @@ enum Sending {
     Going,
     Gone,
     Refused(String),
+    /// The server could not be reached: the message waits to go online.
+    Unsent(String),
 }
 
 /// The origin. See the module docs.
@@ -116,6 +118,9 @@ pub struct ImapOrigin {
     trouble: HashMap<String, String>,
     /// Accounts whose changes to take in, with the mailboxes to ask for.
     due: Vec<(String, String)>,
+    /// Set when the device came online again: servers that could not be reached are asked
+    /// again, and messages waiting to go online are sent.
+    reconnected: Arc<AtomicBool>,
 }
 
 impl ImapOrigin {
@@ -131,7 +136,29 @@ impl ImapOrigin {
             sends: HashMap::new(),
             trouble: HashMap::new(),
             due: Vec::new(),
+            reconnected: Arc::default(),
         }
+    }
+
+    /// Online again, when it is: each server that could not be reached is asked what changed,
+    /// and what waits to go online is sent. Whether the outbox is to be settled.
+    fn reconnect(&mut self, host: &Host) -> bool {
+        if !self.reconnected.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        for account in self.trouble.keys() {
+            self.due.push((account.clone(), "inbox".to_owned()));
+        }
+        host.runtime().retry_waiting();
+        true
+    }
+
+    /// This origin, trying again what could not reach its server whenever `reconnected` is set
+    /// (the device came online again) and it is woken.
+    #[must_use]
+    pub fn reconnecting_on(mut self, reconnected: Arc<AtomicBool>) -> Self {
+        self.reconnected = reconnected;
+        self
     }
 }
 
@@ -798,6 +825,7 @@ impl Origin for ImapOrigin {
     fn due(&self) -> bool {
         self.state.is_none()
             || self.woken.load(Ordering::Acquire)
+            || self.reconnected.load(Ordering::Acquire)
             || !self.due.is_empty()
             || !self.changed.borrow().is_empty()
     }
@@ -825,6 +853,7 @@ impl Origin for ImapOrigin {
             polled.wrote = true;
         }
         polled.wrote |= self.add_accounts(cx.host, &cx.now);
+        polled.settle |= self.reconnect(cx.host);
         for (account, mailbox) in std::mem::take(&mut self.due) {
             let _ = self.connector.changes(&account, &mailbox);
         }
@@ -872,6 +901,22 @@ impl Origin for ImapOrigin {
                     }
                     None => {}
                 },
+                Event::Unsent { request, reason } => match self.pending.remove(&request) {
+                    Some(Pending::Send(payload)) => {
+                        self.sends.insert(payload, Sending::Unsent(reason));
+                        polled.settle = true;
+                    }
+                    Some(Pending::Write {
+                        account,
+                        key,
+                        before,
+                    }) => {
+                        self.trouble.insert(account.clone(), reason);
+                        self.put_back(cx.host, &cx.now, &account, &key, &before);
+                        polled.wrote = true;
+                    }
+                    None => {}
+                },
             }
         }
         polled.wrote |= self.push(cx.host, &cx.now);
@@ -886,20 +931,29 @@ impl Origin for ImapOrigin {
         polled
     }
 
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String> {
+    fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
         if capability != "smtp.send" {
-            return Err(format!(
+            return Delivery::Rejected(format!(
                 "the mail connector does not carry out {capability}"
             ));
         }
         let key = payload.to_string();
         match self.sends.get(&key) {
+            Some(Sending::Going) => return Delivery::Pending,
             Some(Sending::Gone) => {
                 self.sends.remove(&key);
-                return Ok(());
+                return Delivery::Delivered;
             }
-            Some(Sending::Going) => return Err("sending".to_owned()),
-            Some(Sending::Refused(reason)) => return Err(reason.clone()),
+            Some(Sending::Refused(reason)) => {
+                let reason = reason.clone();
+                self.sends.remove(&key);
+                return Delivery::Rejected(reason);
+            }
+            Some(Sending::Unsent(reason)) => {
+                let reason = reason.clone();
+                self.sends.remove(&key);
+                return Delivery::Offline(reason);
+            }
             None => {}
         }
         let field = |i: usize| -> String {
@@ -922,9 +976,9 @@ impl Origin for ImapOrigin {
             Some(request) => {
                 self.pending.insert(request, Pending::Send(key.clone()));
                 self.sends.insert(key, Sending::Going);
-                Err("sending".to_owned())
+                Delivery::Pending
             }
-            None => Err(format!("no mail account {account} on this device")),
+            None => Delivery::Rejected(format!("no mail account {account} on this device")),
         }
     }
 }

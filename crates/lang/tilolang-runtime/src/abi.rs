@@ -153,6 +153,7 @@ imports! {
     (ArgAt, "arg_at", "iii", "i"),
     (Actions, "actions", "i", "i"),
     (Lenses, "lenses", "i", "i"),
+    (Delivery, "delivery", "i", "i"),
     (WorkspaceMembers, "workspace_members", "", "i"),
     (Members, "members", "i", "i"),
     (Speakers, "speakers", "i", "i"),

@@ -88,8 +88,13 @@ pub enum Event {
     },
     /// The server took the request (a send, a flag, a move).
     Accepted(Request),
-    /// The server refused it, or could not be reached: why.
+    /// The server refused it: why.
     Refused {
+        request: Request,
+        reason: String,
+    },
+    /// The server could not be reached, so it never got the request: why.
+    Unsent {
         request: Request,
         reason: String,
     },
@@ -401,8 +406,8 @@ impl MailConnector for EngineConnector {
                 EngineEvent::Error {
                     request_id,
                     kind,
+                    context,
                     message,
-                    ..
                 } => {
                     let account = self
                         .pending
@@ -410,6 +415,12 @@ impl MailConnector for EngineConnector {
                         .map(|(_, account, _)| account)
                         .unwrap_or_default();
                     match kind {
+                        EngineRequestKind::Send if context == mail::engine::SMTP_UNREACHED => {
+                            out.push(Event::Unsent {
+                                request: request_id,
+                                reason: message,
+                            });
+                        }
                         EngineRequestKind::Send
                         | EngineRequestKind::StoreFlag
                         | EngineRequestKind::Move => out.push(Event::Refused {
