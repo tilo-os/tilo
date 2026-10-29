@@ -156,6 +156,60 @@ pub fn document_action_result(
     found
 }
 
+/// Whether `operation` may be published on `on` by a widget below its
+/// component's root: views and effects may, a document mutation never does.
+///
+/// # Panics
+/// In a debug build, on a document mutation: offering one there is a
+/// mistake of the widget's author.
+pub fn admits_outside_document(operation: &tilo_actions::ActionSpec, on: &str) -> bool {
+    let admitted = operation.kind != tilo_actions::OperationKind::Document;
+    debug_assert!(
+        admitted,
+        "`{on}` offers document action `{}` outside the resource's actions; \
+         a document change is the resource's Action through its Dispatcher",
+        operation.id
+    );
+    admitted
+}
+
+/// `resource` without document actions, at any depth: what a widget below
+/// its component's root may publish. The root is the one boundary that
+/// speaks for the resource; every host walk publishes and dispatches what
+/// the rest of the tree adds through this.
+#[must_use]
+pub fn outside_document(mut resource: tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec {
+    let on = resource.id.as_str().to_owned();
+    resource
+        .actions
+        .retain(|action| admits_outside_document(action, &on));
+    resource.children = resource
+        .children
+        .into_iter()
+        .map(outside_document)
+        .collect();
+    resource
+}
+
+/// `resource`, resolved by id below its component's root, without document
+/// actions. A lookup is asked for ids the root publishes too (an item of its
+/// own), so this drops them without complaint: the root's publication
+/// carries them.
+#[must_use]
+pub fn resolved_outside_document(
+    mut resource: tilo_actions::ResourceSpec,
+) -> tilo_actions::ResourceSpec {
+    resource
+        .actions
+        .retain(|action| action.kind != tilo_actions::OperationKind::Document);
+    resource.children = resource
+        .children
+        .into_iter()
+        .map(resolved_outside_document)
+        .collect();
+    resource
+}
+
 pub fn resources(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,

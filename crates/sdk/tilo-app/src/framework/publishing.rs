@@ -1,16 +1,18 @@
 //! What a part of a view publishes beside its resource that no binding
 //! covers: the live entities it shows ([`LiveRow`]s), search entries for
-//! what the resource does not hold, and whether the secrets behind them are
-//! unlocked. A view says it with
+//! what the resource does not hold, whether the secrets behind them are
+//! unlocked, and what it looks up for the platform search's queries. A view says it with
 //! [`ViewCx::publishing`](super::ViewCx::publishing); the root collects it as
 //! it collects a hosted surface's, so a view never needs a widget of its own
 //! to publish what it shows.
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
 use tilo_resource::{Resource, SearchEntry};
-use ui_core::widget::{Decorator, Element, Widget};
+use ui_core::search::SearchQuery;
+use ui_core::widget::{AppModel, Decorator, Element, ModelPath, Widget};
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;
@@ -20,6 +22,8 @@ type Rows = Rc<dyn Fn() -> Vec<LiveRow>>;
 type Row = Rc<dyn Fn(&str) -> Option<LiveRow>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
+type OnQuery = Rc<RefCell<dyn FnMut(&SearchQuery)>>;
+type Answering = Rc<dyn Fn() -> bool>;
 
 /// What a part of a view publishes beside the resource. Each source is read
 /// whenever the resource is published or searched, so it reads the view's
@@ -37,6 +41,8 @@ struct Sources {
     row: Option<Row>,
     entries: Option<Entries>,
     unlocked: Option<Unlocked>,
+    query: Option<OnQuery>,
+    answering: Option<Answering>,
 }
 
 impl<R: Resource> Default for Publishes<R> {
@@ -92,19 +98,58 @@ impl<R: Resource> Publishes<R> {
         self.sources.unlocked = Some(Rc::new(unlocked));
         self
     }
+
+    /// Look up what the platform search asks for beyond what the view holds
+    /// (a server's catalogue, a mailbox not yet fetched), and offer what
+    /// comes back through [`Self::search_entries`]. `query` gets the latest
+    /// query on the UI thread before the view syncs; queries asked between
+    /// frames are coalesced. Never asked of a past version.
+    #[must_use]
+    pub fn search_query(mut self, query: impl FnMut(&SearchQuery) + 'static) -> Self {
+        self.sources.query = Some(Rc::new(RefCell::new(query)));
+        self
+    }
+
+    /// Whether the results for the latest [`Self::search_query`] are still
+    /// coming (a server is still looking). A search already showing waits
+    /// for them and shows them once this turns false, without anyone typing
+    /// again. Read after every sync.
+    #[must_use]
+    pub fn search_pending(mut self, pending: impl Fn() -> bool + 'static) -> Self {
+        self.sources.answering = Some(Rc::new(pending));
+        self
+    }
 }
 
-/// `content`, publishing what `publishes` says on the resource `R`.
-pub(crate) fn publishing<R: Resource>(publishes: Publishes<R>, content: Element) -> Element {
-    element(std::any::TypeId::of::<R>(), publishes.sources, content)
+/// `content`, publishing what `publishes` says on the resource `R`. `wake`
+/// is the live window's, `None` in a past version, which is asked nothing.
+pub(crate) fn publishing<R: Resource>(
+    publishes: Publishes<R>,
+    content: Element,
+    wake: Option<ui_core::WakeHandle>,
+) -> Element {
+    element(
+        std::any::TypeId::of::<R>(),
+        publishes.sources,
+        content,
+        wake,
+    )
 }
 
 #[inline(never)]
-fn element(resource: std::any::TypeId, sources: Sources, content: Element) -> Element {
+fn element(
+    resource: std::any::TypeId,
+    sources: Sources,
+    content: Element,
+    wake: Option<ui_core::WakeHandle>,
+) -> Element {
+    // Only a view that looks queries up is asked them.
+    let queries = SearchQueries::waking(wake.filter(|_| sources.query.is_some()));
     Box::new(Publishing {
         resource,
         sources,
         content,
+        queries,
     })
 }
 
@@ -112,6 +157,7 @@ struct Publishing {
     resource: std::any::TypeId,
     sources: Sources,
     content: Element,
+    queries: SearchQueries,
 }
 
 impl Decorator for Publishing {
@@ -156,6 +202,23 @@ impl Decorator for Publishing {
 
     fn name(&self) -> &'static str {
         "Publishing"
+    }
+
+    // The latest query reaches the view before it syncs, as a surface's
+    // does; what it says of its answer is read after.
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if let Some(query) = self.queries.take()
+            && let Some(on_query) = &self.sources.query
+        {
+            (on_query.borrow_mut())(&query);
+        }
+        self.content.sync(state, path);
+        self.queries.settle(
+            self.sources
+                .answering
+                .as_ref()
+                .is_some_and(|answering| answering()),
+        );
     }
 }
 
@@ -216,7 +279,7 @@ impl SurfacePublication for Publishing {
         false
     }
     fn search_queries(&self) -> SearchQueries {
-        SearchQueries::default()
+        self.queries.clone()
     }
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
         None

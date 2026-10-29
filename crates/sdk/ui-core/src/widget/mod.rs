@@ -436,6 +436,10 @@ pub(crate) fn route_to_mounted<T>(
 /// authors to remember to forward their children's declarations. Resource
 /// ownership stays local to the widget that implements it; composition is a
 /// host property, like action-binding and accessibility traversal.
+///
+/// Inside a component only its root (the widget its boundary hosts)
+/// publishes document actions: it speaks for the resource. What the rest of
+/// the component's tree publishes is kept to views and effects.
 pub(crate) fn collect_widget_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -445,6 +449,7 @@ pub(crate) fn collect_widget_resources(
         widget: &dyn Widget,
         doc: &AutoCommit,
         inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        root: bool,
         resources: &mut Vec<tilo_actions::ResourceSpec>,
     ) {
         if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
@@ -462,19 +467,24 @@ pub(crate) fn collect_widget_resources(
         // Boundary adapters expose their real root as a child. Collect each
         // declaration once, and release its document borrow before descending.
         if boundary.is_none() {
-            if let Some(binding) = &binding {
-                if let Ok(found) =
-                    binding.read_document(doc, |doc, _| crate::resources::resources(widget, doc))
-                {
-                    resources.extend(found);
-                }
+            let found = if let Some(binding) = &binding {
+                binding
+                    .read_document(doc, |doc, _| crate::resources::resources(widget, doc))
+                    .unwrap_or_default()
             } else {
-                resources.extend(crate::resources::resources(widget, doc));
+                crate::resources::resources(widget, doc)
+            };
+            // Outside every component nothing speaks for a resource.
+            if root || binding.is_none() {
+                resources.extend(found);
+            } else {
+                resources.extend(found.into_iter().map(crate::resources::outside_document));
             }
         }
-        widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), resources));
+        let below = boundary.is_some();
+        widget.for_each_child(&mut |child| visit(child, doc, binding.clone(), below, resources));
     }
-    visit(widget, doc, None, resources);
+    visit(widget, doc, None, true, resources);
 }
 
 /// Every resource `widget`'s subtree publishes, as the host's action
