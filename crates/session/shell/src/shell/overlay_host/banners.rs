@@ -221,18 +221,26 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Hand the banners the chrome's live notifications, when they changed,
-    /// and where they go.
-    fn feed_banners(&mut self, theme: &Theme) {
+    /// Hand the banners the chrome's live notifications, when they changed.
+    /// Whether they had.
+    fn publish_banner_feed(&mut self) -> bool {
         let Some(chrome) = self.chrome.clone() else {
-            return;
+            return false;
         };
         let feed = BannerFeed::of(&ChromeNotifications::new(&chrome));
         let key = FeedKey::of(&feed);
-        if self.banners.published.as_ref() != Some(&key) {
-            self.banners.published = Some(key);
-            self.banners.link.publish(feed);
+        if self.banners.published.as_ref() == Some(&key) {
+            return false;
         }
+        self.banners.published = Some(key);
+        self.banners.link.publish(feed);
+        true
+    }
+
+    /// Hand the banners the chrome's live notifications, when they changed,
+    /// and where they go.
+    fn feed_banners(&mut self, theme: &Theme) {
+        self.publish_banner_feed();
         let origin = self.rect.origin();
         self.banners.origin = origin;
         let local = |rect: Rect| {
@@ -335,15 +343,22 @@ impl ShellOverlayHost {
         self.answer_banners();
     }
 
-    /// Run the banners' work their wake or a published action brought,
-    /// and carry out what it asked. Whether it changed what they show.
+    /// Hand the banners what arrived since they were last painted, run the
+    /// work their wake or a published action brought, and carry out what
+    /// it asked. Whether it changed what they show. The frame's update
+    /// comes before its accessibility tree, so an arrival is announced in
+    /// the frame it arrives in, not once it has been painted.
     pub(super) fn update_banners(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        if self.banners.app.is_none() {
+            return false;
+        }
+        let published = self.publish_banner_feed();
         let Some(app) = self.banners.app.as_mut() else {
             return false;
         };
         let visible = app.update(doc, path);
         self.answer_banners();
-        visible
+        visible || published
     }
 
     /// Carry out what the banners asked, through the chrome's notification

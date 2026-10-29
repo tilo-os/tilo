@@ -113,10 +113,12 @@ pub struct Shown {
     pub accessibility: Option<AccessNode>,
 }
 
-/// What takes the desktop's commands the moment they are routed: the
-/// banners' surface, while it is not busy with something else.
+/// What takes the desktop's commands and feed the moment they are routed:
+/// the banners' surface, while it is not busy with something else.
 pub(crate) trait TakesCommands {
     fn take(&mut self, command: Command);
+    /// Show the feed published now.
+    fn take_published(&mut self);
 }
 
 #[derive(Default)]
@@ -143,14 +145,29 @@ impl Link {
         Self::default()
     }
 
-    /// Show `feed`: the desktop's live banners now.
+    /// Show `feed`: the desktop's live banners now. Idle banners take it at
+    /// once, so what they say they show (their live region announcing the
+    /// newest) is this feed before they next run.
     pub fn publish(&self, feed: BannerFeed) {
         {
             let mut shared = self.shared.borrow_mut();
             shared.feed = feed;
             shared.generation = shared.generation.wrapping_add(1);
         }
+        if let Some(taker) = self.taker()
+            && let Ok(mut taker) = taker.try_borrow_mut()
+        {
+            taker.take_published();
+        }
         self.wake();
+    }
+
+    fn taker(&self) -> Option<Rc<RefCell<dyn TakesCommands>>> {
+        self.shared
+            .borrow()
+            .taker
+            .as_ref()
+            .and_then(std::rc::Weak::upgrade)
     }
 
     /// Put the banners at `placement`.
@@ -168,12 +185,7 @@ impl Link {
     /// Route `command` to the banners: taken at once while they are idle,
     /// else as soon as they run.
     pub fn command(&self, command: Command) {
-        let taker = self
-            .shared
-            .borrow()
-            .taker
-            .as_ref()
-            .and_then(std::rc::Weak::upgrade);
+        let taker = self.taker();
         let queued = self.shared.borrow().commands.is_empty();
         match taker {
             Some(taker) if queued => match taker.try_borrow_mut() {

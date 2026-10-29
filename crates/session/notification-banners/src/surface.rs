@@ -83,6 +83,11 @@ impl TakesCommands for State {
         self.take_command(command);
         self.hand_over();
     }
+
+    fn take_published(&mut self) {
+        self.take_feed();
+        self.hand_over();
+    }
 }
 
 impl State {
