@@ -1,0 +1,25 @@
+[package]
+name = "tilo-surface-host"
+description = "Runs the shell's surface apps (top bar, launcher, panels) inside the compositor's process: drives each toolkit app, rasterizes its frames into the buffers the compositor shows and hands it the input that lands on them."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tilo-compositor = { path = "../compositor" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+tilo-cpu-raster = { version = "0.1.0", path = "../../sdk/tilo-cpu-raster" }
+vello.workspace = true
+winit.workspace = true
+# The buffers the compositor shows (memory render buffers).
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+tilo-topbar = { path = "../topbar" }
+
+[lints]
+workspace = true

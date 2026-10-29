@@ -21340,6 +21340,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-surface-host"
+version = "0.1.0"
+dependencies = [
+ "smithay",
+ "tilo-compositor",
+ "tilo-cpu-raster",
+ "tilo-topbar",
+ "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-system-info"
 version = "0.1.0"
 dependencies = [

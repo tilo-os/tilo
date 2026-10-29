@@ -22,8 +22,8 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
-    Compositor, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost, WindowInfo,
-    WindowPolicy,
+    Arrangement, Compositor, HostKey, HostLayer, InputEvent, OutputConfig, StackPolicy,
+    SurfaceHost, WindowInfo, WindowPolicy,
 };
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_callback::WlCallback, wl_compositor::WlCompositor, wl_keyboard,
@@ -32,6 +32,10 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::ext::session_lock::v1::client::{
+    ext_session_lock_manager_v1::ExtSessionLockManagerV1, ext_session_lock_v1,
+    ext_session_lock_v1::ExtSessionLockV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface, xdg_surface::XdgSurface, xdg_toplevel::XdgToplevel, xdg_wm_base,
     xdg_wm_base::XdgWmBase,
@@ -43,6 +47,9 @@ const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
 #[derive(Default)]
 struct Seen {
+    globals: Vec<String>,
+    lock_manager: Option<ExtSessionLockManagerV1>,
+    locked: bool,
     compositor: Option<WlCompositor>,
     shm: Option<WlShm>,
     wm_base: Option<XdgWmBase>,
@@ -305,6 +312,136 @@ fn pointer_and_keys_reach_the_window_under_and_with_focus() {
     });
 }
 
+#[test]
+fn clients_connect_through_the_listening_socket() {
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        eprintln!("no XDG_RUNTIME_DIR: nothing to listen in");
+        return;
+    };
+    let mut compositor = headless(Box::new(StackPolicy));
+    let name = compositor.listen().unwrap();
+    let socket =
+        std::os::unix::net::UnixStream::connect(std::path::Path::new(&runtime).join(&name))
+            .unwrap();
+    let connection = Connection::from_socket(socket).unwrap();
+    let mut queue = connection.new_event_queue();
+    connection.display().get_registry(&queue.handle(), ());
+    let mut seen = Seen::default();
+    for _ in 0..500 {
+        connection.flush().unwrap();
+        compositor.dispatch(Duration::from_millis(2)).unwrap();
+        if let Some(guard) = connection.prepare_read() {
+            let _ = guard.read();
+        }
+        queue.dispatch_pending(&mut seen).unwrap();
+        if seen.wm_base.is_some() {
+            return;
+        }
+    }
+    panic!("the client never saw xdg_wm_base");
+}
+
+#[test]
+fn clients_find_the_protocols_they_expect() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = TestClient::connect(&mut compositor);
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.wm_base.is_some()
+    });
+    for interface in [
+        "wl_compositor",
+        "wl_shm",
+        "wl_seat",
+        "wl_output",
+        "wl_data_device_manager",
+        "xdg_wm_base",
+        "zxdg_output_manager_v1",
+        "zwp_linux_dmabuf_v1",
+        "wp_viewporter",
+        "wp_fractional_scale_manager_v1",
+        "wp_presentation",
+        "zxdg_decoration_manager_v1",
+        "xdg_activation_v1",
+        "zwp_primary_selection_device_manager_v1",
+        "wp_cursor_shape_manager_v1",
+        "zwp_relative_pointer_manager_v1",
+        "zwp_pointer_constraints_v1",
+        "zwp_pointer_gestures_v1",
+        "zwp_tablet_manager_v2",
+        "zwp_idle_inhibit_manager_v1",
+        "zwp_keyboard_shortcuts_inhibit_manager_v1",
+        "wp_content_type_manager_v1",
+        "zwp_text_input_manager_v3",
+    ] {
+        assert!(
+            client.seen.globals.iter().any(|global| global == interface),
+            "{interface} is offered"
+        );
+    }
+}
+
+#[test]
+fn a_trusted_client_locks_the_session_and_hides_every_window() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut window = mapped_client(&mut compositor, "private", (200, 100), [255, 0, 0, 255]);
+    assert!(
+        !window
+            .seen
+            .globals
+            .iter()
+            .any(|global| global == "ext_session_lock_manager_v1"),
+        "an ordinary client cannot lock the session"
+    );
+
+    let socket = compositor.connect_trusted_client().unwrap();
+    let connection = Connection::from_socket(socket).unwrap();
+    let queue = connection.new_event_queue();
+    connection.display().get_registry(&queue.handle(), ());
+    let mut locker = TestClient {
+        connection,
+        queue,
+        seen: Seen::default(),
+        surface: None,
+        toplevel: None,
+    };
+    pump(&mut compositor, &mut [&mut locker], |_, clients| {
+        clients[0].seen.lock_manager.is_some()
+    });
+    let _lock = locker
+        .seen
+        .lock_manager
+        .as_ref()
+        .unwrap()
+        .lock(&locker.queue.handle(), ());
+    pump(
+        &mut compositor,
+        &mut [&mut locker, &mut window],
+        |compositor, _| compositor.locked(),
+    );
+    compositor.render().unwrap();
+    pump(&mut compositor, &mut [&mut locker], |_, clients| {
+        clients[0].seen.locked
+    });
+
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some(BACKGROUND),
+        "the window is hidden"
+    );
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut window], |_, _| true);
+    assert!(
+        window.seen.keys.is_empty(),
+        "keys do not reach windows behind the lock"
+    );
+}
+
 /// Places windows left to right, 300 logical pixels apart.
 #[derive(Default)]
 struct Columns {
@@ -329,6 +466,27 @@ impl WindowPolicy for Columns {
         let x = self.placed * 300;
         self.placed += 1;
         Point::from((x, 0))
+    }
+
+    fn arrange(
+        &mut self,
+        windows: &[(WindowInfo, Rectangle<i32, Logical>)],
+        _: &[Rectangle<i32, Logical>],
+    ) -> Option<Vec<Arrangement>> {
+        // Packed left to right by id, so closing one closes the gap.
+        let mut ids: Vec<u64> = windows.iter().map(|(info, _)| info.id).collect();
+        ids.sort_unstable();
+        self.placed = i32::try_from(ids.len()).unwrap();
+        Some(
+            ids.into_iter()
+                .zip(0..)
+                .map(|(id, column)| Arrangement {
+                    id,
+                    location: Point::from((column * 300, 0)),
+                    size: None,
+                })
+                .collect(),
+        )
     }
 }
 
@@ -386,6 +544,16 @@ fn the_policy_places_windows_and_a_click_moves_focus() {
     );
     assert_eq!(left.seen.buttons, vec![(BTN_LEFT, true), (BTN_LEFT, false)]);
     assert!(right.seen.buttons.is_empty());
+
+    // Closing the left window lets the policy close the gap.
+    left.toplevel.take().unwrap().destroy();
+    left.surface.take().unwrap().destroy();
+    pump(
+        &mut compositor,
+        &mut [&mut left, &mut right],
+        |compositor, _| compositor.windows().len() == 1,
+    );
+    assert_eq!(compositor.windows()[0].1, (0, 0, 250, 200));
 }
 
 #[derive(Default)]
@@ -393,6 +561,8 @@ struct HostLog {
     motions: Vec<(f64, f64)>,
     buttons: Vec<(u32, bool)>,
     left: u32,
+    keys: Vec<HostKey>,
+    wants_keyboard: bool,
 }
 
 /// A hosted surface: one square of one colour.
@@ -443,6 +613,62 @@ impl SurfaceHost for Square {
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.log.borrow_mut().buttons.push((button, pressed));
     }
+
+    fn wants_keyboard(&self) -> bool {
+        self.log.borrow().wants_keyboard
+    }
+
+    fn key(&mut self, key: &HostKey) {
+        self.log.borrow_mut().keys.push(key.clone());
+    }
+}
+
+#[test]
+fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let log = Rc::new(RefCell::new(HostLog::default()));
+    compositor.add_host(Box::new(Square::new(
+        (0, 0, 10, 10),
+        [0, 255, 0, 255],
+        Rc::clone(&log),
+    )));
+    let mut client = mapped_client(&mut compositor, "typing", (200, 100), [255, 0, 0, 255]);
+
+    log.borrow_mut().wants_keyboard = true;
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .unwrap();
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: false,
+        })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    let keys = log.borrow().keys.clone();
+    assert_eq!(keys.len(), 2);
+    assert_eq!(
+        (keys[0].keycode, keys[0].pressed, keys[0].text),
+        (KEY_A, true, Some('a'))
+    );
+    assert_eq!(keys[0].keysym, 0x61, "XK_a");
+    assert!(!keys[1].pressed);
+    assert!(client.seen.keys.is_empty());
+
+    log.borrow_mut().wants_keyboard = false;
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .unwrap();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.len() == 1
+    });
+    assert_eq!(log.borrow().keys.len(), 2);
 }
 
 #[test]
@@ -509,9 +735,13 @@ impl Dispatch<WlRegistry, ()> for Seen {
             version,
         } = event
         {
+            seen.globals.push(interface.clone());
             match interface.as_str() {
                 "wl_compositor" => {
                     seen.compositor = Some(registry.bind(name, version.min(5), qh, ()));
+                }
+                "ext_session_lock_manager_v1" => {
+                    seen.lock_manager = Some(registry.bind(name, 1, qh, ()));
                 }
                 "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
@@ -633,6 +863,22 @@ impl Dispatch<WlCallback, ()> for Seen {
     }
 }
 
+impl Dispatch<ExtSessionLockV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ExtSessionLockV1,
+        event: ext_session_lock_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, ext_session_lock_v1::Event::Locked) {
+            seen.locked = true;
+        }
+    }
+}
+
+delegate_noop!(Seen: ignore ExtSessionLockManagerV1);
 delegate_noop!(Seen: ignore WlCompositor);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlShmPool);

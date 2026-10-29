@@ -9,7 +9,7 @@
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::pixman::PixmanRenderer;
-use smithay::backend::renderer::{Bind, ExportMem, Offscreen};
+use smithay::backend::renderer::{Bind, ExportMem, ImportDma as _, Offscreen};
 use smithay::output::Output;
 use smithay::reexports::pixman::Image;
 use smithay::utils::{Buffer, Rectangle, Size};
@@ -36,8 +36,10 @@ pub struct HeadlessBackend {
 
 impl HeadlessBackend {
     /// A backend with no outputs yet.
-    pub fn new() -> Result<Self, BackendError> {
+    pub fn new(state: &mut State) -> Result<Self, BackendError> {
         let renderer = PixmanRenderer::new().map_err(|error| failed("pixman renderer", error))?;
+        // Clients' dma-bufs are read through a mapping.
+        state.enable_dmabuf(renderer.dmabuf_formats().iter().copied().collect());
         Ok(Self {
             renderer,
             outputs: Vec::new(),

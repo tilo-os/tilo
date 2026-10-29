@@ -46,8 +46,11 @@ where
     let Some(geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
+    if state.locked() {
+        return state.lock_elements(renderer, output);
+    }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let mut elements = Vec::new();
+    let mut elements = state.input_popup_elements(renderer, output);
     for host in state.hosts.iter().rev() {
         for layer in host.layers().into_iter().rev() {
             let location: Point<i32, Physical> =
