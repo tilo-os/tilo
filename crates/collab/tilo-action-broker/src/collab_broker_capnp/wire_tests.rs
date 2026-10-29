@@ -606,6 +606,55 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[10]);
+            let mut endpoint = room.endpoint(10);
+            let channel = endpoint.channel;
+            assert!(
+                endpoint
+                    .call(Request::Subscribe {
+                        channel,
+                        topic: Topic::TaskRuns,
+                    })
+                    .await
+                    .is_err(),
+                "task runs go only to a delegated agent in a room that runs tasks"
+            );
+            let step = TaskStep {
+                peer_id: 0,
+                provider: String::new(),
+                resource: "note:1".into(),
+                action: "archive".into(),
+                argument: None,
+                invocation: String::new(),
+                wait_ms: 0,
+                seen: None,
+            };
+            for call in [
+                TaskCall::Report("{}".into()),
+                TaskCall::Cancelled,
+                TaskCall::Invoke(step),
+            ] {
+                assert!(
+                    endpoint
+                        .call(Request::Task {
+                            channel,
+                            run_id: 1,
+                            lease: "lease".into(),
+                            call: call.clone(),
+                        })
+                        .await
+                        .is_err(),
+                    "{call:?}: a person holds no task run"
+                );
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn the_wire_client_calls_and_subscribes_against_the_host() {
     use runtime_collab::wire::client::{Client, Delivery};
     tokio::task::LocalSet::new()

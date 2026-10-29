@@ -16,7 +16,7 @@ use std::cell::Cell;
 
 use runtime_collab::wire::{
     Call, Changes, ContextUpdate, Event, FRAMING, Handle, HostFrame, Join, Participant,
-    Publication, Read, Reply, Report, Request, Service, Topic,
+    Publication, Read, Reply, Report, Request, Service, TaskCall, TaskStep, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -331,6 +331,8 @@ impl CapnpChannelHandle {
 pub(super) type Recording = std::pin::Pin<Box<dyn Future<Output = Result<(), capnp::Error>>>>;
 
 /// A service's answer on its way.
+/// A task call's answer, which a task step may wait on.
+pub(super) type TaskAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Reply, capnp::Error>>>>;
 type Answering = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8>, String>>>>;
 
 impl ChannelSession {
@@ -970,6 +972,187 @@ impl CapnpChannelHandle {
         Ok((ops, exhausted))
     }
 
+    /// The task runs the workspace hands this delegated agent from now on.
+    /// A replacement subscription is handed the approved run again.
+    pub(super) fn task_run_feed(&self) -> Result<Feed<TaskRunEnvelope>, capnp::Error> {
+        if self.state.services.legacy_workspace.is_none()
+            && !self.state.task_admitted_room(&self.route().cluster_id)
+        {
+            return Err(capnp::Error::failed(
+                "task execution service unsupported".into(),
+            ));
+        }
+        let current = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let agent_id = current.agent_id.ok_or_else(|| {
+            capnp::Error::failed(
+                "only an admitted delegated agent may subscribe to task runs".into(),
+            )
+        })?;
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.state
+            .task_subscribers
+            .lock()
+            .map_err(|_| capnp::Error::failed("task subscription registry unavailable".into()))?
+            .insert(
+                self.peer_id,
+                TaskSubscription {
+                    agent_id,
+                    cluster_id: self.route().cluster_id,
+                    tx,
+                },
+            );
+        // A replacement stream needs the canonical approved run again, even
+        // when the authenticated connection itself did not change.
+        if let Ok(mut runs) = self.state.pending_task_runs.lock() {
+            runs.retain(|_, run| run.peer_id != self.peer_id);
+        }
+        self.state.local_turn.notify_one();
+        let feed = Feed::new(self.host_guard(), rx);
+        self.state.refresh_native_task_delivery();
+        Ok(feed)
+    }
+
+    /// One of this delegated agent's calls about the task run `run_id` it
+    /// holds under `lease`.
+    pub(super) fn task_call(&self, run_id: u64, lease: String, call: TaskCall) -> TaskAnswer {
+        let agent_id = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+            .and_then(|current| {
+                current.agent_id.ok_or_else(|| {
+                    capnp::Error::failed("only an agent may act on a task run".into())
+                })
+            }) {
+            Ok(agent_id) => agent_id,
+            Err(error) => return Box::pin(std::future::ready(Err(error))),
+        };
+        let answer = match call {
+            TaskCall::Invoke(step) => return self.invoke_task_step(agent_id, run_id, lease, step),
+            TaskCall::Report(update) => {
+                serde_json::from_str::<runtime_collab::TaskRunUpdate>(&update)
+                    .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))
+                    .and_then(|update| {
+                        self.state
+                            .record_task_run_update(
+                                self.peer_id,
+                                &agent_id,
+                                run_id,
+                                &lease,
+                                &update,
+                            )
+                            .map_err(capnp::Error::failed)
+                    })
+                    .map(|()| Reply::Done)
+            }
+            TaskCall::Cancelled => self.task_cancellation(&agent_id, run_id, &lease),
+        };
+        Box::pin(std::future::ready(answer))
+    }
+
+    fn task_cancellation(
+        &self,
+        agent_id: &str,
+        run_id: u64,
+        lease: &str,
+    ) -> Result<Reply, capnp::Error> {
+        let cancelled = self
+            .state
+            .task_run_cancelled(self.peer_id, agent_id, run_id, lease)
+            .map_err(capnp::Error::failed)?;
+        let run = self
+            .state
+            .task_run_for(self.peer_id, agent_id, run_id, lease)
+            .map_err(capnp::Error::failed)?;
+        let control = self
+            .state
+            .native_task_status(&run, lease)
+            .map_err(capnp::Error::failed)?
+            .control
+            .map(|control| serde_json::to_string(&control))
+            .transpose()
+            .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        Ok(Reply::TaskCancelled { cancelled, control })
+    }
+
+    /// Start `step` for the task run, as a native task's re-ask when it
+    /// names the invocation it runs under.
+    fn invoke_task_step(
+        &self,
+        agent_id: String,
+        run_id: u64,
+        lease: String,
+        step: TaskStep,
+    ) -> TaskAnswer {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let caller = super::durable_local_invocation::LocalCaller::capture(self).ok();
+        let route = self.route();
+        let identity = self.verified_identity.clone();
+        Box::pin(async move {
+            if !step.provider.is_empty() && step.peer_id != 0 {
+                return Err(capnp::Error::failed(
+                    "task target mixes live and stable provider identities".into(),
+                ));
+            }
+            let target = runtime_collab::TaskAction {
+                peer_id: step.peer_id,
+                provider: &step.provider,
+                resource: &step.resource,
+                action: &step.action,
+                argument: step.argument.as_deref(),
+            };
+            let provenance =
+                super::native_task_execution::child_provenance(&lease, &step.invocation, caller)?;
+            let (id, update) = if let Some((caller, invocation)) = &provenance {
+                let reask = super::native_task_execution::ChildReask {
+                    peer_id,
+                    agent_id: &agent_id,
+                    run_id,
+                    lease: &lease,
+                    invocation: *invocation,
+                    target,
+                    caller,
+                };
+                let wait = super::native_task_execution::ChildWait::new(
+                    step.wait_ms,
+                    step.seen.as_deref(),
+                )?;
+                state
+                    .invoke_native_task_child(&reask, wait, (&route, &identity))
+                    .await?
+            } else {
+                if !step.provider.is_empty() {
+                    return Err(capnp::Error::failed(
+                        "closed-app activation requires a native task's authenticated custody"
+                            .into(),
+                    ));
+                }
+                let job = state
+                    .start_task_action(
+                        peer_id,
+                        &agent_id,
+                        run_id,
+                        &lease,
+                        target,
+                        (None, (false, None)),
+                    )
+                    .map_err(capnp::Error::failed)?
+                    .start(&state)
+                    .await
+                    .map_err(capnp::Error::failed)?;
+                let update = state.invocation_status(job.id).ok_or_else(|| {
+                    capnp::Error::failed("accepted task action has no broker state".into())
+                })?;
+                (job.id, update)
+            };
+            let update = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            Ok(Reply::Invoked { id, update })
+        })
+    }
+
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
@@ -1275,6 +1458,10 @@ impl WireConnection {
     /// delivers, take the outgoing queue in that order; a call that waits (a
     /// join, a room's change, a document change the room's owner commits
     /// first) answers when done.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per request answered once its work is done"
+    )]
     pub(super) fn call(self: &Rc<Self>, Call { id, request }: Call) {
         let answer: std::pin::Pin<Box<dyn Future<Output = Result<Reply, String>>>> = match request {
             Request::Publish {
@@ -1355,6 +1542,17 @@ impl WireConnection {
                 Ok(session) => session.command(service, &body, &on_behalf_of),
                 Err(error) => Box::pin(std::future::ready(Err(error))),
             },
+            Request::Task {
+                channel,
+                run_id,
+                lease,
+                call,
+            } => {
+                let answer = self
+                    .channel(channel)
+                    .map(|session| session.task_call(run_id, lease, call));
+                Box::pin(async move { answer?.await.map_err(|error| error.to_string()) })
+            }
             request => {
                 let result = self.dispatch(id, request);
                 let _ = self.frames.send(HostFrame::Reply { id, result });
@@ -1390,7 +1588,8 @@ impl WireConnection {
             | Request::Join(_)
             | Request::Room { .. }
             | Request::Command { .. }
-            | Request::Changed { .. } => Err("answered when done".into()),
+            | Request::Changed { .. }
+            | Request::Task { .. } => Err("answered when done".into()),
             Request::Publish {
                 channel,
                 publication: Publication::Report(report),
@@ -1469,6 +1668,12 @@ impl WireConnection {
                         let feed = session.context_feed().map_err(failed)?;
                         tokio::task::spawn_local(pump(feed, id, frames, |update| {
                             Some(Event::Context(update))
+                        }))
+                    }
+                    Topic::TaskRuns => {
+                        let feed = session.task_run_feed().map_err(failed)?;
+                        tokio::task::spawn_local(pump(feed, id, frames, |run| {
+                            task_run_json(run).ok().map(Event::TaskRun)
                         }))
                     }
                     Topic::Content => {

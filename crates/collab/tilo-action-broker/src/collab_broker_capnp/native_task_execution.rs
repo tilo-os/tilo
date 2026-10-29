@@ -23,21 +23,19 @@ pub(super) struct ChildWait {
 impl ChildWait {
     /// The wait a re-ask asked for, capped at
     /// [`tilo_actions::remote::MAX_REMOTE_WAIT`]; `None` for an answer now.
-    pub(super) fn read(
-        request: &super::channel_handle::invoke_task_action_params::Reader<'_>,
-    ) -> Result<Option<Self>, capnp::Error> {
-        let wait_ms = request.get_wait_ms();
+    pub(super) fn new(wait_ms: u32, seen: Option<&str>) -> Result<Option<Self>, capnp::Error> {
         if wait_ms == 0 {
             return Ok(None);
         }
-        let seen = request.get_seen_json()?.to_str()?.trim();
-        let seen = if seen.is_empty() {
-            None
-        } else {
-            Some(serde_json::from_str(seen).map_err(|_| {
-                capnp::Error::failed("task child wait names an invalid update mark".into())
-            })?)
-        };
+        let seen = seen
+            .map(str::trim)
+            .filter(|seen| !seen.is_empty())
+            .map(|seen| {
+                serde_json::from_str(seen).map_err(|_| {
+                    capnp::Error::failed("task child wait names an invalid update mark".into())
+                })
+            })
+            .transpose()?;
         let wait = std::time::Duration::from_millis(u64::from(wait_ms))
             .min(tilo_actions::remote::MAX_REMOTE_WAIT);
         let now = tokio::time::Instant::now();

@@ -81,6 +81,14 @@ pub enum Request {
         of: Changes,
         after: u64,
     },
+    /// A delegated agent's call about the task run `run_id` it holds under
+    /// `lease`.
+    Task {
+        channel: Handle,
+        run_id: u64,
+        lease: String,
+        call: TaskCall,
+    },
     /// Stop a subscription this connection started.
     Unsubscribe { subscription: u64 },
     /// Close a handle, ending its subscriptions.
@@ -106,6 +114,36 @@ pub enum Participant {
     Person { handle: String },
     /// The workspace agent `id` the person delegated to this device.
     Agent { id: String },
+}
+
+/// What an agent says or asks about a task run it holds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TaskCall {
+    /// The run's progress, as `TaskRunUpdate` JSON.
+    Report(String),
+    /// Whether the run was cancelled, answered as [`Reply::TaskCancelled`].
+    Cancelled,
+    /// Run an action as a step of the run, answered as [`Reply::Invoked`].
+    Invoke(TaskStep),
+}
+
+/// An action a task run takes as one of its steps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskStep {
+    /// The live peer that provides the action; 0 when `provider` names it.
+    pub peer_id: u64,
+    /// A retained or application provider; empty for the live peer.
+    pub provider: String,
+    pub resource: String,
+    pub action: String,
+    pub argument: Option<String>,
+    /// The native invocation this step re-asks under; empty for none.
+    pub invocation: String,
+    /// How long a re-ask may wait for its person to decide, in
+    /// milliseconds; 0 answers at once.
+    pub wait_ms: u32,
+    /// The update mark, as JSON, a waiting re-ask has already seen.
+    pub seen: Option<String>,
 }
 
 /// What a [`Request::Changed`] waits on. Each wait says only that
@@ -230,6 +268,8 @@ pub enum Topic {
     /// Who is in the channel and what this endpoint may do there, and the
     /// session's directed asks of it.
     Context,
+    /// The task runs the workspace hands this delegated agent.
+    TaskRuns,
 }
 
 /// The host's answer to a call that succeeded.
@@ -241,6 +281,18 @@ pub enum Reply {
     /// What the call opened.
     Opened(Handle),
     Room(RoomStatus),
+    /// Whether a task run was cancelled, and the control it shows now as
+    /// JSON, if any.
+    TaskCancelled {
+        cancelled: bool,
+        control: Option<String>,
+    },
+    /// The invocation a task step started, and its state now as
+    /// `InvocationUpdate` JSON.
+    Invoked {
+        id: u64,
+        update: String,
+    },
     /// The revision a [`Request::Changed`] waits from next.
     Changed(u64),
     /// A [`Request::Command`]'s answer, in its service's encoding.
@@ -278,6 +330,9 @@ pub enum Event {
         bytes: Vec<u8>,
     },
     Context(ContextUpdate),
+    /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
+    /// action context is free-form JSON, which postcard cannot carry).
+    TaskRun(String),
 }
 
 /// One change of a channel's context.

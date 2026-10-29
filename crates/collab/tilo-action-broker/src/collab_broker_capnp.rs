@@ -145,7 +145,7 @@ use runtime_collab::raw::{
     context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
     presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
-use runtime_collab::wire::{ContextUpdate, Report};
+use runtime_collab::wire::{ContextUpdate, Reply, Report, TaskCall};
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
@@ -10258,56 +10258,14 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeTaskRunsParams,
         mut results: channel_handle::SubscribeTaskRunsResults,
     ) -> Promise<(), capnp::Error> {
-        if self.state.services.legacy_workspace.is_none()
-            && !self.state.task_admitted_room(&self.route().cluster_id)
-        {
-            return Promise::err(capnp::Error::failed(
-                "task execution service unsupported".into(),
-            ));
-        }
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
+        let feed = match self.task_run_feed() {
+            Ok(feed) => feed,
             Err(error) => return Promise::err(error),
         };
-        let Some(agent_id) = current.agent_id else {
-            return Promise::err(capnp::Error::failed(
-                "only an admitted delegated agent may subscribe to task runs".into(),
-            ));
-        };
-        let (tx, rx) = mpsc::unbounded_channel();
-        if let Ok(mut subscribers) = self.state.task_subscribers.lock() {
-            subscribers.insert(
-                self.peer_id,
-                TaskSubscription {
-                    agent_id,
-                    cluster_id: self.route().cluster_id,
-                    tx,
-                },
-            );
-        } else {
-            return Promise::err(capnp::Error::failed(
-                "task subscription registry unavailable".into(),
-            ));
-        }
-        // A replacement stream needs the canonical approved run again, even
-        // when the authenticated connection itself did not change.
-        if let Ok(mut runs) = self.state.pending_task_runs.lock() {
-            runs.retain(|_, run| run.peer_id != self.peer_id);
-        }
-        self.state.local_turn.notify_one();
         let client: task_run_stream::Client = capnp_rpc::new_client(TaskRunStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: Rc::new(AsyncMutex::new(rx)),
+            feed: Rc::new(AsyncMutex::new(feed)),
         });
         results.get().set_stream(client);
-        self.state.refresh_native_task_delivery();
         Promise::ok(())
     }
 
@@ -10316,31 +10274,15 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::ReportTaskRunParams,
         _results: channel_handle::ReportTaskRunResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let Some(agent_id) = current.agent_id else {
-            return Promise::err(capnp::Error::failed(
-                "only an agent may update a task run".into(),
-            ));
-        };
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        Promise::from_future(async move {
+        let answer = (|| {
             let request = params.get()?;
-            let lease = request.get_lease()?.to_str()?.to_owned();
-            let update = serde_json::from_str::<runtime_collab::TaskRunUpdate>(
-                request.get_update_json()?.to_str()?,
-            )
-            .map_err(|error| capnp::Error::failed(format!("invalid task update: {error}")))?;
-            state
-                .record_task_run_update(peer_id, &agent_id, request.get_run_id(), &lease, &update)
-                .map_err(capnp::Error::failed)
-        })
+            Ok::<_, capnp::Error>(self.task_call(
+                request.get_run_id(),
+                request.get_lease()?.to_str()?.to_owned(),
+                TaskCall::Report(request.get_update_json()?.to_str()?.to_owned()),
+            ))
+        })();
+        Promise::from_future(async move { answer?.await.map(drop) })
     }
 
     fn invoke_task_action(
@@ -10348,24 +10290,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::InvokeTaskActionParams,
         mut results: channel_handle::InvokeTaskActionResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let Some(agent_id) = current.agent_id else {
-            return Promise::err(capnp::Error::failed(
-                "only an agent may invoke a task action".into(),
-            ));
-        };
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let caller = durable_local_invocation::LocalCaller::capture(&self).ok();
-        let route = self.route();
-        let identity = self.verified_identity.clone();
-        Promise::from_future(async move {
+        let answer = (|| {
             let request = params.get()?;
             // Interactive confirmations have no safe unattended equivalent.
             if !request.get_confirmation_json()?.to_str()?.trim().is_empty() {
@@ -10373,9 +10298,6 @@ impl channel_handle::Server for CapnpChannelHandle {
                     "task action confirmation evidence is not accepted; request human confirmation outside the run".into(),
                 ));
             }
-            let lease = request.get_lease()?.to_str()?.to_owned();
-            let resource = request.get_resource()?.to_str()?.to_owned();
-            let action = request.get_action()?.to_str()?.to_owned();
             let argument = request
                 .get_has_argument()
                 .then(|| {
@@ -10384,65 +10306,28 @@ impl channel_handle::Server for CapnpChannelHandle {
                         .and_then(|value| Ok(value.to_str()?.to_owned()))
                 })
                 .transpose()?;
-            let provider = request.get_provider()?.to_str()?.to_owned();
-            if !provider.is_empty() && request.get_peer_id() != 0 {
-                return Err(capnp::Error::failed(
-                    "task target mixes live and stable provider identities".into(),
-                ));
-            }
-            let target = runtime_collab::TaskAction {
+            let step = runtime_collab::wire::TaskStep {
                 peer_id: request.get_peer_id(),
-                provider: &provider,
-                resource: &resource,
-                action: &action,
-                argument: argument.as_deref(),
+                provider: request.get_provider()?.to_str()?.to_owned(),
+                resource: request.get_resource()?.to_str()?.to_owned(),
+                action: request.get_action()?.to_str()?.to_owned(),
+                argument,
+                invocation: request.get_invocation()?.to_str()?.to_owned(),
+                wait_ms: request.get_wait_ms(),
+                seen: Some(request.get_seen_json()?.to_str()?.to_owned()),
             };
-            let invocation = request.get_invocation()?.to_str()?;
-            let provenance = native_task_execution::child_provenance(&lease, invocation, caller)?;
-            let (id, update) = if let Some((caller, invocation)) = &provenance {
-                let reask = native_task_execution::ChildReask {
-                    peer_id,
-                    agent_id: &agent_id,
-                    run_id: request.get_run_id(),
-                    lease: &lease,
-                    invocation: *invocation,
-                    target,
-                    caller,
-                };
-                let wait = native_task_execution::ChildWait::read(&request)?;
-                state
-                    .invoke_native_task_child(&reask, wait, (&route, &identity))
-                    .await?
-            } else {
-                if !provider.is_empty() {
-                    return Err(capnp::Error::failed(
-                        "closed-app activation requires a native task's authenticated custody"
-                            .into(),
-                    ));
-                }
-                let job = state
-                    .start_task_action(
-                        peer_id,
-                        &agent_id,
-                        request.get_run_id(),
-                        &lease,
-                        target,
-                        (None, (false, None)),
-                    )
-                    .map_err(capnp::Error::failed)?
-                    .start(&state)
-                    .await
-                    .map_err(capnp::Error::failed)?;
-                let update = state.invocation_status(job.id).ok_or_else(|| {
-                    capnp::Error::failed("accepted task action has no broker state".into())
-                })?;
-                (job.id, update)
+            Ok(self.task_call(
+                request.get_run_id(),
+                request.get_lease()?.to_str()?.to_owned(),
+                TaskCall::Invoke(step),
+            ))
+        })();
+        Promise::from_future(async move {
+            let Reply::Invoked { id, update } = answer?.await? else {
+                return Err(capnp::Error::failed("unexpected task answer".into()));
             };
             results.get().set_id(id);
-            results.get().set_update_json(
-                &serde_json::to_string(&update)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
-            );
+            results.get().set_update_json(&update);
             Ok(())
         })
     }
@@ -10452,38 +10337,21 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::TaskRunCancelledParams,
         mut results: channel_handle::TaskRunCancelledResults,
     ) -> Promise<(), capnp::Error> {
-        let current = match self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            Ok(current) => current,
-            Err(error) => return Promise::err(error),
-        };
-        let Some(agent_id) = current.agent_id else {
-            return Promise::err(capnp::Error::failed(
-                "only an agent may observe task cancellation".into(),
-            ));
-        };
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        Promise::from_future(async move {
+        let answer = (|| {
             let request = params.get()?;
-            let lease = request.get_lease()?.to_str()?.to_owned();
-            let cancelled = state
-                .task_run_cancelled(peer_id, &agent_id, request.get_run_id(), &lease)
-                .map_err(capnp::Error::failed)?;
+            Ok::<_, capnp::Error>(self.task_call(
+                request.get_run_id(),
+                request.get_lease()?.to_str()?.to_owned(),
+                TaskCall::Cancelled,
+            ))
+        })();
+        Promise::from_future(async move {
+            let Reply::TaskCancelled { cancelled, control } = answer?.await? else {
+                return Err(capnp::Error::failed("unexpected task answer".into()));
+            };
             results.get().set_cancelled(cancelled);
-            let run = state
-                .task_run_for(peer_id, &agent_id, request.get_run_id(), &lease)
-                .map_err(capnp::Error::failed)?;
-            let status = state
-                .native_task_status(&run, &lease)
-                .map_err(capnp::Error::failed)?;
-            if let Some(control) = status.control {
-                results.get().set_control_json(
-                    &serde_json::to_string(&control)
-                        .map_err(|error| capnp::Error::failed(error.to_string()))?,
-                );
+            if let Some(control) = control {
+                results.get().set_control_json(&control);
             }
             Ok(())
         })
@@ -12135,9 +12003,30 @@ struct InvocationStreamServer {
     delivered: Option<Box<dyn Fn()>>,
 }
 
+/// A task run as the agent receives it: `runtime_collab::TaskRunEnvelope`
+/// JSON.
+fn task_run_json(run: TaskRunEnvelope) -> Result<String, capnp::Error> {
+    let payload = runtime_collab::TaskRunEnvelope {
+        paused: run.paused,
+        version: 1,
+        task_id: run.task_id,
+        title: run.title,
+        instruction: run.instruction,
+        subject: run.subject,
+        run_id: run.run_id,
+        presentation_version: Some(1),
+        lease: run.lease,
+        planning: run.planning,
+        execution_budget: run.execution_budget,
+        action_context: serde_json::to_value(run.action_context)
+            .map_err(|error| capnp::Error::failed(error.to_string()))?,
+        model: run.model,
+    };
+    serde_json::to_string(&payload).map_err(|error| capnp::Error::failed(error.to_string()))
+}
+
 struct TaskRunStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
+    feed: Rc<AsyncMutex<wire::Feed<TaskRunEnvelope>>>,
 }
 
 struct ActionCatalogueStreamServer {
@@ -12226,36 +12115,15 @@ impl task_run_stream::Server for TaskRunStreamServer {
         _params: task_run_stream::ReadParams,
         mut results: task_run_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
+        let feed = self.feed.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let run = guard
-                .recv()
+            let run = feed
+                .lock()
                 .await
+                .next()
+                .await?
                 .ok_or_else(|| capnp::Error::disconnected("agent task stream closed".into()))?;
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let payload = runtime_collab::TaskRunEnvelope {
-                paused: run.paused,
-                version: 1,
-                task_id: run.task_id,
-                title: run.title,
-                instruction: run.instruction,
-                subject: run.subject,
-                run_id: run.run_id,
-                presentation_version: Some(1),
-                lease: run.lease,
-                planning: run.planning,
-                execution_budget: run.execution_budget,
-                action_context: serde_json::to_value(run.action_context)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
-                model: run.model,
-            };
-            results.get().set_task_json(
-                &serde_json::to_string(&payload)
-                    .map_err(|error| capnp::Error::failed(error.to_string()))?,
-            );
+            results.get().set_task_json(&task_run_json(run)?);
             Ok(())
         })
     }
