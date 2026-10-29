@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 /// Where an environment session runs: this device, or one of the person's
 /// relays by endpoint id — the vocabulary the supervisor speaks.
 pub use tilo_environment::Location;
+/// Which shell an environment session runs: ush's own, or bash for a full
+/// Linux session.
+pub use tilo_environment::Shell;
 
 /// Where a session runs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -27,6 +30,9 @@ pub enum SessionTarget {
         record: Option<String>,
         #[serde(default, skip_serializing_if = "Location::is_this_device")]
         location: Location,
+        /// ush's own shell unless the person picked a full Linux session.
+        #[serde(default, skip_serializing_if = "Shell::is_ush")]
+        shell: Shell,
     },
     /// A legacy VM, by name.
     Legacy { vm: String },
@@ -47,6 +53,7 @@ impl SessionTarget {
         Self::Environment {
             record: None,
             location: Location::ThisDevice,
+            shell: Shell::Ush,
         }
     }
 
@@ -56,6 +63,7 @@ impl SessionTarget {
         Self::Environment {
             record: (record != tilo_environment::DEFAULT_RECORD).then_some(record),
             location: Location::ThisDevice,
+            shell: Shell::Ush,
         }
     }
 
@@ -81,7 +89,9 @@ impl SessionTarget {
     pub fn is_valid(&self) -> bool {
         match self {
             Self::Host => true,
-            Self::Environment { record, location } => {
+            Self::Environment {
+                record, location, ..
+            } => {
                 record
                     .as_deref()
                     .is_none_or(tilo_environment::is_record_key)
@@ -97,9 +107,14 @@ impl SessionTarget {
     pub fn to_supervisor(&self) -> Option<tilo_environment::Target> {
         match self {
             Self::Host => Some(tilo_environment::Target::Host),
-            Self::Environment { record, location } => Some(tilo_environment::Target::Environment {
+            Self::Environment {
+                record,
+                location,
+                shell,
+            } => Some(tilo_environment::Target::Environment {
                 record: record.clone(),
                 location: location.clone(),
+                shell: *shell,
             }),
             Self::Legacy { .. } => None,
         }
@@ -109,11 +124,35 @@ impl SessionTarget {
     #[must_use]
     pub fn at(&self, location: Location) -> Self {
         match self {
-            Self::Environment { record, .. } => Self::Environment {
+            Self::Environment { record, shell, .. } => Self::Environment {
                 record: record.clone(),
                 location,
+                shell: *shell,
             },
             other => other.clone(),
+        }
+    }
+
+    /// The same environment in `shell`; any other target as it is.
+    #[must_use]
+    pub fn in_shell(&self, shell: Shell) -> Self {
+        match self {
+            Self::Environment {
+                record, location, ..
+            } => Self::Environment {
+                record: record.clone(),
+                location: location.clone(),
+                shell,
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// Which shell an environment runs; `None` for any other target.
+    pub fn shell(&self) -> Option<Shell> {
+        match self {
+            Self::Environment { shell, .. } => Some(*shell),
+            _ => None,
         }
     }
 
@@ -309,6 +348,7 @@ mod tests {
                 location: Location::Relay {
                     relay: "ab".repeat(32),
                 },
+                shell: Shell::Ush,
             },
             SessionTarget::Legacy { vm: "linux".into() },
         ] {
@@ -346,6 +386,7 @@ mod tests {
             Some(tilo_environment::Target::Environment {
                 record: Some("work".into()),
                 location: Location::ThisDevice,
+                shell: Shell::Ush,
             })
         );
         assert_eq!(
@@ -353,14 +394,16 @@ mod tests {
                 record: None,
                 location: Location::Relay {
                     relay: "ab".repeat(32)
-                }
+                },
+                shell: Shell::Ush,
             }
             .to_supervisor(),
             Some(tilo_environment::Target::Environment {
                 record: None,
                 location: Location::Relay {
                     relay: "ab".repeat(32)
-                }
+                },
+                shell: Shell::Ush,
             }),
             "the supervisor carries a relay's environments"
         );

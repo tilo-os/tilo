@@ -42,12 +42,15 @@ pub const AGENT_RUN: &str = "agent-run";
 /// The group kind of a workspace task's invocations: an agent working a
 /// native task stamps its steps with the task, so that is the run undo names.
 pub const TASK_RUN: &str = "task";
+/// The group kind of one command line a shell ran: every file action it and
+/// the commands it dispatched carried out, undone as one.
+pub const COMMAND_RUN: &str = "command-run";
 
 /// Whether a group of this kind is a run that undo can name: an agent's
-/// connection, or its run of a task.
+/// connection, its run of a task, or one command line of a shell.
 #[must_use]
 pub fn names_a_run(kind: &str) -> bool {
-    kind == AGENT_RUN || kind == TASK_RUN
+    kind == AGENT_RUN || kind == TASK_RUN || kind == COMMAND_RUN
 }
 
 /// Whose steps an undo or redo takes back.

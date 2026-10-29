@@ -638,6 +638,7 @@ fn mv_in_a_guest_is_one_history_entry_attributed_to_the_person_and_undone_from_h
     write(&allowed.join("a"), "a's text");
 
     let answer = state.handle(crate::broker::Request::FileAction {
+        run: None,
         action: FileAction::Move(MoveOp {
             sources: vec![allowed.join("a")],
             destination: allowed.join("b"),
@@ -704,6 +705,7 @@ fn an_agents_direct_move_is_the_same_action_attributed_to_the_agent_for_the_pers
             agent: "agent-claude".into(),
             person: state.person.clone(),
         },
+        None,
         Some(
             Environment::MOVE_PATHS.with(tilo_environment::environment::MovePaths {
                 device: state.device.clone(),
@@ -753,6 +755,7 @@ fn a_forty_operand_copy_beyond_a_grant_is_refused_whole() {
         .collect();
 
     let answer = state.handle(crate::broker::Request::FileAction {
+        run: None,
         action: FileAction::Copy(CopyOp {
             sources: sources.clone(),
             destination: outside.clone(),
@@ -782,6 +785,7 @@ fn a_forty_operand_copy_beyond_a_grant_is_refused_whole() {
             agent: "agent-claude".into(),
             person: state.person.clone(),
         },
+        None,
         Some(Environment::file_invoke(
             &state.device,
             &FileAction::Copy(CopyOp {
@@ -805,6 +809,7 @@ fn rm_stays_recoverable_through_undo_from_history() {
     write(&allowed.join("notes/today.md"), "today");
 
     let answer = state.handle(crate::broker::Request::FileAction {
+        run: None,
         action: FileAction::Remove(RemoveOp {
             paths: vec![allowed.join("notes")],
             recursive: true,
@@ -878,6 +883,7 @@ fn what_an_older_runtime_kept_stays_listed_and_comes_back_through_the_action() {
     assert_eq!(kept[0].path, allowed.join("old.md"));
 
     let answer = state.handle(crate::broker::Request::FileAction {
+        run: None,
         action: FileAction::Restore(RestoreOp {
             kept: "1793051200-000".into(),
         }),
@@ -914,6 +920,7 @@ fn the_broker_denies_and_logs_a_file_action_outside_the_grant() {
     write(&secret, "secret");
 
     let answer = state.handle(crate::broker::Request::FileAction {
+        run: None,
         action: FileAction::Remove(RemoveOp {
             paths: vec![secret.clone()],
             ..RemoveOp::default()
@@ -941,6 +948,7 @@ fn a_task_that_fails_on_the_tree_settles_failed_and_changes_nothing() {
     let allowed = dir.path().join("allowed");
 
     let answer = state.handle(crate::broker::Request::FileAction {
+        run: None,
         action: FileAction::Remove(RemoveOp {
             paths: vec![allowed.join("not-there")],
             ..RemoveOp::default()
@@ -973,4 +981,42 @@ fn brokered_state(dir: &Path) -> crate::broker::BrokerState {
         "the grant did not take: {answer:?}"
     );
     state
+}
+
+/// Every file action one command line of the shell asks for (`find -delete`
+/// removing three files, say) is stamped with that run, so History
+/// attributes and undoes the run as one.
+#[test]
+fn the_file_actions_of_one_shell_run_are_grouped_as_that_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = brokered_state(dir.path());
+    let allowed = dir.path().join("allowed");
+    for name in ["a.tmp", "b.tmp"] {
+        write(&allowed.join(name), "x");
+    }
+    let run = crate::broker::RunGroup {
+        id: "ush-1-2-3".into(),
+        label: "find . -name '*.tmp' -delete".into(),
+    };
+    for name in ["a.tmp", "b.tmp"] {
+        let answer = state.handle(crate::broker::Request::FileAction {
+            run: Some(run.clone()),
+            action: FileAction::Remove(RemoveOp {
+                paths: vec![allowed.join(name)],
+                ..RemoveOp::default()
+            }),
+        });
+        assert!(
+            matches!(answer, crate::broker::Response::FileAction { .. }),
+            "{answer:?}"
+        );
+    }
+    let removes = entries_for(&state, "remove");
+    assert_eq!(removes.len(), 2);
+    for entry in &removes {
+        let group = entry.group.as_ref().expect("the run's group");
+        assert_eq!(group.id, run.id);
+        assert_eq!(group.label, run.label);
+        assert_eq!(group.kind, crate::broker::COMMAND_RUN);
+    }
 }

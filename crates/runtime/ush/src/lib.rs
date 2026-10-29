@@ -78,6 +78,7 @@ pub mod runs;
 mod runtime_import;
 pub mod seccomp;
 pub mod setup;
+pub mod shell_host;
 pub mod shell_start;
 pub mod store;
 pub mod supervisor;
@@ -133,6 +134,9 @@ pub const GUEST_COMMANDS: &[&str] = &[
     // protocols, so a script or an agent reads the same revisions the file
     // manager's History view lists instead of a second store beside them.
     "version",
+    // The session's shell (`crate::shell_host`): Tilo's own commands
+    // in-process, everything else in this guest.
+    "ush-sh",
 ];
 
 /// Commands for the user's installed legacy apps, from the legacy VM's

@@ -433,3 +433,124 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
         "the grid still has the keyboard"
     );
 }
+
+/// What a pty's line discipline does between Terminal and the shell, for a
+/// shell that runs on a thread here: typed bytes reach it a line at a time
+/// (`\r` ends a line, Ctrl-U clears it) and are echoed; what it prints gets
+/// `\r\n` line ends.
+struct Cooked {
+    typed: Receiver<Vec<u8>>,
+    echo: Sender<Vec<u8>>,
+    line: Vec<u8>,
+    ready: std::collections::VecDeque<u8>,
+}
+
+impl std::io::Read for Cooked {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        while self.ready.is_empty() {
+            let Ok(bytes) = self.typed.recv() else {
+                return Ok(0);
+            };
+            for byte in bytes {
+                match byte {
+                    0x15 => self.line.clear(),
+                    b'\r' | b'\n' => {
+                        let mut echoed = std::mem::take(&mut self.line);
+                        self.ready.extend(echoed.iter().copied());
+                        self.ready.push_back(b'\n');
+                        echoed.extend_from_slice(b"\r\n");
+                        let _ = self.echo.send(echoed);
+                    }
+                    byte => self.line.push(byte),
+                }
+            }
+        }
+        let n = buffer.len().min(self.ready.len());
+        for (slot, byte) in buffer.iter_mut().zip(self.ready.drain(..n)) {
+            *slot = byte;
+        }
+        Ok(n)
+    }
+}
+
+struct Crlf(Sender<Vec<u8>>);
+
+impl std::io::Write for Crlf {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let mut out = Vec::with_capacity(buffer.len());
+        for &byte in buffer {
+            if byte == b'\n' {
+                out.push(b'\r');
+            }
+            out.push(byte);
+        }
+        let _ = self.0.send(out);
+        Ok(buffer.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// ush's own shell as the session's process: `ls | wc -l` runs as two of
+/// Tilo's own commands joined by a pipe in memory, and the marks it writes
+/// become the session's run, with its line, directory, status and output.
+#[test]
+fn a_ush_session_records_the_run_of_a_pipeline() {
+    use std::sync::Arc;
+    use ush_shell::{Input, MemoryHost, Output, Session, Shell, Stdio};
+
+    let mut app = App::new().expect("terminal");
+    let (print, printed) = channel();
+    let (typed_tx, typed) = channel();
+    std::thread::spawn(move || {
+        let host = MemoryHost::new();
+        host.file("/src/demo/notes.md", "")
+            .file("/src/demo/todo.md", "");
+        let io = Stdio {
+            stdin: Input::new(Cooked {
+                typed,
+                echo: print.clone(),
+                line: Vec::new(),
+                ready: std::collections::VecDeque::new(),
+            }),
+            stdout: Output::new(Crlf(print.clone())),
+            stderr: Output::new(Crlf(print)),
+        };
+        let env = [("PS1".to_string(), "$ ".to_string())];
+        let mut shell = Shell::new(Arc::new(host), env, "/src/demo".into(), io);
+        shell.interactive(&Session {
+            runs_key: Some(KEY.into()),
+        });
+    });
+    let mut parts = Some((printed, typed_tx));
+    let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        let (printed, typed) = parts.take().expect("one process");
+        let mut backend = crate::inner::TerminalBackend::for_test();
+        backend.reader = Box::new(Printed(printed, Vec::new()));
+        backend.writer = Box::new(Typed(typed));
+        backend.runs = Some(KEY.into());
+        Ok(backend)
+    });
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    settle_until(&mut app, |state| !state.pane_id().is_empty());
+
+    app.call("run", serde_json::json!({ "command": "ls | wc -l" }))
+        .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 1 && state.requests.pending().next().is_none()
+    });
+
+    let state = app.state();
+    let (_, run) = state.runs.iter().next().unwrap();
+    assert_eq!(run.command.0, "ls | wc -l");
+    assert_eq!(run.cwd.0, "/src/demo");
+    assert_eq!(run.exit, 0);
+    assert!(
+        matches!(run.output, Bytes::Blob { len, .. } if len == "2\r\n".len() as u64),
+        "{:?}",
+        run.output
+    );
+    assert!(!run.undoable, "it only looked");
+}

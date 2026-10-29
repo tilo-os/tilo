@@ -17037,6 +17037,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
+ "ush-shell",
  "uuid",
  "workspace-hack",
 ]
@@ -23484,6 +23485,7 @@ dependencies = [
  "tilo-user-identity",
  "tracing",
  "tracing-subscriber",
+ "ush-shell",
  "uuid",
  "workspace-hack",
 ]

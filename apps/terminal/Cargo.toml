@@ -65,6 +65,8 @@ workspace-hack = { version = "0.1" }
 # collection build, and the app then links the whole runtime statically.
 terminal-samples = { package = "terminal", path = ".", features = ["samples"] }
 tempfile.workspace = true
+# ush's own shell, as the process of a session whose runs are recorded.
+ush-shell = { path = "../../crates/runtime/ush-shell" }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the tests that touch the shared system clipboard / primary
 # selection so they don't race each other under the default parallel runner
