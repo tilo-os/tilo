@@ -15,7 +15,6 @@ mod driver;
 mod mode;
 mod own_device;
 #[cfg(feature = "test-support")]
-mod own_process;
 mod scenario;
 
 use std::path::PathBuf;

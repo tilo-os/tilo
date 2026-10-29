@@ -31,7 +31,6 @@ use ui::widget::GroupRow;
 use super::driver::ShellDriver;
 
 #[cfg(feature = "test-support")]
-mod catch_up;
 mod desk_gestures;
 mod display_brightness;
 mod file_chooser;
@@ -593,20 +592,6 @@ pub enum Action {
         app: OwnApp,
         width: u32,
     },
-    /// Click `target` inside the app running as a window of its own on
-    /// `surface`.
-    #[cfg(feature = "test-support")]
-    OwnProcessClick {
-        surface: u64,
-        target: &'static str,
-    },
-    /// Turn the wheel `dy` notches in the app running as a window of its
-    /// own on `surface`.
-    #[cfg(feature = "test-support")]
-    OwnProcessScroll {
-        surface: u64,
-        dy: f32,
-    },
 }
 
 /// An app [`Action::OwnProcessWindow`] runs as a window of its own.
@@ -1101,10 +1086,6 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
         Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
         Action::SeedRoomHistory => driver.seed_room_history_for_shots(),
-        #[cfg(feature = "test-support")]
-        Action::OwnProcessClick { surface, target } => catch_up::click(driver, *surface, target),
-        #[cfg(feature = "test-support")]
-        Action::OwnProcessScroll { surface, dy } => catch_up::scroll(driver, *surface, *dy),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
         Action::SeedLauncherFresh => driver.seed_launcher_fresh_for_shots(),
         Action::SeedLauncherBusy => driver.seed_launcher_busy_for_shots(),
@@ -4071,7 +4052,6 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         #[cfg(feature = "test-support")]
-        catch_up::scenario(),
         window_search::own_process_files_search(),
         Scenario {
             name: "own_process_files_history",
