@@ -3663,7 +3663,6 @@ pub(crate) mod control_result_probe {
             Rc<RefCell<Vec<Result<ResourceOperationStart, tilo_actions::DoorError>>>>,
         pub(crate) calls: Rc<Cell<usize>>,
         pub(crate) polls: Rc<Cell<usize>>,
-        pub(crate) commits: Rc<Cell<usize>>,
         pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
         pub(crate) payloads: Rc<RefCell<Vec<String>>>,
     }
@@ -3697,7 +3696,6 @@ pub(crate) mod control_result_probe {
         accepted: bool,
         pub(crate) confirmation: bool,
         pub(crate) terminal_after: Option<(usize, bool)>,
-        pub(crate) dirty_typing: bool,
         pub(crate) typed_text: bool,
     }
     impl Probe {
@@ -3709,7 +3707,6 @@ pub(crate) mod control_result_probe {
                     accepted,
                     confirmation: false,
                     terminal_after: None,
-                    dirty_typing: false,
                     typed_text: false,
                 },
                 observed,

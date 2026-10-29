@@ -9,38 +9,10 @@ impl crate::host_core::HostCore for App {
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
             taffy: &self.layout.taffy,
-            records: self.persistence.records.as_ref(),
-            permissions: &self.permission_ctx,
             focused: self.focused_node,
-            history_layout: self.history_layout,
             root_node: self.layout.root_node,
             pointer: &self.input.pointer,
         }
-    }
-
-    fn document_history_with_tree(
-        &mut self,
-    ) -> (
-        &mut crate::standalone_history_host::StandaloneHistoryHost,
-        crate::host_core::HostTree<'_>,
-    ) {
-        (
-            &mut self.document_history,
-            crate::host_core::HostTree {
-                state: &self.state,
-                root: self.root_widget.as_ref(),
-                history: self.history.as_deref(),
-                bindings: &self.bindings,
-                node_map: &self.layout.node_map,
-                taffy: &self.layout.taffy,
-                records: self.persistence.records.as_ref(),
-                permissions: &self.permission_ctx,
-                focused: self.focused_node,
-                history_layout: self.history_layout,
-                root_node: self.layout.root_node,
-                pointer: &self.input.pointer,
-            },
-        )
     }
 
     fn document(&mut self) -> crate::host_core::HostDocument<'_> {
@@ -48,7 +20,6 @@ impl crate::host_core::HostCore for App {
             state: &mut self.state,
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
-            author: &self.collaboration.local_author,
         }
     }
 
@@ -74,7 +45,6 @@ impl crate::host_core::HostCore for App {
         if let Some(palette) = self.actions.action_palette.as_deref() {
             visit(palette);
         }
-        self.document_history.for_each_widget(visit);
     }
 
     fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted {
@@ -139,29 +109,6 @@ impl crate::host_core::HostCore for App {
 
     fn widget_reached(&mut self) {
         self.mark_semantic_tree_stale();
-    }
-
-    fn history_changed_document(&mut self) {
-        self.needs_sync = true;
-        self.layout.layout_dirty = true;
-        match self.persistence.records.as_mut() {
-            Some(set) => set.tick(&mut self.state.doc),
-            None => {
-                if let Some(saver) = self.persistence.autosave.as_mut() {
-                    saver.request(&mut self.state.doc);
-                }
-            }
-        }
-    }
-
-    /// The preview root runs inside this app's wake scope, like its live
-    /// root.
-    fn build_history_preview(
-        &mut self,
-        factory: &crate::standalone_history_host::PreviewRootFactory,
-    ) -> Result<Box<dyn Widget>, String> {
-        let _scope = self.enter_wake_scope();
-        factory()
     }
 
     fn host_root_mut(&mut self) -> &mut dyn Widget {

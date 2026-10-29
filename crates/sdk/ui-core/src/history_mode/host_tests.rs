@@ -948,10 +948,7 @@ fn header_history_control_opens_the_registered_history() {
     assert!(driver.targets().contains_key("activity_timeline"));
     driver
         .invoke_local_history_action(
-            &tilo_actions::ActionAddress::new(
-                crate::standalone_history_host::HISTORY_RESOURCE,
-                "hide",
-            ),
+            &tilo_actions::ActionAddress::new(crate::history_mode::door::HISTORY_RESOURCE, "hide"),
             None,
         )
         .unwrap();

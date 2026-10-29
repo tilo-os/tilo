@@ -37,12 +37,6 @@ impl PreviewCanvas {
         }
         self.dirty = true;
     }
-    pub(crate) fn clear(&mut self) {
-        self.preview = None;
-        self.error = None;
-        self.status = None;
-        self.dirty = true;
-    }
     pub(crate) fn set_status(&mut self, status: Option<String>) {
         if self.status != status {
             self.status = status;

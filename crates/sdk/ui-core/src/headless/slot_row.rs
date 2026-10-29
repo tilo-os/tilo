@@ -76,7 +76,7 @@ impl SlotRowHost for Lent<'_> {
         let Some(history) = self.frame.history.as_mut() else {
             return;
         };
-        let ran = crate::standalone_history_host::history_control_binding(control)
+        let ran = crate::history_mode::door::history_control_binding(control)
             .invoke(())
             .map_err(|error| error.to_string())
             .and_then(|intent| {
@@ -125,7 +125,6 @@ impl FrameHarness {
             history.set_open_button(false);
             history.set_window_presents(true);
         }
-        self.document_history.remove_fallback_bar();
         self.invalidate_layout_tree();
         self.relayout();
     }

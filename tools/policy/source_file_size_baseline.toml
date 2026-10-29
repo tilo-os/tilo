@@ -78,7 +78,7 @@
 "crates/sdk/ui-core/src/app/history_tests.rs" = 7000
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
 "crates/sdk/ui-core/src/bound_dispatch.rs" = 5500
-"crates/sdk/ui-core/src/headless.rs" = 14000
+"crates/sdk/ui-core/src/headless.rs" = 13500
 "crates/sdk/ui-core/src/launch.rs" = 3500
 "crates/sdk/ui-core/src/offscreen.rs" = 5000
 "crates/sdk/ui-core/src/presence/mod.rs" = 4000
@@ -132,7 +132,7 @@
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 7000
 "crates/session/shell/src/shell/network.rs" = 13000
-"crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4500
+"crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4000
 "crates/session/shell/src/shell/overlay_host/overlay_host_tests.rs" = 4000
 "crates/session/shell/src/shell/peer_presence.rs" = 4500
 "crates/session/shell/src/shell/portal_dialog.rs" = 3500

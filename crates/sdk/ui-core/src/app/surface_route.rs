@@ -86,7 +86,6 @@ impl App {
         }
         let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        operation_handlers.insert(super::history_actions::OPERATION.to_string());
         #[cfg(feature = "native")]
         if self.accessibility.zoom.in_window() {
             operation_handlers.insert(crate::host_chrome::zoom::ZOOM_OPERATION.to_string());

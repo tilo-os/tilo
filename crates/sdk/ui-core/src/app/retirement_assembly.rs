@@ -106,12 +106,8 @@ pub(super) struct AppAssemblyValues {
     pub persistence: Option<Box<PersistenceRuntime>>,
     pub autosave_generation: Option<u64>,
     pub actions: Option<Box<ActionRuntime>>,
-    pub document_history: Option<Box<crate::standalone_history_host::StandaloneHistoryHost>>,
-    pub history_chrome_enabled: Option<bool>,
+    pub search_presented: Option<bool>,
     pub native_document_chrome: Option<bool>,
-    pub history_layout: Option<Option<crate::standalone_history_host::HostHistoryLayout>>,
-    pub history_viewport_width: Option<f64>,
-    pub history_focus_pending: Option<bool>,
     pub last_published_playback: Option<Option<Vec<media::handoff::PlaybackReport>>>,
     pub last_playback_publish: Option<Option<Instant>>,
     pub continuation: Option<ContinuationRuntime>,
@@ -224,14 +220,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     assembly.values.persistence = Some(Box::new(PersistenceRuntime::new()));
     assembly.values.autosave_generation = Some(0);
     assembly.values.actions = Some(Box::new(ActionRuntime::new()));
-    assembly.values.document_history = Some(Box::new(
-        crate::standalone_history_host::StandaloneHistoryHost::new(),
-    ));
-    assembly.values.history_chrome_enabled = Some(false);
+    assembly.values.search_presented = Some(false);
     assembly.values.native_document_chrome = Some(true);
-    assembly.values.history_layout = Some(None);
-    assembly.values.history_viewport_width = Some(1000.0);
-    assembly.values.history_focus_pending = Some(false);
     assembly.values.last_published_playback = Some(None);
     assembly.values.last_playback_publish = Some(None);
     let Some(inputs) = assembly.inputs.as_ref() else {
@@ -292,12 +282,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         persistence: Some(persistence),
         autosave_generation: Some(autosave_generation),
         actions: Some(actions),
-        document_history: Some(document_history),
-        history_chrome_enabled: Some(history_chrome_enabled),
+        search_presented: Some(search_presented),
         native_document_chrome: Some(native_document_chrome),
-        history_layout: Some(history_layout),
-        history_viewport_width: Some(history_viewport_width),
-        history_focus_pending: Some(history_focus_pending),
         last_published_playback: Some(last_published_playback),
         last_playback_publish: Some(last_playback_publish),
         continuation: Some(continuation),
@@ -367,12 +353,8 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         autosave_generation,
         document_routes,
         actions,
-        document_history,
-        history_chrome_enabled,
+        search_presented,
         native_document_chrome,
-        history_layout,
-        history_viewport_width,
-        history_focus_pending,
         continuation,
         action_publication_failure,
         last_published_playback,

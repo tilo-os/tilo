@@ -102,7 +102,7 @@ impl TileHost {
                 .ok_or_else(|| "History is unavailable".to_owned())?
                 .invoke_window_history_control(control);
         };
-        let intent = crate::standalone_history_host::history_control_binding(control)
+        let intent = crate::history_mode::door::history_control_binding(control)
             .invoke(())
             .map_err(|error| error.to_string())?;
         crate::history_mode::embedded::run_door_control(history, &intent)

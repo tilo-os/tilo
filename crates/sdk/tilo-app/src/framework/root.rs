@@ -2369,16 +2369,6 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         ui_core::history_mode::capability::document_history_definition(self.app_view())
     }
 
-    fn provides_document_history(&self) -> bool {
-        !self.history
-            || ui_core::widget::capability::capability::<
-                dyn ui_core::history_mode::capability::DocumentHistory,
-            >(self.app_view())
-            .is_some_and(
-                ui_core::history_mode::capability::DocumentHistory::provides_document_history,
-            )
-    }
-
     fn physical_text_policy(
         &self,
         previous: Option<&tilo_actions::EncodedAction>,

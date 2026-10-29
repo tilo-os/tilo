@@ -6,11 +6,7 @@ use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 #[cfg(any(feature = "native", test))]
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
 #[cfg(any(feature = "native", test))]
-use crate::host_core::HostCore as _;
-#[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;
-#[cfg(any(feature = "native", test))]
-use crate::standalone_history::{HistoryReadContext, StandaloneHistory};
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
@@ -18,7 +14,6 @@ use crate::standalone_history::{HistoryReadContext, StandaloneHistory};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HostCommandsKey {
     undo: u64,
-    standalone_history: u64,
     framework_history_open: bool,
     palette: bool,
     focus: Option<taffy::NodeId>,
@@ -215,7 +210,6 @@ impl App {
     pub(crate) fn host_commands_key(&self) -> HostCommandsKey {
         HostCommandsKey {
             undo: self.state.history_revision(),
-            standalone_history: self.document_history.revision(),
             framework_history_open: self
                 .history
                 .as_ref()
@@ -274,27 +268,10 @@ impl App {
 
     /// The rows whichever History serves this app lists, in causal order.
     fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
-        if let Some(history) = &self.history {
-            return history.current_entries(&self.state.doc);
-        }
-        if !self.history_chrome_enabled {
-            return Vec::new();
-        }
-        let Ok(target) = self.capture_history_target() else {
-            return Vec::new();
-        };
-        let context = HistoryReadContext::of(
-            &self.state,
-            self.persistence.records.as_ref(),
-            &self.permission_ctx,
-        );
-        StandaloneHistory::open(
-            target,
-            &context,
-            crate::history_source::AuthorDirectory::with_room_agents(),
-        )
-        .map(|history| history.rows().to_vec())
-        .unwrap_or_default()
+        self.history
+            .as_ref()
+            .map(|history| history.current_entries(&self.state.doc))
+            .unwrap_or_default()
     }
 
     /// Whether the action palette covers the window.

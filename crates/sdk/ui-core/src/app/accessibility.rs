@@ -855,9 +855,6 @@ impl App {
     pub(super) fn set_focused_node(&mut self, new_id: Option<NodeId>) {
         self.mark_semantic_tree_stale();
         self.suspend_history_focus(new_id);
-        if new_id.is_some_and(|node| self.is_history_node(node)) {
-            self.remember_history_content();
-        }
         self.root_widget.focus_requested(new_id, &self.layout.taffy);
         if self.focused_node != new_id {
             if let Some(old) = self.focused_node {
@@ -1642,8 +1639,6 @@ impl App {
                 .history
                 .as_ref()
                 .is_some_and(|history| history.review_is_open())
-            || self.history_layout.is_some()
-            || self.history_chrome_enabled
             || self
                 .actions
                 .action_palette

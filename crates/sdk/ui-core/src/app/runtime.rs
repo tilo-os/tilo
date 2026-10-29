@@ -438,7 +438,6 @@ pub(super) struct ActionRuntime {
     pub(super) next_broker_request_id: Option<u64>,
     /// Dirty tracking for the hosted worker pump (no window event loop).
     pub(super) hosted: super::model_lifecycle::HostedPumpState,
-    pub(super) history_previews: super::history_actions::HistoryPreviews,
 }
 
 /// Which answer from the session action host a request is waiting for.
@@ -502,7 +501,6 @@ impl ActionRuntime {
             refused_broker_receipt: None,
             next_broker_request_id: Some(0),
             hosted: super::model_lifecycle::HostedPumpState::default(),
-            history_previews: super::history_actions::HistoryPreviews::default(),
         }
     }
 }

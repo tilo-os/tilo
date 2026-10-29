@@ -46,7 +46,6 @@ impl FrameHarness {
             history.set_open_button(false);
             history.set_window_presents(true);
         }
-        self.document_history.remove_fallback_bar();
         crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
         self.invalidate_layout_tree();
         let frame = self.content_viewport(self.viewport);
@@ -81,7 +80,7 @@ impl FrameHarness {
             .window_history_control()
             .ok_or("History is unavailable")?;
         let history = self.history.as_mut().ok_or("History is unavailable")?;
-        let intent = crate::standalone_history_host::history_control_binding(control)
+        let intent = crate::history_mode::door::history_control_binding(control)
             .invoke(())
             .map_err(|error| error.to_string())?;
         crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)

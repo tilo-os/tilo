@@ -26,6 +26,7 @@ pub(crate) fn note_news() {
 pub mod capability;
 pub mod checked_files;
 pub mod coverage;
+pub(crate) mod door;
 mod files_session;
 pub mod preview;
 pub mod restore;
@@ -37,7 +38,7 @@ pub use owner::HistoryOwner;
 pub(crate) mod canvas;
 pub(crate) mod frame;
 pub(crate) mod frozen_root;
-pub use frozen_root::FrozenRootPreview;
+pub use frozen_root::{FrozenRootPreview, outline_preview};
 pub(crate) mod host;
 pub mod pending_controls;
 pub use coverage::{HistoricalGap, HistoricalSupport, TypeHistory};

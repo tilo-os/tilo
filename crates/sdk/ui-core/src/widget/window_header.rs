@@ -427,7 +427,7 @@ impl HistoryOpener {
     pub fn set_control(&mut self, control: Option<HistoryControl>) {
         if self.control != control {
             let next = control.map(|control| {
-                crate::standalone_history_host::history_control_button(HISTORY_CONTROL_ID, control)
+                crate::history_mode::door::history_control_button(HISTORY_CONTROL_ID, control)
             });
             if let Some(old) = std::mem::replace(&mut self.button, next) {
                 self.retired.push(old);
@@ -486,7 +486,7 @@ impl HistoryOpener {
     /// The press as an invocation of the History door, once.
     pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         let control = self.pending.take()?;
-        crate::standalone_history_host::history_control_binding(control)
+        crate::history_mode::door::history_control_binding(control)
             .invoke(())
             .ok()
     }

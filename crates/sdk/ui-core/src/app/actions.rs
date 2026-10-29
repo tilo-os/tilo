@@ -99,12 +99,10 @@ impl App {
             self.focused_node,
         );
         complete.extend(semantics.action_resources());
-        complete.extend(self.history_action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
         let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        operation_handlers.insert(history_actions::OPERATION.to_string());
         let violations = tilo_actions::validate_surface(
             &complete,
             &self.actions.action_registry,
@@ -324,11 +322,6 @@ impl App {
         let mut host_resources = vec![crate::search::search_resource()];
         if let Some(history) = &self.history {
             host_resources.push(history.door_resource());
-        } else if self.history_chrome_enabled {
-            host_resources.push(crate::standalone_history_host::history_resource(
-                true,
-                self.document_history.is_open(),
-            ));
         }
         let mut seen = std::collections::HashSet::new();
         bindings
@@ -1759,45 +1752,6 @@ impl App {
                     tilo_actions::ActionOutput::default(),
                 ));
             }
-            if encoded.type_id == history_actions::OPERATION {
-                let result = self
-                    .invoke_history_action(&encoded, actor)
-                    .and_then(|output| {
-                        resolved
-                            .contract
-                            .result
-                            .validate(&output)
-                            .map_err(tilo_actions::DoorError::Failed)?;
-                        Ok(output)
-                    });
-                if kind == tilo_actions::OperationKind::Effect && invocation.is_none() {
-                    let update = match &result {
-                        Ok(output) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation: operation_invocation,
-                            output: output.clone(),
-                        },
-                        Err(error) => tilo_actions::InvocationUpdate::Failed {
-                            invocation: operation_invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: crate::bound_dispatch::door_error_code(error).to_string(),
-                                message: error.to_string(),
-                                details: error.failure_details(),
-                                retryable: false,
-                            },
-                        },
-                    };
-                    self.collaboration
-                        .manager
-                        .send(CollabRequest::RecordLocalEffect {
-                            address: address.clone(),
-                            update,
-                        });
-                }
-                self.needs_sync = true;
-                self.layout.layout_dirty = true;
-                self.invalidate_widget_resource_cache();
-                return result.map(crate::widget::ResourceOperationStart::Completed);
-            }
             if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
                 let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
                 let handled = match semantic_result {
@@ -2038,8 +1992,7 @@ impl App {
         }
         crate::history_mode::embedded::discard_active_output(self.root_widget.as_mut());
         let registered = self.control_domain.drain_partitioned();
-        let dispatched = self.dispatch_history_controls();
-        dispatched.saturating_add(self.dispatch_drained_controls(registered))
+        self.dispatch_drained_controls(registered)
     }
 
     /// Invoke, as the person here, another provider's action a control of
@@ -2377,7 +2330,6 @@ impl App {
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
-        history_actions::without_duplicate_launcher(&mut resources);
         let cached_open_resources = {
             self.actions
                 .open_resource_search_cache
@@ -2387,11 +2339,6 @@ impl App {
                     cache.key == key && cache.permission_generation == permission_generation
                 })
                 .map(|cache| cache.provider.clone())
-        };
-        let cached_open_resources = if self.history_chrome_enabled {
-            None
-        } else {
-            cached_open_resources
         };
         let open_resources = cached_open_resources.unwrap_or_else(|| {
             let provider = crate::search::OpenResourceSearch::new(&resources);
@@ -2570,7 +2517,7 @@ impl App {
     /// Whether this window presents search itself. A shell hosting the app
     /// presents it instead, and receives the request as a host intent.
     fn presents_search(&self) -> bool {
-        self.document_history.has_search()
+        self.search_presented
     }
 
     fn rebuild_action_palette_admission(&mut self) {
@@ -2848,7 +2795,6 @@ impl App {
             .and_then(|cache| cache.resources.clone())
             .unwrap_or_default();
         resources.extend(self.history_local_resources());
-        history_actions::without_duplicate_launcher(&mut resources);
         let lazy_resource_ids = self
             .actions
             .action_palette
@@ -3386,7 +3332,7 @@ impl crate::host_core::ControlHost for App {
         // The window's Retry for unsaved changes (its header button) is the
         // host's own action, like History.
         let unsaved = intent.address.resource == local_input_capture::UNSAVED_RESOURCE;
-        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE && !unsaved {
+        if intent.address.resource != crate::history_mode::door::HISTORY_RESOURCE && !unsaved {
             return false;
         }
         let embedded = owner.filter(|_| !unsaved).and_then(|owner| {

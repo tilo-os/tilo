@@ -242,10 +242,10 @@ impl HistoryHost {
         self.open
     }
 
-    /// The window's History door as this History serves it: the same
-    /// Open, Open at and Hide as the standalone door, without session rows.
+    /// The window's History door as this History serves it: Open, Open at
+    /// and Hide.
     pub(crate) fn door_resource(&self) -> tilo_actions::ResourceSpec {
-        crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
+        crate::history_mode::door::history_resource(!self.invalid_owner, self.is_open())
     }
 
     /// Run one History door operation resolved against [`Self::door_resource`]
@@ -255,14 +255,14 @@ impl HistoryHost {
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, decode_entry};
+        use crate::history_mode::door::{HISTORY_OPERATION, HistoryCommand, decode_entry};
         if encoded.type_id != HISTORY_OPERATION {
             return Err("Unsupported History operation".into());
         }
         match serde_json::from_slice(&encoded.payload) {
             Ok(HistoryCommand::Open) if self.request_open() => Ok(()),
             Ok(HistoryCommand::OpenAt { entry })
-                if decode_entry(&entry).is_ok_and(|entry| self.request_open_at(entry)) =>
+                if decode_entry(&entry).is_some_and(|entry| self.request_open_at(entry)) =>
             {
                 Ok(())
             }
@@ -1709,7 +1709,7 @@ impl HistoryHost {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     row.push(Box::new(
-                        crate::standalone_history_host::history_control_face(
+                        crate::history_mode::door::history_control_face(
                             "history-open",
                             crate::widget::window_header::HistoryControl::of(self.open),
                         )
@@ -2057,7 +2057,7 @@ impl HistoryHost {
             // No window presents History's control: the panel holds it, on.
             let clicked = self.open_requested.clone();
             Some(
-                crate::standalone_history_host::history_control_face(
+                crate::history_mode::door::history_control_face(
                     "history-open",
                     crate::widget::window_header::HistoryControl::Open,
                 )

@@ -1789,11 +1789,11 @@ impl NavShell {
             toggle,
             back,
             inspector_toggle,
-            history_open: crate::standalone_history_host::history_control_button(
+            history_open: crate::history_mode::door::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Closed,
             ),
-            history_close: crate::standalone_history_host::history_control_button(
+            history_close: crate::history_mode::door::history_control_button(
                 "nav-shell-history",
                 HistoryControl::Open,
             ),

@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ControlInvocation};
 
 use super::model::{CommandGroup, HostCommand};
+use crate::history_mode::door::HISTORY_RESOURCE;
 use crate::platform::PlatformConventions;
 use crate::search::request::SEARCH_RESOURCE;
-use crate::standalone_history_host::HISTORY_RESOURCE;
 
 /// The launch option a Jump List task passes its invocation in.
 pub(crate) const LAUNCH_OPTION: &str = "--host-command";
@@ -116,26 +116,13 @@ fn quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use automerge::ROOT;
-    use automerge::transaction::Transactable;
-
     use super::{decode, jump_tasks, menu_text, quote};
     use crate::host_chrome::model::CommandGroup;
     use crate::platform::{Platform, PlatformConventions};
 
     fn commands() -> Vec<crate::host_chrome::model::HostCommand> {
-        let mut state = crate::State::new();
-        for title in ["first", "second"] {
-            state.doc.put(ROOT, "title", title).unwrap();
-            state.commit_action(None, None);
-        }
-        let mut app = crate::app::App::new_with_controlled_inputs(
-            state,
-            Box::new(crate::widget::Text::new("Document")),
-        );
+        let mut app = crate::app::framework_history_tests::native_chrome_app();
         app.set_platform_conventions(PlatformConventions::new(Platform::Windows));
-        app.enable_document_history_chrome();
-        app.init_layout();
         app.host_commands(true)
     }
 

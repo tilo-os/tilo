@@ -254,7 +254,6 @@ pub mod query_text;
 pub use tilo_ui_paint::raster;
 pub mod realtime_continuity;
 pub mod room_sync;
-pub mod standalone_history_pane;
 pub mod storage;
 /// The desktop's keyboard shortcut table (actions, their chords and the
 /// defaults) as the settings document keeps it: what every desktop host
@@ -329,8 +328,6 @@ pub mod shared_selection;
 pub mod shell_tabs;
 mod slot_row;
 pub mod snap;
-mod standalone_history;
-mod standalone_history_host;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
