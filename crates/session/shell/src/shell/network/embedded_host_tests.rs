@@ -197,7 +197,7 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
         .expect("the device the list names is asked");
     assert_eq!(device, Some(other), "the device the list names is asked");
     assert_eq!(endpoint, other);
-    assert_eq!(action, ENTER_ROOM);
+    assert_eq!(action, tilo_relay_session::rooms::ENTER_ROOM);
     assert_eq!(room, Some(serde_json::Value::from(plans.to_string())));
     assert!(!held, "a room its host did not let in is not held");
 }

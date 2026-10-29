@@ -191,7 +191,7 @@ pub(super) fn create_arguments(
 }
 
 /// The name a room shared from a workspace called `name` gets.
-fn room_name(name: &str) -> String {
+pub(super) fn room_name(name: &str) -> String {
     let name: String = name
         .trim()
         .chars()

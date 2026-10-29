@@ -29,6 +29,7 @@ pub mod member_limits;
 #[doc(hidden)]
 pub mod membership_watch;
 pub mod metrics;
+mod own_rooms;
 pub mod payloads;
 pub mod peer;
 #[doc(hidden)]
