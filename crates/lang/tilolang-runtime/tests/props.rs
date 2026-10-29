@@ -85,4 +85,62 @@ view message(m: Message) {
             "choosing the offered action ran it"
         );
     }
+
+    const REACTED: &str = r#"app so.tilo.talk "Talk"
+
+type Post {
+    text: Text (title)
+    reactions: Map<Set<Principal>>
+}
+
+action add(p: Post, emoji: Text) {
+    p.reactions.add(emoji, invoker)
+}
+
+action take(p: Post, emoji: Text) {
+    p.reactions.remove(emoji, invoker)
+}
+
+view post(p: Post) {
+    ui.Reactions(reactions: p.reactions)
+}
+"#;
+
+    #[test]
+    fn a_map_of_sets_holds_each_element_and_reads_as_sets_by_key() {
+        let app = App::compile(REACTED, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let p = rt.create("Post").unwrap();
+        let ben = tilolang_runtime::Principal::new("ben");
+        for (who, action, emoji) in [
+            (me(), "add", "👍"),
+            (ben.clone(), "add", "👍"),
+            (ben.clone(), "add", "🎉"),
+            (ben.clone(), "take", "🎉"),
+        ] {
+            rt.invoke_action(
+                &who,
+                (
+                    app.action(action).as_str(),
+                    vec![Value::resource(&p), Value::text(emoji)],
+                ),
+            )
+            .unwrap();
+        }
+        let view = rt
+            .open_view(&me(), &app.view("post"), vec![Value::resource(&p)])
+            .unwrap();
+        let node = of_kind(view.tree(), "ui.Reactions")[0].clone();
+        let Some(Value::Map(entries)) = node.props.get("reactions") else {
+            panic!("a map: {}", dump(view.tree()));
+        };
+        let mut who = vec![Value::Principal(me()), Value::Principal(ben)];
+        who.sort_by_key(|p| format!("{p:?}"));
+        assert_eq!(
+            entries,
+            &vec![(Value::text("👍"), Value::List(who))],
+            "one emoji, both who reacted; the taken-back one is gone"
+        );
+    }
 }

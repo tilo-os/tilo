@@ -56,6 +56,17 @@ fn only_an_action_reads_the_invoker() {
 }
 
 #[test]
+fn a_requirement_reads_the_invoker_who_would_invoke_it_where_it_is_offered() {
+    assert!(
+        codes(
+            "type Note {\n    text: Text\n}\naction edit(n: Note, text: Text) {\n    require created(n)?.who == .some(invoker) \"Only its author\"\n    n.text = text\n}"
+        )
+        .is_empty(),
+        "a requirement on who invokes the action"
+    );
+}
+
+#[test]
 fn actions_and_flows_take_no_principal_but_views_and_fns_may() {
     assert_eq!(
         codes("action a(p: Principal) {\n}"),
