@@ -97,12 +97,11 @@ fn publish_laptop_with_monitor() {
 /// stands, then run the frame that carries out what it asked.
 pub(crate) fn press(
     host: &mut ShellOverlayHost,
-    _first_layout: &(TaffyTree<()>, NodeId),
+    layout: &(TaffyTree<()>, NodeId),
     key: Key,
     mods: ModifiersState,
 ) {
     let what = format!("{key:?}");
-    let layout = layout_host(host);
     let consumed = press_key(host, &layout.0, layout.1, key, mods);
     assert!(consumed, "{what} must be consumed by the shell");
     frame(host);

@@ -567,7 +567,7 @@ impl ResourceApp for DisplaysApp {
         let parts = Parts {
             dispatch: dispatch.clone(),
             shown: shown.clone(),
-            pin: pin.clone(),
+            pin,
             seat,
         };
         let content = cx.switch(&shown, move |_cx, shown| sheet(shown, &parts));
@@ -1057,7 +1057,7 @@ fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
         .with_enter_submits(true)
         .on_change(move |text| {
             if let Some(seat) = &typed {
-                *seat.pin.borrow_mut() = text.to_owned();
+                text.clone_into(&mut seat.pin.borrow_mut());
             }
         })
         .on_submit(move |_| submitted.submit_pin());
