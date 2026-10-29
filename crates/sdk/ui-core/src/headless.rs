@@ -7913,40 +7913,6 @@ impl FrameHarness {
         self.settle_history_control(prepared, confirmed)
     }
 
-    fn service_pending_history_commands(&mut self) -> bool {
-        let commands = self
-            .history
-            .as_ref()
-            .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
-        let mut serviced = !commands.is_empty();
-        for command in commands {
-            match command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    let _ = self.continue_pending_history_control(&token);
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => {
-                    let prepared = self
-                        .history
-                        .as_mut()
-                        .and_then(|history| history.prepare_pending_control_typed(&token, &value));
-                    if let Some(prepared) = prepared {
-                        self.settle_history_control(prepared, true);
-                    }
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    self.cancel_pending_history_control(&token);
-                }
-            }
-        }
-        let embedded = crate::history_mode::embedded::drain_pending_commands(self.root.as_mut());
-        serviced |= !embedded.is_empty();
-        self.service_embedded_history_commands(embedded);
-        serviced
-    }
-
     fn dispatch_control_invocations(&mut self) {
         crate::history_mode::embedded::discard_active_output(self.root.as_mut());
         let registered = self.control_domain.drain_partitioned();
@@ -9146,6 +9112,11 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn widget_reached(&mut self) {
         self.invalidate_local();
+    }
+
+    fn history_commands_arrived(&mut self) {
+        self.discard_layout_tree();
+        self.focused = None;
     }
 
     fn history_changed_document(&mut self) {

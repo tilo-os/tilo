@@ -1999,54 +1999,6 @@ impl App {
             .map_or_else(Vec::new, |history| history.pending_control_reviews())
     }
 
-    fn service_pending_history_commands(&mut self) {
-        let commands = self
-            .history
-            .as_ref()
-            .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
-        let embedded =
-            crate::history_mode::embedded::drain_pending_commands(self.root_widget.as_mut());
-        if !commands.is_empty() || !embedded.is_empty() {
-            if self.history_focus.is_none() {
-                self.history_focus = self.capture_focus_identity();
-            }
-            self.layout.node_map.clear();
-            self.bindings.clear();
-            self.focused_node = None;
-            self.layout.request_rebuild();
-            self.layout.layout_dirty = true;
-        }
-        for command in commands {
-            let (token, confirmation) = match command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    if let Some(history) = &mut self.history {
-                        history.cancel_pending_control(&token);
-                    }
-                    continue;
-                }
-            };
-            let Some(prepared) =
-                self.history
-                    .as_mut()
-                    .and_then(|history| match confirmation.as_deref() {
-                        Some(value) => history.prepare_pending_control_typed(&token, value),
-                        None => history.prepare_pending_control(&token, false),
-                    })
-            else {
-                continue;
-            };
-            self.settle_history_control(prepared, confirmation.is_some());
-        }
-        self.service_embedded_history_commands(embedded);
-    }
-
     /// Drives the production local idle body without creating a window or input.
     #[cfg(any(test, feature = "test-support"))]
     pub fn controlled_local_idle_for_test(&mut self) -> bool {

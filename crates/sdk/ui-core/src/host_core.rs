@@ -575,6 +575,49 @@ pub(crate) trait HostCore {
         })
     }
 
+    /// History asked about its held-back controls: the tree it lays out is
+    /// about to change under the host's maps.
+    fn history_commands_arrived(&mut self);
+
+    /// Carry out what the registered History and the History surfaces
+    /// embedded in the app asked of their held-back controls: review,
+    /// confirm or cancel each, while History still holds input. Whether
+    /// anything asked.
+    fn service_pending_history_commands(&mut self) -> bool {
+        let commands = self
+            .registered_history_mut()
+            .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
+        let embedded = crate::history_mode::embedded::drain_pending_commands(self.host_root_mut());
+        let asked = !commands.is_empty() || !embedded.is_empty();
+        if asked {
+            self.history_commands_arrived();
+        }
+        for command in commands {
+            let (token, confirmation) = match command {
+                ContinuationCommand::Review(token) => (token, None),
+                ContinuationCommand::Confirm(token, value) => (token, Some(value)),
+                ContinuationCommand::Cancel(token) => {
+                    if let Some(history) = self.registered_history_mut() {
+                        history.cancel_pending_control(&token);
+                    }
+                    continue;
+                }
+            };
+            let Some(prepared) =
+                self.registered_history_mut()
+                    .and_then(|history| match confirmation.as_deref() {
+                        Some(value) => history.prepare_pending_control_typed(&token, value),
+                        None => history.prepare_pending_control(&token, false),
+                    })
+            else {
+                continue;
+            };
+            self.settle_history_control(prepared, confirmation.is_some());
+        }
+        self.service_embedded_history_commands(embedded);
+        asked
+    }
+
     /// Serve what History surfaces embedded in the app asked of their
     /// held-back controls: review, confirm or cancel each.
     fn service_embedded_history_commands(&mut self, embedded: Vec<PendingCommand>) {
