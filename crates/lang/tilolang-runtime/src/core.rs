@@ -47,6 +47,10 @@ pub enum Delivery {
     /// The service refused it, for this reason. It is never tried again.
     Rejected(String),
     /// Handed over; the service has not answered yet. Asked again on the next settle.
+    ///
+    /// Resolved by the sink that says it: it is obliged to have its owner settle again once
+    /// the service answered (an origin reports `Polled::settle` from the poll that took the
+    /// answer in), and to answer every effect it took, its service going away included.
     Pending,
     /// The service could not be reached, for this reason, so it never got it: the effect waits
     /// to go online and is tried again when the network comes back.

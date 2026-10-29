@@ -1130,3 +1130,77 @@ fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it
         "and none of it in the note shown when it arrived"
     );
 }
+
+#[test]
+fn the_instance_answers_a_late_joiners_snapshot_request_with_its_record() {
+    let (mut host, mut window, sent, inbox, route) = running("ada");
+    settle(&mut host, &mut window);
+    let snapshots = |sent: &Sent| {
+        sent.borrow()
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request,
+                    CollabRequest::Document {
+                        mutation: collaboration::DocumentMutation::Snapshot(_),
+                        ..
+                    }
+                )
+            })
+            .count()
+    };
+    let before = snapshots(&sent);
+    inbox
+        .borrow_mut()
+        .push_back(CollabEvent::DocumentSnapshotRequested { route });
+    settle(&mut host, &mut window);
+    assert_eq!(
+        snapshots(&sent),
+        before + 1,
+        "the record went to the late joiner"
+    );
+}
+
+#[test]
+fn the_instance_answers_every_handoff_step_the_shell_asks() {
+    use collaboration::handoff::{HandoffReport, HandoffRequest, Successor};
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let reports = |sent: &Sent| -> Vec<HandoffReport> {
+        sent.borrow()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::ReportHandoff { message, .. } => HandoffReport::decode(message),
+                _ => None,
+            })
+            .collect()
+    };
+    inbox.borrow_mut().push_back(CollabEvent::Handoff {
+        request: HandoffRequest::Checkpoint { token: 7 },
+    });
+    inbox.borrow_mut().push_back(CollabEvent::Handoff {
+        request: HandoffRequest::Retire {
+            token: 8,
+            successor: Successor {
+                room: uuid::Uuid::new_v4().to_string(),
+                record: "elsewhere".to_owned(),
+                by: "ada".to_owned(),
+            },
+        },
+    });
+    settle(&mut host, &mut window);
+    let reports = reports(&sent);
+    assert!(
+        reports
+            .iter()
+            .any(|report| matches!(report, HandoffReport::Done { token: 7, .. })),
+        "a checkpoint is done: {reports:?}"
+    );
+    assert!(
+        reports.iter().any(|report| matches!(
+            report,
+            HandoffReport::Failed { token: 8, reason } if !reason.is_empty()
+        )),
+        "a retirement is refused with why: {reports:?}"
+    );
+}

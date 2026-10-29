@@ -183,15 +183,26 @@ impl Routes {
             let Some(channel) = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
+                // optional-decode: a `.route` file not named for a channel is not one
                 .and_then(|stem| uuid::Uuid::parse_str(stem).ok())
                 .map(ChannelId)
             else {
                 continue;
             };
-            let route = std::fs::read(&path)
-                .ok()
-                .and_then(|bytes| postcard::from_bytes::<ChannelRoute>(&bytes).ok())
-                .filter(|route| route.proves(room, channel));
+            // A route that does not read is reported, then left out: the
+            // channel is routed again when its bridge next proves it.
+            let route = match std::fs::read(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    postcard::from_bytes::<ChannelRoute>(&bytes).map_err(|error| error.to_string())
+                }) {
+                Ok(route) => Some(route),
+                Err(error) => {
+                    tracing::warn!(%room, path = %path.display(), %error, "a stored channel route does not read");
+                    None
+                }
+            }
+            .filter(|route| route.proves(room, channel));
             if let Some(route) = route
                 && known.len() < MAX_ROUTES
             {
