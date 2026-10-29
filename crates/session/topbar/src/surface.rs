@@ -240,6 +240,21 @@ impl TopBarSurface {
         self.profile.is_open()
     }
 
+    /// Open the workspace menu under the full bar's workspace name, or close
+    /// it, as a press on the name does.
+    pub fn toggle_workspace_menu(&mut self) {
+        self.source.anchor.set(Rect::ZERO);
+        self.open_popover(Popover::WorkspaceMenu);
+        self.hand_over();
+    }
+
+    /// Open the profile card under the person's own avatar, or close it, as
+    /// a press on the avatar does.
+    pub fn toggle_profile(&mut self) {
+        self.open_popover(Popover::Profile);
+        self.hand_over();
+    }
+
     fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.scenario = scenario.map(str::to_owned);
         self.link.publish(crate::fixture::feed(scenario));
@@ -472,6 +487,8 @@ impl TopBarSurface {
             tray: rect_of(TopBarChrome::tray_pill_rect),
             clock,
             popover,
+            workspace_menu: self.workspace_menu_labels(),
+            profile: self.profile.is_open(),
             modal: self.popover_open(),
             keyboard,
             holds_shown: self.popover_open()

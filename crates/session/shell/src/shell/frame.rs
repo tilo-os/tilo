@@ -8540,7 +8540,7 @@ mod tests {
     fn compact_bar_shown(fb: &FrameBuilder) -> bool {
         fb.widget_registry()
             .keys()
-            .any(|key| key.ends_with("topbar_compact[1]"))
+            .any(|key| key.ends_with("display:1:topbar"))
     }
 
     /// On a desktop spread across two displays a fullscreen covers its own
@@ -8617,7 +8617,7 @@ mod tests {
             );
             let registry = fb.widget_registry();
             assert_eq!(
-                rect_named(&registry, "TopBarChrome").height() > 10.0,
+                rect_named(&registry, "TopBarSpace").height() > 10.0,
                 !on_primary,
                 "{label}: the full top bar steps aside only for a fullscreen on the primary"
             );
@@ -9749,14 +9749,14 @@ mod tests {
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
-            let name = unsafe { (**widget).name() };
-            (name == "TopBarChrome").then_some(*id)
+            let app = unsafe { (**widget).test_id() };
+            (app == Some(tilo_topbar::APP_ID)).then_some(*id)
         });
         let chrome_id = chrome_id.expect("production chrome must mount the top bar");
         fb.set_native_focus(&mut focus, Some(chrome_id));
         assert_eq!(
             fb.widget_name(focus.expect("top bar must take keyboard focus")),
-            Some("TopBarChrome"),
+            Some("EmbeddedApp"),
             "this case is the VM path: chrome, not the Terminal, holds focus"
         );
         let mut doc = AutoCommit::new();
@@ -9831,14 +9831,14 @@ mod tests {
         let mut focus = None;
         fb.reconcile_native_focus(&mut focus);
         let chrome_id = fb.node_map.iter().find_map(|(id, widget)| {
-            let name = unsafe { (**widget).name() };
-            (name == "TopBarChrome").then_some(*id)
+            let app = unsafe { (**widget).test_id() };
+            (app == Some(tilo_topbar::APP_ID)).then_some(*id)
         });
         let chrome_id = chrome_id.expect("production chrome must mount the top bar");
         fb.set_native_focus(&mut focus, Some(chrome_id));
         assert_eq!(
             fb.widget_name(focus.expect("top bar must take keyboard focus")),
-            Some("TopBarChrome"),
+            Some("EmbeddedApp"),
             "chrome holds focus, as on the VM path"
         );
         let probe = fb.node_map.values().find_map(|widget| {
@@ -10178,7 +10178,7 @@ mod tests {
             }
             let mut frame = FrameBuilder::with_tree(tree, (1472, 920));
             let _ = frame.paint_settled();
-            let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+            let bar = rect_named(&frame.widget_registry(), "TopBarSpace");
             let rect = frame
                 .host_mut()
                 .group_at_for_tests(strip, 0)

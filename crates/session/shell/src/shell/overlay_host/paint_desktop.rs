@@ -168,16 +168,8 @@ impl ShellOverlayHost {
                 presence,
             )?
         };
-        // The compact bars of the other displays share the top bar's scene.
-        let bars = surface
-            .display_chrome()
-            .and_then(Widget::as_any)
-            .and_then(|layer| layer.downcast_ref::<crate::shell::display_bars::DisplayBars>())
-            .map(crate::shell::display_bars::DisplayBars::bar_rects)
-            .unwrap_or_default();
-        Some(bars.into_iter().fold(bounds, |all, (_, bar)| {
-            all.union(Rect::new(bar.x0, bar.y0, bar.x1, bar.y1 + 28.0))
-        }))
+        // The bars themselves are the top bar app's, drawn over this.
+        Some(bounds)
     }
 
     /// Ribbon, the strip switcher's card and the rail sit below Quick
@@ -248,7 +240,7 @@ impl ShellOverlayHost {
         let panel = self.collaborators_painted_panel;
         // From the faces that opened it; from the bar above it when they
         // are not shown.
-        let faces = self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::collaborators_rect);
+        let faces = self.topbar_shown().people;
         let anchor = if faces.is_zero_area() {
             Point::new(panel.center().x, panel.y0)
         } else {

@@ -84,9 +84,6 @@ impl Widget for ShellOverlayHost {
         if self.peer_sync_overlay.visible() {
             self.peer_sync_overlay.sync(s, p);
         }
-        if self.bar_popovers.profile.is_open() {
-            self.bar_popovers.profile.sync(s, p);
-        }
         self.capture_studio.sync(s, p);
         for (_, mirror) in &mut self.capture_mirrors {
             mirror.sync(s, p);
@@ -152,8 +149,6 @@ impl Widget for ShellOverlayHost {
             | person_activation
             | person_context_dirty
             | person_action_dirty;
-        let bar_popover_dirty =
-            self.bar_popovers.profile.is_open() && self.bar_popovers.profile.update(doc, path);
         let marker_dirty = self
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
@@ -305,9 +300,9 @@ impl Widget for ShellOverlayHost {
         // pointer dispatch; and drop a menu whose tab has since gone.
         self.harvest_pending_tab_context_menus();
         self.prune_stale_tab_context_menu();
-        // Same for a popover the bar asked for, and what was chosen in one.
-        self.harvest_bar_popover_request();
-        self.settle_bar_popovers();
+        // The top bar takes what the chrome knows now, its presence
+        // included, and what it asked is carried out.
+        let topbar_dirty = self.update_topbar(doc, path);
         self.harvest_floating_surface_requests();
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
@@ -452,7 +447,7 @@ impl Widget for ShellOverlayHost {
             || tooltip_dirty
             || agent_quick_dirty
             || person_quick_dirty
-            || bar_popover_dirty
+            || topbar_dirty
             || marker_dirty
             || content_dirty
             || quick_settings_dirty
@@ -682,7 +677,7 @@ impl Widget for ShellOverlayHost {
             self.person_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
         );
-        children.extend(self.build_bar_popovers(taffy, theme, node_map));
+        children.extend(self.build_topbar_layout(taffy, theme, node_map));
         children.extend(
             self.agent_markers
                 .build(taffy, theme, node_map, self.rect.origin()),
@@ -775,7 +770,7 @@ impl Widget for ShellOverlayHost {
             self.agent_quick_composer
                 .apply_layout(taffy, agent_node, self.rect.origin());
         }
-        self.apply_bar_popovers_layout(taffy);
+        self.apply_topbar_layout(taffy);
         self.agent_markers.apply(taffy, self.rect.origin());
         self.person_markers.apply(taffy, self.rect.origin());
         if let Some(node) = self.person_quick_composer_node {
@@ -1069,7 +1064,10 @@ impl Widget for ShellOverlayHost {
             return vec![onboarding, &self.capture_studio];
         }
         let mut out: Vec<&dyn Widget> =
-            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
+            Vec::with_capacity(6_usize.saturating_add(self.capture_mirrors.len()));
+        // The top bar reads first, as it stands above the windows: Tab
+        // reaches it before them, as it did when the desktop drew it.
+        out.extend(self.topbar.child());
         out.push(self.content.as_ref());
         if self.palette_visible
             && let Some(launcher) = self.launcher.as_ref()
@@ -1090,12 +1088,6 @@ impl Widget for ShellOverlayHost {
         }
         if self.agent_quick_composer.is_open() {
             out.push(&*self.agent_quick_composer);
-        }
-        if self.bar_popovers.workspace_menu.is_open() {
-            out.push(&self.bar_popovers.workspace_menu);
-        }
-        if self.bar_popovers.profile.is_open() {
-            out.push(&self.bar_popovers.profile);
         }
         out.extend(self.agent_markers.children());
         if self.person_quick_composer.is_open() {
@@ -1121,7 +1113,8 @@ impl Widget for ShellOverlayHost {
             return vec![onboarding, &mut self.capture_studio];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
-            Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
+            Vec::with_capacity(6_usize.saturating_add(self.capture_mirrors.len()));
+        out.extend(self.topbar.child_mut());
         out.push(self.content.as_mut());
         if self.palette_visible
             && let Some(launcher) = self.launcher.as_mut()
@@ -1142,12 +1135,6 @@ impl Widget for ShellOverlayHost {
         }
         if self.agent_quick_composer.is_open() {
             out.push(&mut *self.agent_quick_composer);
-        }
-        if self.bar_popovers.workspace_menu.is_open() {
-            out.push(&mut self.bar_popovers.workspace_menu);
-        }
-        if self.bar_popovers.profile.is_open() {
-            out.push(&mut self.bar_popovers.profile);
         }
         out.extend(self.agent_markers.children_mut());
         if self.person_quick_composer.is_open() {
@@ -1176,7 +1163,6 @@ impl Widget for ShellOverlayHost {
                 .app_sheet
                 .as_mut()
                 .is_some_and(|sheet| sheet.dialog_mut().take_focus_reset())
-            | self.bar_popovers.profile.take_focus_reset()
             | self.pairing.take_focus_reset()
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
@@ -1265,8 +1251,7 @@ impl Widget for ShellOverlayHost {
             | self.layers.overview.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
-            | self.bar_popovers.structure_stale()
-            | self.bar_popovers.profile.take_structure_dirty()
+            | self.take_topbar_structure_dirty()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1691,7 +1676,7 @@ impl ShellOverlayHost {
         if self.route_capture_mirror_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
-        if self.route_bar_popover_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+        if self.route_topbar_modal_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if self.agent_quick_composer.is_open()

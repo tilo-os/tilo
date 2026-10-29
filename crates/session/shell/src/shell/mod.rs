@@ -72,7 +72,6 @@ pub mod directory_sheet;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 pub(crate) mod disk_sync_guard;
-pub mod display_bars;
 pub mod display_confirm;
 pub(crate) mod display_control;
 pub mod display_identify;
@@ -1080,19 +1079,21 @@ pub(crate) const WORK_AREA: tilo_desktop::composition::WorkArea =
         bottom: ui::tokens::Spacing::BASE.s3,
     };
 
-/// The native chrome the shared desktop surface is built with: the session's
-/// top bar and wallpaper, the collaboration launchpad for an empty
-/// workspace, and the strip's leading edge gutter.
+/// The native chrome the shared desktop surface is built with: the room of
+/// the session's top bar (the bar itself is an app the overlay host draws
+/// over the desktop), the wallpaper, the collaboration launchpad for an
+/// empty workspace, and the strip's leading edge gutter.
 pub(crate) fn workspace_surface_chrome(
     desktop: &state::DesktopTree,
     chrome: &chrome_state::Chrome,
 ) -> tilo_desktop::composition::SurfaceChrome {
-    let local = chrome
-        .borrow()
-        .explicit_local_user()
-        .map_or_else(crate::shell::state::local_user_id, str::to_owned);
-    let topbar = topbar_chrome::TopBarChrome::from_tree_with_local_user(desktop, local)
-        .with_chrome(topbar_chrome::native_source(chrome.clone()));
+    // The bar's room follows what the bar does: none under a fullscreen
+    // window over the primary display, none while it shows over the windows.
+    let standing = chrome.clone();
+    let topbar = tilo_desktop::topbar::BarSpace::new(std::rc::Rc::new(move || {
+        let state = standing.borrow();
+        (state.fullscreen_covers_primary(), state.top_bar_presence())
+    }));
     // Full-screen layer under the translucent top bar, so the bar picks up
     // the gradient tint behind it.
     let backdrop: Box<dyn Widget> = desktop.active_workspace().map_or_else(
@@ -1125,8 +1126,8 @@ pub(crate) fn workspace_surface_chrome(
         empty_workspace: Some(Box::new(
             tilo_desktop::launchpad::CollaborationLaunchpad::new(),
         )),
-        // Compact top bars of the displays other than the primary.
-        display_chrome: Some(Box::new(display_bars::DisplayBars::new(chrome.clone()))),
+        // The compact bars of the other displays are the top bar app's too.
+        display_chrome: None,
         // Wallpaper before the first window, panning with the strip; the
         // overlay host keeps it at this value every layout.
         leading_inset: overlay_host::STRIP_EDGE_GUTTER_PX,

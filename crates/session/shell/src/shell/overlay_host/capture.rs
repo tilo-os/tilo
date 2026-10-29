@@ -163,7 +163,7 @@ impl ShellOverlayHost {
             || self.capture_studio.send_menu_open()
             || self.agent_quick_composer.modal_capture().is_some()
             || self.person_quick_composer.modal_capture().is_some()
-            || self.bar_popovers.any_open()
+            || self.topbar_shown().modal
     }
 
     /// How many marks the open screenshot editor holds, if it is open.

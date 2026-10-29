@@ -40,7 +40,9 @@ impl ShellOverlayHost {
                 follow: self.follow_banner.is_moving(now),
                 projection: self.projection_overlay.needs_animation_frame(now)
                     || self.display_identify.needs_frame(now),
-                content: self.content.needs_animation_frame(),
+                // The top bar was the desktop's own content until it became
+                // an app the shell hosts; its frames still count as such.
+                content: self.content.needs_animation_frame() || self.topbar_needs_frame(),
                 strip_switcher: self.strip_navigator.labels_need_animation_frame(now),
                 strip_indicators: self.strip_navigator.indicators_need_animation_frame(now),
                 capture_mirror: self
@@ -187,7 +189,7 @@ impl ShellOverlayHost {
             // accessor; `&mut self` makes the access exclusive.
             unsafe { (&mut *row).set_drawn_apart(true) };
         }
-        let topbar_bounds = self.draw_workspace_sections(
+        let content_bounds = self.draw_workspace_sections(
             backdrop,
             topbar,
             workspace,
@@ -289,6 +291,16 @@ impl ShellOverlayHost {
         self.prepare_strip_indicators(Instant::now());
         self.prepare_control_hints(Instant::now());
         self.sync_top_bar_presence(Instant::now());
+        // The top bar app over the windows, with the presence just settled:
+        // its bars on every display and the menu or card one opened.
+        let topbar_bounds = self.draw_topbar(
+            topbar,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            content_bounds,
+        );
         let quick_settings_transition_visible = self.qs_motion.is_visible(ui::time::now());
         phase_at = scene_phase("scene/sections/overlays", phase_at);
         // The panel, the ribbon and the rail are each a damage part of the
@@ -468,15 +480,6 @@ impl ShellOverlayHost {
             );
             None
         });
-        overlay_part(
-            above_quick_settings,
-            "shell.bar-popovers",
-            desktop,
-            |scene| {
-                self.draw_bar_popovers(scene, transform, text_renderer, theme, presence);
-                None
-            },
-        );
         overlay_part(
             above_quick_settings,
             "shell.control-hints",
@@ -748,7 +751,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 23] {
+    ) -> [(&'static str, Option<Instant>); 24] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -771,6 +774,7 @@ impl ShellOverlayHost {
             ),
             ("people", self.people_wake_deadline()),
             ("content", self.content.next_wake_deadline()),
+            ("topbar", self.topbar_deadline()),
             ("strip-switcher", self.strip_switcher_wake_deadline(now)),
             (
                 "notification",

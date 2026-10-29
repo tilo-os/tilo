@@ -133,6 +133,11 @@ impl ShellOverlayHost {
                 }
             }
         }
+        // The top bar stands over the desktop's own content: the pointer on
+        // a bar, and the keys while it holds the keyboard, are the bar's.
+        if self.route_topbar_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+            return;
+        }
         if let Some(&content_child) = children.first() {
             self.content
                 .handle_event(event, &mut ctx.reborrow(ctx.path, content_child));
@@ -144,8 +149,6 @@ impl ShellOverlayHost {
             // open the menu in the same dispatch so it is on screen — and
             // in the accessibility tree — by the time this event returns.
             self.harvest_pending_tab_context_menus();
-            // So is a popover the bar asked for.
-            self.harvest_bar_popover_request();
             // `/` the app did not type opens search of that app, as Ctrl+K
             // does. A focused field or terminal takes `/` as text.
             if !*ctx.handled

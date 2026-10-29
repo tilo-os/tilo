@@ -57,8 +57,6 @@ mod color_management_surface_override;
 mod command_line_usage;
 #[path = "compositor_test.rs"]
 mod compositor_test;
-#[path = "continuity_suggestion_flow.rs"]
-mod continuity_suggestion_flow;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
 #[path = "cpu_raster_parity.rs"]

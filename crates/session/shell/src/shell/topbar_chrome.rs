@@ -1,45 +1,19 @@
-//! The native host for the shared top bar.
-//!
-//! [`tilo_desktop::topbar::TopBarChrome`] draws the bar; this module answers
-//! it from the compositor's chrome state — status, clock, overlays, the
-//! Clocks app's live activity — and carries out what it asks for.
+//! What the shell knows that the top bar shows, worked out from the
+//! compositor's chrome state: the person's own name and colour, the status,
+//! the time, the Clocks app's live activity and the running applications'
+//! tray items. The bar itself is an app the overlay host mounts and feeds
+//! (`overlay_host::topbar_host`).
 use crate::shell::chrome_state;
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tilo_desktop::chrome::{
-    ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent,
-    ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, OwnChip, SystemStatus, VolumeState,
+    ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, ClockSnapshot,
+    LinkKind, LinkStatus, MediaKind, SystemStatus, VolumeState,
 };
 pub use tilo_desktop::topbar::*;
-use vello::kurbo::Rect;
 
 /// How often the Clocks app's live activity is taken in. The bar asks for a
 /// snapshot many times a frame; the activity changes at most once a second.
 const CLOCK_ACTIVITY_REFRESH: Duration = Duration::from_millis(250);
-
-/// The bar's chrome source for the compositor's `chrome`.
-pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
-    // Owned fixtures paint at an owned clock value. Reading wall time here
-    // would change an otherwise identical scene at a minute boundary.
-    let fixture_clock = chrome.borrow().hosted_inputs.fixture_clock();
-    Rc::new(NativeChrome {
-        chrome,
-        clock: RefCell::new(ClockPoll::default()),
-        fixture_clock,
-        pill: Cell::new(Rect::ZERO),
-        people: RefCell::new(None),
-    })
-}
-
-/// This person's own chip, as the bar shows it, worked out once per chrome
-/// revision.
-#[derive(Clone)]
-struct People {
-    key: (u64, u64),
-    own: OwnChip,
-}
 
 /// The name this person goes by here, numbered like anyone else's when
 /// someone in the room shares it; never "You", never their key.
@@ -76,17 +50,19 @@ pub(crate) fn own_rgb(state: &chrome_state::ChromeState) -> (u8, u8, u8) {
     ui::presence::identity_rgb(hue)
 }
 
+/// When the Clocks app's live activity was last taken in, and the timer
+/// whose end was last announced.
 #[derive(Default)]
-struct ClockPoll {
+pub(crate) struct ClockPoll {
     checked: Option<Instant>,
     notified_id: Option<String>,
 }
 
 /// The app whose live activity the bar shows as its clock.
-const CLOCKS_APP: &str = "so.tilo.clocks";
+pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 
 /// Hand a control pressed on the floating clock to Clocks, over its channel.
-fn publish_clock_command(command: &str, activity_id: Option<&str>) {
+pub(crate) fn publish_clock_command(command: &str, activity_id: Option<&str>) {
     crate::shell::live_activities::board().press(
         CLOCKS_APP,
         serde_json::json!({
@@ -98,7 +74,7 @@ fn publish_clock_command(command: &str, activity_id: Option<&str>) {
 
 /// Take the live activity Clocks shows — its running timer or stopwatch —
 /// into chrome, and announce a newly due timer once.
-fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut ClockPoll) {
+pub(crate) fn refresh_clock_activity(state: &mut chrome_state::ChromeState, poll: &mut ClockPoll) {
     let now = Instant::now();
     if poll
         .checked
@@ -154,7 +130,7 @@ pub(crate) fn clock_snapshot() -> ClockSnapshot {
     snapshot
 }
 
-fn system_status(status: &tilo_quick_settings::SystemStatus) -> SystemStatus {
+pub(crate) fn system_status(status: &tilo_quick_settings::SystemStatus) -> SystemStatus {
     SystemStatus {
         battery_percent: status.battery_percent(),
         battery_charging: status.battery_is_charging(),
@@ -189,372 +165,49 @@ fn system_status(status: &tilo_quick_settings::SystemStatus) -> SystemStatus {
     }
 }
 
-struct NativeChrome {
-    chrome: chrome_state::Chrome,
-    clock: RefCell<ClockPoll>,
-    fixture_clock: Option<ClockSnapshot>,
-    /// Where this bar last drew its workspace name: its menu opens there.
-    pill: Cell<Rect>,
-    people: RefCell<Option<People>>,
+/// A click on a running application's tray item, as its host takes it.
+pub(crate) fn tray_request(request: AppTrayRequest) -> tilo_tray_host::TrayRequest {
+    match request {
+        AppTrayRequest::Activate { x, y } => tilo_tray_host::TrayRequest::Activate { x, y },
+        AppTrayRequest::SecondaryActivate { x, y } => {
+            tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
+        }
+        AppTrayRequest::ContextMenu { x, y } => tilo_tray_host::TrayRequest::ContextMenu { x, y },
+    }
 }
 
-impl NativeChrome {
-    fn people(&self, state: &chrome_state::ChromeState) -> People {
-        let key = (state.revision, ui::local_identity::generation());
-        if let Some(people) = self.people.borrow().as_ref().filter(|p| p.key == key) {
-            return people.clone();
-        }
-        let people = People {
-            key,
-            own: OwnChip {
-                name: own_shown_name(state),
-                rgb: own_rgb(state),
-                identity: String::new(),
+/// The running applications' tray items, as the bar shows them.
+pub(crate) fn app_tray_items() -> Vec<AppTrayItem> {
+    crate::tray::global()
+        .snapshot()
+        .into_iter()
+        .map(|item| AppTrayItem {
+            key: item.key,
+            id: item.id.clone(),
+            owner_app: item.address.owner_app.clone(),
+            title: if item.title.trim().is_empty() {
+                item.id
+            } else {
+                item.title
             },
-        };
-        *self.people.borrow_mut() = Some(people.clone());
-        people
-    }
-}
-
-impl DesktopChromeSource for NativeChrome {
-    fn tree(&self) -> tilo_desktop_model::DesktopTree {
-        self.chrome.borrow().tree().desktop.clone()
-    }
-
-    fn snapshot(&self) -> DesktopChromeSnapshot {
-        let mut state = self.chrome.borrow_mut();
-        refresh_clock_activity(&mut state, &mut self.clock.borrow_mut());
-        let people = self.people(&state);
-        DesktopChromeSnapshot {
-            revision: state.revision,
-            status: system_status(&state.quick_settings.status),
-            clock: self.fixture_clock.clone().unwrap_or_else(clock_snapshot),
-            overlays: ChromeOverlays {
-                overview: state.overlays.overview,
-                ws_settings: state.overlays.ws_settings,
-                clock: state.overlays.clock,
+            status: match item.status {
+                tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
+                tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
+                tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
             },
-            // A fullscreen owns its display: over the primary one, the full
-            // bar steps aside. User maximize still fills the workspace but
-            // keeps the bar.
-            fullscreen: state.fullscreen_covers_primary(),
-            notification_badge: state.notification_badge_total(),
-            notifications_quiet: state.quiet_status_now().is_some(),
-            // The status cluster opens quick settings here.
-            notifications_only: false,
-            activity_glance: state.activity_glance.clone(),
-            viewport_size: state.viewport_size(),
-            clock_activity: state.clock_activity.as_ref().map(|activity| ClockActivity {
-                activity_id: activity.activity_id.clone(),
-                label: activity.label.clone(),
-                remaining_secs: activity.remaining_secs,
-                stopwatch: activity.stopwatch,
-                paused: activity.paused,
-                overlay: activity.overlay,
-            }),
-            active_exposures: state.active_exposures().to_vec(),
-            // Native presence has no spectator role yet.
-            watching: 0,
-            top_bar: state.top_bar_presence(),
-            own: Some(people.own),
-            invite: tilo_desktop::chrome::Invite::when(
-                crate::shell::invite_policy::may_invite_here(&state),
-            ),
-            waved: state.wave_notice.clone(),
-            arrived: state.arrival_notice.clone(),
-        }
-    }
-
-    fn intent(&self, intent: ChromeIntent) -> bool {
-        let mut state = self.chrome.borrow_mut();
-        match intent {
-            ChromeIntent::SwitchWorkspace(dir) => return state.switch_workspace(dir),
-            ChromeIntent::ToggleOverview => state.overlays.overview = !state.overlays.overview,
-            ChromeIntent::ToggleQuickSettings => {
-                state.toggle_quick_settings();
-                return true;
-            }
-            ChromeIntent::ShowQuickSettings => {
-                state.open_quick_settings();
-                return true;
-            }
-            ChromeIntent::ToggleCollaborators => {
-                state.overlays.collaborators = !state.overlays.collaborators;
-                if state.overlays.collaborators {
-                    state.overlays.room_activity = false;
-                }
-            }
-            // The same invite flow the people panel's button starts.
-            ChromeIntent::Invite => {
-                state.push_peer_sync_request(
-                    crate::shell::overlay_host::PeerSyncAction::PromptInvite,
-                );
-                state.overlays.collaborators = false;
-            }
-            // The overlay host opens the list at them on its next update.
-            ChromeIntent::ShowPerson(id) => {
-                state.push_presence_request(chrome_state::PresenceRequest::Show(id));
-            }
-            ChromeIntent::ShowActivity(focus) => {
-                let focus = focus.or_else(|| state.activity_glance.focus.clone());
-                state.open_room_activity(focus);
-                return true;
-            }
-            ChromeIntent::HideClock => state.overlays.clock = false,
-            // The overlay host opens the strip switcher's card on its next
-            // update, as Super+S does, with the focused strip chosen.
-            ChromeIntent::ShowStrips => state.request_strip_switcher(),
-            ChromeIntent::ClockCommand {
-                command,
-                activity_id,
-            } => {
-                drop(state);
-                publish_clock_command(&command, activity_id.as_deref());
-                return true;
-            }
-            ChromeIntent::AcceptContinuity => {
-                return state.accept_continuity_suggestion(Instant::now()).is_some();
-            }
-            ChromeIntent::DismissContinuity => {
-                return state
-                    .dismiss_continuity_suggestion(Instant::now())
-                    .is_some();
-            }
-            ChromeIntent::AppTray { key, request } => {
-                drop(state);
-                let request = match request {
-                    AppTrayRequest::Activate { x, y } => {
-                        tilo_tray_host::TrayRequest::Activate { x, y }
-                    }
-                    AppTrayRequest::SecondaryActivate { x, y } => {
-                        tilo_tray_host::TrayRequest::SecondaryActivate { x, y }
-                    }
-                    AppTrayRequest::ContextMenu { x, y } => {
-                        tilo_tray_host::TrayRequest::ContextMenu { x, y }
-                    }
-                };
-                if let Err(error) = crate::tray::global().request(&key, request) {
-                    tracing::debug!(target: "shell::tray", %key, %error, "tray click not delivered");
-                    return false;
-                }
-                return true;
-            }
-            ChromeIntent::RenameWorkspace { name } => {
-                if !state.may_rename_active_workspace() {
-                    return false;
-                }
-                state.rename_active_workspace(&name);
-                return true;
-            }
-            // The overlay host shows both popovers; it takes the request
-            // in the same dispatch.
-            ChromeIntent::ToggleWorkspaceMenu => {
-                state.bar_popover_request = Some(chrome_state::BarPopoverRequest::WorkspaceMenu {
-                    anchor: self.pill.get(),
-                });
-            }
-            ChromeIntent::ToggleProfile => {
-                state.bar_popover_request = Some(chrome_state::BarPopoverRequest::Profile);
-            }
-            // The native bar carries no Tilo mark (its About is in Settings),
-            // and the device keeps who its person is, so nothing is asked
-            // from the avatar here.
-            ChromeIntent::ToggleTiloMenu
-            | ChromeIntent::OpenAvatarAsk
-            | ChromeIntent::CollapseAvatarAsk
-            | ChromeIntent::AnswerAvatarAsk
-            | ChromeIntent::PutOffAvatarAsk => return false,
-        }
-        state.bump();
-        true
-    }
-
-    fn settings_anchor(&self, rect: Rect) {
-        self.pill.set(rect);
-        self.chrome.borrow_mut().workspace_settings_anchor = rect;
-    }
-
-    fn continuity_offer(&self) -> Option<String> {
-        let suggestion = self.chrome.borrow().continuity_suggestion(Instant::now())?;
-        Some(crate::shell::continuity_suggestion::continue_label(
-            &suggestion,
-        ))
-    }
-
-    fn app_tray_revision(&self) -> u64 {
-        crate::tray::global().revision()
-    }
-
-    fn app_notification_badge(&self, app_id: &str) -> u32 {
-        self.chrome.borrow().notification_badge_for(app_id)
-    }
-
-    fn app_tray(&self) -> Vec<AppTrayItem> {
-        crate::tray::global()
-            .snapshot()
-            .into_iter()
-            .map(|item| AppTrayItem {
-                key: item.key,
-                id: item.id.clone(),
-                owner_app: item.address.owner_app.clone(),
-                title: if item.title.trim().is_empty() {
-                    item.id
-                } else {
-                    item.title
+            icon: match item.icon {
+                tilo_tray_host::TrayIcon::Pixels {
+                    width,
+                    height,
+                    rgba,
+                } => AppTrayIcon::Pixels {
+                    width,
+                    height,
+                    rgba,
                 },
-                status: match item.status {
-                    tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
-                    tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
-                    tilo_tray_host::ItemStatus::NeedsAttention => AppTrayStatus::NeedsAttention,
-                },
-                icon: match item.icon {
-                    tilo_tray_host::TrayIcon::Pixels {
-                        width,
-                        height,
-                        rgba,
-                    } => AppTrayIcon::Pixels {
-                        width,
-                        height,
-                        rgba,
-                    },
-                    tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
-                },
-                item_is_menu: item.item_is_menu,
-            })
-            .collect()
-    }
-}
-
-#[cfg(test)]
-mod native_source_tests {
-    use super::*;
-    use crate::shell::state::WorkspaceTree;
-
-    #[test]
-    fn fixture_clock_is_owned_without_freezing_the_live_source() {
-        let parent = tempfile::tempdir().unwrap();
-        let inputs =
-            crate::shell::hosted_inputs::HostedTileInputs::fixture_in(parent.path()).unwrap();
-        let chrome = chrome_state::ChromeState::new_with_fixture_handle(
-            WorkspaceTree::bootstrap_default().shared(),
-            inputs,
-        );
-        let source = native_source(chrome);
-        assert_eq!(source.snapshot().clock, ClockSnapshot::default());
-
-        let live = native_source(chrome_state::ChromeState::new(
-            WorkspaceTree::bootstrap_default(),
-        ));
-        assert!(live.snapshot().clock.unix_seconds > 0);
-    }
-
-    #[test]
-    fn native_source_uses_each_fixtures_explicit_clock_on_repeated_frames() {
-        let parent = tempfile::tempdir().unwrap();
-        for (unix_seconds, display) in [(1_700_000_000, "09:41"), (1_700_000_060, "09:42")] {
-            let clock = ClockSnapshot {
-                unix_seconds,
-                clock: display.into(),
-                weekday: "Tuesday".into(),
-                date: "14 November".into(),
-            };
-            let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(parent.path())
-                .unwrap()
-                .with_fixture_clock(clock.clone())
-                .unwrap();
-            let chrome = chrome_state::ChromeState::new_with_fixture_handle(
-                WorkspaceTree::bootstrap_default().shared(),
-                inputs,
-            );
-            let source = native_source(chrome);
-            for _ in 0..3 {
-                assert_eq!(source.snapshot().clock, clock);
-            }
-        }
-        assert!(
-            crate::shell::hosted_inputs::HostedTileInputs::default()
-                .with_fixture_clock(ClockSnapshot::default())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn intents_take_the_compositors_own_mutation_paths() {
-        let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let source = native_source(chrome.clone());
-        assert!(source.intent(ChromeIntent::ToggleOverview));
-        assert!(chrome.borrow().overlays.overview);
-        assert!(source.intent(ChromeIntent::ShowQuickSettings));
-        assert!(chrome.borrow().overlays.quick_settings);
-        assert!(source.intent(ChromeIntent::ToggleCollaborators));
-        assert!(chrome.borrow().overlays.collaborators);
-        assert!(!chrome.borrow().overlays.room_activity);
-        source.settings_anchor(Rect::new(1.0, 2.0, 30.0, 40.0));
-        assert_eq!(
-            chrome.borrow().workspace_settings_anchor,
-            Rect::new(1.0, 2.0, 30.0, 40.0)
-        );
-    }
-
-    /// A click on the strip's name in the top bar asks for the strip
-    /// switcher, not the overview.
-    #[test]
-    fn the_strip_name_asks_for_the_strip_switcher() {
-        let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let source = native_source(chrome.clone());
-        assert!(source.intent(ChromeIntent::ShowStrips));
-        assert!(!chrome.borrow().overlays.overview, "not the overview");
-        assert!(chrome.borrow_mut().take_strip_switcher_request());
-        assert!(
-            !chrome.borrow_mut().take_strip_switcher_request(),
-            "one request, taken once"
-        );
-    }
-
-    #[test]
-    fn the_snapshot_reports_what_chrome_holds() {
-        let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let source = native_source(chrome.clone());
-        let snapshot = source.snapshot();
-        assert_eq!(
-            snapshot.status.battery_percent,
-            chrome.borrow().quick_settings.status.battery_percent()
-        );
-        assert_eq!(source.tree().active, chrome.borrow().tree().desktop.active);
-    }
-
-    #[test]
-    fn the_floating_clock_is_clocks_live_activity_and_its_controls_go_back() {
-        let board = crate::shell::live_activities::board();
-        let chrome = chrome_state::ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let source = native_source(chrome.clone());
-        board.show(
-            CLOCKS_APP,
-            Some(serde_json::json!({
-                "active": true,
-                "activity_id": "timer-1",
-                "label": "Tea",
-                "remaining_secs": 90,
-                "stopwatch": false,
-                "overlay": true,
-            })),
-        );
-        let shown = source
-            .snapshot()
-            .clock_activity
-            .expect("the timer is shown");
-        assert_eq!(shown.label, "Tea");
-        assert_eq!(shown.remaining_secs, 90);
-        assert!(source.snapshot().overlays.clock, "it floats");
-
-        assert!(source.intent(ChromeIntent::ClockCommand {
-            command: "toggle".into(),
-            activity_id: Some("timer-1".into()),
-        }));
-        board.show(CLOCKS_APP, None);
-        let source = native_source(chrome.clone());
-        assert!(source.snapshot().clock_activity.is_none(), "it ended");
-        assert!(!chrome.borrow().overlays.clock);
-    }
+                tilo_tray_host::TrayIcon::Letter(letter) => AppTrayIcon::Letter(letter),
+            },
+            item_is_menu: item.item_is_menu,
+        })
+        .collect()
 }

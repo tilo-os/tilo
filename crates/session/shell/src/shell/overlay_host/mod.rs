@@ -23,6 +23,7 @@ mod control_hints;
 mod cursor_chat;
 mod feedback_pick;
 mod feedback_point;
+mod topbar_host;
 pub(crate) use cursor_chat::ChatOut;
 mod arrival;
 mod person_markers;
@@ -988,8 +989,9 @@ pub struct ShellOverlayHost {
     tracker: Option<std::sync::Arc<crate::shell::broker_services::NativeTrackerRuns>>,
     agent_quick_composer: Box<crate::shell::agent_quick_composer::AgentQuickComposer>,
     agent_quick_composer_node: Option<NodeId>,
-    /// The workspace menu and the profile card the top bar opens.
-    bar_popovers: Box<bar_popovers::BarPopovers>,
+    /// The top bar, an app hosted over the desktop: its bars on every
+    /// display and the menus they open.
+    topbar: Box<topbar_host::TopBarHost>,
     /// The ask-agent chord's progress and the apps that answer it.
     selection_requests: crate::shell::selection_agent::SelectionRequests,
     /// Controls a development session's test control asked to activate in

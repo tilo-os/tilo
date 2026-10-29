@@ -589,7 +589,7 @@ impl ShellOverlayHost {
             tracker: None,
             agent_quick_composer: Box::default(),
             agent_quick_composer_node: None,
-            bar_popovers: Box::default(),
+            topbar: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             test_activations: Vec::new(),
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),

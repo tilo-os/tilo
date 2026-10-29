@@ -6,7 +6,7 @@
 use super::*;
 
 /// Look up a widget's rect by its *last* path segment
-/// (`.../TopBarChrome[0]` → `TopBarChrome`) — registry keys are full
+/// (`.../TopBarSpace[0]` → `TopBarSpace`) — registry keys are full
 /// paths, so an exact-key lookup on a nested widget would miss. The
 /// widgets asserted on here are unique in the rendered tree, so the
 /// first match is deterministic.
@@ -155,7 +155,7 @@ fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
         };
 
         let before = fb.widget_registry();
-        let topbar_before = rect_named(&before, "TopBarChrome");
+        let topbar_before = rect_named(&before, "TopBarSpace");
         let row_before = rect_named(&before, "GroupRow");
         assert!(
             topbar_before.height() > 10.0,
@@ -169,7 +169,7 @@ fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
         assert!(fb.chrome().is_fullscreen());
 
         let during = fb.widget_registry();
-        let topbar_fs = rect_named(&during, "TopBarChrome");
+        let topbar_fs = rect_named(&during, "TopBarSpace");
         let row_fs = rect_named(&during, "GroupRow");
         assert!(
             topbar_fs.height() <= 0.5,
@@ -196,7 +196,7 @@ fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
         assert!(!fb.chrome().is_fullscreen());
 
         let after = fb.widget_registry();
-        let topbar_after = rect_named(&after, "TopBarChrome");
+        let topbar_after = rect_named(&after, "TopBarSpace");
         let row_after = rect_named(&after, "GroupRow");
         assert!(
             (topbar_after.height() - topbar_before.height()).abs() < 0.5,
@@ -227,7 +227,7 @@ fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
 
         let during = fb.widget_registry();
         let row_during = rect_named(&during, "GroupRow");
-        let topbar_during = rect_named(&during, "TopBarChrome");
+        let topbar_during = rect_named(&during, "TopBarSpace");
         assert!(
             row_during.width() > 0.0 && row_during.height() > 0.0,
             "an unknown fullscreen id must not collapse the shell; got {row_during:?}",
@@ -252,13 +252,13 @@ fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
         fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
         let _ = fb.paint_settled();
         assert!(
-            rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
+            rect_named(&fb.widget_registry(), "TopBarSpace").height() > 10.0,
             "Expand keeps the top bar"
         );
         fb.with_chrome(|chrome| chrome.set_maximized_group(None));
         let _ = fb.paint_settled();
         assert!(
-            rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
+            rect_named(&fb.widget_registry(), "TopBarSpace").height() > 10.0,
             "restoring keeps the top bar"
         );
     }
@@ -288,7 +288,7 @@ fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
             fb.viewport().0,
         );
         assert!(
-            rect_named(&during, "TopBarChrome").height() <= 0.5,
+            rect_named(&during, "TopBarSpace").height() <= 0.5,
             "Super+F hides the top bar"
         );
         assert!(fb.host_mut().toggle_focused_group_fullscreen());

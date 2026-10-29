@@ -114,16 +114,6 @@ mod pending_requests;
 use pending_requests::RecordRequest;
 pub use pending_requests::{PendingPrompt, PromptRequest};
 
-/// A popover the top bar opens, asked for by the bar that was pressed.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum BarPopoverRequest {
-    /// Open or close the workspace menu under `anchor`, the workspace name
-    /// on the bar that asked.
-    WorkspaceMenu { anchor: vello::kurbo::Rect },
-    /// Open or close the profile card under the person's own avatar.
-    Profile,
-}
-
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(
@@ -411,9 +401,6 @@ pub struct ChromeState {
     /// top bar without bumping revision so the workspace lens can animate
     /// from the exact context that opened it.
     pub workspace_settings_anchor: vello::kurbo::Rect,
-    /// The popover a top bar asked for and the overlay host has not opened
-    /// (or closed) yet: the workspace menu or the profile card.
-    pub bar_popover_request: Option<BarPopoverRequest>,
     /// The Permissions tab's in-progress grant. Lives here (not the
     /// overlay host) so it survives a re-render, and holds picker
     /// indices rather than a resolved capability so a subject leaving
@@ -795,7 +782,6 @@ impl ChromeState {
             pad_map: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
-            bar_popover_request: None,
             ws_grant_draft: tilo_desktop::workspace_settings::GrantDraft::default(),
             revision: 0,
             instance: next_chrome_instance(),

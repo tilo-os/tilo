@@ -45,6 +45,7 @@ mod clock;
 mod controls;
 mod people;
 mod sharing;
+mod space;
 mod strips;
 mod tray;
 mod wave_notice;
@@ -53,6 +54,7 @@ mod workspace;
 use clock::{clock_overlay_drag_region, time_bucket_secs, until_next_time_bucket};
 use controls::{FocusOrigin, TrayBell, navigates, paint_bar_selector};
 use sharing::{FaceLook, roster_colors};
+pub use space::BarSpace;
 pub use workspace::paint_tilo_mark;
 
 /// Where a layout stood the bar: in the column above the windows, or over
@@ -94,6 +96,44 @@ pub fn topbar_height(theme: &Theme) -> f32 {
         .line_height_px()
         * theme.text_scale;
     TOPBAR_HEIGHT_PX.max((line + 2.0 * ui::tokens::Spacing::BASE.s1).ceil())
+}
+
+/// How the bar stands in the desktop's column: out of it under a
+/// fullscreen window, over it while the person hides it, else across its
+/// top at [`topbar_height`].
+fn bar_style(fullscreen: bool, overlays: bool, theme: &Theme) -> Style {
+    Style {
+        display: if fullscreen {
+            Display::None
+        } else {
+            Display::Flex
+        },
+        position: if overlays {
+            taffy::style::Position::Absolute
+        } else {
+            taffy::style::Position::Relative
+        },
+        inset: if overlays {
+            taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::auto(),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            }
+        } else {
+            taffy::Rect::auto()
+        },
+        size: Size {
+            width: Dimension::percent(1.0),
+            height: if fullscreen {
+                Dimension::length(0.0)
+            } else {
+                Dimension::length(topbar_height(theme))
+            },
+        },
+        flex_shrink: 0.0,
+        ..Default::default()
+    }
 }
 
 /// Below this width the bar narrows its centre lane to the time alone,
@@ -1161,38 +1201,7 @@ impl Widget for TopBarChrome {
         // the windows take its strip, and showing it later moves nothing.
         let overlays = !fullscreen && self.presence().overlays();
         self.laid_out = BarStanding::of(overlays);
-        let style = Style {
-            display: if fullscreen {
-                Display::None
-            } else {
-                Display::Flex
-            },
-            position: if overlays {
-                taffy::style::Position::Absolute
-            } else {
-                taffy::style::Position::Relative
-            },
-            inset: if overlays {
-                taffy::Rect {
-                    left: taffy::LengthPercentageAuto::length(0.0),
-                    right: taffy::LengthPercentageAuto::auto(),
-                    top: taffy::LengthPercentageAuto::length(0.0),
-                    bottom: taffy::LengthPercentageAuto::auto(),
-                }
-            } else {
-                taffy::Rect::auto()
-            },
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: if fullscreen {
-                    Dimension::length(0.0)
-                } else {
-                    Dimension::length(topbar_height(theme))
-                },
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        };
+        let style = bar_style(fullscreen, overlays, theme);
         let node = match taffy.new_leaf(style) {
             Ok(node) => node,
             Err(err) => {

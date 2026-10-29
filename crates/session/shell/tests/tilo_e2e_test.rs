@@ -12,7 +12,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::chrome_state::{Chrome, ChromeState, SearchScope};
+use shell::shell::chrome_state::{ChromeState, SearchScope};
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::TopBarChrome;
 use shell::shell::{build_tilo_root, build_tilo_root_with_chrome, state::TileContent};
@@ -525,138 +525,56 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         assert_eq!(dropped.title, "main.ts");
     }
 
-    // Phase `workspace_name_click_asks_for_the_workspace_menu`.
-    // Clicking the top bar's workspace name must ask the host for the
-    // workspace menu, under the name, driven end-to-end: if dispatch is
-    // intercepted before `TopBarChrome` sees the click, nothing is asked.
-    {
-        use automerge::AutoCommit;
-        use taffy::NodeId;
-
-        let (mut bar, chrome, taffy, node, hit) = topbar_with_workspace_pill_hit();
-
-        // The widget tracks the cursor itself, because winit delivers MouseInput
-        // without a position.
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let modifiers = winit::event::Modifiers::default();
-
-        let cm = ui::synthetic_input::cursor_moved(hit.x, hit.y);
-        bar.handle_event(
-            &cm,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        let mi = ui::synthetic_input::mouse_press();
-        bar.handle_event(
-            &mi,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-
-        assert!(
-            handled,
-            "click on the workspace name should be handled by the top bar"
-        );
-        let asked = chrome.borrow_mut().bar_popover_request.take();
-        assert!(
-            matches!(
-                asked,
-                Some(shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu { anchor })
-                    if anchor.contains(hit)
-            ),
-            "the first click asks for the workspace menu under the name: {asked:?}"
-        );
-
-        let mut handled2 = false;
-        bar.handle_event(
-            &mi,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled2,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled2);
-        assert!(
-            chrome.borrow().bar_popover_request.is_some(),
-            "a second click asks again: the host toggles"
-        );
-    }
-
     // Phase `top_right_corner_click_opens_quick_settings`.
     // The painted tray remains inset, but the physical top-right screen corner
-    // is part of its interaction target so a fast edge throw opens Quick Settings.
+    // is part of its interaction target so a fast edge throw opens Quick
+    // Settings, through the whole root as a real click reaches the bar.
     {
         use automerge::AutoCommit;
         use taffy::NodeId;
+        use ui::presence::PresenceCtx;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+        use vello::Scene;
+        use vello::kurbo::{Affine, Point};
 
-        let (mut bar, chrome, taffy, node, _) = topbar_with_workspace_pill_hit();
+        let tree = WorkspaceTree::bootstrap_default();
+        let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let Layout {
+            taffy,
+            child_node: root_node,
+        } = lay_out_with_text(root.as_mut(), 1600.0, 900.0, &theme, &mut tr);
+        let mut scene = Scene::new();
+        root.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
         let mut state = AutoCommit::new();
-        let root = automerge::ROOT.clone();
         let mut focus: Option<NodeId> = None;
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-        bar.handle_event(
-            &ui::synthetic_input::cursor_moved(1599.0, 1.0),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
+        click_full_root(
+            &mut root,
+            &taffy,
+            root_node,
+            &mut state,
+            &automerge::ROOT,
+            &mut focus,
+            winit::event::Modifiers::default(),
+            Point::new(1599.0, 1.0),
         );
-        bar.handle_event(
-            &ui::synthetic_input::mouse_press(),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-
         assert!(
-            handled,
+            chrome.borrow().overlays.quick_settings,
             "the top-right corner must be an active tray target"
         );
-        assert!(chrome.borrow().overlays.quick_settings);
     }
 
     // Phase `full_root_click_toggles_the_workspace_menu`.
     // Drives the **full** `build_tilo_root` tree, where routing via
-    // `ShellOverlayHost::handle_event` once failed to reach `TopBarChrome`:
+    // `ShellOverlayHost::handle_event` once failed to reach the top bar:
     // a click on the workspace name opens the workspace menu, a second
     // one closes it.
     {
@@ -669,7 +587,12 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
                 .or_else(|| widget.children().into_iter().find_map(pill_hit))
         }
         fn menu_shown(widget: &dyn Widget) -> bool {
-            widget.name() == "WorkspaceMenu" || widget.children().into_iter().any(menu_shown)
+            widget
+                .as_any()
+                .and_then(|root| {
+                    root.downcast_ref::<shell::shell::overlay_host::ShellOverlayHost>()
+                })
+                .is_some_and(|host| host.workspace_menu_labels().is_some())
         }
         use automerge::AutoCommit;
         use taffy::NodeId;
@@ -694,7 +617,7 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             child_node: root_node,
         } = lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
 
-        // A draw pass is required so the inner TopBarChrome populates its
+        // A draw pass is required so the top bar app lays out its
         // workspace pill, which handle_event hit-tests against.
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
@@ -714,10 +637,6 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         assert!(
             menu_shown(root.as_ref()),
             "click on the workspace name via full root must open the workspace menu"
-        );
-        assert!(
-            chrome.borrow().bar_popover_request.is_none(),
-            "taken at once"
         );
 
         // The open menu takes the second press: it closes, and the name
@@ -785,76 +704,6 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
             "host must stop requesting animation frames once the crossfade settles"
         );
     }
-}
-
-/// Builds a `TopBarChrome` over a fresh bootstrap tree, lays it out at a
-/// fixed 1600x900 viewport and draws once so its workspace pill is placed,
-/// returning the pieces a caller needs to dispatch a synthetic click plus
-/// the pill's screen-space centre. Split out of the click phases to keep
-/// them under the line limit.
-fn topbar_with_workspace_pill_hit() -> (
-    TopBarChrome,
-    Chrome,
-    taffy::TaffyTree<()>,
-    taffy::NodeId,
-    vello::kurbo::Point,
-) {
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
-    use ui::theme::Theme;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Point};
-
-    let tree = WorkspaceTree::bootstrap_default();
-    let chrome = ChromeState::new(tree.clone());
-    assert!(
-        !chrome.borrow().overlays.overview,
-        "precondition: overview starts closed"
-    );
-
-    let mut bar = TopBarChrome::from_tree(&tree.desktop)
-        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
-
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-    let viewport = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(1600.0, 900.0),
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    taffy
-        .compute_layout_with_measure(
-            viewport,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("compute_layout");
-    bar.apply_layout(&taffy, node, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    let mut tr = TextRenderer::new();
-    let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-    let btn = bar.workspace_menu_rect();
-    assert!(
-        btn.area() > 0.0,
-        "draw should have placed the workspace pill"
-    );
-    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
-
-    (bar, chrome, taffy, node, hit)
 }
 
 /// One cursor-move + left-press at `hit`, mirroring how a real click event

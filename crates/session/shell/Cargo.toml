@@ -339,6 +339,8 @@ tilo-sheets = { path = "../sheets" }
 tilo-notification-banners = { path = "../notification-banners" }
 # The workspace overview, an app this process mounts.
 tilo-overview = { path = "../overview" }
+# The top bar, an app the shell hosts over the desktop.
+tilo-topbar = { path = "../topbar" }
 # The share session, encoders, viewer registry and counters of a window
 # shared with the workspace's other devices.
 tilo-window-share = { path = "../window-share" }

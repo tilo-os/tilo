@@ -141,6 +141,10 @@ pub struct Shown {
     pub clock: Rect,
     /// The open menu or card; zero when none is open.
     pub popover: Rect,
+    /// The workspace menu's rows as shown, while it is open.
+    pub workspace_menu: Option<Vec<Option<String>>>,
+    /// The profile card is open.
+    pub profile: bool,
     /// Something of the bar is open over the desktop and takes the next
     /// press, wherever it lands (a menu or card).
     pub modal: bool,

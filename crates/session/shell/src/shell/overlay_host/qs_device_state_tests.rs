@@ -289,9 +289,7 @@ fn wifi_tile_names_the_observed_link_not_a_stale_scan() {
 
 /// What the top bar draws from chrome, through its production source.
 fn bar_status(chrome: &crate::shell::chrome_state::Chrome) -> tilo_desktop::chrome::SystemStatus {
-    crate::shell::topbar_chrome::native_source(chrome.clone())
-        .snapshot()
-        .status
+    crate::shell::topbar_chrome::system_status(&chrome.borrow().quick_settings.status)
 }
 
 #[test]

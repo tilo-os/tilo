@@ -28,7 +28,7 @@ impl ShellOverlayHost {
         if !self.feedback_configured() || self.feedback_picker.is_open() {
             return;
         }
-        self.close_bar_popovers_for(None);
+        self.close_topbar_popovers();
         let windows = self.pick_windows();
         self.feedback_picker.open(windows, ui::time::now());
         self.bump_chrome();

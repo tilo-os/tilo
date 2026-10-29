@@ -15742,6 +15742,7 @@ dependencies = [
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-thumbnail",
+ "tilo-topbar",
  "tilo-tray-host",
  "tilo-tts",
  "tilo-ui",

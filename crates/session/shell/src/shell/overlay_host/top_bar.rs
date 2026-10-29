@@ -13,12 +13,8 @@ impl ShellOverlayHost {
         let display = self
             .primary_output()
             .map_or(self.rect, |output| output.rect());
-        let bar = self
-            .content
-            .as_any()?
-            .downcast_ref::<tilo_desktop::composition::DesktopSurface>()?
-            .topbar()?
-            .get_rect();
+        self.desktop_surface()?;
+        let bar = self.full_top_bar_rect();
         let bar = if bar.is_zero_area() {
             Rect::new(
                 display.x0,
@@ -63,15 +59,7 @@ impl ShellOverlayHost {
                 || state.overlays.clock
                 || state.editing_workspace_name.is_some()
         });
-        chrome_holds
-            || self
-                .content
-                .as_any()
-                .and_then(|content| {
-                    content.downcast_ref::<tilo_desktop::composition::DesktopSurface>()
-                })
-                .and_then(tilo_desktop::composition::DesktopSurface::topbar)
-                .is_some_and(crate::shell::topbar_chrome::TopBarChrome::holds_itself_shown)
+        chrome_holds || self.topbar_holds_shown()
     }
 
     /// Bring the bar's presence up to date at `now`: the person's choice,
@@ -81,16 +69,9 @@ impl ShellOverlayHost {
         // it on the display the window fills, so the window is all app (and
         // its client can be scanned out) until the bar is reached for.
         let chosen = self.desktop_controls.config().hide_top_bar;
+        // The bar itself leaves with the window and comes back with its
+        // restore (`feed_topbar`).
         let maximized = self.maximized_on_top_bar_display();
-        // The bar leaves with a window maximizing over it and comes back
-        // with its restore, moved by what moved the window.
-        let (motion, source) = (self.layout_theme.motion(), self.input_source);
-        if let Some(bar) = self
-            .desktop_surface_mut()
-            .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)
-        {
-            bar.move_with_window(!maximized, motion, source);
-        }
         self.top_bar_reveal.set_hide(chosen || maximized);
         self.top_bar_reveal.settle(now);
         let held_open = self.top_bar_held_open();
@@ -311,10 +292,12 @@ impl ShellOverlayHost {
         let shown = self.chrome.as_ref().is_some_and(|chrome| {
             chrome.borrow().top_bar_presence() == tilo_desktop::chrome::TopBarPresence::Shown
         });
-        shown
+        (shown
             && self
                 .top_bar_reveal_geometry()
-                .is_some_and(|(_, bar)| bar.contains(p))
+                .is_some_and(|(_, bar)| bar.contains(p)))
+            // What the bar opened floats over the windows wherever it is.
+            || self.topbar_floats_at(p)
     }
 
     /// Whether a notification banner has the pointer where it is.

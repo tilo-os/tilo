@@ -585,7 +585,7 @@ impl ShellOverlayHost {
 }
 
 /// Lay `app` out over `region`.
-fn place(app: &mut dyn AppWidget, region: Rect, theme: &Theme) {
+pub(super) fn place(app: &mut dyn AppWidget, region: Rect, theme: &Theme) {
     let mut taffy = ui::taffy::TaffyTree::<()>::new();
     let mut nodes = HashMap::new();
     let node = app.build_layout(&mut taffy, theme, &mut nodes);

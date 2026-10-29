@@ -3398,14 +3398,7 @@ impl ShellDriver {
         // The bar places what it opens under its own controls, which a
         // paint lays out first.
         let _ = self.paint();
-        self.with_chrome(|st| {
-            st.bar_popover_request = Some(
-                shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu {
-                    anchor: vello::kurbo::Rect::ZERO,
-                },
-            );
-            st.bump();
-        });
+        self.host_mut().toggle_workspace_menu();
         self.step_frames(20);
     }
 
@@ -3414,10 +3407,7 @@ impl ShellDriver {
         // The bar places what it opens under its own controls, which a
         // paint lays out first.
         let _ = self.paint();
-        self.with_chrome(|st| {
-            st.bar_popover_request = Some(shell::shell::chrome_state::BarPopoverRequest::Profile);
-            st.bump();
-        });
+        self.host_mut().toggle_profile_card();
         self.step_frames(20);
     }
 
@@ -3791,7 +3781,7 @@ impl ShellDriver {
     /// `"ws_settings_tab[general|members|permissions]"` — keys needing
     /// chrome-internal accessors no tree walk reaches), then falls back to
     /// the widget-tree registry keyed by `test_id` or path
-    /// (`ShellOverlayHost/TopBarChrome`).
+    /// (`ShellOverlayHost/EmbeddedApp/topbar`).
     ///
     /// # A client tile has two names, and only one is the one you guessed
     ///
@@ -4009,7 +3999,7 @@ mod tests {
         }
         // Phase `widget_registry_finds_topbar_buttons`.
         // `widget_registry` must enumerate the live widget tree after a
-        // paint, surfacing a `TopBarChrome` entry from the bootstrap default —
+        // paint, surfacing the top bar app's `topbar` from the bootstrap default —
         // pinned so a regression in `ShellOverlayHost::children()` fails here
         // rather than silently returning an empty registry.
         {
@@ -4028,8 +4018,8 @@ mod tests {
                 registry.keys().collect::<Vec<_>>()
             );
             assert!(
-                registry.keys().any(|k| k.contains("TopBarChrome")),
-                "registry should contain TopBarChrome; keys={:?}",
+                registry.contains_key("topbar"),
+                "registry should contain the top bar; keys={:?}",
                 registry.keys().collect::<Vec<_>>()
             );
         }

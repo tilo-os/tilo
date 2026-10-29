@@ -18,13 +18,12 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use automerge::AutoCommit;
-use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
@@ -36,7 +35,6 @@ use shell::shell::hosted_inputs::HostedTileInputs;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::room_activity::RoomActivityPane;
 use shell::shell::state::WorkspaceTree;
-use shell::shell::topbar_chrome::TopBarChrome;
 use tilo_desktop::chrome::ClockSnapshot;
 
 use ui::presence::PresenceCtx;
@@ -260,7 +258,6 @@ fn e2e_open_close_overview() {
     // cards to paint without further appends.
     let tree = WorkspaceTree::bootstrap_demo();
 
-    let theme = Theme::dark();
     let mut offscreen = OffscreenRenderer::try_new(W_U32, H_U32)
         .expect("overview pixel oracle requires an offscreen adapter");
     let out_dir = screenshots_dir();
@@ -271,7 +268,7 @@ fn e2e_open_close_overview() {
     // The probe only computes the workspace name's centre; the click flows
     // through `ShellOverlayHost::handle_event` and opens the workspace
     // menu, whose Overview row opens the overview.
-    let hit = clock.step(|| workspace_pill_hit(&tree, &theme, h.chrome.clone()));
+    let hit = clock.step(|| workspace_pill_hit(&mut h));
     clock.step(|| h.click(hit.x, hit.y));
     clock.step(|| {
         let host = h
@@ -423,82 +420,21 @@ fn e2e_launch_failure_notifications_visual_review() {
     println!("launch-failure review PNGs: {}", out_dir.display());
 }
 
-/// Centre of the topbar's workspace name, from a sibling `TopBarChrome` —
-/// topbar geometry is width-driven, so its rect matches.
-fn workspace_pill_hit(
-    tree: &WorkspaceTree,
-    theme: &Theme,
-    chrome: shell::shell::chrome_state::Chrome,
-) -> Point {
-    let (_, centre) = probe_topbar(
-        tree,
-        theme,
-        chrome,
-        shell::shell::topbar_chrome::TopBarChrome::workspace_menu_rect,
-    );
-    centre
+/// Centre of the top bar's workspace name, where the live bar drew it.
+fn workspace_pill_hit(h: &mut Harness) -> Point {
+    host_of(h).top_bar_workspace_name_rect().center()
 }
 
-fn tray_pill_hit(
-    tree: &WorkspaceTree,
-    theme: &Theme,
-    chrome: shell::shell::chrome_state::Chrome,
-) -> Point {
-    let (_, centre) = probe_topbar(
-        tree,
-        theme,
-        chrome,
-        shell::shell::topbar_chrome::TopBarChrome::tray_pill_rect,
-    );
-    centre
+/// Centre of the top bar's status cluster, where the live bar drew it.
+fn tray_pill_hit(h: &mut Harness) -> Point {
+    host_of(h).top_bar_tray_rect().center()
 }
 
-/// Shared probe helper: lays out a sibling `TopBarChrome` at the shell's
-/// topbar origin/width and returns the `extract`-selected rect + its
-/// centre. Matching viewport width is what lines up the right-edge
-/// cluster (tray pill, avatar stack) with the live root.
-fn probe_topbar(
-    tree: &WorkspaceTree,
-    theme: &Theme,
-    chrome: shell::shell::chrome_state::Chrome,
-    extract: impl FnOnce(&TopBarChrome) -> vello::kurbo::Rect,
-) -> (vello::kurbo::Rect, Point) {
-    let mut bar = TopBarChrome::from_tree(&tree.desktop)
-        .with_chrome(shell::shell::topbar_chrome::native_source(chrome));
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = bar.build_layout(&mut taffy, theme, &mut map);
-    // The shell's Container + Column use `with_no_padding`, so the topbar is
-    // flush at y=0/x=0 and the probe matches at zero offset.
-    let topbar_offset = 0.0_f64;
-    let probe_w = W;
-    let vp = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(probe_w, H),
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    taffy
-        .compute_layout_with_measure(
-            vp,
-            Size {
-                width: AvailableSpace::Definite(probe_w),
-                height: AvailableSpace::Definite(H),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("compute_layout");
-    bar.apply_layout(&taffy, node, Point::new(topbar_offset, topbar_offset));
-    let mut scene = Scene::new();
-    let mut tr = TextRenderer::new();
-    let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    let r = extract(&bar);
-    let centre = Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1));
-    (r, centre)
+fn host_of(h: &mut Harness) -> &mut ShellOverlayHost {
+    h.root
+        .as_any_mut()
+        .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+        .expect("the root is the shell overlay host")
 }
 
 // Test 2: tab drag-to-reorder (Files -> after Browser)
@@ -1022,7 +958,6 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
         {
             let _guard = TEST_LOCK.lock_recover();
             let tree = WorkspaceTree::bootstrap_demo();
-            let theme = Theme::dark();
 
             let mut renderer_opt = OffscreenRenderer::try_new(W_U32, H_U32).ok();
             let out_dir = screenshots_dir();
@@ -1035,7 +970,7 @@ fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
                 &out_dir.join("e2e-06-quick-settings-pre.png"),
             );
 
-            let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
+            let hit = tray_pill_hit(&mut h);
             h.click(hit.x, hit.y);
             assert!(
                 h.chrome.borrow().overlays.quick_settings,
