@@ -735,7 +735,7 @@ impl XdgShellHandler for State {
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         match self.window_of_toplevel(&surface) {
             Some(window) => {
-                self.window_request(&window, &crate::policy::WindowRequest::Maximize(true), None)
+                self.window_request(&window, &crate::policy::WindowRequest::Maximize(true), None);
             }
             None => {
                 surface.send_configure();
