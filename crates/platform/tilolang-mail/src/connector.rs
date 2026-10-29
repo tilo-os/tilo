@@ -17,7 +17,7 @@ use mail::sync::{Want, Window};
 
 /// A mail account of the workspace's settings, as the connector shows it: never its servers or
 /// credentials.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AccountRef {
     /// The id the settings give it.
     pub id: String,
@@ -27,7 +27,7 @@ pub struct AccountRef {
 }
 
 /// A message as its server holds it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImapMessage {
     /// Its Message-ID, or an id derived from its content.
     pub key: String,
@@ -51,7 +51,7 @@ pub struct ImapMessage {
 }
 
 /// What a mailbox's server said changed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Changes {
     pub account: String,
     pub mailbox: String,
@@ -62,7 +62,7 @@ pub struct Changes {
 }
 
 /// A message to send.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Outgoing {
     pub to: String,
     pub cc: String,
@@ -78,7 +78,7 @@ pub struct Outgoing {
 pub type Request = EngineRequestId;
 
 /// What a server answered.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Event {
     Changes(Changes),
     /// What a search found, beside what is held.
@@ -185,7 +185,9 @@ pub type AccountSource = Box<dyn Fn() -> Vec<AccountConfig>>;
 pub struct EngineConnector {
     source: AccountSource,
     requests: Sender<EngineRequest>,
-    events: Receiver<EngineEvent>,
+    /// The engine's answers, when this connector is the one reading them; else whoever reads
+    /// them hands this connector its own ([`Self::engine_event`]).
+    events: Option<Receiver<EngineEvent>>,
     /// What is held of each account, by address: the engine's mailbox, which knows each
     /// message's place on the server.
     held: HashMap<String, Mailbox>,
@@ -208,7 +210,22 @@ impl EngineConnector {
         Self {
             source,
             requests,
-            events,
+            events: Some(events),
+            held: HashMap::new(),
+            keys: HashMap::new(),
+            pending: BTreeMap::new(),
+        }
+    }
+
+    /// The connector reading its accounts from `source` and sending its requests to an engine
+    /// whose answers someone else reads and hands it ([`Self::engine_event`]): one of several
+    /// sharing an engine.
+    #[must_use]
+    pub fn sharing(source: AccountSource, requests: Sender<EngineRequest>) -> Self {
+        Self {
+            source,
+            requests,
+            events: None,
             held: HashMap::new(),
             keys: HashMap::new(),
             pending: BTreeMap::new(),
@@ -357,7 +374,28 @@ impl MailConnector for EngineConnector {
 
     fn events(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
-        while let Ok(event) = self.events.try_recv() {
+        while let Some(event) = self.events.as_ref().and_then(|events| events.try_recv().ok()) {
+            self.engine_event(event, &mut out);
+        }
+        out
+    }
+}
+
+impl EngineConnector {
+    /// Whether the engine still works on a request of this connector's.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Whether the engine's request `request` is one this connector made and is waiting on.
+    #[must_use]
+    pub fn owns(&self, request: &Request) -> bool {
+        self.pending.contains_key(request)
+    }
+
+    /// Take in what the engine said, adding what it means to `out`.
+    pub fn engine_event(&mut self, event: EngineEvent, out: &mut Vec<Event>) {
             match event {
                 EngineEvent::Fetched {
                     account_id,
@@ -436,7 +474,7 @@ impl MailConnector for EngineConnector {
                 EngineEvent::Completed { request_id, kind } => {
                     // A write's completion with no error before it: the server took it.
                     let Some((_, account, to)) = self.pending.remove(&request_id) else {
-                        continue;
+                        return;
                     };
                     if matches!(
                         kind,
@@ -457,7 +495,5 @@ impl MailConnector for EngineConnector {
                 | EngineEvent::Sent { .. }
                 | EngineEvent::Authorized { .. } => {}
             }
-        }
-        out
     }
 }
