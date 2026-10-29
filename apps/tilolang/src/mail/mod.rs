@@ -43,9 +43,41 @@ pub fn live_origin(
         flag.store(true, Ordering::Release);
         wake();
     });
+    let reconnected = Arc::new(AtomicBool::new(false));
+    follow_the_network(Arc::clone(&reconnected), Arc::clone(&wake));
     let (requests, events) = mail::engine::spawn(content, wake);
-    Rc::new(RefCell::new(ImapOrigin::new(
-        Box::new(EngineConnector::new(accounts, requests, events)),
-        woken,
-    )))
+    Rc::new(RefCell::new(
+        ImapOrigin::new(
+            Box::new(EngineConnector::new(accounts, requests, events)),
+            woken,
+        )
+        .reconnecting_on(reconnected),
+    ))
+}
+
+/// Set `reconnected` and wake whenever the device comes online again: what could not reach
+/// its server then is tried again. An event of the platform's network status, never a timer.
+fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail::engine::Wake) {
+    let spawned = std::thread::Builder::new()
+        .name("mail-network".into())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
+                return;
+            };
+            runtime.block_on(async move {
+                let mut network = tilo_net::status::watch();
+                let mut online = network.last().online();
+                loop {
+                    let now = network.changed().await.online();
+                    if now && !online {
+                        reconnected.store(true, Ordering::Release);
+                        wake();
+                    }
+                    online = now;
+                }
+            });
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "mail does not follow the network: it retries only when asked");
+    }
 }

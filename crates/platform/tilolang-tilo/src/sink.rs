@@ -9,7 +9,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as Json;
-use tilolang_runtime::OutsideSink;
+use tilolang_runtime::{Delivery, OutsideSink};
 
 /// The directory the development sink writes under: `$XDG_STATE_HOME/tilolang-dev`, else
 /// `~/.local/state/tilolang-dev`.
@@ -52,16 +52,21 @@ impl LogSink {
 }
 
 impl OutsideSink for LogSink {
-    fn deliver(&mut self, capability: &str, payload: &Json) -> Result<(), String> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
+        let written = (|| -> std::io::Result<()> {
+            if let Some(dir) = self.path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            let line = serde_json::json!({"capability": capability, "payload": payload});
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            writeln!(file, "{line}")
+        })();
+        match written {
+            Ok(()) => Delivery::Delivered,
+            Err(error) => Delivery::Rejected(error.to_string()),
         }
-        let line = serde_json::json!({"capability": capability, "payload": payload});
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|error| error.to_string())?;
-        writeln!(file, "{line}").map_err(|error| error.to_string())
     }
 }

@@ -8,7 +8,7 @@
 //! Any other shell starts with `-l`.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Where a guest's shell finds its rc file.
 pub const GUEST_RC: &str = "/run/ush/shell.bash";
@@ -50,32 +50,6 @@ pub fn interactive_args(shell: &Path, rc: Option<&Path>) -> Vec<OsString> {
         }
         _ => vec!["-l".into()],
     }
-}
-
-/// The shell a guest hosts. The host's `$SHELL` is a hint: it is used when
-/// the images have it, else `/usr/bin/bash`, else `/usr/bin/sh`, so a session
-/// never fails to start over a preference.
-pub fn guest_shell(images: &[PathBuf]) -> PathBuf {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(s) = std::env::var_os("SHELL") {
-        let s = PathBuf::from(s);
-        // `/bin` is a link into `/usr/bin` in the guest; look where it points.
-        let in_usr = s
-            .strip_prefix("/bin")
-            .map_or_else(|_| s.clone(), |rest| Path::new("/usr/bin").join(rest));
-        candidates.push(in_usr);
-    }
-    candidates.push(PathBuf::from("/usr/bin/bash"));
-    candidates.push(PathBuf::from("/usr/bin/sh"));
-    for c in &candidates {
-        let Ok(relative) = c.strip_prefix("/") else {
-            continue;
-        };
-        if images.iter().any(|image| image.join(relative).exists()) {
-            return c.clone();
-        }
-    }
-    PathBuf::from("/bin/sh")
 }
 
 #[cfg(test)]
