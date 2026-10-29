@@ -3648,6 +3648,11 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(test.contains("the_preview_follows_the_inputs_and_undo_reverts"));
         assert!(test.contains("app.undo()"));
         assert!(test.contains("sync_with"));
+        assert!(
+            test.contains("clearing_runs_at_once_with_undo")
+                && app_readme(&spec).contains("runs at once and every surface offers Undo"),
+            "the guide describes the clear the template's test proves"
+        );
     }
 }
 
