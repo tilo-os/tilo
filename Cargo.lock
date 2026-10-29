@@ -17749,9 +17749,13 @@ name = "tilo-audio-service"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "serde",
  "serde_json",
  "settings-store",
+ "tilo-actions",
  "tilo-media",
+ "tilo-resource",
+ "tilo-service",
  "tilo-test-env",
  "tracing",
  "tracing-subscriber",
@@ -17851,6 +17855,24 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-test-env",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-bluetooth-agent"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tilo-bluez",
+ "tilo-copy-lint",
+ "tilo-service",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
 ]
 
 [[package]]
@@ -18247,6 +18269,20 @@ dependencies = [
  "wayland-protocols-wlr",
  "workspace-hack",
  "xcursor",
+]
+
+[[package]]
+name = "tilo-connectivity-service"
+version = "0.1.0"
+dependencies = [
+ "os-actions",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-service",
+ "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -19904,6 +19940,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "os-actions",
+ "serde",
  "serde_json",
  "tempfile",
  "tilo-copy-lint",
@@ -19911,6 +19948,7 @@ dependencies = [
  "tilo-lock",
  "tilo-paths",
  "tilo-secret-vault",
+ "tilo-service",
  "tilo-test-env",
  "tokio",
  "tokio-util",
@@ -19945,6 +19983,26 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-notifications-service"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-copy-lint",
+ "tilo-desktop-entry",
+ "tilo-lock",
+ "tilo-resource",
+ "tilo-service",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -20290,13 +20348,46 @@ dependencies = [
 name = "tilo-polkit-agent"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "tilo-copy-lint",
  "tilo-lock",
+ "tilo-service",
  "tokio",
  "tokio-util",
  "tracing",
+ "workspace-hack",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-portal"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tilo-accessibility-settings",
+ "tilo-actions",
+ "tilo-dialogs",
+ "tilo-files",
+ "tilo-lock",
+ "tilo-lockdown-policy",
+ "tilo-paths",
+ "tilo-power-mgmt",
+ "tilo-resource",
+ "tilo-service",
+ "tilo-ui",
+ "tokio",
+ "tracing",
+ "url",
  "workspace-hack",
  "zbus",
 ]
@@ -21188,6 +21279,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-lock",
+ "tilo-resource",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-session"
 version = "0.1.0"
 dependencies = [
@@ -21198,16 +21304,25 @@ dependencies = [
  "settings-store",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-audio-service",
+ "tilo-bluetooth-agent",
+ "tilo-bluez",
  "tilo-compositor",
+ "tilo-connectivity-service",
  "tilo-desktop",
  "tilo-desktop-model",
  "tilo-desktop-surface",
+ "tilo-media",
+ "tilo-network-secret-agent",
  "tilo-notification-banners",
  "tilo-paths",
  "tilo-quick-settings",
+ "tilo-service",
  "tilo-surface-host",
  "tilo-ui",
+ "tokio",
  "tracing",
+ "url",
  "wayland-client",
  "wayland-protocols",
  "workspace-hack",

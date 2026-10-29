@@ -1,12 +1,15 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, prints its
-//! name and starts `command` with `WAYLAND_DISPLAY` set to it; with a
-//! command, the session lasts as long as it does.
+//! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none] [-- command
+//! args...]`. Listens on a fresh `wayland-N` socket, prints its name and
+//! starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
+//! session lasts as long as it does. The desktop services serve on the
+//! buses the environment names unless a flag names another (or none).
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use tilo_compositor::{DisplayConfig, OutputConfig};
+    use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
     use tilo_session::{Options, Session, SessionConfig, SessionEnvironment};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,8 +31,29 @@ fn main() -> std::process::ExitCode {
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
 
+    let bus = |flag: &str| match value(flag).map(String::as_str) {
+        None => Bus::Default,
+        Some("none") => Bus::None,
+        Some(address) => Bus::Address(address.to_owned()),
+    };
+    let buses = Buses {
+        session: bus("--session-bus"),
+        system: bus("--system-bus"),
+    };
+    let (mut services, _following) = services();
+    let _desktop = match DesktopServices::start(&buses) {
+        Ok(desktop) => {
+            services.extend(desktop.services());
+            Some(desktop)
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the desktop services did not start");
+            None
+        }
+    };
     let options = Options {
         config: SessionConfig::load(),
+        services,
         ..Options::default()
     };
     let started = match backend {
@@ -86,6 +110,54 @@ fn main() -> std::process::ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// What keeps the services' readings following the device while it lives.
+#[cfg(target_os = "linux")]
+type Following = Vec<Box<dyn std::any::Any>>;
+
+/// The system services the session hosts, on this device's own daemons,
+/// and what keeps their readings following the device.
+#[cfg(target_os = "linux")]
+fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
+    use std::sync::Arc;
+    use tilo_connectivity_service::{Connectivity, device::OsDevice};
+
+    let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
+    let mut following: Following = Vec::new();
+    match Connectivity::new(Arc::new(OsDevice), None) {
+        Ok(connectivity) => {
+            match connectivity.follow() {
+                Ok(follow) => following.push(Box::new(follow)),
+                Err(error) => tracing::warn!(%error, "connectivity does not follow the device"),
+            }
+            services.push(Box::new(connectivity));
+        }
+        Err(error) => tracing::warn!(%error, "connectivity service not started"),
+    }
+    match audio_helper().map(|helper| {
+        let mut command = std::process::Command::new(helper);
+        command.arg("--serve");
+        tilo_service::lines::Process::spawn(command, tilo_audio_service::sound::publish, None)
+    }) {
+        Some(Ok(audio)) => services.push(Box::new(audio)),
+        Some(Err(error)) => tracing::warn!(%error, "the audio service did not start"),
+        None => tracing::warn!("the audio service is not installed here"),
+    }
+    (services, following)
+}
+
+/// The audio service (`tilo-audio`): beside the session, else where the
+/// image installs it.
+#[cfg(target_os = "linux")]
+fn audio_helper() -> Option<std::path::PathBuf> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("tilo-audio")));
+    beside
+        .into_iter()
+        .chain([std::path::PathBuf::from("/usr/libexec/tilo-audio")])
+        .find(|path| path.exists())
 }
 
 #[cfg(not(target_os = "linux"))]

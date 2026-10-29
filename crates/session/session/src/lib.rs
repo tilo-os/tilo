@@ -10,12 +10,18 @@
 //! an ordinary app hosted on a layer of its own: the notification banners
 //! and quick settings. What the chrome asks of its host comes back as
 //! [`DesktopAsk`]s, carried out here.
+//!
+//! The session also hosts the system services it was started with
+//! ([`Options::services`]): connectivity, audio and the rest publish their
+//! resources beside the desktop's, and [`Session::invoke`] reaches their
+//! actions as it reaches the desktop's, by address.
 
 #![cfg(target_os = "linux")]
 
 mod chrome;
 mod config;
 mod controls;
+pub mod desktop_services;
 mod env;
 mod keys;
 mod panels;
@@ -33,7 +39,8 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
-use tilo_surface_host::{DeskGesture, DesktopHost, Doors, WidgetHost, desktop_with};
+use tilo_service::Started;
+use tilo_surface_host::{DeskGesture, DesktopHost, Doors, Published, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
@@ -43,6 +50,7 @@ pub use controls::{INPUT_RESOURCE, MAGNIFIER_RESOURCE, Magnify, SESSION_RESOURCE
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA_PLAYER, MICROPHONE, QUICK_SETTINGS};
 pub use tilo_quick_settings::host::PanelHost;
+pub use tilo_service::{Service, Services};
 
 use controls::SessionControls;
 use keys::{Invocations, SessionKeys};
@@ -72,6 +80,9 @@ pub struct Options {
     pub quick_settings: Option<Rc<dyn PanelHost>>,
     /// The person's settings: shortcuts, input, gestures.
     pub config: SessionConfig,
+    /// The system services the session hosts: what they publish is the
+    /// session's, beside the desktop's.
+    pub services: Vec<Box<dyn Service>>,
 }
 
 impl Default for Options {
@@ -84,6 +95,7 @@ impl Default for Options {
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
             config: SessionConfig::default(),
+            services: Vec::new(),
         }
     }
 }
@@ -104,7 +116,8 @@ struct Shared {
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     quick_settings: Option<QuickSettings>,
-    /// Every hosted surface's published side: the session's action host.
+    /// Every hosted surface's and service's published side: the session's
+    /// action host.
     doors: Doors,
     /// Published actions keys and gestures asked for, waiting for the door.
     invocations: Invocations,
@@ -112,6 +125,9 @@ struct Shared {
     commands: Rc<RefCell<Vec<SessionCommand>>>,
     /// Quick settings' readings of the device, which a readout shows.
     readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
+    /// The system services, reached for their readings; their actions go
+    /// through the door like every other.
+    services: Rc<RefCell<Services>>,
 }
 
 impl Shared {
@@ -382,6 +398,13 @@ impl Session {
             Rc::clone(&invocations),
         )));
 
+        let mut services = Services::default();
+        for service in options.services {
+            services.add(service);
+        }
+        let services = Rc::new(RefCell::new(services));
+        doors.add(Rc::new(RefCell::new(ServiceDoor(Rc::clone(&services)))));
+
         let shared = Shared {
             handle,
             desktop,
@@ -392,6 +415,7 @@ impl Session {
             invocations,
             commands,
             readings,
+            services,
         };
         Ok(Self {
             compositor,
@@ -458,19 +482,34 @@ impl Session {
     }
 
     /// Everything the session publishes now: the desk's resource (its
-    /// windows among its children), the chrome's, the surface apps' and
-    /// the session's own, with their actions.
+    /// windows among its children), the chrome's, the surface apps', the
+    /// session's own and the services', with their actions.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.shared.doors.resources()
     }
 
+    /// What the service publishing `resource` reads of it now, as JSON;
+    /// `None` when no service publishes it.
+    #[must_use]
+    pub fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        self.shared.services.borrow().read(resource)
+    }
+
+    /// Wait until every device call the services started has landed, and
+    /// take them in: what a headless run does before it reads.
+    pub fn settle_services(&self) {
+        self.shared.services.borrow_mut().settle();
+    }
+
     /// Invoke the published action `action` of resource `resource`, as
     /// any caller of the action protocol does, and carry out what it asked
-    /// of the session.
+    /// of the session. A service's action that runs on the device is
+    /// accepted at once; its result lands in the service's reading.
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, or bad arguments.
+    /// The door's refusal: no such resource or action, bad arguments, or
+    /// one the device cannot do now.
     pub fn invoke(
         &mut self,
         resource: &str,
@@ -577,6 +616,7 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
+        self.shared.services.borrow_mut().poll();
         self.settle()?;
         self.compositor.render()?;
         self.settle()
@@ -628,5 +668,36 @@ fn mount_quick_settings(
             tracing::warn!(%error, "quick settings not mounted");
             None
         }
+    }
+}
+
+/// The system services' published side, behind the session's door like
+/// every hosted surface: one action host for all of them.
+struct ServiceDoor(Rc<RefCell<Services>>);
+
+impl Published for ServiceDoor {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        self.0.borrow().resources()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        match self
+            .0
+            .borrow_mut()
+            .invoke(&address.resource, &address.action, arguments)
+        {
+            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
+            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+            Some(Err(error)) => Err(error),
+            None => Err(DoorError::Unknown(address.clone())),
+        }
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        Vec::new()
     }
 }
