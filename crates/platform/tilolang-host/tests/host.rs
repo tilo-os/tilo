@@ -201,15 +201,23 @@ fn running_app(
     app: &str,
     bundle: Bundle,
 ) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
-    running_with(person, app, bundle, Rc::default())
+    running_with(
+        person,
+        app,
+        bundle,
+        Rc::default(),
+        automerge::AutoCommit::new(),
+    )
 }
 
-/// [`running_app`], the broker holding the instance's action directory in `directory`.
+/// [`running_app`], the broker holding the instance's action directory in `directory`, the
+/// record holding `doc` as the room handed it.
 fn running_with(
     person: &str,
     app: &str,
     bundle: Bundle,
     directory: Rc<RefCell<Directory>>,
+    doc: automerge::AutoCommit,
 ) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let route = RouteSpec::app(app, uuid::Uuid::new_v4());
@@ -229,7 +237,7 @@ fn running_with(
         handle: Some(person.to_owned()),
     }));
     let _ = manager.poll();
-    let record = RoomRecord::new(automerge::AutoCommit::new(), manager, route.clone(), person);
+    let record = RoomRecord::new(doc, manager, route.clone(), person);
     let mut host = TilolangHost::new(None, wake());
     let kept = host.kept(app).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
@@ -281,6 +289,114 @@ fn documents_sent(sent: &Sent) -> usize {
         .iter()
         .filter(|request| matches!(request, CollabRequest::Document { .. }))
         .count()
+}
+
+/// A host whose counter instance opens its record as the host does, joined on a broker the test
+/// plays, from the copy `documents` keeps: no committed read, as a sealed room's record the room
+/// does not hold yet opens.
+fn opened_from_own_copy(
+    person: &str,
+    documents: &Rc<dyn durable_store::DurableStore>,
+) -> (TilolangHost, Window, Sent, RouteSpec) {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+    let sent: Sent = Rc::default();
+    let mut manager = CollaborationManager::with_peer_transport(Broker {
+        route: route.clone(),
+        sent: Rc::clone(&sent),
+        inbox: Rc::default(),
+        joined: None,
+        directory: Rc::default(),
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: None,
+        record_kind: None,
+        handle: Some(person.to_owned()),
+    }));
+    let _ = manager.poll();
+    let record = RoomRecord::open_read(manager, None, documents, person).unwrap();
+    let mut host = TilolangHost::new(None, wake());
+    let kept = host.kept(APP).unwrap();
+    let (ours, theirs) = Channel::pair().unwrap();
+    let watched = ours.as_fd().try_clone_to_owned().unwrap();
+    let hosted = Hosted::with_record(
+        Spec {
+            app: APP.to_owned(),
+            room: route.cluster_id.to_string(),
+            instance: 1,
+            person: person.to_owned(),
+        },
+        record,
+        Arc::new(counter()),
+        &kept,
+        Box::new(ChannelTransport::new(ours).unwrap()),
+        Rc::new(Phrases::new("en-US")),
+        wake(),
+    );
+    host.add(hosted, Some(watched));
+    let window = Window {
+        transport: ChannelTransport::new(theirs).unwrap(),
+        root: None,
+        detail: None,
+        activated: false,
+    };
+    (host, window, sent, route)
+}
+
+/// What the room holds of the record: every change the instance sent on its connection, and
+/// nothing else, as a sealed room's channel keeps it.
+fn room_copy(sent: &Sent) -> automerge::AutoCommit {
+    let mut room = automerge::AutoCommit::new();
+    for request in sent.borrow().iter() {
+        if let CollabRequest::Document { mutation, .. } = request {
+            let bytes = match mutation {
+                collab_types::DocumentMutation::Incremental(bytes)
+                | collab_types::DocumentMutation::Snapshot(bytes) => bytes,
+            };
+            tilo_automerge::ApplyIncoming::load_incoming(&mut room, bytes).unwrap();
+        }
+    }
+    room
+}
+
+#[test]
+fn a_record_made_from_the_hosts_own_copy_reopens_from_what_its_room_holds() {
+    // A record the room did not hold opens from the host's own copy, whose making (its schema
+    // stamp) is a change of this replica's. A press is the instance's first change to the room.
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(durable_store::MemoryStore::default());
+    let (mut host, mut window, sent, _route) = opened_from_own_copy("ada", &documents);
+    settle(&mut host, &mut window);
+    let (key, event) = window.increment();
+    window.send(&[ToApp::Fire {
+        lane: Lane::Root,
+        key,
+        event,
+        value: None,
+    }]);
+    settle(&mut host, &mut window);
+    assert_eq!(value_of(host.instances().next().unwrap()), 1);
+
+    // The room's copy alone is the whole record: nothing it holds builds on a change that never
+    // reached it, so a reader that has only the room's writes can read it back.
+    let room = room_copy(&sent);
+    assert_eq!(
+        automerge::ReadDoc::get_missing_deps(&room, &[]),
+        Vec::new(),
+        "every change the room's writes build on reached the room"
+    );
+
+    // A fresh host, opened on the room's copy as a reopen reads it, shows the press.
+    let (mut reopened, mut window, _sent, _inbox, _route) =
+        running_with("ada", APP, counter(), Rc::default(), room);
+    settle(&mut reopened, &mut window);
+    assert_eq!(
+        value_of(reopened.instances().next().unwrap()),
+        1,
+        "the reopened instance shows the record as it was"
+    );
 }
 
 #[test]
@@ -736,8 +852,13 @@ fn query() -> ActionDirectoryQuery {
 #[test]
 fn the_instance_offers_an_action_directory_the_door_and_agents_browse() {
     let directory = Rc::new(RefCell::new(Directory::default()));
-    let (mut host, mut window, _sent, _inbox, _route) =
-        running_with("ada", APP, counter(), Rc::clone(&directory));
+    let (mut host, mut window, _sent, _inbox, _route) = running_with(
+        "ada",
+        APP,
+        counter(),
+        Rc::clone(&directory),
+        automerge::AutoCommit::new(),
+    );
     settle(&mut host, &mut window);
     assert_eq!(
         directory.borrow().offered,

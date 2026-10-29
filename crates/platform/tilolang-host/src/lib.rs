@@ -369,6 +369,13 @@ impl TilolangHost {
                     let Some(reader) = PrimaryRead::of(&manager).map_err(AdmitError::Join)? else {
                         return self.run(opening, spec, bundle, manager, None);
                     };
+                    // The read waits for as long as the broker takes: say that it does, so an
+                    // instance that never opens shows where it waits.
+                    tracing::info!(
+                        app = opening.app,
+                        instance = opening.instance,
+                        "a tilolang instance reads its record's committed history"
+                    );
                     let (sender, read) = std::sync::mpsc::channel();
                     let wake = Arc::clone(&self.wake);
                     std::thread::Builder::new()
