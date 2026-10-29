@@ -313,6 +313,10 @@ export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # as a launch is, so `tilolang dev` swaps a new build in without a restart
 # (crates/packaging/launcher/src/live_module.rs). A shipped launcher ignores it.
 export TILO_LAUNCHER_LIVE_MODULES=1
+# A development session logs warnings and errors unless RUST_LOG says
+# otherwise: a shipped shell logs errors only, and a watch that could not
+# start or a catalogue that did not settle would leave no trace here.
+export RUST_LOG=${RUST_LOG:-warn}
 # The interfaces this build of the system provides, not the host's: on a Tilo
 # host /usr/share/tilo/system-interfaces.toml is that image's, which may be
 # newer or older than the apps built here.
