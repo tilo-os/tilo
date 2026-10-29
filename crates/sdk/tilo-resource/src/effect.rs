@@ -932,13 +932,27 @@ pub fn argument<T: serde::de::DeserializeOwned>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     name: &str,
 ) -> Result<T, String> {
-    serde_json::from_value(
-        arguments
-            .get(name)
-            .cloned()
-            .unwrap_or(serde_json::Value::Null),
-    )
-    .map_err(|error| format!("`{name}`: {error}"))
+    // Only the decode is per type: the lookup and the message are compiled
+    // once for every argument of every effect.
+    T::deserialize(argument_value(arguments, name)).map_err(|error| argument_error(name, &error))
+}
+
+/// The argument `name`, or `null` when it is absent.
+#[inline(never)]
+fn argument_value(
+    arguments: &serde_json::Map<String, serde_json::Value>,
+    name: &str,
+) -> serde_json::Value {
+    arguments
+        .get(name)
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Why argument `name` did not decode.
+#[inline(never)]
+fn argument_error(name: &str, error: &serde_json::Error) -> String {
+    format!("`{name}`: {error}")
 }
 
 /// Put one argument of an effect being encoded; an absent optional one

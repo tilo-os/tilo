@@ -1400,17 +1400,7 @@ impl<R, A: Serialize> ActionRef<R, A> {
     /// invocation that refuses with why ([`Invoke::refusal`]), never one
     /// with empty arguments.
     pub fn with(&self, input: impl Into<A>) -> Invoke<R> {
-        let (arguments, refusal) = match self.arguments(&input.into()) {
-            Ok(arguments) => (arguments, None),
-            Err(refusal) => (serde_json::Map::new(), Some(refusal)),
-        };
-        Invoke {
-            id: self.id,
-            arguments,
-            refusal,
-            effect: false,
-            marker: PhantomData,
-        }
+        Invoke::bound(self.id, self.arguments(&input.into()))
     }
 
     /// [`Self::with`], reporting an input that does not bind at once.
@@ -1606,10 +1596,18 @@ where
         ActionRef::key(&self.action)
     }
     fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let parsed = (self.parse)(input)
-            .ok_or_else(|| format!("the input makes no arguments for `{}`", self.action.id))?;
+        let Some(parsed) = (self.parse)(input) else {
+            return Err(no_arguments(self.action.id));
+        };
         self.action.arguments(&parsed.into())
     }
+}
+
+/// Why a [`TryMapped`] control invoked nothing: written once, not once per
+/// adapter.
+#[inline(never)]
+fn no_arguments(id: &str) -> String {
+    format!("the input makes no arguments for `{id}`")
 }
 
 /// The input of an action that takes nothing: `()`, or a verb's empty
@@ -1691,6 +1689,27 @@ impl<R> Invoke<R> {
             arguments: effect.arguments(),
             refusal: None,
             effect: true,
+            marker: PhantomData,
+        }
+    }
+
+    /// The invocation of action `id` with what its input bound to, or one
+    /// that refuses with why it did not bind. Kept out of line: its body is
+    /// the same for every resource, so the copies merge into one.
+    #[inline(never)]
+    fn bound(
+        id: &'static str,
+        bound: Result<serde_json::Map<String, serde_json::Value>, String>,
+    ) -> Self {
+        let (arguments, refusal) = match bound {
+            Ok(arguments) => (arguments, None),
+            Err(refusal) => (serde_json::Map::new(), Some(refusal)),
+        };
+        Self {
+            id,
+            arguments,
+            refusal,
+            effect: false,
             marker: PhantomData,
         }
     }
