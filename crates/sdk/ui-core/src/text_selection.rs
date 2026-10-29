@@ -197,6 +197,20 @@ pub fn line_boundaries(text: &str, byte_idx: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Where grapheme segmentation may start for a position at or after
+/// `byte_idx`: just past the last LF before it. UAX #29 always breaks after
+/// LF (the LF of CRLF too), so a scan from there agrees with one from the
+/// start of the text, without walking every line above. Bytes are searched
+/// so an offset inside a UTF-8 scalar is safe; an LF is always a whole one.
+fn grapheme_line_start(text: &str, byte_idx: usize) -> usize {
+    text.as_bytes()
+        .get(..byte_idx)
+        .unwrap_or(text.as_bytes())
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map_or(0, |i| i.saturating_add(1))
+}
+
 /// The nearest extended-grapheme boundary at or before `byte_idx`.
 ///
 /// This is the safe place to clamp carets after remote edits: a UTF-8 scalar
@@ -205,12 +219,14 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
     if byte_idx >= text.len() {
         return text.len();
     }
-    let byte_idx = byte_idx.min(text.len());
-    grapheme_indices(text)
+    let start = grapheme_line_start(text, byte_idx);
+    let (_, line) = text.split_at(start);
+    grapheme_indices(line)
         .map(|(i, _)| i)
-        .take_while(|&i| i <= byte_idx)
+        .take_while(|&i| i <= byte_idx.saturating_sub(start))
         .last()
         .unwrap_or(0)
+        .saturating_add(start)
 }
 
 /// Step one user-perceived character to the left of `byte_idx`. Extended
@@ -219,19 +235,26 @@ pub fn grapheme_boundary_at_or_before(text: &str, byte_idx: usize) -> usize {
 /// compatibility.
 pub fn prev_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    grapheme_indices(text)
+    // From a line start, the character to the left is the previous line's
+    // LF (or CRLF), so the scan starts on that line.
+    let start = grapheme_line_start(text, byte_idx.saturating_sub(1));
+    let (_, line) = text.split_at(start);
+    grapheme_indices(line)
         .map(|(i, _)| i)
-        .take_while(|&i| i < byte_idx)
+        .take_while(|&i| i < byte_idx.saturating_sub(start))
         .last()
         .unwrap_or(0)
+        .saturating_add(start)
 }
 
 /// Step one user-perceived character to the right of `byte_idx`. See
 /// [`prev_char_boundary`] for the compatibility note.
 pub fn next_char_boundary(text: &str, byte_idx: usize) -> usize {
     let byte_idx = byte_idx.min(text.len());
-    grapheme_indices(text)
-        .map(|(i, _)| i)
+    let start = grapheme_line_start(text, byte_idx);
+    let (_, line) = text.split_at(start);
+    grapheme_indices(line)
+        .map(|(i, _)| i.saturating_add(start))
         .find(|&i| i > byte_idx)
         .unwrap_or(text.len())
 }
@@ -844,6 +867,70 @@ mod tests {
             assert_eq!(next_word_boundary_chars(s, 0), 6); // start of "beta"
             assert_eq!(next_word_boundary_chars(s, 6), 11); // start of "gamma"
             assert_eq!(prev_word_boundary_chars(s, 10), 6); // start of "beta"
+        }
+    }
+
+    #[test]
+    fn line_scoped_grapheme_walks_match_whole_text_segmentation_at_every_byte() {
+        let atoms = [
+            "",
+            "a",
+            "\n",
+            "\r",
+            "\r\n",
+            "a\u{301}",
+            "\u{301}",
+            "👩‍👩‍👧‍👦",
+            "👩🏽‍🚀",
+            "🇫🇮🇦🇺",
+            "\u{600}a",
+            "क्‍ष",
+            "\0",
+        ];
+        for left in atoms {
+            for right in atoms {
+                for separator in ["", "\n", "\r\n"] {
+                    let text = format!("{left}{separator}{right}");
+                    let boundaries: Vec<usize> = grapheme_indices(&text).map(|(i, _)| i).collect();
+                    for offset in 0..=text.len().saturating_add(1) {
+                        let bounded = offset.min(text.len());
+                        let at_or_before = if offset >= text.len() {
+                            text.len()
+                        } else {
+                            boundaries
+                                .iter()
+                                .copied()
+                                .rfind(|&i| i <= offset)
+                                .unwrap_or(0)
+                        };
+                        let previous = boundaries
+                            .iter()
+                            .copied()
+                            .rfind(|&i| i < bounded)
+                            .unwrap_or(0);
+                        let next = boundaries
+                            .iter()
+                            .copied()
+                            .find(|&i| i > bounded)
+                            .unwrap_or(text.len());
+                        assert_eq!(
+                            grapheme_boundary_at_or_before(&text, offset),
+                            at_or_before,
+                            "at or before byte {offset} in {text:?}"
+                        );
+                        assert_eq!(
+                            prev_char_boundary(&text, offset),
+                            previous,
+                            "before byte {offset} in {text:?}"
+                        );
+                        assert_eq!(
+                            next_char_boundary(&text, offset),
+                            next,
+                            "after byte {offset} in {text:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 
