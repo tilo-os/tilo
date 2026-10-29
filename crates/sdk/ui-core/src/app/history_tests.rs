@@ -309,7 +309,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         layout(&mut app);
         let old = named(&mut app, "Restore version");
         let heads = app.state.doc.base_heads();
-        app = app.with_autosave(crate::persist::DocWriter::disabled("replacement"));
+        app = app.with_autosave(app_state::DocWriter::disabled("replacement"));
         layout(&mut app);
         assert!(app.validate_history_registration().is_err());
         app.dispatch_a11y_action(old, &crate::a11y::Action::Activate);

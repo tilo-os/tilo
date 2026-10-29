@@ -2196,55 +2196,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     #[serial_test::serial]
-    fn native_initial_launch_persists_merged_history_without_a_local_edit() {
-        use automerge::{ReadDoc, transaction::Transactable};
-        let _environment = LaunchFixtureEnv::new();
-        let room = uuid::Uuid::new_v4();
-        let mut _env_override = tilo_test_env::ScopedEnv::new();
-        _env_override.set("TILO_WORKSPACE_ID", room.to_string());
-        let mut history = automerge::AutoCommit::new();
-        history
-            .put(
-                automerge::ROOT,
-                "initial_only",
-                "must survive local restart",
-            )
-            .unwrap();
-        history.commit();
-        let (manager, _) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_for_test(
-                "so.tilo.launch-fixture",
-                room,
-                history.save(),
-            );
-        let construction =
-            crate::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
-        let (mut state, mut saver) = crate::persist::open("so.tilo.launch-fixture");
-        saver.request(&mut state.doc);
-        saver.flush();
-        assert!(saver.last_error().is_none());
-        drop(saver);
-        drop(construction);
-        let mut store =
-            crate::persist::DocStore::open_room("so.tilo.launch-fixture", &room.to_string())
-                .unwrap();
-        let doc = store
-            .load_complete()
-            .unwrap()
-            .expect("initial capture must reach local persistence");
-        assert_eq!(
-            doc.get(automerge::ROOT, "initial_only")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("must survive local restart")
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    #[serial_test::serial]
     fn native_initial_launch_canonical_cache_reads_existing_history_before_defaults() {
         use automerge::{ReadDoc, transaction::Transactable};
         let environment = LaunchFixtureEnv::new();

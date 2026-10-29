@@ -14,7 +14,7 @@
 //! ([`super::RecordOpenError::Retired`]). Copying is transfer alone: the
 //! source keeps going and the two histories diverge from here.
 //!
-//! An app that keeps one document for itself in a room ([`crate::persist`])
+//! An app that keeps one document for itself in a room (its room index)
 //! transfers the same way ([`Origin::AppDocument`]): its document arrives
 //! as a record, and a moved one is retired where it was.
 //!
@@ -123,8 +123,7 @@ pub fn stamp_retired(doc: &mut AutoCommit, why: &Retirement) -> Result<(), Trans
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Origin {
     Record(RecordCheckout),
-    /// The document an app keeps for itself in a room through
-    /// [`crate::persist`]. It has no record identity of its own there, and
+    /// The document an app keeps for itself in a room, its room index. It has no record identity of its own there, and
     /// arrives in the destination as a record of this kind.
     AppDocument(RecordKind),
 }

@@ -639,7 +639,7 @@ mod tests {
                 crate::State::new(),
                 Box::new(crate::widget::Text::new("body")),
             )
-            .with_autosave(crate::persist::DocWriter::disabled(
+            .with_autosave(app_state::DocWriter::disabled(
                 "required writer unavailable",
             ));
             assert!(

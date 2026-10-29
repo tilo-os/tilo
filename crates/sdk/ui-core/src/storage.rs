@@ -3,7 +3,7 @@
 //!
 //! | What | Seam | Backed by |
 //! |---|---|---|
-//! | Documents (collaborative, synced) | resources and records; [`crate::persist`] for a single-document app | Automerge records |
+//! | Documents (collaborative, synced) | resources and records | Automerge records |
 //! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
 //! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the desktop settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
 //! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |

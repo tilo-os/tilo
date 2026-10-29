@@ -512,7 +512,7 @@ impl State {
 
     /// Wrap an already-loaded document.
     ///
-    /// The entry point for persistence (`tilo_ui::persist`): the store hands back
+    /// The entry point for persistence: the store hands back
     /// the previous session's `AutoCommit` — history, actor identity and all
     /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {

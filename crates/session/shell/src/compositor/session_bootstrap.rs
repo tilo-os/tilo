@@ -83,7 +83,7 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
     tree.seed_next_id_from_self();
 
     // Nothing writes back over a file this session refused to read — a refused
-    // session runs without persistence, like `ui::persist` disabling a writer over a document it wouldn't open.
+    // session runs without persistence, like the record store disabling a writer over a document it wouldn't open.
     tree.persist_path = if state_notice.is_none() {
         Some(path)
     } else {

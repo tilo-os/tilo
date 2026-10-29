@@ -241,7 +241,6 @@ pub mod passcode_keyboard;
 pub mod pen;
 pub mod people_photos;
 pub mod permissions;
-pub mod persist;
 pub mod person_card;
 pub mod pick;
 pub mod pick_wire;

@@ -1,19 +1,12 @@
 impl App {
-    /// Pair with [`crate::persist::open`], which hands back the document the
-    /// previous session left plus its writer:
-    ///
-    /// ```ignore
-    /// let (state, autosave) = ui::persist::open("so.tilo.my-app");
-    /// ui::App::from_factory(state, my_app::app_root)
-    ///     .with_autosave(autosave)
-    ///     .run();
-    /// ```
+    /// Write the live document back through `autosave`, the writer of the
+    /// store it was loaded from.
     #[must_use]
     #[allow(
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
     )]
-    pub fn with_autosave(mut self, autosave: crate::persist::DocWriter) -> Self {
+    pub fn with_autosave(mut self, autosave: app_state::DocWriter) -> Self {
         self.autosave_generation = self
             .autosave_generation
             .checked_add(1)
@@ -355,9 +348,9 @@ impl App {
         }
     }
 
-    /// Lets a caller check [`crate::persist::DocWriter::last_error`] rather
+    /// Lets a caller check [`app_state::DocWriter::last_error`] rather
     /// than assuming the disk accepted the writes.
-    pub fn autosave(&self) -> Option<&crate::persist::DocWriter> {
+    pub fn autosave(&self) -> Option<&app_state::DocWriter> {
         self.persistence.autosave.as_ref()
     }
 }

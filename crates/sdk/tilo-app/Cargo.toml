@@ -100,6 +100,8 @@ required-features = ["test-support"]
 tilo-content = { version = "0.1.0", path = "../../system/content" }
 # The native process host lends the window the device content store.
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
+# The test hosts keep a profile's records in the native store.
+tilo-app-state = { version = "0.1.0", path = "../../system/app-state" }
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [dev-dependencies]
