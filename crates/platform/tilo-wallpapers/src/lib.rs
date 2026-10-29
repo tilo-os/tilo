@@ -201,5 +201,71 @@ fn decode(path: &Path, asset: &Asset) -> Option<DecodedImage> {
     .ok()
 }
 
+/// What a picture of the person's own may be: at most 32 MiB encoded and
+/// 16384 pixels a side, decoding to at most 1 GiB.
+const CUSTOM_LIMITS: tilo_image_codec::AdmissionLimits = tilo_image_codec::AdmissionLimits {
+    max_encoded_bytes: 32 * 1024 * 1024,
+    max_rgba_bytes: 1024 * 1024 * 1024,
+    max_dimension: 16_384,
+};
+
+/// Where the person's own picture ([`CUSTOM`]) is kept: this device's
+/// private state, never a workspace.
+#[must_use]
+pub fn custom_picture_path() -> Option<PathBuf> {
+    tilo_paths::state_dir().map(|state| custom_picture_in(&state))
+}
+
+fn custom_picture_in(state: &Path) -> PathBuf {
+    state.join("tilo/wallpaper/custom")
+}
+
+/// Keep `encoded` as the person's own picture, once it is an image the
+/// limits admit; where it was kept.
+///
+/// # Errors
+/// It is no such image, or it could not be written.
+pub fn keep_custom_picture(encoded: &[u8]) -> std::io::Result<PathBuf> {
+    let path =
+        custom_picture_path().ok_or_else(|| std::io::Error::other("no private state directory"))?;
+    keep_custom_at(&path, encoded)?;
+    Ok(path)
+}
+
+fn keep_custom_at(path: &Path, encoded: &[u8]) -> std::io::Result<()> {
+    CUSTOM_LIMITS.admit(encoded).map_err(|error| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{error:?}"))
+    })?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no directory"))?;
+    std::fs::create_dir_all(directory)?;
+    let partial = path.with_extension("partial");
+    {
+        use std::io::Write as _;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&partial)?;
+        file.write_all(encoded)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&partial, path)
+}
+
+/// The person's own picture, decoded to at most `max_dimension` a side.
+#[must_use]
+pub fn decode_custom_picture(max_dimension: u32) -> Option<DecodedImage> {
+    let encoded = std::fs::read(custom_picture_path()?).ok()?;
+    CUSTOM_LIMITS.admit(&encoded).ok()?;
+    tilo_image_codec::DecodeImage {
+        encoded: &encoded,
+        max_dimension,
+    }
+    .decode_native()
+    .ok()
+}
+
 #[cfg(test)]
 mod tests;
