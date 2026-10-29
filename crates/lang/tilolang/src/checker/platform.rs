@@ -129,7 +129,7 @@ impl Checker<'_> {
     /// The people a rich input's `@` drawer offers, which the system gives every rich input
     /// (chat.md, "Completion drawers"): who spoke last in `subject` (the resource the view
     /// shows) and its members; without a subject, nobody first and the workspace's members.
-    pub(super) fn drawer_people(&mut self, subject: Option<Ex>) -> (Ex, Ex) {
+    pub(super) fn drawer_people(subject: Option<Ex>) -> (Ex, Ex) {
         let people = Ty::List(Box::new(Ty::Principal));
         match subject {
             Some(r) => (

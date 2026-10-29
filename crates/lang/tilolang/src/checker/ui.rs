@@ -538,7 +538,7 @@ impl Checker<'_> {
             .subject
             .clone()
             .map(|(local, ty)| Ex::local(local, ty));
-        let (speakers, people) = self.drawer_people(subject);
+        let (speakers, people) = Self::drawer_people(subject);
         for (name, value) in [("speakers", speakers), ("people", people)] {
             self.emit(Stmt::Eval(Ex::host(
                 Imp::UiPropH,

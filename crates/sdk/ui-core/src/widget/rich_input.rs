@@ -84,6 +84,11 @@ pub struct RichInput {
     seen: u64,
     /// Whom its `@` drawer offers, as the system gave them.
     people: DrawerPeople,
+    /// The sources the system gave for its triggers ([`Self::set_sources`]).
+    sources: Vec<CompletionSource>,
+    /// The `@` source built from [`Self::people`], unless a source given for `@` takes its
+    /// place.
+    people_source: Option<CompletionSource>,
 }
 
 /// The people of a rich input's `@` drawer: who spoke last, then who can read it, and what the
@@ -97,6 +102,10 @@ struct DrawerPeople {
 }
 
 impl DrawerPeople {
+    fn is_empty(&self) -> bool {
+        self.speakers.is_empty() && self.members.is_empty()
+    }
+
     fn given(&mut self, speakers: Vec<Person>, members: Vec<Person>) {
         if speakers != self.speakers || members != self.members {
             self.speakers = speakers;
@@ -178,6 +187,8 @@ impl RichInput {
             name: name.to_owned(),
             seen: 0,
             people: DrawerPeople::default(),
+            sources: Vec::new(),
+            people_source: None,
         };
         let _ = key;
         let picked = Rc::clone(&input.picked);
@@ -194,7 +205,27 @@ impl RichInput {
 
     /// Complete from `sources` too, one per trigger, as the system gives them: each
     /// candidate's view is what its reference reads as here once picked.
-    pub fn set_sources(&mut self, sources: Vec<crate::widget::completion::CompletionSource>) {
+    pub fn set_sources(&mut self, sources: Vec<CompletionSource>) {
+        self.sources = sources;
+        self.offer();
+    }
+
+    /// The sources it completes from: those given, then the people of its `@` drawer where
+    /// no source given is for `@`.
+    fn offered(&self) -> Vec<CompletionSource> {
+        let mut sources = self.sources.clone();
+        if let Some(people) = &self.people_source
+            && !sources.iter().any(|source| source.trigger == '@')
+        {
+            sources.push(people.clone());
+        }
+        sources
+    }
+
+    /// Give the field the sources it completes from: those given, and the people of its `@`
+    /// drawer where no source given is for `@`.
+    fn offer(&mut self) {
+        let sources = self.offered();
         for candidate in sources
             .iter()
             .flat_map(|source| &source.tiers)
@@ -458,8 +489,12 @@ impl Decorator for RichInput {
     ) {
         // The room says what each of the drawer's people is (an agent is marked as one) with
         // the frame.
-        if let Some(source) = self.people.source(presence) {
-            self.set_sources(vec![source]);
+        if self.people.is_empty() && self.people_source.is_some() {
+            self.people_source = None;
+            self.offer();
+        } else if let Some(source) = self.people.source(presence) {
+            self.people_source = Some(source);
+            self.offer();
         }
         self.line.draw(scene, transform, text, theme, presence);
     }
