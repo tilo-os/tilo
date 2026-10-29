@@ -34,6 +34,7 @@ impl ShellOverlayHost {
                 | LayerId::EmojiPicker
                 | LayerId::TabContextMenu
                 | LayerId::PowerMenu
+                | LayerId::Overview
                 | LayerId::Dictation
                 | LayerId::CommandPalette => {}
                 LayerId::MemberSheet => root.children.push(
@@ -42,95 +43,6 @@ impl ShellOverlayHost {
                         .with_description(t("a11y-member-sheet-description"))
                         .with_state(AccessState::new().modal(true)),
                 ),
-                LayerId::Overview => {
-                    let cards = self.overview_cards();
-                    let mut overview = AccessNode::new(Role::Dialog)
-                        .with_name(t("a11y-overview"))
-                        .with_bounds(self.overview_bounds())
-                        .with_state(AccessState::new().modal(true));
-                    overview
-                        .children
-                        .extend(cards.iter().enumerate().map(|(index, card)| {
-                            AccessNode::new(Role::Button)
-                                .with_name(card.name.clone())
-                                .with_bounds(self.overview_row_rect(index))
-                                .with_state(AccessState::new().focusable(true).focused(
-                                    self.overview_selection == Some(index)
-                                        && self.overview_window_selection.is_none(),
-                                ))
-                        }));
-                    let windows = self.overview_row_windows();
-                    if !windows.is_empty() {
-                        let total = windows.len();
-                        let items = windows
-                            .iter()
-                            .enumerate()
-                            .map(|(index, window)| {
-                                let selected =
-                                    self.overview_window_selection == Some(window.address.tab);
-                                AccessNode::new(Role::ListItem)
-                                    .with_semantic_key(format!(
-                                        "overview-window:{}",
-                                        window.address.tab
-                                    ))
-                                    .with_name(window.title.clone())
-                                    .with_position(index.saturating_add(1), total)
-                                    .with_bounds(self.overview_window_tile_rect(index))
-                                    .with_state(
-                                        AccessState::new()
-                                            .focusable(true)
-                                            .focused(selected)
-                                            .selected(selected),
-                                    )
-                            })
-                            .collect();
-                        overview.children.push(
-                            AccessNode::new(Role::List)
-                                .with_bounds(self.overview_window_list_rect().unwrap_or(Rect::ZERO))
-                                .with_name(crate::shell::i18n::t("overview-windows-title"))
-                                .with_description(crate::shell::i18n::t(
-                                    "overview-windows-description",
-                                ))
-                                .with_children(items),
-                        );
-                    }
-                    overview.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(t("a11y-new-workspace"))
-                            .with_bounds(self.overview_add_workspace_rect_for(cards.len()))
-                            .with_state(AccessState::new().focusable(true).focused(
-                                self.overview_selection == Some(cards.len())
-                                    && self.overview_window_selection.is_none(),
-                            )),
-                    );
-                    overview.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(t("overview-join-workspace"))
-                            .with_bounds(self.overview_join_workspace_rect_for(cards.len()))
-                            .with_state(AccessState::new().focusable(true).focused(
-                                self.overview_selection == Some(cards.len().saturating_add(1))
-                                    && self.overview_window_selection.is_none(),
-                            )),
-                    );
-                    let site_rooms = self.site_rooms();
-                    for (idx, card) in cards.iter().enumerate() {
-                        let leave = self.overview_leave_rect(idx, &site_rooms);
-                        if leave.area() > 0.0 {
-                            overview.children.push(
-                                AccessNode::new(Role::Button)
-                                    .with_name(t_args(
-                                        "a11y-leave-workspace",
-                                        &[("name", card.name.clone().into())],
-                                    ))
-                                    .with_bounds(leave),
-                            );
-                        }
-                    }
-                    if let Some(strips) = self.overview_strips_accessibility() {
-                        overview.children.push(strips);
-                    }
-                    root.children.push(overview);
-                }
                 LayerId::WorkspaceSettings => {
                     let mut settings = AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-workspace-settings"))
@@ -273,7 +185,6 @@ impl ShellOverlayHost {
                     _ => None,
                 }
             }
-            LayerId::Overview => self.overview_accessibility_rect(child_path),
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
@@ -284,6 +195,7 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
+            | LayerId::Overview
             | LayerId::PowerMenu | LayerId::Dictation
             // The launcher answers for its own card.
             | LayerId::CommandPalette => None,
@@ -313,7 +225,6 @@ impl ShellOverlayHost {
             LayerId::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()
             }
-            LayerId::Overview => self.focus_overview_accessibility(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
             | LayerId::Directory
@@ -323,6 +234,7 @@ impl ShellOverlayHost {
             | LayerId::WindowSwitcher
             | LayerId::EmojiPicker
             | LayerId::TabContextMenu
+            | LayerId::Overview
             | LayerId::PowerMenu | LayerId::Dictation
             // The launcher answers for its own card.
             | LayerId::CommandPalette => false,

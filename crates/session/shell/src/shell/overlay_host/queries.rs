@@ -7,36 +7,102 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// Cached "+ Add workspace" tile rect, `Rect::ZERO` while the overview
-    /// is hidden. Lets tests assert it's on screen and click its centre.
-    pub fn add_workspace_rect_for_tests(&self) -> Rect {
-        self.add_workspace_hit_rect()
+    /// Full ordered list of scopes shown in the banner. Includes
+    /// [`SearchScope::ActiveApp`] only when there's a currently focused
+    /// tab — otherwise the pill would render an empty label.
+    pub(super) fn search_scope_list(&self) -> Vec<crate::shell::chrome_state::SearchScope> {
+        use crate::shell::chrome_state::SearchScope;
+        let mut out = Vec::with_capacity(3);
+        if self
+            .chrome
+            .as_ref()
+            .and_then(|c| c.borrow().active_app_title())
+            .is_some()
+        {
+            out.push(SearchScope::ActiveApp);
+        }
+        out.push(SearchScope::Workspace);
+        out.push(SearchScope::All);
+        out
     }
 
-    /// The new-workspace row while the overview is open.
-    ///
-    /// The fade's first sample is still alpha 0, and that sample clears the
-    /// painted hit cache so a closing overview cannot create a room. The
-    /// row's geometry is the control: `list-targets` and a click both use
-    /// it as soon as the overlay flag is up, including that first sample.
-    pub(super) fn add_workspace_hit_rect(&self) -> Rect {
-        if !self.overlay_flags().overview {
-            return Rect::ZERO;
+    /// Label for the i-th scope pill. [`SearchScope::ActiveApp`] names
+    /// the focused app (`Notes app`), truncated to `MAX_APP_PILL_CHARS`
+    /// — "app" is explicit because the kind-filter strip above uses the
+    /// same names for a different axis.
+    pub(crate) fn search_scope_pill_label(
+        &self,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) -> String {
+        use crate::shell::chrome_state::SearchScope;
+        const MAX_APP_PILL_CHARS: usize = 14;
+        if let Some(resource_label) = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            (state.search_scope == scope)
+                .then(|| {
+                    state
+                        .search_resource_scope
+                        .as_ref()
+                        .map(|resource| resource.label.clone())
+                })
+                .flatten()
+        }) {
+            const MAX_RESOURCE_PILL_CHARS: usize = 18;
+            let label = if resource_label.chars().count() > MAX_RESOURCE_PILL_CHARS {
+                let head: String = resource_label
+                    .chars()
+                    .take(MAX_RESOURCE_PILL_CHARS)
+                    .collect();
+                format!("{head}…")
+            } else {
+                resource_label
+            };
+            return format!("‹ {label}");
         }
-        let content = self.overview_content_rect();
-        let top = self.overview_list_top().max(content.y0);
-        if top >= content.y1 {
-            return Rect::ZERO;
+        match scope {
+            SearchScope::ActiveApp => {
+                let Some(raw) = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|c| c.borrow().active_app_title())
+                else {
+                    return SearchScope::ActiveApp.localized_label();
+                };
+                let title = if raw.chars().count() > MAX_APP_PILL_CHARS {
+                    let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
+                    format!("{head}…")
+                } else {
+                    raw
+                };
+                // An app already called "… app" doesn't get told twice.
+                if title.to_lowercase().ends_with(" app") {
+                    title
+                } else {
+                    t_args("host-search-scope-app", &[("title", title.into())])
+                }
+            }
+            other => other.localized_label(),
         }
-        let band = Rect::new(content.x0, top, content.x1, content.y1);
-        let row = self
-            .overview_add_workspace_rect_for(self.overview_cards().len())
-            .intersect(band);
-        if row.width() > 0.0 && row.height() > 0.0 {
-            row
-        } else {
-            Rect::ZERO
-        }
+    }
+
+    /// True if `p` is over any open overlay's hit rect, so
+    /// [`Widget::handle_event`] absorbs every pointer event and not just
+    /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
+    /// light up affordances underneath.
+    pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.search_card().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    pub(super) fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
+        let f = self.overlay_flags();
+        self.dictation_pointer_at((p.x, p.y))
+            || (f.collaborators && self.collaborators_overlay.contains(p))
+            || (f.quick_settings && self.quick_settings_rect().contains(p))
+            || (f.ws_settings && self.ws_settings_rect().contains(p))
+            || (f.projection && ProjectionOverlay::contains(self.overlay_area(), p))
+            || (self.layers.emoji_picker.is_open()
+                && self.layers.emoji_picker.card_rect().contains(p))
     }
 
     /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
@@ -252,19 +318,6 @@ impl ShellOverlayHost {
         } else {
             Rect::ZERO
         }
-    }
-
-    /// One rect per workspace card in the overview, in tree order.
-    /// Empty while the overview is closed.
-    pub fn overview_row_rects_for_tests(&self) -> Vec<Rect> {
-        if !self.overlay_flags().overview {
-            return Vec::new();
-        }
-        let Some(chrome) = self.chrome.as_ref() else {
-            return Vec::new();
-        };
-        let count = chrome.borrow().tree().desktop.workspaces.len();
-        (0..count).map(|i| self.overview_row_rect(i)).collect()
     }
 
     /// The invite, join and pairing sheet's named controls, as last laid
@@ -1040,29 +1093,6 @@ impl ShellOverlayHost {
     pub fn show_pairing_for_shots(&mut self, link: &str) {
         self.peer_sync_overlay.prompt_pair();
         self.peer_sync_overlay.show_pairing(link.to_owned());
-    }
-
-    /// Fast-forwards the overview crossfade so a headless single-frame
-    /// render sees the settled layer, not the alpha-zero start.
-    pub fn force_overview_settled(&mut self, target: bool) {
-        self.overview_zoom.snap(target);
-        self.overview_naming = None;
-        // Same seeding the animated open does, so a single-frame paint
-        // matches what a real open leaves behind.
-        self.reseed_overview_selection(target);
-    }
-
-    /// Start the keyboard on the current room each time the overview
-    /// opens, and forget any press when it closes.
-    pub(super) fn reseed_overview_selection(&mut self, open: bool) {
-        self.overview_selection = if open {
-            self.overview_here_index()
-        } else {
-            None
-        };
-        self.overview_window_selection = None;
-        self.overview_window_interrupted = false;
-        self.overview_press = None;
     }
 
     /// Open the search of the app in `tab` with `query` typed, as the app's

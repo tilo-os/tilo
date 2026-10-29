@@ -721,13 +721,7 @@ impl OverviewPanel {
 
     /// The colour person `id` wears: their cursor's.
     pub(super) fn person_color(&self, id: &str) -> Color {
-        let (r, g, b) = self
-            .desk
-            .colors
-            .get(id)
-            .copied()
-            .unwrap_or_else(|| ui::presence::user_color(id));
-        Color::from_rgb8(r, g, b)
+        super::paint::face_colour(&self.desk.colors, id)
     }
 
     /// Each person's colour, as a face stack reads them.

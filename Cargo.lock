@@ -15714,6 +15714,7 @@ dependencies = [
  "tilo-notification-banners",
  "tilo-ntfs-mount",
  "tilo-output-passes",
+ "tilo-overview",
  "tilo-owner-commit",
  "tilo-paths",
  "tilo-peer-state",

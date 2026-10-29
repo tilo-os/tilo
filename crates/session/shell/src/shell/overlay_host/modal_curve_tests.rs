@@ -121,36 +121,7 @@ fn modal_transitions_pump_only_the_frames_they_need() {
         );
     }
 
-    /// The draw path consults `self.last_cursor` against each row rect, so
-    /// the hit-test must stay honest with that geometry; `hit_test_overview`
-    /// and `overview_row_rect` are the shared oracle.
-    fn overview_hit_test_returns_card_index_when_cursor_is_over_card() {
-        use crate::shell::chrome_state::ChromeState;
-        use crate::shell::state::WorkspaceTree;
-        use ui::widget::Container;
-
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        tree.create_hosted_workspace("Second");
-        tree.create_hosted_workspace("Third");
-        let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
-        h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-
-        // Aim at the first row's centre via the same geometry helper the
-        // draw path uses, so this test doesn't re-derive row math.
-        let first = h.overview_row_rect(0);
-        assert_eq!(h.hit_test_overview(first.center()), Some(0));
-
-        // Second row should hit with index 1.
-        let second = h.overview_row_rect(1);
-        assert_eq!(h.hit_test_overview(second.center()), Some(1));
-
-        // A point far outside the column (top-left corner) must return None.
-        assert_eq!(h.hit_test_overview(Point::new(5.0, 5.0)), None);
-    }
-
     palette_exit_interpolates_not_pops();
     palette_open_transition_pumps_frames_and_is_visible();
     osd_sleeps_while_opaque_and_pumps_only_its_fade_tail();
-    overview_hit_test_returns_card_index_when_cursor_is_over_card();
 }

@@ -10069,9 +10069,9 @@ mod tests {
             st.bump();
         });
         fb.host_mut().latch_overview_transition();
-        // No settled paint: the acceptance check lists targets as soon as the
-        // overlay flag is up, which is this moment. The open's first sample
-        // is still alpha 0.
+        // The open's first frame: its sample is still alpha 0, and the
+        // overview's app is up and names its targets already.
+        let _ = fb.paint_with_damage();
         let rect = fb
             .widget_registry()
             .get("add_workspace")
@@ -10079,19 +10079,12 @@ mod tests {
             .unwrap_or(Rect::ZERO);
         assert!(
             rect.area() > 0.0,
-            "overview must publish add_workspace as soon as it is open"
+            "the alpha-zero open sample must publish add_workspace"
         );
         assert!(
             rect.x1 <= 1920.0,
             "the new-workspace control stays on the first display (right edge {})",
             rect.x1
-        );
-        let _ = fb.paint_with_damage();
-        assert!(
-            fb.widget_registry()
-                .get("add_workspace")
-                .is_some_and(|hit| hit.area() > 0.0),
-            "the alpha-zero open sample must keep add_workspace addressable"
         );
         let center = rect.center();
         let mut doc = AutoCommit::new();

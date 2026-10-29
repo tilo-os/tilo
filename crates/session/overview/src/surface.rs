@@ -414,12 +414,19 @@ impl Decorator for OverviewSurface {
             return;
         }
         self.panel.handle_event(event, ctx);
-        // The overview is modal: nothing it leaves reaches what is under
-        // it, but the pointer's moves still reach whatever tracks them.
-        if !matches!(event, WindowEvent::CursorMoved { .. }) {
+        // The overview is modal over its display: no press, wheel or
+        // finger reaches what is under it. Keys it does not use (a shell
+        // chord) and the pointer's moves go on.
+        if matches!(
+            event,
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } | WindowEvent::Touch(_)
+        ) {
             *ctx.handled = true;
         }
         self.settle();
+        if let Some(seat) = &self.seat {
+            seat.set_holds_keyboard(self.panel.is_naming());
+        }
     }
 
     fn perform_semantic_action(

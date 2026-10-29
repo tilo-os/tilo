@@ -606,11 +606,6 @@ impl ShellOverlayHost {
             self.overview_zoom
                 .show(open, ui::motion::Zoom::OVERVIEW, motion, source, now);
             self.request_compositor_transition_paints();
-            // Reseed from the current room so the first arrow press moves
-            // one step from here, not from a stale previous visit.
-            self.reseed_overview_selection(open);
-            self.overview_scroll_y = 0.0;
-            self.overview_naming = None;
         }
         self.overview_zoom.progress(now)
     }
@@ -633,7 +628,7 @@ impl ShellOverlayHost {
             .chrome
             .as_ref()
             .is_some_and(|chrome| chrome.borrow().overlays.overview);
-        let motion = self.overview_layout_theme.motion();
+        let motion = self.layout_theme.motion();
         let _ = self.sync_overview_zoom(open, source, motion);
     }
 
@@ -663,12 +658,6 @@ impl ShellOverlayHost {
     /// Whether setup stands in front of the desktop.
     pub fn onboarding_is_open(&self) -> bool {
         self.onboarding.is_some()
-    }
-
-    /// A key opened or closed the overview: the windows fly at `fast`, as
-    /// spatial context, and input acts on the new state at once.
-    pub(super) fn latch_keyboard_overview(&mut self) {
-        self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
     }
 
     /// A workspace switch was asked for by `source`: ask for the frame that

@@ -225,6 +225,52 @@ impl<S: Seat> SheetHost<S> {
     pub(crate) fn area(&self) -> Rect {
         self.area
     }
+
+    /// Offer `event` to the app, for a sheet the host routes itself at its
+    /// own place in the dispatch; whether the app took it. A key that
+    /// follows the opening at once reaches the app before the host has laid
+    /// it out.
+    pub(crate) fn offer_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let moved = matches!(event, WindowEvent::CursorMoved { .. });
+        let was = *ctx.handled;
+        // The pointer's moves always reach it, so it knows where a press
+        // lands; anything else something before it took is not its.
+        if !ShellLayer::is_open(self) || (was && !moved) {
+            return false;
+        }
+        let Some(app) = self.app.as_mut() else {
+            return false;
+        };
+        let node = self.node.unwrap_or(ctx.node_id);
+        let path = ctx.path;
+        *ctx.handled = false;
+        app.handle_event(event, &mut ctx.reborrow(path, node));
+        let took = *ctx.handled;
+        *ctx.handled = was || took;
+        took
+    }
+
+    /// Draw the app, for a sheet the host draws itself at its own place in
+    /// the scene.
+    pub(crate) fn draw_app(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if self.node.is_none() {
+            return;
+        }
+        if let Some(app) = self.app.as_mut() {
+            app.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
 }
 
 impl<S: Seat> ShellLayer for SheetHost<S> {

@@ -93,7 +93,7 @@ impl ShellOverlayHost {
                 WorkspaceSlide::start(
                     from,
                     after > before,
-                    self.overview_layout_theme.motion(),
+                    self.layout_theme.motion(),
                     source,
                     ui::motion::frame_now(),
                 )

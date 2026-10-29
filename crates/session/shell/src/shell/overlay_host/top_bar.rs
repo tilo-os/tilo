@@ -84,7 +84,7 @@ impl ShellOverlayHost {
         let maximized = self.maximized_on_top_bar_display();
         // The bar leaves with a window maximizing over it and comes back
         // with its restore, moved by what moved the window.
-        let (motion, source) = (self.overview_layout_theme.motion(), self.input_source);
+        let (motion, source) = (self.layout_theme.motion(), self.input_source);
         if let Some(bar) = self
             .desktop_surface_mut()
             .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)

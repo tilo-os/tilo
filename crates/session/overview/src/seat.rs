@@ -18,6 +18,8 @@ pub struct OverviewSeat {
     desk: Rc<RefCell<(u64, OverviewDesk)>>,
     asked: Rc<RefCell<Vec<OverviewPick>>>,
     open_asked: Rc<Cell<bool>>,
+    /// A strip's name is being typed: every key is the overview's.
+    typing: Rc<Cell<bool>>,
     flight: WindowFlight,
 }
 
@@ -63,6 +65,16 @@ impl OverviewSeat {
     /// compositor draws them and keeps the clock.
     pub fn flight(&self) -> &WindowFlight {
         &self.flight
+    }
+
+    /// Whether the overview holds the keyboard whole (a strip's name is
+    /// being typed), shell chords included.
+    pub fn holds_keyboard(&self) -> bool {
+        self.typing.get()
+    }
+
+    pub(crate) fn set_holds_keyboard(&self, typing: bool) {
+        self.typing.set(typing);
     }
 
     pub(crate) fn ask(&self, pick: OverviewPick) {

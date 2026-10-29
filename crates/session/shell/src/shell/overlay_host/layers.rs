@@ -68,6 +68,7 @@ pub(crate) enum LayerId {
     MemberSheet,
     /// "Join a workspace…", an app ([`tilo_sheets::directory`]).
     Directory,
+    /// The workspace overview, an app ([`tilo_overview`]).
     Overview,
     WorkspaceSettings,
     Collaborators,
@@ -102,7 +103,11 @@ impl LayerId {
     pub(crate) const fn is_app(self) -> bool {
         matches!(
             self,
-            Self::PowerMenu | Self::DisplayConfirmation | Self::ShortcutHelp | Self::Directory
+            Self::PowerMenu
+                | Self::DisplayConfirmation
+                | Self::ShortcutHelp
+                | Self::Directory
+                | Self::Overview
         )
     }
 
@@ -628,6 +633,10 @@ pub(crate) struct OverlayStack {
     pub(crate) emoji_picker: EmojiPicker,
     pub(crate) tab_menu: TabMenuLayer,
     pub(crate) power_menu: SheetHost<tilo_sheets::power::PowerSeat>,
+    /// The workspace overview, an app ([`tilo_overview`]). The host routes
+    /// and draws it at its own place, so it is not among
+    /// [`Self::layers`].
+    pub(crate) overview: SheetHost<tilo_overview::OverviewSeat>,
     /// The layer that consumed a press whose release has not arrived yet.
     release_owner: Option<LayerId>,
 }

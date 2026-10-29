@@ -943,6 +943,16 @@ impl OverviewPanel {
     }
 }
 
+/// The colour person `id` wears: their cursor's, from `colors_for`, else
+/// the one their id gives them.
+pub(super) fn face_colour(colors_for: &HashMap<String, (u8, u8, u8)>, id: &str) -> Color {
+    let (r, g, b) = colors_for
+        .get(id)
+        .copied()
+        .unwrap_or_else(|| ui::presence::user_color(id));
+    Color::from_rgb8(r, g, b)
+}
+
 /// An overlapping stack of member faces, right-aligned at `anchor.x` and
 /// centred on `anchor.y`, on `ground` (the separator ring is a hole punched
 /// in the face below). An absent member stays at reduced strength rather
@@ -968,11 +978,7 @@ fn paint_face_stack(
     let right = right_x - r;
     for (idx, person) in people.iter().take(shown).enumerate() {
         let cx = right - f64_of_usize(slots.saturating_sub(1).saturating_sub(idx)) * step;
-        let (cr, cg, cb) = colors_for
-            .get(&person.id)
-            .copied()
-            .unwrap_or_else(|| ui::presence::user_color(&person.id));
-        let fill = Color::from_rgb8(cr, cg, cb);
+        let fill = face_colour(colors_for, &person.id);
         // Mixed toward the ground rather than made translucent: the
         // monogram picks its ink from the fill it is drawn on.
         let fill = if person.present {

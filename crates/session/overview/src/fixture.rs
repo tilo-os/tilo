@@ -113,7 +113,7 @@ pub fn desk() -> OverviewDesk {
         group(
             1003,
             500,
-            vec![tab(105, "Release notes — Tilo", browser(), true)],
+            vec![tab(105, "Tilo release notes", browser(), true)],
         ),
         group(1004, 500, vec![tab(106, "Week 44", calendar(), true)]),
     ];

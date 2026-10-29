@@ -435,13 +435,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // A strip's name being typed in the overview: Escape keeps the old
-        // name and leaves the overview open.
-        if self.overview_naming.take().is_some() {
-            self.bump_chrome();
-            *handled = true;
-            return true;
-        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -456,7 +449,7 @@ impl ShellOverlayHost {
             st.overlays.overview = false;
             st.bump();
             drop(st);
-            self.latch_keyboard_overview();
+            self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
             *handled = true;
             return true;
         }
@@ -615,10 +608,6 @@ impl ShellOverlayHost {
             }
         }
         if !self.palette_visible && self.strip_navigator.commit_text(text) {
-            self.bump_chrome();
-            return true;
-        }
-        if !self.palette_visible && self.overview_naming_commit_text(text) {
             self.bump_chrome();
             return true;
         }

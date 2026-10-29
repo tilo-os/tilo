@@ -110,14 +110,8 @@ wireless-protocols = Miracast, Google Cast, AirPlay and FCast
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
 
-# The overview's row of the current workspace's windows.
-overview-windows-title = Windows in this workspace
-overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
+# What the overview asked that could not be done.
 overview-window-move-failed = Can't move this window
-overview-strips-title = Strips in this workspace
-overview-strip-rename = Rename
-overview-strip-move-up = Move up
-overview-strip-move-down = Move down
 overview-strip-move-failed = Can't move this strip
 overview-strip-rename-failed = Can't rename this strip
 
@@ -565,8 +559,6 @@ host-fabric-control-granted = { $device } may control this device for 15 minutes
 a11y-workspace = Tilo workspace
 a11y-member-sheet = Workspace permission decision
 a11y-member-sheet-description = Choose a clearly labelled permission option with Up or Down, press Enter to confirm, or Escape to cancel. Destructive changes require a separate explicit confirmation and offer workspace activity for review.
-a11y-overview = Workspace overview
-a11y-new-workspace = New workspace
 a11y-workspace-settings = Workspace settings
 a11y-workspace-settings-description = Workspace identity, people, permissions, apps, files, and signed ownership governance.
 a11y-manage-ownership = Manage workspace ownership
@@ -677,21 +669,6 @@ agent-door-declined = The person at this desktop declined this connection.
 # The shortcut-guide pill in the display corner
 help-pill = Help
 
-# Workspace overview panel
-overview-go-to = Go to
-overview-no-room = No room selected
-overview-you-are-here = You are here
-overview-shared-out = Shared out of here
-overview-more-shares = and { $count } more
-overview-share-with-two = { $first } and { $second }
-overview-share-with-many = { $count ->
-        [one] { $first } and { $count } other
-       *[other] { $first } and { $count } others
-    }
-overview-share-can-edit = { $with } can edit
-overview-new-workspace = New workspace
-overview-join-workspace = Join a workspace…
-overview-leave-workspace = Leave
 # A site's workspace in the switcher: the community this computer follows, or
 # the site it came from.
 overview-site-community = { $site } community
@@ -701,7 +678,6 @@ overview-site-here = { $count ->
     [one] 1 person here
    *[other] { $count } people here
 }
-a11y-leave-workspace = Leave { $name }
 
 # Search filter chips
 search-filter-all = All

@@ -34,7 +34,7 @@ pub(crate) use agent_markers::AccessibleAgentMarker;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
-use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_isize};
+use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_f64, usize_of_isize};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -81,7 +81,6 @@ mod launcher_host;
 pub(crate) mod layers;
 mod live_shares;
 mod now_playing;
-mod overview_grid;
 mod palette_flow;
 mod parked_workspaces;
 mod peer_sync_dispatch;
@@ -246,9 +245,7 @@ mod foreign_surfaces;
 mod keyboard;
 mod launches;
 mod overlay_routing;
-mod overview_input;
-mod overview_layout;
-mod overview_paint;
+mod overview_app;
 mod paint_desktop;
 mod paint_top;
 mod palette_routing;
@@ -292,6 +289,7 @@ mod tab_rename;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
+mod window_flight;
 mod window_focus;
 mod workspace_content;
 mod ws_emoji;
@@ -299,13 +297,6 @@ mod ws_settings;
 
 use capture::{instant_screen_capture, instant_window_capture, magnifier_step};
 use collaborators::{CollaborationPreferences, collaborators_screen_exposure};
-#[cfg(test)]
-use overview_layout::OVERVIEW_PANEL_START_SCALE;
-use overview_layout::{
-    OVERVIEW_FACE_AWAY_ALPHA, OVERVIEW_FACES_MAX, OVERVIEW_PANEL_RISE_PX, OVERVIEW_SHARES_MAX_ROWS,
-    OverviewMetrics, overview_panel_curve,
-};
-use overview_paint::OverviewPanelCache;
 pub(crate) use portal_prompts::{prompt_choice_to_outcome, prompt_label};
 use qs_state::{
     QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics, quick_settings_settled_bounds, radio_field,
@@ -627,43 +618,19 @@ pub struct ShellOverlayHost {
     /// picture of the workspace. A re-toggle mid-flight reverses from where
     /// the windows are drawn.
     overview_zoom: ui::motion::Presence,
-    /// A strip's name being typed in the overview.
-    overview_naming: Option<Box<overview_grid::OverviewNaming>>,
+    /// The shell took the overview down (its flag went off) and it has not
+    /// finished leaving: told apart from the overview taking itself down.
+    overview_closing: bool,
+    /// The chrome revision (and whether the switcher was up) the overview
+    /// was last lent the desktop at.
+    overview_desk_revision: Option<(u64, bool)>,
     /// The overview's live pictures of shell-drawn windows, painted once and
     /// kept while nothing they show changes, so every frame of the zoom
     /// draws the same paint instead of painting each window again.
     overview_thumbnails: Option<(u64, crate::shell::window_previews::LiveThumbnails)>,
-    /// Scroll offset (px) for the overview's room list, clamped each
-    /// frame so a workspace deletion can't strand it past the tail.
-    overview_scroll_y: f64,
-    /// Keyboard target in the overview switcher: arrows walk it, Enter
-    /// goes there, Esc leaves it alone. `None` while closed; re-seeded
-    /// from the current room each time it opens.
-    overview_selection: Option<usize>,
-    /// The window in the current room's preview row the keyboard is on:
-    /// Left and Right walk it, Enter goes there. `None` while the keyboard
-    /// is on the room list.
-    overview_window_selection: Option<crate::shell::state::TabId>,
-    /// One interrupted activation is consumed after its target disappears.
-    overview_window_interrupted: bool,
-    /// A press on the overview until it is let go: a click or tap on a
-    /// window preview goes to that window, a drag carries it to another
-    /// room.
-    overview_press: Option<tilo_desktop::overview::OverviewPress>,
-    /// Settled overview panel recording. Animation frames reuse it and only
-    /// change the transform, instead of re-encoding every room row.
-    overview_panel_cache: Option<OverviewPanelCache>,
-    /// How many times the panel recording was built. Tests use this to prove
-    /// a transition does not rebuild it per frame.
-    overview_panel_cache_fills: u32,
-    /// Overview panel density for the current theme, refreshed each
-    /// layout pass — see [`OverviewMetrics`]. Cached so the geometry
-    /// helpers hit-testing calls (no theme in hand) read the same numbers
-    /// paint does.
-    overview_metrics: OverviewMetrics,
-    /// Layout-only theme snapshot for the shared compact-modal rule.
-    overview_layout_theme: Theme,
-    overview_layout_viewport: Rect,
+    /// The theme the host was last laid out with, for what is decided
+    /// with no theme in hand (motion, the compact-modal rule).
+    layout_theme: Theme,
     /// Quick Settings' appear, drill and height motion (`ui::motion`).
     qs_motion: qs_motion::QsMotion,
     /// The input the person last used, which the next surface that opens
@@ -777,9 +744,6 @@ pub struct ShellOverlayHost {
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
     axis_gather_pending: Option<axis_navigation::Gather>,
-    /// Hit rect for the "+ Add workspace" affordance at the tail of the
-    /// overview's list. `Rect::ZERO` when not painted.
-    add_workspace_rect: Rect,
     /// Top of the band below the top bar that sheets, the permission prompt
     /// and the notification stack lay out under. Defaults to
     /// [`CHROME_TOP_OFFSET_PX`]; `with_chrome_top` overrides it.
@@ -1071,8 +1035,8 @@ pub struct ShellOverlayHost {
     /// Live window previews the switcher and the overview show, rendered
     /// by the compositor only while one of them is up.
     window_previews: crate::shell::window_previews::WindowPreviews,
-    /// Each window the overview's row last drew, in order, and whether its
-    /// well showed its live picture: what the panel on screen holds.
+    /// Each window picture the overview's flight last drew, in order, and
+    /// whether it showed its live picture.
     overview_row_drawn: Vec<(u64, tilo_desktop::window_switcher::PreviewState)>,
     /// The focused text field's caret in desktop coordinates, as the
     /// compositor last reported it; the emoji picker and clipboard history
@@ -1415,9 +1379,6 @@ fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersStat
     ) && !(modifiers.control_key() || modifiers.alt_key() || modifiers.super_key())
 }
 
-// Overview layout constants. Module-level so the draw path,
-// `hit_test_overview` and the unit tests share one geometry oracle.
-
 /// Where one `update` of the host spent its time, reported as
 /// `SLOW-HOST-UPDATE` when the whole of it took long enough to hold up input:
 /// a stalled pump then names its step in the session log.
@@ -1709,15 +1670,11 @@ mod empty_workspace_tests;
 
 #[cfg(test)]
 #[allow(
-    clippy::float_cmp,
-    reason = "exact overview layout geometry is the behavior under test"
-)]
-#[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
-#[path = "overview_panel_tests.rs"]
-mod overview_panel_tests;
+#[path = "workspace_settings_tests.rs"]
+mod workspace_settings_tests;
 
 #[cfg(test)]
 #[allow(

@@ -47,13 +47,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // A strip's name being typed in the overview takes every key, for the
-        // same reason.
-        if !self.palette_visible && self.overview_naming.is_some() {
-            self.overview_naming_key(logical_key, mstate);
-            *handled = true;
-            return true;
-        }
         // The usual host event path handles this ahead of modal routing.
         // Keep the same arbitration here for direct widget dispatch and any
         // future backend that enters through this keyboard-only helper.
@@ -144,7 +137,7 @@ impl ShellOverlayHost {
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
                 drop(st);
-                self.latch_keyboard_overview();
+                self.latch_overview_transition_from(ui::tokens::MotionSource::Keyboard);
             }
             *handled = true;
             return true;
@@ -370,12 +363,6 @@ impl ShellOverlayHost {
                 ui::tokens::MotionSource::Keyboard,
             );
             *handled = true;
-            return true;
-        }
-        if self.handle_overview_strip_keys(logical_key, mstate, handled) {
-            return true;
-        }
-        if self.handle_overview_keyboard_nav(logical_key, shift_down, handled) {
             return true;
         }
         if super_down

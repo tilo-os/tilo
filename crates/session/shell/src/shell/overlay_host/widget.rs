@@ -414,6 +414,7 @@ impl Widget for ShellOverlayHost {
             | self.pump_display_confirmation(doc, path)
             | self.pump_shortcut_guide(doc, path)
             | self.pump_directory(doc, path);
+        let overview_dirty = self.pump_overview(doc, path);
         let session_action_dirty = self.drain_session_action_results();
         steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
@@ -464,6 +465,7 @@ impl Widget for ShellOverlayHost {
             || notifications_dropped
             || launch_dirty
             || power_menu_dirty
+            || overview_dirty
             || session_action_dirty
             || chrome_dirty
             || portal_dirty
@@ -519,10 +521,9 @@ impl Widget for ShellOverlayHost {
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
-        // The overview's row heights follow the theme's type sizes; resolve
-        // them here, where the theme is in hand, so this pass's hit-testing
-        // and paint share one answer.
-        self.resolve_overview_layout(theme);
+        // What is decided with no theme in hand (motion, the compact-modal
+        // rule) reads the theme of this pass.
+        self.layout_theme.clone_from(theme);
         self.onboarding_node = None;
         // A pass that lays out the guide has it up as the flag asks.
         self.follow_shortcut_guide();
@@ -606,6 +607,13 @@ impl Widget for ShellOverlayHost {
             theme,
             node_map,
             self.overlay_area(),
+            self.rect.origin(),
+        );
+        let overview_window = self.layers.overview.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.overview_output_rect(),
             self.rect.origin(),
         );
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
@@ -711,6 +719,7 @@ impl Widget for ShellOverlayHost {
         children.extend(display_confirm_window);
         children.extend(shortcut_guide_window);
         children.extend(directory_window);
+        children.extend(overview_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -858,6 +867,7 @@ impl Widget for ShellOverlayHost {
         self.layers
             .directory
             .apply_layout(taffy, self.rect.origin());
+        self.layers.overview.apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
             // display it opens on.
@@ -1102,6 +1112,7 @@ impl Widget for ShellOverlayHost {
         out.extend(self.layers.display_confirm.widget());
         out.extend(self.layers.shortcut_guide.widget());
         out.extend(self.layers.directory.widget());
+        out.extend(self.layers.overview.widget());
         out
     }
 
@@ -1153,6 +1164,7 @@ impl Widget for ShellOverlayHost {
         out.extend(self.layers.display_confirm.widget_mut());
         out.extend(self.layers.shortcut_guide.widget_mut());
         out.extend(self.layers.directory.widget_mut());
+        out.extend(self.layers.overview.widget_mut());
         out
     }
 
@@ -1250,6 +1262,7 @@ impl Widget for ShellOverlayHost {
             | self.layers.display_confirm.structure_changed()
             | self.layers.shortcut_guide.structure_changed()
             | self.layers.directory.structure_changed()
+            | self.layers.overview.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
@@ -1795,6 +1808,13 @@ impl ShellOverlayHost {
             *ctx.handled = true;
             return;
         }
+        // The overview's keys, and a strip's name typed in it, ahead of the
+        // shell's chords.
+        if !Self::is_pointer_event(event)
+            && self.route_overview_key(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
+            return;
+        }
         if let WindowEvent::Ime(winit::event::Ime::Commit(text)) = event
             && self.commit_into_chrome_field(text)
         {
@@ -1867,7 +1887,9 @@ impl ShellOverlayHost {
         if self.handle_shell_mouse_click_event(event, ctx.handled) {
             return;
         }
-        if self.handle_shell_overview_pointer_event(event, ctx.scale_factor, ctx.handled) {
+        if Self::is_pointer_event(event)
+            && self.route_overview_pointer(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
+        {
             return;
         }
 

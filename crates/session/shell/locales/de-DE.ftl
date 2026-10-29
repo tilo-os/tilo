@@ -108,14 +108,8 @@ wireless-protocols = Miracast, Google Cast, AirPlay und FCast
 display-identify-builtin = Eingebauter Bildschirm
 display-identify-unnamed = Bildschirm { $number }
 
-# Die Fensterreihe des aktuellen Arbeitsbereichs in der Übersicht.
-overview-windows-title = Fenster in diesem Arbeitsbereich
-overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich, um es dorthin zu verschieben.
+# Was die Übersicht verlangte und nicht getan werden konnte.
 overview-window-move-failed = Dieses Fenster kann nicht verschoben werden
-overview-strips-title = Leisten in diesem Arbeitsbereich
-overview-strip-rename = Umbenennen
-overview-strip-move-up = Nach oben
-overview-strip-move-down = Nach unten
 overview-strip-move-failed = Diese Leiste lässt sich nicht verschieben
 overview-strip-rename-failed = Diese Leiste lässt sich nicht umbenennen
 
@@ -562,8 +556,6 @@ host-fabric-control-granted = { $device } darf dieses Gerät 15 Minuten lang ste
 a11y-workspace = Tilo-Arbeitsbereich
 a11y-member-sheet = Berechtigungsentscheidung für den Arbeitsbereich
 a11y-member-sheet-description = Wähle mit Pfeil nach oben oder unten eine klar beschriftete Berechtigung, bestätige mit Eingabe oder brich mit Escape ab. Folgenreiche Änderungen verlangen eine eigene ausdrückliche Bestätigung und bieten die Aktivität des Arbeitsbereichs zur Prüfung an.
-a11y-overview = Arbeitsbereichsübersicht
-a11y-new-workspace = Neuer Arbeitsbereich
 a11y-workspace-settings = Arbeitsbereichseinstellungen
 a11y-workspace-settings-description = Identität, Personen, Berechtigungen, Apps und Dateien des Arbeitsbereichs sowie signierte Eigentümerverwaltung.
 a11y-manage-ownership = Eigentum am Arbeitsbereich verwalten
@@ -674,21 +666,6 @@ agent-door-declined = Die Person an diesem Desktop hat diese Verbindung abgelehn
 # Die Hilfe-Pille in der Bildschirmecke
 help-pill = Hilfe
 
-# Arbeitsbereichsübersicht
-overview-go-to = Wechseln zu
-overview-no-room = Kein Raum ausgewählt
-overview-you-are-here = Du bist hier
-overview-shared-out = Von hier aus geteilt
-overview-more-shares = und { $count } weitere
-overview-share-with-two = { $first } und { $second }
-overview-share-with-many = { $count ->
-        [one] { $first } und { $count } weitere Person
-       *[other] { $first } und { $count } weitere Personen
-    }
-overview-share-can-edit = { $with } darf bearbeiten
-overview-new-workspace = Neuer Arbeitsbereich
-overview-join-workspace = Einem Arbeitsbereich beitreten…
-overview-leave-workspace = Verlassen
 # Der Arbeitsbereich einer Website im Umschalter: die Community dieses Computers
 # oder die Website, von der er kommt.
 overview-site-community = Community { $site }
@@ -698,7 +675,6 @@ overview-site-here = { $count ->
     [one] 1 Person hier
    *[other] { $count } Personen hier
 }
-a11y-leave-workspace = { $name } verlassen
 
 # Filterchips der Suche
 search-filter-all = Alle
