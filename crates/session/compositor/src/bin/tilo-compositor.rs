@@ -1,7 +1,7 @@
 //! The compositor on its own: `tilo-compositor [--backend
 //! nested|drm|headless] [--size WxH] [--scale S] [-- command args...]`.
-//! Listens on a fresh `wayland-N` socket, prints its name and starts
-//! `command` with `WAYLAND_DISPLAY` set to it. Windows float on a plain
+//! Listens on a fresh `wayland-N` socket, starts Xwayland, prints both and
+//! starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to them. Windows float on a plain
 //! background; no shell surfaces. Inside a desktop (`DISPLAY` set) it runs in
 //! a window by default, else on the TTY.
 
@@ -73,12 +73,26 @@ fn main() -> std::process::ExitCode {
         }
     };
     println!("WAYLAND_DISPLAY={socket}");
+    // X11 clients through Xwayland, unless it is missing.
+    let x_display = match compositor.start_xwayland() {
+        Ok(number) => {
+            println!("DISPLAY=:{number}");
+            Some(format!(":{number}"))
+        }
+        Err(error) => {
+            eprintln!("tilo-compositor: no Xwayland: {error}");
+            None
+        }
+    };
     let mut child = None;
     if let Some((program, rest)) = command.split_first() {
-        match std::process::Command::new(program)
-            .args(rest)
-            .env("WAYLAND_DISPLAY", &socket)
-            .spawn()
+        let mut command = std::process::Command::new(program);
+        command.args(rest).env("WAYLAND_DISPLAY", &socket);
+        match &x_display {
+            Some(display) => command.env("DISPLAY", display),
+            None => command.env_remove("DISPLAY"),
+        };
+        match command.spawn()
         {
             Ok(spawned) => child = Some(spawned),
             Err(error) => eprintln!("tilo-compositor: {program}: {error}"),

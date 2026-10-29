@@ -105,6 +105,9 @@ pub struct State {
     pub(crate) text_input: crate::text_input::TextInput,
     pub(crate) cursor: crate::cursor::Cursor,
     pub(crate) output_management: crate::output_management::OutputManagement,
+    pub(crate) xwayland_shell: smithay::wayland::xwayland_shell::XWaylandShellState,
+    /// The X11 window manager, once Xwayland is ready.
+    pub(crate) xwm: Option<smithay::xwayland::X11Wm>,
 }
 
 impl State {
@@ -144,6 +147,10 @@ impl State {
             text_input: crate::text_input::TextInput::new(display),
             cursor: crate::cursor::Cursor::new(),
             output_management: crate::output_management::OutputManagement::new(display),
+            xwayland_shell: smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(
+                display,
+            ),
+            xwm: None,
         }
     }
 
@@ -190,10 +197,10 @@ impl State {
         self.space
             .elements()
             .filter_map(|window| {
-                let toplevel = window.toplevel()?;
+                let info = describe(window)?;
                 let location = self.space.element_location(window)?;
                 let size = window.geometry().size;
-                Some((window_info(toplevel), Rectangle::new(location, size)))
+                Some((info, Rectangle::new(location, size)))
             })
             .collect()
     }
@@ -369,7 +376,7 @@ impl State {
             && !self.locked()
             && let Some((window, _, _)) = self.surface_under(self.pointer)
         {
-            let info = window.toplevel().map(window_info);
+            let info = describe(&window);
             if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
                 self.focus_window(&window, serial);
             }
@@ -439,21 +446,27 @@ impl State {
         }
         let surface = window
             .toplevel()
-            .map(|toplevel| toplevel.wl_surface().clone());
+            .map(|toplevel| toplevel.wl_surface().clone())
+            .or_else(|| crate::xwayland::x11_wl_surface(window));
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface, serial);
         }
     }
 
-    /// Map a toplevel whose first buffer arrived, where the policy places it.
-    fn map_window(&mut self, window: &Window) {
-        let Some(info) = window.toplevel().map(window_info) else {
+    /// Map a toplevel whose first buffer arrived (or an X11 window that
+    /// asked to be mapped), where the policy places it.
+    pub(crate) fn map_window(&mut self, window: &Window) {
+        let Some(info) = describe(window) else {
             return;
         };
         let outputs = self.output_geometries();
         let size = window.geometry().size;
         let location = self.policy.place(&info, (size.w, size.h), &outputs);
         self.space.map_element(window.clone(), location, false);
+        if let Some(x11) = window.x11_surface() {
+            // X11 windows know their place in the root window.
+            let _ = x11.configure(Rectangle::new(location, size));
+        }
         if self.policy.focus_on_map(&info) {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
         }
@@ -470,12 +483,23 @@ impl State {
         };
         let stack: Vec<Window> = self.space.elements().cloned().collect();
         for window in stack {
-            let Some(toplevel) = window.toplevel() else {
+            let Some(id) = describe(&window).map(|info| info.id) else {
                 continue;
             };
-            let id = window_info(toplevel).id;
             let Some(arrangement) = arrangements.iter().find(|arrangement| arrangement.id == id)
             else {
+                continue;
+            };
+            if let Some(x11) = window.x11_surface() {
+                let size = arrangement
+                    .size
+                    .map_or_else(|| x11.geometry().size, Into::into);
+                let _ = x11.configure(Rectangle::new(arrangement.location, size));
+                self.space
+                    .map_element(window.clone(), arrangement.location, false);
+                continue;
+            }
+            let Some(toplevel) = window.toplevel() else {
                 continue;
             };
             if let Some((w, h)) = arrangement.size {
@@ -506,7 +530,25 @@ struct WindowId(u64);
 
 static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// What a policy learns about a window.
+/// Where X11 window ids start in the [`WindowInfo`] id space, apart from
+/// Wayland toplevels' counter.
+const X11_IDS: u64 = 1 << 40;
+
+/// What a policy learns about a window, Wayland or X11; `None` for
+/// override-redirect X11 windows, which place themselves.
+fn describe(window: &Window) -> Option<WindowInfo> {
+    if let Some(toplevel) = window.toplevel() {
+        return Some(window_info(toplevel));
+    }
+    let x11 = window.x11_surface()?;
+    (!x11.is_override_redirect()).then(|| WindowInfo {
+        id: X11_IDS | u64::from(x11.window_id()),
+        app_id: Some(x11.class()),
+        title: Some(x11.title()),
+    })
+}
+
+/// What a policy learns about a toplevel.
 fn window_info(toplevel: &ToplevelSurface) -> WindowInfo {
     smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
         let id = states.data_map.get::<WindowId>().map_or(0, |id| id.0);

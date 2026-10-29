@@ -23,6 +23,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_udev",
     "backend_session_libseat",
     "backend_x11",
+    "xwayland",
 ] }
 tracing.workspace = true
 # Named pointer shapes from the XCursor theme.
