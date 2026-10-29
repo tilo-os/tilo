@@ -55,7 +55,9 @@ class NextestPolicyTests(unittest.TestCase):
         ci = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))["profile"]["ci"]
         self.assertEqual(ci["status-level"], "leak")
 
-    def test_every_native_4k_test_gets_an_exclusive_cpu_budget(self) -> None:
+    def test_every_native_4k_test_gets_a_share_of_the_cores(self) -> None:
+        # A whole 3840x2160 software frame needs many cores, but not the whole
+        # pool: a share of sixteen or more, or the pool itself.
         config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
         expected = native_4k_tests()
         self.assertTrue(expected, "the source scan must find native-4K renderer tests")
@@ -66,6 +68,10 @@ class NextestPolicyTests(unittest.TestCase):
                 override["filter"]
                 for override in overrides
                 if override.get("threads-required") == "num-cpus"
+                or (
+                    isinstance(override.get("threads-required"), int)
+                    and override["threads-required"] >= 16
+                )
             ]
             covered = {
                 test_name
