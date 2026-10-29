@@ -154,7 +154,7 @@ fn older_markup_keeps_its_annotations_and_leaves_old_threads_behind() {
                 "a1": {
                     "id": "a1",
                     "page_id": "p1",
-                    "mark": { "kind": "note", "x": 1.0, "y": 2.0 },
+                    "mark": r#"{"kind":"note","x":1.0,"y":2.0}"#,
                 },
             },
             "comments": {
