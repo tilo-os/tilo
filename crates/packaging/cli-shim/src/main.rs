@@ -26,7 +26,7 @@ use std::env;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 
-use cli_shim::{Sidecar, sidecar_path_for};
+use cli_shim::{Sidecar, missing_sidecar_message, sidecar_path_for};
 
 /// System install path for the launcher; overridable by the sidecar's
 /// `launcher = ...` field so tests can point at a target/debug/tilo-launcher without root-installing.
@@ -39,10 +39,7 @@ fn main() -> ! {
     });
     let sidecar_path = sidecar_path_for(&exe);
     let sidecar = read_sidecar(&sidecar_path).unwrap_or_else(|e| {
-        die(&format!(
-            "tilo-cli-shim: sidecar {} unreadable: {e}",
-            sidecar_path.display()
-        ));
+        die(&missing_sidecar_message(&exe, &e));
     });
 
     let launcher = sidecar

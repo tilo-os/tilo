@@ -57,6 +57,19 @@ for builder in dist/build-binaries.sh dist/arch/PKGBUILD; do
     }
 done
 
+# Every host package ships `tilo`, the terminal's way to the desktop's apps and
+# actions; a builder that stops compiling it leaves the payload without one.
+for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; do
+    grep -Eq -- '-p tilo-cli' "$repo_root/$builder" || {
+        echo "$builder does not build the tilo command" >&2
+        exit 1
+    }
+done
+grep -Fq '"--bin" "tilo"' "$repo_root/dist/nix/package.nix" || {
+    echo "dist/nix/package.nix does not build the tilo command" >&2
+    exit 1
+}
+
 # Host packages ship only the compositor from the shell crate. Keep every FHS
 # builder explicit so adding another developer binary to that crate cannot
 # multiply release build time and disk use again.
@@ -83,7 +96,7 @@ fi
 
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
-for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -160,7 +173,7 @@ void _start(void) {
 EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
-    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
                   "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
                   "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
@@ -195,7 +208,7 @@ for object_mode in -shared -c; do
         exit 1
     fi
 done
-for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -212,6 +225,31 @@ printf '#!/bin/sh\necho "libmissing.so => not found"\n' > "$work/fake-tools/ldd"
 if PATH="$work/fake-tools:$PATH" TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "payload verifier accepted a missing shared library" >&2; exit 1
 fi
+mv "$fhs/usr/bin/tilo" "$work/tilo-held"
+if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
+    echo "payload verifier accepted a package without the tilo command" >&2; exit 1
+fi
+mv "$work/tilo-held" "$fhs/usr/bin/tilo"
+# A packaged app command needs its sidecar: without one, typing the command
+# only reports the sidecar unreadable. Orphaned sidecars fail too.
+apps_bin=$fhs/usr/lib/tilo-apps/bin
+mkdir -p "$apps_bin"
+install -m755 "$true_bin" "$apps_bin/notes"
+if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >"$work/no-sidecar.log" 2>&1; then
+    echo "payload verifier accepted a command shim without its sidecar" >&2; exit 1
+fi
+grep -Fq 'command shim without its sidecar' "$work/no-sidecar.log"
+printf 'package_id = "so.tilo.notes"\n' > "$apps_bin/notes.tilo-shim"
+if "$repo_root/dist/verify-cli-shims.sh" "$apps_bin" >/dev/null 2>&1; then
+    echo "shim verifier accepted a sidecar naming no command" >&2; exit 1
+fi
+printf 'package_id = "so.tilo.notes"\ncommand = "notes"\n' > "$apps_bin/notes.tilo-shim"
+TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null
+rm "$apps_bin/notes"
+if "$repo_root/dist/verify-cli-shims.sh" "$apps_bin" >/dev/null 2>&1; then
+    echo "shim verifier accepted a sidecar without its command shim" >&2; exit 1
+fi
+rm -r "$fhs/usr/lib/tilo-apps"
 mv "$fhs/usr/bin/tilo-import-folders" "$work/import-held"
 if TILO_EXPECT_ARCH="$package_arch" "$repo_root/dist/verify-payload.sh" "$fhs" >/dev/null 2>&1; then
     echo "payload verifier accepted missing import executable" >&2; exit 1
@@ -231,7 +269,7 @@ fi
 
 nix=$work/nix-result
 mkdir -p "$nix"/{bin,libexec,etc/pam.d,share/systemd/user,share/wayland-sessions,share/applications,share/xdg-desktop-portal/portals,share/pipewire,share/licenses/tilo-session}
-for target in "$nix/bin/tilo-shell" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
+for target in "$nix/bin/tilo-shell" "$nix/bin/tilo" "$nix/bin/tilo-launcher" "$nix/bin/tilo-import-folders" \
               "$nix/libexec/tilo-unlock-helper" "$nix/libexec/tilo-flight-recorder" \
               "$nix/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"

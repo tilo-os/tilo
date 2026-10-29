@@ -7,7 +7,7 @@ result=$(realpath "$1")
 arch=$2
 case "$arch" in amd64|arm64) ;; *) exit 2 ;; esac
 
-for file in bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper \
+for file in bin/tilo-shell bin/tilo bin/tilo-launcher bin/tilo-import-folders libexec/tilo-unlock-helper \
             libexec/tilo-session libexec/tilo-session-runner \
             libexec/tilo-flight-recorder libexec/tilo-session-report; do
     [[ -x $result/$file ]] || { echo "missing executable: $file" >&2; exit 1; }

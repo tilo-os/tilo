@@ -30,6 +30,7 @@ build() {
   cd "tilo-$pkgver"
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p tilo-unlock-helper -p tilo-session-record
+  cargo build --release --locked -p tilo-cli --bin tilo
   cargo build --release --locked -p imager --bin imager --features installation
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
   cargo build --release --locked -p shell --bin shell --no-default-features
@@ -46,7 +47,7 @@ package_tilo-session() {
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
   cd "$srcdir/payload"
-  install -Dm755 bin/tilo-shell bin/tilo-import-folders -t "$pkgdir/usr/bin"
+  install -Dm755 bin/tilo-shell bin/tilo bin/tilo-import-folders -t "$pkgdir/usr/bin"
   # The launcher's path is pinned where the session and its units start it, on
   # every distribution; the old name on PATH links to it.
   install -Dm755 bin/tilo-launcher -t "$pkgdir/usr/libexec/tilo"

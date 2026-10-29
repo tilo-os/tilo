@@ -24,6 +24,7 @@ SUPPORT = {
     "ush",
     "local-model-service",
     "tilo-model-gateway",
+    "tilo-cli",
 }
 
 

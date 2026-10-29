@@ -63,7 +63,8 @@ touch "$root/.lock"
 touch "$TILO_RUNTIME_BUNDLE_DIR/.gc.lock"
 [[ -z ${FIXTURE_RUNTIME_STATE:-} ]] || mkdir -p "$TILO_RUNTIME_BUNDLE_DIR/$FIXTURE_RUNTIME_STATE"
 cp "$TILO_CLI_SHIM_PATH" "$root/bin/settings-cli"
-printf 'so.tilo.settings\n' > "$root/bin/settings-cli.tilo-shim"
+[[ -n ${FIXTURE_NO_SIDECAR:-} ]] \
+    || printf 'package_id = "so.tilo.settings"\ncommand = "settings-cli"\n' > "$root/bin/settings-cli.tilo-shim"
 cat > "$root/registry.toml" <<TOML
 [[entry]]
 id = "so.tilo.settings"
@@ -125,6 +126,15 @@ if FIXTURE_RUNTIME_STATE=.leases TILO_ENV_RUNTIME_DIR=$env_runtime \
     exit 1
 fi
 grep -Fq 'collector state left in the packaged runtime root' "$work/runtime-state.log"
+# A command shim without its sidecar only fails when someone types it: the
+# package build refuses it instead.
+if FIXTURE_NO_SIDECAR=1 TILO_ENV_RUNTIME_DIR=$env_runtime \
+    "$repo_root/dist/rpm/stage-app-store.sh" "$release" "$release/bin" "$work/no-sidecar" \
+    >"$work/no-sidecar.log" 2>&1; then
+    echo "app-store staging shipped a command shim without its sidecar" >&2
+    exit 1
+fi
+grep -Fq 'command shim without its sidecar' "$work/no-sidecar.log"
 test "$(stat -c %a "$stage/usr/share/tilo-apps/registry.toml")" = 644
 test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/bundle.toml")" = 644
 test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef/libfixture.so")" = 755
