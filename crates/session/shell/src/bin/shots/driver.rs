@@ -2689,9 +2689,6 @@ impl ShellDriver {
             }
             st.quick_settings.wifi_password = Some(prompt);
         });
-        self.fb
-            .host_mut()
-            .seed_wifi_password_for_tests("espresso", rejected);
     }
 
     /// Long SSIDs are normal in apartment blocks and enterprise networks;
