@@ -14,8 +14,8 @@ const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.ids"),
 );
 const TODO: (&str, &str) = (
-    include_str!("../../../../apps/tl/todo/app.tl"),
-    include_str!("../../../../apps/tl/todo/app.ids"),
+    include_str!("../../../../apps/tl/tasks/app.tl"),
+    include_str!("../../../../apps/tl/tasks/app.ids"),
 );
 const NOTES_APP: &str = "so.tilo.lang.notes";
 const TODO_APP: &str = "so.tilo.lang.todo";
@@ -55,7 +55,7 @@ fn seeded() -> Task {
     for source in [
         "notes.retitle(notes.new_note(notes.notes), \"Q3 plan\")",
         "notes.pin(notes.new_note(notes.notes), true)",
-        "todo.add(todo.todos, \"milk\")\ntodo.add(todo.todos, \"bins\")",
+        "todo.add(todo.tasks, \"milk\")\ntodo.add(todo.tasks, \"bins\")",
     ] {
         let answer = task.run(source, true);
         assert_eq!(answer["state"], "done", "{source}: {answer:#}");
@@ -68,13 +68,13 @@ fn seeded() -> Task {
 fn one_program_reads_notes_and_todo() {
     let task = seeded();
     assert_eq!(
-        task.said("print(notes.notes.len(), notes.notes.filter(n -> n.pinned).len(), todo.todos.items.len())"),
+        task.said("print(notes.notes.len(), notes.notes.filter(n -> n.pinned).len(), todo.tasks.items.len())"),
         "2 1 2"
     );
-    let titles = task.run("todo.todos.items", false);
+    let titles = task.run("todo.tasks.items", false);
     let shown = titles["output"][0].as_str().unwrap();
     assert!(
-        shown.contains("@todo.Todo:") && shown.contains("\"milk\""),
+        shown.contains("@todo.Task:") && shown.contains("\"milk\""),
         "{shown}"
     );
     assert!(
@@ -86,7 +86,7 @@ fn one_program_reads_notes_and_todo() {
 #[test]
 fn a_programs_lets_stay_for_the_next() {
     let task = seeded();
-    let first = task.run("let list = todo.todos", false);
+    let first = task.run("let list = todo.tasks", false);
     assert_eq!(first["state"], "done", "{first:#}");
     assert_eq!(first["lets"][0]["name"], "list", "{first:#}");
     assert_eq!(task.said("list.items.len()"), "2");
@@ -96,7 +96,7 @@ fn a_programs_lets_stay_for_the_next() {
 fn changes_in_two_apps_are_invocations_of_each() {
     let task = seeded();
     let answer = task.run(
-        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntodo.add(todo.todos, \"call Ada\")",
+        "for n in notes.notes.filter(n -> n.pinned) {\n    notes.pin(n, false)\n}\ntodo.add(todo.tasks, \"call Ada\")",
         false,
     );
     assert_eq!(answer["state"], "done", "{answer:#}");
@@ -123,13 +123,13 @@ fn changes_in_two_apps_are_invocations_of_each() {
         "the action is invoked on its subject: {invoked:#?}"
     );
     assert_eq!(task.said("notes.notes.filter(n -> n.pinned).len()"), "0");
-    assert_eq!(task.said("todo.todos.items.len()"), "3");
+    assert_eq!(task.said("todo.tasks.items.len()"), "3");
 }
 
 #[test]
 fn an_assignment_is_the_resources_field_edit() {
     let task = seeded();
-    let answer = task.run("for t in todo.todos.items {\n    t.done = true\n}", false);
+    let answer = task.run("for t in todo.tasks.items {\n    t.done = true\n}", false);
     assert_eq!(answer["state"], "done", "{answer:#}");
     let invoked = task.door.invoked.borrow().clone();
     assert_eq!(invoked.len(), 2, "{invoked:#?}");
@@ -139,13 +139,13 @@ fn an_assignment_is_the_resources_field_edit() {
             .all(|call| call["action"] == "edit-flag" && call["arguments"]["value"] == true),
         "{invoked:#?}"
     );
-    assert_eq!(task.said("todo.todos.items.filter(t -> t.done).len()"), "2");
+    assert_eq!(task.said("todo.tasks.items.filter(t -> t.done).len()"), "2");
 }
 
 #[test]
 fn many_changes_are_previewed_and_sent_on_confirm() {
     let task = seeded();
-    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    todo.add(todo.todos, t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
+    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\"] {\n    todo.add(todo.tasks, t)\n}\nfor n in notes.notes {\n    n.title = \"x\"\n}";
     let previewed = task.run(bulk, false);
     assert_eq!(previewed["state"], "preview", "{previewed:#}");
     assert_eq!(
@@ -157,23 +157,23 @@ fn many_changes_are_previewed_and_sent_on_confirm() {
         task.door.invoked.borrow().is_empty(),
         "a preview invokes nothing"
     );
-    assert_eq!(task.said("todo.todos.items.len()"), "2");
+    assert_eq!(task.said("todo.tasks.items.len()"), "2");
     let applied = task.run(bulk, true);
     assert_eq!(applied["state"], "done", "{applied:#}");
     assert_eq!(applied["changed"], 6, "{applied:#}");
-    assert_eq!(task.said("todo.todos.items.len()"), "6");
+    assert_eq!(task.said("todo.tasks.items.len()"), "6");
 }
 
 #[test]
 fn a_destructive_action_is_previewed_first() {
     let task = seeded();
     let answer = task.run(
-        "for t in todo.todos.items {\n    todo.remove(todo.todos, t)\n}",
+        "for t in todo.tasks.items {\n    todo.remove(todo.tasks, t)\n}",
         false,
     );
     assert_eq!(answer["state"], "preview", "{answer:#}");
     assert_eq!(answer["steps"][0]["destructive"], true, "{answer:#}");
-    assert_eq!(task.said("todo.todos.items.len()"), "2");
+    assert_eq!(task.said("todo.tasks.items.len()"), "2");
 }
 
 #[test]
@@ -186,11 +186,11 @@ fn a_refused_invocation_is_never_done() {
         "{answer:#}"
     );
     let tried = task.run(
-        "match try todo.rename(todo.todos, \"Saturday\") { .ok => print(\"renamed\"), .err(why) => print(why) }",
+        "match try todo.add(todo.tasks, \"Saturday\") { .ok(t) => print(t.title), .err(why) => print(why) }",
         true,
     );
     assert_eq!(tried["state"], "done", "{tried:#}");
-    assert_eq!(tried["output"], json!(["renamed"]), "{tried:#}");
+    assert_eq!(tried["output"], json!(["Saturday"]), "{tried:#}");
 }
 
 #[test]
@@ -200,9 +200,9 @@ fn what_cannot_be_read_is_an_error_never_nothing() {
     let door = Rc::new(apps);
     let session = door.task();
     for source in [
-        "todo.todos.items.len()",
-        "print(todo.todos.items.len())",
-        "todo.todos.items",
+        "todo.tasks.items.len()",
+        "print(todo.tasks.items.len())",
+        "todo.tasks.items",
     ] {
         let answer = session.run(source, false);
         assert_eq!(answer["state"], "failed", "{source}: {answer:#}");

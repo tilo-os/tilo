@@ -122,8 +122,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     # `libatomic` own libharfbuzz-icu.so.0 and libatomic.so.1, which the copied
     # shell binary links directly; keep them explicit so compositor startup never
     # depends on build-stage or transitive browser dependencies.
-    # `plymouth-plugin-label` draws the boot sign-in screen's names and
-    # messages; Plymouth carries only its FreeType half into the initramfs.
     && dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
@@ -132,7 +130,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     libatomic \
     at-spi2-core \
     plymouth \
-    plymouth-plugin-label \
     plymouth-plugin-script \
     plymouth-scripts \
     && dnf clean all \

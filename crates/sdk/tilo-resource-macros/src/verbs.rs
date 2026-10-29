@@ -689,6 +689,15 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, Some((_, schema))) => schema,
         (None, None) => quote!(<#ty as #krate::JsonSchema>::json_schema),
     };
+    // A picked resource is a reference to one of its kind; bytes travel as
+    // content, which the vocabulary does not describe.
+    let field_type = match (&param.picks, crate::byte_param(ty)) {
+        (Some(kind), _) => quote!(|_: &mut #krate::TypeSet| {
+            #krate::FieldType::Resource(::std::string::String::from(#kind))
+        }),
+        (None, Some(_)) => quote!(|_: &mut #krate::TypeSet| #krate::FieldType::Any),
+        (None, None) => quote!(<#ty as #krate::JsonSchema>::field_type),
+    };
     quote! {
         #krate::__private::ParamDecl {
             name: #name,
@@ -700,6 +709,7 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
             example: #example,
             flat: #flat,
             content: #content,
+            field_type: #field_type,
         }
     }
 }

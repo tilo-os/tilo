@@ -34,7 +34,7 @@ required = ["files.paths"]
 optional = ["clipboard", "app-files", "secrets", "threads", "media.decode", "processes", "open-uri"]
 
 [resources]
-kinds = ["files.folder", "tilo.accounts"]
+kinds = ["files.folder", "tilo.accounts", "files.recent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

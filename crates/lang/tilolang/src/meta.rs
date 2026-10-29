@@ -20,6 +20,10 @@ pub struct PackageMeta {
     /// The launcher category (`app ... (category: .office)`), lower case.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// The ids the app was published under before (`app ... (previously: so.tilo.old)`): the
+    /// platform reads its records, grants and windows under them as the app's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previously: Vec<String>,
     /// SHA-256 (hex) of the wasm module without the metadata section.
     pub module_hash: String,
     pub types: Vec<TypeMeta>,
@@ -141,6 +145,10 @@ pub struct TypeMeta {
     /// `type Notes = Collection<Note>`: a resource that is its one field.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub holder: bool,
+    /// `(origin: imap.message)`: the kind of an outside service's resource the type holds,
+    /// which the system keeps in step with the service (`crate::origin`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):

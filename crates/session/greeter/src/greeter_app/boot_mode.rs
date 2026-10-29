@@ -150,13 +150,17 @@ impl GreeterApp {
         }
     }
 
-    /// At boot, the way to the other ways of opening the disk.
+    /// "Can't sign in", under the field: at boot the way to the other ways
+    /// of opening the disk, after boot the recovery form for a known
+    /// account (sign-in.md §5.3).
     pub(super) fn build_cant_sign_in(
         &self,
         busy: bool,
         align: AlignItems,
     ) -> Option<Box<dyn Widget>> {
-        self.boot.as_ref()?;
+        if self.boot.is_none() && self.login_user.is_none() {
+            return None;
+        }
         let requests = Rc::clone(&self.requests);
         Some(Box::new(
             Stack::column(

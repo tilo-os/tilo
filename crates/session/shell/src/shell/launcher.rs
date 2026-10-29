@@ -6640,9 +6640,7 @@ pub fn take_staged_resume_for_package(
         .map(|note| note.placement)?;
     let (resume, record_instance) = take_staged_resume(placement, room)?;
     let resume = resume.and_then(|(schema, bytes)| {
-        crate::shell::personal_continuity_registry::resume_for_installed_launch(
-            package_id, schema, bytes,
-        )
+        crate::shell::continuation_registry::resume_for_installed_launch(package_id, schema, bytes)
     });
     Some((resume, record_instance))
 }

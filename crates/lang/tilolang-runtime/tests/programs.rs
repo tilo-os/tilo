@@ -13,7 +13,7 @@ mod cases {
         AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
-    const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
+    const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 
     struct World {
@@ -35,7 +35,7 @@ mod cases {
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         todo.load(&rt);
         notes_app.load(&rt);
-        let list = rt.create("TodoList").unwrap();
+        let list = rt.create("Tasks").unwrap();
         let nb = rt.create("Notes").unwrap();
         let mut notes = Vec::new();
         let mut titled = Vec::new();
@@ -85,7 +85,7 @@ mod cases {
 
     impl World {
         fn list_literal(&self) -> String {
-            format!("@todo.TodoList:{}", self.list.id_string())
+            format!("@todo.Tasks:{}", self.list.id_string())
         }
 
         fn todo_titles(&self) -> Vec<String> {
@@ -255,7 +255,8 @@ mod cases {
         }
 
         let w = world();
-        let assign = format!("let l = {}\nl.name = \"Mine\"", w.list_literal());
+        let note = &w.notes[0];
+        let assign = format!("let n = @notes.Note:{}\nn.title = \"Mine\"", note.id_string());
         // A runtime that runs its apps' code itself has nowhere to send it: the program never
         // writes the record.
         let reply = Session::new().run(&w.rt, &agent(), &assign);
@@ -279,10 +280,10 @@ mod cases {
         else {
             panic!("one field edit: {sent:?}");
         };
-        assert_eq!((field.as_str(), value), ("name", &Value::text("Mine")));
-        assert_eq!(*target, w.list);
+        assert_eq!((field.as_str(), value), ("title", &Value::text("Mine")));
+        assert_eq!(target.id_string(), note.id_string());
         assert_ne!(
-            w.rt.read(&w.list, "name").unwrap(),
+            w.rt.read(note, "title").unwrap(),
             Value::text("Mine"),
             "the program wrote nothing itself"
         );
@@ -297,6 +298,6 @@ mod cases {
             &format!("let l = {}\nl.items = l.items", w.list_literal()),
         );
         let lines = rejected(&reply);
-        assert!(lines.contains("todo's actions"), "{lines}");
+        assert!(lines.contains("'s actions"), "{lines}");
     }
 }

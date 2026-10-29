@@ -16,10 +16,6 @@ COPY os/usr/share/flatpak/remotes.d/flathub.flatpakrepo /usr/share/flatpak/remot
 # remains reviewable and the initramfs does not depend on a desktop image
 # stack; a theme edit changes only this small layer.
 COPY --from=plymouth-assets /out/tilo/ /usr/share/plymouth/themes/tilo/
-# Points Plymouth's two text faces at the login screen's face, which the theme
-# carries cut to its two weights (boot-face.ttf, boot-face-strong.ttf).
-COPY --chmod=0755 os/usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh \
-    /usr/lib/dracut/modules.d/93tilo-boot-face/module-setup.sh
 # The desktop's wallpapers (os-wallpapers) and their credits.
 COPY --from=os-wallpapers /out/backgrounds/tilo/ /usr/share/backgrounds/tilo/
 COPY --from=os-wallpapers /out/licenses/tilo-wallpapers/ /usr/share/licenses/tilo-wallpapers/

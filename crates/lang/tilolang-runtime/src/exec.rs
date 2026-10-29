@@ -1039,7 +1039,7 @@ impl Core {
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
         let payload = outside_json(&unboxed(self.val_whole(payload_h)?))?;
-        if capability != "post" {
+        if !tilolang::origin::is_capability(&capability) {
             return trap(format!("unknown outside capability `{capability}`"));
         }
         let (txn, action, primary, origin) = {

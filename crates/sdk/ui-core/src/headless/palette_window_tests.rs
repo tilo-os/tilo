@@ -4,6 +4,7 @@
 //! across the window beside it.
 
 use super::FrameHarness;
+use crate::host_core::HostCore as _;
 use crate::widget::{AppKind, TaffyTreeExt as _, TileContent, TileHost, Widget};
 use std::collections::HashMap;
 use vello::kurbo::{Point, Rect};
@@ -97,14 +98,14 @@ fn a_confirmation_a_press_asked_for_stands_over_the_window_pressed_in() {
     );
     harness.relayout();
     assert_eq!(
-        harness.invoking_window_rect(),
+        harness.tree().invoking_window_rect(),
         None,
         "with no press and no focus in a window, the palette has the surface"
     );
     harness.click_at(600.0, 150.0);
     harness.relayout();
     assert_eq!(
-        harness.invoking_window_rect(),
+        harness.tree().invoking_window_rect(),
         Some(Rect::new(400.0, 0.0, 800.0, 300.0)),
         "the palette stands over the window pressed in"
     );
@@ -112,7 +113,7 @@ fn a_confirmation_a_press_asked_for_stands_over_the_window_pressed_in() {
         winit::keyboard::NamedKey::Shift,
     ));
     assert_eq!(
-        harness.pressed_at, None,
+        harness.pointer.pressed_at, None,
         "after a key the press no longer decides; the focused window does"
     );
 }

@@ -11,10 +11,11 @@ use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
 use crate::open_with::{OpenWithCandidates, SharedOpenWithRoute};
-use crate::recent::RecentUse;
+use crate::recent::{RecentRecord, RecentUse};
 use std::path::{Path, PathBuf};
 use ui::tilo_actions::{ActionParam, ParamType, ResourceSpec};
 use ui::tilo_resource::Effect as _;
+use ui::tilo_resource::{AbsolutePath, Invoke};
 use ui::widget::command_palette::CommandEntry;
 use ui::widget::context_menu::MenuItem;
 use vello::kurbo::Point;
@@ -642,19 +643,40 @@ impl FilesState {
             return;
         }
         let at = ui::time::unix_now_ms();
-        self.edit_recent(|recent| recent.note(path, last_use, at));
+        let shown = AbsolutePath::new(path).ok();
+        self.edit_recent(
+            |device| shown.map(|path| RecentRecord::NOTE.with((device, path, last_use, at))),
+            |recent| recent.note(path, last_use, at),
+        );
     }
 
     pub(super) fn recent_moved(&mut self, from: &Path, to: &Path) {
-        self.edit_recent(|recent| recent.moved(from, to));
+        let shown = AbsolutePath::new(from).ok().zip(AbsolutePath::new(to).ok());
+        self.edit_recent(
+            |device| shown.map(|(from, to)| RecentRecord::MOVED.with((device, from, to))),
+            |recent| recent.moved(from, to),
+        );
     }
 
-    /// Change the Recent list: this device's setting, where every window
-    /// sees it; a window no framework hosts keeps its own.
-    fn edit_recent(&mut self, change: impl FnOnce(&mut crate::recent::RecentFiles)) {
-        match &self.recent_setting {
-            Some(setting) => {
-                if let Err(error) = setting.update(change) {
+    /// The Recent lists record, where every window sees this device's list,
+    /// and this device's id.
+    fn recent_record(&self) -> Option<(&ui::framework::PersonRecord<RecentRecord>, &str)> {
+        self.recent_record.as_ref().zip(self.device.as_deref())
+    }
+
+    /// Change the Recent list: this device's in the record through
+    /// the action `edit` makes for the device, none for a relative path; a
+    /// window no framework hosts keeps its own and changes it with `change`.
+    fn edit_recent(
+        &mut self,
+        edit: impl FnOnce(String) -> Option<Invoke<RecentRecord>>,
+        change: impl FnOnce(&mut crate::recent::RecentFiles),
+    ) {
+        match self.recent_record() {
+            Some((record, device)) => {
+                if let Some(edit) = edit(device.to_owned())
+                    && let Err(error) = record.invoke(&edit)
+                {
                     tracing::warn!(%error, "could not save recent files");
                 }
             }
@@ -664,9 +686,10 @@ impl FilesState {
 
     /// The Recent list as stored.
     pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
-        self.recent_setting
-            .as_ref()
-            .map_or_else(|| self.recent.clone(), ui::framework::Setting::get)
+        self.recent_record().map_or_else(
+            || self.recent.clone(),
+            |(record, device)| record.with(|recent| recent.on(device)),
+        )
     }
 
     /// The Recent listing: every remembered path that still exists, in
@@ -699,9 +722,13 @@ impl FilesState {
     /// `FileCommand::ForgetRecent` — drop the item from Recent (the file is
     /// untouched).
     pub(super) fn apply_forget_recent(&mut self, path: &Path) -> bool {
-        self.edit_recent(|recent| {
-            recent.forget(path);
-        });
+        let shown = AbsolutePath::new(path).ok();
+        self.edit_recent(
+            |device| shown.map(|path| RecentRecord::FORGET.with((device, path))),
+            |recent| {
+                recent.forget(path);
+            },
+        );
         if self.is_recent_view() {
             self.refresh();
         }

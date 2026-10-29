@@ -151,9 +151,6 @@ fn populated_tree() -> WorkspaceTree {
     ] {
         tree.retired_fields.insert(key.into(), value);
     }
-    tree.continuation_tabs.insert(5);
-    tree.continuation_owned_tabs.insert(5, room(3));
-    tree.continuation_closed_tabs.insert(12, room(3));
     tree.native_document_tabs.insert(
         8,
         NativeDocumentReference {

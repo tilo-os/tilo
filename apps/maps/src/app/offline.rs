@@ -1,6 +1,9 @@
 //! The offline areas a person saved: the regions their tiles cover, naming them, and recording, deleting or following the set the resource holds.
 
+use ui::tilo_resource::Invoke;
+
 use super::{GeoBounds, MapsApp, TileId, bounds_contains, failure, format_bytes};
+use crate::offline_areas::OfflineAreas;
 
 impl MapsApp {
     /// The tile ids a saved region covers — used for delete/keep set arithmetic
@@ -52,8 +55,8 @@ impl MapsApp {
             z1,
             tiles,
         };
-        let areas = crate::offline_areas::recorded(&self.model.regions, region);
-        self.set_offline_areas(areas);
+        let areas = crate::offline_areas::recorded(&self.model.regions, region.clone());
+        self.edit_offline_areas(|device| OfflineAreas::RECORD.with((device, region)), areas);
     }
 
     /// Remove an offline area and delete the tiles no *other* area still
@@ -81,7 +84,8 @@ impl MapsApp {
             .filter(|r| r.id != id)
             .cloned()
             .collect();
-        self.set_offline_areas(areas);
+        let area = id.to_owned();
+        self.edit_offline_areas(|device| OfflineAreas::FORGET.with((device, area)), areas);
         self.model.status = failure::t_args(
             "maps-offline-removed",
             &[
@@ -96,30 +100,33 @@ impl MapsApp {
     pub(super) fn clear_offline_areas(&mut self) {
         let freed = self.tiles.clear_cache();
         self.offline_panel.set_cache_bytes(0);
-        self.set_offline_areas(Vec::new());
+        self.edit_offline_areas(|device| OfflineAreas::CLEAR.with(device), Vec::new());
         self.model.status = failure::t_args(
             "maps-offline-cleared",
             &[("size", format_bytes(freed).into())],
         );
     }
 
-    /// Show `areas` and keep them as this device's offline areas.
-    pub(super) fn set_offline_areas(&mut self, areas: Vec<crate::model::DownloadedRegion>) {
-        if let Some(setting) = &self.offline_areas
-            && let Err(error) = setting.set(crate::offline_areas::OfflineAreas {
-                offline_areas: areas.clone(),
-            })
+    /// Show `areas`, and keep them as this device's offline areas through
+    /// the action `edit` makes for the device.
+    pub(super) fn edit_offline_areas(
+        &mut self,
+        edit: impl FnOnce(String) -> Invoke<OfflineAreas>,
+        areas: Vec<crate::model::DownloadedRegion>,
+    ) {
+        if let Some((record, device)) = &self.offline_areas
+            && let Err(error) = record.invoke(&edit(device.clone()))
         {
             tracing::warn!("maps: the offline areas could not be stored: {error}");
         }
         self.model.regions = areas;
     }
 
-    /// Show the offline areas another window or a restart left on this
-    /// device.
+    /// Show the offline areas another window, another device's sync or a
+    /// restart left for this device.
     pub(super) fn follow_offline_areas(&mut self) {
-        if let Some(setting) = &self.offline_areas {
-            let stored = setting.get().offline_areas;
+        if let Some((record, device)) = &self.offline_areas {
+            let stored = record.with(|areas| areas.on(device));
             if stored != self.model.regions {
                 self.model.regions = stored;
             }

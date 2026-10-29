@@ -6163,7 +6163,8 @@ impl GroupRow {
             .groups
             .iter()
             .any(super::window_group::WindowGroup::drag_in_flight);
-        if any_drag || maximized_idx.is_some() {
+        // Windows on a canvas share no seams to draw.
+        if any_drag || maximized_idx.is_some() || self.canvas.is_some() {
             return;
         }
         let now = crate::motion::frame_now();

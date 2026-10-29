@@ -24,7 +24,6 @@
 pub(crate) use tilo_relay_store::bounded;
 #[doc(hidden)]
 pub mod compaction;
-pub(crate) mod continuity;
 pub(crate) mod record_sync;
 pub(crate) mod replay;
 pub(crate) mod resume;
@@ -224,8 +223,7 @@ pub struct WorkspaceStore {
     /// are listed but not yet pinned, and the collections that wait for
     /// them ([`replay::CaptureLeases`]).
     capture_leases: Arc<replay::CaptureLeases>,
-    /// Classifies retained co-edit bodies: checkpoint replacement and
-    /// continuity evidence.
+    /// Classifies retained co-edit bodies for checkpoint replacement.
     payloads: std::sync::Arc<dyn crate::payloads::ShellPayloads>,
 }
 
@@ -783,25 +781,6 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    pub(crate) fn enqueue_continuity_pending(
-        &self,
-        device: &[u8; 32],
-        bytes: &[u8],
-        receipt: &continuity::Receipt,
-    ) -> Result<PathBuf, StoreError> {
-        let directory = self.pending_dir_for(device);
-        fs::create_dir_all(&directory)?;
-        let path = directory.join(format!(
-            "{:016x}-continuity-{}.delta",
-            receipt.sequence,
-            hex::encode(rand::random::<[u8; 16]>())
-        ));
-        continuity::write(self, &path, bytes, receipt)?;
-        atomic_write(&path, bytes)?;
-        Self::pending_durable(&directory)?;
-        Ok(path)
-    }
-
     /// Eager helper; bounded storage paths must use replay cursors, not this
     /// loader.
     /// Load the pending queue in delivery order without acknowledging it.
@@ -979,14 +958,6 @@ impl shell_selection::ShellStore for WorkspaceStore {
     fn install_shell_binding(&mut self, binding: Arc<dyn ShellBinding>) {
         self.shell_binding = Some(binding);
         self.tail_cache.invalidate();
-    }
-    fn copy_measured(
-        &self,
-        source: &Path,
-        destination: &Path,
-        stats: &mut bounded::WorkStats,
-    ) -> Result<(), StoreError> {
-        continuity::copy_measured(self, source, destination, stats, 0).map(|_| ())
     }
     fn handle(&self) -> Arc<dyn shell_selection::ShellStore> {
         Arc::new(self.clone())

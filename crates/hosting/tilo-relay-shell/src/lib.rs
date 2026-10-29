@@ -4,17 +4,16 @@
 //! the collaboration message as an opaque body. Some host decisions still
 //! need to know a little about that body: whether it is a document frame
 //! compaction may fold, whether a checkpoint replaces its author's previous
-//! one, whether it is a member's own continuity checkpoint or a step of
-//! channel governance, and which devices it is addressed to. The relay core
-//! (`tilo-relay`) asks the [`ShellPayloads`] its embedder injects those
-//! questions and never names the desktop's message vocabulary itself.
+//! one, whether it is a step of channel governance, and which devices it is
+//! addressed to. The relay core (`tilo-relay`) asks the [`ShellPayloads`] its
+//! embedder injects those questions and never names the desktop's message
+//! vocabulary itself.
 //!
 //! [`NeighbourPayloads`] answers them for the desktop's peer-sync messages
 //! (`NeighbourMsg`); it is the only place compaction, surface admission,
-//! retained-checkpoint replacement, continuity evidence and the live
-//! checkpoint gate decode one. With the `web` feature, `legacy` is the
-//! browser legacy-window bridge, which decodes and originates those
-//! messages on the browser live plane.
+//! retained-checkpoint replacement and the live checkpoint gate decode one.
+//! With the `web` feature, `legacy` is the browser legacy-window bridge,
+//! which decodes and originates those messages on the browser live plane.
 //!
 //! [`selection`] is native shell replay selection: with a desktop
 //! [`RetentionAuthority`](retained_proof::RetentionAuthority)
@@ -88,11 +87,6 @@ pub enum CheckpointKind {
     /// A step of channel governance (a governance commit, an access request
     /// or its acknowledgement): each replaces the last on one route.
     Governance,
-    /// A person's own continuity checkpoint, authored for `user`.
-    Continuity {
-        /// The user public key the checkpoint belongs to.
-        user: [u8; 32],
-    },
     /// A device's snapshot of its person's workspace list, authored for
     /// `user`: each replaces that device's last.
     Directory {

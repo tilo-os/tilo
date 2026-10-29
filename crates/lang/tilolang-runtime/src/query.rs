@@ -343,7 +343,12 @@ fn filter_pred(
     clock: &Clock,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
-        let pred = f.pred.clone().ok_or("the filter has no predicate")?;
+        // A filter on the time it is asked at ("Today": `due <= today`) reads it now.
+        let pred = f
+            .pred
+            .as_ref()
+            .ok_or("the filter has no predicate")?
+            .at(clock.now);
         return match value {
             "true" => Ok(pred),
             "false" => Ok(Pred::Not(Box::new(pred))),

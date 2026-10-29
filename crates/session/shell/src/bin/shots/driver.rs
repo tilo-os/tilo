@@ -188,7 +188,6 @@ impl ShellDriver {
         let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
         tree.own_workspaces_for_test(|_| owner.clone());
-        let hosted_tabs = hosted_app_tabs(&tree);
         // An owned fixture never reads the wall clock, so frames compare
         // across minutes; it shows the time it is given, like a session
         // shows the time it reads.
@@ -210,20 +209,6 @@ impl ShellDriver {
         // A capture shows the state it seeds, never the rendering machine's
         // networks or accessories (a section opening reads them).
         fb.host_mut().disable_quick_settings_os_reads();
-        // Binding a tab never creates its document: the action that opens
-        // an app does. This driver opens every tab of the tree it is handed
-        // into its own fresh record store, so it is that action here —
-        // without it every in-process app renders "record does not exist".
-        let records = fb.chrome().records().clone();
-        for tab in hosted_tabs {
-            // A refusal stays on screen as that tile's unavailable card;
-            // the line here says which tab and why.
-            if let Err(error) =
-                shell::shell::tab_documents::create_scratch_tab_record(&records, tab)
-            {
-                eprintln!("shots: tab {tab} has no document: {error}");
-            }
-        }
         Self {
             fb,
             state: AutoCommit::new(),
@@ -889,35 +874,6 @@ fn shots_clock() -> tilo_desktop::chrome::ClockSnapshot {
 /// Every tab in `tree` whose tile is an in-process app — the tabs that
 /// the production open-app actions give a scratch document when they
 /// mint them (`window_actions`).
-fn all_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
-    tree.desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .map(|tab| tab.id)
-        .collect()
-}
-
-fn hosted_app_tabs(tree: &WorkspaceTree) -> Vec<u64> {
-    use shell::shell::state::TileContent;
-    tree.desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .filter(|tab| {
-            matches!(
-                tab.tile,
-                TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
-            )
-        })
-        .map(|tab| tab.id)
-        .collect()
-}
-
 /// Append a tab to the first window group of the first workspace, straight
 /// into a forked document. The `room-activity` scene's peer has no
 /// `WorkspaceTree` — just a bare document, like a remote replica that has
@@ -1079,22 +1035,13 @@ impl ShellDriver {
     /// Create the person's "Research" workspace on this device and show it.
     pub fn seed_own_workspace_for_shots(&mut self) {
         let handle = self.chrome_handle();
-        let tabs = {
+        {
             let st = handle.borrow();
             let person = st.local_user_id.clone();
             let mut tree = st.tree_mut();
             tree.set_peer_salt(crate::own_device::SHOWN_SALT);
-            let before = all_tab_ids(&tree);
             crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
-            let after = all_tab_ids(&tree);
-            drop(tree);
-            drop(st);
-            after
-                .into_iter()
-                .filter(|tab| !before.contains(tab))
-                .collect::<Vec<_>>()
-        };
-        self.open_tab_records(&tabs);
+        }
         self.with_chrome(ChromeState::bump);
     }
 
@@ -1135,10 +1082,10 @@ impl ShellDriver {
             return;
         };
         let handle = self.chrome_handle();
-        let arrived = {
+        {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            let arrived = laptop.deliver(&mut tree, &mut list);
+            laptop.deliver(&mut tree, &mut list);
             let shown = tree
                 .desktop
                 .workspaces
@@ -1148,11 +1095,7 @@ impl ShellDriver {
             if let Some(shown) = shown {
                 tree.desktop.set_active(shown);
             }
-            arrived
-        };
-        // A tab arriving from another device opens its record here; the
-        // live shell fetches it from that device, a scene starts it empty.
-        self.open_tab_records(&arrived);
+        }
         self.own_device = Some((laptop, list));
         self.with_chrome(ChromeState::bump);
     }
@@ -1166,19 +1109,6 @@ impl ShellDriver {
                 room,
                 crate::own_device::LAPTOP_SALT,
             );
-        }
-    }
-
-    /// Make the documents of tabs a scenario opened itself, as the action
-    /// that opens an app does: binding never creates one.
-    pub(crate) fn open_tab_records(&self, tabs: &[u64]) {
-        let records = self.chrome().records().clone();
-        for tab in tabs {
-            if let Err(error) =
-                shell::shell::tab_documents::create_scratch_tab_record(&records, *tab)
-            {
-                eprintln!("shots: tab {tab} has no document: {error}");
-            }
         }
     }
 
@@ -1248,10 +1178,6 @@ impl ShellDriver {
             }
             drop(tree);
             drop(st);
-            // These windows were opened here, not by the open-app action,
-            // so their documents are made here: without them the windows
-            // showed "record does not exist".
-            self.open_tab_records(&tabs);
         }
         self.with_chrome(|_| {});
     }
@@ -2496,7 +2422,6 @@ impl ShellDriver {
             }
             st.bump();
         });
-        self.open_tab_records(&[tab_id]);
         self.relayout();
         // The window arrives, and its app comes up and publishes what it
         // holds, before search is asked for.

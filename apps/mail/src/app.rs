@@ -384,6 +384,8 @@ pub struct MailApp {
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
     /// The preferences as this window last read or stored them.
     followed_preferences: crate::resource::MailPreferences,
+    /// The trusted senders record, followed in a live window.
+    pub(crate) trusted_senders: Option<crate::trusted_senders::Followed>,
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
@@ -720,6 +722,7 @@ impl MailApp {
             has_contact_draft_conflict: false,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
+            trusted_senders: None,
             connect_requested: false,
             awaiting_engine: false,
             background_poll_deadline: Cell::new(None),
@@ -3215,8 +3218,6 @@ impl MailApp {
         for account in &mut self.shared.borrow_mut().accounts.accounts {
             account.collapsed = preferences.collapsed_accounts.contains(&account.id);
         }
-        self.shared.borrow_mut().remote_senders =
-            preferences.remote_content_senders.iter().cloned().collect();
         self.followed_preferences = preferences;
         self.dirty = true;
     }
@@ -3233,13 +3234,6 @@ impl MailApp {
                 .iter()
                 .filter(|account| account.collapsed)
                 .map(|account| account.id.clone())
-                .collect(),
-            remote_content_senders: self
-                .shared
-                .borrow()
-                .remote_senders
-                .iter()
-                .cloned()
                 .collect(),
         }
     }
@@ -4062,6 +4056,7 @@ impl Widget for MailApp {
         }
         self.persist_active_account_if_changed();
         self.sync_preferences();
+        self.sync_trusted_senders();
         self.declare_window_toolbar();
         self.nav.sync(state, path);
     }

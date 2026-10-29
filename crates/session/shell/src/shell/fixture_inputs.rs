@@ -310,7 +310,10 @@ mod tests {
                 .active_workspace()
                 .unwrap()
                 .room();
-            let record = crate::shell::tab_documents::scratch_tab_record(note);
+            let record = ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_tab(note),
+                ui::record::RecordKind::new("note"),
+            );
             room_index
                 .borrow_mut()
                 .seed_observed([crate::shell::room_records::ObservedRecord {
