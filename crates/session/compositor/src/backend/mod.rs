@@ -6,11 +6,13 @@
 //! event loop when it is created, routes input into the [`State`], and draws
 //! each output's scene ([`crate::render`]) when that output can take a frame.
 
+pub mod drm;
 pub mod headless;
 
 use crate::output::OutputConfig;
 use crate::state::State;
 
+pub use drm::{DisplayConfig, DrmBackend};
 pub use headless::HeadlessBackend;
 
 /// What a backend does for the compositor.
@@ -18,6 +20,12 @@ pub trait Backend {
     /// Draw the outputs that can take a frame and tell their clients when
     /// it was shown.
     fn render(&mut self, state: &mut State) -> Result<(), BackendError>;
+
+    /// When the backend next wants [`Backend::render`] called with no event
+    /// to bring it (an output whose frame is due).
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
 
     /// Add an output the backend simulates. Backends with real outputs find
     /// them themselves and refuse.

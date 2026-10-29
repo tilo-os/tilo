@@ -19,6 +19,17 @@ pub struct WindowInfo {
     pub title: Option<String>,
 }
 
+/// Where a window goes and the size it is asked to take.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arrangement {
+    /// The window ([`WindowInfo::id`]).
+    pub id: u64,
+    /// Its top-left corner in the logical layout.
+    pub location: Point<i32, Logical>,
+    /// The size it is configured to, or `None` to leave it to the client.
+    pub size: Option<(i32, i32)>,
+}
+
 /// Decides placement, initial size and focus for windows.
 pub trait WindowPolicy {
     /// The size a new toplevel is configured to before its first buffer, or
@@ -37,6 +48,17 @@ pub trait WindowPolicy {
         size: (i32, i32),
         outputs: &[Rectangle<i32, Logical>],
     ) -> Point<i32, Logical>;
+
+    /// Lay every mapped window out again (`windows` bottom first, with their
+    /// current rectangles) after one mapped or went away, or the outputs
+    /// changed. `None` leaves every window where it is.
+    fn arrange(
+        &mut self,
+        _windows: &[(WindowInfo, Rectangle<i32, Logical>)],
+        _outputs: &[Rectangle<i32, Logical>],
+    ) -> Option<Vec<Arrangement>> {
+        None
+    }
 
     /// Whether a window takes keyboard focus when it first shows.
     fn focus_on_map(&mut self, _window: &WindowInfo) -> bool {

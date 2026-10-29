@@ -24,10 +24,13 @@
 pub mod backend;
 pub mod host;
 pub mod input;
+mod lock;
 pub mod output;
 pub mod policy;
+mod protocols;
 pub mod render;
 mod state;
+mod text_input;
 
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
@@ -35,12 +38,13 @@ use std::time::Duration;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
+use smithay::wayland::socket::ListeningSocketSource;
 
-pub use backend::{Backend, BackendError, HeadlessBackend, Screenshot};
+pub use backend::{Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, Screenshot};
 pub use host::{HostLayer, SurfaceHost};
-pub use input::InputEvent;
+pub use input::{HostKey, InputEvent, KeyModifiers};
 pub use output::OutputConfig;
-pub use policy::{StackPolicy, WindowInfo, WindowPolicy};
+pub use policy::{Arrangement, StackPolicy, WindowInfo, WindowPolicy};
 pub use state::State;
 
 /// Why the compositor could not start or keep running.
@@ -127,7 +131,35 @@ impl Compositor {
 
     /// A compositor whose outputs have no display (see [`backend::headless`]).
     pub fn headless(policy: Box<dyn WindowPolicy>) -> Result<Self, Error> {
-        Self::new(policy, |_, _| Ok(Box::new(HeadlessBackend::new()?)))
+        Self::new(policy, |_, state| {
+            Ok(Box::new(HeadlessBackend::new(state)?))
+        })
+    }
+
+    /// A compositor on a bare TTY (see [`backend::drm`]).
+    pub fn drm(
+        policy: Box<dyn WindowPolicy>,
+        config: backend::DisplayConfig,
+    ) -> Result<Self, Error> {
+        Self::new(policy, |handle, state| {
+            Ok(Box::new(backend::DrmBackend::start(handle, state, config)?))
+        })
+    }
+
+    /// Run until `stop` holds: wait for clients, devices and due frames,
+    /// handle them and draw.
+    pub fn run(&mut self, mut stop: impl FnMut(&Self) -> bool) -> Result<(), Error> {
+        /// The longest the loop sleeps with nothing due, so `stop` is asked.
+        const IDLE: Duration = Duration::from_millis(250);
+        while !stop(self) {
+            let timeout = self.data.backend.next_deadline().map_or(IDLE, |at| {
+                at.saturating_duration_since(std::time::Instant::now())
+                    .min(IDLE)
+            });
+            self.dispatch(timeout)?;
+            self.render()?;
+        }
+        Ok(())
     }
 
     /// Add an output the backend simulates.
@@ -147,9 +179,45 @@ impl Compositor {
         let (ours, theirs) = UnixStream::pair()?;
         self.display
             .handle()
-            .insert_client(ours, state::client_data())
+            .insert_client(ours, state::client_data(false))
             .map_err(io)?;
         Ok(theirs)
+    }
+
+    /// Connect a client the session trusts with privileged protocols
+    /// (locking the session); otherwise as [`Compositor::connect_client`].
+    pub fn connect_trusted_client(&mut self) -> Result<UnixStream, Error> {
+        let (ours, theirs) = UnixStream::pair()?;
+        self.display
+            .handle()
+            .insert_client(ours, state::client_data(true))
+            .map_err(io)?;
+        Ok(theirs)
+    }
+
+    /// Whether the session is locked.
+    pub fn locked(&self) -> bool {
+        self.data.state.locked()
+    }
+
+    /// Listen for clients on a fresh `wayland-N` socket in
+    /// `$XDG_RUNTIME_DIR` and return its name (for `WAYLAND_DISPLAY`).
+    pub fn listen(&mut self) -> Result<String, Error> {
+        let source = ListeningSocketSource::new_auto().map_err(io)?;
+        let name = source.socket_name().to_string_lossy().into_owned();
+        self.event_loop
+            .handle()
+            .insert_source(source, |stream, (), data| {
+                if let Err(error) = data
+                    .state
+                    .display
+                    .insert_client(stream, state::client_data(false))
+                {
+                    tracing::warn!(%error, "client not accepted");
+                }
+            })
+            .map_err(io)?;
+        Ok(name)
     }
 
     /// Wait up to `timeout` for client requests or backend events, handle
@@ -178,6 +246,7 @@ impl Compositor {
             host.prepare_frame();
         }
         self.data.backend.render(&mut self.data.state)?;
+        self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())
     }
@@ -196,6 +265,11 @@ impl Compositor {
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
             .collect()
+    }
+
+    /// Whether a client keeps the session from idling (idle-inhibit).
+    pub fn idle_inhibited(&self) -> bool {
+        self.data.state.idle_inhibited()
     }
 
     /// The window with keyboard focus.

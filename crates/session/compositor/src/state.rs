@@ -15,12 +15,17 @@ use std::time::{Duration, Instant};
 use smithay::backend::input::KeyState;
 use smithay::backend::input::{Axis, ButtonState};
 use smithay::backend::renderer::utils::{on_commit_buffer_handler, with_renderer_surface_state};
+use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::wayland::presentation::Refresh;
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind;
 use smithay::desktop::{PopupKind, PopupManager, Space, Window, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
-use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::backend::{
+    ClientData, ClientId, DisconnectReason, GlobalId,
+};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -41,13 +46,23 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::host::SurfaceHost;
-use crate::input::InputEvent;
+use crate::input::{HostKey, InputEvent, KeyModifiers};
 use crate::policy::{WindowInfo, WindowPolicy};
 
 /// Per-client data every Wayland client carries.
 #[derive(Default)]
 pub struct ClientState {
     compositor: CompositorClientState,
+    /// The session started this client and trusts it with privileged
+    /// protocols (locking the session).
+    trusted: bool,
+}
+
+impl ClientState {
+    /// Whether the client may use privileged protocols.
+    pub(crate) const fn trusted(&self) -> bool {
+        self.trusted
+    }
 }
 
 impl ClientData for ClientState {
@@ -88,6 +103,9 @@ pub struct State {
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     pub(crate) pointer: Point<f64, Logical>,
     pointer_target: PointerTarget,
+    pub(crate) protocols: crate::protocols::Protocols,
+    pub(crate) lock: crate::lock::Lock,
+    pub(crate) text_input: crate::text_input::TextInput,
 }
 
 impl State {
@@ -122,6 +140,9 @@ impl State {
             hosts: Vec::new(),
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
+            protocols: crate::protocols::Protocols::new(display),
+            lock: crate::lock::Lock::new(display),
+            text_input: crate::text_input::TextInput::new(display),
         }
     }
 
@@ -138,6 +159,16 @@ impl State {
 
     pub(crate) fn add_output(&mut self, output: &Output, location: Point<i32, Logical>) {
         self.space.map_output(output, location);
+        self.rearrange();
+    }
+
+    /// Stop showing anything on `output` (it was disconnected) and
+    /// withdraw its global.
+    pub(crate) fn remove_output(&mut self, output: &Output, global: GlobalId) {
+        self.space.unmap_output(output);
+        self.space.refresh();
+        self.display.remove_global::<Self>(global);
+        self.rearrange();
     }
 
     /// The logical rectangles of every output.
@@ -230,9 +261,49 @@ impl State {
                 };
                 // evdev codes sit 8 below their XKB keycodes.
                 let code = keycode.saturating_add(8);
-                keyboard.input::<(), _>(self, code.into(), state, serial, time, |_, _, _| {
-                    FilterResult::Forward
-                });
+                // The topmost hosted surface that wants the keyboard takes
+                // keys from every client.
+                let host = if self.locked() {
+                    None
+                } else {
+                    self.hosts.iter().rposition(|host| host.wants_keyboard())
+                };
+                let intercepted = keyboard.input(
+                    self,
+                    code.into(),
+                    state,
+                    serial,
+                    time,
+                    |_, modifiers, handle| {
+                        if host.is_none() {
+                            return FilterResult::Forward;
+                        }
+                        let unmodified = handle
+                            .raw_syms()
+                            .first()
+                            .copied()
+                            .unwrap_or_else(|| handle.modified_sym());
+                        FilterResult::Intercept(HostKey {
+                            keycode,
+                            pressed,
+                            keysym: handle.modified_sym().raw(),
+                            unmodified_keysym: unmodified.raw(),
+                            text: handle.modified_sym().key_char().filter(|c| !c.is_control()),
+                            modifiers: KeyModifiers {
+                                ctrl: modifiers.ctrl,
+                                alt: modifiers.alt,
+                                shift: modifiers.shift,
+                                logo: modifiers.logo,
+                                caps_lock: modifiers.caps_lock,
+                            },
+                        })
+                    },
+                );
+                if let (Some(index), Some(key)) = (host, intercepted)
+                    && let Some(host) = self.hosts.get_mut(index)
+                {
+                    host.key(&key);
+                }
             }
         }
     }
@@ -240,9 +311,12 @@ impl State {
     fn pointer_motion(&mut self, to: Point<f64, Logical>, serial: Serial, time: u32) {
         self.pointer = self.clamp_to_outputs(to);
         let location = self.pointer;
-        let target = self
-            .host_under(location)
-            .map_or(PointerTarget::Clients, PointerTarget::Host);
+        let target = if self.locked() {
+            PointerTarget::Clients
+        } else {
+            self.host_under(location)
+                .map_or(PointerTarget::Clients, PointerTarget::Host)
+        };
         if let PointerTarget::Host(old) = self.pointer_target
             && target != self.pointer_target
             && let Some(host) = self.hosts.get_mut(old)
@@ -258,6 +332,7 @@ impl State {
                 // Clients lose the pointer while a hosted surface has it.
                 None
             }
+            PointerTarget::Clients if self.locked() => self.lock_surface_under(location),
             PointerTarget::Clients => self
                 .surface_under(location)
                 .map(|(_, surface, origin)| (surface, origin)),
@@ -284,7 +359,10 @@ impl State {
             }
             return;
         }
-        if pressed && let Some((window, _, _)) = self.surface_under(self.pointer) {
+        if pressed
+            && !self.locked()
+            && let Some((window, _, _)) = self.surface_under(self.pointer)
+        {
             let info = window.toplevel().map(window_info);
             if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
                 self.focus_window(&window, serial);
@@ -340,7 +418,7 @@ impl State {
             .unwrap_or(point)
     }
 
-    fn focus_window(&mut self, window: &Window, serial: Serial) {
+    pub(crate) fn focus_window(&mut self, window: &Window, serial: Serial) {
         self.space.raise_element(window, true);
         for other in self.space.elements() {
             if other != window {
@@ -373,16 +451,66 @@ impl State {
         if self.policy.focus_on_map(&info) {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
         }
+        self.rearrange();
+    }
+
+    /// Ask the policy to lay the windows out again and apply its answer,
+    /// keeping the stacking order.
+    pub(crate) fn rearrange(&mut self) {
+        let windows = self.windows();
+        let outputs = self.output_geometries();
+        let Some(arrangements) = self.policy.arrange(&windows, &outputs) else {
+            return;
+        };
+        let stack: Vec<Window> = self.space.elements().cloned().collect();
+        for window in stack {
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
+            let id = window_info(toplevel).id;
+            let Some(arrangement) = arrangements.iter().find(|arrangement| arrangement.id == id)
+            else {
+                continue;
+            };
+            if let Some((w, h)) = arrangement.size {
+                toplevel.with_pending_state(|state| state.size = Some((w, h).into()));
+                toplevel.send_pending_configure();
+            }
+            let activated = window.toplevel().is_some_and(|toplevel| {
+                toplevel.with_pending_state(|state| {
+                    state.states.contains(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated)
+                })
+            });
+            // Re-mapping in stacking order keeps the order.
+            self.space
+                .map_element(window.clone(), arrangement.location, activated);
+        }
     }
 
     /// Tell every surface on `output` that a frame it drew was shown.
     pub(crate) fn frame_shown(&self, output: &Output) {
         let time = self.now();
+        let mut feedback = OutputPresentationFeedback::new(output);
         for window in self.space.elements_for_output(output) {
             window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())
             });
+            window.take_presentation_feedback(
+                &mut feedback,
+                |_, _| Some(output.clone()),
+                |_, _| PresentationKind::empty(),
+            );
         }
+        let refresh = output
+            .current_mode()
+            .and_then(|mode| u64::try_from(mode.refresh).ok())
+            .filter(|mhz| *mhz > 0)
+            .map_or(Refresh::Unknown, |mhz| {
+                Refresh::Fixed(Duration::from_nanos(1_000_000_000_000 / mhz))
+            });
+        let presented: smithay::utils::Time<smithay::utils::Monotonic> =
+            smithay::utils::Clock::new().now();
+        feedback.presented(presented, refresh, 0, PresentationKind::empty());
     }
 
     /// Drop windows whose clients went away and refresh output membership.
@@ -530,6 +658,7 @@ impl XdgShellHandler for State {
             .cloned();
         if let Some(window) = gone {
             self.space.unmap_elem(&window);
+            self.rearrange();
         }
     }
 }
@@ -576,8 +705,11 @@ smithay::delegate_data_device!(State);
 smithay::delegate_output!(State);
 
 /// A fresh client's data, for [`DisplayHandle::insert_client`].
-pub(crate) fn client_data() -> Arc<ClientState> {
-    Arc::new(ClientState::default())
+pub(crate) fn client_data(trusted: bool) -> Arc<ClientState> {
+    Arc::new(ClientState {
+        trusted,
+        ..ClientState::default()
+    })
 }
 
 impl State {

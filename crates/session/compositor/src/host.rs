@@ -9,6 +9,8 @@
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
+use crate::input::HostKey;
+
 /// One buffer a hosted surface shows, at a position in the logical layout.
 #[derive(Debug, Clone)]
 pub struct HostLayer {
@@ -42,6 +44,15 @@ pub trait SurfaceHost {
 
     /// Scroll over the surface, in logical pixels.
     fn pointer_axis(&mut self, _horizontal: f64, _vertical: f64) {}
+
+    /// Whether keys should come to this surface instead of the focused
+    /// window (an open launcher or menu).
+    fn wants_keyboard(&self) -> bool {
+        false
+    }
+
+    /// A key, while [`SurfaceHost::wants_keyboard`] holds.
+    fn key(&mut self, _key: &HostKey) {}
 
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}
