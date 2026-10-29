@@ -331,7 +331,7 @@ The handoff is a **hint, not authority**:
   4. the guided extent equals `target_extent`, is still unallocated, and does not
      overlap either staging partition.
   The existing whole-disk refusal is unchanged for USB media.
-- `apps/imager/src/setup/destination/disks.rs` stops disabling the live disk only in
+- `crates/session/installer/src/disks.rs` stops disabling the live disk only in
   internal mode, and only offers guided alongside on it. The UI preselects the
   extent and the profile fields, and the user still reviews and confirms.
 - The live root grows at boot. `tilo-installer-setup.service` runs

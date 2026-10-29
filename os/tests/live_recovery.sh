@@ -89,7 +89,7 @@ fi
 if grep -Fq 'ConditionKernelCommandLine=tilo.install' "$unit" \
    && grep -Fq 'TTYPath=/dev/tty2' "$unit" \
    && grep -Fq 'tilo-live-recovery.service' "$repo/os/Containerfile.installer" \
-   && grep -Fq 'Ctrl+Alt+F2 for recovery tools' "$repo/apps/imager/src/setup/destination/installer_app.rs"; then
+   && grep -Fq 'Ctrl+Alt+F2 for recovery tools' "$repo/crates/session/installer/src/installer_app.rs"; then
   ok "installer media exposes the recovery console on tty2 and advertises it"
 else
   bad "live-media recovery entry point is missing or undiscoverable"
