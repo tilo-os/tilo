@@ -9,8 +9,11 @@
 //! and the instance's origin reaches it over a socket ([`remote`], [`wire`]).
 
 pub mod connector;
+#[cfg(feature = "engine")]
+pub mod engine;
 pub mod origin;
 pub mod remote;
+#[cfg(feature = "engine")]
 pub mod serve;
 pub mod wire;
 
@@ -19,10 +22,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use connector::{AccountSource, EngineConnector};
+#[cfg(feature = "engine")]
+use engine::{AccountSource, EngineConnector};
 use origin::ImapOrigin;
 
 /// The settings' mail accounts under the profile's configuration root.
+#[cfg(feature = "engine")]
 #[must_use]
 pub fn settings_accounts(config_root: Option<std::path::PathBuf>) -> AccountSource {
     Box::new(move || {
@@ -36,6 +41,7 @@ pub fn settings_accounts(config_root: Option<std::path::PathBuf>) -> AccountSour
 
 /// The origin over the live engine, waking the window's frame loop with `wake` when a server
 /// answers.
+#[cfg(feature = "engine")]
 #[must_use]
 pub fn live_origin(
     accounts: AccountSource,
@@ -71,12 +77,8 @@ pub fn remote_origin(
 ) -> std::io::Result<Rc<RefCell<ImapOrigin>>> {
     let woken = Arc::new(AtomicBool::new(true));
     let reconnected = Arc::new(AtomicBool::new(false));
-    let connector = remote::RemoteConnector::new(
-        stream,
-        Arc::clone(&woken),
-        wake,
-        Arc::clone(&reconnected),
-    )?;
+    let connector =
+        remote::RemoteConnector::new(stream, Arc::clone(&woken), wake, Arc::clone(&reconnected))?;
     Ok(Rc::new(RefCell::new(
         ImapOrigin::new(Box::new(connector), woken).reconnecting_on(reconnected),
     )))
@@ -84,6 +86,7 @@ pub fn remote_origin(
 
 /// Set `reconnected` and wake whenever the device comes online again: what could not reach
 /// its server then is tried again. An event of the platform's network status, never a timer.
+#[cfg(feature = "engine")]
 pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail::engine::Wake) {
     let spawned = std::thread::Builder::new()
         .name("mail-network".into())
@@ -107,4 +110,38 @@ pub(crate) fn follow_the_network(reconnected: Arc<AtomicBool>, wake: mail::engin
     if let Err(error) = spawned {
         tracing::warn!(%error, "mail does not follow the network: it retries only when asked");
     }
+}
+
+/// The variable the launcher names the origin a connector process connects with.
+#[cfg(feature = "engine")]
+pub const CONNECTOR_ORIGIN_ENV: &str = runtime_portal::origin_connector::ORIGIN_ENV;
+
+/// Run the connector for `origin` this process was started as (`TILO_TILOLANG_CONNECTOR`), on
+/// the door the launcher handed it, for the settings' accounts, until the session closes the
+/// door.
+///
+/// # Errors
+/// An origin this crate has no connector for, or no door to take instances from.
+#[cfg(feature = "engine")]
+pub fn run_connector(origin: &str) -> Result<(), String> {
+    if origin != "imap" {
+        return Err(format!("there is no connector for the origin `{origin}`"));
+    }
+    let door = runtime_portal::origin_connector::take_door()
+        .ok_or_else(|| "the launcher handed the connector no door".to_owned())?;
+    let attachments = std::iter::from_fn(move || {
+        match runtime_portal::origin_connector::receive_attachment(&door) {
+            Ok(Some(connection)) => Some(std::os::unix::net::UnixStream::from(connection)),
+            Ok(None) => {
+                tracing::info!("the session closed the mail connector's door");
+                None
+            }
+            Err(error) => {
+                tracing::error!(%error, "the mail connector's door failed: it takes no more instances");
+                None
+            }
+        }
+    });
+    serve::serve(settings_store::config_root(), attachments);
+    Ok(())
 }

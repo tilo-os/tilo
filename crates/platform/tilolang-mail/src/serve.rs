@@ -29,7 +29,8 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use mail::engine::{EngineEvent, EngineRequest};
 
-use crate::connector::{AccountRef, AccountSource, EngineConnector, Event, MailConnector, Request};
+use crate::connector::{AccountRef, Event, MailConnector, Request};
+use crate::engine::{AccountSource, EngineConnector};
 use crate::wire::{self, FromConnector, ToConnector};
 
 /// What wakes the connector's loop.

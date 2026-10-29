@@ -94,6 +94,7 @@ pub fn desktop_manifest(
             .as_ref()
             .map_or(100, |entry| entry.splash_budget_ms),
         runtime: None,
+        origins: Vec::new(),
     });
     manifest.target = Some(Target {
         platform: platform.to_owned(),

@@ -11,7 +11,7 @@ use tilolang_tilo::runtime::{Principal, ResourceRef, Value as RtValue};
 
 use super::Room;
 use crate::window::Window;
-use tilolang_mail::connector::EngineConnector;
+use tilolang_mail::engine::EngineConnector;
 use tilolang_mail::origin::ImapOrigin;
 use ui::framework::RunMode;
 
@@ -100,10 +100,7 @@ fn room_with(config: AccountConfig) -> Room {
 
 /// A room whose accounts are what `accounts` says each time it is asked, which comes online
 /// again when `reconnected` is set.
-fn room_over(
-    accounts: tilolang_mail::connector::AccountSource,
-    reconnected: Arc<AtomicBool>,
-) -> Room {
+fn room_over(accounts: tilolang_mail::engine::AccountSource, reconnected: Arc<AtomicBool>) -> Room {
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
     let engine = mail::engine::live::LiveEngine::trusting(

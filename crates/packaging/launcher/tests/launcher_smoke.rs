@@ -59,6 +59,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -
             gui_bin: None,
             cli_bin: None,
             runtime: None,
+            origins: Vec::new(),
         },
         sandbox: Sandbox {
             net: Net {
@@ -462,6 +463,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 gui_bin: None,
                 cli_bin: None,
                 runtime: None,
+                origins: Vec::new(),
             },
             sandbox: Sandbox {
                 net: Net {
@@ -592,6 +594,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 gui_bin: None,
                 cli_bin: None,
                 runtime: None,
+                origins: Vec::new(),
             },
             sandbox: Sandbox {
                 net: Net {

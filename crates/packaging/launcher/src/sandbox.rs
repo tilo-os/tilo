@@ -1172,6 +1172,7 @@ mod tests {
                 gui_bin: None,
                 cli_bin: None,
                 runtime: None,
+                origins: Vec::new(),
             },
             sandbox: crate::manifest::Sandbox {
                 net: crate::manifest::Net {

@@ -920,7 +920,11 @@ impl Origin for ImapOrigin {
         polled.settle |= self.reconnect(cx.host);
         for (account, mailbox) in std::mem::take(&mut self.due) {
             if self.connector.changes(&account, &mailbox).is_none() {
-                tracing::warn!(account, mailbox, "the mail connector took no request for the account");
+                tracing::warn!(
+                    account,
+                    mailbox,
+                    "the mail connector took no request for the account"
+                );
             }
         }
         polled.wrote |= self.push(cx.host, &cx.now);

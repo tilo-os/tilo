@@ -223,11 +223,19 @@ fn hand_over_now(
         )
         .filter(|id| *id != app.package_id),
     };
+    // An app whose types hold an outside service's resources reaches its connector, which
+    // holds the network and custody the host has none of.
+    let origin = super::origin_connectors::connection(app, room).map_err(|error| {
+        refused(format!(
+            "the app's origin connector cannot be reached: {error}"
+        ))
+    })?;
     let fds = InstanceFds {
         broker,
         identity,
         module,
         window: patch,
+        origin,
     };
     let started = send_to_host(&key, &request, &fds)?;
     tracing::info!(

@@ -22173,6 +22173,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-wake",
  "tilolang",
+ "tilolang-mail",
  "tilolang-tilo",
  "tokio",
  "tracing",

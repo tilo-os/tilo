@@ -433,6 +433,7 @@ fn manifest(net: &str) -> ManifestView {
             gui_bin: None,
             cli_bin: None,
             runtime: None,
+            origins: Vec::new(),
         },
         sandbox: Sandbox {
             net: Net {

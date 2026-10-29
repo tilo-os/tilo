@@ -158,6 +158,11 @@ enum Cmd {
         /// (`RunOptions::tilolang_hosted`).
         #[arg(long, conflicts_with = "service")]
         tilolang_hosted: bool,
+        /// A tilolang app's connector for the origin named (`imap`), not a window: the
+        /// process the session runs for an app whose types hold an outside service's
+        /// resources, with the door its instances attach over (`RunOptions::tilolang_connector`).
+        #[arg(long, conflicts_with_all = ["service", "tilolang_hosted", "wayland_socket", "open", "open_uri"])]
+        tilolang_connector: Option<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -553,6 +558,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         headless_console,
         service,
         tilolang_hosted,
+        tilolang_connector,
         rest,
     } = command
     else {
@@ -583,6 +589,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         headless_console,
         service,
         tilolang_hosted,
+        tilolang_connector,
         rest,
     })
 }
@@ -856,6 +863,7 @@ struct RunCliArgs {
     headless_console: Option<u64>,
     service: bool,
     tilolang_hosted: bool,
+    tilolang_connector: Option<String>,
     rest: Vec<String>,
 }
 
@@ -903,6 +911,7 @@ fn run_gui_command(
         open_uri: args.open_uri,
         headless_console: args.headless_console,
         tilolang_hosted: args.tilolang_hosted,
+        tilolang_connector: args.tilolang_connector,
     };
     // Held from before the package is verified until the app exits, so an
     // update meanwhile leaves the build this launch runs alone
@@ -1570,6 +1579,7 @@ fn run_installed(
         open_uri: None,
         headless_console: None,
         tilolang_hosted: false,
+        tilolang_connector: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {

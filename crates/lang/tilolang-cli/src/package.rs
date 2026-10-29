@@ -175,7 +175,7 @@ shell-ui = "optional@{shell_ui}"
 runtime = {tilolang}
 bin = {bin}
 type = "gui"
-
+{origins}
 [providers]
 mime = []
 ext = []
@@ -193,6 +193,8 @@ ext = []
         capabilities = capabilities,
         namespaces = namespaces,
         net = net,
+        // The system runs the mail connector for the app, in this sandbox, window or not.
+        origins = if mail { "origins = [\"imap\"]\n" } else { "" },
     )
 }
 

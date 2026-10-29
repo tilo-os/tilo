@@ -8,21 +8,35 @@ description = "The mail origin of tilolang packages: the logic that keeps a pack
 
 [dependencies]
 # The IMAP and SMTP protocol code of native Mail, and the settings' account store.
-mail = { path = "../../../apps/mail" }
+mail = { path = "../../../apps/mail", optional = true }
 tilolang-tilo = { path = "../tilolang-tilo" }
-tilo-content = { path = "../../system/content" }
+tilo-content = { path = "../../system/content", optional = true }
 # Whether the device is online: an unreachable mail server is tried again when the network
 # comes back, followed on a thread of its own.
-tilo-net = { path = "../tilo-net" }
+tilo-net = { path = "../tilo-net", optional = true }
 # The descriptors the session hands the connector: one per instance that attaches.
-runtime-portal = { path = "../../runtime/runtime-portal" }
-settings-store = { path = "../../system/settings-store" }
-tokio = { workspace = true, features = ["rt"] }
+runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
+settings-store = { path = "../../system/settings-store", optional = true }
+tokio = { workspace = true, features = ["rt"], optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 chrono = { workspace = true, features = ["std"] }
 uuid.workspace = true
 tracing.workspace = true
+
+[features]
+default = ["engine"]
+# The connector itself, in native code with the network and the credentials: the engine, the
+# connector process's loop and the in-process origin. A tilolang host needs none of it: its
+# origins reach the connector over a socket.
+engine = [
+    "dep:mail",
+    "dep:tilo-content",
+    "dep:tilo-net",
+    "dep:runtime-portal",
+    "dep:settings-store",
+    "dep:tokio",
+]
 
 [dev-dependencies]
 # The test IMAP and SMTP servers the connector's tests run against.
