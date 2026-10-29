@@ -1518,8 +1518,9 @@
         },
         {
           "name": "drop",
-          "doc": "A card was dropped below the lane's last card: carries the card.",
-          "value": "resource"
+          "doc": "A card was dropped into the lane: carries the card and its place among the lane's other cards, from 0. A card that takes drops itself reports those that land just before it.",
+          "value": "resource",
+          "at": "int"
         }
       ],
       "semantics": {

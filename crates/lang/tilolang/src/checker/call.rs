@@ -313,6 +313,14 @@ impl Checker<'_> {
         {
             return Self::state_at(&state);
         }
+        // A scalar an event carries goes to the action boxed, as its place until it fires.
+        if let ExprKind::Ident(name) = &e.kind
+            && let Some((local, ty)) = self.lookup(name)
+            && self.st.event_scalars.contains(&local)
+            && (ty == Ty::Option(Box::new(want.clone())) || want.is_error())
+        {
+            return Ex::local(local, ty);
+        }
         let mut names = std::collections::BTreeSet::new();
         super::boundary::names_in(e, &mut names);
         // An action value computes nothing from view state itself: the applications in it
@@ -1184,7 +1192,18 @@ impl Checker<'_> {
     /// `items.move(item, after: other)` or `before: other`: a place named by a neighbour, never
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
-        let usage = "write `.move(item, after: other)`, `.move(item, before: other)` or `.move(item, to: index)`";
+        let usage = "write `.move(item, after: other)`, `.move(item, before: other)`, `.move(item, to: index)` or `.move(item, to: index, among: run)`";
+        // `to: i, among: run`: the place `i` among the items of `run` (a lane of a board, the
+        // items of one section) other than the one moved.
+        if let [item, place, among] = args
+            && place.name.as_ref().is_some_and(|n| n.name == "to")
+            && among.name.as_ref().is_some_and(|n| n.name == "among")
+        {
+            let item = self.expr_as(&item.value, t);
+            let index = self.expr_as(&place.value, &Ty::Int);
+            let run = self.expr_as(&among.value, &Ty::List(Box::new(t.clone())));
+            return Ex::host(Imp::CollMoveAmong, vec![b, fid, item, index, run], Ty::Unit);
+        }
         let (Some(item), Some(place), 2) = (args.first(), args.get(1), args.len()) else {
             self.err(
                 "E022",

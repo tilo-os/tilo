@@ -612,11 +612,18 @@ impl ViewInstance {
     }
 }
 
-/// Put the value an event carries where the action reference holds it, through `then`.
+/// Put the value an event carries where the action reference holds it, through `then`: the
+/// whole of it, or the part of `[value, at]` a place names.
 fn fill_event(aref: &mut ActionRef, value: Option<&Value>) -> Result<(), ()> {
     for arg in &mut aref.args {
         match arg {
             Value::Event => *arg = value.cloned().ok_or(())?,
+            Value::EventPart(part) => {
+                let Some(Value::List(parts)) = value else {
+                    return Err(());
+                };
+                *arg = parts.get(*part).cloned().ok_or(())?;
+            }
             Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value)?,
             _ => {}
         }
