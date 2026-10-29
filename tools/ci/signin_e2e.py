@@ -1695,9 +1695,17 @@ cryptsetup close e2e-target
 
     def boot_to_session(self, label: str) -> dict | None:
         """Boot, open the volume and sign in at the greeter with the account password; the
-        session that starts, if one does."""
+        session that starts, if one does. Once the person is migrated, the boot shows the boot
+        sign-in instead of the disk prompt: the password goes there, and the session follows
+        without the greeter asking (item 3)."""
         self.boot(label)
-        self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
+        if self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt") == 0:
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen(f"{label}-boot-sign-in", path, text)
+            self.cycle.type(self.account)
+            self.cycle.keys("ret")
+            self.connect()
+            return self.wait_session(180)
         try:
             state = console.poll(self.cycle.console, lambda s: s.get("app") == "greeter"
                                  and s.get("accepts_input"), 300, 2)
