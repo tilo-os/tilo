@@ -1154,7 +1154,7 @@ fn keyboard_commands_plan_keys_modifiers_and_typed_text() {
         }
     }
 
-    // Phase `typing_plans_press_release_per_char_with_shift_where_needed`.
+    // Phase `typing_plans_press_release_per_char`.
     {
         // Phase `type_text_emits_press_release_per_char`.
         {
@@ -1223,81 +1223,29 @@ fn keyboard_commands_plan_keys_modifiers_and_typed_text() {
             assert_eq!(actions.len(), pressed.len() * 2, "every press is released");
         }
 
-        // Phase `typing_a_capital_holds_shift_around_it`.
-        // Asserts the exact action sequence, not just a count — a missing Shift bracket is invisible to chrome (reads `text`) and only shows up on the delivered key stream.
-        {
-            let state = StaticState::new(&[]);
-            let (resp, actions) = dispatch_command(
-                &Command::Type {
-                    text: "Hi".to_string(),
-                },
-                &state,
-            );
-            assert!(matches!(resp, Response::Ok { .. }));
-            assert_eq!(
-                actions,
-                vec![
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Named(NamedKeyTag::Shift),
-                        pressed: true,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Char('H'),
-                        pressed: true,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Char('H'),
-                        pressed: false,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Named(NamedKeyTag::Shift),
-                        pressed: false,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Char('i'),
-                        pressed: true,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Char('i'),
-                        pressed: false,
-                    },
-                ],
-                "a capital is typed with Shift held across it, and a lowercase \
-                     letter is not — a bare keycode would reach the client as its \
-                     lowercase letter either way",
-            );
-        }
-
-        // Phase `typing_a_shifted_punctuation_mark_holds_shift_around_it`.
+        // Phase `typing_plans_characters_not_keyboard_positions`.
+        // Which key and which Shift or AltGr type a character is the seat
+        // keymap's to say (`compositor::keymap_typing`), so the plan names
+        // characters only: a US position planned here would type `z` for `y`
+        // on a German keymap.
         {
             let state = StaticState::new(&[]);
             let (_, actions) = dispatch_command(
                 &Command::Type {
-                    text: ":".to_string(),
+                    text: "H:@€".to_string(),
                 },
                 &state,
             );
-            assert_eq!(
-                actions,
-                vec![
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Named(NamedKeyTag::Shift),
-                        pressed: true,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Char(':'),
-                        pressed: true,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Char(':'),
-                        pressed: false,
-                    },
-                    PlannedAction::KeyboardKey {
-                        key: KeyTag::Named(NamedKeyTag::Shift),
-                        pressed: false,
-                    },
-                ],
-            );
+            let expected: Vec<PlannedAction> = "H:@€"
+                .chars()
+                .flat_map(|c| {
+                    [true, false].map(|pressed| PlannedAction::KeyboardKey {
+                        key: KeyTag::Char(c),
+                        pressed,
+                    })
+                })
+                .collect();
+            assert_eq!(actions, expected);
         }
 
         // Phase `type_empty_text_is_a_noop`.
