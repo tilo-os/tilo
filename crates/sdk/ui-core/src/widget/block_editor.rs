@@ -566,6 +566,8 @@ pub struct SlashRequest {
     reason = "independent editor interaction and lifecycle flags"
 )]
 pub struct BlockEditor {
+    /// What it answers to ([`Widget::test_id`]): `block_editor` unless its owner names it.
+    id: Option<String>,
     blocks: Vec<Block>,
     focused: Option<usize>,
     /// Decoupled from `focused` so the index survives blur/refocus.
@@ -891,6 +893,7 @@ impl BlockEditor {
     pub fn new() -> Self {
         crate::i18n::I18nManager::register_widget_messages();
         let mut s = Self {
+            id: None,
             blocks: Vec::new(),
             focused: None,
             is_focused: false,
@@ -1011,6 +1014,14 @@ impl BlockEditor {
         };
         s.blocks.push(Block::paragraph(""));
         s
+    }
+
+    /// Answer to `id` ([`Widget::test_id`]): the key of the field it edits, by which its window
+    /// gives it the keyboard.
+    #[must_use]
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.id = Some(id.to_owned());
+        self
     }
 
     #[must_use]
@@ -9937,7 +9948,7 @@ impl Widget for BlockEditor {
     }
 
     fn test_id(&self) -> Option<&str> {
-        Some("block_editor")
+        Some(self.id.as_deref().unwrap_or("block_editor"))
     }
 
     fn get_rect(&self) -> Rect {

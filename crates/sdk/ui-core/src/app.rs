@@ -2539,6 +2539,15 @@ impl App {
     /// with no caret restore, since the field legitimately changed.
     #[doc(hidden)]
     pub fn rebuild_structure(&mut self) {
+        self.rebuild_structure_placing_focus();
+    }
+
+    /// [`Self::rebuild_structure`]: whether a control asked for the keyboard in the tree it
+    /// built ([`Widget::take_focus_request`]) and has it. That request is where the keyboard
+    /// goes, over where it was before the rebuild: a caller restoring the focus it captured
+    /// before must leave it.
+    pub(crate) fn rebuild_structure_placing_focus(&mut self) -> bool {
+        let mut requested = false;
         let _entry = self.enter_wake_scope();
         let _phase = tilo_resource::profiling::Phase::start("ui.rebuild_structure");
         // The header the rebuild builds hears whether the window's bar
@@ -2684,13 +2693,14 @@ impl App {
                 };
             }
             // The tree this rebuild made is the one a control asked focus in.
-            self.apply_focus_request();
+            requested = self.apply_focus_request();
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
         // was built with; asked once per build, not per frame.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
         self.window.preferred_size = self.root_widget.preferred_window_size();
+        requested
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of

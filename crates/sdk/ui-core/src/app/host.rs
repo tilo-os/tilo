@@ -741,6 +741,10 @@ fn lay_out_window(
     // Whether the last pass asked for another only to remount in place.
     let mut remount_next = false;
     let mut remounted = false;
+    // Whether a control's request placed the keyboard in a rebuild of this
+    // pass: from then on `focus`, captured before the pass, is where focus
+    // was, not where it goes, in this rebuild and every later one.
+    let mut requested = false;
     let result = settle_widget_composition(recompose_for_viewport, |rebuild| {
         let remount_only = rebuild && std::mem::take(&mut remount_next);
         let in_place =
@@ -761,7 +765,7 @@ fn lay_out_window(
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
             let autofocus = app.autofocus_on_structure_change;
             app.autofocus_on_structure_change = false;
-            app.rebuild_structure();
+            requested |= app.rebuild_structure_placing_focus();
             app.autofocus_on_structure_change = autofocus;
             if let Some(view) = &view {
                 crate::view::capability::restore_view_state(app.root_widget.as_mut(), view);
@@ -771,7 +775,12 @@ fn lay_out_window(
             if app.layout.structure_dirty {
                 return Ok((None, true));
             }
-            if let Some(focus) = &focus {
+            if requested {
+                // A control asked for the keyboard in a tree this pass built
+                // and has it (the rebuild keeps it on the control it is in):
+                // one decision places focus, and the focus captured before
+                // the pass is what the request moved on from.
+            } else if let Some(focus) = &focus {
                 // SAFETY: rebuild completed, and sync retained this topology.
                 // A trap narrows eligible targets; it must not bypass identity
                 // restoration or send saved selection to a fallback control.
