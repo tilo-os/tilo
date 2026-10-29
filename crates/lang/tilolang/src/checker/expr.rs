@@ -791,7 +791,9 @@ impl Checker<'_> {
                     );
                     return Ex::error();
                 };
-                if f.role.as_deref() == Some("previously") && !self.st.migration {
+                if f.role.as_deref() == Some("previously")
+                    && self.st.role.as_deref() != Some("migration")
+                {
                     self.err("E114", name.span, format!("`{}` is what `{}` held previously: only a `migration action` reads it, to bring it to where the type keeps it now", f.name, key.name));
                     return Ex::error();
                 }
