@@ -151,12 +151,14 @@ pub fn resolve(request: &Request, exists: &dyn Fn(&Path) -> bool) -> Result<Firm
         // AAVMF/QEMU_EFI is distributed under different names by Fedora and
         // Debian-family hosts; both put a blank variable-store template next
         // to the read-only code image. Measured boot is never implied from an
-        // arbitrary AAVMF build merely because it exposes a TPM device.
+        // arbitrary AAVMF build merely because it exposes a TPM device: the
+        // TPM is there for what does not bind to PCRs, the TPM-and-secret
+        // wrapper of sign-in (docs/security/sign-in.md §4.1), and anything
+        // PCR-bound tested on it proves nothing.
         if request.tpm {
-            return Err(QemuError::new(
-                "the aarch64 VM has no verified measured-AAVMF profile yet",
-                "boot the ARM guest without a TPM (--no-tpm); TPM enrollment stays disabled in Tilo until signed measured-boot predictions are implemented",
-            ));
+            notes.push(
+                "tpm: swtpm on tpm-tis-device; AAVMF's measurements are unverified, so only what is not PCR-bound is tested".into(),
+            );
         }
         if keys != Keys::None {
             return Err(QemuError::new(
@@ -597,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn arm_firmware_matches_both_package_layouts_and_refuses_a_tpm() {
+    fn arm_firmware_matches_both_package_layouts_and_takes_a_tpm_unmeasured() {
         let fedora = files("/a", &["QEMU_EFI-pflash.raw", "vars-template-pflash.raw"]);
         let debian = files("/a", &["AAVMF_CODE.fd", "AAVMF_VARS.fd"]);
         let r = request(Arch::Aarch64, "/a");
@@ -621,8 +623,19 @@ mod tests {
                 false
             )
         );
-        let error = pick(&Request { tpm: true, ..r }, &fedora).unwrap_err();
-        assert!(error.detail.contains("measured-AAVMF"), "{error:?}");
+        let with_tpm = resolve(&Request { tpm: true, ..r }, &|p| fedora.contains(p)).unwrap();
+        assert!(
+            !with_tpm.measures,
+            "an AAVMF build is never taken to measure"
+        );
+        assert!(
+            with_tpm
+                .notes
+                .iter()
+                .any(|note| note.contains("not PCR-bound")),
+            "{:?}",
+            with_tpm.notes
+        );
     }
 
     #[test]

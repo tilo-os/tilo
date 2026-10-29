@@ -919,7 +919,7 @@ impl Machine {
             self.name.clone(),
         ]);
         if self.tpm {
-            args.extend(self.tpm(run).qemu_args());
+            args.extend(self.tpm(run).qemu_args(self.arch));
         }
         args
     }
