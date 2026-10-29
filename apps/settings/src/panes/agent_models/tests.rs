@@ -774,10 +774,7 @@ fn model_request_limits_use_the_published_settings_effects() {
         &mut app,
         "settings.hosted-agent-providers",
         "set-providers",
-        serde_json::to_value(agent_provider_config::HostedProfiles {
-            profiles: vec![profile],
-        })
-        .unwrap(),
+        serde_json::json!({ "hosted": { "profiles": [profile] } }),
     )
     .unwrap();
     let stored = |app: &TestApp<crate::resource::SettingsShell>| {

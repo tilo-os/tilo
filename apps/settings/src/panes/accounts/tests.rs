@@ -903,41 +903,37 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
     let read = AccountsRead::of(&root);
     let config = root.path().expect("an explicit root");
     let gate = crate::stall::Stall::new();
-    let window = std::thread::spawn(move || {
-        ui::rt::mark_ui_thread();
-        let stalled = std::sync::Arc::clone(&gate);
-        let root = AccountRoot::at(config).with_vault_gate(move || {
-            stalled.wait();
-        });
-        let dir = AccountDirectory::load_in(&root);
-        let pane = AccountsPane::from_read(root, dir, read);
-        let granted = t("accounts-status-mail-granted");
-        let shows_granted = |app: &mut TestApp<SettingsShell>| {
-            announced(app).iter().any(|line| line.contains(&granted))
-        };
-
-        let mut app = window_showing(pane);
-        let shown = shows_granted(&mut app);
-        gate.assert_held("composing the accounts");
-        assert!(!shown, "the grant is not known before the vault answers");
-        assert!(
-            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
-                area(settings).unwrap().model().borrow().busy()
-            })
-            .unwrap(),
-            "the pane keeps polling while the vault is out"
-        );
-
-        gate.release();
-        let deadline = tilo_test_env::hang_deadline();
-        while !shows_granted(&mut app) {
-            assert!(Instant::now() < deadline, "the grant is shown");
-            app.settle();
-            std::thread::yield_now();
-        }
+    // A window that waited on the vault would sit until the stall gives up,
+    // which `assert_held` reports.
+    let stalled = std::sync::Arc::clone(&gate);
+    let root = AccountRoot::at(config).with_vault_gate(move || {
+        stalled.wait();
     });
-    if let Err(panic) = window.join() {
-        std::panic::resume_unwind(panic);
+    let dir = AccountDirectory::load_in(&root);
+    let pane = AccountsPane::from_read(root, dir, read);
+    let granted = t("accounts-status-mail-granted");
+    let shows_granted = |app: &mut TestApp<SettingsShell>| {
+        announced(app).iter().any(|line| line.contains(&granted))
+    };
+
+    let mut app = window_showing(pane);
+    let shown = shows_granted(&mut app);
+    gate.assert_held("composing the accounts");
+    assert!(!shown, "the grant is not known before the vault answers");
+    assert!(
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            area(settings).unwrap().model().borrow().busy()
+        })
+        .unwrap(),
+        "the pane keeps polling while the vault is out"
+    );
+
+    gate.release();
+    let deadline = tilo_test_env::hang_deadline();
+    while !shows_granted(&mut app) {
+        assert!(Instant::now() < deadline, "the grant is shown");
+        app.settle();
+        std::thread::yield_now();
     }
 }
 
