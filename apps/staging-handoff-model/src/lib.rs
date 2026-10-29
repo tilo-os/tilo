@@ -127,6 +127,17 @@ pub fn is_guid(value: &str) -> bool {
             .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+/// An operation, attempt or request id: the canonical lowercase text of a
+/// non-nil UUID, as `uuid::Uuid::new_v4().to_string()` writes it. Every id
+/// the setup records, passes to a helper or names a directory with is
+/// checked with this one rule. It lives here so the privileged helpers that
+/// share this model check ids without linking the installer backend.
+pub fn is_operation_id(value: &str) -> bool {
+    is_guid(value)
+        && !value.bytes().any(|byte| byte.is_ascii_uppercase())
+        && value.bytes().any(|byte| byte != b'0' && byte != b'-')
+}
+
 /// A firmware boot entry id: four uppercase hex digits.
 fn is_boot_id(value: &str) -> bool {
     value.len() == 4
@@ -318,6 +329,16 @@ pub fn pad_json(json: &[u8], len: u64) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_ids_are_canonical_lowercase_and_never_nil() {
+        assert!(is_operation_id("0f0e0d0c-0b0a-4908-8706-050403020100"));
+        assert!(!is_operation_id("0F0E0D0C-0B0A-4908-8706-050403020100"));
+        assert!(!is_operation_id("00000000-0000-0000-0000-000000000000"));
+        assert!(!is_operation_id("{0f0e0d0c-0b0a-4908-8706-050403020100}"));
+        assert!(!is_operation_id("0f0e0d0c0b0a49088706050403020100"));
+        assert!(!is_operation_id(""));
+    }
 
     fn handoff() -> Handoff {
         Handoff {

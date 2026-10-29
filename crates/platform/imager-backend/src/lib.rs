@@ -171,12 +171,8 @@ pub fn random_guid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// An operation, attempt or request id: the canonical lowercase text of a
-/// non-nil UUID, as [`random_guid`] writes it. Every id the setup records,
-/// passes to a helper or names a directory with is checked with this one rule.
-pub fn is_operation_id(value: &str) -> bool {
-    uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
-}
+/// An operation, attempt or request id, as [`random_guid`] writes it.
+pub use staging_handoff_model::is_operation_id;
 
 /// Canonical lowercase GUID text (`8-4-4-4-12` hex digits).
 pub fn is_guid(value: &str) -> bool {
