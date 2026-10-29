@@ -187,6 +187,14 @@ impl Layers {
         self.each(|host| host.resources()).concat()
     }
 
+    /// Where what the desk's and the chrome's trees publish stands.
+    fn revisions(&self) -> [u64; 2] {
+        [
+            self.desktop.with_widgets(|host| host.revision()),
+            self.chrome.borrow().revision(),
+        ]
+    }
+
     /// Invoke the published action `action` of `resource` on the layer
     /// that publishes it.
     fn invoke(
@@ -248,6 +256,11 @@ struct Shared {
     commands: Rc<RefCell<Vec<SessionCommand>>>,
     /// Quick settings' readings of the device, which a readout shows.
     readings: Rc<RefCell<Option<tilo_quick_settings::host::Feed>>>,
+    /// The system services.
+    services: RefCell<Services>,
+    /// Where everything the session publishes stood when search last read
+    /// it: the desk's, the chrome's and the services' revisions.
+    observed: Cell<Option<[u64; 3]>>,
 }
 
 impl Shared {
@@ -395,6 +408,12 @@ impl Shared {
                         &own.arguments,
                     )
                     .map(drop)
+                self.invoke(
+                    own.address.resource.as_str(),
+                    own.address.action.as_str(),
+                    &own.arguments,
+                )
+                .map(drop)
             });
         }
         // What the session's own actions asked of it.
@@ -402,7 +421,56 @@ impl Shared {
     }
 
     /// Read what the session publishes for search, after a frame.
+    /// Everything the session publishes: the desk's and the chrome's
+    /// resources, then the services'.
+    fn resources(&self) -> Vec<ResourceSpec> {
+        let mut resources = self.layers.resources();
+        resources.extend(self.services.borrow().resources());
+        resources
+    }
+
+    /// Invoke the published action `action` of `resource` where it is
+    /// published: on the desk's or the chrome's layer, else at the service
+    /// publishing it.
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        match self.layers.invoke(resource, action, arguments) {
+            Err(DoorError::Unknown(address)) => {
+                match self
+                    .services
+                    .borrow_mut()
+                    .invoke(resource, action, arguments)
+                {
+                    Some(Ok(Started::Done(output))) => {
+                        Ok(ResourceOperationStart::Completed(output))
+                    }
+                    Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+                    Some(Err(error)) => Err(error),
+                    None => Err(DoorError::Unknown(address)),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Where everything the session publishes stands: it may have changed
+    /// only when this moved.
+    fn revision(&self) -> [u64; 3] {
+        let [desk, chrome] = self.layers.revisions();
+        [desk, chrome, self.services.borrow().revision()]
+    }
+
+    /// Hand search what the session publishes when it changed: read after
+    /// a frame, as the desk cannot read its own tree while it opens search.
     fn observe(&self) {
+        let now = Some(self.revision());
+        if self.observed.replace(now) == now {
+            return;
+        }
         let open_tabs = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -826,6 +894,10 @@ impl Session {
             commands,
             readings,
         };
+            services: RefCell::new(services),
+            observed: Cell::new(None),
+        });
+        shared.observe();
         Ok(Self {
             compositor,
             shared,
