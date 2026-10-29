@@ -8084,23 +8084,6 @@ impl FrameHarness {
         }
     }
 
-    /// Keep why an edit the job `on_behalf_of` submitted was refused: the
-    /// job then fails.
-    fn note_continuation(
-        &mut self,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        let Err(error) = result else {
-            return;
-        };
-        if let Some(continuation) = on_behalf_of.and_then(|id| self.acting_for.get_mut(&id))
-            && continuation.refused.is_none()
-        {
-            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
-        }
-    }
-
     fn dispatch_legacy_control(
         &mut self,
         target: &crate::bound_dispatch::legacy_document::LegacyResourceTarget,
@@ -9958,6 +9941,15 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
+    }
+
+    fn acting_for_mut(
+        &mut self,
+    ) -> &mut std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    > {
+        &mut self.acting_for
     }
 
     fn dispatch_current_history_control(

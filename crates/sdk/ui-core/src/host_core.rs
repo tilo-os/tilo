@@ -234,6 +234,11 @@ pub(crate) trait HostCore {
     /// The app's registered framework History, when it has one.
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome>;
 
+    /// The effects running for their invokers, by invocation.
+    fn acting_for_mut(
+        &mut self,
+    ) -> &mut HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>;
+
     /// Run a pending History control whose meaning
     /// [`Self::dispatch_prepared_history_control`] found unchanged.
     fn dispatch_current_history_control(
@@ -305,6 +310,23 @@ pub(crate) trait HostCore {
         self.dispatch_node(node, |widget, doc, root| {
             widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
         })
+    }
+
+    /// Keep why an edit the running effect `on_behalf_of` submitted was
+    /// refused: the effect then fails rather than claim what it did not do.
+    fn note_continuation(
+        &mut self,
+        on_behalf_of: Option<tilo_actions::InvocationId>,
+        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
+    ) {
+        let Err(error) = result else {
+            return;
+        };
+        if let Some(continuation) = on_behalf_of.and_then(|id| self.acting_for_mut().get_mut(&id))
+            && continuation.refused.is_none()
+        {
+            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
+        }
     }
 
     fn dispatch_semantic_node<R>(

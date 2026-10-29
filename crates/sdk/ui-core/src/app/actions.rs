@@ -4207,6 +4207,15 @@ impl crate::host_core::HostCore for App {
         self.history.as_mut()
     }
 
+    fn acting_for_mut(
+        &mut self,
+    ) -> &mut std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    > {
+        &mut self.actions.acting_for
+    }
+
     fn dispatch_current_history_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
