@@ -47,6 +47,10 @@ const AUTHOR_MARK: &str = "author";
 /// The key a stored enum value keeps its variant under
 /// (`tilo_resource::VARIANT_KEY`).
 const VARIANT_KEY: &str = "$variant";
+/// The key the `Str` variant of a stored mark value keeps its string under,
+/// and the bare key an older layout kept it under.
+const STR_FIELD: &str = "$field/str/0";
+const STR_FIELD_FLAT: &str = "0";
 /// The key and value slot of an item of a stored collection
 /// (`tilo_resource::Collection`): `{ <id>: { k: <order>, v: <item> } }`.
 const ITEM_VALUE: &str = "v";
@@ -338,7 +342,10 @@ impl Walk<'_> {
         };
         self.string(&value, VARIANT_KEY)
             .is_some_and(|variant| variant.eq_ignore_ascii_case("str"))
-            .then(|| self.string(&value, "0"))
+            .then(|| {
+                self.string(&value, STR_FIELD)
+                    .or_else(|| self.string(&value, STR_FIELD_FLAT))
+            })
             .flatten()
     }
 

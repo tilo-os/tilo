@@ -1,11 +1,17 @@
 //! `#[derive(Model)]` for an enum whose variants carry fields.
 //!
 //! A value is a map: the variant's name under `$variant`
-//! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under its
-//! own key, stored as its type stores it. Concurrent edits of one variant
-//! merge field by field (two people editing a text field of the same variant
-//! splice it); changing the variant is one last-writer-wins write of its name,
-//! and storing a variant removes the fields another one left.
+//! (`tilo_resource::VARIANT_KEY`), and each of the variant's fields under a
+//! key of its variant (`$field/<variant>/<field>`), stored as its type stores
+//! it. Concurrent edits of one variant merge field by field (two people
+//! editing a text field of the same variant splice it); changing the variant
+//! is one last-writer-wins write of its name, and storing a variant removes
+//! the fields another one left. Two variants naming a field alike never share
+//! its key, so a concurrent change of variant and edit of the old variant's
+//! field never leaves the new variant reading the old one's value.
+//!
+//! A document of the older layout, each field under its bare name beside
+//! `$variant`, reads as it was written; the next store writes it by variant.
 //!
 //! Named fields keep their names (`#[model(rename = "key")]` changes one,
 //! `#[model(skip)]` leaves one out: its `Default` on read); the fields of a
@@ -27,6 +33,8 @@ struct Field {
     /// The local the pattern binds it to.
     binding: Ident,
     key: String,
+    /// The document key it is stored under: one of its variant's own.
+    storage: String,
     ty: Type,
     skip: bool,
 }
@@ -53,6 +61,7 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
         let key = options
             .rename
             .unwrap_or_else(|| snake_case(&variant.ident.to_string()));
+        let variant_key = key.clone();
         let default = variant
             .attrs
             .iter()
@@ -82,15 +91,16 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
                 name.strip_prefix("r#")
                     .map_or_else(|| name.clone(), str::to_owned)
             });
-            if key == tilo_variant_key() {
+            if key.starts_with('$') {
                 return Err(syn::Error::new(
                     field.span(),
-                    "`$variant` names the variant; store this field under another key",
+                    "keys beginning with `$` name the variant and where its fields are stored; store this field under another key",
                 ));
             }
             fields.push(Field {
                 member,
                 binding: format_ident!("__field{}", index),
+                storage: storage_key(&variant_key, &key),
                 key,
                 ty: field.ty.clone(),
                 skip: options.skip,
@@ -113,9 +123,24 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
     Ok(out)
 }
 
-/// `tilo_resource::VARIANT_KEY`, which a field may not be stored under.
-const fn tilo_variant_key() -> &'static str {
-    "$variant"
+/// The key variant `variant`'s field `field` is stored under:
+/// `$field/<variant>/<field>`, with `%` and `/` escaped so that no two
+/// variants' fields share a key.
+fn storage_key(variant: &str, field: &str) -> String {
+    fn escape_into(text: &str, out: &mut String) {
+        for ch in text.chars() {
+            match ch {
+                '%' => out.push_str("%25"),
+                '/' => out.push_str("%2F"),
+                other => out.push(other),
+            }
+        }
+    }
+    let mut key = String::from("$field/");
+    escape_into(variant, &mut key);
+    key.push('/');
+    escape_into(field, &mut key);
+    key
 }
 
 impl Variant {
@@ -209,7 +234,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
                 quote!(::core::default::Default::default())
             } else {
                 let field_key = &field.key;
-                quote!(#krate::read_key(doc, id, #field_key)?)
+                let storage = &field.storage;
+                quote!(#model::read_variant_field(doc, id, #storage, #field_key)?)
             }
         });
         quote!(#key => ::core::result::Result::Ok(#built),)
@@ -218,7 +244,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     let store = variants.iter().map(|variant| {
         let pattern = variant.pattern();
         let key = &variant.key;
-        let keys: Vec<&String> = variant.stored().map(|field| &field.key).collect();
+        let keys = variant.stored().map(|field| &field.key);
+        let storage: Vec<&String> = variant.stored().map(|field| &field.storage).collect();
         let bindings = variant.stored().map(|field| &field.binding);
         let unused = variant
             .fields
@@ -228,8 +255,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         quote! {
             #pattern => {
                 #(let _ = #unused;)*
-                let __obj = #model::variant_map(doc, slot, #key, &[#(#keys),*])?;
-                #(#krate::write_key(doc, &__obj, #keys, #bindings)?;)*
+                let __obj = #model::variant_map(doc, slot, #key, &[#(#storage),*])?;
+                #(#model::write_variant_field(doc, &__obj, #storage, #keys, #bindings)?;)*
                 ::core::result::Result::Ok(())
             }
         }

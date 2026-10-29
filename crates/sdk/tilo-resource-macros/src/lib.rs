@@ -28,9 +28,10 @@ fn krate() -> Tokens {
 /// * an enum of unit variants is a string naming the variant; the variant
 ///   marked `#[default]` is the value of an absent slot;
 /// * an enum whose variants carry fields is a map: the variant's name under
-///   `$variant` and each field under its own key (a tuple variant's as `0`,
-///   `1`, …), so edits of one variant merge field by field and a change of
-///   variant is last writer wins.
+///   `$variant` and each field under a key of its variant
+///   (`$field/<variant>/<field>`, a tuple variant's fields named `0`, `1`,
+///   …), so edits of one variant merge field by field, a change of variant is
+///   last writer wins, and no variant reads a field another one wrote.
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
