@@ -24,7 +24,7 @@ default = ["client"]
 # (action directory, nearby transfer, Wi-Fi continuity, task runs, presence
 # and workspace-control types), for code that speaks the broker's language
 # through some other transport.
-client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:ed25519-dalek"]
+client = ["dep:runtime-portal", "dep:capnp", "dep:capnp-rpc", "dep:tokio", "dep:ed25519-dalek", "wire-frame/tokio"]
 # The `AppSettings` capability over a `settings_store::SettingsSource`, for
 # the hosts that hand one to each app.
 settings-host = ["client", "dep:settings-store"]

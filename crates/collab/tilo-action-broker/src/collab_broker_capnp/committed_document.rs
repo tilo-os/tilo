@@ -755,12 +755,8 @@ impl CapnpChannelHandle {
         service.await_sealed_history(&context)
     }
 
-    pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
-        self.committed_document_dispatch_prepared(request, None)
-    }
-
-    /// [`Self::committed_document_dispatch`], with an Open's record already
-    /// `prepared` by the device that creates it.
+    /// Answer a committed-document request, with an Open's record already
+    /// `prepared` by the device that creates it, if another does.
     pub(super) fn committed_document_dispatch_prepared(
         &self,
         request: &Request,

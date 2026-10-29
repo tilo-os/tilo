@@ -16,9 +16,7 @@ pub(super) fn live_admission(
 ) -> OpAdmission {
     let channel =
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
-    channels
-        .document_admission(channel, envelope.encryption.as_ref())
-        .into()
+    channels.document_admission(channel, envelope.encryption.as_ref())
 }
 
 /// Replay to a new op subscriber of `channel_id` the ops this broker

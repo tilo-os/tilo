@@ -2,7 +2,7 @@
 //! change (`applicationsChanged`): content-free, so Files asks the tools
 //! service for the list again instead of asking on a timer.
 
-use crate::services::{HostServices, NearbyTransferChange};
+use crate::services::HostServices;
 
 /// The wait for the app list's next change past `after` for a connection on
 /// `route_app`: only the certified Files route may wait, as only Files lists
@@ -24,60 +24,6 @@ pub(super) fn app_change(
         .ok_or_else(|| {
             capnp::Error::unimplemented("this host does not say when its apps change".into())
         })
-}
-
-impl super::CapnpChannelHandle {
-    /// Answer `applicationsChanged`: the admission rechecked for the route
-    /// that asked, then the wait for the app list's next change.
-    pub(super) fn answered_about_app_changes(
-        &self,
-        params: &super::channel_handle::ApplicationsChangedParams,
-        results: super::channel_handle::ApplicationsChangedResults,
-    ) -> capnp::capability::Promise<(), capnp::Error> {
-        let route = self.route();
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&route, &self.verified_identity)
-        {
-            return capnp::capability::Promise::err(error);
-        }
-        let Ok(params) = params.get() else {
-            return capnp::capability::Promise::err(capnp::Error::failed(
-                "a malformed request".into(),
-            ));
-        };
-        answer(
-            &self.state.services,
-            &route.app_id,
-            params.get_after(),
-            results,
-        )
-    }
-}
-
-/// Answer `applicationsChanged` for a connection on `route_app`: the wait
-/// `app_change` hands back, sent as the change to wait from next.
-fn answer(
-    services: &HostServices,
-    route_app: &str,
-    after: u64,
-    results: super::channel_handle::ApplicationsChangedResults,
-) -> capnp::capability::Promise<(), capnp::Error> {
-    match app_change(services, route_app, after) {
-        Ok(change) => reply(change, results),
-        Err(error) => capnp::capability::Promise::err(error),
-    }
-}
-
-/// Send `change` as the reply: the revision to wait from next.
-fn reply(
-    change: NearbyTransferChange,
-    mut results: super::channel_handle::ApplicationsChangedResults,
-) -> capnp::capability::Promise<(), capnp::Error> {
-    capnp::capability::Promise::from_future(async move {
-        results.get().set_change(change.await);
-        Ok(())
-    })
 }
 
 #[cfg(test)]

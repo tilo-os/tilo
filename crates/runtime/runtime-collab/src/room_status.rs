@@ -6,7 +6,7 @@ use crate::collab_capnp;
 
 /// Where a room stands for the apps on this device: whether an app can open
 /// documents in it now, and if not, why.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RoomStatus {
     /// Apps open documents in it.
     #[default]

@@ -1,10 +1,11 @@
-#![expect(
-    clippy::future_not_send,
-    reason = "wire connections and the broker registry run on the test LocalSet"
+#![allow(
+    clippy::significant_drop_tightening,
+    reason = "each test's room outlives the endpoints it serves; dropping it early would close them"
 )]
 
 use super::*;
 use crate::collab_outbound::recording::{RecordingSink, Sent};
+use crate::test_support::WorkspaceTree;
 use collab_types::{PeerPresence, PeerPresencePayload, sign_op};
 use ed25519_dalek::SigningKey;
 use std::time::SystemTime;
@@ -15,7 +16,7 @@ struct Room {
     sink: Arc<RecordingSink>,
     membership: crate::test_support::WorkspaceTreeHandle,
     directories: Rc<LocalActionDirectoryRegistry>,
-    _fanout: Arc<FanoutState>,
+    fanout: Arc<FanoutState>,
 }
 
 impl Room {
@@ -41,7 +42,12 @@ impl Room {
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::new(sink.clone()),
             Some(membership.clone()),
-            None,
+            Some(Arc::new(
+                members
+                    .iter()
+                    .map(|seed| device(*seed).verifying_key().to_bytes())
+                    .collect(),
+            )),
         );
         fanout.attach_capnp(state.clone());
         state.ensure_channel(&route.channel_key());
@@ -51,13 +57,27 @@ impl Room {
             sink,
             membership,
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
-            _fanout: fanout,
+            fanout,
         }
     }
 
     /// An endpoint of `seed`'s person on its own wire connection, holding
     /// the room's channel.
     fn endpoint(&self, seed: u8) -> Endpoint {
+        let (connection, outgoing, channel) = self.connection(seed);
+        Endpoint::serve(connection, outgoing, channel)
+    }
+
+    /// A connection of `seed`'s person holding the room's channel, not yet
+    /// served.
+    fn connection(
+        &self,
+        seed: u8,
+    ) -> (
+        Rc<WireConnection>,
+        mpsc::UnboundedReceiver<HostFrame>,
+        Handle,
+    ) {
         let root = SigningKey::from_bytes(&[seed; 32]);
         let admitted = admit_verified_join(
             &self.membership.read(),
@@ -69,7 +89,7 @@ impl Room {
             },
         )
         .unwrap();
-        let (connection, outgoing) = WireConnection::new();
+        let (connection, outgoing) = WireConnection::new(None);
         let hold = self.state.next_peer_id();
         let channel = connection.open(ChannelSession::new(Rc::new(CapnpChannelHandle {
             person_chat_views: RefCell::default(),
@@ -85,15 +105,29 @@ impl Room {
             lease: None,
             _hold: None,
         })));
-        let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
-        let (reader, writer) = host.into_split();
-        let driver = tokio::task::spawn_local(serve(connection, outgoing, reader, writer));
-        Endpoint {
-            channel,
-            stream: endpoint,
-            next_id: 1,
-            driver,
-        }
+        (connection, outgoing, channel)
+    }
+
+    /// A connection that joins channels itself, served to an endpoint
+    /// holding none yet.
+    fn joining_endpoint(&self) -> Endpoint {
+        let peer_id = self.fanout.next_peer_id();
+        let service = Rc::new(CapnpCollabService {
+            worker: None,
+            app_worker: None,
+            state: self.state.clone(),
+            directories: self.directories.clone(),
+            peer_id,
+            lease: Rc::new(ConnectionLease {
+                local_media: None,
+                state: self.state.clone(),
+                directories: self.directories.clone(),
+                peer_id,
+            }),
+            holds: route_holds::ConnectionHolds::default(),
+        });
+        let (connection, outgoing) = WireConnection::new(Some(service));
+        Endpoint::serve(connection, outgoing, Handle(0))
     }
 }
 
@@ -123,10 +157,26 @@ impl Drop for Endpoint {
 }
 
 impl Endpoint {
+    fn serve(
+        connection: Rc<WireConnection>,
+        outgoing: mpsc::UnboundedReceiver<HostFrame>,
+        channel: Handle,
+    ) -> Self {
+        let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
+        let (reader, writer) = host.into_split();
+        let driver = tokio::task::spawn_local(serve(connection, outgoing, reader, writer));
+        Self {
+            channel,
+            stream: endpoint,
+            next_id: 1,
+            driver,
+        }
+    }
+
     async fn send(&mut self, request: Request) -> u64 {
         use tokio::io::AsyncWriteExt as _;
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = id.wrapping_add(1);
         FRAMING
             .write_value_async(&mut self.stream, &Call { id, request })
             .await
@@ -387,6 +437,222 @@ async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
                     ..
                 }
             ));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[3]);
+            let mut endpoint = room.joining_endpoint();
+            let channel = room.route.channel_key();
+            assert_eq!(
+                endpoint
+                    .call(Request::Room {
+                        channel: channel.clone(),
+                        seen: None,
+                    })
+                    .await,
+                Ok(Reply::Room(runtime_collab::RoomStatus::Ready))
+            );
+            let refused = endpoint
+                .call(Request::Join(Join {
+                    channel: channel.clone(),
+                    identity: crate::collab_broker_capnp::tests::certified_join(
+                        &room.route.cluster_id,
+                        &SigningKey::from_bytes(&[3; 32]),
+                        &device(4),
+                    ),
+                    participant: Participant::Person {
+                        handle: String::new(),
+                    },
+                    record_kind: None,
+                }))
+                .await;
+            assert!(
+                refused.is_err(),
+                "a device the room never enrolled joins nothing"
+            );
+            let Ok(Reply::Opened(handle)) = endpoint
+                .call(Request::Join(Join {
+                    channel,
+                    identity: crate::collab_broker_capnp::tests::certified_join(
+                        &room.route.cluster_id,
+                        &SigningKey::from_bytes(&[3; 32]),
+                        &device(3),
+                    ),
+                    participant: Participant::Person {
+                        handle: "Ada".into(),
+                    },
+                    record_kind: None,
+                }))
+                .await
+            else {
+                panic!("the member's enrolled device joins");
+            };
+            endpoint.channel = handle;
+            assert_eq!(
+                endpoint
+                    .publish(
+                        &PresenceKey::surface_pointer("editor"),
+                        PeerPresencePayload::Arrived,
+                    )
+                    .await,
+                Ok(Reply::Done)
+            );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_service_command_is_answered_or_refused_on_its_call() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[9]);
+            let mut endpoint = room.endpoint(9);
+            let channel = endpoint.channel;
+            for service in [
+                Service::AudioOutput,
+                Service::NativeMedia,
+                Service::PersonChat,
+                Service::Speaker,
+                Service::Realtime,
+                Service::NearbyTransfer,
+                Service::WifiContinuity,
+                Service::BrowserServiceSession,
+                Service::ApprovedCheck,
+                Service::LocalFile,
+                Service::CommittedDocument,
+            ] {
+                let refused = endpoint
+                    .call(Request::Command {
+                        channel,
+                        service,
+                        body: b"not a command".to_vec(),
+                        on_behalf_of: Vec::new(),
+                    })
+                    .await;
+                assert!(refused.is_err(), "{service:?} refuses what it cannot read");
+            }
+            assert!(
+                endpoint
+                    .call(Request::Command {
+                        channel: Handle(77),
+                        service: Service::PersonChat,
+                        body: Vec::new(),
+                        on_behalf_of: Vec::new(),
+                    })
+                    .await
+                    .is_err(),
+                "a command names a channel the connection holds"
+            );
+            for report in [
+                Report::Continuation {
+                    schema_version: 1,
+                    metadata: Vec::new(),
+                },
+                Report::ClearContinuation,
+                Report::Handoff(Vec::new()),
+                Report::SearchIndex(b"{}".to_vec()),
+            ] {
+                assert!(
+                    endpoint
+                        .call(Request::Publish {
+                            channel,
+                            publication: Publication::Report(report.clone()),
+                        })
+                        .await
+                        .is_err(),
+                    "{report:?}: a channel with no instance or durable room reports nothing"
+                );
+            }
+            assert!(
+                endpoint
+                    .call(Request::Publish {
+                        channel,
+                        publication: Publication::Effect {
+                            resource: "note:1".into(),
+                            action: "archive".into(),
+                            update: "{}".into(),
+                        },
+                    })
+                    .await
+                    .is_err(),
+                "an effect names a terminal update of an action the app publishes"
+            );
+            for of in [
+                Changes::Speakers,
+                Changes::ChannelKeys,
+                Changes::NearbyTransfers,
+                Changes::Drives,
+                Changes::Applications,
+            ] {
+                assert!(
+                    endpoint
+                        .call(Request::Changed {
+                            channel,
+                            of,
+                            after: 0,
+                        })
+                        .await
+                        .is_err(),
+                    "{of:?}: a host without the service, or a route it is not for, waits on nothing"
+                );
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_wire_client_calls_and_subscribes_against_the_host() {
+    use runtime_collab::wire::client::{Client, Delivery};
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[11, 12]);
+            let connect = |seed: u8| {
+                let (connection, outgoing, channel) = room.connection(seed);
+                let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
+                let (reader, writer) = host.into_split();
+                tokio::task::spawn_local(serve(connection, outgoing, reader, writer));
+                let (reader, writer) = endpoint.into_split();
+                let (client, frames) = Client::new(reader, writer);
+                tokio::task::spawn_local(frames);
+                (client, channel)
+            };
+            let (watcher, watcher_channel) = connect(11);
+            let (author, authored) = connect(12);
+            let mut presence = watcher
+                .subscribe(watcher_channel, Topic::Presence)
+                .await
+                .unwrap();
+            let key = PresenceKey::surface_pointer("editor");
+            assert_eq!(
+                author
+                    .call(Request::Publish {
+                        channel: authored,
+                        publication: Publication::Presence(PeerPresence {
+                            key: postcard::to_stdvec(&key).unwrap(),
+                            payload: PeerPresencePayload::Arrived,
+                        }),
+                    })
+                    .await,
+                Ok(Reply::Done)
+            );
+            let Some(Delivery::Event(Event::Presence { user_id, .. })) = presence.next().await
+            else {
+                panic!("the client routes the subscription's event");
+            };
+            assert_eq!(user_id, principal(12));
+            assert!(
+                watcher
+                    .call(Request::Close { handle: Handle(99) })
+                    .await
+                    .is_err(),
+                "a refusal reaches the call that caused it"
+            );
+            watcher.unsubscribe(presence).await.unwrap();
         })
         .await;
 }

@@ -9,9 +9,10 @@
 //! call's id names the subscription its [`HostFrame::Event`]s carry until
 //! [`HostFrame::Ended`] or [`Request::Unsubscribe`].
 //!
-//! The verbs are few: publish into a channel, subscribe to one of its
-//! topics, invoke, read. What travels in them are the domain payloads the
-//! host and its peers already exchange, such as [`PeerPresence`], which
+//! The verbs are few: join a channel, publish into it, subscribe to one of
+//! its topics, read from it, command one of the host's services on it, and
+//! wait for a change. What travels in them are the domain payloads the host
+//! and its peers already exchange, such as [`PeerPresence`], which
 //! broker-to-broker replication carries unchanged.
 
 use collab_types::history::RosterAgent;
@@ -19,6 +20,11 @@ use collab_types::inbound::OpAdmission;
 use collab_types::presence::Collaborator;
 use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use serde::{Deserialize, Serialize};
+
+use crate::{CertifiedJoinIdentity, RoomStatus};
+
+#[cfg(feature = "client")]
+pub mod client;
 
 /// Both directions' framing.
 pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
@@ -38,6 +44,15 @@ pub struct Call {
 /// What an endpoint asks the host.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Request {
+    /// Join a channel, answered with [`Reply::Opened`] once the room is
+    /// ready for apps to open documents in.
+    Join(Join),
+    /// Where the room a channel key names stands, answered as
+    /// [`Reply::Room`]: now, or once it is no longer `seen`.
+    Room {
+        channel: String,
+        seen: Option<RoomStatus>,
+    },
     /// Publish into a channel this connection holds.
     Publish {
         channel: Handle,
@@ -48,10 +63,98 @@ pub enum Request {
     Subscribe { channel: Handle, topic: Topic },
     /// Ask for something a channel holds; it arrives on its topic.
     Read { channel: Handle, read: Read },
+    /// Ask one of the host's services something about this channel,
+    /// answered as [`Reply::Answer`]. The body and answer are the service's
+    /// own encoding.
+    Command {
+        channel: Handle,
+        service: Service,
+        body: Vec<u8>,
+        /// The original invocation this command serves, when an action
+        /// runs it on another's behalf; empty otherwise.
+        on_behalf_of: Vec<u8>,
+    },
+    /// Wait for `of`'s next change past the revision `after`, answered as
+    /// [`Reply::Changed`] with the revision to wait from next.
+    Changed {
+        channel: Handle,
+        of: Changes,
+        after: u64,
+    },
     /// Stop a subscription this connection started.
     Unsubscribe { subscription: u64 },
     /// Close a handle, ending its subscriptions.
     Close { handle: Handle },
+}
+
+/// Who joins which channel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Join {
+    /// The channel key: the app, room and, for a record, the record.
+    pub channel: String,
+    /// The device's certified presentation for the room's workspace.
+    pub identity: CertifiedJoinIdentity,
+    pub participant: Participant,
+    /// The resource kind of the record the channel names, if the app has one.
+    pub record_kind: Option<String>,
+}
+
+/// Whom the joining endpoint acts as.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Participant {
+    /// The device's person, shown under `handle` when it is not empty.
+    Person { handle: String },
+    /// The workspace agent `id` the person delegated to this device.
+    Agent { id: String },
+}
+
+/// What a [`Request::Changed`] waits on. Each wait says only that
+/// something changed; the endpoint asks again for what it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Changes {
+    /// The person's speaker groups (the Settings app's).
+    Speakers,
+    /// The channel's encryption keys.
+    ChannelKeys,
+    /// Nearby transfers this app sees.
+    NearbyTransfers,
+    /// The person's drives (the Files app's).
+    Drives,
+    /// The person's apps (the Files app's).
+    Applications,
+}
+
+/// A host service a [`Request::Command`] addresses. Their commands are
+/// internally tagged JSON (`native_media::Command`, `audio_output::Command`,
+/// ...) or their own postcard, which the wire carries as they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Service {
+    /// `audio_output::Command` -> `audio_output::Snapshot`, JSON.
+    AudioOutput,
+    /// `native_media::Request` -> `native_media::Snapshot`, JSON.
+    NativeMedia,
+    /// A person-chat or private-draft command and its reply.
+    PersonChat,
+    /// `SpeakerCommand` -> `SpeakerReply`, JSON; the Settings app's only.
+    Speaker,
+    /// A realtime command and its reply, JSON.
+    Realtime,
+    /// `NearbyTransferCommand` -> `NearbyTransferReply`, JSON.
+    NearbyTransfer,
+    /// `WifiContinuityCommand` -> `WifiContinuityReply`, JSON; the Settings
+    /// app's only.
+    WifiContinuity,
+    /// `BrowserServiceSessionCommand` -> `BrowserServiceSessionReply`; the
+    /// Browser's only.
+    BrowserServiceSession,
+    /// An `approved_checks::Request` -> its receipt.
+    ApprovedCheck,
+    /// A command about the person's local files: selected discovery and
+    /// opening, write attribution, external moderation or the file
+    /// clipboard, each JSON in its own envelope.
+    LocalFile,
+    /// A `committed_document::Request` -> its `Reply`, in their encoding.
+    CommittedDocument,
 }
 
 /// What an endpoint publishes into a channel.
@@ -66,6 +169,34 @@ pub enum Publication {
     /// Content the channel's record references, which the endpoint stored:
     /// the host keeps it where the record's readers are served from.
     Content { hash: String, bytes: Vec<u8> },
+    /// What the app reports about its own instance or record.
+    Report(Report),
+    /// A terminal effect the app ran itself on one of the actions it
+    /// publishes, for workspace activity; answered once recorded. `update`
+    /// is the `tilo_actions::InvocationUpdate` JSON (internally tagged).
+    Effect {
+        resource: String,
+        action: String,
+        update: String,
+    },
+}
+
+/// What an app reports about the window it runs in or the record it holds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Report {
+    /// What reopens this instance where it left off: its metadata, in the
+    /// schema version the app reads.
+    Continuation {
+        schema_version: u16,
+        metadata: Vec<u8>,
+    },
+    /// This instance has nothing to continue.
+    ClearContinuation,
+    /// This instance's step of a handoff, as
+    /// `collab_types::handoff::HandoffReport` JSON.
+    Handoff(Vec<u8>),
+    /// A change to the record's search entries, as JSON.
+    SearchIndex(Vec<u8>),
 }
 
 /// What an endpoint reads from a channel.
@@ -109,6 +240,11 @@ pub enum Reply {
     Subscribed,
     /// What the call opened.
     Opened(Handle),
+    Room(RoomStatus),
+    /// The revision a [`Request::Changed`] waits from next.
+    Changed(u64),
+    /// A [`Request::Command`]'s answer, in its service's encoding.
+    Answer(Vec<u8>),
     /// A page of history, each change the postcard bytes of its
     /// [`SignedOp`]. Not `exhausted` while older changes remain here or
     /// were asked of the room's other devices, whose answer a later read
