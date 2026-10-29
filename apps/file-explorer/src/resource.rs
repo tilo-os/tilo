@@ -24,8 +24,8 @@ use ui::framework::{
 use ui::i18n::EmbeddedCatalog;
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Atom, Collection, Id, Invoke, Model, Outbox, Refusal, Settled,
-    Undoing, resource,
+    self, AbsolutePath, ActionCx, ActionDecl, Atom, Collection, Id, Invoke, Model, Outbox, Refusal,
+    Settled, Undoing, resource,
 };
 use ui::widget::Element;
 
@@ -80,7 +80,7 @@ tilo_resource::json_model!(FileOp);
 /// Fresh admission checks it against the receiving host's actual directory.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ImportDestination {
-    pub path: String,
+    pub path: AbsolutePath,
     pub identity: tilo_cloud_files::DestinationIdentity,
 }
 
@@ -89,7 +89,7 @@ impl tilo_resource::JsonSchema for ImportDestination {
         serde_json::json!({
             "type": "object", "required": ["path", "identity"],
             "properties": {
-                "path": {"type": "string"},
+                "path": <AbsolutePath as tilo_resource::JsonSchema>::json_schema(),
                 "identity": {
                     "type": "object", "required": ["device", "inode"],
                     "properties": {
@@ -166,14 +166,6 @@ fn entry_paths(folder: &str, entries: &[String]) -> Result<Vec<String>, Refusal>
         .iter()
         .map(|entry| entry_path(folder, entry))
         .collect()
-}
-
-fn absolute_folder(folder: &str) -> Result<String, Refusal> {
-    if std::path::Path::new(folder).is_absolute() {
-        Ok(folder.to_owned())
-    } else {
-        Err(Refusal::new(format!("{folder} is not an absolute path")))
-    }
 }
 
 /// Reject sync mounts even when this action bypasses the Files view. The
@@ -344,11 +336,11 @@ impl FileExplorer {
         cx: &mut ActionCx,
         ops: &mut Outbox<FileTask, Vec<Change>>,
         #[param("The device whose files change")] device: String,
-        #[param("Absolute path of the folder to create it in")] parent: String,
+        #[param("Absolute path of the folder to create it in")] parent: AbsolutePath,
         #[param("Name of the new folder")] name: String,
     ) -> Result<(), Refusal> {
         let op = FileOp::NewFolder {
-            parent: absolute_folder(&parent)?,
+            parent: parent.to_string_lossy(),
             name: file_name(&name)?,
         };
         queue(cx, ops, device, op)
@@ -397,13 +389,13 @@ impl FileExplorer {
         #[param("The device whose files change")] device: String,
         #[param("Absolute path of the folder holding the entries")] from: String,
         #[param("The entries: names in that folder, or absolute paths")] entries: Vec<String>,
-        #[param("Absolute path of the destination folder")] to: String,
+        #[param("Absolute path of the destination folder")] to: AbsolutePath,
         #[param("Create the destination folder when it does not exist (the default)")]
         create: Option<bool>,
     ) -> Result<(), Refusal> {
         let op = FileOp::Move {
             paths: entry_paths(&from, &entries)?,
-            folder: absolute_folder(&to)?,
+            folder: to.to_string_lossy(),
             create: create.unwrap_or(true),
         };
         queue(cx, ops, device, op)
@@ -419,11 +411,11 @@ impl FileExplorer {
         #[param("The device whose files change")] device: String,
         #[param("Absolute path of the folder holding the entries")] from: String,
         #[param("The entries: names in that folder, or absolute paths")] entries: Vec<String>,
-        #[param("Absolute path of the destination folder")] to: String,
+        #[param("Absolute path of the destination folder")] to: AbsolutePath,
     ) -> Result<(), Refusal> {
         let op = FileOp::Copy {
             paths: entry_paths(&from, &entries)?,
-            folder: absolute_folder(&to)?,
+            folder: to.to_string_lossy(),
         };
         queue(cx, ops, device, op)
     }
@@ -436,7 +428,7 @@ impl FileExplorer {
         ops: &mut Outbox<FileTask, Vec<Change>>,
         #[param("The device whose files change")] device: String,
         #[param("The source files' absolute paths")] paths: Vec<String>,
-        #[param("Absolute path of the destination folder")] folder: String,
+        #[param("Absolute path of the destination folder")] folder: AbsolutePath,
     ) -> Result<(), Refusal> {
         if !cx.is_preview() && !private_source_invocation_permitted() {
             return Err(Refusal::new(
@@ -452,7 +444,7 @@ impl FileExplorer {
         }
         let op = FileOp::ImportMounted {
             paths: entry_paths("", &paths)?,
-            folder: absolute_folder(&folder)?,
+            folder: folder.to_string_lossy(),
         };
         let entry = cx.id();
         if !cx.is_preview() {
@@ -508,7 +500,7 @@ impl FileExplorer {
                 "name 1 to {MAX_MOVE_ENTRIES} entries"
             )));
         }
-        let folder = absolute_folder(&destination.path)?;
+        let folder = destination.path.to_string_lossy();
         if !cx.is_preview() {
             validate_import_destination(&destination)?;
         }
@@ -552,7 +544,7 @@ impl FileExplorer {
         cx: &mut ActionCx,
         ops: &mut Outbox<FileTask, Vec<Change>>,
         #[param("The device whose files change")] device: String,
-        #[param("Absolute path of the folder to write it in")] folder: String,
+        #[param("Absolute path of the folder to write it in")] folder: AbsolutePath,
         #[param(
             "The file's name with its extension; a text format, not a PDF or document",
             example = "Summary.md"
@@ -571,7 +563,7 @@ impl FileExplorer {
         let name = file_name(&name)?;
         crate::documents::writable(&name).map_err(Refusal::new)?;
         let op = FileOp::Write {
-            folder: absolute_folder(&folder)?,
+            folder: folder.to_string_lossy(),
             name,
             text,
             replace: replace.unwrap_or(false),
@@ -592,14 +584,14 @@ impl FileExplorer {
         ops: &mut Outbox<FileTask, Vec<Change>>,
         #[param("The device whose files change")] device: String,
         #[param("Absolute path of the folder holding the entries; the archive goes here")]
-        from: String,
+        from: AbsolutePath,
         #[param("The entries: names in that folder, or absolute paths")] entries: Vec<String>,
         #[param("The archive's name; the single entry's name, or Archive, when none")] name: Option<
             String,
         >,
         #[param("`zip` (default) or `tar.zst`", example = "zip")] format: Option<String>,
     ) -> Result<(), Refusal> {
-        let paths = entry_paths(&from, &entries)?;
+        let paths = entry_paths(&from.to_string_lossy(), &entries)?;
         let name = match name
             .as_deref()
             .map(str::trim)
@@ -633,7 +625,7 @@ impl FileExplorer {
         };
         let op = FileOp::Compress {
             paths,
-            folder: absolute_folder(&from)?,
+            folder: from.to_string_lossy(),
             name,
         };
         queue(cx, ops, device, op)
@@ -652,9 +644,9 @@ impl FileExplorer {
         cx: &mut ActionCx,
         ops: &mut Outbox<FileTask, Vec<Change>>,
         #[param("The device whose files change")] device: String,
-        #[param("Absolute path of the archive")] archive: String,
+        #[param("Absolute path of the archive")] archive: AbsolutePath,
         #[param("Absolute path of the folder to extract into; default the archive's folder")]
-        to: Option<String>,
+        to: Option<AbsolutePath>,
         #[param(
             "When that name is taken: `keep-both` (default, a free name), `replace` (the existing item goes to Trash) or `skip`",
             example = "keep-both"
@@ -668,24 +660,20 @@ impl FileExplorer {
             Some("skip") => IfExists::Skip,
             Some(_) => return Err(Refusal::new("if_exists is keep-both, replace or skip")),
         };
-        let path = std::path::Path::new(&archive);
-        if !path.is_absolute() {
-            return Err(Refusal::new("the archive is an absolute path"));
-        }
-        if !crate::archive::is_supported(path) {
+        if !crate::archive::is_supported(&archive) {
             return Err(Refusal::new(
                 "the archive is a zip, 7z or tar file (plain, .gz, .xz, .zst or .bz2)",
             ));
         }
-        let folder = match to.as_deref().map(str::trim).filter(|to| !to.is_empty()) {
-            Some(to) => absolute_folder(to)?,
-            None => path
+        let folder = match to {
+            Some(to) => to.to_string_lossy(),
+            None => archive
                 .parent()
                 .map(|parent| parent.to_string_lossy().into_owned())
                 .ok_or_else(|| Refusal::new("the archive has no folder"))?,
         };
         let op = FileOp::Extract {
-            archive,
+            archive: archive.to_string_lossy(),
             folder,
             if_exists,
         };
@@ -784,7 +772,7 @@ impl FileExplorer {
         Some(match op {
             FileOp::NewFolder { parent, name } => Self::NEW_FOLDER.with(file_explorer::NewFolder {
                 device,
-                parent,
+                parent: AbsolutePath::new(parent).ok()?,
                 name,
             }),
             FileOp::Rename { path, name } => Self::RENAME.with(file_explorer::Rename {
@@ -806,21 +794,21 @@ impl FileExplorer {
                 device,
                 from: String::new(),
                 entries: paths,
-                to: folder,
+                to: AbsolutePath::new(folder).ok()?,
                 create: Some(create),
             }),
             FileOp::ImportMounted { paths, folder } => {
                 Self::IMPORT_MOUNTED.with(file_explorer::ImportMounted {
                     device,
                     paths,
-                    folder,
+                    folder: AbsolutePath::new(folder).ok()?,
                 })
             }
             FileOp::Copy { paths, folder } => Self::COPY_INTO.with(file_explorer::CopyInto {
                 device,
                 from: String::new(),
                 entries: paths,
-                to: folder,
+                to: AbsolutePath::new(folder).ok()?,
             }),
             FileOp::CloudImport {
                 job_id,
@@ -837,7 +825,7 @@ impl FileExplorer {
                     .map(|entry| serde_json::json!(entry))
                     .collect(),
                 destination: ImportDestination {
-                    path: folder,
+                    path: AbsolutePath::new(folder).ok()?,
                     identity: destination,
                 },
             }),
@@ -848,7 +836,7 @@ impl FileExplorer {
                 replace,
             } => Self::WRITE_FILE.with(file_explorer::WriteFile {
                 device,
-                folder,
+                folder: AbsolutePath::new(folder).ok()?,
                 name,
                 text,
                 replace: Some(replace),
@@ -870,7 +858,7 @@ impl FileExplorer {
                 name,
             } => Self::COMPRESS.with(file_explorer::Compress {
                 device,
-                from: folder,
+                from: AbsolutePath::new(folder).ok()?,
                 entries: paths,
                 format: Some(crate::archive::packing_of(&name).extension().into()),
                 name: Some(name),
@@ -881,8 +869,8 @@ impl FileExplorer {
                 if_exists,
             } => Self::EXTRACT.with(file_explorer::Extract {
                 device,
-                archive,
-                to: Some(folder),
+                archive: AbsolutePath::new(archive).ok()?,
+                to: Some(AbsolutePath::new(folder).ok()?),
                 if_exists: Some(
                     match if_exists {
                         crate::file_ops::IfExists::KeepBoth => "keep-both",
@@ -1087,7 +1075,7 @@ fn validate_import_destination(destination: &ImportDestination) -> Result<(), Re
         .map(|root| crate::remote_accounts::load_in(&root, crate::model::user_home().as_deref()))
         .unwrap_or_default();
     let actual = crate::cloud_transfer::pin_destination(
-        &destination.path,
+        &destination.path.to_string_lossy(),
         mounts.iter().filter_map(|account| account.mount.as_deref()),
     )
     .map_err(Refusal::new)?;

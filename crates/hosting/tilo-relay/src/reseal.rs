@@ -1,12 +1,12 @@
-//! Sealing what the rooms a relay stewards kept in the clear, checked.
+//! Sealing what a relay's rooms kept in the clear, checked.
 //!
-//! A new record of a room whose channels the relay stewards is sealed from
+//! A new record of a room whose channels the relay takes part in is sealed from
 //! its first write. Records written before that keep their history in the
 //! clear until the relay's operator decides to seal them: [`apply`] keeps a
 //! verbatim copy of the state beside it, records the decision in the state
 //! ([`DECISION`]), and seals them. From then on the relay seals them at
-//! every start, and its compactor never keeps a channel it stewards in the
-//! clear. Without the decision the relay leaves them as they are.
+//! every start, and its compactor never keeps a channel it takes part in
+//! in the clear. Without the decision the relay leaves them as they are.
 //! [`scratch`] does the same to a copy of a state, leaving the state as it
 //! is. Both say, per record, whether it is sealed whole: nothing is left in
 //! the clear, and every change the history held in the clear opens from
@@ -81,7 +81,7 @@ fn in_the_clear(
 }
 
 /// The file in a relay's state recording that its operator decided to seal
-/// what the rooms it stewards hold in the clear.
+/// what the rooms whose channels it takes part in hold in the clear.
 pub const DECISION: &str = "reseal.toml";
 
 /// The decision [`DECISION`] records.
@@ -235,7 +235,7 @@ pub async fn scratch(
 }
 
 /// Start `identity`'s relay on the state under `state_root`, which records
-/// the decision, let it seal what the rooms it stewards hold in the clear,
+/// the decision, let it seal what the rooms whose channels it takes part in hold in the clear,
 /// stop it, and report each record of those rooms.
 #[expect(
     clippy::significant_drop_tightening,
@@ -260,7 +260,7 @@ async fn reseal(state_root: &Path, identity: RelayIdentity) -> Result<Vec<Sealed
     .map_err(|error| error.to_string())?;
     relay.resealed().await;
     let after = match relay.rooms() {
-        Some(rooms) => rooms.stewarded_channels().await,
+        Some(rooms) => rooms.own_channels().await,
         None => Vec::new(),
     };
     relay.shutdown().await;
@@ -326,7 +326,7 @@ mod tests {
             .collect()
     }
 
-    /// A Lounge as the relay kept it before a stewarded room's records were
+    /// A Lounge as the relay kept it before a sealed room's records were
     /// sealed from their first write (`tests/fixtures/legacy-lounge`, made
     /// by that relay), in `dir/state`, and its relay's identity: the host and
     /// two members wrote its records in the clear, members later wrote two

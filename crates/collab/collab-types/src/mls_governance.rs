@@ -1,9 +1,10 @@
 //! Versioned, signed clear metadata around opaque MLS governance bytes.
 //!
-//! Relays validate this frame and target its opaque Welcome/commit payloads;
-//! they never receive group keys or decrypt application data.
-
-use std::collections::BTreeSet;
+//! Any participant of a channel writes the MLS commit that brings the
+//! channel's group in line with the membership, and signs it in a
+//! [`MlsGovernanceFrame`]. Hosts route the frame and target its opaque
+//! Welcome and key history; they never receive group keys or decrypt
+//! application data.
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -15,51 +16,36 @@ use crate::{
     sign_event, verify_event,
 };
 
-/// Initial governance wire format. Unknown versions must be rejected.
-pub const MLS_GOVERNANCE_VERSION: u16 = 1;
+/// Governance wire format. Unknown versions are refused.
+pub const MLS_GOVERNANCE_VERSION: u16 = 2;
 /// Prevent a signed frame from becoming an unbounded allocation vector.
 pub const MAX_MLS_CONTROL_BYTES: usize = 16 * 1024 * 1024;
+/// Devices one commit may add or remove.
+pub const MAX_COMMIT_DEVICES: usize = 4096;
 
-/// Opaque control material plus the identity it must affect.
+/// What a frame does to its channel's group.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum MlsGovernanceAction {
-    /// A Welcome is targeted only to `recipient`; `existing_member_commit`
-    /// is fanned out to pre-existing endpoints other than the issuer.
-    Add {
-        recipient: Ed25519PublicKey,
-        welcome: Vec<u8>,
-        existing_member_commit: Option<Vec<u8>>,
-    },
-    /// A removal commit is delivered to every pre-change endpoint,
-    /// including the removed endpoint, except the issuer that already merged.
-    Remove {
-        removed: Ed25519PublicKey,
-        commit: Vec<u8>,
-    },
-    /// Permanently closes the plaintext migration gate after the encrypted
-    /// snapshot named by this digest has a durable broker acknowledgement.
-    EnableEncryption { encrypted_snapshot_digest: [u8; 32] },
-    /// One commit admitting every device in `recipients`, with what they
-    /// all join from ([`JoinMaterial`]). A busy channel admits everyone who
-    /// asked since its last change at once: one frame, epoch and
-    /// existing-member commit per batch rather than per device.
-    AddWithKeyHistory {
-        recipients: Vec<Ed25519PublicKey>,
-        existing_member_commit: Option<Vec<u8>>,
-        joining: Joining,
-    },
-    /// The first frame of a channel created encrypted: the issuer's device
-    /// is the group's only member and the channel's steward, and no
-    /// plaintext document op is accepted for the channel from then on. A
-    /// channel that carried plaintext before is migrated by the same frame:
-    /// new content is encrypted, earlier plaintext stays with the members
-    /// that already hold it. Appended so frames written before it decode.
+    /// The first frame of a channel: its signer created the group alone, and
+    /// no plaintext document op is accepted for the channel from then on.
+    /// Two participants creating the same channel at once keep the genesis
+    /// with the lower digest.
     Genesis,
+    /// One MLS commit moving the group to the membership: `removed` leave,
+    /// `added` join from `joining`. A device in both was admitted again with
+    /// a fresh key package after it lost its state.
+    Commit {
+        removed: Vec<Ed25519PublicKey>,
+        added: Vec<Ed25519PublicKey>,
+        commit: Vec<u8>,
+        /// What `added` join from; `None` exactly when `added` is empty.
+        joining: Option<Joining>,
+    },
 }
 
-/// What the devices one admission adds join from: one Welcome and their
-/// content-key history, sealed for the post-add epoch, so a joiner can
+/// What the devices one commit adds join from: one Welcome and their
+/// content-key history, sealed for the post-commit epoch, so a joiner can
 /// decrypt every earlier op without any other member online.
 ///
 /// Only those devices need it, and it grows with the channel (the Welcome
@@ -84,11 +70,11 @@ impl JoinMaterial {
     }
 }
 
-/// An admission's [`JoinMaterial`], or only its digest.
+/// A commit's [`JoinMaterial`], or only its digest.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Joining {
-    /// The material, for the steward and the devices it adds.
+    /// The material, for the committer and the devices it adds.
     Material(JoinMaterial),
     /// The material's digest, for every member already in the channel:
     /// they apply the commit and never need the Welcome.
@@ -117,92 +103,46 @@ impl Joining {
     }
 }
 
-/// The admission fields of an [`MlsGovernanceAction::Add`] or
-/// [`MlsGovernanceAction::AddWithKeyHistory`].
-#[derive(Clone, Copy, Debug)]
-pub struct Admission<'a> {
-    pub recipients: &'a [Ed25519PublicKey],
-    /// `None` when the frame withholds what its recipients join from.
-    pub welcome: Option<&'a [u8]>,
-    pub existing_member_commit: Option<&'a [u8]>,
-    pub key_history: Option<&'a [u8]>,
-}
-
 impl MlsGovernanceAction {
-    /// The admission fields of an [`Self::Add`] or
-    /// [`Self::AddWithKeyHistory`].
-    pub fn admission(&self) -> Option<Admission<'_>> {
-        match self {
-            Self::Add {
-                recipient,
-                welcome,
-                existing_member_commit,
-            } => Some(Admission {
-                recipients: std::slice::from_ref(recipient),
-                welcome: Some(welcome),
-                existing_member_commit: existing_member_commit.as_deref(),
-                key_history: None,
-            }),
-            Self::AddWithKeyHistory {
-                recipients,
-                existing_member_commit,
-                joining,
-            } => Some(Admission {
-                recipients,
-                welcome: joining
-                    .material()
-                    .map(|material| material.welcome.as_slice()),
-                existing_member_commit: existing_member_commit.as_deref(),
-                key_history: joining
-                    .material()
-                    .map(|material| material.key_history.as_slice()),
-            }),
-            Self::Remove { .. } | Self::EnableEncryption { .. } | Self::Genesis => None,
-        }
-    }
-
-    /// The action as signed and linked over: an admission's material by its
-    /// digest.
+    /// The action as signed and linked over: join material by its digest.
     fn view(&self) -> Result<ActionView<'_>, CanonicalError> {
         Ok(match self {
-            Self::AddWithKeyHistory {
-                recipients,
-                existing_member_commit,
+            Self::Genesis => ActionView::Genesis,
+            Self::Commit {
+                removed,
+                added,
+                commit,
                 joining,
-            } => ActionView::AddWithKeyHistory {
-                recipients,
-                existing_member_commit: existing_member_commit.as_deref(),
-                joining: joining.digest()?,
+            } => ActionView::Commit {
+                removed,
+                added,
+                commit,
+                joining: joining.as_ref().map(Joining::digest).transpose()?,
             },
-            other => ActionView::Other(other),
         })
     }
 }
 
 #[derive(Serialize)]
 enum ActionView<'a> {
-    Other(&'a MlsGovernanceAction),
-    AddWithKeyHistory {
-        recipients: &'a [Ed25519PublicKey],
-        existing_member_commit: Option<&'a [u8]>,
-        joining: [u8; 32],
+    Genesis,
+    Commit {
+        removed: &'a [Ed25519PublicKey],
+        added: &'a [Ed25519PublicKey],
+        commit: &'a [u8],
+        joining: Option<[u8; 32]>,
     },
 }
 
-/// Signed, replay-linked governance frame.
+/// A signed, hash-linked governance frame.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MlsGovernanceFrameV1 {
+pub struct MlsGovernanceFrame {
     pub version: u16,
-    /// Authority-issued idempotency key, unique within this channel.
-    pub transaction_id: [u8; 32],
     pub channel: ChannelId,
-    /// Revision of the authoritative channel-membership record this change
-    /// was checked against.
-    pub membership_revision: u64,
-    /// Hash of the complete preceding frame, or all-zero for the first.
+    /// Digest of the frame this one follows, or all-zero for a genesis.
     pub previous_frame_digest: [u8; 32],
-    /// MLS epoch after the represented commit (or current epoch for enable).
+    /// MLS epoch after the commit; 0 for a genesis.
     pub epoch: u64,
     pub action: MlsGovernanceAction,
     pub signed_by: Ed25519PublicKey,
@@ -213,9 +153,7 @@ pub struct MlsGovernanceFrameV1 {
 struct SigningView<'a> {
     domain: &'static [u8],
     version: u16,
-    transaction_id: [u8; 32],
     channel: ChannelId,
-    membership_revision: u64,
     previous_frame_digest: [u8; 32],
     epoch: u64,
     action: ActionView<'a>,
@@ -228,51 +166,26 @@ struct DigestView<'a> {
     signature: Signature,
 }
 
-/// Live authoritative membership inputs required to accept a frame.
-pub struct MlsGovernanceContext<'a> {
-    pub channel: ChannelId,
-    pub membership_revision: u64,
-    pub previous_frame_digest: [u8; 32],
-    pub expected_epoch: u64,
-    pub governors: &'a BTreeSet<Ed25519PublicKey>,
-    /// Membership after the authoritative workspace/channel mutation.
-    pub desired_members: &'a BTreeSet<Ed25519PublicKey>,
-    /// Endpoints present in MLS before this frame.
-    pub current_mls_members: &'a BTreeSet<Ed25519PublicKey>,
-    /// Set only after the broker durably stores the encrypted snapshot.
-    pub durable_snapshot_ack: Option<[u8; 32]>,
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum MlsGovernanceError {
     #[error("unsupported MLS governance version {0}")]
     Version(u16),
-    #[error("governance frame does not match the live channel/revision/epoch/head")]
-    StaleOrMisrouted,
-    #[error("governance signer is not currently authorised to govern")]
-    Unauthorized,
-    #[error("governance frame signature is invalid: {0}")]
+    #[error("governance signature is invalid: {0}")]
     Signature(String),
-    #[error("governance action contradicts authoritative membership")]
-    MembershipMismatch,
+    #[error("governance frame is malformed")]
+    Malformed,
     #[error("required Welcome or commit is missing or oversized")]
     InvalidControlPayload,
-    #[error("encrypted snapshot lacks the matching durable acknowledgement")]
-    SnapshotNotDurable,
-    #[error("canonical encoding failed: {0}")]
-    Canonical(String),
 }
 
-impl MlsGovernanceFrameV1 {
-    /// Create and sign a V1 frame.
+impl MlsGovernanceFrame {
+    /// Create and sign a frame.
     ///
     /// # Errors
     ///
     /// Returns [`CanonicalError`] if the signing view cannot be encoded.
     pub fn signed(
         channel: ChannelId,
-        transaction_id: [u8; 32],
-        membership_revision: u64,
         previous_frame_digest: [u8; 32],
         epoch: u64,
         action: MlsGovernanceAction,
@@ -280,8 +193,6 @@ impl MlsGovernanceFrameV1 {
     ) -> Result<Self, CanonicalError> {
         let mut frame = Self::unsigned(
             channel,
-            transaction_id,
-            membership_revision,
             previous_frame_digest,
             epoch,
             action,
@@ -291,13 +202,11 @@ impl MlsGovernanceFrameV1 {
         Ok(frame)
     }
 
-    /// A V1 frame whose signature is still to be made by `signed_by`, see
+    /// A frame whose signature is still to be made by `signed_by`, see
     /// [`MlsAccessRequestV1::unsigned`]: sign [`Self::signing_bytes`] and
     /// store it in `signature`.
     pub fn unsigned(
         channel: ChannelId,
-        transaction_id: [u8; 32],
-        membership_revision: u64,
         previous_frame_digest: [u8; 32],
         epoch: u64,
         action: MlsGovernanceAction,
@@ -305,9 +214,7 @@ impl MlsGovernanceFrameV1 {
     ) -> Self {
         Self {
             version: MLS_GOVERNANCE_VERSION,
-            transaction_id,
             channel,
-            membership_revision,
             previous_frame_digest,
             epoch,
             action,
@@ -327,11 +234,9 @@ impl MlsGovernanceFrameV1 {
 
     fn signing_view(&self) -> Result<SigningView<'_>, CanonicalError> {
         Ok(SigningView {
-            domain: b"tilo.mls-governance.v1",
+            domain: b"tilo.mls-governance.v2",
             version: self.version,
-            transaction_id: self.transaction_id,
             channel: self.channel,
-            membership_revision: self.membership_revision,
             previous_frame_digest: self.previous_frame_digest,
             epoch: self.epoch,
             action: self.action.view()?,
@@ -340,7 +245,8 @@ impl MlsGovernanceFrameV1 {
     }
 
     /// SHA-256 link value covering the signature as well as all metadata,
-    /// the same whether an admission's material is carried or withheld.
+    /// the same whether join material is carried or withheld. Of two frames
+    /// following the same one, every device keeps the lower digest.
     ///
     /// # Errors
     ///
@@ -353,42 +259,64 @@ impl MlsGovernanceFrameV1 {
         Ok(Sha256::digest(canonical_bytes(&view)?).into())
     }
 
-    /// The frame with an admission's material withheld: what every member
-    /// but its recipients gets. `None` for a frame that carries none.
+    /// The devices this frame adds.
+    pub fn added(&self) -> &[Ed25519PublicKey] {
+        match &self.action {
+            MlsGovernanceAction::Commit { added, .. } => added,
+            MlsGovernanceAction::Genesis => &[],
+        }
+    }
+
+    /// The devices this frame removes.
+    pub fn removed(&self) -> &[Ed25519PublicKey] {
+        match &self.action {
+            MlsGovernanceAction::Commit { removed, .. } => removed,
+            MlsGovernanceAction::Genesis => &[],
+        }
+    }
+
+    /// The join material this copy carries, if any.
+    pub fn join_material(&self) -> Option<&JoinMaterial> {
+        match &self.action {
+            MlsGovernanceAction::Commit {
+                joining: Some(joining),
+                ..
+            } => joining.material(),
+            _ => None,
+        }
+    }
+
+    /// The frame with its join material withheld: what every member but the
+    /// devices it adds gets. `None` for a frame that carries none.
     ///
     /// # Errors
     ///
     /// Returns [`CanonicalError`] if the material cannot be encoded.
     pub fn withheld(&self) -> Result<Option<Self>, CanonicalError> {
-        let MlsGovernanceAction::AddWithKeyHistory {
-            recipients,
-            existing_member_commit,
-            joining: Joining::Material(material),
+        let MlsGovernanceAction::Commit {
+            removed,
+            added,
+            commit,
+            joining: Some(Joining::Material(material)),
         } = &self.action
         else {
             return Ok(None);
         };
-        let action = MlsGovernanceAction::AddWithKeyHistory {
-            recipients: recipients.clone(),
-            existing_member_commit: existing_member_commit.clone(),
-            joining: Joining::Withheld(material.digest()?),
-        };
         Ok(Some(Self {
-            version: self.version,
-            transaction_id: self.transaction_id,
-            channel: self.channel,
-            membership_revision: self.membership_revision,
-            previous_frame_digest: self.previous_frame_digest,
-            epoch: self.epoch,
-            action,
-            signed_by: self.signed_by,
-            signature: self.signature,
+            action: MlsGovernanceAction::Commit {
+                removed: removed.clone(),
+                added: added.clone(),
+                commit: commit.clone(),
+                joining: Some(Joining::Withheld(material.digest()?)),
+            },
+            ..self.clone()
         }))
     }
 
-    /// What a steward publishes for this frame: the frame, and for an
-    /// admission also its copy with the material withheld. A host delivers
-    /// the whole one to the devices it adds alone and the other to everyone.
+    /// What a committer publishes for this frame: the frame, and for a
+    /// commit adding devices also its copy with the material withheld. A
+    /// host delivers the whole one to the devices it adds alone and the other
+    /// to everyone.
     ///
     /// # Errors
     ///
@@ -398,88 +326,67 @@ impl MlsGovernanceFrameV1 {
         Ok(std::iter::once(self).chain(withheld).collect())
     }
 
-    /// Verify the frame's detached signature without applying live policy.
+    /// Verify the frame's detached signature.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VerifyError`] when the signature does not verify.
     pub fn verify_signature(&self) -> Result<(), VerifyError> {
         verify_event(&self.signing_view()?, &self.signature, &self.signed_by)
     }
 
-    /// Validate signature, replay link, live revision/capability, membership
-    /// transition, payload bounds, and migration acknowledgement.
-    pub fn validate(&self, context: &MlsGovernanceContext<'_>) -> Result<(), MlsGovernanceError> {
+    /// Check the version, the signature and the shape of the action: a
+    /// genesis opens the chain at epoch 0, and a commit names distinct
+    /// devices within bounds, carries bounded MLS bytes, and joining
+    /// material exactly when it adds anyone. Whether the changes match the
+    /// membership is for the receiver's projection to decide.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MlsGovernanceError`] for the first check that fails.
+    pub fn check(&self) -> Result<(), MlsGovernanceError> {
         if self.version != MLS_GOVERNANCE_VERSION {
             return Err(MlsGovernanceError::Version(self.version));
         }
-        let route_matches = self.channel == context.channel;
-        let revision_matches = self.membership_revision == context.membership_revision;
-        let head_matches = self.previous_frame_digest == context.previous_frame_digest;
-        let epoch_matches = self.epoch == context.expected_epoch;
-        if !(route_matches && revision_matches && head_matches && epoch_matches) {
-            return Err(MlsGovernanceError::StaleOrMisrouted);
-        }
-        if !context.governors.contains(&self.signed_by) {
-            return Err(MlsGovernanceError::Unauthorized);
-        }
         self.verify_signature()
-            .map_err(|error: VerifyError| MlsGovernanceError::Signature(error.to_string()))?;
+            .map_err(|error| MlsGovernanceError::Signature(error.to_string()))?;
+        let bad = |bytes: &[u8]| bytes.is_empty() || bytes.len() > MAX_MLS_CONTROL_BYTES;
         match &self.action {
-            action @ (MlsGovernanceAction::Add { .. }
-            | MlsGovernanceAction::AddWithKeyHistory { .. }) => {
-                let Some(Admission {
-                    recipients,
-                    welcome,
-                    existing_member_commit,
-                    key_history,
-                }) = action.admission()
-                else {
-                    return Err(MlsGovernanceError::InvalidControlPayload);
-                };
-                let distinct: BTreeSet<_> = recipients.iter().collect();
-                if recipients.is_empty()
-                    || distinct.len() != recipients.len()
-                    || recipients.iter().any(|recipient| {
-                        !context.desired_members.contains(recipient)
-                            || context.current_mls_members.contains(recipient)
-                    })
-                {
-                    return Err(MlsGovernanceError::MembershipMismatch);
-                }
-                let needs_commit = context.current_mls_members.len() > 1;
-                let bad = |v: &[u8]| v.is_empty() || v.len() > MAX_MLS_CONTROL_BYTES;
-                // A frame withholding its material is checked by whoever
-                // holds the material: its digest is signed.
-                if welcome.is_some_and(bad)
-                    || needs_commit != existing_member_commit.is_some()
-                    || existing_member_commit.is_some_and(bad)
-                    || key_history.is_some_and(bad)
-                {
-                    return Err(MlsGovernanceError::InvalidControlPayload);
-                }
-            }
-            MlsGovernanceAction::Remove { removed, commit } => {
-                if !context.current_mls_members.contains(removed)
-                    || context.desired_members.contains(removed)
-                {
-                    return Err(MlsGovernanceError::MembershipMismatch);
-                }
-                if commit.is_empty() || commit.len() > MAX_MLS_CONTROL_BYTES {
-                    return Err(MlsGovernanceError::InvalidControlPayload);
-                }
-            }
-            MlsGovernanceAction::EnableEncryption {
-                encrypted_snapshot_digest,
-            } => {
-                if context.current_mls_members != context.desired_members {
-                    return Err(MlsGovernanceError::MembershipMismatch);
-                }
-                if context.durable_snapshot_ack != Some(*encrypted_snapshot_digest) {
-                    return Err(MlsGovernanceError::SnapshotNotDurable);
-                }
-            }
             MlsGovernanceAction::Genesis => {
-                let only_issuer = context.current_mls_members.len() == 1
-                    && context.current_mls_members.contains(&self.signed_by);
-                if self.previous_frame_digest != [0; 32] || !only_issuer {
-                    return Err(MlsGovernanceError::MembershipMismatch);
+                if self.previous_frame_digest != [0; 32] || self.epoch != 0 {
+                    return Err(MlsGovernanceError::Malformed);
+                }
+            }
+            MlsGovernanceAction::Commit {
+                removed,
+                added,
+                commit,
+                joining,
+            } => {
+                let distinct = |devices: &[Ed25519PublicKey]| {
+                    devices.len() <= MAX_COMMIT_DEVICES
+                        && devices
+                            .iter()
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .len()
+                            == devices.len()
+                };
+                if self.epoch == 0
+                    || (removed.is_empty() && added.is_empty())
+                    || !distinct(removed)
+                    || !distinct(added)
+                    || removed.contains(&self.signed_by)
+                    || added.contains(&self.signed_by)
+                    || added.is_empty() != joining.is_none()
+                {
+                    return Err(MlsGovernanceError::Malformed);
+                }
+                let material_bad = joining
+                    .as_ref()
+                    .and_then(Joining::material)
+                    .is_some_and(|material| bad(&material.welcome) || bad(&material.key_history));
+                if bad(commit) || material_bad {
+                    return Err(MlsGovernanceError::InvalidControlPayload);
                 }
             }
         }
@@ -487,15 +394,15 @@ impl MlsGovernanceFrameV1 {
     }
 }
 
-/// Version of [`MlsAccessRequestV1`] and [`MlsGovernanceAckV1`].
+/// Version of [`MlsAccessRequestV1`].
 pub const MLS_ACCESS_VERSION: u16 = 1;
 
-/// One device asking a channel's steward for membership: a fresh MLS key
-/// package for that channel, signed by the device's certified key.
+/// One device asking a channel's participants for membership: a fresh MLS
+/// key package for that channel, signed by the device's certified key.
 ///
-/// The steward admits the device only when the channel's access policy
-/// (room membership through the person's certified device set, or a live
-/// service grant) names this device key. The signature binds the key
+/// Any participant admits the device once the channel's access policy (room
+/// membership through the person's certified device set, or a live service
+/// grant) names this device key. The signature binds the key
 /// package to the device, so a relay that stores or forwards the request
 /// cannot substitute its own package.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,7 +415,7 @@ pub struct MlsAccessRequestV1 {
     /// TLS-serialised MLS `KeyPackage` minted for this channel only.
     pub key_package: Vec<u8>,
     /// When the device minted the request (seconds since the Unix epoch),
-    /// so a steward keeps only the newest request per device.
+    /// so a participant keeps only the newest request per device.
     pub issued_at: u64,
     pub signature: Signature,
 }
@@ -600,19 +507,19 @@ impl MlsAccessRequestV1 {
 }
 
 /// Upper bound on each id of a [`ChannelRoute`], so a claim cannot make a
-/// steward hash or store an unbounded string.
+/// participant hash or store an unbounded string.
 pub const MAX_CHANNEL_ROUTE_ID_BYTES: usize = 1024;
 
 /// The record a channel carries: its app and record id, which with the room
 /// hash to the channel's id ([`crate::document_channel_id`]).
 ///
-/// A channel id cannot be turned back into its record, so a steward that is
-/// to decide Read on the record (a Deny over an app or a pattern of records
+/// A channel id cannot be turned back into its record, so a participant that
+/// is to decide Read on the record (a Deny over an app or a pattern of records
 /// included) must be told the route. The claim needs no signature and no
 /// trust in whoever presents it: [`Self::proves`] holds only for the route
 /// whose hash is the channel's id, and finding another route with the same
 /// hash means breaking SHA-256. A device asking for a channel's key sends it
-/// beside its access request; a steward keeps it with the channel.
+/// beside its access request; a participant keeps it with the channel.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelRoute {
@@ -643,98 +550,6 @@ impl ChannelRoute {
         self.app.len() <= MAX_CHANNEL_ROUTE_ID_BYTES
             && self.record.len() <= MAX_CHANNEL_ROUTE_ID_BYTES
             && self.channel(room) == channel
-    }
-}
-
-/// A device's cumulative acknowledgement: it has durably processed every
-/// governance frame of `channel` up to and including `through_digest`.
-///
-/// Cumulative acknowledgements keep delivery idempotent and ordered: a
-/// repeated or late acknowledgement never undoes what the steward already
-/// recorded.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MlsGovernanceAckV1 {
-    pub version: u16,
-    pub channel: ChannelId,
-    pub device: Ed25519PublicKey,
-    pub through_digest: [u8; 32],
-    pub signature: Signature,
-}
-
-#[derive(Serialize)]
-struct AckView {
-    domain: &'static [u8],
-    version: u16,
-    channel: ChannelId,
-    device: Ed25519PublicKey,
-    through_digest: [u8; 32],
-}
-
-impl MlsGovernanceAckV1 {
-    /// Create and sign an acknowledgement with the device key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
-    pub fn signed(
-        channel: ChannelId,
-        through_digest: [u8; 32],
-        device_key: &SigningKey,
-    ) -> Result<Self, CanonicalError> {
-        let mut ack = Self {
-            version: MLS_ACCESS_VERSION,
-            channel,
-            device: Ed25519PublicKey::from_bytes(device_key.verifying_key().to_bytes()),
-            through_digest,
-            signature: Signature::from_bytes([0; 64]),
-        };
-        ack.signature = sign_event(&ack.signing_view(), device_key)?;
-        Ok(ack)
-    }
-
-    /// An acknowledgement whose signature is still to be made, see
-    /// [`MlsAccessRequestV1::unsigned`].
-    pub fn unsigned(
-        channel: ChannelId,
-        device: Ed25519PublicKey,
-        through_digest: [u8; 32],
-    ) -> Self {
-        Self {
-            version: MLS_ACCESS_VERSION,
-            channel,
-            device,
-            through_digest,
-            signature: Signature::from_bytes([0; 64]),
-        }
-    }
-
-    /// The bytes the device key signs.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
-    pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
-        canonical_bytes(&self.signing_view())
-    }
-
-    fn signing_view(&self) -> AckView {
-        AckView {
-            domain: b"tilo.mls-governance-ack.v1",
-            version: self.version,
-            channel: self.channel,
-            device: self.device,
-            through_digest: self.through_digest,
-        }
-    }
-
-    /// Verify the version and device signature.
-    pub fn verify(&self) -> Result<(), MlsGovernanceError> {
-        if self.version != MLS_ACCESS_VERSION {
-            return Err(MlsGovernanceError::Version(self.version));
-        }
-        verify_event(&self.signing_view(), &self.signature, &self.device)
-            .map_err(|error| MlsGovernanceError::Signature(error.to_string()))
     }
 }
 
@@ -783,86 +598,96 @@ mod tests {
     }
 
     #[test]
-    fn acknowledgement_is_bound_to_its_device_and_digest() {
-        let (device, _) = generate_keypair();
-        let ack = MlsGovernanceAckV1::signed(ChannelId::new(), [4; 32], &device).unwrap();
-        ack.verify().unwrap();
-        let mut forged = ack;
-        forged.through_digest = [5; 32];
-        assert!(forged.verify().is_err());
-    }
-
-    #[test]
     fn a_frame_signed_elsewhere_matches_one_signed_here() {
-        let (steward, steward_pk) = generate_keypair();
+        let (signer, signer_pk) = generate_keypair();
         let channel = ChannelId::new();
-        let signed = MlsGovernanceFrameV1::signed(
+        let expected =
+            MlsGovernanceFrame::signed(channel, [0; 32], 0, MlsGovernanceAction::Genesis, &signer)
+                .unwrap();
+        let mut unsigned = MlsGovernanceFrame::unsigned(
             channel,
-            [2; 32],
-            1,
             [0; 32],
             0,
             MlsGovernanceAction::Genesis,
-            &steward,
-        )
-        .unwrap();
-        let mut unsigned = MlsGovernanceFrameV1::unsigned(
-            channel,
-            [2; 32],
-            1,
-            [0; 32],
-            0,
-            MlsGovernanceAction::Genesis,
-            steward_pk,
+            signer_pk,
         );
         assert!(unsigned.verify_signature().is_err());
         let message = unsigned.signing_bytes().unwrap();
         unsigned.signature =
-            Signature::from_bytes(ed25519_dalek::Signer::sign(&steward, &message).to_bytes());
+            Signature::from_bytes(ed25519_dalek::Signer::sign(&signer, &message).to_bytes());
         unsigned.verify_signature().unwrap();
-        assert_eq!(unsigned, signed);
+        assert_eq!(unsigned, expected);
     }
 
     #[test]
-    fn genesis_must_open_the_chain_with_only_its_issuer() {
-        let (steward, steward_pk) = generate_keypair();
+    fn withholding_join_material_keeps_digest_and_signature() {
+        let (signer, _) = generate_keypair();
+        let (_, joiner) = generate_keypair();
+        let frame = MlsGovernanceFrame::signed(
+            ChannelId::new(),
+            [3; 32],
+            2,
+            MlsGovernanceAction::Commit {
+                removed: Vec::new(),
+                added: vec![joiner],
+                commit: vec![1],
+                joining: Some(Joining::Material(JoinMaterial {
+                    welcome: vec![2],
+                    key_history: vec![3],
+                })),
+            },
+            &signer,
+        )
+        .unwrap();
+        frame.check().unwrap();
+        let withheld = frame.withheld().unwrap().unwrap();
+        assert!(withheld.join_material().is_none());
+        withheld.check().unwrap();
+        assert_eq!(withheld.digest().unwrap(), frame.digest().unwrap());
+    }
+
+    #[test]
+    fn malformed_frames_are_refused() {
+        let (signer, signer_pk) = generate_keypair();
         let (_, other) = generate_keypair();
         let channel = ChannelId::new();
-        let governors = BTreeSet::from([steward_pk]);
-        let only_steward = BTreeSet::from([steward_pk]);
-        let crowded = BTreeSet::from([steward_pk, other]);
-        let context = |previous, members| MlsGovernanceContext {
-            channel,
-            membership_revision: 1,
-            previous_frame_digest: previous,
-            expected_epoch: 0,
-            governors: &governors,
-            desired_members: members,
-            current_mls_members: members,
-            durable_snapshot_ack: None,
+        let frame = |previous, epoch, action| {
+            MlsGovernanceFrame::signed(channel, previous, epoch, action, &signer).unwrap()
         };
-        let genesis = |previous| {
-            MlsGovernanceFrameV1::signed(
-                channel,
+        let commit = |removed: Vec<Ed25519PublicKey>, added: Vec<Ed25519PublicKey>| {
+            let joining = (!added.is_empty()).then_some(Joining::Withheld([1; 32]));
+            MlsGovernanceAction::Commit {
+                removed,
+                added,
+                commit: vec![1],
+                joining,
+            }
+        };
+        frame([0; 32], 0, MlsGovernanceAction::Genesis)
+            .check()
+            .unwrap();
+        frame([1; 32], 1, commit(vec![other], Vec::new()))
+            .check()
+            .unwrap();
+        for malformed in [
+            frame([3; 32], 0, MlsGovernanceAction::Genesis),
+            frame([0; 32], 1, MlsGovernanceAction::Genesis),
+            frame([1; 32], 1, commit(Vec::new(), Vec::new())),
+            frame([1; 32], 1, commit(vec![other, other], Vec::new())),
+            frame([1; 32], 1, commit(vec![signer_pk], Vec::new())),
+            frame([1; 32], 0, commit(vec![other], Vec::new())),
+            frame(
                 [1; 32],
                 1,
-                previous,
-                0,
-                MlsGovernanceAction::Genesis,
-                &steward,
-            )
-            .unwrap()
-        };
-        genesis([0; 32])
-            .validate(&context([0; 32], &only_steward))
-            .unwrap();
-        assert_eq!(
-            genesis([0; 32]).validate(&context([0; 32], &crowded)),
-            Err(MlsGovernanceError::MembershipMismatch)
-        );
-        assert_eq!(
-            genesis([3; 32]).validate(&context([3; 32], &only_steward)),
-            Err(MlsGovernanceError::MembershipMismatch)
-        );
+                MlsGovernanceAction::Commit {
+                    removed: Vec::new(),
+                    added: vec![other],
+                    commit: vec![1],
+                    joining: None,
+                },
+            ),
+        ] {
+            assert_eq!(malformed.check(), Err(MlsGovernanceError::Malformed));
+        }
     }
 }

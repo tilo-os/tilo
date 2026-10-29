@@ -1,10 +1,10 @@
 //! The content keys a public room's spectators open its channels with.
 //!
-//! A spectator is no channel member: the steward admits only the room's
+//! A spectator is no channel member: participants admit only the room's
 //! governed member devices, one MLS leaf each, and a spectator's devices
 //! come and go with page loads. In a public room anyone may join as a guest
 //! and be admitted to every channel, so a visitor who only watches may read
-//! what a guest would. The steward grants that to the spectator person, not
+//! what a guest would. The node grants that to the spectator person, not
 //! to each device: it hands any device the person certified, while that
 //! device holds a seat in the room, the channel's content keys
 //! ([`channel_crypto::ChannelContentKeys`], what an application endpoint
@@ -29,8 +29,8 @@ impl Rooms {
     ///
     /// # Errors
     ///
-    /// Refuses a refused decision, a room this relay does not govern and
-    /// steward, a record a Read Deny keeps from anyone, and a channel that
+    /// Refuses a refused decision, a room this relay does not govern and take
+    /// part in, a record a Read Deny keeps from anyone, and a channel that
     /// does not exist yet.
     #[expect(
         clippy::significant_drop_tightening,
@@ -63,16 +63,16 @@ impl Rooms {
         let channel = collab_types::document_channel_id(&route.app_id, &route.room, &route.record);
         let now = SystemTime::now();
         let access = room.peer().governance().governed_access(now)?;
-        if readers(room.peer(), &access, room.stewardship.as_deref(), now)?.withholds(channel) {
+        if readers(room.peer(), &access, room.participation.as_deref(), now)?.withholds(channel) {
             return Err(
                 "this record is kept from some of the room, and from those who watch".into(),
             );
         }
-        let steward = room
-            .stewardship
+        let participant = room
+            .participation
             .clone()
-            .ok_or("this relay does not steward the room's channels")?;
-        let keys = steward.channels.lock().await.existing_keys(channel)?;
+            .ok_or("this relay does not take part in the room's channels")?;
+        let keys = participant.channels.lock().await.existing_keys(channel)?;
         tracing::debug!(room = %route.room, app = %route.app_id, record = %route.record,
             epoch = keys.epoch(), "handed a spectator the channel's content keys");
         Ok(keys)

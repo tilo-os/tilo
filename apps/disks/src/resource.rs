@@ -1,6 +1,6 @@
 //! Disks as a resource.
 //!
-//! The block devices of this machine are live device state: the surface
+//! The block devices of this machine are live device state: the window
 //! probes them and publishes each drive and partition as a
 //! [`LiveRow`] beneath the storage resource, offering the
 //! [`DisksEffect`]s that apply to it. Mounting, formatting or ejecting
@@ -13,15 +13,12 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{EffectStatus, Fixture, LiveRow, Publishes, ResourceApp, ViewCx};
 use ui::tilo_actions::ConfirmationPolicy;
 use ui::tilo_resource::{self, Atom, Effect, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
-use crate::app::{ActionKind, DisksApp};
+use crate::app::{ActionKind, DisksApp, Store};
 use crate::model::{Drive, Partition, Topology};
 use crate::offer::{self, Offer};
 
@@ -420,53 +417,55 @@ impl ResourceApp for DisksShell {
     }
 
     fn view(cx: &mut ViewCx<Disks>) -> Element {
-        cx.surface(DisksApp::new())
+        window(cx, Store::system())
     }
 }
 
-impl ResourceSurface<Disks, DisksEffect> for DisksApp {
-    fn present(&mut self, state: &Rc<Disks>) {
-        self.adopt_names(&state.names());
+/// The Disks window over `store`'s devices: it answers their effects and
+/// publishes them as live rows.
+fn window(cx: &ViewCx<Disks>, mut store: Store) -> Element {
+    let fixture = cx.fixture::<Topology>().map(|topology| (*topology).clone());
+    store.attach_framework(cx.dispatcher(), cx.mode(), fixture, cx.waker());
+    let window = DisksApp::new(store, Some(cx.live().clone()));
+    let store = Rc::clone(window.shared());
+    {
+        let (answer, status) = (Rc::clone(&store), Rc::clone(&store));
+        cx.effects(move |effect: DisksEffect, cx| {
+            answer.borrow_mut().answer_effect(effect, &answer, cx)
+        })
+        .status(move || busy(status.borrow().is_running()));
     }
+    {
+        let store = Rc::clone(&store);
+        cx.on_stage(move |scenario| store.borrow_mut().stage_scenario(scenario));
+    }
+    cx.publishing(
+        // Every drive on this machine with its partitions; a handful at
+        // most, so the whole set is published.
+        Publishes::new().live_rows(move || store.borrow().drive_rows()),
+        Box::new(window),
+    )
+}
 
-    fn attach(&mut self, cx: SurfaceCx<Disks>) {
-        let fixture = cx.fixture::<Topology>().map(|topology| (*topology).clone());
-        self.attach_framework(cx.dispatcher(), cx.mode(), fixture, cx.waker());
+/// The device operations, unavailable while another one runs.
+fn busy(running: bool) -> Vec<EffectStatus> {
+    if !running {
+        return Vec::new();
     }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, effect: DisksEffect, cx: &mut EffectCx<Disks, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if !self.is_running() {
-            return Vec::new();
-        }
-        let busy = |effect| {
-            EffectStatus::unavailable(
-                effect,
-                "disks.busy",
-                "Another disk operation is still running",
-            )
-        };
-        vec![
-            busy(DisksEffect::MOUNT),
-            busy(DisksEffect::UNMOUNT),
-            busy(DisksEffect::FORMAT),
-            busy(DisksEffect::BENCHMARK),
-            busy(DisksEffect::EJECT),
-        ]
-    }
-
-    /// Every drive on this machine with its partitions; a handful at most,
-    /// so the whole set is published.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.drive_rows()
-    }
+    let busy = |effect| {
+        EffectStatus::unavailable(
+            effect,
+            "disks.busy",
+            "Another disk operation is still running",
+        )
+    };
+    vec![
+        busy(DisksEffect::MOUNT),
+        busy(DisksEffect::UNMOUNT),
+        busy(DisksEffect::FORMAT),
+        busy(DisksEffect::BENCHMARK),
+        busy(DisksEffect::EJECT),
+    ]
 }
 
 #[cfg(test)]
@@ -486,7 +485,7 @@ mod tests {
         const TITLE: &'static str = "Disks";
 
         fn view(cx: &mut ViewCx<Disks>) -> Element {
-            cx.surface(DisksApp::sample())
+            window(cx, Store::sample())
         }
     }
 
@@ -724,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_a_row_and_running_its_operations_reach_the_surface() {
+    fn selecting_a_row_and_running_its_operations_reach_the_window() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
         app.call_on("partition:sda1", "select", serde_json::json!({}))
             .unwrap();

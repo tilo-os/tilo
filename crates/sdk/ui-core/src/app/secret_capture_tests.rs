@@ -75,7 +75,7 @@ fn capture_submission_waits_for_the_matching_transport_ack_and_latches_until_tea
             .with_secret(true)
             .with_initial_value("secret"),
     );
-    app.floating = crate::app::FloatingRuntime::new(Some(
+    *app.floating = crate::app::FloatingRuntime::new(Some(
         FloatingSurfaceServiceClient::from_stream(app_side).unwrap(),
     ));
     app.set_secret_on_screen(true);

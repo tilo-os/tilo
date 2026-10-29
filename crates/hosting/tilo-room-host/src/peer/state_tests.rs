@@ -3288,12 +3288,11 @@ fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
     times
 }
 
-/// In a room this relay governs, the relay's own device stewards every
-/// channel: a member's access request goes to it and to no other member,
-/// while the member's other changes reach them as before. In a room it does
-/// not govern, the request reaches every member, whichever one stewards.
+/// Any participant of a channel admits a device asking for it, so a member's
+/// access request reaches every member, whether this relay governs the room
+/// or not.
 #[tokio::test]
-async fn a_governed_rooms_access_requests_reach_no_other_member() {
+async fn access_requests_reach_every_member() {
     for governed in [false, true] {
         let mut fixture = Fixture::new();
         if governed {
@@ -3312,12 +3311,7 @@ async fn a_governed_rooms_access_requests_reach_no_other_member() {
         // A retained delta, authored at 2.
         fixture.enqueue(2).await;
         fixture.drained_wait().await;
-        let delivered = delivered_times(&mut fixture);
-        if governed {
-            assert_eq!(delivered, [2], "only the edit reached the member");
-        } else {
-            assert_eq!(delivered, [1, 2]);
-        }
+        assert_eq!(delivered_times(&mut fixture), [1, 2]);
         assert_eq!(
             fixture.store.load_retained().unwrap().len(),
             2,

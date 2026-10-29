@@ -33,6 +33,12 @@ pub(super) fn live_with_studio() -> TestApp<PrintCentreShell> {
     app
 }
 
+/// The print centre `app`'s window shows.
+pub(super) fn centre(app: &mut TestApp<PrintCentreShell>) -> Shared {
+    app.with_widget(|window: &mut PrintCentreWindow| Rc::clone(&window.centre))
+        .expect("the Print Centre window is mounted")
+}
+
 /// The tree Print Centre publishes once a refresh has found printers,
 /// documents and scanners.
 fn populated_resources() -> Vec<ui::tilo_actions::ResourceSpec> {
@@ -657,7 +663,8 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
             .unwrap();
     }
     {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let mut centre = shared.borrow_mut();
         centre.open_scan();
         centre.scan_finished(Ok(scanned_page(10)));
         centre.scan_finished(Ok(scanned_page(20)));
@@ -669,7 +676,8 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
     }
     app.settle();
     let (edited, scanner) = {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let centre = shared.borrow();
         (
             centre.scan.pages[1].png.clone(),
             centre.selected_scanner.clone(),
@@ -679,7 +687,7 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
         app.effect(&PrintCentreEffect::NewScannedDocument),
         Err(ui::tilo_actions::DoorError::ConfirmationRequired)
     ));
-    assert_eq!(app.surface_mut::<PrintCentre>().scan.pages.len(), 2);
+    assert_eq!(centre(&mut app).borrow().scan.pages.len(), 2);
 
     app.harness()
         .click_named("print-centre.scan.new-document")
@@ -692,7 +700,8 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
     app.harness().key("Escape");
     app.settle();
     {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let centre = shared.borrow();
         assert_eq!(centre.scan.pages.len(), 2);
         assert_eq!(centre.scan.selected, 1);
         assert_eq!(centre.scan.result.as_ref().unwrap().png, edited);
@@ -702,7 +711,8 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
         .unwrap();
     assert!(app.confirm_asked().is_some());
     {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let mut centre = shared.borrow_mut();
         assert!(centre.scan.pages.is_empty());
         assert!(centre.scan.result.is_none());
         assert_eq!(centre.scan.selected, 0);
@@ -727,7 +737,8 @@ fn new_scanned_document_requires_consent_and_resets_only_the_document() {
 fn new_scanned_document_refuses_pending_scan_and_save() {
     let mut app = live_with_studio();
     {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let mut centre = shared.borrow_mut();
         centre.open_scan();
         centre.scan_finished(Ok(scanned_page(10)));
         centre.scan_another();
@@ -740,7 +751,8 @@ fn new_scanned_document_refuses_pending_scan_and_save() {
             .is_err()
     );
     {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let mut centre = shared.borrow_mut();
         assert!(centre.scan.in_progress);
         assert_eq!(centre.scan.pages.len(), 1);
         centre.scan_finished(Ok(scanned_page(20)));
@@ -752,7 +764,8 @@ fn new_scanned_document_refuses_pending_scan_and_save() {
             .is_err()
     );
     {
-        let centre = app.surface_mut::<PrintCentre>();
+        let shared = centre(&mut app);
+        let mut centre = shared.borrow_mut();
         assert_eq!(centre.scan.pages.len(), 2);
         assert!(centre.scan_saving);
         centre.scan_saving = false;
@@ -760,7 +773,7 @@ fn new_scanned_document_refuses_pending_scan_and_save() {
     app.settle();
     app.effect_confirmed(&PrintCentreEffect::NewScannedDocument)
         .unwrap();
-    assert!(app.surface_mut::<PrintCentre>().scan.pages.is_empty());
+    assert!(centre(&mut app).borrow().scan.pages.is_empty());
 }
 
 #[test]

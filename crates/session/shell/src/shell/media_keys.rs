@@ -21,6 +21,8 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey, NativeKey};
 use xkeysym::key as keysyms;
 
+use media::audio::default_node::VolumeState;
+
 use crate::shell::osd::{Osd, Transport};
 use crate::shell::status::StatusBridge;
 use tilo_quick_settings::actions::QsActions;
@@ -275,7 +277,7 @@ pub fn apply(key: MediaKey, cx: &Context<'_>) -> Option<Response> {
 /// Current sink level + mute, as the status poller last read it. Never the
 /// daemon itself: the keys run on the compositor thread, and a key pressed
 /// before the first reading shows nothing rather than freeze the desktop.
-fn current_volume(status: Option<&StatusBridge>) -> Option<os_actions::VolumeState> {
+fn current_volume(status: Option<&StatusBridge>) -> Option<VolumeState> {
     status.and_then(|s| s.snapshot().volume)
 }
 
@@ -300,9 +302,9 @@ fn step_volume(delta: f32, audio: &dyn AudioControl, status: Option<&StatusBridg
 pub(crate) fn commit_volume(
     audio: &dyn AudioControl,
     status: Option<&StatusBridge>,
-    previous: Option<os_actions::VolumeState>,
+    previous: Option<VolumeState>,
     level: f32,
-) -> Result<(os_actions::VolumeState, Osd), String> {
+) -> Result<(VolumeState, Osd), String> {
     let level = level.clamp(0.0, 1.0);
     audio.set_volume(level * 100.0)?;
     let was_muted = previous.is_some_and(|now| now.muted);
@@ -310,7 +312,7 @@ pub(crate) fn commit_volume(
     if was_muted && unmute {
         audio.set_mute(false)?;
     }
-    let committed = os_actions::VolumeState {
+    let committed = VolumeState {
         level,
         muted: was_muted && !unmute,
     };
@@ -326,11 +328,11 @@ pub(crate) fn commit_volume(
 pub(crate) fn commit_mute(
     audio: &dyn AudioControl,
     status: Option<&StatusBridge>,
-    previous: os_actions::VolumeState,
+    previous: VolumeState,
     muted: bool,
-) -> Result<(os_actions::VolumeState, Osd), String> {
+) -> Result<(VolumeState, Osd), String> {
     audio.set_mute(muted)?;
-    let committed = os_actions::VolumeState {
+    let committed = VolumeState {
         level: previous.level,
         muted,
     };
@@ -735,7 +737,7 @@ mod tests {
             }
             if let Some(bridge) = self.bridge_on_write.borrow().as_ref() {
                 let before = bridge.snapshot().volume.expect("seeded volume");
-                bridge.set_volume(os_actions::VolumeState {
+                bridge.set_volume(VolumeState {
                     level: before.level,
                     muted,
                 });
@@ -746,7 +748,7 @@ mod tests {
             self.calls.borrow_mut().push("toggle_mute".to_string());
             if let Some(bridge) = self.bridge_on_write.borrow().as_ref() {
                 let before = bridge.snapshot().volume.expect("seeded volume");
-                bridge.set_volume(os_actions::VolumeState {
+                bridge.set_volume(VolumeState {
                     level: before.level,
                     muted: !before.muted,
                 });
@@ -773,7 +775,7 @@ mod tests {
 
     fn bridge_at(level: f32, muted: bool) -> StatusBridge {
         let b = StatusBridge::new();
-        b.set_volume(os_actions::VolumeState { level, muted });
+        b.set_volume(VolumeState { level, muted });
         b
     }
 
@@ -1173,7 +1175,11 @@ mod tests {
         fn a_machine_with_no_audio_daemon_shows_no_readout() {
             let rec = Recorder::default();
             // No bridge reading; this host may have no wpctl in the test sandbox.
-            if os_actions::get_volume_state().is_err() {
+            if media::audio::default_node::volume_state(
+                media::audio::default_node::DefaultNode::Sink,
+            )
+            .is_err()
+            {
                 assert!(
                     apply_local(MediaKey::VolumeUp, &rec, None).is_none(),
                     "no slab may claim a change that did not happen"

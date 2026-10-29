@@ -1,16 +1,11 @@
 //! System Monitor as a resource: the shared table layout (sort, tree or
 //! flat) is the [`Monitor`] model, edited at its paths; this machine's
-//! processes are the surface's [`ResourceSurface::live_rows`], and
-//! everything Monitor does to them (refresh, inspect, copy a PID, end a
-//! process or a whole app) is its typed effect vocabulary [`MonitorEffect`],
-//! answered by the surface.
+//! processes are live rows the view publishes, and everything Monitor
+//! does to them (refresh, inspect, copy a PID, end a process or a whole
+//! app) is its typed effect vocabulary [`MonitorEffect`], answered by the
+//! view.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
 use ui::widget::Element;
@@ -162,55 +157,7 @@ impl ResourceApp for MonitorShell {
             ),
             RunMode::Past => MonitorApp::past(),
         };
-        // A search hit, or an agent's `open`, shows the process it names.
-        cx.on_open(app.opener());
-        cx.surface(app)
-    }
-}
-
-impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
-    fn present(&mut self, state: &Rc<Monitor>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Monitor>) {
-        self.wake_with(cx.waker());
-        self.follow_preferences(cx.settings());
-        self.attach_framework(cx.dispatcher());
-        self.attach_actions(cx.actions());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.stage_scenario(scenario);
-        }
-    }
-
-    fn effect(&mut self, effect: MonitorEffect, _cx: &mut EffectCx<Monitor, Self>) -> EffectAnswer {
-        self.answer(effect).map(|()| Effected::done())
-    }
-
-    /// The processes on this machine, beneath the processes door: inspect,
-    /// copy the PID, stop or kill one. Not document state.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.live_process_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.live_process_row(id)
-    }
-
-    /// Every process running here, each found by its name, user or PID and
-    /// opening its exact generation — the tail beyond the published rows too.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.process_search_entries()
-    }
-
-    /// Processes are the machine's state of the moment: a closed Monitor
-    /// leaves none in the system's search index to open into one that has
-    /// ended.
-    fn kept_in_search_index(&self) -> bool {
-        false
+        crate::app::window(cx, app)
     }
 }
 
@@ -473,6 +420,7 @@ mod tests {
 
         let hit = app
             .surface_mut::<MonitorApp>()
+            .state()
             .process_search_entries()
             .into_iter()
             .find(|entry| entry.anchor.as_deref() == Some(id.as_str()))
@@ -529,6 +477,7 @@ mod tests {
         app.harness().relayout();
         let processes: Vec<String> = app
             .surface_mut::<MonitorApp>()
+            .state()
             .process_search_entries()
             .into_iter()
             .filter_map(|entry| entry.anchor)

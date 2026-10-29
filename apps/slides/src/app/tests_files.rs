@@ -37,6 +37,19 @@ fn through_the_chooser(
 
 const OPEN: SlidesEffect = SlidesEffect::OpenPresentation { path: None };
 
+/// A relative path is refused before it reaches the app: it would name a
+/// file wherever the process runs.
+#[test]
+fn file_effects_refuse_a_relative_path() {
+    use ui::tilo_resource::Effect as _;
+    for id in ["open-presentation", "save-as"] {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), "deck.odp".into());
+        let error = SlidesEffect::decode(id, &arguments).unwrap_err();
+        assert!(error.contains("absolute"), "{id}: {error}");
+    }
+}
+
 /// Foreign producers may wrap words in CDATA instead of escaping them.
 /// Opening those packages must keep the words and their surrounding marks.
 #[test]
@@ -249,7 +262,7 @@ fn open_save_as_and_read_reach_the_files_named() {
     bench
         .app
         .effect_confirmed(&SlidesEffect::OpenPresentation {
-            path: Some(path.to_string_lossy().into_owned()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(path.clone()).unwrap()),
         })
         .expect("open is answered");
     bench.frame();
@@ -259,7 +272,7 @@ fn open_save_as_and_read_reach_the_files_named() {
     bench
         .app
         .effect(&SlidesEffect::SaveAs {
-            path: Some(out.to_string_lossy().into_owned()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(out.clone()).unwrap()),
         })
         .expect("save-as is answered");
     let written =
@@ -286,7 +299,7 @@ fn open_save_as_and_read_reach_the_files_named() {
         bench
             .app
             .effect(&SlidesEffect::OpenPresentation {
-                path: Some(path.to_string_lossy().into_owned()),
+                path: Some(ui::tilo_resource::AbsolutePath::new(path.clone()).unwrap()),
             })
             .is_err(),
         "an unconfirmed open is held for confirmation"
@@ -462,7 +475,7 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
     bench
         .app
         .effect(&SlidesEffect::SaveAs {
-            path: Some(pptx.to_string_lossy().into_owned()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(pptx.clone()).unwrap()),
         })
         .expect("save-as is answered");
     let written =
@@ -478,7 +491,7 @@ fn a_saved_box_is_as_tall_as_its_words_show_it() {
     bench
         .app
         .effect(&SlidesEffect::SaveAs {
-            path: Some(odp.to_string_lossy().into_owned()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(odp.clone()).unwrap()),
         })
         .expect("save-as is answered");
     let content = package_part(&odp, "content.xml");

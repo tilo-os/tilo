@@ -249,13 +249,13 @@ fn draw_frame_content_with(
     }
     painted(scene, "the close dialog", &mut drawn);
     app.presence_ctx.pop_viewport(prev_vp);
-    if let Some(ap) = app.actions.action_palette.as_mut() {
+    if let Some(ap) = app.actions.action_palette.as_deref_mut() {
         ap.follow_presence(app.theme.motion());
     }
     if let Some(ap) = app
         .actions
         .action_palette
-        .as_mut()
+        .as_deref_mut()
         .filter(|p| p.is_presented())
     {
         // The window under its bar: the palette and its scrim leave the

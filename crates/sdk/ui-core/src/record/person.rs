@@ -1,19 +1,18 @@
-//! Records in the person's own room: data that belongs to one person and
-//! follows them across their devices, never to a collaborator.
+//! Records an app holds beside the one it shows.
 //!
-//! A shared room's records are its members'. Some of an app's state is
-//! nobody's but the person's — what they watched, the words they taught
-//! the keyboard, where they stopped reading — and is still data rather than
-//! a preference: it grows, it has history, edits to it are undone. That
-//! state is a record like any other, kept in the person's own room
-//! ([`collab_types::person_room()`]): a room whose id is derived from the
-//! person's root key and whose members are, by that derivation, exactly the
-//! devices that root certified. Nobody can be invited into it.
+//! Some of an app's state is still data rather than a preference — what was
+//! watched, the words taught to the keyboard, where reading stopped — and is
+//! one record of its kind: it grows, it has history, edits to it are undone.
+//! That record is kept with the app's other records in the workspace it is
+//! open in ([`PersonRecords::in_workspace`]), and syncs with the workspace like
+//! any of them.
 //!
-//! An app holds the person's records beside the record it shows, whatever
-//! room that one is in. [`PersonRecords`] is where they are kept on this
-//! device for one app; [`StoredRecord`] is one of them, opened, edited with
-//! attribution and undo, and synced on its own route
+//! The person's shared records — their accounts, which Settings keeps for
+//! all of their apps, their contacts — and the settings sections are kept in
+//! the person's room ([`collab_types::person_room()`]), a room whose id is
+//! derived from the person's root key. [`PersonRecords`] is where they are
+//! kept on this device for one app; [`StoredRecord`] is one of them, opened,
+//! edited with attribution and undo, and synced on its own route
 //! ([`StoredRecord::history_owner`]) to the person's other devices.
 //!
 //! Without a root identity there is no person room: the records are kept
@@ -97,9 +96,15 @@ impl PersonRecords {
     /// # Errors
     /// Rejects an invalid package.
     pub fn replica(package_id: &str, author: UserId) -> Result<Self, RecordOpenError> {
+        let scope = scope_of(&author);
+        Self::replica_in(package_id, &scope, author)
+    }
+
+    /// [`Self::replica`], of the records kept in `scope`.
+    fn replica_in(package_id: &str, scope: &str, author: UserId) -> Result<Self, RecordOpenError> {
         let mut owners = RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
         Ok(Self {
-            store: owners.open_person(package_id, &scope_of(&author))?,
+            store: owners.open_person(package_id, scope)?,
             owners,
             replica: true,
             author,
@@ -123,6 +128,29 @@ impl PersonRecords {
         let mut owners = self.others.clone().unwrap_or_else(|| self.owners.clone());
         Ok(Self {
             store: owners.open_person(package_id, &scope_of(&self.author))?,
+            owners,
+            replica: self.replica,
+            author: self.author.clone(),
+            others: None,
+        })
+    }
+
+    /// The app's own records of a kind in the workspace `workspace`, kept
+    /// where these are: one per kind, the same on every device, synced on
+    /// the ordinary route of a record of the app in that workspace. They
+    /// are kept apart from the store of the record the app shows, so an
+    /// edit of one while that one is being changed waits for nothing.
+    ///
+    /// # Errors
+    /// Rejects an invalid workspace.
+    pub fn in_workspace(&self, workspace: &str) -> Result<Self, RecordOpenError> {
+        let (package, _) = self.store.package_and_home();
+        if self.store.backend().is_none() {
+            return Self::replica_in(&package, workspace, self.author.clone());
+        }
+        let mut owners = self.owners.clone();
+        Ok(Self {
+            store: owners.open_person(&package, workspace)?,
             owners,
             replica: self.replica,
             author: self.author.clone(),
@@ -182,8 +210,8 @@ impl PersonRecords {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
-                let (package, _) = self.store.package_and_home();
-                let replica = Self::replica(&package, self.author.clone())?;
+                let (package, home) = self.store.package_and_home();
+                let replica = Self::replica_in(&package, &home, self.author.clone())?;
                 open_in(&replica.store, &checkout, initialize)?;
                 Ok(StoredRecord::new(
                     replica.store,
@@ -217,8 +245,8 @@ impl PersonRecords {
             Err(RecordOpenError::Store(app_state::StoreError::WriterBusy { .. }))
                 if !self.replica =>
             {
-                let (package, _) = self.store.package_and_home();
-                let replica = Self::replica(&package, self.author.clone())?;
+                let (package, home) = self.store.package_and_home();
+                let replica = Self::replica_in(&package, &home, self.author.clone())?;
                 match replica.store.try_open_record(&checkout) {
                     Ok(_) => replica.store,
                     Err(RecordOpenError::MissingRecord) => return Ok(None),
@@ -269,10 +297,10 @@ pub(super) fn open_in(
     }
 }
 
-/// One of the person's records, open, or one of the workspace's
-/// ([`super::workspace`]), held the same way. Edits are attributed to the
-/// person, recorded as undo steps of their own and synced on the record's
-/// route.
+/// A record held beside the one an app shows: the app's own of a kind, one
+/// of the person's, or one of the workspace's ([`super::workspace`]), each
+/// held the same way. Edits are attributed to the person, recorded as undo
+/// steps of their own and synced on the record's route.
 pub struct StoredRecord {
     store: RecordStore,
     checkout: RecordCheckout,
@@ -399,14 +427,14 @@ impl StoredRecord {
         stepped
     }
 
-    /// The route this record syncs on: the person's room, when they have
-    /// one. `None` for a record kept on this device only.
+    /// The route this record syncs on. `None` for a record kept on this
+    /// device only.
     #[must_use]
     pub fn route(&self) -> Option<crate::collaboration::RouteSpec> {
         self.store.route(&self.checkout).ok()
     }
 
-    /// Whether this record syncs to the person's other devices.
+    /// Whether this record syncs to other devices.
     #[must_use]
     pub fn syncs(&self) -> bool {
         self.route().is_some()
@@ -414,8 +442,8 @@ impl StoredRecord {
 
     /// The record's owner for its collaboration route, which a widget
     /// reports from [`Widget::record_owners`](crate::widget::Widget::record_owners)
-    /// so the runtime publishes its edits and merges the person's other
-    /// devices' while it is open.
+    /// so the runtime publishes its edits and merges other devices' while
+    /// it is open.
     #[must_use]
     pub fn history_owner(&self) -> HistoryOwner {
         HistoryOwner::legacy(self.store.clone(), self.checkout.clone(), &self.lifetime)
@@ -449,10 +477,9 @@ impl StoredRecord {
     }
 
     /// Where the content this record references is stored and read: under
-    /// the person's own room, kept by the host and carried to the person's
-    /// other devices on the record's route — never in the room of the
-    /// window showing it. `None` without a person room, where the record
-    /// stays on this device and keeps no content of its own.
+    /// the record's room, kept by the host and carried to other devices on
+    /// the record's route. `None` for a record kept on this device only,
+    /// which keeps no content of its own.
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         let (package, home) = self.store.package_and_home();

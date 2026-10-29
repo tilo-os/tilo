@@ -173,7 +173,7 @@ fn a_window_edits_one_document_that_open_replaces() {
 
     let (_dir, path) = typ_file("other.typ", "= Other\n");
     app.effect_confirmed(&crate::actions::TypstEffect::OpenFile {
-        path: Some(path.clone()),
+        path: Some(path.parse().unwrap()),
     })
     .unwrap();
     app.settle();
@@ -191,7 +191,7 @@ fn saving_to_a_path_through_the_effect_writes_the_shown_source() {
     let mut app = TestApp::<TypstEditorShell>::launched(&[&path]).unwrap();
     let destination = dir.path().join("saved.typ");
     app.effect_confirmed(&crate::actions::TypstEffect::Save {
-        path: Some(destination.display().to_string()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(destination.clone()).unwrap()),
     })
     .unwrap();
     app.settle();

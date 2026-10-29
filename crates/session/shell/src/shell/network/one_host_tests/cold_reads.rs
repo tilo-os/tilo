@@ -216,7 +216,7 @@ impl AppLaunch {
 impl Device {
     /// Write `changes` (Automerge change bytes) into `app`'s `record` in
     /// `room`, as the app does on its sealed channel: sealed under the
-    /// record's channel keys, which this device asks the room's steward for,
+    /// record's channel keys, which this device asks the room's participants for,
     /// signed by this device and published to the room's host. Before this
     /// device serves through a broker, whose channel service then holds the
     /// keys instead.

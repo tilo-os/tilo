@@ -271,6 +271,21 @@ registry_url=${TILO_REGISTRY_URL%/}
   printf 'TILO_REGISTRY_URL must be a public HTTPS origin\n' >&2
   exit 1
 }
+# Devices built from this commit read exactly one package format. Submitting their apps to a
+# registry whose catalogue is at another format lists builds none of those devices can verify:
+# every Store install and update on them fails. The registry runs this commit's registry-server
+# and has signed a snapshot at the format first (docs/registry.md).
+if [[ $stage != upload ]]; then
+  package_format=$(sed -n 's/^pub const PACKAGE_FORMAT_VERSION: u32 = \([0-9]*\);$/\1/p' \
+    crates/packaging/registry-types/src/lib.rs)
+  served_format=$(curl --fail --silent --show-error --max-time 120 \
+    "$registry_url/entries?format=compact" | jq -er .protocol)
+  [[ -n $package_format && $served_format == "$package_format" ]] || {
+    printf '%s publishes its catalogue at package format %s, but this commit reads format %s: deploy its registry-server and sign a snapshot at format %s before submitting apps\n' \
+      "$registry_url" "$served_format" "$package_format" "$package_format" >&2
+    exit 1
+  }
+fi
 registry_metadata="$RUNNER_TEMP/tilo-registry-metadata"
 registry_media="$RUNNER_TEMP/tilo-registry-media"
 registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"

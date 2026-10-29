@@ -57,6 +57,8 @@ description = "Browse history, review changes, and work with Git visually."
 description = "Inspect and edit binary files with precision."
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
+[apps.launcher]
+description = "Find apps, windows, files and actions from one search, and start them from the keyboard."
 [apps.logs]
 description = "Search and understand system logs without a wall of noise."
 [apps.messages]

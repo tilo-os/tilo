@@ -261,9 +261,11 @@ impl ShellOverlayHost {
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::new(),
                 qs_actions,
                 qs_action_slot,
-                room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
-                projection_overlay: ProjectionOverlay::default(),
-                portal_dialogs: PortalDialogController::default(),
+                room_activity: Box::new(
+                    crate::shell::room_activity::RoomActivityPane::new_persistent(),
+                ),
+                projection_overlay: Box::default(),
+                portal_dialogs: Box::default(),
                 history_narrator: Some(
                     crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 ),
@@ -329,18 +331,20 @@ impl ShellOverlayHost {
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::without_os_reads(),
                 qs_actions,
                 qs_action_slot,
-                room_activity: crate::shell::room_activity::RoomActivityPane::with_local_user(
-                    "shell-fixture".into(),
+                room_activity: Box::new(
+                    crate::shell::room_activity::RoomActivityPane::with_local_user(
+                        "shell-fixture".into(),
+                    ),
                 ),
                 history_narrator: None,
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::disabled(),
                 history_describer: crate::shell::history_narrative::HistoryDescriber::disabled(),
-                portal_dialogs: PortalDialogController::new(
+                portal_dialogs: Box::new(PortalDialogController::new(
                     crate::shell::portal_dialog::PortalDialogQueue::default(),
-                ),
-                projection_overlay: ProjectionOverlay::from_controller(
+                )),
+                projection_overlay: Box::new(ProjectionOverlay::from_controller(
                     crate::shell::projection::ProjectionController::unavailable(),
-                ),
+                )),
                 session_action_policy:
                     crate::shell::search::providers::SessionActionPolicy::default(),
                 now_playing: std::rc::Rc::new(crate::shell::now_playing::NoPlayers),
@@ -405,7 +409,7 @@ impl ShellOverlayHost {
             onboarding_node: None,
             onboarding_released: false,
             onboarding_focus_reset: false,
-            strip_navigator: tilo_desktop::strip_navigator::StripNavigator::default(),
+            strip_navigator: Box::default(),
             control_hints: super::control_hints::load(),
             control_hints_frame: tilo_desktop::control_hints::HintFrame::default(),
             strip_switcher_revision: None,
@@ -476,7 +480,7 @@ impl ShellOverlayHost {
             qs_device_fabric_start: 0,
             qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_source: None,
-            layers: OverlayStack::default(),
+            layers: Box::default(),
             session_action_channel: std::sync::mpsc::channel(),
             power_bridge: None,
             session_action_policy: inputs.session_action_policy,
@@ -485,8 +489,9 @@ impl ShellOverlayHost {
             fullscreen_hint: None,
             top_edge_swipe: None,
             strip_pan_active: false,
+            strip_deck_drag_display: None,
             qs_refresh: inputs.qs_refresh,
-            workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
+            workspace_settings_overlay: Box::default(),
             ws_emoji: None,
             workspace_rename_submit_held: false,
             palette_was_visible: false,
@@ -528,8 +533,8 @@ impl ShellOverlayHost {
             local_status: collaboration_preferences.manual_status,
             local_status_origin: ui::StatusOrigin::Manual,
             status_sharing: collaboration_preferences.sharing,
-            peer_sync_overlay: PeerSyncOverlay::default(),
-            directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
+            peer_sync_overlay: Box::default(),
+            directory_sheet: Box::default(),
             arrival_pulses: Vec::new(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
@@ -574,15 +579,15 @@ impl ShellOverlayHost {
             activity_refresh: ActivityRefreshGate::default(),
             activity_served: None,
             activity_pending_reveal: None,
-            collaborators_overlay: CollaboratorsOverlay::default(),
-            people_overlay: people_overlay::from_settings(),
+            collaborators_overlay: Box::default(),
+            people_overlay: Box::new(people_overlay::from_settings()),
             live_layout_bridge: None,
             published_layout: None,
             collaborators_appearing: ui::motion::Appearing::closed(),
             collaborators_painted: Scene::new(),
             collaborators_painted_panel: Rect::ZERO,
             projection_overlay: inputs.projection_overlay,
-            wifi_prompt: Self::new_wifi_prompt(),
+            wifi_prompt: Box::new(Self::new_wifi_prompt()),
             wifi_password_prompt: None,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
@@ -602,9 +607,8 @@ impl ShellOverlayHost {
             follow_cursor_targets: Vec::new(),
             agent_markers: agent_markers::AgentMarkers::default(),
             person_markers: tilo_desktop::person_cursor::PersonCursors::default(),
-            person_quick_composer:
-                crate::shell::person_quick_composer::PersonQuickComposer::default(),
-            cursor_chat: cursor_chat::CursorChatComposer::default(),
+            person_quick_composer: Box::default(),
+            cursor_chat: Box::default(),
             self_presence: presence_self::SelfPresence {
                 chosen: collaboration_preferences.availability,
                 visibility: collaboration_preferences.visibility.clone(),
@@ -624,9 +628,9 @@ impl ShellOverlayHost {
             app_sheet_changed: false,
             agent_actions: HashMap::new(),
             tracker: None,
-            agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer::default(),
+            agent_quick_composer: Box::default(),
             agent_quick_composer_node: None,
-            bar_popovers: bar_popovers::BarPopovers::default(),
+            bar_popovers: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
             feedback_picker: crate::shell::feedback_pick::NativePicker::default(),
@@ -655,7 +659,7 @@ impl ShellOverlayHost {
 
     pub(super) fn register_authentication_actions(&mut self) {
         let queue = self.portal_dialogs.queue().clone();
-        let provider = self.onboarding.as_ref().map_or_else(
+        let provider = self.onboarding.as_deref().map_or_else(
             || crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::new(queue.clone()),
             |view| crate::shell::search::providers::authentication_prompts::AuthenticationPromptsProvider::with_first_use_scope(queue.clone(), view.authentication_first_use_scope()),
         );
@@ -664,7 +668,7 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn register_onboarding_actions(&mut self) {
-        if let Some(view) = self.onboarding.as_ref() {
+        if let Some(view) = self.onboarding.as_deref() {
             self.search_registry.register(view.semantic_provider());
         }
         self.register_authentication_actions();
@@ -673,7 +677,9 @@ impl ShellOverlayHost {
     /// Activate first-login chrome on an already constructed compositor
     /// host. Production uses this after resolving the canonical XDG path.
     pub fn enable_onboarding(&mut self, identity_dir: std::path::PathBuf) {
-        self.onboarding = Some(crate::onboarding_view::OnboardingView::new(identity_dir));
+        self.onboarding = Some(Box::new(crate::onboarding_view::OnboardingView::new(
+            identity_dir,
+        )));
         self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
@@ -715,7 +721,7 @@ impl ShellOverlayHost {
 
     #[cfg(test)]
     pub(crate) fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
-        self.onboarding = Some(view);
+        self.onboarding = Some(Box::new(view));
         self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
@@ -725,8 +731,8 @@ impl ShellOverlayHost {
     /// authoritative when its Secret Service item is unavailable, so this
     /// surface offers unlock/retry and restore but never replacement minting.
     pub fn enable_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
-        self.onboarding = Some(crate::onboarding_view::OnboardingView::new_for_recovery(
-            identity_dir,
+        self.onboarding = Some(Box::new(
+            crate::onboarding_view::OnboardingView::new_for_recovery(identity_dir),
         ));
         self.register_onboarding_actions();
         self.onboarding_released = false;
@@ -737,8 +743,9 @@ impl ShellOverlayHost {
     /// existing Linux host. It retains the trusted chrome boundary and the
     /// identity/backup gates of full-system onboarding.
     pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
-        self.onboarding =
-            Some(crate::onboarding_view::OnboardingView::new_for_host_desktop(identity_dir));
+        self.onboarding = Some(Box::new(
+            crate::onboarding_view::OnboardingView::new_for_host_desktop(identity_dir),
+        ));
         self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
@@ -746,9 +753,9 @@ impl ShellOverlayHost {
 
     /// Activate host-session recovery-only identity chrome.
     pub fn enable_host_desktop_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
-        self.onboarding = Some(
+        self.onboarding = Some(Box::new(
             crate::onboarding_view::OnboardingView::new_for_host_desktop_recovery(identity_dir),
-        );
+        ));
         self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
@@ -772,8 +779,9 @@ impl ShellOverlayHost {
                 &[("error", error.to_string().into())],
             )
         })?;
-        self.onboarding =
-            Some(crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?);
+        self.onboarding = Some(Box::new(
+            crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?,
+        ));
         self.register_onboarding_actions();
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
@@ -783,25 +791,29 @@ impl ShellOverlayHost {
     pub(crate) fn take_original_copy_request(
         &mut self,
     ) -> Option<crate::onboarding_migration::OriginalCopyRequest> {
-        self.onboarding.as_mut()?.take_original_copy_request()
+        self.onboarding.as_deref_mut()?.take_original_copy_request()
     }
 
     pub(crate) fn identity_setup_active(&self) -> bool {
         self.onboarding
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::onboarding_view::OnboardingView::identity_setup_active)
     }
 
     pub(crate) fn take_existing_files_request(&mut self) -> Option<crate::retained_files::Request> {
-        self.onboarding.as_mut()?.take_existing_files_request()
+        self.onboarding
+            .as_deref_mut()?
+            .take_existing_files_request()
     }
 
     pub(crate) fn take_existing_files_release(&mut self) -> Option<String> {
-        self.onboarding.as_mut()?.take_existing_files_release()
+        self.onboarding
+            .as_deref_mut()?
+            .take_existing_files_release()
     }
 
     pub(crate) fn existing_files_outcome(&mut self, operation: &str, available: bool) {
-        if let Some(view) = self.onboarding.as_mut() {
+        if let Some(view) = self.onboarding.as_deref_mut() {
             view.existing_files_outcome(operation, available);
         }
     }
@@ -811,7 +823,7 @@ impl ShellOverlayHost {
         &mut self,
         state: crate::onboarding_view::OnboardingVisualState,
     ) {
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        if let Some(onboarding) = self.onboarding.as_deref_mut() {
             onboarding.set_visual_state_for_snapshot(state);
         }
     }

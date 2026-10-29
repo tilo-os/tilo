@@ -14,6 +14,8 @@
 
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
+use media::audio::default_node::{self, DefaultNode, VolumeState};
+
 use crate::session_runtime::Delivery;
 use crate::shell::media_keys::AudioControl;
 use crate::shell::osd::Osd;
@@ -33,35 +35,39 @@ pub(crate) trait AudioBackend: Send + 'static {
     fn source_muted(&mut self) -> Result<bool, String>;
     /// The default sink as it actually is, to correct the tray after a
     /// write failed.
-    fn sink_state(&mut self) -> Result<os_actions::VolumeState, String>;
+    fn sink_state(&mut self) -> Result<VolumeState, String>;
 }
 
-/// `wpctl`, through `os-actions`.
+/// The default devices, through `media::audio::default_node`.
 pub(crate) struct SystemAudio;
 
 impl AudioBackend for SystemAudio {
     fn set_volume(&mut self, pct: f32) -> Result<(), String> {
-        os_actions::set_volume(pct)
+        default_node::set_volume(DefaultNode::Sink, pct)
     }
 
     fn set_mute(&mut self, muted: bool) -> Result<(), String> {
-        os_actions::set_mute(muted)
+        default_node::set_mute(DefaultNode::Sink, muted)
     }
 
     fn toggle_mute(&mut self) -> Result<(), String> {
-        os_actions::toggle_mute()
+        default_node::toggle_mute(DefaultNode::Sink)
     }
 
+    /// `wpctl set-mute toggle` prints nothing useful, so the new state is
+    /// read back; the mic-mute key does not autorepeat, so the extra call
+    /// costs one press, not a burst.
     fn toggle_source_mute(&mut self) -> Result<bool, String> {
-        os_actions::toggle_source_mute()
+        default_node::toggle_mute(DefaultNode::Source)?;
+        self.source_muted()
     }
 
     fn source_muted(&mut self) -> Result<bool, String> {
-        os_actions::get_source_state().map(|state| state.muted)
+        default_node::volume_state(DefaultNode::Source).map(|state| state.muted)
     }
 
-    fn sink_state(&mut self) -> Result<os_actions::VolumeState, String> {
-        os_actions::get_volume_state()
+    fn sink_state(&mut self) -> Result<VolumeState, String> {
+        default_node::volume_state(DefaultNode::Sink)
     }
 }
 
@@ -259,7 +265,7 @@ mod tests {
         entered: Option<mpsc::Sender<()>>,
         gate: Option<mpsc::Receiver<()>>,
         fail_volume: bool,
-        sink: os_actions::VolumeState,
+        sink: VolumeState,
         source_muted: bool,
     }
 
@@ -300,7 +306,7 @@ mod tests {
             self.record("source_muted".into());
             Ok(self.source_muted)
         }
-        fn sink_state(&mut self) -> Result<os_actions::VolumeState, String> {
+        fn sink_state(&mut self) -> Result<VolumeState, String> {
             Ok(self.sink)
         }
     }
@@ -321,7 +327,7 @@ mod tests {
                 entered: Some(entered_tx),
                 gate: Some(gate),
                 fail_volume,
-                sink: os_actions::VolumeState {
+                sink: VolumeState {
                     level: 0.3,
                     muted: true,
                 },
@@ -359,7 +365,7 @@ mod tests {
     fn volume_keys_coalesce_latest_wins() {
         let (backend, harness) = blocking_backend(false);
         let bridge = StatusBridge::new();
-        bridge.set_volume(os_actions::VolumeState {
+        bridge.set_volume(VolumeState {
             level: 0.40,
             muted: false,
         });
@@ -405,7 +411,7 @@ mod tests {
     fn a_failed_write_puts_the_tray_back_on_the_sink() {
         let (backend, harness) = blocking_backend(true);
         let bridge = StatusBridge::new();
-        bridge.set_volume(os_actions::VolumeState {
+        bridge.set_volume(VolumeState {
             level: 0.30,
             muted: true,
         });
@@ -419,7 +425,7 @@ mod tests {
         .expect("queued");
         assert_eq!(
             bridge.snapshot().volume,
-            Some(os_actions::VolumeState {
+            Some(VolumeState {
                 level: 0.35,
                 muted: false,
             }),
@@ -432,7 +438,7 @@ mod tests {
         });
         assert_eq!(
             bridge.snapshot().volume,
-            Some(os_actions::VolumeState {
+            Some(VolumeState {
                 level: 0.3,
                 muted: true,
             }),

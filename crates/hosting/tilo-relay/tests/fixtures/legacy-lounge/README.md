@@ -1,10 +1,10 @@
 # A Lounge the relay kept in the clear
 
 `state.tar.gz.b64` holds, as base64 text, a relay's state directory as
-tilo-relay kept it at d56f3c7bd9, before the records of a room whose channels the relay
-stewards were sealed from their first write. The room is "Lounge",
-governed and stewarded by the fixture governor (`rooms::tests::governor_with`
-with host capabilities). In it:
+tilo-relay kept it at d56f3c7bd9, before the records of a room whose
+channels the relay takes part in were sealed from their first write. The
+room is "Lounge", governed by the fixture governor, which takes part in its
+channels (`rooms::tests::governor_with` with host capabilities). In it:
 
 - the host wrote three records (`welcome`, `chat`, `notes` of
   `so.tilo.notes`) in the clear;
@@ -116,7 +116,7 @@ async fn clear_write(
 }
 
 /// Produces `crates/hosting/tilo-relay/tests/fixtures/legacy-lounge.tar.gz`
-/// with the relay as it was before records of a stewarded room were sealed
+/// with the relay as it was before records of a sealed room were sealed
 /// from their first write: a Lounge whose records the host and two members
 /// wrote in the clear, two of them later written sealed by members holding
 /// their channels' keys, one never given a channel. Prints the state

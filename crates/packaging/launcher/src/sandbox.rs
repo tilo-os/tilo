@@ -1,6 +1,6 @@
 //! Bubblewrap argv construction from a [`ManifestView`].
 //!
-//! Pure function: given a manifest, payload root, optional runtime root,
+//! Pure function: given a manifest, payload root, the app's runtime root,
 //! and resolved service fds, returns the argv for `bwrap`. No I/O — fd
 //! plumbing is `run()`'s job in `lib.rs`.
 
@@ -604,7 +604,7 @@ fn push_app_metadata(argv: &mut Vec<String>, manifest: &ManifestView, payload_mo
 /// Mount a further runtime bundle read-only at its runtime mount. Unlike the
 /// app's own runtime it changes no loader path: the app finds what it needs
 /// inside by path. Returns the mount.
-pub fn push_optional_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
+pub fn push_required_runtime(argv: &mut Vec<String>, root: &Path, version: &str) -> PathBuf {
     let mount = runtime_mount_for(version);
     push_bind(argv, "--ro-bind", root, &mount);
     mount
@@ -1165,7 +1165,7 @@ mod tests {
             version: "0.1.0".to_string(),
             kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
-            optional_runtimes: Vec::new(),
+            required_runtimes: Vec::new(),
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),
                 r#type: crate::manifest::EntrypointType::Gui,
@@ -1905,7 +1905,7 @@ mod tests {
         // A tilolang app: its payload is the compiled module; the binary is
         // the tilolang runtime bundle's, told where the module is.
         let mut m = mk_manifest("off");
-        m.optional_runtimes = vec!["tilolang/0.1.0".to_string()];
+        m.required_runtimes = vec!["tilolang/0.1.0".to_string()];
         m.entrypoint.bin = "bin/tilolang".to_string();
         m.entrypoint.runtime = Some("tilolang/0.1.0".to_string());
         let argv = build_bwrap_argv(

@@ -1491,7 +1491,6 @@ installer-existing-password-required = Enter the passphrase for this backup.
 
 installer-existing-file-required = Choose your identity backup first.
 
-installer-existing-file-invalid = Choose a local identity backup file.
 
 installer-existing-busy = Your identity is being restored.
 

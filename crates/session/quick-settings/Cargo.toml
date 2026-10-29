@@ -1,6 +1,6 @@
 [package]
 name = "tilo-quick-settings"
-description = "The desktop's Quick Settings panel: its page, sections and state, and the device status line the top bar shares."
+description = "The desktop's Quick Settings panel as an app: its resource, effects and views, the readings the desktop lends it, and the device status line the top bar shares."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -12,13 +12,17 @@ license.workspace = true
 test-support = []
 
 [dependencies]
+durable-store = { path = "../../system/durable-store" }
 os-actions = { path = "../../system/os-actions" }
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
 parking_lot.workspace = true
+serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-desktop = { path = "../desktop" }
 tilo-power-mgmt = { path = "../../system/power" }
 tracing.workspace = true
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# A framework app: the panel's resource, effects and views.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 vello.workspace = true
 winit.workspace = true
 workspace-hack = { version = "0.1" }
@@ -26,7 +30,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 # The panel's pixel tests rasterise a page on the CPU.
 tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true

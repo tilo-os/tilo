@@ -57,7 +57,7 @@ impl ShellOverlayHost {
     }
 
     /// The rail that maps the active strip, and its windows in rail order:
-    /// one segment per window group,
+    /// one segment per window group on the display it is drawn on,
     /// the focused one marked, the ones on screen lit. Reads the live
     /// [`GroupRow`] rather than the tree — visibility is a layout question,
     /// and the tree knows only order.
@@ -95,11 +95,20 @@ impl ShellOverlayHost {
             }) else {
                 return empty;
             };
+            // Drawn on the focused display, the rail maps that display's
+            // windows: across several, each shows only its own.
+            let display = self
+                .is_partitioned()
+                .then(|| tree.desktop.outputs.focused_display())
+                .flatten();
             let order: Vec<GroupId> = tree
                 .desktop
                 .active_workspace()
                 .and_then(|ws| ws.strips.iter().find(|s| s.id == sid))
-                .map(|s| s.window_groups.iter().map(|g| g.id).collect())
+                .map(|s| match display {
+                    Some(display) => tree.desktop.outputs.groups_on(s, display),
+                    None => s.window_groups.iter().map(|g| g.id).collect(),
+                })
                 .unwrap_or_default();
             (sid, order)
         };

@@ -10,7 +10,7 @@
 use crate::model::{Catalogue, Route};
 use tilo_actions::{ActionSpec, Availability, ConfirmationPolicy};
 use ui::framework::LiveRow;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 /// What Windows Apps asks the compatibility service and the managed
 /// appliance to do. None of it is document state: a launch, an install or a
@@ -27,14 +27,14 @@ pub enum WindowsEffect {
     /// Install Windows application.
     #[effect(job, privileged, kind = "outside")]
     Install {
-        #[param("Path of the installer; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the installer; omit to choose one")]
+        path: Option<AbsolutePath>,
     },
     /// Import Windows ISO.
     #[effect(job, privileged, kind = "outside")]
     ImportIso {
-        #[param("Path of the ISO; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the ISO; omit to choose one")]
+        path: Option<AbsolutePath>,
     },
     /// Open recovery desktop.
     #[effect(row, job, privileged, kind = "outside")]
@@ -86,8 +86,8 @@ pub enum WindowsEffect {
     OpenFile {
         #[param("The application's id")]
         app: String,
-        #[param("Path of the file; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the file; omit to choose one")]
+        path: Option<AbsolutePath>,
     },
     /// Publish launcher.
     #[effect(row, job, kind = "outside")]
@@ -131,10 +131,15 @@ impl WindowsEffect {
     /// The service operation this effect asks for, and the item it names.
     pub(crate) fn operation(&self) -> (&'static str, String) {
         let none = String::new;
+        let path = |path: &Option<AbsolutePath>| {
+            path.as_ref()
+                .map(AbsolutePath::to_string_lossy)
+                .unwrap_or_default()
+        };
         match self {
             Self::Show { app } => ("windows.show", app.clone()),
-            Self::Install { path } => ("windows.install", path.clone().unwrap_or_default()),
-            Self::ImportIso { path } => ("windows.import-iso", path.clone().unwrap_or_default()),
+            Self::Install { path: file } => ("windows.install", path(file)),
+            Self::ImportIso { path: file } => ("windows.import-iso", path(file)),
             Self::Recovery => ("windows.recovery", none()),
             Self::Start => ("windows.start", none()),
             Self::Restart => ("windows.restart", none()),
@@ -161,9 +166,12 @@ impl WindowsEffect {
     /// The operation's argument as the service handlers read it.
     pub(crate) fn payload(&self) -> Vec<u8> {
         let encoded = match self {
-            Self::OpenFile { app, path } => {
-                serde_json::to_vec(&[app.clone(), path.clone().unwrap_or_default()])
-            }
+            Self::OpenFile { app, path } => serde_json::to_vec(&[
+                app.clone(),
+                path.as_ref()
+                    .map(AbsolutePath::to_string_lossy)
+                    .unwrap_or_default(),
+            ]),
             other => serde_json::to_vec(&other.operation().1),
         };
         encoded.unwrap_or_default()
@@ -422,6 +430,15 @@ mod tests {
             .into_iter()
             .map(LiveRow::into_resource)
             .collect()
+    }
+
+    /// A relative installer path is refused before the service sees it.
+    #[test]
+    fn a_relative_installer_path_is_refused() {
+        let arguments =
+            serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("setup.exe"))]);
+        let refused = WindowsEffect::decode("install", &arguments).unwrap_err();
+        assert!(refused.contains("absolute"), "{refused}");
     }
 
     #[test]

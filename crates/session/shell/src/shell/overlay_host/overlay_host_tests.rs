@@ -677,7 +677,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         assert!(host.onboarding_active());
         assert!(
             host.onboarding
-                .as_ref()
+                .as_deref()
                 .is_some_and(|view| !view.flow().is_done() && view.presents_desktop_context())
         );
         let mut taffy = TaffyTree::new();
@@ -713,7 +713,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
 
         assert!(
             host.onboarding
-                .as_ref()
+                .as_deref()
                 .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context),
             "starting the first-login tour must release the opaque setup backdrop"
         );
@@ -729,7 +729,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let tour_rect = harness
             .host
             .onboarding
-            .as_ref()
+            .as_deref()
             .expect("first-login tour")
             .get_rect();
         assert_eq!(
@@ -792,7 +792,7 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         assert_eq!(
             h.host
                 .onboarding
-                .as_ref()
+                .as_deref()
                 .expect("the tour stays open")
                 .tour_step(),
             Some(2),
@@ -1514,7 +1514,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         let before = h
             .host
             .onboarding
-            .as_ref()
+            .as_deref()
             .expect("desktop tour activates onboarding")
             .flow()
             .screen();
@@ -1540,7 +1540,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert_eq!(
             h.host
                 .onboarding
-                .as_ref()
+                .as_deref()
                 .expect("Capture Studio must not tear down OOBE")
                 .flow()
                 .screen(),
@@ -3344,7 +3344,7 @@ fn queue_setup(
             "current typed setup action {} (owner={}, screen={:?})",
             invocation.0,
             is_active_workspace_owner(&chrome.borrow()),
-            host.onboarding.as_ref().map(|view| view.flow().screen())
+            host.onboarding.as_deref().map(|view| view.flow().screen())
         )
     });
     let disposition = selected
@@ -3481,7 +3481,7 @@ fn onboarding_semantic_failed_mint_remains_protected_and_lock_hides_actions() {
         "a failed identity write is not a successful semantic action"
     );
     assert!(h.host.onboarding_active());
-    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(!h.host.onboarding.as_deref().unwrap().flow().is_done());
     h.chrome.borrow_mut().set_session_locked(true);
     assert!(
         !h.host
@@ -3527,7 +3527,7 @@ fn onboarding_semantic_create_refuses_a_gate_closed_before_reduction() {
         create().is_err(),
         "a sync that consumed a now-invalid creation is not success"
     );
-    assert!(!h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(!h.host.onboarding.as_deref().unwrap().flow().is_done());
     h.host.sync(&doc, &automerge::ROOT);
     assert!(
         create().is_err(),
@@ -3699,7 +3699,7 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
         returned.load(Ordering::Acquire),
         "the actual synchronous minter must return first"
     );
-    assert!(h.host.onboarding.as_ref().unwrap().flow().is_done());
+    assert!(h.host.onboarding.as_deref().unwrap().flow().is_done());
     assert!(ticket().unwrap().is_some());
 }
 

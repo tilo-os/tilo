@@ -1,10 +1,10 @@
 //! Watch history: the videos the person watched, newest first.
 //!
-//! History is the person's own. It is a record in their own room
-//! ([`RecordEnv::person`](ui::framework::RecordEnv::person)), which follows them
-//! to their other devices and never reaches a collaborator: a shared queue
-//! never reveals what someone watched. Each video is kept once, at the time
-//! it was last watched, so two devices watching at once merge by video.
+//! History is a record of its own beside the library
+//! ([`RecordEnv::person`](ui::framework::RecordEnv::person)), kept in the
+//! workspace Tube is open in and synced with it; the library never holds
+//! it. Each video is kept once, at the time it was last watched, so two
+//! devices watching at once merge by video.
 
 use std::collections::BTreeMap;
 

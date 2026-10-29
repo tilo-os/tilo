@@ -304,7 +304,7 @@ impl HostSessions {
         sessions
             .handler
             .compactor
-            .steward_with(Arc::new(rooms.clone()));
+            .with_participant_keys(Arc::new(rooms.clone()));
         Ok((sessions, Some(Governed { rooms, actions })))
     }
 
@@ -445,12 +445,12 @@ impl HostSessions {
     }
 }
 
-/// Say loudly when a host that `governs` rooms under `cert` stewards no
+/// Say loudly when a host that `governs` rooms under `cert` takes part in no
 /// channels: its certificate may not own workspaces, so the rooms it governs
 /// keep their records in the clear in the room document instead of sealed
 /// channels.
 fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
-    if governs && !cert.capabilities.stewards_room_channels() {
+    if governs && !cert.capabilities.takes_part_in_room_channels() {
         tracing::error!(
             device = %cert.device_label,
             "this host's certificate cannot own workspaces, so the rooms it governs are not sealed; re-enroll it with the own capability"

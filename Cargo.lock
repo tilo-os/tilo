@@ -2131,7 +2131,6 @@ dependencies = [
  "pollster",
  "postcard",
  "serde",
- "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-files",
@@ -11578,6 +11577,7 @@ dependencies = [
  "tilo-crypto",
  "tilo-files",
  "tilo-lock",
+ "tilo-media",
  "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
@@ -20325,13 +20325,16 @@ dependencies = [
 name = "tilo-quick-settings"
 version = "0.1.0"
 dependencies = [
+ "durable-store",
  "os-actions",
  "parking_lot",
+ "serde",
  "settings-store",
+ "tilo-app",
  "tilo-cpu-raster",
  "tilo-desktop",
+ "tilo-media",
  "tilo-power-mgmt",
- "tilo-ui",
  "tilo-vello",
  "tilo-winit",
  "tracing",

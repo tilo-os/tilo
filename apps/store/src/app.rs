@@ -40,7 +40,6 @@ use crate::model::{ActionKind, StoreItem, StoreSource};
 use crate::reports::{Reports as Store, reports as verbs};
 use crate::resource::{ReportProjection, StoreEffect};
 use crate::worker::{Outcome, Request, StoreWorker};
-mod runtime;
 mod view;
 mod window_bar;
 
@@ -464,7 +463,6 @@ pub struct StoreApp {
     worker: Option<StoreWorker>,
     pub(crate) package_content: Option<ui::framework::content::ContentStore>,
     pub(crate) imported_review: Option<(String, String, String)>,
-    pub(crate) runtime_recovery: Option<crate::runtime_recovery::Recovery>,
     launch_requests: Vec<ui::collaboration::CollabRequest>,
     pending_launches: HashMap<u64, std::sync::mpsc::Sender<LaunchCompletion>>,
     next_launch_request: Option<u64>,
@@ -605,7 +603,6 @@ impl StoreApp {
             worker: None,
             package_content: None,
             imported_review: None,
-            runtime_recovery: None,
             launch_requests: Vec::new(),
             pending_launches: HashMap::new(),
             next_launch_request: Some(1),
@@ -983,9 +980,6 @@ impl StoreApp {
 
     /// Return to the catalogue from whichever page is open.
     fn show_catalogue(&mut self) {
-        if let Some(recovery) = &mut self.runtime_recovery {
-            recovery.visible = false;
-        }
         self.focused_detail = None;
         self.pending_detail = None;
         self.remotes_open = false;
@@ -1537,12 +1531,8 @@ impl Widget for StoreApp {
         if recompose {
             // A resize only reflows retained controls. Replacing them here
             // discards input state and their text/layout caches.
-            self.can_go_back.set(
-                self.runtime_visible()
-                    || self.safety_open
-                    || self.remotes_open
-                    || self.focused_detail.is_some(),
-            );
+            self.can_go_back
+                .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
             root.set_content(self.compose(theme));
             self.composition_context = Some((theme.clone(), locale, pseudo));
             self.composition_dirty = false;
@@ -1696,17 +1686,11 @@ pub enum Finish {
     /// The app's card is no longer busy.
     Package,
     /// The registry took the app's report: record its case.
-    Submitted {
-        app_id: String,
-    },
+    Submitted { app_id: String },
     /// The registry confirmed the app's case: record its status.
-    Case {
-        app_id: String,
-    },
+    Case { app_id: String },
     /// The reviewed local file was installed.
     ImportedPackage,
-    RuntimeReview,
-    RuntimeAcquire,
     /// Nothing beside the status line.
     Status,
 }
@@ -1948,19 +1932,6 @@ impl StoreApp {
         effect: StoreEffect,
         cx: &mut EffectCx<Store, Self>,
     ) -> EffectAnswer {
-        if effect == StoreEffect::InspectRuntime {
-            let mut value = self.runtime_recovery.as_ref().map_or(
-                serde_json::Value::Null,
-                crate::runtime_recovery::Recovery::inspection,
-            );
-            if let Some(object) = value.as_object_mut() {
-                object.insert(
-                    "progress_status".into(),
-                    serde_json::Value::String(self.status_line.clone()),
-                );
-            }
-            return Ok(Effected::value(value));
-        }
         if let StoreEffect::PrepareModeration { app, appeal } = &effect {
             return self
                 .prepare_moderation(app, *appeal)
@@ -2061,52 +2032,12 @@ impl StoreApp {
             ));
         }
         match effect {
-            StoreEffect::ReviewRuntime { app, runtime } => {
-                let target = crate::runtime_recovery::RuntimeTarget::new(app, runtime)?;
-                return self.review_runtime(target);
-            }
-            StoreEffect::AcquireRuntime { review } => {
-                self.reserve_job()?;
-                let recovery = self
-                    .runtime_recovery
-                    .as_mut()
-                    .ok_or_else(|| ui::i18n!("store-runtime-review-required"))?;
-                let review = recovery.consent(&review)?;
-                self.status_line = ui::i18n!("store-runtime-acquiring");
-                self.structure_dirty = true;
-                return Ok(Job::admitted(
-                    Request::AcquireRuntime(Box::new(review)),
-                    Finish::RuntimeAcquire,
-                ));
-            }
-            StoreEffect::RetryRuntime => {
-                let recovery = self
-                    .runtime_recovery
-                    .as_ref()
-                    .ok_or_else(|| ui::i18n!("store-runtime-review-required"))?;
-                if !matches!(recovery.phase, crate::runtime_recovery::Phase::Failed(_)) {
-                    return Err(ui::i18n!("store-runtime-review-required"));
-                }
-                return self.review_runtime(recovery.target.clone());
-            }
-            StoreEffect::ShowRuntime => {
-                let recovery = self
-                    .runtime_recovery
-                    .as_mut()
-                    .ok_or_else(|| ui::i18n!("store-runtime-review-required"))?;
-                recovery.visible = true;
-                self.structure_dirty = true;
-            }
-            StoreEffect::BackRuntime => self.show_catalogue(),
             StoreEffect::ShowCatalogue => {
                 if self.focused_detail.is_some() || self.remotes_open || self.safety_open {
                     self.show_catalogue();
                 } else {
                     self.show_view(View::Home);
                 }
-            }
-            StoreEffect::InspectRuntime => {
-                return Err(ui::i18n!("store-runtime-inspect-route"));
             }
             StoreEffect::PrepareModeration { .. } | StoreEffect::InspectCatalogue { .. } => {
                 return Err("Catalogue inspection must use the resource effect route.".into());
@@ -2201,7 +2132,7 @@ impl StoreApp {
                 }
                 self.reserve_job()?;
                 let input = match (path, content) {
-                    (Some(path), None) if path.len() <= 4096 => {
+                    (Some(path), None) if path.as_os_str().len() <= 4096 => {
                         crate::package_import::Input::Path(path.into())
                     }
                     (None, Some(hash)) if ui::framework::content::valid_hash(&hash) => {
@@ -2571,13 +2502,6 @@ impl StoreApp {
             .as_ref()
             .is_some_and(|worker| worker.request_job(request, done));
         if !queued {
-            if matches!(finish, Finish::RuntimeReview | Finish::RuntimeAcquire)
-                && let Some(recovery) = &mut self.runtime_recovery
-            {
-                recovery.phase = crate::runtime_recovery::Phase::Failed(ui::i18n!(
-                    "store-runtime-repair-unavailable"
-                ));
-            }
             if finish == Finish::Package {
                 self.active_operation = None;
             }
@@ -2625,20 +2549,6 @@ impl StoreApp {
             self.pending_jobs = self.pending_jobs.saturating_sub(1);
         }
         self.structure_dirty = true;
-        if matches!(finish, Finish::RuntimeReview | Finish::RuntimeAcquire)
-            && let Some(recovery) = &mut self.runtime_recovery
-        {
-            if *finish == Finish::RuntimeReview {
-                recovery.reviewed(outcome.as_ref().map_err(Clone::clone).and_then(|finished| {
-                    finished
-                        .runtime_review
-                        .clone()
-                        .ok_or_else(|| ui::i18n!("store-runtime-review-required"))
-                }));
-            } else {
-                recovery.acquired(outcome.as_ref().map(|_| ()).map_err(Clone::clone));
-            }
-        }
         let finished = outcome?;
         if *finish == Finish::ImportedPackage {
             self.imported_review = None;
@@ -2661,11 +2571,7 @@ impl StoreApp {
                     moderation_status_label(case.status),
                     cx,
                 )?,
-                Finish::Package
-                | Finish::Status
-                | Finish::ImportedPackage
-                | Finish::RuntimeReview
-                | Finish::RuntimeAcquire => {}
+                Finish::Package | Finish::Status | Finish::ImportedPackage => {}
             }
         }
         self.set_status_line(finished.status);
@@ -2876,7 +2782,6 @@ impl StoreApp {
         rows.push(self.remotes_row());
         rows.push(self.moderation_row());
         rows.extend(self.latest_job_row());
-        rows.extend(self.runtime_row());
         rows
     }
 
@@ -2922,7 +2827,6 @@ impl StoreApp {
                 .map(Self::remote_live_row);
         }
         match id {
-            "store:runtime-repair" => self.runtime_row(),
             REMOTES_ID => Some(self.remotes_row()),
             crate::resource::MODERATION_ID => Some(self.moderation_row()),
             LATEST_JOB_ID => self.latest_job_row(),
@@ -3393,11 +3297,18 @@ mod tests {
     fn a_size_refusal_outlasts_the_workers_background_errors() {
         let mut app = seeded_app();
         let refused = app.admit(StoreEffect::ImportPackage {
-            path: Some("/large.tapp".into()),
+            path: Some("/large.tapp".parse().unwrap()),
             content: None,
             reported_size: Some(crate::package_import::MAX_IMPORT_BYTES as u64 + 1),
         });
         assert!(refused.is_err());
+        // A relative package path is refused before the Store sees it.
+        let arguments =
+            serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("large.tapp"))]);
+        let relative =
+            <StoreEffect as ui::tilo_resource::Effect>::decode("import-package", &arguments)
+                .unwrap_err();
+        assert!(relative.contains("absolute"), "{relative}");
         let size_refused = ui::i18n!("store-package-size-refused");
         app.apply_worker_snapshot(crate::worker::Snapshot {
             items: Vec::new(),

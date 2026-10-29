@@ -1,11 +1,11 @@
-//! The encrypted channels of a room hosted on a device have one steward.
+//! A device has one leaf in the group of each channel it takes part in.
 //!
 //! A room placed on this device is governed by the device's own room host,
-//! which signs with the device's key. The host stewards the room's channels;
-//! the device's broker is only ever a channel member, here as on any other
-//! device. Two stewards signing a channel's frames under one key would fork
-//! the channel: the member admitted by one could not read what the other's
-//! group sealed.
+//! which signs with the device's key and takes part in the room's channels;
+//! the device's broker takes its keys from the host rather than joining as a
+//! second member under the same key. Two groups signed under one key would
+//! fork the channel: the member admitted by one could not read what the
+//! other's group sealed.
 
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
@@ -104,7 +104,7 @@ fn channels(
         },
         Box::new(
             WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                .with_stewards(crate::shell::network::ShellNetwork::room_stewards(net))
+                .with_governors(crate::shell::network::ShellNetwork::room_governors(net))
                 .with_hosted_channel_keys(crate::shell::collab_broker::hosted_channel_keys_of(
                     Arc::clone(net),
                 )),
@@ -119,8 +119,8 @@ fn channels(
 /// received.
 struct Recording<'a> {
     net: &'a ShellNetwork,
-    sent: RefCell<Vec<collab_types::MlsGovernanceFrameV1>>,
-    received: RefCell<Vec<collab_types::MlsGovernanceFrameV1>>,
+    sent: RefCell<Vec<collab_types::MlsGovernanceFrame>>,
+    received: RefCell<Vec<collab_types::MlsGovernanceFrame>>,
 }
 
 impl<'a> Recording<'a> {
@@ -152,10 +152,10 @@ impl GovernanceTransport for Recording<'_> {
     }
 }
 
-/// One line per frame of `channel`: its transaction, the frame it follows,
-/// its epoch and what it does, so a failure shows each steward's chain.
+/// One line per frame of `channel`: its signature, the frame it follows, its
+/// epoch and what it does, so a failure shows each signer's chain.
 fn describe(
-    frames: &[collab_types::MlsGovernanceFrameV1],
+    frames: &[collab_types::MlsGovernanceFrame],
     channel: collab_types::ChannelId,
 ) -> String {
     frames
@@ -163,27 +163,21 @@ fn describe(
         .filter(|frame| frame.channel == channel)
         .map(|frame| {
             format!(
-                "  {} signed {} after {} epoch {} {}",
-                hex::encode(&frame.transaction_id[..4]),
+                "  signed {} after {} epoch {} {}",
                 hex::encode(&frame.signature.as_bytes()[..4]),
                 hex::encode(&frame.previous_frame_digest[..4]),
                 frame.epoch,
                 match &frame.action {
-                    MlsGovernanceAction::Add { recipient, .. } => {
-                        format!("adds {}", hex::encode(&recipient.as_bytes()[..4]))
+                    MlsGovernanceAction::Commit { removed, added, .. } => {
+                        let short = |devices: &[collab_types::Ed25519PublicKey]| {
+                            devices
+                                .iter()
+                                .map(|device| hex::encode(&device.as_bytes()[..4]))
+                                .collect::<Vec<_>>()
+                                .join(" and ")
+                        };
+                        format!("removes [{}] adds [{}]", short(removed), short(added))
                     }
-                    MlsGovernanceAction::AddWithKeyHistory { recipients, .. } => format!(
-                        "adds {} with key history",
-                        recipients
-                            .iter()
-                            .map(|recipient| hex::encode(&recipient.as_bytes()[..4]))
-                            .collect::<Vec<_>>()
-                            .join(" and ")
-                    ),
-                    MlsGovernanceAction::Remove { removed, .. } => {
-                        format!("removes {}", hex::encode(&removed.as_bytes()[..4]))
-                    }
-                    MlsGovernanceAction::EnableEncryption { .. } => "enables encryption".into(),
                     MlsGovernanceAction::Genesis => "genesis".into(),
                 }
             )
@@ -193,12 +187,12 @@ fn describe(
 }
 
 /// A collaborator joins a room hosted on the owner's device, and both open
-/// one record's channel. Exactly one steward signs the channel's frames,
-/// with the device's key, and what the owner's device seals the
-/// collaborator's device opens.
+/// one record's channel. The owner's device takes part through its host
+/// alone: one group signs under the device's key, and what the owner's
+/// device seals the collaborator's device opens.
 #[test]
 #[serial_test::serial]
-fn a_room_hosted_on_a_device_has_one_channel_steward() {
+fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[50; 32]);
@@ -286,15 +280,14 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
         ChannelAccess::Waiting => None,
         other => panic!("{who} cannot open the channel: {other:?}"),
     };
-    // How many stewards signed the channel's frames: the owner's broker,
-    // when it sent any, and whoever signed the frames the collaborator
-    // received that the broker never sent.
-    let stewards = || {
+    // Who signed the channel's frames: the owner's broker, when it sent any,
+    // and whoever signed the frames the collaborator received that the
+    // broker never sent.
+    let signers = || {
         let sent = owner_transport.sent.borrow();
         let broker = sent.iter().any(|frame| frame.channel == channel);
-        // A steward names a channel's frames by their revision alone, so two
-        // stewards signing under one key send frames with the same ids: only
-        // the signature tells one's frame from the other's.
+        // Two groups signing under one key send frames naming the same
+        // device: only the signature tells one's frame from the other's.
         let other = member_transport.received.borrow().iter().any(|frame| {
             frame.channel == channel
                 && !sent
@@ -319,7 +312,7 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
         assert!(
             Instant::now() < deadline,
             "timed out waiting for both devices to open the channel; owner ready {}, \
-             collaborator ready {}, (broker signed, another steward signed) {:?}",
+             collaborator ready {}, (broker signed, the host signed) {:?}",
             matches!(
                 owner_channels.access(room, channel, Instant::now()),
                 ChannelAccess::Ready(_)
@@ -328,7 +321,7 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
                 member_channels.access(room, channel, Instant::now()),
                 ChannelAccess::Ready(_)
             ),
-            stewards()
+            signers()
         );
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -338,9 +331,9 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
         .seal_content(artifact, ContentRetention::Checkpoint, b"the plan")
         .unwrap();
     let opened = member_keys.open_content(artifact, &metadata, &sealed);
-    let (broker, other) = stewards();
+    let (broker, other) = signers();
     eprintln!(
-        "channel stewards: the owner's broker signed {broker}, another steward signed {other}; \
+        "channel signers: the owner's broker signed {broker}, the host signed {other}; \
          keys at epoch {} on the owner's device and {} on the collaborator's",
         owner_keys.epoch(),
         member_keys.epoch()
@@ -370,11 +363,11 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
     drop((owner_transport, member_transport));
     assert!(
         !broker,
-        "the owner's broker stewarded a channel its device's host governs"
+        "the owner's broker took part in a channel its device's host takes part in"
     );
-    assert!(other, "the room's host stewards the channel");
-    // The owner's device takes its keys from its own host's steward; the
-    // collaborator, whose room is hosted elsewhere, is a plain member.
+    assert!(other, "the room's host takes part in the channel");
+    // The owner's device takes its keys from its own host; the
+    // collaborator, whose room is hosted elsewhere, takes part itself.
     assert!(
         owner
             .hosted_channel_keys(room, channel, None, false)
@@ -390,7 +383,7 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
 
 /// An app's broker connection asks for its channel's keys from a task on
 /// the broker's own runtime. A room placed on this device's host after the
-/// app connected answers there with the host steward's keys, and the
+/// app connected answers there with the host's keys, and the
 /// connection's task goes on: asking once panicked inside that runtime and
 /// ended the app's connection.
 #[test]
@@ -440,7 +433,7 @@ fn a_connection_asking_for_keys_of_a_room_placed_here_after_it_started_survives(
     let answer = asked.expect("the connection's task survives asking for its channel's keys");
     assert!(
         matches!(answer, ChannelAccess::Ready(_)),
-        "the host's steward hands this device the channel's keys: {answer:?}"
+        "the host hands this device the channel's keys: {answer:?}"
     );
     assert!(
         net.hosted_channel_keys(room, channel, None, false)

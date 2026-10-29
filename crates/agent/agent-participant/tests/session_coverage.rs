@@ -28,8 +28,8 @@ mod common;
 // again), whose changes are admitted through the Automerge isolate.
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
-mod steward;
+#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -195,7 +195,7 @@ async fn every_web_app_over_the_session() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let catalogue = catalogue();
 
     // The agent: its own device under the root with no capabilities, and a
@@ -940,7 +940,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let set_cells = "sheets.workbook#set-cells";
     let (url, sent) = model_endpoint(vec![tool_call(
         "p1",
@@ -997,7 +997,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (url, sent) = model_endpoint(vec![
         tool_call(
             "r1",
@@ -1084,7 +1084,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let store = tilo_content::ContentStore::memory();
     let (mut agent, control) = planning_agent(
         &root,
@@ -1209,7 +1209,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let store = tilo_content::ContentStore::memory();
     let (mut agent, control) = planning_agent(
         &root,
@@ -1303,7 +1303,7 @@ async fn written_steps_name_a_records_field_and_carry_content_into_it() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let store = tilo_content::ContentStore::memory();
     let (mut agent, control) = planning_agent(
         &root,
@@ -1372,7 +1372,7 @@ async fn a_step_takes_the_value_a_formula_computed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1433,7 +1433,7 @@ async fn a_step_takes_arithmetic_written_in_words() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1499,7 +1499,7 @@ async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1575,7 +1575,7 @@ async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1632,7 +1632,7 @@ async fn a_missing_value_goes_to_repair_naming_its_reference() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let set_cells = |rows: serde_json::Value| {
         tool_call(
             "p1",
@@ -1729,7 +1729,7 @@ async fn task_with_model(
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (url, sent) = model_endpoint(answers);
     let (mut agent, control) = planning_agent(
         &root,
@@ -1894,7 +1894,7 @@ async fn upserts_by_key_from_two_agents_overwrite_nothing() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (mut first, _) = planning_agent(
         &root,
         (&host, &host_device),
@@ -2025,7 +2025,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
     let (gate, held) = std::sync::mpsc::channel();
     let (url, sent) = gated_model_endpoint(vec![
@@ -2231,7 +2231,7 @@ async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
 /// agent who has not opened it yet.
 struct RelayRoom {
     host: support::TestHost,
-    _steward: steward::Steward,
+    _laptop: participant::Participant,
     ana: (AgentParticipant, std::sync::Arc<AgentControl>),
     rae: (AgentParticipant, std::sync::Arc<AgentControl>),
     ben: (AgentParticipant, std::sync::Arc<AgentControl>),
@@ -2274,7 +2274,7 @@ impl RelayRoom {
             "127.0.0.1:0".parse().unwrap(),
         )
         .await;
-        let steward = steward::Steward::start(&host.relay, &ada).await;
+        let laptop = participant::Participant::start(&host.relay, &ada).await;
         let direct = || {
             (
                 Box::new(tilo_agent_participant::DirectPlanner)
@@ -2318,7 +2318,7 @@ impl RelayRoom {
         post_in_chat(&mut rae.0, &rae.1, "LR-2041 code requested");
         let mut room = Self {
             host,
-            _steward: steward,
+            _laptop: laptop,
             ana,
             rae,
             ben,

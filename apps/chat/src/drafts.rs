@@ -1,10 +1,9 @@
-//! What the person is writing and has not sent: their own record, kept in
-//! their own room.
+//! What is being written and has not been sent: a record of Chat's beside
+//! the conversation, kept in the workspace Chat is open in.
 //!
-//! A draft is the writer's alone. It follows them to their other devices
-//! and never reaches the room the chat is shared in: what one person types
-//! never shows in another's composer, and keystrokes never spend the room's
-//! change budget. Sending a message is what puts words in the room.
+//! A draft is never part of the conversation's record: keystrokes never
+//! spend the conversation's change budget. Sending a message is what puts
+//! words in the conversation.
 
 use std::collections::BTreeMap;
 

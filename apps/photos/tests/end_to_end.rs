@@ -716,7 +716,11 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         let shown = hz.app().edited_pixels().expect("rendered").clone();
 
         let out = dir.path().join("out.png");
-        assert!(hz.app().save_to(&out.to_string_lossy()), "save failed");
+        assert!(
+            hz.app()
+                .save_to(&ui::tilo_resource::AbsolutePath::new(out.clone()).unwrap()),
+            "save failed"
+        );
 
         let written = std::fs::read(&out).unwrap();
         assert_eq!(&written[1..4], b"PNG", "that is not a PNG");

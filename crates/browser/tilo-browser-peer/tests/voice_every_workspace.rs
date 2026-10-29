@@ -6,9 +6,7 @@
 //! - a room the host governs that a guest was invited into;
 //! - a workspace of the host's owner, which the host only carries for them
 //!   (it syncs across their devices through it, and no room governs it
-//!   here);
-//! - the person's own room, which a host carries for every person it
-//!   trusts: a member of the host's Lounge has their own desktop there.
+//!   here).
 //!
 //! A new kind of workspace belongs in [`KINDS`]; one without calls fails.
 
@@ -48,12 +46,9 @@ enum Kind {
     /// A workspace of the host's owner, which the host carries but no room
     /// governs here.
     Carried,
-    /// The person's own room, carried for a person the host trusts because
-    /// a room it governs let them in.
-    Own,
 }
 
-const KINDS: [Kind; 4] = [Kind::Governed, Kind::Invited, Kind::Carried, Kind::Own];
+const KINDS: [Kind; 3] = [Kind::Governed, Kind::Invited, Kind::Carried];
 
 /// Connects `device` to the host and asks to subscribe to `workspace_id`:
 /// the host's answer, `Ready` or `NotAuthorised`.
@@ -143,30 +138,6 @@ async fn a_call_is_joined_in_every_kind_of_workspace() {
                 let workspace_id = 0x0077_6e00_0000_0001;
                 let first = session(address.clone(), workspace_id, &laptop).await;
                 let second = session(address.clone(), workspace_id, &phone).await;
-                (workspace_id, first, second, "voice".to_owned())
-            }
-            Kind::Own => {
-                // Carol is a member of the host's Lounge, nothing more. Her
-                // own room is carried for her laptop and phone alike, and
-                // for no one else the host trusts.
-                let lounge = relay.rooms().unwrap().create("Lounge").await.unwrap();
-                enter(&relay, &laptop.cert, &lounge.room).await;
-                let carol = SigningKey::generate(&mut UnwrapErr(SysRng));
-                let carol_laptop = enrol(&carol, "carol-laptop", DeviceCapabilities::member());
-                let carol_phone = enrol(&carol, "carol-phone", DeviceCapabilities::member());
-                invite(&relay, &laptop.cert, &lounge.room, &carol, &carol_laptop).await;
-                let dave = SigningKey::generate(&mut UnwrapErr(SysRng));
-                let dave_laptop = enrol(&dave, "dave-laptop", DeviceCapabilities::member());
-                invite(&relay, &laptop.cert, &lounge.room, &dave, &dave_laptop).await;
-                let own = tilo_relay::own_room(&carol.verifying_key().to_bytes());
-                let workspace_id = tilo_relay::room_workspace_id(&own).unwrap();
-                let first = session(address.clone(), workspace_id, &carol_laptop).await;
-                let second = session(address.clone(), workspace_id, &carol_phone).await;
-                let (_dave, answer) = subscribe(address.clone(), workspace_id, &dave_laptop).await;
-                assert!(
-                    answer.is_err(),
-                    "another person the host trusts is not admitted to carol's own room"
-                );
                 (workspace_id, first, second, "voice".to_owned())
             }
         };

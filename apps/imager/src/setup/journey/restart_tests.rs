@@ -73,7 +73,7 @@ fn prepare_with_migration(
     })
     .unwrap();
     app.effect(&InstallerPreviewEffect::SelectPreviewAvatar {
-        source_file: picture.to_str().unwrap().into(),
+        source_file: AbsolutePath::new(picture).unwrap(),
     })
     .unwrap();
     wait(app, |state| {

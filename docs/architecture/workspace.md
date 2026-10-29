@@ -255,9 +255,10 @@ the model but instead of it:
   the separate governance document with its receipts, custody and succession,
   and the host-served `tilo.host` / `tilo.member` namespaces. Membership is
   workspace state changed by actions.
-- **Stewards.** A device that alone admits devices to a channel, steward
-  takeover and genesis epochs, in the broker, the host and the browser. Any
-  participant with the grant admits.
+- **Channel creation by the governor.** Only the governing device creates
+  a channel's group; any participant admits and removes devices
+  (`channel_crypto::ChannelPeer`). The browser follows and checks commits
+  but writes none, since it does not hold record-level Read grants.
 - **Per-person spaces.** The own room, the person room and the personal
   continuity shard, each derived from the root key under its own domain
   string, and the gossip-only personal fabric lane.

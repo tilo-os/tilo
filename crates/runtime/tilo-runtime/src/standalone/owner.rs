@@ -9,7 +9,7 @@
 //! manifest declares; in dev mode, an app that is not installed is trusted
 //! with the kind its own build names.
 //!
-//! Apps seal their writes; this device stewards the room's channels, so the
+//! Apps seal their writes; this device takes part in the room's channels, so the
 //! owner opens each sealed write only after the sealed envelope passed every
 //! check, and admits the plaintext it verified.
 
@@ -63,7 +63,7 @@ pub(super) struct RoomOwner {
     governor: DeviceCert,
     creation: RecordCreation,
     workspace: Arc<ProfileWorkspace>,
-    /// The channel keys this device holds as the room's steward.
+    /// The channel keys this device holds as a member of the room's channels.
     keys: ChannelKeyProvider,
     committed: Mutex<Committed>,
 }

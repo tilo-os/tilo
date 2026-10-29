@@ -2534,10 +2534,17 @@ mod command_path_tests {
         let missing = invoke(
             &mut files,
             &mut doc,
-            (notes, "copy-to"),
+            (notes.clone(), "copy-to"),
             ("folder", &nowhere),
         );
         assert!(missing.unwrap_err().contains("is not an existing folder"));
+        let relative = invoke(
+            &mut files,
+            &mut doc,
+            (notes, "copy-to"),
+            ("folder", Path::new("documents")),
+        );
+        assert!(relative.unwrap_err().contains("absolute"));
     }
 
     /// `go-to` and `open` with a path show the folder and answer with its

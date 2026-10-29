@@ -1642,7 +1642,7 @@ pub struct NavShell {
     rail: Option<Element>,
     filter: Option<SearchField>,
     controls: Option<Element>,
-    headers: [Header; 4],
+    headers: Box<[Header; 4]>,
     pending: Pending,
     toggle: Button,
     back: Button,
@@ -1784,7 +1784,7 @@ impl NavShell {
             rail: None,
             filter: None,
             controls: None,
-            headers: Column::ALL.map(Header::new),
+            headers: Box::new(Column::ALL.map(Header::new)),
             pending: Pending::default(),
             toggle,
             back,
@@ -2356,7 +2356,7 @@ impl NavShell {
     fn reset_fit(&mut self) {
         let inputs = self.inputs.borrow();
         let mut fit = inputs.fit.borrow_mut();
-        for (slot, header) in fit.iter_mut().zip(&mut self.headers) {
+        for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
             let capable: Vec<bool> = header
                 .actions
                 .iter_mut()
@@ -3334,7 +3334,7 @@ impl NavShell {
     fn apply_fit(&mut self) {
         let fit = Rc::clone(&self.inputs.borrow().fit);
         let mut fit = fit.borrow_mut();
-        for (slot, header) in fit.iter_mut().zip(&mut self.headers) {
+        for (slot, header) in fit.iter_mut().zip(self.headers.iter_mut()) {
             let shown = slot.shown.unwrap_or(header.actions.len());
             header.more.set_shown(shown < header.actions.len());
             for (i, action) in header.actions.iter_mut().enumerate() {
@@ -4535,7 +4535,7 @@ impl Widget for NavShell {
         self.for_each_owned_mut(|child| child.mark_drawn());
         // The shell paints its titles itself, so they learn here what it
         // painted: as children they would otherwise ask for a frame forever.
-        for header in &mut self.headers {
+        for header in self.headers.iter_mut() {
             header.title.mark_drawn();
         }
     }

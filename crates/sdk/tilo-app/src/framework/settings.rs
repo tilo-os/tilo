@@ -195,9 +195,20 @@ impl Hosted {
         Attached {
             workspace,
             emoji,
-            person: self
-                .person
-                .map(|records| super::person::PersonState::new(records, app_id, app_title)),
+            // The app's own records of a kind are kept with its others in
+            // the workspace it is open in.
+            person: self.person.map(|records| {
+                let own = self.room.as_ref().and_then(|(store, _, _)| {
+                    let (_, workspace) = store.package_and_home();
+                    records
+                        .in_workspace(&workspace)
+                        .map_err(|error| {
+                            tracing::warn!(%error, "the app's records of a kind are unavailable");
+                        })
+                        .ok()
+                });
+                super::person::PersonState::new(records, own, app_id, app_title)
+            }),
             device: self.device,
             room: self
                 .room
@@ -282,7 +293,7 @@ impl ViewStorage {
     pub(crate) fn person<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonRecord<P>> {
-        super::controls::opened::<P>();
+        super::controls::opened_in_room::<P>();
         self.person.as_ref()?.open::<P>()
     }
 

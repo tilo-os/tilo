@@ -536,7 +536,7 @@ fn a_read_deny_below_the_room_refuses_only_what_it_names() {
     assert!(access.read(), "the room itself stays readable");
     assert!(!access.write());
 }
-/// A steward withholds a record's channel from exactly the member devices
+/// A participant withholds a record's channel from exactly the member devices
 /// that may not read the record, by the same decision as
 /// [`StatePeer::check_document_read`]: a Read Deny naming one record
 /// withholds that record's channel alone, a Deny over an app withholds every

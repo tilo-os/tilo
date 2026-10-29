@@ -5,7 +5,7 @@
 //! and apps it may act in, until when. To act in a governed room it needs
 //! what every collaborator needs: a place on the room's governed roster,
 //! which every member reads, which the relay admits to the room, and from
-//! which the room's steward admits devices to each record's channel.
+//! which the room's participants admit devices to each record's channel.
 //!
 //! So when the agent's grant is approved (or restored after a restart), each
 //! room this relay governs asks the one admission decision,
@@ -13,7 +13,7 @@
 //! live delegated agent of this relay's own user, in a room the delegation
 //! names and governance owns here. If admitted, the agent goes on the roster
 //! bound to its delegation ([`tilo_peer_state::PeerGovernanceMut::admit_agent`]); the
-//! relay then admits it to the room and the steward to the channels it asks
+//! relay then admits it to the room and a participant to the channels it asks
 //! for, like any member. Every member admits its changes as its own: signed
 //! by its key, at its person's role but never above Editor, and only inside
 //! its delegation.

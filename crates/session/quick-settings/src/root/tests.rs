@@ -32,7 +32,7 @@ fn laptop() -> QuickSettingsState {
         percent: 64,
         state: tilo_power_mgmt::BatteryState::Discharging,
     });
-    state.status.volume = Some(os_actions::VolumeState {
+    state.status.volume = Some(media::audio::default_node::VolumeState {
         level: 0.4,
         muted: false,
     });

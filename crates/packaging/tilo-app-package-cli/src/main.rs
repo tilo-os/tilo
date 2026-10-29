@@ -1047,7 +1047,7 @@ fn reconcile_entry_history(
         registry_types::verify_snapshot(&catalogue, owner, now)
             .context("verify runtime catalogue against registry owner")?;
         let (tapp, _) = read_tapp(&args.file, false)?;
-        require_optional_runtime_offers(entry, &args.url, &tapp.meta.manifest, &catalogue.entries)?;
+        require_runtime_offers(entry, &args.url, &tapp.meta.manifest, &catalogue.entries)?;
         let dropped = registry_client::runtime_history::reconcile(
             entry,
             &catalogue.entries,
@@ -1074,7 +1074,7 @@ fn reconcile_entry_history(
 
 /// A newly published app must not become visible before its exact engine.
 /// The caller verifies the owner-signed snapshot and the app before this check.
-fn require_optional_runtime_offers(
+fn require_runtime_offers(
     entry: &registry_types::RegistryEntry,
     current_url: &str,
     manifest: &Manifest,
@@ -1092,7 +1092,7 @@ fn require_optional_runtime_offers(
     let target = current
         .target()
         .context("current package has no native target")?;
-    for runtime in tilo_app_package::desktop::optional_runtime_dependencies(manifest) {
+    for runtime in tilo_app_package::desktop::required_runtime_dependencies(manifest) {
         let offered = catalogue.iter().any(|provider| {
             registry_types::is_runtime_package_id(&provider.package_id)
                 && provider
@@ -1137,7 +1137,7 @@ fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<
 
 #[cfg(test)]
 mod runtime_readiness_tests {
-    use super::{record_missing_runtime, require_optional_runtime_offers};
+    use super::{record_missing_runtime, require_runtime_offers};
 
     #[test]
     fn publication_waits_for_the_exact_engine_and_native_architecture() {
@@ -1148,7 +1148,7 @@ mod runtime_readiness_tests {
         let manifest: super::Manifest =
             super::Manifest::from_toml_str(include_str!("../../../../apps/browser/tilo-app.toml"))
                 .unwrap();
-        let runtime = &manifest.package.optional_runtimes[0];
+        let runtime = &manifest.package.required_runtimes[0];
         let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let url = "https://apps.tilo.so/artifacts/browser.tapp";
         let mut app = RegistryEntry {
@@ -1184,7 +1184,7 @@ mod runtime_readiness_tests {
             signature_hex: String::new(),
         };
         registry_types::sign_entry(&mut app, &signer);
-        let missing = require_optional_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
+        let missing = require_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
         assert_eq!(
             missing
                 .downcast_ref::<registry_client::runtime_history::MissingRuntime>()
@@ -1206,7 +1206,7 @@ mod runtime_readiness_tests {
             artifact.target.architecture = architecture.into();
             registry_types::sign_entry(&mut provider, &signer);
             assert_eq!(
-                require_optional_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
+                require_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
                 accepted
             );
         }

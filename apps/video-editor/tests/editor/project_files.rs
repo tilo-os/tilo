@@ -46,7 +46,7 @@ fn keys(app: &mut HeadlessApp<VideoEditor>, modifiers: &[&str], key: &str) {
 
 fn export(app: &mut HeadlessApp<VideoEditor>, path: &Path) -> Result<(), String> {
     let exported = app.effect_confirmed(&VideoEditorEffect::ExportProjectFile {
-        path: Some(path.display().to_string()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
     });
     app.settle();
     exported.map(drop).map_err(|error| error.to_string())
@@ -54,7 +54,7 @@ fn export(app: &mut HeadlessApp<VideoEditor>, path: &Path) -> Result<(), String>
 
 fn open(app: &mut HeadlessApp<VideoEditor>, path: &Path) -> Result<(), String> {
     let opened = app.effect(&VideoEditorEffect::OpenProjectFile {
-        path: Some(path.display().to_string()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
     });
     app.settle();
     opened.map(drop).map_err(|error| error.to_string())

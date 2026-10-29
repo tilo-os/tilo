@@ -1,8 +1,8 @@
 //! Room actions on sealed records of a room the host itself governs.
 //!
-//! A node (a host certified to own workspaces) governs the room and stewards
-//! its channels. Its room actions join as the same device, so they are
-//! handed the steward's keys through the relay's admission decision rather
+//! A node (a host certified to own workspaces) governs the room and takes
+//! part in its channels. Its room actions join as the same device, so they
+//! are handed the node's keys through the relay's admission decision rather
 //! than admitted to each channel a second time. The host owner's page acts
 //! on a sealed record through the host; another member of the room sees the
 //! change arrive sealed and authored by the host; that member is refused
@@ -141,7 +141,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &room.room).await;
 
     // The owner's page writes a Sheets record. It is sealed on its channel,
-    // which this host stewards.
+    // which this host takes part in.
     let route = page.create(SHEETS);
     page.peer.barrier().unwrap().recv().unwrap().unwrap();
     let written = until_retained(
@@ -190,7 +190,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     );
     assert!(
         took < Duration::from_secs(5),
-        "the host waited for keys it already stewards: {took:?}"
+        "the host waited for keys it already holds: {took:?}"
     );
     let by_host = until_retained(&hosted, room.workspace_id, &route, host_key, 1).await;
     assert!(

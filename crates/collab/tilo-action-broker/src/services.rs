@@ -285,8 +285,8 @@ pub trait WorkspaceMemberships: Send + Sync {
         false
     }
 
-    /// Whether `room` is held here but governed by the node that stewards
-    /// it, where this device asks that host to commit the room's own
+    /// Whether `room` is held here but governed by the node that takes part
+    /// in its channels, where this device asks that host to commit the room's own
     /// membership changes, decided by the room's governance as they are
     /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {

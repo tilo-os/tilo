@@ -1242,3 +1242,198 @@ fn arriving_is_said_in_the_top_bar_on_one_display_beneath_every_overlay() {
         "nothing of it is painted where the overlays are"
     );
 }
+
+/// A second strip below [`STRIP`], with a window on each display too.
+const STRIP_BELOW: StripId = StripId(id(78));
+const BELOW_ON_PANEL: GroupId = id(2001);
+const BELOW_ON_MONITOR: GroupId = id(2004);
+/// More windows of [`STRIP`] on the monitor than on the panel.
+const MORE_ON_MONITOR: [GroupId; 2] = [id(1005), id(1006)];
+
+/// [`tree`] with three windows of the first strip on the monitor and one
+/// on the panel, and a second strip with a window on each display.
+fn two_strip_tree() -> WorkspaceTree {
+    let mut tree = tree();
+    let ws = &mut tree.desktop.workspaces[0];
+    ws.strips[0]
+        .window_groups
+        .extend(MORE_ON_MONITOR.iter().map(|g| group(*g)));
+    ws.strips.push(Strip {
+        id: STRIP_BELOW,
+        name: "Below".into(),
+        window_groups: vec![group(BELOW_ON_PANEL), group(BELOW_ON_MONITOR)],
+    });
+    for g in MORE_ON_MONITOR.into_iter().chain([BELOW_ON_MONITOR]) {
+        tree.desktop.outputs.home.insert(g, MONITOR_KEY.into());
+    }
+    tree.desktop
+        .outputs
+        .home
+        .insert(BELOW_ON_PANEL, PANEL_KEY.into());
+    tree
+}
+
+impl Desk {
+    fn output(&self, index: usize) -> u32 {
+        self.outputs[index].id.0
+    }
+
+    /// Which strip each display shows: the desktop's word and the strip
+    /// deck's, which must agree.
+    fn shown(&self, index: usize) -> usize {
+        let display = self.output(index);
+        let strip = self
+            .fb
+            .chrome()
+            .tree()
+            .desktop
+            .strip_shown_on(display)
+            .expect("a strip on every display");
+        let by_tree = usize::from(strip == STRIP_BELOW);
+        let by_deck = self
+            .fb
+            .host()
+            .strip_deck()
+            .expect("a strip deck")
+            .shown(Some(display));
+        assert_eq!(by_tree, by_deck, "display {index}: tree and deck agree");
+        by_deck
+    }
+
+    fn focus(&mut self, strip: StripId, group: GroupId) {
+        let _ = self
+            .fb
+            .host_mut()
+            .focus_window_on_strip(strip, group, tab_of(group));
+        self.settle();
+    }
+
+    /// Ctrl+Super+Down (`1`) or Up (`-1`).
+    fn chord(&mut self, direction: i32) -> bool {
+        let mut moved = false;
+        self.fb
+            .with_chrome(|chrome| moved = chrome.switch_strip(direction));
+        moved
+    }
+
+    /// Three fingers swiping up on the touchpad: toward the strip below.
+    fn swipe_to_strip_below(&mut self) {
+        let t0 = ui::time::now();
+        let ms = |n: u64| std::time::Duration::from_millis(n);
+        let host = self.fb.host_mut();
+        for (step, (travel, at)) in [(200.0, 8), (400.0, 16), (600.0, 24), (800.0, 32)]
+            .into_iter()
+            .enumerate()
+        {
+            let _ = host.update_strip_deck_drag(travel, step == 0, t0 + ms(at));
+        }
+        assert!(host.end_strip_deck_drag(t0 + ms(40), false));
+        self.settle();
+    }
+}
+
+/// The rail along the bottom maps the windows on the display it is drawn
+/// on, not every window of the strip.
+#[test]
+fn the_window_rail_counts_only_its_own_displays_windows() {
+    let mut desk = Desk::laid_out("laptop-beside-1080p", two_strip_tree());
+    desk.focus(STRIP, ON_PANEL);
+    assert_eq!(desk.focused_display(), Some(desk.output(0)));
+    let rail = desk.fb.host().strip_rail_for_tests();
+    assert_eq!(rail.count, 1, "the panel has one window of the strip");
+    assert_on(
+        desk.display(0),
+        rail.content,
+        "the rail's content area",
+        "the panel",
+    );
+    desk.focus(STRIP, MORE_ON_MONITOR[1]);
+    assert_eq!(desk.focused_display(), Some(desk.output(1)));
+    let rail = desk.fb.host().strip_rail_for_tests();
+    assert_eq!(rail.count, 3, "the monitor has three windows of the strip");
+    assert_eq!(rail.focused, 2, "the focused one is the monitor's third");
+    assert_on(
+        desk.display(1),
+        rail.content,
+        "the rail's content area",
+        "the monitor",
+    );
+}
+
+/// Three fingers up on the panel go to the strip below there; the
+/// monitor keeps showing the strip it showed.
+#[test]
+fn a_three_finger_swipe_moves_only_the_focused_displays_strips() {
+    let mut desk = Desk::laid_out("laptop-beside-1080p", two_strip_tree());
+    desk.focus(STRIP, ON_PANEL);
+    assert_eq!((desk.shown(0), desk.shown(1)), (0, 0));
+    desk.swipe_to_strip_below();
+    assert_eq!(desk.shown(0), 1, "the panel went to the strip below");
+    assert_eq!(desk.shown(1), 0, "the monitor stayed where it was");
+    assert_eq!(
+        desk.focused_display(),
+        Some(desk.output(0)),
+        "focus stays on the panel"
+    );
+    let monitor = desk.display(1);
+    let still = desk
+        .fb
+        .host()
+        .active_tile_rect(ON_MONITOR)
+        .expect("the monitor's window");
+    assert!(
+        monitor.intersect(still).area() > 0.0,
+        "the monitor's window of the first strip is still on it: {still:?}"
+    );
+    let below = desk
+        .fb
+        .host()
+        .active_tile_rect(BELOW_ON_MONITOR)
+        .expect("the strip below's monitor window");
+    assert!(
+        monitor.intersect(below).area() <= 0.0,
+        "the strip below's monitor window stays off the monitor: {below:?}"
+    );
+}
+
+/// Ctrl+Super+Down does what the swipe does: on the focused display only.
+/// Focus moving to the other display keeps both where they are, and the
+/// chord there moves that display alone.
+#[test]
+fn the_strip_chord_moves_only_the_focused_displays_strips() {
+    let mut desk = Desk::laid_out("laptop-beside-1080p", two_strip_tree());
+    desk.focus(STRIP, ON_MONITOR);
+    assert!(desk.chord(1));
+    desk.settle();
+    assert_eq!(desk.shown(1), 1, "the monitor went to the strip below");
+    assert_eq!(desk.shown(0), 0, "the panel stayed where it was");
+    assert_eq!(desk.focused_display(), Some(desk.output(1)));
+    // The pointer crossing to the panel brings focus to its own strip.
+    let panel = desk.display(0);
+    desk.dispatch(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: PhysicalPosition::new(panel.center().x, panel.center().y),
+    });
+    desk.settle();
+    assert_eq!(desk.focused_display(), Some(desk.output(0)));
+    assert_eq!(
+        (desk.shown(0), desk.shown(1)),
+        (0, 1),
+        "both keep their strips"
+    );
+    assert_eq!(
+        desk.fb.chrome().tree().desktop.active_strip_id(),
+        Some(STRIP),
+        "the panel's strip is the one in use"
+    );
+    assert!(desk.chord(1));
+    desk.settle();
+    assert_eq!((desk.shown(0), desk.shown(1)), (1, 1));
+    assert!(desk.chord(-1));
+    desk.settle();
+    assert_eq!(
+        (desk.shown(0), desk.shown(1)),
+        (0, 1),
+        "the monitor is untouched"
+    );
+}

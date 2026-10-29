@@ -47,6 +47,8 @@ pub enum HostedActions {
 /// One row's face.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedRow {
+    /// Names the row in the panel's effects: what the desktop knows it by.
+    pub key: String,
     pub title: String,
     pub detail: String,
     pub icon: Icon,

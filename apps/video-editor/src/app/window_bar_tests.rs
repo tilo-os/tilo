@@ -301,7 +301,7 @@ fn an_opens_undo_brings_the_timeline_back() {
         let before = app.surface_mut::<VideoEditorApp>().project.clips.len();
         assert!(before > 0, "the sample has a timeline to replace");
         app.effect(&VideoEditorEffect::OpenProjectFile {
-            path: Some(other.display().to_string()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(&other).unwrap()),
         })
         .expect("the project file opens");
         app.settle();

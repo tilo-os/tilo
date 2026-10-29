@@ -353,7 +353,7 @@ pub(crate) fn spawn_native_owner_harness_with_reads(
 /// [`spawn_native_owner_harness_with_reads`] for a device whose channel
 /// state is kept in `channel_store`, as a session's is under its secret
 /// store: the broker's channel service opens it, so the device has the
-/// keys of channels another device stewards.
+/// keys of channels its own host does not take part in.
 pub(crate) fn spawn_device_harness(
     socket: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
@@ -559,7 +559,7 @@ impl DrainQueues {
             .and_then(|service| service.pump_until_due(&*self.net))
     }
 
-    /// Arm `watch` while stewards wait for a policy announcement; `false`
+    /// Arm `watch` while groups wait for a policy announcement; `false`
     /// when one already arrived and governance must be pumped again now.
     fn arm_policy_watch(&self, watch: &tilo_identity_host::policy_change::Watch) -> bool {
         self.channel_encryption
@@ -1001,7 +1001,7 @@ fn spawn_inner(
 
     // Inbound-drain: when peer-sync is on, drain signed documents, presence,
     // and cooperative scrollback. The thread parks until a frame arrives,
-    // a channel is opened, or channel governance has work due (a steward's
+    // a channel is opened, or channel governance has work due (a group's
     // policy re-check, a member's access-request backoff).
     // Every remote entry is routed like a local one, by the `(app_id,
     // cluster_id)` the publishing host stamped on the wire.
@@ -1042,10 +1042,10 @@ fn spawn_inner(
                 // rather than every frame — the lookup takes the
                 // replica's lock and parses every peer id it holds.
                 let mut labels: HashMap<String, (Instant, PeerLabels)> = HashMap::new();
-                // A steward re-checks its channels' access policy when an
+                // A group member re-checks its channels' access policy when an
                 // input announces a change or an expiry it registered comes
                 // due, not on a clock. The watch is armed only
-                // while stewards wait for that, so a device stewarding no
+                // while groups wait for that, so a device taking part in no
                 // channel sleeps through every announcement.
                 let policy_watch = {
                     let wake = std::sync::Arc::clone(&wake);
@@ -1242,7 +1242,7 @@ type SessionServices = Option<crate::shell::channel_encryption::ChannelKeyAccess
 /// Open the session's services. The channel encryption service runs
 /// whenever this session reaches room hosts (`peer_sync`) or has a secret
 /// store, unless it is a configured peer broker (`own_channels`): keys of the rooms this device's
-/// own room host stewards come from that host and need nothing else. The
+/// own room host takes part in come from that host and need nothing else. The
 /// secret store only adds this device's own channel state, which rooms
 /// hosted elsewhere need ([`session_channel_store`]).
 fn open_session_services(
@@ -1287,7 +1287,7 @@ fn open_session_history(channels: &Arc<Mutex<BrokerChannels>>) {
 /// This device's own channel state: kept under the session's secret-store
 /// vault and signed with its certified device key. `None` without either;
 /// the channel service then serves only rooms this device's own host
-/// stewards, and never falls back to plaintext. Tests have no secret store.
+/// takes part in, and never falls back to plaintext. Tests have no secret store.
 #[cfg(test)]
 fn session_channel_store() -> Option<crate::shell::channel_encryption::ChannelEncryptionConfig> {
     None
@@ -1319,7 +1319,7 @@ fn session_channel_store() -> Option<crate::shell::channel_encryption::ChannelEn
 
 /// Open this device's channel encryption service, with its own channel
 /// state under `store` when a secret store keeps one: its directory follows
-/// `workspaces`, the devices `net` authenticates and each room's steward as
+/// `workspaces`, the devices `net` authenticates and each room's governor as
 /// this device's native owner holds the room.
 pub(crate) fn channel_key_access(
     store: Option<crate::shell::channel_encryption::ChannelEncryptionConfig>,
@@ -1330,20 +1330,20 @@ pub(crate) fn channel_key_access(
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let (authenticated, authenticated_changes, stewards, hosted): (
+    let (authenticated, authenticated_changes, governors, hosted): (
         crate::shell::channel_policy::AuthenticatedDevices,
         crate::shell::channel_policy::AuthenticatedChanges,
-        crate::shell::channel_policy::Stewards,
+        crate::shell::channel_policy::Governors,
         Option<crate::shell::channel_policy::HostedChannelKeys>,
     ) = match net {
         Some(net) => {
             let changes = Arc::clone(&net);
-            let stewards = crate::shell::network::ShellNetwork::room_stewards(&net);
+            let governors = crate::shell::network::ShellNetwork::room_governors(&net);
             let hosted = hosted_channel_keys_of(Arc::clone(&net));
             (
                 Box::new(move |user| net.authenticated_devices_of(user)),
                 Box::new(move |after| changes.authenticated_devices_next_change(after)),
-                stewards,
+                governors,
                 Some(hosted),
             )
         }
@@ -1359,7 +1359,7 @@ pub(crate) fn channel_key_access(
         crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
     )
     .with_authenticated_changes(authenticated_changes)
-    .with_stewards(stewards);
+    .with_governors(governors);
     let directory = match hosted {
         Some(hosted) => directory.with_hosted_channel_keys(hosted),
         None => directory,
@@ -1596,7 +1596,7 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 }
 
 /// The keys of the channels of rooms `net`'s own room host governs, from
-/// that host's steward.
+/// that host.
 pub(crate) fn hosted_channel_keys_of(
     net: Arc<crate::shell::network::ShellNetwork>,
 ) -> crate::shell::channel_policy::HostedChannelKeys {

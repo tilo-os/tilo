@@ -240,21 +240,37 @@ impl GitClientApp {
 
     /// Open the repository at the empty-state path field, binding it if valid.
     pub(super) fn open_repo_from_input(&mut self) {
-        let raw = self.open_input.value().trim().to_string();
-        let _ = self.open_repository_at(&raw);
+        let raw = self.open_input.value().to_owned();
+        if let Ok(path) = self.typed_repository(&raw) {
+            let _ = self.open_repository_at(&path);
+        }
     }
 
-    /// Open the repository at `raw`, typed, chosen in the file chooser or
+    /// The repository path the person typed, or why it names none (said in
+    /// the window too).
+    pub(super) fn typed_repository(
+        &mut self,
+        raw: &str,
+    ) -> Result<ui::tilo_resource::AbsolutePath, String> {
+        let raw = raw.trim();
+        let typed = if raw.is_empty() {
+            Err("no repository path was given".to_owned())
+        } else {
+            ui::tilo_resource::AbsolutePath::new(raw).map_err(String::from)
+        };
+        if let Err(error) = &typed {
+            self.last_error = Some(error.clone());
+        }
+        typed
+    }
+
+    /// Open the repository at `path`, typed, chosen in the file chooser or
     /// named by an action. Answers why not when there is none.
-    pub(super) fn open_repository_at(&mut self, raw: &str) -> Result<(), String> {
+    pub(super) fn open_repository_at(&mut self, path: &std::path::Path) -> Result<(), String> {
         if self.repository_busy() {
             return Err(ui::i18n!("git-remote-busy"));
         }
-        let raw = raw.trim();
-        if raw.is_empty() {
-            return Err("no repository path was given".into());
-        }
-        if self.bind_repository(std::path::Path::new(raw)) {
+        if self.bind_repository(path) {
             self.last_error = None;
             self.set_focus(None);
             self.screen = Screen::Changes;
@@ -269,7 +285,7 @@ impl GitClientApp {
             }
             Ok(())
         } else {
-            let error = format!("No git repository at {raw}");
+            let error = format!("No git repository at {}", path.display());
             self.last_error = Some(error.clone());
             Err(error)
         }

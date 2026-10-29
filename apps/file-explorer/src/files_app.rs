@@ -1542,7 +1542,11 @@ impl FileExplorerWidget {
         if self.is_trash_view() || !self.shown_is_folder {
             return Vec::new();
         }
-        let folder = self.current_path.display().to_string();
+        // The folder shown is where these act; a relative one names none.
+        let Ok(here) = ui::tilo_resource::AbsolutePath::new(&self.current_path) else {
+            return Vec::new();
+        };
+        let folder = here.to_string_lossy();
         let names: Vec<serde_json::Value> = self
             .entries
             .iter()
@@ -1572,7 +1576,7 @@ impl FileExplorerWidget {
         };
         let new_folder = FileExplorer::NEW_FOLDER
             .bind(file_explorer::NewFolder::paths().device, device.clone())
-            .and(file_explorer::NewFolder::paths().parent, folder.clone())
+            .and(file_explorer::NewFolder::paths().parent, here.clone())
             .declaration("new-folder-here", t("files-menu-new-folder"));
         let rename = FileExplorer::RENAME
             .bind(file_explorer::Rename::paths().device, device.clone())
@@ -1588,22 +1592,22 @@ impl FileExplorerWidget {
             .declaration("move-here", "Move entries from here to a folder");
         let copying = FileExplorer::COPY_INTO
             .bind(file_explorer::CopyInto::paths().device, device.clone())
-            .and(file_explorer::CopyInto::paths().from, folder.clone())
+            .and(file_explorer::CopyInto::paths().from, folder)
             .declaration("copy-here", "Copy entries from here to a folder");
         let writing = FileExplorer::WRITE_FILE
             .bind(file_explorer::WriteFile::paths().device, device.clone())
-            .and(file_explorer::WriteFile::paths().folder, folder.clone())
+            .and(file_explorer::WriteFile::paths().folder, here.clone())
             .declaration("write-file-here", "Write a file here");
         let compressing = FileExplorer::COMPRESS
             .bind(file_explorer::Compress::paths().device, device.clone())
-            .and(file_explorer::Compress::paths().from, folder.clone())
+            .and(file_explorer::Compress::paths().from, here.clone())
             .declaration(
                 "compress-here",
                 "Compress entries here to a zip or tar.zst archive",
             );
         let extracting = FileExplorer::EXTRACT
             .bind(file_explorer::Extract::paths().device, device)
-            .and(file_explorer::Extract::paths().to, Some(folder))
+            .and(file_explorer::Extract::paths().to, Some(here))
             .declaration("extract-here", "Extract an archive into this folder");
         // Each of these names the entries it changes by name or path, which
         // an agent or a script passes and a person picks in the listing: a
@@ -2388,10 +2392,7 @@ impl FileExplorerWidget {
                 return Ok(self.answer_when_settled(queued));
             }
             FilesEffect::GoTo { path } | FilesEffect::OpenFolder { path } => {
-                let path = PathBuf::from(path);
-                if !path.is_absolute() {
-                    return Err(format!("{} is not an absolute path", path.display()));
-                }
+                let path = path.into_path_buf();
                 if !path.is_dir() {
                     return Err(format!("{} is not a folder Files can open", path.display()));
                 }
@@ -2960,7 +2961,7 @@ impl FileExplorerWidget {
     fn import_once(
         &mut self,
         entry: &str,
-        folder: &str,
+        folder: &Path,
     ) -> Result<Option<crate::file_ops::FileOp>, String> {
         let source = self
             .visible_entry_path(entry)
@@ -2968,11 +2969,9 @@ impl FileExplorerWidget {
         if !self.importable_cloud_entry(&source) {
             return Err(t("files-import-source-unavailable"));
         }
-        let folder = Path::new(folder);
-        // Validate the submitted spelling before canonicalization makes even a
-        // relative path absolute. Retain the validated target, not its alias,
-        // when the document outbox executes the copy on a later frame.
-        if !folder.is_absolute() || !folder.is_dir() {
+        // Retain the validated target, not its alias, when the document
+        // outbox executes the copy on a later frame.
+        if !folder.is_dir() {
             return Err(format!("{} is not an existing folder.", folder.display()));
         }
         let destination = std::fs::canonicalize(folder).map_err(|e| e.to_string())?;
@@ -2997,13 +2996,12 @@ impl FileExplorerWidget {
     fn copy_into_folder(
         &mut self,
         entry: &str,
-        folder: &str,
+        folder: &Path,
     ) -> Result<Option<crate::file_ops::FileOp>, String> {
         let source = self
             .visible_entry_path(entry)
             .ok_or_else(|| "file entry is no longer visible".to_string())?;
-        let folder = PathBuf::from(folder);
-        if !folder.is_absolute() || !folder.is_dir() {
+        if !folder.is_dir() {
             return Err(format!("{} is not an existing folder.", folder.display()));
         }
         self.queue_copy(crate::file_ops::FileOp::Copy {

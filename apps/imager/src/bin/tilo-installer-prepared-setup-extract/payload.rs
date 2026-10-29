@@ -42,7 +42,7 @@ pub fn selected() -> Result<String> {
     Ok(path.to_owned())
 }
 fn completed(attempt: &str) -> Result<String> {
-    if !imager_backend::is_operation_id(attempt) {
+    if !staging_handoff_model::is_operation_id(attempt) {
         return Err(invalid());
     }
     Ok(format!("{ROOT}/.completed-setup-{attempt}"))

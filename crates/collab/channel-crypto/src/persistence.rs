@@ -38,7 +38,7 @@ const STATE_RECORD: &[u8] = b"channel-crypto/member-state";
 
 /// A vault-derived state-encryption key. It is zeroized on drop and its
 /// `Debug` representation never reveals bytes.
-pub struct VaultKey(SymmetricKey);
+pub struct VaultKey(pub(crate) SymmetricKey);
 
 impl VaultKey {
     /// Wrap key bytes returned by a platform secret service or hardware vault.
@@ -283,14 +283,13 @@ impl MemberKey {
 const MEMBER_RECORD: &[u8] = b"channel-crypto/device-member";
 const MEMBER_RECORD_VERSION: u8 = 1;
 
-/// A device's durable state for one channel it takes part in without
-/// stewarding it.
+/// A device's own place in one channel's group.
 pub(crate) enum MemberRecord {
     /// Asked for access; holds the member key whose key packages are out.
     Waiting(Box<MemberKey>),
     /// Admitted.
     Joined(Box<ChannelGroup>),
-    /// Removed by the steward.
+    /// Removed by a commit.
     Removed,
 }
 
@@ -336,29 +335,34 @@ impl MemberRecordWire {
 }
 
 impl MemberRecord {
-    pub(crate) fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
-        let sealed = self.seal(key)?;
-        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
-    }
-
-    pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
-        Self::open_sealed(&read_sealed(path)?, key)
-    }
-
-    /// This record sealed under `key`, as [`Self::save_sealed`] writes it.
+    /// This record sealed under `key`.
     pub(crate) fn seal(&self, key: &VaultKey) -> Result<Vec<u8>> {
-        let record = match self {
-            Self::Waiting(member) => {
-                let (name, signer, storage) = member.snapshot()?;
-                MemberRecordWire::Waiting {
-                    name,
-                    signer,
-                    storage,
-                }
-            }
-            Self::Joined(group) => MemberRecordWire::Joined(group.snapshot()?),
-            Self::Removed => MemberRecordWire::Removed,
-        };
+        match self {
+            Self::Waiting(member) => Self::seal_waiting(member, key),
+            Self::Joined(group) => Self::seal_joined(group, key),
+            Self::Removed => Self::seal_wire(MemberRecordWire::Removed, key),
+        }
+    }
+
+    /// [`Self::Waiting`] with `member`, sealed, without owning it.
+    pub(crate) fn seal_waiting(member: &MemberKey, key: &VaultKey) -> Result<Vec<u8>> {
+        let (name, signer, storage) = member.snapshot()?;
+        Self::seal_wire(
+            MemberRecordWire::Waiting {
+                name,
+                signer,
+                storage,
+            },
+            key,
+        )
+    }
+
+    /// [`Self::Joined`] with `group`, sealed, without owning it.
+    pub(crate) fn seal_joined(group: &ChannelGroup, key: &VaultKey) -> Result<Vec<u8>> {
+        Self::seal_wire(MemberRecordWire::Joined(group.snapshot()?), key)
+    }
+
+    fn seal_wire(record: MemberRecordWire, key: &VaultKey) -> Result<Vec<u8>> {
         let mut file = MemberFile {
             version: MEMBER_RECORD_VERSION,
             record,

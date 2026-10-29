@@ -24,127 +24,6 @@ pub(super) fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
     (state, root)
 }
 
-/// What a scripted host answers, one look at a time, and the fresh
-/// instances it was asked to start.
-type Looks = std::collections::VecDeque<Result<InstallStatus, String>>;
-type Relaunches = Arc<std::sync::Mutex<Vec<Option<String>>>>;
-static HOST: std::sync::Mutex<Option<(Looks, Relaunches)>> = std::sync::Mutex::new(None);
-use ui::webview::chromium::install::{EngineInstaller, InstallPhase, InstallStatus};
-
-struct ScriptedHost(Looks, Relaunches);
-
-impl EngineInstaller for ScriptedHost {
-    fn status(&mut self) -> Result<InstallStatus, String> {
-        self.0.pop_front().unwrap_or(Ok(InstallStatus::Installed))
-    }
-    fn relaunch(&mut self, uri: Option<&str>) -> Result<(), String> {
-        self.1.lock().unwrap().push(uri.map(str::to_owned));
-        Ok(())
-    }
-}
-
-fn scripted_host() -> Option<Box<dyn EngineInstaller>> {
-    let (looks, relaunches) = HOST.lock().unwrap().take()?;
-    Some(Box::new(ScriptedHost(looks, relaunches)))
-}
-
-fn script(looks: Looks) -> Relaunches {
-    let relaunches = Relaunches::default();
-    *HOST.lock().unwrap() = Some((looks, Arc::clone(&relaunches)));
-    relaunches
-}
-
-/// Frames until the setup shows `wanted`, or the test gives up.
-fn until_setup(widget: &mut BrowserWidget, wanted: impl Fn(&crate::engine_setup::Setup) -> bool) {
-    let deadline = tilo_test_env::hang_deadline();
-    while ui::time::now() < deadline {
-        let _ = synced(widget);
-        if widget.engine_setup_shown.as_ref().is_some_and(&wanted) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    panic!("setup stuck at {:?}", widget.engine_setup_shown);
-}
-
-/// First use without the engine: the Browser asks the host for it,
-/// shows the progress, and reopens once it is installed. A failure
-/// offers a retry that asks again. Nothing here is a message to read or
-/// a command to run.
-#[test]
-fn a_missing_engine_is_installed_on_first_use_with_progress() {
-    use crate::engine_setup::Setup;
-    // One test owns the scripted host: statics are process-wide.
-    let relaunches = script(
-        [
-            Ok(InstallStatus::Installing {
-                phase: InstallPhase::Preparing,
-                received: 0,
-                total: None,
-            }),
-            Ok(InstallStatus::Installing {
-                phase: InstallPhase::Downloading,
-                received: 40_000_000,
-                total: Some(80_000_000),
-            }),
-            Ok(InstallStatus::Installed),
-        ]
-        .into(),
-    );
-    let mut w = BrowserWidget::with_engine(
-        unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled),
-        false,
-    );
-    w.engine_problem = Some(EngineProblem::NotInstalled);
-    w.engine_installer = scripted_host;
-    w.initial_url = "https://tilo.so/".into();
-
-    // The first frame starts the install without anyone pressing a button.
-    let _ = synced(&mut w);
-    assert!(w.engine_setup.is_some(), "first use asks the host");
-
-    until_setup(&mut w, |setup| {
-        matches!(
-            setup,
-            Setup::Fetching {
-                phase: InstallPhase::Downloading,
-                received: 40_000_000,
-                ..
-            }
-        )
-    });
-    assert_eq!(w.engine_setup_shown.as_ref().unwrap().fraction(), Some(0.5));
-    // The page area is the toolkit's progress state.
-    layout_at(&mut w, 900.0, 600.0);
-
-    until_setup(&mut w, |setup| *setup == Setup::Reopened);
-    assert_eq!(
-        *relaunches.lock().unwrap(),
-        [Some("https://tilo.so/".to_owned())],
-        "a fresh Browser starts on the page being opened, with the engine mounted"
-    );
-    layout_at(&mut w, 900.0, 600.0);
-
-    // A failed install says so and the one button asks again.
-    let relaunches = script([Err("offline".to_owned())].into());
-    let mut w = BrowserWidget::with_engine(
-        unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled),
-        false,
-    );
-    w.engine_problem = Some(EngineProblem::NotInstalled);
-    w.engine_installer = scripted_host;
-    until_setup(
-        &mut w,
-        |setup| matches!(setup, Setup::Failed(message) if message == "offline"),
-    );
-    layout_at(&mut w, 900.0, 600.0);
-    let _retry = script([Ok(InstallStatus::Installed)].into());
-    w.perform_browser_operation(BrowserOperation::InstallEngine)
-        .expect("retrying is the page's install action");
-    until_setup(&mut w, |setup| *setup == Setup::Reopened);
-    assert!(relaunches.lock().unwrap().is_empty());
-}
-
 pub(super) fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
     layout_with_theme(widget, width, height, &Theme::dark());
 }
@@ -2249,9 +2128,9 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
 
     // Phase `default_engine_failure_never_becomes_a_simulated_page`.
     {
-        let (engine, problem) =
+        let (engine, failed) =
             engine_or_error(Err("Could not start Chromium at /x: denied".into()));
-        assert_eq!(problem, Some(EngineProblem::Failed));
+        assert!(failed);
         let _clone: SharedEngine = Arc::clone(&engine);
         engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
         assert!(engine.frames().lock().unwrap().is_none());
@@ -2283,14 +2162,9 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
         );
     }
 
-    // Phase `a_missing_engine_offers_its_install_instead_of_instructions`.
+    // Phase `an_engine_that_is_not_running_says_so_and_offers_no_download`.
     {
-        assert_eq!(
-            ENGINE_INSTALL_URI,
-            "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.23-chromium",
-            "repair names the consuming app and exact declaration, not a catalogue alias"
-        );
-        let engine = unavailable_engine(BrowsingMode::Normal, EngineProblem::NotInstalled);
+        let engine = unavailable_engine(BrowsingMode::Normal);
         engine.send(WebViewCommand::Navigate("https://tilo.so".into()));
         let message = engine
             .drain_events()
@@ -2300,48 +2174,15 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
                 _ => None,
             })
             .expect("navigation answers with the problem");
-        assert_eq!(
-            message,
-            ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE
-        );
+        assert_eq!(message, ui::webview::chromium::runtime::FAILED_MESSAGE);
         for developer_word in ["build-host", "TILO_", "python", "Chromium"] {
             assert!(!message.contains(developer_word), "{message}");
         }
 
         let mut w = BrowserWidget::with_engine(engine, false);
-        w.engine_problem = Some(EngineProblem::NotInstalled);
+        w.engine_failed = true;
         let _ = synced(&mut w);
         let resources = [w.published()];
-        let page = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.0 == "browser.page")
-            .unwrap();
-        let install = page
-            .actions
-            .iter()
-            .find(|action| action.id == "install-engine")
-            .expect("the install is an action on the page");
-        assert_eq!(install.kind, OperationKind::Effect);
-        assert!(install.contract.availability.is_available());
-        layout_at(&mut w, 900.0, 600.0);
-        assert!(
-            ui::widget::controls::control_action_bindings(&w)
-                .iter()
-                .any(|binding| binding.control_id == "browser.install-engine"
-                    && matches!(
-                        &binding.kind,
-                        ui::widget::ControlBindingKind::Action(address)
-                            if address.resource == "browser.page"
-                                && address.action == "install-engine"
-                    )),
-            "the page area's Install button runs the page's install action"
-        );
-
-        // Once the engine runs there is nothing to install.
-        let mut running = BrowserWidget::with_engine(TestEngine::new(), true);
-        let _ = synced(&mut running);
-        let resources = [running.published()];
         let page = resources[0]
             .children
             .iter()
@@ -2351,12 +2192,15 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
             !page
                 .actions
                 .iter()
-                .any(|action| action.id == "install-engine")
+                .any(|action| action.id.contains("engine")),
+            "the engine installs with Browser; the page offers no download of it"
         );
+        layout_at(&mut w, 900.0, 600.0);
         assert!(
-            running
-                .perform_browser_operation(BrowserOperation::InstallEngine)
-                .is_err()
+            !ui::widget::controls::control_action_bindings(&w)
+                .iter()
+                .any(|binding| binding.control_id.contains("engine")),
+            "the page area explains, it has no download button"
         );
     }
 

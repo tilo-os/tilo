@@ -1690,7 +1690,7 @@ impl Inner {
     fn splices_since(
         &self,
         before: &BTreeMap<AppId, Arc<idx::Snapshot>>,
-        overlay: &Overlay,
+        overlay: &Arc<Overlay>,
         items: &ItemTouches,
     ) -> BTreeMap<DocId, Vec<ListingChange>> {
         let mut out: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();

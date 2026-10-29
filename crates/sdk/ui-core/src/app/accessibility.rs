@@ -406,7 +406,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
             let node = self.layout.node_map.keys().copied().find(|&node| {
@@ -1210,7 +1210,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|p| p.is_presented())
         {
             return crate::accesskit_bridge::build_presentation_with_resources_bound(
@@ -1399,14 +1399,18 @@ impl App {
             self.bindings.clear();
             self.layout.node_map.clear();
             self.focused_node = None;
-            let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
-                palette.perform_semantic_action(
-                    target,
-                    action,
-                    &mut crate::widget::Edits::lend(&mut self.state.doc),
-                    &self.state.root,
-                )
-            });
+            let handled = self
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .is_some_and(|palette| {
+                    palette.perform_semantic_action(
+                        target,
+                        action,
+                        &mut crate::widget::Edits::lend(&mut self.state.doc),
+                        &self.state.root,
+                    )
+                });
             self.finish_action_palette_input(handled);
             return None;
         }
@@ -1660,7 +1664,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(|palette| palette.is_presented())
     }
 
@@ -1698,7 +1702,7 @@ impl App {
         if let Some(palette) = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .filter(|p| p.is_presented())
         {
             return self.accessibility.semantic_tree.refresh_bound(
@@ -1776,7 +1780,7 @@ impl App {
                 let activated = self
                     .actions
                     .action_palette
-                    .as_mut()
+                    .as_deref_mut()
                     .is_some_and(|palette| palette.activate_bound(target));
                 self.capture_ordinary_palette_request();
                 Ok(activated)
@@ -1875,14 +1879,18 @@ impl App {
                         self.bindings.clear();
                         self.layout.node_map.clear();
                         self.focused_node = None;
-                        let handled = self.actions.action_palette.as_mut().is_some_and(|palette| {
-                            palette.perform_semantic_action(
-                                &semantic_target,
-                                &verb,
-                                &mut crate::widget::Edits::lend(&mut self.state.doc),
-                                &self.state.root,
-                            )
-                        });
+                        let handled =
+                            self.actions
+                                .action_palette
+                                .as_deref_mut()
+                                .is_some_and(|palette| {
+                                    palette.perform_semantic_action(
+                                        &semantic_target,
+                                        &verb,
+                                        &mut crate::widget::Edits::lend(&mut self.state.doc),
+                                        &self.state.root,
+                                    )
+                                });
                         self.finish_action_palette_input(handled);
                         return Ok(handled);
                     }

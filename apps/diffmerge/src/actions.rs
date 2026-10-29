@@ -25,10 +25,10 @@ pub enum DiffmergeEffect {
     /// Open files
     #[effect(attended, job, cancellable)]
     OpenFiles {
-        #[param("left file path (omit both paths to choose the files)")]
-        left: Option<String>,
-        #[param("right file path")]
-        right: Option<String>,
+        #[param("absolute left file path (omit both paths to choose the files)")]
+        left: Option<tilo_resource::AbsolutePath>,
+        #[param("absolute right file path")]
+        right: Option<tilo_resource::AbsolutePath>,
     },
     /// Open one file against nothing
     ///
@@ -36,8 +36,8 @@ pub enum DiffmergeEffect {
     /// side, which reads as the whole file being added or removed.
     #[effect(attended, job, cancellable)]
     OpenOne {
-        #[param("the file to show")]
-        path: String,
+        #[param("absolute path of the file to show")]
+        path: tilo_resource::AbsolutePath,
         #[param("which side it takes (left or right)")]
         side: String,
     },
@@ -49,8 +49,10 @@ pub enum DiffmergeEffect {
     /// the tool exists for.
     #[effect(attended, job, cancellable)]
     SaveMerged {
-        #[param("where to write the merged result (omit to use the last place, or choose one)")]
-        path: Option<String>,
+        #[param(
+            "absolute path to write the merged result to (omit to use the last place, or choose one)"
+        )]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Save merged result as…
     ///
@@ -64,10 +66,10 @@ pub enum DiffmergeEffect {
     /// the host's chooser.
     #[effect(attended, job, cancellable)]
     CompareFolders {
-        #[param("left folder path (omit both paths to choose the folders)")]
-        left: Option<String>,
-        #[param("right folder path")]
-        right: Option<String>,
+        #[param("absolute left folder path (omit both paths to choose the folders)")]
+        left: Option<tilo_resource::AbsolutePath>,
+        #[param("absolute right folder path")]
+        right: Option<tilo_resource::AbsolutePath>,
     },
     /// Load sample
     #[effect(own_device)]

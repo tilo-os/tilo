@@ -9,7 +9,7 @@
 //!   read, an expired grant or a removal takes the person out;
 //! - a channel is one record's: a Read Deny on the record, or on its app or
 //!   any pattern covering it, takes its person, or service member, out of
-//!   that record's channel and no other. The steward names the record from a
+//!   that record's channel and no other. A participant names the record from a
 //!   grant naming it ([`collab_types::named_record_of_channel`]) or from the
 //!   route a device proved with its request ([`collab_types::ChannelRoute`]);
 //!   a channel whose record it cannot name is withheld from whoever a Deny
@@ -49,19 +49,19 @@ pub type AuthenticatedChanges = Box<dyn Fn(u64) -> Option<u64> + Send>;
 /// Every input of [`ChannelDirectory::allowed_devices`] announces its writes
 /// ([`tilo_identity_host::policy_change`]): the tree as a write guard that
 /// changed policy is released, the fleet on save and through the identity directory's watch,
-/// the network's authenticated devices on each change. Stewards re-check on
+/// the network's authenticated devices on each change. Groups re-check on
 /// those announcements and at [`ChannelDirectory::next_policy_change`]
 /// rather than every second, while the clock and the watch hold.
 pub struct WorkspaceChannelDirectory {
     tree: WorkspaceTreeHandle,
     own_devices: OwnDevices,
     authenticated_changes: AuthenticatedChanges,
-    stewards: Stewards,
+    governors: Governors,
     hosted: Option<HostedChannelKeys>,
 }
 
-/// A channel's content keys from the steward of the room host this device
-/// runs, for a room that host governs; `None` for any other room. See
+/// A channel's content keys from the room host this device runs, for a room
+/// that host takes part in; `None` for any other room. See
 /// [`ChannelDirectory::hosted_channel_keys`].
 pub type HostedChannelKeys = Box<
     dyn Fn(
@@ -74,9 +74,10 @@ pub type HostedChannelKeys = Box<
 >;
 
 /// The device keys of this device and of `room`'s governor, as the room's
-/// admitted document names them: the governor stewards the room's
-/// channels. `None` while this device holds no admitted view of the room.
-pub type Stewards = Box<dyn Fn(RoomId) -> Option<([u8; 32], [u8; 32])> + Send>;
+/// admitted document names them: the governor takes part in every channel
+/// of the room, and creates a channel's group when it first opens it. `None`
+/// while this device holds no admitted view of the room.
+pub type Governors = Box<dyn Fn(RoomId) -> Option<([u8; 32], [u8; 32])> + Send>;
 
 impl WorkspaceChannelDirectory {
     pub fn new(tree: WorkspaceTreeHandle, own_devices: OwnDevices) -> Self {
@@ -84,24 +85,24 @@ impl WorkspaceChannelDirectory {
             tree,
             own_devices,
             authenticated_changes: Box::new(|_| None),
-            stewards: Box::new(|_| None),
+            governors: Box::new(|_| None),
             hosted: None,
         }
     }
 
     /// The directory, taking the keys of the rooms this device's own room
-    /// host governs from that host's steward, which is then the one steward
-    /// of their channels: this device stewards none of them.
+    /// host takes part in from that host, whose leaf in their groups is this
+    /// device's own.
     #[must_use]
     pub fn with_hosted_channel_keys(mut self, hosted: HostedChannelKeys) -> Self {
         self.hosted = Some(hosted);
         self
     }
 
-    /// The directory, reading who stewards each room from `stewards`.
+    /// The directory, reading who governs each room from `governors`.
     #[must_use]
-    pub fn with_stewards(mut self, stewards: Stewards) -> Self {
-        self.stewards = stewards;
+    pub fn with_governors(mut self, governors: Governors) -> Self {
+        self.governors = governors;
         self
     }
 
@@ -175,11 +176,11 @@ pub fn fleet_devices(
 
 impl ChannelDirectory for WorkspaceChannelDirectory {
     fn governs(&self, room: RoomId) -> bool {
-        // A room this device governs is its own room host's, whose steward
-        // stewards it.
+        // A room this device governs is its own room host's, which takes part
+        // in its channels for this device.
         self.hosted.is_none()
             && self.tree.read().rooms().contains(&room)
-            && (self.stewards)(room).is_some_and(|(here, governor)| here == governor)
+            && (self.governors)(room).is_some_and(|(here, governor)| here == governor)
     }
 
     fn hosted_channel_keys(
@@ -192,10 +193,8 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         (self.hosted.as_ref()?)(room, channel, route, create)
     }
 
-    fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
-        (self.stewards)(room)
-            .filter(|(here, governor)| here != governor)
-            .map(|(_, governor)| Ed25519PublicKey::from_bytes(governor))
+    fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
+        (self.governors)(room).map(|(_, governor)| Ed25519PublicKey::from_bytes(governor))
     }
 
     fn allowed_devices(
@@ -254,7 +253,7 @@ pub fn next_policy_change(
     capabilities.into_iter().chain(certificates).min()
 }
 
-/// A channel of a room, and the route of its record when the steward knows
+/// A channel of a room, and the route of its record when this device knows
 /// it.
 pub type ChannelOf<'r> = (RoomId, ChannelId, Option<&'r ChannelRoute>);
 
@@ -754,7 +753,7 @@ mod tests {
         assert_eq!(routed(&tree, "so.tilo.notes", "draft"), everyone);
     }
 
-    /// Stewards re-check at the first instant the readers change
+    /// Groups re-check at the first instant the readers change
     /// by time alone, and that instant is exactly where the answer changes.
     #[test]
     fn the_next_policy_change_is_where_the_readers_change_by_time() {

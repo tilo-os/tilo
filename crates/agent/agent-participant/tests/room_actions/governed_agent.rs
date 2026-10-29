@@ -1,12 +1,12 @@
 //! A delegated agent's own session in a room the host itself governs.
 //!
-//! A node (a host certified to own workspaces) governs the room and stewards
-//! its channels. Ada asks for an agent from her page and approves it on her
+//! A node (a host certified to own workspaces) governs the room and takes
+//! part in its channels. Ada asks for an agent from her page and approves it on her
 //! laptop with a delegation naming the room; the agent runs on the node
 //! under its own device key. When it opens a sealed record it asks the
-//! steward for the record's channel like any collaborator: the governor
-//! admits it to the room's roster through the one admission decision, bound
-//! to its delegation, and the steward admits it to the channel. Its change
+//! channel's participants for it like any collaborator: the governor admits
+//! it to the room's roster through the one admission decision, bound to its
+//! delegation, and a participant admits it to the channel. Its change
 //! arrives at Bob, another member, sealed, signed by the agent's own key and
 //! named on the roster as Ada's agent. Withdrawing the grant takes it off.
 

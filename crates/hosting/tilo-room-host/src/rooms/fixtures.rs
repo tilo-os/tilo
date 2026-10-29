@@ -17,7 +17,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use super::{PreAdmitRequest, Rooms};
 use crate::host::{HostConfig, HostIdentity, HostMode, RoomHost};
 
-/// A host certified only to host rooms: it governs them without stewarding
+/// A host certified only to host rooms: it governs them without taking part in
 /// their channels.
 #[must_use]
 pub fn governor() -> (SigningKey, DeviceCert) {

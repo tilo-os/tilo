@@ -639,7 +639,7 @@ visitor is their own person, and joining is rate-limited.
   receive on the live plane but not publish there. It is never a channel's
   member and asks no channel for access. Because anyone may join this room as
   a guest and then read every channel, letting a visitor who only watches
-  read them exposes nothing new: the room's steward hands the content keys of
+  read them exposes nothing new: the room's node hands the content keys of
   a channel that exists (`POST /channel-keys`) to any device the spectator
   person certified, while that device holds a spectator seat. That is one
   grant to the spectator person, not one per device. A room that is not

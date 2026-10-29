@@ -35,8 +35,8 @@ mod pump {
         collab_core::BrokerChannels,
     };
 
-    /// Device `seed`'s channel service in a room device `steward` governs.
-    fn service((seed, steward): (u8, u8), dir: &Path) -> ChannelEncryption {
+    /// Device `seed`'s channel service in a room device `governor` governs.
+    fn service((seed, governor): (u8, u8), dir: &Path) -> ChannelEncryption {
         ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root: dir.join(CHANNEL_STATE),
@@ -44,8 +44,8 @@ mod pump {
                 device_key: key(seed),
             },
             Box::new(Directory {
-                governs: seed == steward,
-                steward: public(steward),
+                governs: seed == governor,
+                governor: public(governor),
                 policy: Policy::default(),
             }),
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -116,16 +116,16 @@ mod pump {
     fn arriving_governance_wakes_a_parked_pump() {
         let room = Arc::new(Room::default());
         let room_id = RoomId::new();
-        let steward_dir = tempfile::tempdir().unwrap();
+        let governor_dir = tempfile::tempdir().unwrap();
         let member_dir = tempfile::tempdir().unwrap();
         let ((_access, wake, _pump), tid) =
             parked_thread(|| parked(&room, room_id, 0, service((2, 1), member_dir.path())));
 
-        let steward = Endpoint::join(&room, room_id, 1);
-        let mut governor = service((1, 1), steward_dir.path());
+        let governing = Endpoint::join(&room, room_id, 1);
+        let mut governor = service((1, 1), governor_dir.path());
         governor.access(room_id, ChannelId::new(), Instant::now());
-        governor.pump(&steward, Instant::now(), 1_000);
-        assert!(queued(&room, 0) > 0, "the steward announced nothing");
+        governor.pump(&governing, Instant::now(), 1_000);
+        assert!(queued(&room, 0) > 0, "the governor announced nothing");
         assert!(
             tid.is_none_or(|tid| tilo_test_env::idle::blocked(&tid)) && queued(&room, 0) > 0,
             "the parked pump ran without a poke"

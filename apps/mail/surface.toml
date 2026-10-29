@@ -400,7 +400,6 @@ params = [
 kind = "mail.copies"
 label = "Mail on your devices"
 version = 1
-person = true
 fields = [
   { path = "copies", type = "Collection<KeptCopy>", readonly = true, stored = "collection" },
   { path = "copies.*.account", type = "String" },

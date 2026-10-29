@@ -71,7 +71,7 @@ pub fn session_keys(room: RoomId, channel: ChannelId) -> Option<ChannelContentKe
 /// [`session_keys`] for the frame loop, which must never wait for them.
 ///
 /// Reading a channel's keys can wait: on the channel service's lock, and for
-/// a room this device hosts on the host's steward, answered on the network's
+/// a room this device hosts on the host, answered on the network's
 /// runtime. Under load that took more than a minute, with the desktop frozen
 /// while it sealed a presence frame. Here the loop gets the keys the last
 /// read found at once, and a reader thread reads them again, so they are
@@ -733,10 +733,10 @@ mod tests {
         };
         let channel = collab_types::document_channel_id(&focus.app, room, &focus.record);
         let dir = tempfile::tempdir().unwrap();
-        let keys = channel_crypto::ChannelSteward::open_or_create(
-            dir.path(),
+        let keys = channel_crypto::ChannelPeer::create_now(
+            Some(dir.path()),
             channel,
-            ed25519_dalek::SigningKey::from_bytes(&[4; 32]),
+            Box::new(ed25519_dalek::SigningKey::from_bytes(&[4; 32])),
             &channel_crypto::VaultKey::new([9; 32]),
         )
         .unwrap()
