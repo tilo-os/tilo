@@ -28,9 +28,12 @@ type Door = tilo_runtime::mcp::McpServer<BrokerActionHost>;
 /// A task, by its room, its agent and its issue.
 type TaskKey = (String, String, String);
 
+/// Each task's session of the door, with the run it is of.
+type Sessions = Mutex<HashMap<TaskKey, (String, Arc<Door>)>>;
+
 /// Every task's session, with the run it belongs to.
-fn sessions() -> &'static Mutex<HashMap<TaskKey, (String, Arc<Door>)>> {
-    static SESSIONS: OnceLock<Mutex<HashMap<TaskKey, (String, Arc<Door>)>>> = OnceLock::new();
+fn sessions() -> &'static Sessions {
+    static SESSIONS: OnceLock<Sessions> = OnceLock::new();
     SESSIONS.get_or_init(Mutex::default)
 }
 
@@ -188,7 +191,10 @@ impl HostStepServices for BrokerDoor {
             .filter(|this| !this.trim().is_empty())
             .map(str::to_owned);
         let label = args.text("label").unwrap_or(issue).to_owned();
-        let agent = actor.id().strip_prefix("agent:").unwrap_or(actor.id());
+        let agent = actor
+            .id()
+            .strip_prefix("agent:")
+            .unwrap_or_else(|| actor.id());
         let door = session_of(
             request.room,
             agent,
