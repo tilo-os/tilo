@@ -618,117 +618,6 @@ fn primary_window_app_id(explicit: Option<&str>) -> String {
     )
 }
 
-/// Where a session puts a surface app's window: on a layer of the output,
-/// placed by the app's own anchors instead of by the desktop.
-///
-/// The session owns placement — which output, which edge, how much room the
-/// desktop leaves free — so it says so in the environment of the process it
-/// starts, beside the socket it hands the app. An app launched without it is
-/// an ordinary window.
-#[cfg(target_os = "linux")]
-fn layer_surface_from_env() -> Option<winit::platform::wayland::LayerSurfaceAttributes> {
-    use winit::platform::wayland::{Anchor, KeyboardInteractivity, Layer, LayerSurfaceAttributes};
-
-    /// A value the session set, trimmed; empty counts as unset.
-    fn value(name: &str) -> Option<String> {
-        let value = std::env::var(name).ok()?;
-        let value = value.trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    }
-
-    let layer = match value("TILO_SURFACE_LAYER")?.to_ascii_lowercase().as_str() {
-        "background" => Layer::Background,
-        "bottom" => Layer::Bottom,
-        "top" => Layer::Top,
-        "overlay" => Layer::Overlay,
-        other => {
-            tracing::warn!(
-                layer = other,
-                "unknown surface layer; leaving the window a toplevel"
-            );
-            return None;
-        }
-    };
-
-    let mut anchor = Anchor::empty();
-    if let Some(edges) = value("TILO_SURFACE_ANCHOR") {
-        for edge in edges.split(',').map(str::trim) {
-            anchor |= match edge {
-                "top" => Anchor::TOP,
-                "bottom" => Anchor::BOTTOM,
-                "left" => Anchor::LEFT,
-                "right" => Anchor::RIGHT,
-                "" | "none" => Anchor::empty(),
-                other => {
-                    tracing::warn!(edge = other, "unknown surface anchor; ignoring it");
-                    Anchor::empty()
-                }
-            };
-        }
-    }
-
-    let (mut width, mut height) = (0, 0);
-    if let Some(size) = value("TILO_SURFACE_SIZE") {
-        let (w, h) = size
-            .split_once(['x', 'X', ','])
-            .unwrap_or((size.as_str(), ""));
-        width = w.trim().parse().unwrap_or(0);
-        height = h.trim().parse().unwrap_or(0);
-    }
-
-    let margin = value("TILO_SURFACE_MARGIN").map_or((0, 0, 0, 0), |margin| {
-        let mut edges = margin
-            .split(',')
-            .map(|edge| edge.trim().parse().unwrap_or(0));
-        (
-            edges.next().unwrap_or(0),
-            edges.next().unwrap_or(0),
-            edges.next().unwrap_or(0),
-            edges.next().unwrap_or(0),
-        )
-    });
-
-    let keyboard_interactivity = match value("TILO_SURFACE_KEYBOARD")
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "" | "none" => KeyboardInteractivity::None,
-        "on-demand" | "ondemand" | "on_demand" => KeyboardInteractivity::OnDemand,
-        "exclusive" => KeyboardInteractivity::Exclusive,
-        other => {
-            tracing::warn!(
-                keyboard = other,
-                "unknown surface keyboard mode; taking none"
-            );
-            KeyboardInteractivity::None
-        }
-    };
-
-    Some(LayerSurfaceAttributes {
-        layer,
-        namespace: value("TILO_SURFACE_NAMESPACE").unwrap_or_else(|| String::from("tilo-surface")),
-        anchor,
-        size: winit::dpi::LogicalSize::new(width, height),
-        exclusive_zone: value("TILO_SURFACE_EXCLUSIVE")
-            .and_then(|zone| zone.parse().ok())
-            .unwrap_or(0),
-        margin,
-        keyboard_interactivity,
-    })
-}
-
-/// Whether the session starts this process as its lock screen: while it
-/// runs, the window asks the compositor for the session's lock and draws on
-/// it instead of being a window the desktop places.
-#[cfg(target_os = "linux")]
-fn session_lock_from_env() -> bool {
-    std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
-        let value = value.trim();
-        value == "1" || value.eq_ignore_ascii_case("true")
-    })
-}
-
 /// How the primary window is made, whether by `resumed` or before the app
 /// is constructed (`startup`).
 fn primary_window_attributes(
@@ -764,6 +653,118 @@ fn primary_window_attributes(
     #[cfg(target_os = "linux")]
     let window_attributes = {
         use winit::platform::wayland::WindowAttributesExtWayland;
+        /// Where a session puts a surface app's window: on a layer of the output,
+        /// placed by the app's own anchors instead of by the desktop.
+        ///
+        /// The session owns placement — which output, which edge, how much room the
+        /// desktop leaves free — so it says so in the environment of the process it
+        /// starts, beside the socket it hands the app. An app launched without it is
+        /// an ordinary window.
+        fn layer_surface_from_env() -> Option<winit::platform::wayland::LayerSurfaceAttributes> {
+            use winit::platform::wayland::{
+                Anchor, KeyboardInteractivity, Layer, LayerSurfaceAttributes,
+            };
+
+            /// A value the session set, trimmed; empty counts as unset.
+            fn value(name: &str) -> Option<String> {
+                let value = std::env::var(name).ok()?;
+                let value = value.trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            }
+
+            let layer = match value("TILO_SURFACE_LAYER")?.to_ascii_lowercase().as_str() {
+                "background" => Layer::Background,
+                "bottom" => Layer::Bottom,
+                "top" => Layer::Top,
+                "overlay" => Layer::Overlay,
+                other => {
+                    tracing::warn!(
+                        layer = other,
+                        "unknown surface layer; leaving the window a toplevel"
+                    );
+                    return None;
+                }
+            };
+
+            let mut anchor = Anchor::empty();
+            if let Some(edges) = value("TILO_SURFACE_ANCHOR") {
+                for edge in edges.split(',').map(str::trim) {
+                    anchor |= match edge {
+                        "top" => Anchor::TOP,
+                        "bottom" => Anchor::BOTTOM,
+                        "left" => Anchor::LEFT,
+                        "right" => Anchor::RIGHT,
+                        "" | "none" => Anchor::empty(),
+                        other => {
+                            tracing::warn!(edge = other, "unknown surface anchor; ignoring it");
+                            Anchor::empty()
+                        }
+                    };
+                }
+            }
+
+            let (mut width, mut height) = (0, 0);
+            if let Some(size) = value("TILO_SURFACE_SIZE") {
+                let (w, h) = size
+                    .split_once(['x', 'X', ','])
+                    .unwrap_or((size.as_str(), ""));
+                width = w.trim().parse().unwrap_or(0);
+                height = h.trim().parse().unwrap_or(0);
+            }
+
+            let margin = value("TILO_SURFACE_MARGIN").map_or((0, 0, 0, 0), |margin| {
+                let mut edges = margin
+                    .split(',')
+                    .map(|edge| edge.trim().parse().unwrap_or(0));
+                (
+                    edges.next().unwrap_or(0),
+                    edges.next().unwrap_or(0),
+                    edges.next().unwrap_or(0),
+                    edges.next().unwrap_or(0),
+                )
+            });
+
+            let keyboard_interactivity = match value("TILO_SURFACE_KEYBOARD")
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "" | "none" => KeyboardInteractivity::None,
+                "on-demand" | "ondemand" | "on_demand" => KeyboardInteractivity::OnDemand,
+                "exclusive" => KeyboardInteractivity::Exclusive,
+                other => {
+                    tracing::warn!(
+                        keyboard = other,
+                        "unknown surface keyboard mode; taking none"
+                    );
+                    KeyboardInteractivity::None
+                }
+            };
+
+            Some(LayerSurfaceAttributes {
+                layer,
+                namespace: value("TILO_SURFACE_NAMESPACE")
+                    .unwrap_or_else(|| String::from("tilo-surface")),
+                anchor,
+                size: winit::dpi::LogicalSize::new(width, height),
+                exclusive_zone: value("TILO_SURFACE_EXCLUSIVE")
+                    .and_then(|zone| zone.parse().ok())
+                    .unwrap_or(0),
+                margin,
+                keyboard_interactivity,
+            })
+        }
+
+        /// Whether the session starts this process as its lock screen: while it
+        /// runs, the window asks the compositor for the session's lock and draws on
+        /// it instead of being a window the desktop places.
+        fn session_lock_from_env() -> bool {
+            std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
+                let value = value.trim();
+                value == "1" || value.eq_ignore_ascii_case("true")
+            })
+        }
+
         let window_attributes = if session_lock_from_env() {
             // The lock screen is the compositor's to size and give every
             // input to; it has no title bar of ours.
