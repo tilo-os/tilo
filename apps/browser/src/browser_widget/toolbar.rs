@@ -62,7 +62,7 @@ impl BrowserWidget {
         if self.show_library {
             (crate::resource::Browser::KIND, "show-page")
         } else {
-            ("browser.history", "show-history")
+            ("browser.library", "show-history")
         }
     }
 
@@ -71,7 +71,7 @@ impl BrowserWidget {
         if self.show_settings {
             (crate::resource::Browser::KIND, "show-page")
         } else {
-            ("browser.settings", "show-settings")
+            (crate::resource::Browser::KIND, "show-settings")
         }
     }
 
@@ -326,7 +326,7 @@ impl BrowserWidget {
                 .tooltip(&status);
             row = row.push(Box::new(self.bind_button(
                 button,
-                "browser.downloads",
+                "browser.library",
                 "show-downloads",
             )));
         }

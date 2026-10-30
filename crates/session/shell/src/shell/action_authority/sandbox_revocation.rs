@@ -1,10 +1,22 @@
 //! Interrupt immutable sandboxes when accepted sandbox authority is withdrawn.
 //! No package-name signals, new grants, or automatic application restarts.
+//! Only a definite withdrawal interrupts: a policy whose record the owner
+//! has replaced is judged again when the export of that record lands.
 use super::{Binding, Published};
 use collab_types::caps::{CapOverride, Effect, Expiry, Scope, Subject, path_covers};
 use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+/// A sandbox the published policy does not withdraw from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Standing {
+    /// Judged against the record its owner holds.
+    Current,
+    /// Judged against a record its owner has replaced since. Nothing is
+    /// withdrawn until the export of the owner's record says so.
+    Awaiting,
+}
 
 pub(super) struct Sandbox {
     binding: Binding,
@@ -57,17 +69,30 @@ impl Sandbox {
         })
     }
 
-    pub(super) fn authorization_status(&self, published: &Published) -> Result<(), &'static str> {
+    /// Whether the published policy still holds what this sandbox captured.
+    /// `Err` is a definite withdrawal, with its static category. A policy
+    /// whose record the owner has since replaced, with that record's export
+    /// not on its way yet, is [`Standing::Awaiting`]: the grants are checked
+    /// against it all the same (the policy never goes back to an earlier
+    /// snapshot of the tree, so a grant missing from it is gone), and the
+    /// export that reaches the owner's record judges the sandbox again when
+    /// it is published.
+    pub(super) fn authorization_status(
+        &self,
+        published: &Published,
+    ) -> Result<Standing, &'static str> {
         if self.capabilities.is_empty() {
-            return Ok(());
+            return Ok(Standing::Current);
         }
         let policy = published
             .rooms
             .get(&self.binding.0)
             .ok_or("room_projection_missing")?;
-        policy
-            .accepted_status(self.binding.0, &published.exporting)
-            .map_err(crate::shell::native_workspace_owner::store::AuthorityRejection::reason)?;
+        let standing = match policy.accepted_status(self.binding.0, &published.exporting) {
+            Ok(()) => Standing::Current,
+            Err(rejection) if !rejection.withdraws() => Standing::Awaiting,
+            Err(rejection) => return Err(rejection.reason()),
+        };
         let now = Some(tilo_clock::unix_now_ms() / 1000);
         let app = Subject::app(&self.binding.1);
         let grants: Vec<_> = self
@@ -104,7 +129,7 @@ impl Sandbox {
         }) {
             return Err("new_narrowing_overlap");
         }
-        Ok(())
+        Ok(standing)
     }
 
     fn interrupt(&self) {
@@ -464,7 +489,7 @@ mod tests {
             );
             published.sandboxes[&process.0.id()].authorization_status(&published)
         };
-        assert_eq!(status, Ok(()));
+        assert_eq!(status, Ok(Standing::Current));
         earlier.publish();
         let mut published = super::super::lock(&authority.published);
         assert!(

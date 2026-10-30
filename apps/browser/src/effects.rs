@@ -255,7 +255,11 @@ pub enum BrowserEffect {
         id: String,
     },
     /// Show browser settings
-    #[effect(view, row)]
+    ///
+    /// The browser's own view, not the settings row's: a view there would
+    /// be the row's disclosure, a private one that keeps clearing site data
+    /// from an agent.
+    #[effect(view)]
     ShowSettings,
     /// Filter library
     #[effect(view, row)]
