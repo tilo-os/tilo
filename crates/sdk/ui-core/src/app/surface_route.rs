@@ -80,7 +80,7 @@ impl App {
                 .as_ref()
                 .is_some_and(|actions| !actions.is_empty())
             {
-                return self.withdraw_action_surface(publication_app_id);
+                return self.withdraw_action_surface();
             }
             return true;
         }
@@ -131,7 +131,7 @@ impl App {
             {
                 return true;
             }
-            return self.withdraw_action_surface(crate::collaboration::local_app_id());
+            return self.withdraw_action_surface();
         }
         let descriptors = tilo_actions::door::survey(&resources);
         self.capture_action_directory_snapshot(&resources, &descriptors);
@@ -154,10 +154,7 @@ impl App {
             || self
                 .collaboration
                 .manager
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: publication_app_id,
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             self.actions.last_published_actions = Some(descriptors);
             self.actions.published_surface = Some(state);

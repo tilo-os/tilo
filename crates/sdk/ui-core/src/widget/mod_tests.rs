@@ -11,9 +11,7 @@ struct CollabProbe {
 
 impl Collaborative for CollabProbe {
     fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
-        vec![crate::collaboration::CollabRequest::ClearContinuation {
-            app_id: "probe".into(),
-        }]
+        vec![crate::collaboration::CollabRequest::ClearContinuation]
     }
 
     fn handle_collab_event(&mut self, _: &crate::collaboration::CollabEvent) {

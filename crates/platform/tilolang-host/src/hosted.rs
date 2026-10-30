@@ -582,12 +582,10 @@ impl Hosted {
             }
             HandoffRequest::OwnerView { .. } => return,
         };
-        let app_id = self.record.route().app_id.clone();
         if let Err(error) = self
             .record
             .manager_mut()
             .try_send(CollabRequest::ReportHandoff {
-                app_id,
                 message: report.encode(),
             })
         {
@@ -807,10 +805,7 @@ impl Hosted {
                 if self
                     .record
                     .manager_mut()
-                    .send(CollabRequest::PublishActionSurface {
-                        app_id: self.spec.app.clone(),
-                        delta,
-                    })
+                    .send(CollabRequest::PublishActionSurface { delta })
                 {
                     self.published = Some((Vec::new(), state));
                     self.published_from = None;
@@ -839,10 +834,7 @@ impl Hosted {
             || self
                 .record
                 .manager_mut()
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: self.spec.app.clone(),
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
@@ -895,10 +887,7 @@ impl Hosted {
             && !self
                 .record
                 .manager_mut()
-                .send(CollabRequest::PublishActionSurface {
-                    app_id: self.spec.app.clone(),
-                    delta,
-                })
+                .send(CollabRequest::PublishActionSurface { delta })
         {
             // What the broker holds is no longer what was patched: a later turn sends the
             // surface whole, as a reset.

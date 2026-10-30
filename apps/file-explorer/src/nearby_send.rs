@@ -22,7 +22,6 @@ use ui::collaboration::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget,
 };
 
-const APP_ID: &str = "so.tilo.file-explorer";
 /// How long a background snapshot may go unanswered before the next
 /// announced change asks again regardless: a request sent while the route
 /// was going down is never answered, and waiting on it would stop every
@@ -118,7 +117,6 @@ impl NearbySendState {
         self.requests
             .push_back(CollabRequest::NearbyTransferCommand {
                 request_id,
-                app_id: APP_ID.into(),
                 command,
             });
     }

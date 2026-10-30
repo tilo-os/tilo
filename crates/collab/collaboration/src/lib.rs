@@ -524,47 +524,34 @@ pub enum CollabRequest {
     /// whole. For small surfaces a caller builds directly; the toolkit's own
     /// publication sends [`Self::PublishActionSurface`].
     PublishActions {
-        app_id: String,
         actions: Vec<ExportedAction>,
     },
     /// Change this application's exported resource/action surface: the
     /// delta from what the broker holds (or, when it resets, a whole new
     /// surface). See [`SurfacePublication`].
     PublishActionSurface {
-        app_id: String,
         delta: SurfaceDelta,
     },
     /// App-owned CRDT state projected for same-identity continuation. The
     /// local broker authenticates the route and stores this only for shell
     /// capture; it is never a room action or a restore command.
     ReportContinuation {
-        app_id: String,
         schema_version: u16,
         metadata: Vec<u8>,
     },
     /// Remove the last continuation report after the app can no longer
     /// produce a safe projection.
-    ClearContinuation {
-        app_id: String,
-    },
+    ClearContinuation,
     /// Answer a handoff request, or report a retirement
     /// ([`handoff::HandoffReport`], encoded). Session-local, on the primary
     /// route; never relayed to peers.
     ReportHandoff {
-        app_id: String,
         message: Vec<u8>,
-    },
-    /// Private, level-triggered playback descriptors for shell-mediated
-    /// same-person handoff. Never part of the room CRDT or peer fan-out.
-    ReportPlayback {
-        app_id: String,
-        reports_json: Vec<u8>,
     },
     /// A change to this app's entries in the system's persistent search
     /// index ([`crate::search::index_publication::IndexDelta`], encoded).
     /// Bound to the certified primary route; never relayed to peers.
     PublishSearchIndex {
-        app_id: String,
         delta_json: Vec<u8>,
     },
     /// One generic active-session continuity transition. The shell binds the
@@ -575,14 +562,12 @@ pub enum CollabRequest {
     },
     RealtimeCommand {
         request_id: u64,
-        app_id: String,
         command: collab_types::realtime::RealtimeCommand,
     },
     /// One Files-owned picker/status/consent command. The broker authenticates
     /// the app route and keeps payload bytes on the shell transfer transport.
     NearbyTransferCommand {
         request_id: u64,
-        app_id: String,
         command: runtime_collab::NearbyTransferCommand,
     },
     OpenWorkspaceControl {

@@ -166,14 +166,13 @@ impl App {
     }
 
     pub(super) fn report_handoff(&mut self, report: &HandoffReport) -> bool {
-        let Some(route) = self.private_continuity_route() else {
+        if self.private_continuity_route().is_none() {
             tracing::warn!("handoff: no instance route to answer on");
             return false;
-        };
+        }
         self.collaboration
             .manager
             .send(CollabRequest::ReportHandoff {
-                app_id: route.app_id,
                 message: report.encode(),
             })
     }
@@ -259,10 +258,7 @@ mod tests {
             .borrow()
             .iter()
             .filter_map(|request| match request {
-                CollabRequest::ReportHandoff { app_id, message } => {
-                    assert_eq!(app_id, "dev.tilo.handoff");
-                    HandoffReport::decode(message)
-                }
+                CollabRequest::ReportHandoff { message } => HandoffReport::decode(message),
                 _ => None,
             })
             .collect()
@@ -694,7 +690,7 @@ mod owner_view_tests {
             assert!(app.continuation.owner_view.awaiting_claim);
             assert!(requests.borrow().iter().any(|request| matches!(
                 request,
-                crate::collaboration::CollabRequest::ClearContinuation { .. }
+                crate::collaboration::CollabRequest::ClearContinuation
             )));
             assert!(requests.borrow().iter().all(|request| !matches!(
                 request,
@@ -804,7 +800,7 @@ mod owner_view_tests {
                     .iter()
                     .filter(|request| matches!(
                         request,
-                        crate::collaboration::CollabRequest::ClearContinuation { .. }
+                        crate::collaboration::CollabRequest::ClearContinuation
                     ))
                     .count(),
                 epoch

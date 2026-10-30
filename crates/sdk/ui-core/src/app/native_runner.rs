@@ -4142,7 +4142,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
             tracing::debug!(target: "tilo.app.activation", "existing native window activation requested");
         }
-        app.publish_playback_handoff();
 
         // A "just typed" highlight fades in steps, each a wake deadline: a
         // step that came due paints once, and the loop sleeps between them

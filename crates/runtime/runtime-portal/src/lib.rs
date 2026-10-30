@@ -94,10 +94,22 @@ pub enum NotAvailable {
     /// The service read the request and refused it, saying why.
     #[error("refused: {0}")]
     Refused(String),
-    /// Capability error talking to the service (rejected request, malformed reply).
-    #[cfg(feature = "rpc")]
-    #[error("capnp error: {0}")]
-    Capnp(#[from] capnp::Error),
+}
+
+/// A Cap'n Proto service's failure, in the terms every service shares: a
+/// connection that went away is a failed connection, anything else the
+/// service said is its refusal.
+#[cfg(feature = "rpc")]
+impl From<capnp::Error> for NotAvailable {
+    fn from(error: capnp::Error) -> Self {
+        match error.kind {
+            capnp::ErrorKind::Disconnected => Self::ConnectionFailed(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                error.extra,
+            )),
+            _ => Self::Refused(error.extra),
+        }
+    }
 }
 
 /// True iff we appear to be running inside a Tilo session. Heuristic only —

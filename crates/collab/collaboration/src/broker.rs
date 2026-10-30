@@ -458,30 +458,30 @@ impl BrokerTransport {
             // A surface delta waiting for room folds into the one already
             // waiting for this app, so a burst of republications is one
             // delta however long the shovel stalls.
-            SdkCommand::Primary(CollabRequest::PublishActionSurface { app_id, delta }) => {
+            SdkCommand::Primary(CollabRequest::PublishActionSurface { delta }) => {
                 let waiting = self.spill.iter_mut().find_map(|parked| match parked {
-                    SdkCommand::Primary(CollabRequest::PublishActionSurface {
-                        app_id: parked_app,
-                        delta: older,
-                    }) if *parked_app == app_id => Some(older),
+                    SdkCommand::Primary(CollabRequest::PublishActionSurface { delta: older }) => {
+                        Some(older)
+                    }
                     _ => None,
                 });
                 if let Some(older) = waiting {
                     *older = std::mem::take(older).then(delta);
                 } else {
                     self.spill.push_back(SdkCommand::Primary(
-                        CollabRequest::PublishActionSurface { app_id, delta },
+                        CollabRequest::PublishActionSurface { delta },
                     ));
                 }
             }
             // A whole surface supersedes an older one still waiting.
-            SdkCommand::Primary(CollabRequest::PublishActions { app_id, actions }) => {
+            SdkCommand::Primary(CollabRequest::PublishActions { actions }) => {
                 let waiting = self.spill.iter_mut().find(|parked| {
-                    matches!(parked, SdkCommand::Primary(CollabRequest::PublishActions {
-                        app_id: parked_app, ..
-                    }) if *parked_app == app_id)
+                    matches!(
+                        parked,
+                        SdkCommand::Primary(CollabRequest::PublishActions { .. })
+                    )
                 });
-                let whole = SdkCommand::Primary(CollabRequest::PublishActions { app_id, actions });
+                let whole = SdkCommand::Primary(CollabRequest::PublishActions { actions });
                 if let Some(older) = waiting {
                     *older = whole;
                 } else {
@@ -1493,7 +1493,6 @@ fn bounded_rpc_diagnostic(error: &runtime_portal::NotAvailable) -> (&'static str
                 .collect();
             ("refused", detail, chars.next().is_some())
         }
-        runtime_portal::NotAvailable::Capnp(error) => ("capnp", format!("{:?}", error.kind), false),
         runtime_portal::NotAvailable::ServiceFdMissing => {
             ("service_fd_missing", String::new(), false)
         }
@@ -6232,9 +6231,7 @@ async fn dispatch_sdk_request(
             super::external_moderation::execute(&route.channel, &command, on_behalf_of, &reply)
                 .await;
         }
-        // No host takes playback reports: the shell's same-person media
-        // handoff reads none yet.
-        CollabRequest::Hello { .. } | CollabRequest::ReportPlayback { .. } => {}
+        CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
             Ok(bytes) => match route.channel.send(&bytes).await {
                 Ok(()) => inbound_tx.state.change_sent(),
@@ -6410,7 +6407,7 @@ async fn dispatch_sdk_request(
                 })
                 .await;
         }
-        CollabRequest::PublishActions { app_id: _, actions } => {
+        CollabRequest::PublishActions { actions } => {
             if let Err(error) = route.channel.publish_actions(&actions).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
@@ -6420,7 +6417,7 @@ async fn dispatch_sdk_request(
                 inbound_tx.state.notify_events();
             }
         }
-        CollabRequest::PublishActionSurface { app_id: _, delta } => {
+        CollabRequest::PublishActionSurface { delta } => {
             if let Err(error) = route.channel.publish_action_surface(&delta).await {
                 tracing::warn!(%error, "collab: publishing resource/action surface failed; republishing");
                 inbound_tx
@@ -6431,7 +6428,6 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::ReportContinuation {
-            app_id: _,
             schema_version,
             metadata,
         } => {
@@ -6443,20 +6439,17 @@ async fn dispatch_sdk_request(
                 tracing::warn!(%error, "collab: reporting continuation metadata failed");
             }
         }
-        CollabRequest::ClearContinuation { app_id: _ } => {
+        CollabRequest::ClearContinuation => {
             if let Err(error) = route.channel.clear_continuation().await {
                 tracing::warn!(%error, "collab: clearing continuation metadata failed");
             }
         }
-        CollabRequest::ReportHandoff { app_id: _, message } => {
+        CollabRequest::ReportHandoff { message } => {
             if let Err(error) = route.channel.handoff(&message).await {
                 tracing::warn!(%error, "collab: reporting a handoff step failed");
             }
         }
-        CollabRequest::PublishSearchIndex {
-            app_id: _,
-            delta_json,
-        } => {
+        CollabRequest::PublishSearchIndex { delta_json } => {
             if let Err(error) = route.channel.publish_search_index(&delta_json).await {
                 tracing::warn!(%error, "collab: publishing search index entries failed");
             }
@@ -6469,7 +6462,6 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::RealtimeCommand {
             request_id,
-            app_id: _,
             command,
         } => {
             let result = serde_json::to_vec(&command)
@@ -6497,7 +6489,6 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::NearbyTransferCommand {
             request_id,
-            app_id: _,
             command,
         } => {
             let result = route
@@ -9377,8 +9368,7 @@ mod tests {
         for n in 0..total {
             // One megabyte each: the burst is far past the byte budget too.
             let command = TransportCommand::Primary(CollabRequest::ReportHandoff {
-                app_id: format!("app-{n}"),
-                message: vec![0; 1024 * 1024],
+                message: vec![u8::try_from(n).unwrap(); 1024 * 1024],
             });
             assert_eq!(transport.submit(command), Ok(()), "command {n} was refused");
             assert!(
@@ -9394,19 +9384,20 @@ mod tests {
         while seen.len() < total {
             let mut moved = false;
             while let Ok(queued) = shovel.try_recv() {
-                let SdkCommand::Primary(CollabRequest::ReportHandoff { app_id, .. }) =
-                    queued.command
+                let SdkCommand::Primary(CollabRequest::ReportHandoff { message }) = queued.command
                 else {
                     panic!("unexpected command");
                 };
-                seen.push(app_id);
+                seen.push(message[0]);
                 moved = true;
             }
             // The owner's drain is what refills the queue after a wake.
             transport.drain(&mut events);
             assert!(moved || !transport.spill.is_empty() || seen.len() == total);
         }
-        let expected = (0..total).map(|n| format!("app-{n}")).collect::<Vec<_>>();
+        let expected = (0..total)
+            .map(|n| u8::try_from(n).unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(seen, expected);
         assert!(transport.state.is_healthy());
     }
@@ -9418,7 +9409,6 @@ mod tests {
     fn a_command_larger_than_the_whole_budget_is_refused_without_closing_the_bridge() {
         let (mut transport, mut shovel) = parking_transport(8);
         let huge = TransportCommand::Primary(CollabRequest::ReportHandoff {
-            app_id: "notes".into(),
             message: vec![0; SDK_COMMAND_QUEUE_BYTES + 1024 * 1024],
         });
         assert!(matches!(
@@ -9427,11 +9417,7 @@ mod tests {
         ));
         assert!(transport.state.is_healthy());
         assert_eq!(
-            transport.submit(TransportCommand::Primary(
-                CollabRequest::ClearContinuation {
-                    app_id: "notes".into()
-                }
-            )),
+            transport.submit(TransportCommand::Primary(CollabRequest::ClearContinuation)),
             Ok(())
         );
         assert!(shovel.try_recv().is_ok());
@@ -9445,7 +9431,6 @@ mod tests {
         let (mut transport, mut shovel) = parking_transport(1);
         let surface = |n: usize| {
             TransportCommand::Primary(CollabRequest::PublishActionSurface {
-                app_id: "notes".into(),
                 delta: SurfaceDelta {
                     removed: vec![format!("page-{n}")],
                     ..SurfaceDelta::default()

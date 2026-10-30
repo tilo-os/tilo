@@ -355,32 +355,6 @@ pub fn playback_sessions() -> Vec<PlaybackSession> {
     sessions
 }
 
-/// Private local-process reports for the authenticated app-to-shell broker.
-/// The caller supplies the broker-certified app/workspace route, replacing
-/// executable-name and environment hints before serialization.
-pub fn playback_reports(app_id: &str, workspace_id: &str) -> Vec<PlaybackReport> {
-    registry()
-        .lock()
-        .map(|sessions| {
-            sessions
-                .values()
-                .take(MAX_PLAYBACK_REPORTS)
-                .map(|registered| {
-                    let mut report = registered.report.clone();
-                    report.session.app_id = app_id.to_string();
-                    report.session.id = format!(
-                        "{}:{}",
-                        app_id,
-                        report.session.id.rsplit(':').next().unwrap_or("media")
-                    );
-                    report.workspace_id = workspace_id.to_string();
-                    report
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Replace the shell-owned snapshot of standards-discovered players.
 ///
 /// Unlike authenticated app reports, discovery has no broker route to trust.
@@ -620,12 +594,11 @@ mod tests {
                 audible: true,
                 controller_bus_name: Some("org.mpris.MediaPlayer2.tilo-music"),
             });
-            let report = playback_reports("so.tilo.music", "workspace")
+            let session = playback_sessions()
                 .into_iter()
-                .find(|report| report.session.title == "A durable song")
+                .find(|session| session.title == "A durable song")
                 .expect("app-owned playback is reported");
-            assert_eq!(report.session.app_id, "so.tilo.music");
-            assert_eq!(report.workspace_id, "workspace");
+            let report = playback_report(&session.id).expect("its source resolves");
             assert!(matches!(
                 report.source,
                 HandoffSource::AppResource { ref uri } if uri == "music://track/track-42"

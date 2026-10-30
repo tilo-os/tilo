@@ -527,8 +527,7 @@ fn a_recognised_cause_is_named_without_quoting_the_process() {
         (
             Some(1),
             "error: service connection failed: joining collaboration route failed: \
-             capnp error: Failed: remote exception: collaboration launch is not an \
-             authenticated shell-managed process",
+             refused: collaboration launch is not an authenticated shell-managed process",
             "The app couldn't join this workspace's collaboration service, so it \
              stopped before opening. The desktop log says why.",
         ),
