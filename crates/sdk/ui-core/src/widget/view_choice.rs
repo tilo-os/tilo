@@ -137,6 +137,14 @@ impl ViewChoice {
         let _ = self.action.install_custody(domain, attachment);
     }
 
+    /// Choose `entry` through the published action, as a person's press
+    /// does: the host runs it and the widget answers it in [`Self::start`].
+    pub(crate) fn emit(&mut self, entry: String) {
+        if let Err(error) = self.action.emit(entry) {
+            tracing::warn!(%error, control = %self.id, "a choice refused its entry");
+        }
+    }
+
     pub(crate) fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.take()
     }
