@@ -1192,6 +1192,27 @@ impl Compositor {
         Ok(self.data.backend.read_back(&mut self.data.state, target)?)
     }
 
+    /// What `region` of the output `name` shows now — its top-left corner
+    /// and size in that output's physical pixels, as shown — read back as
+    /// rows of R, G, B, A.
+    ///
+    /// # Errors
+    /// The display is gone or asleep, or nothing could be rendered.
+    pub fn read_back_region(
+        &mut self,
+        name: &str,
+        region: (i32, i32, i32, i32),
+    ) -> Result<Screenshot, Error> {
+        let (x, y, width, height) = region;
+        self.read_back(&capture::Target::Output {
+            name: name.to_owned(),
+            region: smithay::utils::Rectangle::new(
+                (x, y).into(),
+                (width.max(1), height.max(1)).into(),
+            ),
+        })
+    }
+
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)

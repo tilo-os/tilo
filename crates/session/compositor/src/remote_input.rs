@@ -34,14 +34,6 @@ mod keycode {
     pub(super) const RIGHT_CTRL: u32 = 97;
 }
 
-/// Whether `keycode` is Ctrl or Alt, either side.
-fn is_chord_modifier(keycode: u32) -> bool {
-    matches!(
-        keycode,
-        keycode::LEFT_CTRL | keycode::RIGHT_CTRL | keycode::LEFT_ALT | keycode::RIGHT_ALT
-    )
-}
-
 /// Whether the person's held keys complete the cut chord.
 fn completes_cut(held: &BTreeSet<u32>) -> bool {
     let ctrl = held.contains(&keycode::LEFT_CTRL) || held.contains(&keycode::RIGHT_CTRL);
@@ -147,8 +139,11 @@ mod tests {
         press(&mut firewall, &[keycode::LEFT_CTRL, keycode::LEFT_ALT, 30]);
         assert!(!firewall.is_cut(), "neither chord cuts");
         // The chord cuts, and its Escape never reaches the window.
-        assert!(firewall.chord(keycode::LEFT_CTRL, true));
-        assert!(firewall.chord(keycode::RIGHT_ALT, true));
+        assert!(
+            !firewall.chord(keycode::LEFT_CTRL, true),
+            "the modifiers alone are the window's"
+        );
+        assert!(!firewall.chord(keycode::RIGHT_ALT, true));
         assert!(
             firewall.chord(keycode::ESCAPE, true),
             "the completing press is the chord's"

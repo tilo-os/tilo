@@ -18184,8 +18184,12 @@ name = "tilo-capture-studio"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "tilo-app",
  "tilo-callstream",
  "tilo-media",
+ "tilo-sheets",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -21583,6 +21587,7 @@ dependencies = [
  "tilo-auth",
  "tilo-bluetooth-agent",
  "tilo-bluez",
+ "tilo-capture-studio",
  "tilo-compositor",
  "tilo-connectivity-service",
  "tilo-copy-lint",

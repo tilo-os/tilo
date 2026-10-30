@@ -94,7 +94,7 @@ fn unique(directory: &Path) -> PathBuf {
 }
 
 /// Every display on, each at its place in the layout.
-fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
+pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
     let mut placed = Vec::new();
     for output in compositor.outputs() {
         let Some((x, y, width, _)) = output.rect else {

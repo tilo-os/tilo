@@ -50,6 +50,9 @@ tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settin
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }
+# The capture studio the session shows over the desktop, and the recorder
+# that feeds it the compositor's frames.
+tilo-capture-studio = { path = "../capture-studio" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }

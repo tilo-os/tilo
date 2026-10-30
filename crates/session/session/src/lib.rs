@@ -28,6 +28,7 @@
 mod a11y_settings;
 mod app_icons;
 pub mod capture;
+mod capture_studio;
 mod chrome;
 mod config;
 mod controls;
@@ -181,6 +182,9 @@ pub struct Options {
     pub wake: tilo_service::LoopWake,
     /// The screenshots the portal asks for, which the session takes.
     pub captures: Option<capture::Captures>,
+    /// The folder the capture studio keeps its Screenshots folder in;
+    /// `None`: the person's Pictures folder, else their home.
+    pub pictures: Option<std::path::PathBuf>,
     /// The desktop services the session runs beside: what apps sent their
     /// notifications daemon, the questions they ask, and the portal they
     /// serve. The session feeds it what it knows of itself: which apps run
@@ -297,6 +301,7 @@ impl Default for Options {
             verifier: std::sync::Arc::new(unlock::Unavailable),
             wake: tilo_service::LoopWake::default(),
             captures: None,
+            pictures: None,
             desktop: None,
             questions: None,
             portal: None,
@@ -1106,6 +1111,8 @@ pub struct Session {
     unlocking: Unlocking,
     /// The screenshots asked for.
     captures: Option<capture::Captures>,
+    /// The capture studio the session shows, and answers the asks of.
+    capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
     /// Whether the night light is on, and whether a change is kept in the
@@ -1311,6 +1318,9 @@ impl Session {
             lock,
         } = mount_sheets(&mut compositor, &mut doors, &options);
 
+        // The capture studio, over everything it captures.
+        let capture_studio = capture_studio::mount(&mut compositor, &mut doors, &options);
+
         let shortcuts = std::mem::take(&mut options.config.shortcuts);
         // The desktop's own chords win over every app's: the portal's
         // bindings step aside for the table the session answers first.
@@ -1431,6 +1441,7 @@ impl Session {
                 wake: loop_wake,
             },
             captures: options.captures,
+            capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             night_light: (options.config.night_light, options.config.kept),
             portal: options.portal,
@@ -1763,6 +1774,9 @@ impl Session {
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
+        }
+        if let Some(studio) = &mut self.capture_studio {
+            studio.serve(&mut self.compositor);
         }
         if let Some(portal) = &mut self.portal {
             portal.serve(&mut self.compositor, &self.shared.handle);
