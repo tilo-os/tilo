@@ -61,6 +61,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // The chip takes a finger's room on touch (`small_target` is laid out right).
             Kind::SmallHitTarget => "",
             Kind::ScrollsSideways => "sideways",
+            // Layout snaps every edge, broken or not.
+            Kind::OffPixel => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -70,6 +72,27 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
         );
     }
     assert!(report.new_findings().next().is_some(), "the check fails");
+}
+
+#[test]
+fn edges_sized_in_fractions_of_a_rem_land_on_device_pixels_at_every_display_scale() {
+    let scales = layout_check::layouts()
+        .iter()
+        .map(|layout| layout.display_scale)
+        .collect::<Vec<_>>();
+    for scale in [1.0, 1.5, 2.0] {
+        assert!(scales.contains(&scale), "the check lays out at {scale}x");
+    }
+    let report = layout_check::check(&Options {
+        dirs: vec![manifest().join("tests/layout_check/pixels")],
+        ..Options::default()
+    })
+    .expect("the fixture lays out");
+    assert!(
+        report.findings.is_empty(),
+        "every edge stands on a device pixel:\n{}",
+        layout_check::render(&report)
+    );
 }
 
 #[test]

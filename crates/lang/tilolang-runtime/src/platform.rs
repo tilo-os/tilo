@@ -314,9 +314,9 @@ impl Core {
         }
     }
 
-    /// A version as the language holds it: who, when, by which action.
     /// A version of `of` as a `host.Version`: who, when, what, the task run, its kind, the
-    /// fields it changed by name, and the resource.
+    /// fields it changed by name, and the resource; then the id of the action that made it,
+    /// which `v.is(edit)` compares (`tilolang::host::action_id_at`).
     fn version_value(&self, v: crate::store::Version, of: &ResourceRef) -> Value {
         let task = v.task.map(|run| {
             let task = run.task().to_owned();
@@ -346,6 +346,7 @@ impl Core {
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
+            Value::Text(v.action),
         ])
     }
 
@@ -787,6 +788,9 @@ impl Core {
                 args: shown.args.clone(),
                 author,
             }),
+            // After its fields, the action's id, which `a.is(edit)` compares
+            // (`tilolang::host::action_id_at`).
+            Value::Text(action.id.clone()),
         ])))
     }
 

@@ -4040,6 +4040,12 @@ impl TextInput {
         self.document_inset = true;
     }
 
+    /// Set the text flush with the field's edge, without the document's inset: a body read
+    /// where it stands under a name, as a message's does.
+    pub(crate) fn drop_document_inset(&mut self) {
+        self.document_inset = false;
+    }
+
     /// Where the trailing accessory sits: a square at the field's trailing
     /// edge, one band tall, while it is shown.
     fn accessory_rect(&self) -> Option<Rect> {

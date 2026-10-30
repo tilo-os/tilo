@@ -19,15 +19,18 @@ pub enum Kind {
     SmallHitTarget,
     /// Content is wider than the window or its scroll view, so the page scrolls sideways.
     ScrollsSideways,
+    /// An edge between two device pixels at the display's scale, drawn blurred across both.
+    OffPixel,
 }
 
 impl Kind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
         Self::SmallHitTarget,
         Self::ScrollsSideways,
+        Self::OffPixel,
     ];
 
     pub fn name(self) -> &'static str {
@@ -37,6 +40,7 @@ impl Kind {
             Self::Overlap => "overlap",
             Self::SmallHitTarget => "small-hit-target",
             Self::ScrollsSideways => "scrolls-sideways",
+            Self::OffPixel => "off-pixel",
         }
     }
 }
@@ -57,6 +61,10 @@ pub struct Problem {
 
 /// Slack for rounding: layout places edges on fractions of a pixel.
 const EPSILON: f64 = 1.0;
+
+/// How far from a device pixel an edge may stand, in device pixels: what the toolkit's single
+/// precision coordinates carry, far under anything a person could see.
+const PIXEL_SLACK: f64 = 0.01;
 
 fn rect(r: [f64; 4]) -> Rect {
     Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3])
@@ -190,17 +198,23 @@ struct Walk<'a> {
     across: bool,
     /// The smallest a target may be, where the face is the target (on touch).
     min_target: Option<f64>,
+    /// Device pixels per logical pixel.
+    display_scale: f64,
+    /// Inside a box already found off the device pixels: what it holds moves with it.
+    off_pixel: bool,
     out: &'a mut Vec<Problem>,
 }
 
 /// Every problem of the frame `root`, laid out in `viewport`, where a target needs `min_target`
 /// logical pixels on each side. On a fine pointer the toolkit grows each control's hit area
 /// about its centre to the minimum, so targets are checked where the face itself must be the
-/// target: on touch, where faces grow to it.
+/// target: on touch, where faces grow to it. At `display_scale` device pixels per logical
+/// pixel, every edge must stand on a device pixel.
 pub fn inspect(
     root: &InspectionNode,
     viewport: (u32, u32),
     min_target: Option<f64>,
+    display_scale: f64,
 ) -> Vec<Problem> {
     let mut out = Vec::new();
     let viewport = Rect::new(0.0, 0.0, f64::from(viewport.0), f64::from(viewport.1));
@@ -209,6 +223,8 @@ pub fn inspect(
         beyond: false,
         across: false,
         min_target,
+        display_scale,
+        off_pixel: false,
         out: &mut out,
     };
     walk.node(
@@ -256,6 +272,10 @@ impl Walk<'_> {
         }
         let was_beyond = self.beyond;
         let was_across = self.across;
+        let was_off_pixel = self.off_pixel;
+        if geometric {
+            self.pixels(node, keys, own);
+        }
         if geometric && !hangs(&node.widget) {
             self.reach(node, keys, own, parent, scroller);
             if let Some(min) = self.min_target {
@@ -296,6 +316,36 @@ impl Walk<'_> {
         }
         self.beyond = was_beyond;
         self.across = was_across;
+        self.off_pixel = was_off_pixel;
+    }
+
+    /// A box with an edge between two device pixels: the outermost such box only, since what
+    /// it holds is placed from its edges.
+    fn pixels(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
+        if self.off_pixel {
+            return;
+        }
+        let scale = self.display_scale;
+        let off = |edge: f64| (edge * scale - (edge * scale).round()).abs() > PIXEL_SLACK;
+        let edges = [
+            ("left", own.x0),
+            ("top", own.y0),
+            ("right", own.x1),
+            ("bottom", own.y1),
+        ];
+        let Some((side, edge)) = edges.into_iter().find(|(_, edge)| off(*edge)) else {
+            return;
+        };
+        self.off_pixel = true;
+        self.push(
+            Kind::OffPixel,
+            node,
+            keys,
+            format!(
+                "its {side} edge at {edge:.3} falls at device pixel {:.3} at {scale}x",
+                edge * scale
+            ),
+        );
     }
 
     /// A box past its container's, or past the window's sides.
@@ -607,7 +657,7 @@ mod tests {
     fn overlaps(children: Vec<InspectionNode>) -> Vec<Problem> {
         let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
         shell.children = children;
-        inspect(&shell, (400, 300), None)
+        inspect(&shell, (400, 300), None, 1.0)
             .into_iter()
             .filter(|p| p.kind == Kind::Overlap)
             .collect()
@@ -656,7 +706,7 @@ mod tests {
             ),
         ];
         let small = |min| {
-            inspect(&root, (400, 300), min)
+            inspect(&root, (400, 300), min, 1.0)
                 .into_iter()
                 .filter(|p| p.kind == Kind::SmallHitTarget)
                 .map(|p| p.id)
@@ -713,5 +763,68 @@ mod tests {
             ),
         ]);
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    fn stack_node(id: &str, rect: [f64; 4], children: Vec<InspectionNode>) -> InspectionNode {
+        InspectionNode {
+            path: id.to_owned(),
+            widget: "Stack".to_owned(),
+            test_id: Some(id.to_owned()),
+            focusable: false,
+            rect,
+            child_clip: None,
+            layout: None,
+            semantics: None,
+            children,
+        }
+    }
+
+    fn off_pixel(root: &InspectionNode, scale: f64) -> Vec<Vec<String>> {
+        inspect(root, (400, 300), None, scale)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::OffPixel)
+            .map(|problem| problem.keys)
+            .collect()
+    }
+
+    #[test]
+    fn an_edge_between_device_pixels_is_found_at_the_outermost_box_it_moves() {
+        // 20.5 is a device pixel at 2x but not at 1x; 20 + 2/3 is one at 1.5x only.
+        let third = 20.0 + 2.0 / 3.0;
+        let window = |inner: [f64; 4]| {
+            stack_node(
+                "window",
+                [0.0, 0.0, 400.0, 300.0],
+                vec![stack_node(
+                    "column",
+                    inner,
+                    vec![stack_node(
+                        "label",
+                        [inner[0], inner[1], 50.0, 10.0],
+                        vec![],
+                    )],
+                )],
+            )
+        };
+        let half = window([20.5, 10.0, 100.0, 40.0]);
+        assert_eq!(
+            off_pixel(&half, 1.0),
+            vec![vec!["column".to_owned(), "window".to_owned()]],
+            "found at the column, not again at the label it moves"
+        );
+        assert!(off_pixel(&half, 2.0).is_empty());
+        assert_eq!(off_pixel(&half, 1.5).len(), 1);
+
+        let thirds = window([third, 10.0, 100.0, 40.0]);
+        assert!(off_pixel(&thirds, 1.5).is_empty());
+        assert_eq!(off_pixel(&thirds, 2.0).len(), 1);
+        assert_eq!(off_pixel(&thirds, 1.0).len(), 1);
+
+        assert_eq!(
+            off_pixel(&window([21.0, 10.0, 100.0, 40.0]), 1.5).len(),
+            1,
+            "a whole logical pixel is not a device pixel at 1.5x"
+        );
+        assert!(off_pixel(&window([20.0, 10.0, 100.0, 40.0]), 1.5).is_empty());
     }
 }

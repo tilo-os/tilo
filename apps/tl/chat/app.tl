@@ -181,7 +181,7 @@ view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>
             button(start_thread(c, m), icon_only: true)
         }
         edit_button(m, editing, revised)
-        pin_button(m)
+        button(pin(m), icon_only: true)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -210,7 +210,7 @@ view thread_message(m: Message, replying: State<Option<Message>>, editing: State
             on press: set(replying, m)
         }
         edit_button(m, editing, revised)
-        pin_button(m)
+        button(pin(m), icon_only: true)
         ui.EmojiPicker {
             on pick(e): react(m, e)
         }
@@ -223,7 +223,7 @@ view composer(to: TextChannel | Thread, draft: State<RichText>, replying: State<
         std.reply_banner(r, cancel: set(replying, .none))
     }
     row {
-        ui.RichInput(value: draft, placeholder: placeholder, fill) {
+        rich_input(bind: draft, placeholder: placeholder, fill) {
             on submit: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
         }
         ui.Button("Send", icon: .send, icon_only: true) {
@@ -234,19 +234,10 @@ view composer(to: TextChannel | Thread, draft: State<RichText>, replying: State<
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if actions(m).any(a -> a.label == "Edit") {
+    if actions(m).any(a -> a.is(edit)) {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }
-    }
-}
-
-/// Pin, or Unpin on a pinned message.
-/// TODO(runtime): `button(pin(m), icon_only: true)`; in a hover toolbar its label stays as it was
-/// first presented when the message is pinned.
-view pin_button(m: Message) {
-    ui.Button(if m.pinned { "Unpin" } else { "Pin" }, icon: .pin, icon_only: true) {
-        on press: pin(m)
     }
 }
 
@@ -278,9 +269,7 @@ view message(m: Message, editing: State<Option<Message>>, revised: State<RichTex
     }
 }
 
-/// What a message says.
-/// TODO(language): "edited" once a view can read when the body last changed (a field's own
-/// versions); the message's last version is any change of it, a pin or a reaction too.
+/// What a message says, and that it was edited when its history holds an edit.
 view said(m: Message) {
     if not m.body.is_empty() {
         rich_text(m.body)
@@ -288,11 +277,14 @@ view said(m: Message) {
     for p in m.parts {
         text(p.body)
     }
+    if history(m).any(v -> v.is(edit)) {
+        ui.Text("edited", role: .caption, secondary: true)
+    }
 }
 
 /// A message being edited in place: its text in an editor, saved or left as it was.
 view revision(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    ui.RichInput(value: revised, placeholder: "Edit message") {
+    rich_input(bind: revised, placeholder: "Edit message") {
         on submit: edit(m, revised).then(set(editing, .none))
     }
     row {

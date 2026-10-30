@@ -2,9 +2,6 @@
 # are known and do not fail `tests/layout_check.rs`; a finding not named here does. Take a line
 # out once its problem is fixed (the test says when one no longer shows).
 #
-# The apps' own views.
-overflow mail › conversation › std.page [Stack]
-
 # At display scale 2 the detail column of a window with a draft open reaches past the window.
 scrolls-sideways mail › mailboxes › ui.NavShell [Scrollable]
 
