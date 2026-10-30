@@ -346,8 +346,8 @@ async fn on_session_bus(
         }
     };
     // What the daemon receives wakes the loop: the session's banners read
-    // the arrivals on its next turn, pixels and all. Nothing else takes
-    // them, so they reach the person rather than being thrown away.
+    // the arrivals on its next turn and show them as banners and in the
+    // centre, pixels and all; a fresh one does not wait for the loop's pass.
     let woken = Arc::clone(&wake);
     notifications.on_change(move || woken());
     // Sandboxed apps' notifications are the daemon's, shown the same way.
