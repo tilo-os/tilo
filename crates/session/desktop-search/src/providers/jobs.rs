@@ -199,7 +199,7 @@ mod tests {
         let jobs = Jobs(vec![job(progress("Encoding\u{7}", Some(3), Some(10)))]);
         let hits = jobs.query("");
         assert_eq!(hits.len(), 2);
-        assert_eq!(hits[0].subtitle.as_deref(), Some("Encoding (3 / 10)"));
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Encoding (3 of 10)"));
         assert_eq!(
             hits[1].target,
             Target::Cancel {
