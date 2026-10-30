@@ -1597,12 +1597,8 @@ impl Store {
                 connection,
                 generation,
             } => self.show_result(&connection.to_string(), generation)?,
-            DbEffect::ReadResult {
-                connection,
-                generation,
-            } => {
-                self.read_result(&connection.to_string(), generation)?;
-            }
+            // Read in `answer_effect`, before anything runs.
+            DbEffect::ReadResult { .. } => {}
             DbEffect::Rerun {
                 connection,
                 generation,
@@ -1711,8 +1707,7 @@ impl Store {
         {
             return self
                 .read_result(&connection.to_string(), generation)
-                .map(Effected::value)
-                .map_err(Into::into);
+                .map(Effected::value);
         }
         self.changed = true;
         if matches!(

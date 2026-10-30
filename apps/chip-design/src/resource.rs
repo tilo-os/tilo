@@ -445,7 +445,7 @@ impl Project {
     /// Its read is what discloses it, so removing a report or a receipt is
     /// offered to whoever may read it, an agent too, where the place's
     /// Inspect view is this window's own.
-    fn document_child(&self, id: &str) -> bool {
+    fn document_child(_: &Self, id: &str) -> bool {
         id.strip_prefix(<Self as tilo_resource::Resource>::KIND)
             .and_then(|rest| rest.strip_prefix("/derived/"))
             .is_some_and(|place| {

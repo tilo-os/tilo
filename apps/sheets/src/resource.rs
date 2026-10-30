@@ -1369,7 +1369,7 @@ impl Workbook {
     /// writing a sheet's cells, editing a chart or replying to a comment
     /// are offered to whoever may read it, an agent too, where its Open view
     /// is this window's own.
-    fn document_child(&self, id: &str) -> bool {
+    fn document_child(_: &Self, id: &str) -> bool {
         is_sheet_item(id) || annotation_place(id).is_some()
     }
 
