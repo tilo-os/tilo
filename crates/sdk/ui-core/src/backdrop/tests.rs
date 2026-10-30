@@ -718,3 +718,123 @@ fn a_provided_backdrop_of_the_right_size_is_drawn_in_place_of_the_placeholder() 
     );
     provide_backdrops(Vec::new());
 }
+
+/// Render the stripes with one floating panel drawn in `theme`'s floating
+/// finish over them, with the backdrop pass.
+fn render_floating_over_stripes(theme: &Theme) -> Vec<u8> {
+    let (width, height) = (256, 192);
+    let mut scene = stripes(width, height);
+    // A hard edge under the panel's left rim, which a lens moves.
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::BLACK,
+        None,
+        &Rect::new(0.0, 0.0, 80.0, f64::from(height)),
+    );
+    let recording = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    crate::surface::panel(&mut scene, Affine::IDENTITY, PANEL, 12.0, theme);
+    let frame = BackdropFrame::from_single_scene(recording.finish());
+    let mut renderer = OffscreenRenderer::new(width, height);
+    renderer.set_backdrop(Some(std::sync::Arc::new(frame)));
+    renderer.render(&scene, Color::BLACK)
+}
+
+fn glass_theme(refraction: f32) -> Theme {
+    let mut document = crate::theme::Preset::Glass.document();
+    document.material.floating = crate::tokens::Finish::Glass {
+        blur: 4.0,
+        tint: 0.2,
+        saturation: 1.0,
+        refraction,
+        edge_highlight: 0.5,
+        specular: 0.0,
+    };
+    Theme::from_document(&document).unwrap()
+}
+
+fn brightness(p: [u8; 4]) -> u16 {
+    u16::from(p[0]) + u16::from(p[1]) + u16::from(p[2])
+}
+
+/// A glass panel bends what is under it at its rim and leaves its middle
+/// as the blur shows it, lights its top edge, and holds every pixel of its
+/// body inside the band ink is measured against.
+#[test]
+fn a_glass_panel_bends_and_lights_its_rim_and_stays_legible() {
+    let width = 256;
+    let flat = render_floating_over_stripes(&glass_theme(0.0));
+    let bent = render_floating_over_stripes(&glass_theme(16.0));
+    // The middle is untouched by the lens.
+    let centre = (128, 96);
+    assert!(close(
+        pixel(&flat, width, centre.0, centre.1),
+        pixel(&bent, width, centre.0, centre.1),
+        2
+    ));
+    // Near the rim the backdrop is displaced: some pixel along a row a few
+    // pixels inside the left edge differs.
+    let moved = (66..90).any(|x| {
+        !close(
+            pixel(&flat, width, x, centre.1),
+            pixel(&bent, width, x, centre.1),
+            6,
+        )
+    });
+    assert!(moved, "the rim shows the backdrop where it was");
+
+    // The top edge is lit: its outermost row is lighter than the row below.
+    let theme = glass_theme(16.0);
+    let top = pixel(&bent, width, 128, 48);
+    let below = pixel(&bent, width, 128, 51);
+    assert!(
+        brightness(top) > brightness(below),
+        "lit rim {top:?} over body {below:?}"
+    );
+
+    // Every body pixel, wherever the stripes put black or white, keeps
+    // secondary ink at body-text contrast.
+    let ink = theme.tokens.colors.text_dim;
+    for y in (54..140).step_by(4) {
+        for x in (70..186).step_by(3) {
+            let [r, g, b, _] = pixel(&bent, width, x, y);
+            let seen = Color::from_rgba8(r, g, b, 255);
+            let ratio = crate::color::contrast_ratio(ink, seen);
+            assert!(
+                ratio >= crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST - 0.1,
+                "text_dim on the glass at ({x}, {y}) is {ratio:.2}:1"
+            );
+        }
+    }
+}
+
+/// Block's floating panel is its opaque ground with the strong border: no
+/// blur, no hairline, no shadow.
+#[test]
+fn a_block_panel_is_flat_and_bordered() {
+    let width = 256;
+    let theme = Theme::preset(crate::theme::Preset::Block);
+    let seen = render_floating_over_stripes(&theme);
+    let ground = crate::chrome::panel_ground(&theme).to_rgba8().to_u8_array();
+    assert!(close(pixel(&seen, width, 128, 96), ground, 1));
+    assert!(close(pixel(&seen, width, 100, 60), ground, 1));
+    let border = theme.tokens.colors.text_tertiary.to_rgba8().to_u8_array();
+    assert!(
+        close(pixel(&seen, width, 128, 48), border, 2),
+        "the top row is the border: {:?} vs {border:?}",
+        pixel(&seen, width, 128, 48)
+    );
+    // Outside, the stripes are untouched: no shadow darkens them.
+    let stripes_only = {
+        let mut renderer = OffscreenRenderer::new(width, 192);
+        renderer.render(&stripes(width, 192), Color::BLACK)
+    };
+    for (x, y) in [(128, 150), (128, 160), (200, 96)] {
+        assert!(close(
+            pixel(&seen, width, x, y),
+            pixel(&stripes_only, width, x, y),
+            1
+        ));
+    }
+}

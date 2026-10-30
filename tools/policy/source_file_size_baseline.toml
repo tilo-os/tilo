@@ -86,7 +86,6 @@
 "crates/sdk/ui-core/src/ui_graph.rs" = 5000
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500
 "crates/sdk/ui-core/src/widget/block_editor.rs" = 13500
-"crates/sdk/ui-core/src/widget/button.rs" = 4000
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
 "crates/sdk/ui-core/src/widget/command_palette.rs" = 3500
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
