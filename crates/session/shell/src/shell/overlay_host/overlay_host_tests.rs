@@ -1010,6 +1010,45 @@ fn build_fixture_harness() -> Harness {
     build_harness_with_host(host, chrome)
 }
 
+/// A sheet the shell hosts asks for frames while it moves, never for a
+/// change it has yet to draw: the pointer that made the change asks for that
+/// frame, and counting it as motion would keep the frame clock running.
+#[test]
+fn a_hosted_sheets_undrawn_change_is_not_motion() {
+    let mut h = build_harness();
+    h.host.force_power_menu_for_visual_test();
+    paint(&mut h);
+    let crate::shell::test_support::LaidOut { taffy, node, nodes } =
+        crate::shell::test_support::lay_out_in_viewport(&mut h.host, 1600.0, 900.0, &Theme::dark());
+    (h.taffy, h.root_node, h.node_map) = (taffy, node, nodes);
+    // The menu's frames run until it rests, as the loop runs them.
+    loop {
+        paint(&mut h);
+        if !h.host.layers.power_menu.is_animating(ui::time::now()) {
+            break;
+        }
+    }
+    let rows = h.host.power_menu_semantic_rects();
+    let lock = rows.first().expect("the menu shows its rows").1.center();
+    let _ = pump(
+        &mut h,
+        &ui::synthetic_input::cursor_moved(lock.x, lock.y),
+        Modifiers::default(),
+    );
+    assert!(
+        h.host
+            .layers
+            .power_menu
+            .widget()
+            .is_some_and(Widget::needs_redraw),
+        "the hover is a change still to draw"
+    );
+    assert!(
+        !h.host.layers.power_menu.is_animating(ui::time::now()),
+        "a change still to draw is not motion"
+    );
+}
+
 fn build_harness_with_host(
     mut host: ShellOverlayHost,
     chrome: crate::shell::chrome_state::Chrome,
