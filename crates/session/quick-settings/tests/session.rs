@@ -35,7 +35,7 @@ fn panel() -> Surface {
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
         .size((
-            tilo_quick_settings::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_WIDTH,
             u32::try_from(HEIGHT).unwrap(),
         ))
         .keyboard(Keyboard::OnDemand)
@@ -43,7 +43,11 @@ fn panel() -> Surface {
 
 #[test]
 fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
-    let mut session = session_with(&[panel()]);
+    let mut session = session_with(&[]);
+    // The desk as it stands before the panel appears: what the panel leaves
+    // alone has to stay exactly this, pixel for pixel.
+    let desk = drawn_desk(&mut session);
+    session.start_surface(&panel()).expect("the panel starts");
 
     assert!(
         session.surfaces().running("quick-settings"),
@@ -53,24 +57,20 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
 
     // What it drew is its own frame, composited like any client's: the panel
     // along the output's right edge, and what lies left of it untouched.
-    let frame = drawn(&mut session);
-    let inside = pixel(
-        &frame,
-        WIDTH - i32::try_from(tilo_quick_settings::PANEL_WIDTH).unwrap() / 2,
-        200,
+    let frame = drawn(&mut session, &desk);
+    save(&frame, "session-quick-settings");
+    let inside = pixel(&frame, WIDTH - width() / 2, 200);
+    assert_ne!(
+        inside,
+        pixel(&desk, WIDTH - width() / 2, 200),
+        "the panel draws its own frame"
     );
-    let outside = pixel(&frame, 20, HEIGHT - 20);
-    assert_ne!(inside, outside, "the panel draws its own frame");
+    let beside = WIDTH - width() - 20;
     assert_eq!(
-        pixel(
-            &frame,
-            WIDTH - i32::try_from(tilo_quick_settings::PANEL_WIDTH).unwrap() - 10,
-            200
-        ),
-        outside,
+        pixel(&frame, beside, 200),
+        pixel(&desk, beside, 200),
         "the panel takes exactly its width"
     );
-    save(&frame, "session-quick-settings");
 
     session.stop_surface("quick-settings");
     assert!(
@@ -81,7 +81,14 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
 
 #[test]
 fn the_session_asks_the_panel_to_show_the_notifications() {
-    let mut session = session_with(&[panel()]);
+    let mut session = session_with(&[]);
+    let desk = drawn_desk(&mut session);
+    session.start_surface(&panel()).expect("the panel starts");
+
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the session started the panel"
+    );
 
     // What the panel offers reaches the session as actions, like any app's.
     let deadline = Instant::now() + OPENING;
@@ -126,27 +133,20 @@ fn the_session_asks_the_panel_to_show_the_notifications() {
         "the panel ran it: {ended:?}"
     );
 
-    let frame = drawn(&mut session);
+    let frame = drawn(&mut session, &desk);
     save(&frame, "session-quick-settings-notifications");
     session.stop_surface("quick-settings");
 }
 
 /// The frame once the panel has drawn into it.
-fn drawn(session: &mut Session) -> Screenshot {
+fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
     let deadline = Instant::now() + OPENING;
-    let outside = {
-        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        pixel(&frame, 20, HEIGHT - 20)
-    };
+    let panel = pixel(desk, WIDTH - width() / 2, 200);
     loop {
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        let inside = pixel(
-            &frame,
-            WIDTH - i32::try_from(tilo_quick_settings::PANEL_WIDTH).unwrap() / 2,
-            200,
-        );
-        if inside != outside {
+        let inside = pixel(&frame, WIDTH - width() / 2, 200);
+        if inside != panel {
             return frame;
         }
         assert!(
@@ -154,6 +154,11 @@ fn drawn(session: &mut Session) -> Screenshot {
             "the panel shows nothing here (headless session without a renderer?)"
         );
     }
+}
+
+/// The width the panel is placed at.
+fn width() -> i32 {
+    i32::try_from(tilo_quick_settings::resource::PANEL_WIDTH).unwrap()
 }
 
 /// A pixel of `frame`, as the colour it shows.
@@ -174,6 +179,23 @@ fn session_with(surfaces: &[Surface]) -> Session {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session")
+}
+
+/// The desk as it stands before the surface appears: pumped until it has
+/// drawn, so what the surface leaves alone can be compared with it.
+fn drawn_desk(session: &mut Session) -> Screenshot {
+    let deadline = Instant::now() + OPENING;
+    let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    loop {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        // Settled: the same frame twice running, with something on it.
+        if frame.rgba == last.rgba && frame.rgba.iter().any(|byte| *byte != 0) {
+            return frame;
+        }
+        last = frame;
+        assert!(Instant::now() < deadline, "the desk never drew");
+    }
 }
 
 /// One turn of the session's loop.

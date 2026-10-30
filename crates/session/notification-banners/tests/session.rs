@@ -45,7 +45,13 @@ fn banners() -> Surface {
 
 #[test]
 fn the_session_starts_the_banners_as_a_trusted_client_on_their_layer() {
-    let mut session = session_with(&[banners()]);
+    let mut session = session_with(&[]);
+    // The desk as it stands before the banners appear: what they leave alone
+    // has to stay exactly this, pixel for pixel.
+    let desk = drawn_desk(&mut session);
+    session
+        .start_surface(&banners())
+        .expect("the banners start");
 
     assert!(
         session.surfaces().running("notification-banners"),
@@ -55,14 +61,14 @@ fn the_session_starts_the_banners_as_a_trusted_client_on_their_layer() {
 
     // What they drew is their own frame, composited like any client's: the
     // stack at the output's top right, and what lies left of it untouched.
-    let frame = drawn(&mut session);
-    let left = pixel(&frame, 20, HEIGHT - 20);
+    let frame = drawn(&mut session, &desk);
+    save(&frame, "session-banners");
+    let beside = WIDTH - width() - 20;
     assert_eq!(
-        pixel(&frame, WIDTH - i32::try_from(BANNERS).unwrap() - 10, 200),
-        left,
+        pixel(&frame, beside, 100),
+        pixel(&desk, beside, 100),
         "the banners take exactly their width"
     );
-    save(&frame, "session-banners");
 
     session.stop_surface("notification-banners");
     assert!(
@@ -73,7 +79,16 @@ fn the_session_starts_the_banners_as_a_trusted_client_on_their_layer() {
 
 #[test]
 fn the_session_asks_the_banners_to_focus_their_newest() {
-    let mut session = session_with(&[banners()]);
+    let mut session = session_with(&[]);
+    let desk = drawn_desk(&mut session);
+    session
+        .start_surface(&banners())
+        .expect("the banners start");
+
+    assert!(
+        session.surfaces().running("notification-banners"),
+        "the session started the banners"
+    );
 
     // What they offer reaches the session as actions, like any app's.
     let deadline = Instant::now() + OPENING;
@@ -122,23 +137,20 @@ fn the_session_asks_the_banners_to_focus_their_newest() {
         "the banners ran it: {ended:?}"
     );
 
-    let frame = drawn(&mut session);
+    let frame = drawn(&mut session, &desk);
     save(&frame, "session-banners-focused");
     session.stop_surface("notification-banners");
 }
 
 /// The frame once the banners have drawn into it.
-fn drawn(session: &mut Session) -> Screenshot {
+fn drawn(session: &mut Session, desk: &Screenshot) -> Screenshot {
     let deadline = Instant::now() + OPENING;
-    let left = {
-        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        pixel(&frame, 20, HEIGHT - 20)
-    };
+    let stack_before = pixel(desk, WIDTH - width() / 2, 100);
     loop {
         pump(session);
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        let stack = pixel(&frame, WIDTH - i32::try_from(BANNERS).unwrap() / 2, 100);
-        if stack != left {
+        let stack = pixel(&frame, WIDTH - width() / 2, 100);
+        if stack != stack_before {
             return frame;
         }
         assert!(
@@ -146,6 +158,11 @@ fn drawn(session: &mut Session) -> Screenshot {
             "the banners show nothing here (headless session without a renderer?)"
         );
     }
+}
+
+/// The width the banners are placed at.
+fn width() -> i32 {
+    i32::try_from(BANNERS).unwrap()
 }
 
 /// A pixel of `frame`, as the colour it shows.
@@ -166,6 +183,23 @@ fn session_with(surfaces: &[Surface]) -> Session {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session")
+}
+
+/// The desk as it stands before the surface appears: pumped until it has
+/// drawn, so what the surface leaves alone can be compared with it.
+fn drawn_desk(session: &mut Session) -> Screenshot {
+    let deadline = Instant::now() + OPENING;
+    let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    loop {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        // Settled: the same frame twice running, with something on it.
+        if frame.rgba == last.rgba && frame.rgba.iter().any(|byte| *byte != 0) {
+            return frame;
+        }
+        last = frame;
+        assert!(Instant::now() < deadline, "the desk never drew");
+    }
 }
 
 /// One turn of the session's loop.

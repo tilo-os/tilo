@@ -43,7 +43,11 @@ fn bar() -> Surface {
 
 #[test]
 fn the_session_starts_the_bar_as_a_trusted_client_on_its_layer() {
-    let mut session = session_with(&[bar()]);
+    let mut session = session_with(&[]);
+    // The desk as it stands before the bar appears: what the bar leaves alone
+    // has to stay exactly this, pixel for pixel.
+    let desk = drawn_desk(&mut session);
+    session.start_surface(&bar()).expect("the bar starts");
 
     assert!(
         session.surfaces().running("topbar"),
@@ -70,21 +74,16 @@ fn the_session_starts_the_bar_as_a_trusted_client_on_its_layer() {
     // What it drew is its own frame, composited like any client's: the bar
     // across the band it took, and what lies below untouched by it.
     let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-    let bar_pixel = frame
-        .pixel(u32::try_from(WIDTH / 2).unwrap(), BAR / 2)
-        .expect("a pixel of the bar");
-    let below = frame
-        .pixel(
-            u32::try_from(WIDTH / 2).unwrap(),
-            u32::try_from(HEIGHT / 2).unwrap(),
-        )
-        .expect("a pixel below the bar");
-    assert_ne!(bar_pixel, below, "the bar draws over what is below it");
+    let middle = u32::try_from(WIDTH / 2).unwrap();
+    let bar_pixel = frame.pixel(middle, BAR / 2).expect("a pixel of the bar");
+    assert_ne!(
+        bar_pixel,
+        desk.pixel(middle, BAR / 2).expect("the desk above"),
+        "the bar draws over what is below it"
+    );
     assert_eq!(
-        frame
-            .pixel(u32::try_from(WIDTH / 2).unwrap(), BAR)
-            .expect("the pixel under the bar"),
-        below,
+        frame.pixel(middle, BAR).expect("the pixel under the bar"),
+        desk.pixel(middle, BAR).expect("the desk under the bar"),
         "the bar takes exactly the band it reserved"
     );
     save(&frame, "session-bar");
@@ -156,6 +155,23 @@ fn session_with(surfaces: &[Surface]) -> Session {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session")
+}
+
+/// The desk as it stands before the bar appears: pumped until it has drawn,
+/// so what the bar leaves alone can be compared with it.
+fn drawn_desk(session: &mut Session) -> Screenshot {
+    let deadline = Instant::now() + OPENING;
+    let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
+    loop {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        // Settled: the same frame twice running, with something on it.
+        if frame.rgba == last.rgba && frame.rgba.iter().any(|byte| *byte != 0) {
+            return frame;
+        }
+        last = frame;
+        assert!(Instant::now() < deadline, "the desk never drew");
+    }
 }
 
 /// One turn of the session's loop.
