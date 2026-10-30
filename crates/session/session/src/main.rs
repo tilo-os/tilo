@@ -71,12 +71,7 @@ fn main() -> std::process::ExitCode {
         session: bus("--session-bus"),
         system: bus("--system-bus"),
     };
-    // A session that ends without a word leaves the person at the login
-    // screen with no idea why: the one that owns the machine leaves a record
-    // of every panic, which its next start tells them about.
-    if backend == "drm" {
-        tilo_crash_records::install(tilo_crash_records::PANIC_TITLE);
-    }
+    record_panics(backend);
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is
     // part of them.
@@ -103,15 +98,7 @@ fn main() -> std::process::ExitCode {
         .as_ref()
         .and_then(|desktop| desktop.portal())
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    // What this desktop knows of its own machine reaches the person through
-    // their notifications. Only the session that owns the machine tells
-    // them: a session in a window of another desktop, or a headless one,
-    // has that machine's storage, updates and history to leave alone.
-    if backend == "drm"
-        && let Some(desktop) = &desktop
-    {
-        tilo_session::notices::start(desktop.notifications());
-    }
+    tell_the_person(backend, desktop.as_deref());
     let options = Options {
         services,
         wake,
@@ -139,16 +126,7 @@ fn main() -> std::process::ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // A main loop that stops for good keeps the display frozen on its last
-    // frame and the keyboard unread; the watchdog records why and ends the
-    // process, so the person comes back to the login screen. Only the TTY
-    // backend owns the display; a window or a headless run leaves nothing to
-    // hand back.
-    if backend == "drm"
-        && let Err(error) = tilo_session::notices::guard_main_loop(session.compositor())
-    {
-        tracing::warn!(%error, "the main loop is not watched");
-    }
+    watch_the_loop(backend, &mut session);
     run(session, ours, command)
 }
 
@@ -194,6 +172,42 @@ fn run(
             eprintln!("tilo-session: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// A session that ends without a word leaves the person at the login screen
+/// with no idea why: the one that owns the machine leaves a record of every
+/// panic, which its next start tells them about.
+#[cfg(target_os = "linux")]
+fn record_panics(backend: &str) {
+    if backend == "drm" {
+        tilo_crash_records::install(tilo_crash_records::PANIC_TITLE);
+    }
+}
+
+/// What this desktop knows of its own machine reaches the person through
+/// their notifications. Only the session that owns the machine tells them: a
+/// session in a window of another desktop, or a headless one, has that
+/// machine's storage, updates and history to leave alone.
+#[cfg(target_os = "linux")]
+fn tell_the_person(backend: &str, desktop: Option<&tilo_session::desktop_services::DesktopServices>) {
+    if backend == "drm"
+        && let Some(desktop) = desktop
+    {
+        tilo_session::notices::start(desktop.notifications());
+    }
+}
+
+/// A main loop that stops for good keeps the display frozen on its last frame
+/// and the keyboard unread; the watchdog records why and ends the process, so
+/// the person comes back to the login screen. Only the TTY backend owns the
+/// display; a window or a headless run leaves nothing to hand back.
+#[cfg(target_os = "linux")]
+fn watch_the_loop(backend: &str, session: &mut tilo_session::Session) {
+    if backend == "drm"
+        && let Err(error) = tilo_session::notices::guard_main_loop(session.compositor())
+    {
+        tracing::warn!(%error, "the main loop is not watched");
     }
 }
 

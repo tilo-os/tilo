@@ -836,7 +836,7 @@ mod tests {
         });
         let mut arguments = serde_json::Map::new();
         arguments.insert("action".into(), RESTART_ACTION.into());
-        let mut published = notifications.clone();
+        let mut published = notifications;
         published
             .invoke(&resource, "invoke", &arguments)
             .expect("the action is offered");

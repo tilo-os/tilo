@@ -390,7 +390,7 @@ mod tests {
             written: Some(1_790_000_000),
             log: "sysrq triggered".to_owned(),
         };
-        let first = keep_stops(dir.path(), &[stop.clone()], 1_790_000_100).unwrap();
+        let first = keep_stops(dir.path(), std::slice::from_ref(&stop), 1_790_000_100).unwrap();
         assert_eq!(first.len(), 1);
         assert!(first[0].ends_with(STOPPED_SUFFIX), "{first:?}");
         assert!(

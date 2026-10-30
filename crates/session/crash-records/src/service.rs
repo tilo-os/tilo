@@ -99,10 +99,7 @@ impl CrashRecords {
 
     /// Every record, newest first.
     fn records(&self) -> Vec<CrashRecord> {
-        self.dir
-            .as_deref()
-            .map(crate::list)
-            .unwrap_or_else(Vec::new)
+        self.dir.as_deref().map_or_else(Vec::new, crate::list)
     }
 }
 
