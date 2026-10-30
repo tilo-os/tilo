@@ -1395,14 +1395,17 @@ pub trait Widget {
         std::any::type_name::<Self>()
     }
 
-    /// Structural chrome can explicitly leave an inherited document callback.
+    /// Structural chrome can opt out of the component binding it would
+    /// otherwise inherit from its parent.
     #[doc(hidden)]
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         false
     }
-    /// Drawn live content whose input is suspended by a framework surface.
+    /// Drawn live content whose input and bound dispatch a framework surface
+    /// suspends: it stays visible and keeps its state, but takes no events and
+    /// opens no records.
     #[doc(hidden)]
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         None
     }
 

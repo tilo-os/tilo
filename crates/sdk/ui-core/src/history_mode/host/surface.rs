@@ -388,7 +388,7 @@ impl HistoryHost {
     }
 }
 impl Widget for HistoryHost {
-    fn inactive_callback_boundary(&self) -> Option<NodeId> {
+    fn inactive_bound_dispatch_boundary(&self) -> Option<NodeId> {
         self.live_node.filter(|_| !self.live_interactive())
     }
     fn name(&self) -> &'static str {

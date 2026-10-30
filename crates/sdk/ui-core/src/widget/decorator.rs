@@ -441,9 +441,9 @@ decorator_trait! {
     ref {
         fn focus_reveal_context() -> Option<vello::kurbo::Rect>;
         #[doc(hidden)]
-        fn resets_callback_binding() -> bool;
+        fn resets_binding_inheritance() -> bool;
         #[doc(hidden)]
-        fn inactive_callback_boundary() -> Option<NodeId>;
+        fn inactive_bound_dispatch_boundary() -> Option<NodeId>;
         fn native_input_snapshot(state: &AppModel, path: &ModelPath) -> Option<serde_json::Value>;
         fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;
         fn has_separate_document_owner() -> bool;

@@ -3254,7 +3254,7 @@ impl Widget for ActionPalette {
     fn test_id(&self) -> Option<&str> {
         Some("action-palette")
     }
-    fn resets_callback_binding(&self) -> bool {
+    fn resets_binding_inheritance(&self) -> bool {
         true
     }
     fn is_focusable(&self) -> bool {
