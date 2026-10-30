@@ -79,6 +79,27 @@ impl Planner for Recording {
     }
 }
 
+/// Ed's delegation: the room and the video editor, for an hour.
+fn delegate_to_ed(root: &ed25519_dalek::SigningKey, agent_device: &support::Device) -> Delegation {
+    let now = tilo_clock::unix_now_ns();
+    Delegation::sign(
+        root,
+        agent_device.cert.device_public_key,
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: "ed".into(),
+        },
+        "Ed",
+        [0x2a, 0x7c, 0xd1],
+        DelegateScope {
+            rooms: vec![ROOM.into()],
+            apps: vec![VIDEO.into()],
+        },
+        now,
+        now.checked_add(3_600_000_000_000).unwrap(),
+    )
+    .unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -97,23 +118,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
     .await;
     let _laptop = participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
-    let now = tilo_clock::unix_now_ns();
-    let delegation = Delegation::sign(
-        &root,
-        agent_device.cert.device_public_key,
-        tilo_relay_protocol::delegation::Delegate::Agent {
-            agent_id: "ed".into(),
-        },
-        "Ed",
-        [0x2a, 0x7c, 0xd1],
-        DelegateScope {
-            rooms: vec![ROOM.into()],
-            apps: vec![VIDEO.into()],
-        },
-        now,
-        now + 3_600_000_000_000,
-    )
-    .unwrap();
+    let delegation = delegate_to_ed(&root, &agent_device);
     host.relay
         .register_agent(&agent_device.cert, delegation.clone())
         .await
