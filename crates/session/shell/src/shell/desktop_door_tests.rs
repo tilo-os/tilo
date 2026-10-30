@@ -394,3 +394,6 @@ fn opening_what_nothing_here_opens_says_why_and_holds_no_place() {
     );
     assert_eq!(fixture.strips(), before);
 }
+
+#[path = "desktop_mail_tests.rs"]
+mod mail_review;

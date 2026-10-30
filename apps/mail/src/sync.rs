@@ -155,6 +155,46 @@ impl Window {
         }
         window
     }
+
+    /// This window and `other` together, when the server numbers both the
+    /// same way; else this one.
+    #[must_use]
+    pub fn with(self, other: Option<Self>) -> Self {
+        match other {
+            Some(other) if other.uid_validity == self.uid_validity => Self {
+                uid_validity: self.uid_validity,
+                newest: self.newest.max(other.newest),
+                oldest: self.oldest.min(other.oldest),
+            },
+            _ => self,
+        }
+    }
+
+    /// The window the UIDs of `messages` in `folder` take, when they agree
+    /// on the numbering.
+    #[must_use]
+    pub fn of_messages<'a>(
+        messages: impl IntoIterator<Item = &'a Message>,
+        folder: Folder,
+    ) -> Option<Self> {
+        let mut window: Option<Self> = None;
+        for at in messages
+            .into_iter()
+            .filter_map(|message| message.server.filter(|at| at.folder == folder))
+        {
+            let seen = Self {
+                uid_validity: at.uid_validity,
+                newest: at.uid,
+                oldest: at.uid,
+            };
+            window = Some(match window {
+                None => seen,
+                Some(window) if window.uid_validity != at.uid_validity => return None,
+                Some(window) => window.with(Some(seen)),
+            });
+        }
+        window
+    }
 }
 
 /// What to fetch of a folder.

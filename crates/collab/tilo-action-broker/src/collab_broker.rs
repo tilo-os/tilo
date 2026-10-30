@@ -887,6 +887,13 @@ impl AppActionBroker {
         self.state.record_completion_for_test(id, actor, update);
     }
 
+    /// Name `peer_id` the connection of the window launched as `instance`,
+    /// as the launcher's handoff does.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind_window_instance_for_test(&self, peer_id: u64, instance: u64) {
+        self.state.bind_window_instance_for_test(peer_id, instance);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_invocations_for_test(
         &self,

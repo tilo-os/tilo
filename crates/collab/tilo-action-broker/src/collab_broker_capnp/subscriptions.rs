@@ -132,6 +132,15 @@ impl super::CapnpBrokerState {
             .min()
     }
 
+    /// Stand in for the launcher's handoff naming `peer_id` the connection
+    /// of the window the shell launched as `instance`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn bind_window_instance_for_test(&self, peer_id: u64, instance: u64) {
+        if let Ok(mut windows) = self.window_instances.lock() {
+            windows.insert(peer_id, instance);
+        }
+    }
+
     /// Whether a local app subscribes to exactly `route`'s documents.
     pub fn holds_route(&self, route: &CrdtRoute) -> bool {
         self.channels.lock().is_ok_and(|channels| {
@@ -467,5 +476,14 @@ mod tests {
             rx.try_recv().unwrap().admission,
             OpAdmission::CleartextAdmitted
         );
+    }
+}
+
+impl super::InvocationEnvelope {
+    /// The argument slot as the application receives it.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn argument_for_test(&self) -> Option<&str> {
+        self.argument.as_deref()
     }
 }
