@@ -199,6 +199,31 @@ fn pump(
     }
 }
 
+/// Step `session` with `client` until `asked` answers.
+#[track_caller]
+fn until<T>(
+    session: &mut Session,
+    client: &mut TestClient,
+    mut asked: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    let mut answer = None;
+    pump(session, &mut [client], |session, _| {
+        answer = asked(session);
+        answer.is_some()
+    });
+    answer
+}
+
+/// The control assistive technology names `name` under `node`, by target.
+fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
+    if node.name.as_deref() == Some(name)
+        && let Some(target) = &node.action_target
+    {
+        return Some(target.clone());
+    }
+    node.children.iter().find_map(|child| control(child, name))
+}
+
 fn session() -> Session {
     // Headless tests take no part in the collaboration plane: no endpoint, no
     // room.
@@ -2749,8 +2774,9 @@ impl Drop for SessionBus {
 }
 
 /// Send one notification over the freedesktop interface on `address`, as an
-/// app of the session would, and name the id the daemon gave it.
-async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> u32 {
+/// app of the session would, and name the id the daemon gave it. The
+/// connection is the app's: it stays open until the caller drops it.
+async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> (zbus::Connection, u32) {
     let app = zbus::connection::Builder::address(address)
         .unwrap()
         .build()
@@ -2780,13 +2806,12 @@ async fn notify(address: &str, summary: &str, body: &str, timeout: i32) -> u32 {
         )
         .await
         .unwrap();
-    reply.body().deserialize().unwrap()
+    (app, reply.body().deserialize().unwrap())
 }
 
 /// An app's notification over the freedesktop interface, from the process
 /// whose window the session shows: a banner and a centre entry named after
-/// that app, and the bar's bell counting it. Letting the banner run out
-/// keeps it in the centre.
+/// that app, and the bar's bell counting it.
 #[test]
 fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let _settled = ui::motion::testing::settled();
@@ -2828,7 +2853,8 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let mut client = mapped(&mut session, "so.tilo.mail");
 
     let runtime = desktop.runtime();
-    let id = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 300));
+    // It waits for the person: nothing here measures the banner running out.
+    let (app, id) = runtime.block_on(notify(bus.address.as_str(), "New mail", "From Ada", 0));
 
     pump(&mut session, &mut [&mut client], |session, _| {
         session.notifications().unread() == 1
@@ -2853,9 +2879,22 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
         "the bell says what is unread: {bell:?}"
     );
 
-    // Run out, it is kept in the centre, named after the same app.
+    // The person closes the banner on its own control: it is kept in the
+    // centre, named after the same app.
+    let dismiss = until(&mut session, &mut client, |session| {
+        session
+            .banners()
+            .shown()
+            .accessibility
+            .as_ref()
+            .and_then(|node| control(node, "Dismiss"))
+    })
+    .expect("the banner offers a way out");
+    session
+        .banners()
+        .command(tilo_notification_banners::Command::Activate(dismiss));
     pump(&mut session, &mut [&mut client], |session, _| {
-        session.banners().shown().banners.is_empty()
+        session.notifications().log().active().is_empty()
     });
     let centre = session.notifications();
     let history = centre.log();
@@ -2866,4 +2905,5 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
         .expect("the centre keeps it");
     assert_eq!(kept.app_id.as_deref(), Some("so.tilo.mail"));
     assert_eq!(centre.unread(), 1, "and it stays unread until read");
+    drop(app);
 }

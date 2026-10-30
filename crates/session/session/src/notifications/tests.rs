@@ -368,6 +368,31 @@ fn read_in_full_moves_it_to_the_centre() {
 }
 
 #[test]
+fn the_centre_lists_what_arrived_named_after_its_app() {
+    let mut rig = rig();
+    let id = rig.daemon.alloc_id();
+    let mut message = sent(id);
+    message.caller = Some(Caller {
+        app_id: "so.tilo.mail".into(),
+        workspace: None,
+    });
+    rig.daemon.push(message);
+    rig.step();
+    // The person reads it in full: it leaves the banner for the centre.
+    rig.ask(Ask::Read(rig.banner().id));
+    rig.step();
+    let view = rig.bridge.view();
+    assert_eq!(view.rows.len(), 1, "the centre lists it");
+    assert_eq!(view.rows[0].title, "New mail");
+    assert_eq!(
+        view.rows[0].app, "so.tilo.mail",
+        "named after the app it came from"
+    );
+    assert!(view.rows[0].opens, "it can be opened");
+    assert_eq!(view.quiet, None, "it is not held by quiet");
+}
+
+#[test]
 fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
     let mut rig = rig();
     rig.policy.lock().unwrap().do_not_disturb = true;
