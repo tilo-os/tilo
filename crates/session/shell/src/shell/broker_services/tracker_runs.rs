@@ -300,6 +300,9 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
             collab_types::task_budget::TaskExecutionBudget {
                 turn_ms: u32::try_from(budget.turn_ms).unwrap_or(u32::MAX),
                 total_ms: u32::try_from(budget.total_ms).unwrap_or(u32::MAX),
+                max_turns: budget
+                    .max_turns
+                    .map(|turns| u32::try_from(turns).unwrap_or(u32::MAX)),
             }
         }),
         subject: issue
@@ -463,6 +466,103 @@ mod tests {
         assert!(run.instruction.contains("Keep the headings"));
         assert_eq!(run.directions.len(), 1);
         assert_eq!((run.applied_revision(), run.latest_revision()), (0, 1));
+    }
+
+    /// A chat's run reaches its agent with the chat's whole budget: its turn
+    /// ceiling as well as its time, and the tracker admits no more turns
+    /// than the run's envelope does.
+    #[test]
+    fn a_chats_run_carries_its_turn_ceiling_to_the_agent() {
+        assert_eq!(
+            tasks::model::MAX_TURNS,
+            u64::from(collab_types::task_budget::MAX_RUN_TURNS)
+        );
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::ASK_AGENT.with(tracker::AskAgent {
+                ask: tasks::model::AgentRequest {
+                    id: tilo_resource::Id::from_raw("chat"),
+                    title: "Review today's applications".into(),
+                    body: None,
+                    agent: "claude".into(),
+                    model: None,
+                    subject: None,
+                    quick: false,
+                    chat: true,
+                    delegation: None,
+                },
+            }))
+            .unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        let budget = run.budget.expect("a chat has a budget");
+        budget.validate().unwrap();
+        assert_eq!(
+            budget.max_turns.map(u64::from),
+            Some(tasks::model::CHAT_TURNS)
+        );
+        assert_eq!(u64::from(budget.total_ms), tasks::model::MAX_TOTAL_MS);
+    }
+
+    /// A conversation goes on after a run ended: what the person tells the
+    /// agent then starts the next run, and the broker hands that run the
+    /// message as its one direction, never the earlier run's.
+    #[test]
+    fn a_message_after_a_run_ended_is_the_next_runs_direction() {
+        let mut person = Replica::<Tracker>::new().as_author("ada");
+        person
+            .apply(Tracker::CREATE.with(tracker::Create {
+                title: "Review the applications".parse().expect("not blank"),
+                parent: None,
+                body: None,
+                status: None,
+                assignee: Some("agent:claude".into()),
+            }))
+            .unwrap();
+        let issue = person
+            .state()
+            .unwrap()
+            .issues
+            .ids()
+            .next()
+            .cloned()
+            .unwrap();
+        let tell = |text: &str| {
+            Tracker::TELL_AGENT.with(tracker::TellAgent {
+                issue: issue.clone(),
+                text: text.parse().expect("not blank"),
+            })
+        };
+        person.apply(tell("Start with the newest")).unwrap();
+        let mut agent = person.fork().as_agent_for("agent:claude", "ada");
+        agent
+            .apply(Tracker::FINISH_RUN.with(tracker::FinishRun {
+                issue: issue.clone(),
+                outcome: tasks::model::RunOutcome::Done,
+                summary: None,
+            }))
+            .unwrap();
+        person.sync_with(&mut agent).unwrap();
+        assert!(
+            runs_of(&person.state().unwrap())
+                .iter()
+                .all(|run| !run.active)
+        );
+
+        person.apply(tell("Now draft the replies")).unwrap();
+        let runs = runs_of(&person.state().unwrap());
+        let [run] = runs.as_slice() else {
+            panic!("one run: {runs:?}");
+        };
+        assert_eq!((run.epoch, run.active), (2, true));
+        let directions: Vec<&str> = run
+            .directions
+            .iter()
+            .map(|direction| direction.text.as_str())
+            .collect();
+        assert_eq!(directions, ["Now draft the replies"]);
     }
 
     /// A part of a task works on the model the task was set to, so every step

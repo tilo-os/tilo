@@ -2615,6 +2615,7 @@ agent-quick-editor-name = Deine Nachricht an den Agenten
 agent-quick-send = Senden
 agent-quick-excerpt = „{ $text }“
 agent-quick-open-run = In Aufgaben öffnen
+agent-quick-open-chat = Als Chat öffnen
 agent-quick-answer-view = Antwortansicht
 agent-quick-answer-open = Öffnen
 agent-quick-undo-refused = Diese Änderung ließ sich nicht rückgängig machen.

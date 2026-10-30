@@ -226,6 +226,10 @@ if [[ -n $model_provider ]]; then
     if [[ $model_provider == host ]]; then
         provider_record=$("$bin/tilo-model-gateway" export-provider) \
             || die "this machine's Tilo configuration has no default provider to give the session"
+    elif [[ $model_provider == record:?* ]]; then
+        # A provider record (profile and key) in a file only the developer can read, for an
+        # endpoint no preset names: `record:FILE`.
+        provider_record=$(<"${model_provider#record:}") || die "cannot read ${model_provider#record:}"
     else
         [[ $model_provider == *:?* ]] || die "--model-provider takes PRESET:MODEL or host"
         provider_preset=${model_provider%%:*}
