@@ -23,6 +23,9 @@
 //!   and moves only when the test moves it, and the network starts closed.
 //! - [`runtime_tempdir`] is a private temporary directory with a path as
 //!   short as a real runtime directory's, for tests that bind sockets.
+//! - [`PrivateBus`] is a `dbus-daemon` of the test's own, configured so that it
+//!   starts without reading the caller's home directory out of the user
+//!   database.
 //! - [`lock`] is the single process-wide lock both of them hold. Every
 //!   scope in the process is serialised on it, and it is re-entrant, so
 //!   scopes nest on one thread.
@@ -87,6 +90,8 @@
 //! mutates the variable without this crate.
 
 pub mod allocation;
+#[cfg(unix)]
+mod bus;
 mod capability;
 mod desktop;
 #[cfg(target_os = "linux")]
@@ -101,6 +106,8 @@ pub mod requested_allocations;
 pub mod scenario;
 pub mod swtpm;
 
+#[cfg(unix)]
+pub use bus::PrivateBus;
 pub use capability::{Capability, Probe, capability_unavailable};
 #[cfg(target_os = "linux")]
 pub use capability::{bubblewrap, mount_namespace, user_namespace};

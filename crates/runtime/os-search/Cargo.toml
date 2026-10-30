@@ -37,6 +37,7 @@ objc2-uniform-type-identifiers = { version = "0.3", default-features = false, fe
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 # The providers are tested on a private session bus (dbus-daemon).
