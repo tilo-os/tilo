@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::data_table::tests::answer_row_actions;
 use automerge::AutoCommit;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -423,6 +424,7 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
         &button(ElementState::Pressed, MouseButton::Left),
         false,
     );
+    answer_row_actions(&mut table);
     assert_eq!(*checks.borrow(), [(1, true)]);
     let mut state = crate::state::State::new();
     assert!(table.perform_action(
@@ -431,6 +433,7 @@ fn badges_and_checkboxes_are_measured_painted_and_read() {
         &mut crate::widget::Edits::lend(&mut state.doc),
         &state.root,
     ));
+    answer_row_actions(&mut table);
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     assert!(!table.perform_action(
         &crate::a11y::Action::ToggleCheck,
@@ -598,6 +601,7 @@ fn a_plain_press_on_a_selection_drags_it_whole_and_a_still_press_clicks() {
         false,
     );
     assert_eq!(table.selected_rows(), [2]);
+    answer_row_actions(&mut table);
     assert_eq!(*clicks.borrow(), [2]);
 }
 

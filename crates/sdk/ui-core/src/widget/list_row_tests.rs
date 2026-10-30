@@ -550,9 +550,11 @@ fn hover_actions_run_from_assistive_technology_and_the_keyboard() {
     assert_eq!(replied.get(), 1);
     row.set_focus(false);
     assert_eq!(row.armed_action, None, "leaving the row disarms");
-    // Every hover action is reported, so a native audit can see it.
+    // A hover action that is only a callback is not a published action, so
+    // the inventory reports nothing for it; binding the row's action is what
+    // makes it visible to a native audit.
     let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
-    assert_eq!(bindings.len(), 3);
+    assert!(bindings.is_empty());
 }
 
 #[test]
