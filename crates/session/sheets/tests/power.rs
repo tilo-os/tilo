@@ -113,10 +113,12 @@ fn the_menu_paints_only_its_panel_over_the_desktop() {
 }
 
 #[test]
-fn a_session_that_does_not_own_the_machine_offers_only_lock_and_log_out() {
+fn a_session_that_does_not_own_the_machine_offers_a_shut_down_that_ends_it() {
     let mut app = staged("detached");
     let names: Vec<String> = rows(&mut app).into_iter().map(|(name, _)| name).collect();
-    assert_eq!(names, ["Lock", "Log out"]);
+    // Shut down stays: in a session started from another desktop it ends
+    // that session, it does not power the machine off.
+    assert_eq!(names, ["Lock", "Log out", "Shut down"]);
     let mut app = staged("no-switching");
     let names: Vec<String> = rows(&mut app).into_iter().map(|(name, _)| name).collect();
     assert!(!names.iter().any(|name| name == "Switch user"));

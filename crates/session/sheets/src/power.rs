@@ -148,9 +148,13 @@ pub struct Offers {
     /// it, Switch user is not offered at all rather than failing.
     pub user_switching: bool,
     /// This session owns the machine's power. A headless or nested session
-    /// shares the host with another desktop, so it offers no switching
-    /// user, suspend, restart or shut down.
+    /// shares the host with another desktop: it offers no switching user,
+    /// suspending or restarting, and shutting down ends only itself.
     pub host_power: bool,
+    /// A password unlocks this session, so its lock screen can be left
+    /// again. Without one, locking is not offered at all rather than
+    /// leaving the person on a screen nothing opens.
+    pub locking: bool,
     /// How far down the sheet the menu hangs from: the bottom of the top
     /// bar it was opened from.
     pub hangs_from: f64,
@@ -161,6 +165,7 @@ impl Default for Offers {
         Self {
             user_switching: true,
             host_power: true,
+            locking: true,
             hangs_from: 0.0,
         }
     }
@@ -171,8 +176,11 @@ impl Offers {
     pub fn offers(self, effect: PowerEffect) -> bool {
         match effect {
             PowerEffect::SwitchUser => self.user_switching && self.host_power,
-            PowerEffect::Suspend | PowerEffect::Restart | PowerEffect::ShutDown => self.host_power,
-            PowerEffect::Lock | PowerEffect::LogOut => true,
+            PowerEffect::Suspend | PowerEffect::Restart => self.host_power,
+            PowerEffect::Lock => self.locking,
+            // Shut down is offered everywhere: a session that owns no
+            // machine ends itself when it is chosen.
+            PowerEffect::LogOut | PowerEffect::ShutDown => true,
         }
     }
 
@@ -319,6 +327,18 @@ impl PowerMenu {
         }
     }
 
+    /// What a row does beyond its name here: the same as everywhere, except
+    /// that a session which owns no machine ends itself on shutting down
+    /// rather than turning the host off.
+    fn detail(&self, effect: PowerEffect) -> String {
+        match effect {
+            PowerEffect::ShutDown if !self.offered_now().host_power => {
+                t("power-shut-down-session-detail")
+            }
+            other => other.detail(),
+        }
+    }
+
     fn items(&self) -> Vec<MenuItem> {
         let mut items = vec![MenuItem::caption(t("power-menu-title"))];
         items.extend(self.shown.iter().map(|&effect| {
@@ -326,7 +346,7 @@ impl PowerMenu {
             let item = MenuItem::icon_action(effect.icon(), effect.label(), move || {
                 chosen.set(Some(effect));
             })
-            .with_description(effect.detail());
+            .with_description(self.detail(effect));
             match self.addresses.get(&effect) {
                 Some(address) => item.for_action(address.clone()),
                 None => item,
@@ -634,22 +654,22 @@ fn unavailable(offers: Offers) -> Vec<EffectStatus> {
         PowerEffect::SwitchUser => EffectStatus::unavailable(
             PowerEffect::SWITCH_USER,
             "not-offered",
-            "This session cannot switch user",
+            t("power-not-offered-switch-user"),
         ),
         PowerEffect::Suspend => EffectStatus::unavailable(
             PowerEffect::SUSPEND,
             "not-offered",
-            "This session does not own the computer's power",
+            t("power-not-offered-power"),
         ),
         PowerEffect::Restart => EffectStatus::unavailable(
             PowerEffect::RESTART,
             "not-offered",
-            "This session does not own the computer's power",
+            t("power-not-offered-power"),
         ),
         PowerEffect::ShutDown => EffectStatus::unavailable(
             PowerEffect::SHUT_DOWN,
             "not-offered",
-            "This session does not own the computer's power",
+            t("power-not-offered-power"),
         ),
     };
     PowerEffect::ALL

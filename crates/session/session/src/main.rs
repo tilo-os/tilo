@@ -44,7 +44,11 @@ fn main() -> std::process::ExitCode {
         }
     };
     let wake = tilo_service::LoopWake::default();
-    let (mut services, _following) = services(&wake);
+    // A session in a window of another desktop runs on that desktop's
+    // machine: its services stay off the host's daemons, its device stays
+    // the host's, and no session action it takes reaches the host.
+    let hosted = matches!(backend, Backend::Nested);
+    let (mut services, _following) = services(&wake, hosted);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     let _desktop = desktop_services(&reach.buses, &wake, Arc::new(capture), &mut services);
@@ -53,7 +57,7 @@ fn main() -> std::process::ExitCode {
         wake,
         setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
         captures: Some(captures),
-        ..device_options()
+        ..device_options(hosted)
     };
     let started = match backend {
         Backend::Headless => Session::headless(
@@ -184,23 +188,31 @@ fn desktop_services(
 
 /// What the session reads of this device: its configuration, search, quick
 /// settings over its own backends and the players, its session actions and
-/// who unlocks it.
+/// who unlocks it. A session in a window of another desktop (`hosted`)
+/// reads no device of its own and carries out no session action: the
+/// window's machine is the host's.
 #[cfg(target_os = "linux")]
-fn device_options() -> tilo_session::Options {
+fn device_options(hosted: bool) -> tilo_session::Options {
     use tilo_quick_settings::device::PlayerLink;
     use tilo_session::{DeviceHost, Options, QuickSettings, SessionConfig};
     Options {
         config: SessionConfig::load(),
         search: search_options(),
-        quick_settings: Some(QuickSettings::Device(Box::new(|wake| {
-            let device = DeviceHost::os(wake);
-            match PlayerLink::helper() {
-                Ok(players) => device.follow_players(players),
-                Err(error) => eprintln!("tilo-session: no media helper: {error}"),
-            }
-            device
-        }))),
-        session_actions: os_actions::perform_session_action,
+        quick_settings: (!hosted).then(|| {
+            QuickSettings::Device(Box::new(|wake| {
+                let device = DeviceHost::os(wake);
+                match PlayerLink::helper() {
+                    Ok(players) => device.follow_players(players),
+                    Err(error) => eprintln!("tilo-session: no media helper: {error}"),
+                }
+                device
+            }))
+        }),
+        session_actions: if hosted {
+            tilo_session::no_session_actions
+        } else {
+            os_actions::perform_session_action
+        },
         user: std::env::var("USER").unwrap_or_default(),
         verifier: tilo_session::unlock::installed(),
         ..Options::default()
@@ -256,9 +268,15 @@ fn start_command(
 type Following = Vec<Box<dyn std::any::Any>>;
 
 /// The system services the session hosts, on this device's own daemons,
-/// and what keeps their readings following the device.
+/// and what keeps their readings following the device. A session in a
+/// window of another desktop hosts only the settings service: the machine's
+/// connectivity, clock, time zone and audio routing are the host's, and
+/// changing them from a window would change the host.
 #[cfg(target_os = "linux")]
-fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
+fn services(
+    wake: &tilo_service::LoopWake,
+    hosted: bool,
+) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
 
@@ -267,6 +285,9 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
     services.push(Box::new(tilo_settings_service::SettingsService::new(
         &tilo_session::Options::default().person,
     )));
+    if hosted {
+        return (services, following);
+    }
     match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
         Ok(connectivity) => {
             match connectivity.follow() {

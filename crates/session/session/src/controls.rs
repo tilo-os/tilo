@@ -40,6 +40,9 @@ pub enum SessionCommand {
     Lock,
     /// End the session: the person logs out.
     LogOut,
+    /// End this session and nothing else: what shutting down is to a
+    /// session in a window of another desktop, which owns no machine.
+    End,
     /// Step the magnifier: on or off, stronger or weaker.
     Magnifier(Magnify),
     /// Use the displays together this way.
