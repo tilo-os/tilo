@@ -1,9 +1,4 @@
 {
-  "native_authority": {
-    "revision": 0,
-    "rooms": {},
-    "pending": {}
-  },
   "schema_version": 1,
   "workspaces": [
     {
@@ -380,6 +375,23 @@
             "id": "role:owner:0",
             "subject": {
               "role": "owner"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000001",
+            "kinds": [
+              "read",
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "session-app",
+            "subject": {
+              "app": "shell"
             },
             "node": "room:00000000-0000-4000-8000-000000000001",
             "kinds": [
@@ -773,6 +785,23 @@
             "granted_by": {
               "role": "owner"
             }
+          },
+          {
+            "id": "session-app",
+            "subject": {
+              "app": "shell"
+            },
+            "node": "room:00000000-0000-4000-8000-000000000002",
+            "kinds": [
+              "read",
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
           }
         ]
       },
@@ -797,6 +826,12 @@
     "2": 6
   },
   "collaborators": [],
+  "native_document_tabs": {
+    "8": {
+      "provider_id": "org.example.Editor",
+      "path": "/srv/doc/notes.md"
+    }
+  },
   "room_authority": {
     "00000000-0000-4000-8000-000000000002": {
       "Peer": "iroh:peer-endpoint"
@@ -814,11 +849,5 @@
   },
   "continuation_rooms": [
     "00000000-0000-4000-8000-000000000003"
-  ],
-  "native_document_tabs": {
-    "8": {
-      "provider_id": "org.example.Editor",
-      "path": "/srv/doc/notes.md"
-    }
-  }
+  ]
 }

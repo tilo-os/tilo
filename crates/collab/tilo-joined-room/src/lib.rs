@@ -6,8 +6,8 @@
 //! their durable record, [`NativeAuthorityStorage`]. Every change is admitted
 //! into a candidate, published through the host's [`Store`] and only then
 //! installed, so no reader or receipt ever sees state the disk may not hold.
-//! The desktop session keeps that record inside its state file; the
-//! standalone runtime keeps it in a file of its own ([`open_file`]).
+//! A host keeps that record in a file of its own beside its state file
+//! ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
 mod application_record;
@@ -52,7 +52,7 @@ pub use checkpoint::{
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 #[cfg(not(target_arch = "wasm32"))]
-pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
+pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file, write_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};

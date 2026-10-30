@@ -120,7 +120,7 @@ pub fn fs_capability_export_path() -> PathBuf {
 }
 
 /// Native file envelope; the portable desktop schema remains independently versioned.
-pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 5;
+pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 6;
 
 /// `state.json` as a versioned format: a file of an older version comes up
 /// to [`NATIVE_STATE_SCHEMA_VERSION`] when it is loaded, after a snapshot of
@@ -132,7 +132,11 @@ pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
         name: "desktop state",
         version: NATIVE_STATE_SCHEMA_VERSION,
         oldest: 3,
-        steps: &[drop_untouched_lounges, activity_becomes_an_app],
+        steps: &[
+            drop_untouched_lounges,
+            activity_becomes_an_app,
+            owner_record_leaves_the_file,
+        ],
     };
 
 /// Version 3 to 4: workspaces no longer get a Lounge. Version 3 gave every
@@ -274,6 +278,28 @@ fn activity_becomes_an_app(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&file).map_err(|error| error.to_string())
 }
 
+/// Version 5 to 6: the native owner's record is no longer part of the state
+/// file. It lives in a file of its own beside it
+/// ([`super::native_workspace_owner::owner_file`]), where the record a
+/// version-5 file carries moves before this step runs; a record that could
+/// not be read stays in the snapshot [`bring_up`] keeps.
+///
+/// [`bring_up`]: tilo_files::native::migration::Format::bring_up
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
+)]
+fn owner_record_leaves_the_file(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let Some(fields) = file.as_object_mut() else {
+        return Err("a state file is a JSON object".into());
+    };
+    fields.remove("native_authority");
+    fields.insert("schema_version".into(), serde_json::Value::from(6_u32));
+    serde_json::to_vec(&file).map_err(|error| error.to_string())
+}
+
 /// A Lounge as version 3 made it: a strip and three windows under ids in
 /// the reserved namespace, derived from `seed`; with `touched_by`, a window
 /// under that device's salt that the person put into it.
@@ -318,15 +344,28 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
 }
 
 /// A file the previous version of [`STATE_FORMAT`] wrote, which its step
-/// is tested against: version 4, with the Activity window as a tile of its
-/// own kind.
+/// is tested against: version 5, with the native owner's record in the file
+/// it kept it in then.
 #[cfg(test)]
 #[allow(
     clippy::unnecessary_wraps,
     reason = "a format at its first version has no previous file, which the test reads as None"
 )]
 fn previous_state_file() -> Option<Vec<u8>> {
-    Some(v4_with_activity().1)
+    Some(v5_with_the_owner_record())
+}
+
+/// A state file as version 5 wrote it: the demo desktop, and the native
+/// owner's record inside the file, where version 5 kept it.
+#[cfg(test)]
+fn v5_with_the_owner_record() -> Vec<u8> {
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.persist_path = None;
+    let bytes = encode_tree(&tree).expect("encoded");
+    let mut file: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    file["native_authority"] = serde_json::json!({"revision": 0, "rooms": {}, "pending": {}});
+    file["schema_version"] = serde_json::Value::from(5_u32);
+    serde_json::to_vec(&file).expect("json")
 }
 
 /// A state file as version 4 wrote it: the demo desktop's windows, and
@@ -940,6 +979,15 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
     let stored = serde_json::from_str::<StoredVersion>(&s)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?
         .schema_version;
+    // A file from before the native owner kept its record in a file of its
+    // own carries that record as `native_authority`, which the step to the
+    // current version takes out of the file. It moves to the owner's file
+    // first, in one piece, so the rooms this device holds and the joins it
+    // has in flight come along with the update. A file this build does not
+    // bring up is refused without touching the owner's.
+    if (STATE_FORMAT.oldest..NATIVE_STATE_SCHEMA_VERSION).contains(&stored) {
+        hand_over_embedded_owner_record(path, &s);
+    }
     let s = String::from_utf8(
         STATE_FORMAT
             .bring_up(path, s.into_bytes(), stored)
@@ -1005,12 +1053,51 @@ pub fn load_device_tree_from(path: &Path, salt: u16) -> std::io::Result<Workspac
     Ok(tree)
 }
 
+/// Hand the record a state file from before the native owner kept its record
+/// in a file of its own ([`super::native_workspace_owner::owner_file`])
+/// carries as `native_authority` to that file, in one piece, so the rooms
+/// this device holds and the joins it has in flight come along with the
+/// update. A record that cannot be read or written stays where it is: the
+/// step that takes the key out of the file keeps the file it replaced
+/// (`state.json.v<version>`), so the record is still on disk.
+fn hand_over_embedded_owner_record(path: &Path, file: &str) {
+    // The caller read this file's stored version above, so a document that
+    // is not a JSON object holds no record to hand over to the owner's file.
+    // optional-decode: that is the only case this returns on.
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str(file) else {
+        return;
+    };
+    let Some(embedded) = fields.get("native_authority") else {
+        return;
+    };
+    let owner_path = super::native_workspace_owner::owner_file(path);
+    if let Err(error) = hand_over_record(&owner_path, embedded) {
+        tracing::warn!(
+            %error,
+            owner_file = %owner_path.display(),
+            "the state file's owner record could not move beside it"
+        );
+    }
+}
+
+/// Write `embedded` to `owner_path` unless the owner's own file already holds
+/// a record: that file is the one that counts, the copy in the state file
+/// being from before it existed.
+fn hand_over_record(owner_path: &Path, embedded: &serde_json::Value) -> Result<(), String> {
+    let record: tilo_joined_room::NativeAuthorityStorage =
+        serde_json::from_value(embedded.clone()).map_err(|error| error.to_string())?;
+    if record.is_empty() || !tilo_joined_room::read_file(owner_path)?.is_empty() {
+        return Ok(());
+    }
+    tilo_joined_room::write_file(owner_path, &record)
+}
+
 /// A field the desktop writes but never reads back (its presence cache)
 /// is not one an older file held: it is written again with the tree, so it
 /// is never kept beside it as retired, which would write it twice and
 /// change the file on every load.
 fn keep_only_unwritten_fields_retired(tree: &mut WorkspaceTree) {
-    // The native owner keeps its record in a file of its own now.
+    // The native owner's record lives beside the file now (version 5 to 6).
     tree.retired_fields.remove("native_authority");
     if tree.retired_fields.is_empty() {
         return;
@@ -1243,6 +1330,12 @@ mod tests {
                     &STATE_FORMAT,
                     previous,
                     |current| {
+                        let file: serde_json::Value =
+                            serde_json::from_slice(current).expect("json");
+                        assert!(
+                            file.get("native_authority").is_none(),
+                            "the owner's record leaves the file for one of its own"
+                        );
                         serde_json::from_slice::<WorkspaceTree>(current)
                             .expect("the step's output reads as the current state");
                     },
@@ -1260,6 +1353,101 @@ mod tests {
         std::fs::write(&path, &newer).unwrap();
         assert!(load_tree_from(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+    }
+
+    /// The state file a version-5 build wrote keeps the native owner's record
+    /// inside it. Loading it moves that record to the file the owner reads
+    /// beside it, in one piece — the room this device holds and the joins it
+    /// has in flight come along with the update — and the state file is
+    /// written back without it.
+    #[test]
+    fn a_state_file_from_before_the_owner_file_moves_the_record_beside_it() {
+        let (directory, owner, room, _now, _key) =
+            super::super::native_workspace_owner::test_enrolled_owner();
+        let path = directory.path().join("state.json");
+        let beside = super::super::native_workspace_owner::owner_file(&path);
+        wait_for_saves();
+        drop(owner);
+        let record = std::fs::read(&beside).expect("the owner's record");
+        // The file as version 5 wrote it: the same document, its record
+        // inside, and nothing beside it.
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        file["native_authority"] = serde_json::from_slice(&record).unwrap();
+        file["schema_version"] = serde_json::Value::from(5_u32);
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+        std::fs::remove_file(&beside).unwrap();
+
+        let tree = load_tree_from(&path).expect("a version-5 state file loads");
+        assert!(
+            tree.native_authority.holds(room),
+            "the room the device held came with the record"
+        );
+        let moved: tilo_joined_room::NativeAuthorityStorage =
+            serde_json::from_slice(&std::fs::read(&beside).expect("the record moved beside it"))
+                .expect("the record beside the file reads");
+        assert!(
+            moved.holds(room),
+            "the record moved over in one piece, the room this device held with it"
+        );
+        let shared = tree.shared();
+        save_shared_tree_to(&shared, &path).unwrap();
+        wait_for_saves();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(
+            saved.get("native_authority").is_none(),
+            "the record left the state file"
+        );
+    }
+
+    /// The record beside the state file is the one that counts: the copy
+    /// inside a file from before it existed moves over only when that file
+    /// holds none. Here it holds one, and the copy inside names a room this
+    /// device does not hold: the file's own record stands, untouched.
+    #[test]
+    fn a_record_beside_the_file_is_never_replaced_by_the_one_inside_it() {
+        let (directory, owner, room, _now, _key) =
+            super::super::native_workspace_owner::test_enrolled_owner();
+        let path = directory.path().join("state.json");
+        let beside = super::super::native_workspace_owner::owner_file(&path);
+        wait_for_saves();
+        drop(owner);
+        let written = std::fs::read(&beside).expect("the owner's record");
+        // The file as version 5 wrote it, its copy of the record naming a room
+        // this device does not hold.
+        let absent = RoomId::parse("00000000-0000-4000-8000-0000000000ab").expect("room uuid");
+        let record: serde_json::Value = serde_json::from_slice(&written).unwrap();
+        let held = record["rooms"]
+            .as_object()
+            .and_then(|rooms| rooms.get(&room.to_string()))
+            .cloned()
+            .expect("the record holds the room this device holds");
+        let mut stale = serde_json::json!({"revision": 0, "rooms": {}, "pending": {}});
+        stale["rooms"]
+            .as_object_mut()
+            .expect("the record's rooms")
+            .insert(absent.to_string(), held);
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        file["native_authority"] = stale;
+        file["schema_version"] = serde_json::Value::from(5_u32);
+        std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
+
+        let tree = load_tree_from(&path).expect("a version-5 state file loads");
+        assert!(
+            tree.native_authority.holds(room),
+            "the room this device holds came from the file beside"
+        );
+        assert!(
+            !tree.native_authority.holds(absent),
+            "the copy inside the state file did not replace the record beside it"
+        );
+        assert_eq!(
+            std::fs::read(&beside).unwrap(),
+            written,
+            "the owner's file was left as it was"
+        );
     }
 
     /// A state file from when every workspace got a Lounge comes up without

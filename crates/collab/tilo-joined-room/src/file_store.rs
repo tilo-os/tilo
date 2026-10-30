@@ -77,6 +77,25 @@ pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
     }
 }
 
+/// Make `record` the file's whole content, as the owner's publications write
+/// it: how a record kept somewhere else (a desktop state file from before the
+/// owner had a file of its own) reaches this one.
+///
+/// # Errors
+/// The record fails its preflight, or the file cannot be replaced.
+pub fn write_file(path: &Path, record: &NativeAuthorityStorage) -> Result<(), String> {
+    preflight_storage(record)?;
+    // Compact JSON, as [`Store::publish`] writes it.
+    let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
+    serde_json::to_writer(&mut bytes, record).map_err(|e| e.to_string())?;
+    tilo_files::native::atomic::replace(
+        path,
+        &bytes.into_inner(),
+        tilo_files::native::atomic::Privacy::OwnerOnly,
+    )
+    .map_err(|error| error.into_io_error().to_string())
+}
+
 /// Open the owner whose record is the file at `path`, starting empty.
 ///
 /// # Errors

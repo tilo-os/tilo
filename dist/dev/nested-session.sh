@@ -469,7 +469,7 @@ wait_for_socket() {
 if ((fresh_desktop)); then
     say "forgetting the saved desktop"
     rm -rf "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
-        "$XDG_CONFIG_HOME"/tilo/state.automerge*
+        "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
 fi
 
 # A throwaway identity's certificates last 24 hours; mint a fresh one well
@@ -482,7 +482,7 @@ if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +120
     say "discarding the throwaway identity and its desktop"
     rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
         "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
-        "$XDG_CONFIG_HOME"/tilo/state.automerge*
+        "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
     mkdir -p "$TILO_IDENTITY_ROOT"
     mkdir -m 700 "$state/secrets"
 fi
