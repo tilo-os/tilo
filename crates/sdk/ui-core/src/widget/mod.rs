@@ -777,6 +777,11 @@ impl<I> ActionEmitter<I> {
 }
 
 #[cfg(test)]
+mod test_controls;
+#[cfg(test)]
+pub(crate) use test_controls::{Uncustodied, test_value_action_binding};
+
+#[cfg(test)]
 pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
     use tilo_actions::{
         ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,

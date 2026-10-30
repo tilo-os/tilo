@@ -100,7 +100,6 @@
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10500
 "crates/sdk/ui-core/src/widget/text_input.rs" = 7500
 "crates/sdk/ui-core/src/widget/tile_host.rs" = 3500
-"crates/sdk/ui-core/src/widget/toggle_group.rs" = 4000
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
 "crates/sdk/ui-core/src/widget/window_group.rs" = 6500

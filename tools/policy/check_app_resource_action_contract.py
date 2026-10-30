@@ -130,7 +130,7 @@ TRUNCATING_SEARCH = re.compile(
 CONTROL_CALLBACKS = frozenset(
     {
         "on_activate", "on_activate_entry", "on_change", "on_check",
-        "on_chosen_change", "on_clear_filters", "on_click", "on_context_menu_item",
+        "on_clear_filters", "on_click", "on_context_menu_item",
         "on_delete", "on_drop", "on_files", "on_heading_action", "on_move",
         "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
         "on_rename", "on_retry",
