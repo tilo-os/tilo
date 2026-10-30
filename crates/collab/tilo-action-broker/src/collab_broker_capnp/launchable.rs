@@ -1549,10 +1549,7 @@ mod tests {
         let alias = format!(
             "{}5de7eba4-60d5-41f3-bd8a-2c4e5d8d9dd2:464da94a-e962-41ee-b1bf-498c32006984:{}",
             tilo_actions::BOUND_RESOURCE_PREFIX,
-            "files.app"
-                .bytes()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
+            hex::encode("files.app")
         );
         let owner = Caller::local_person("owner").in_room(&room);
         let target =

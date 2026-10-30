@@ -183,7 +183,6 @@ impl ShellOverlayHost {
     /// no model, offline) the composer says which and offers the fix in
     /// place: it never waits on an agent that is not coming.
     pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
-        use crate::shell::state::WorkspaceAuthority as _;
         use crate::shell::task_agents::NEW_TASK_AGENT;
         // On a canvas a question's answer is a window where it was asked.
         if self.canvas_shown() && seed.ask.is_some() {
@@ -192,21 +191,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let Some((room, person, members)) = ({
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                (
-                    workspace.room().to_string(),
-                    state.active_local_user_in(&tree),
-                    workspace
-                        .agent_members()
-                        .into_iter()
-                        .map(|(agent, _)| agent)
-                        .collect::<Vec<_>>(),
-                )
-            })
-        }) else {
+        let Some((room, person, members)) = active_room_agents(&chrome.borrow()) else {
             tracing::warn!("the composer did not open: no workspace is active");
             return false;
         };
@@ -372,7 +357,7 @@ impl ShellOverlayHost {
                 .and_then(|workspace| minted.launch(&workspace));
             match outcome {
                 Ok(()) => {
-                    tracing::info!(agent = %minted.agent_id, "launched the agent made for the task")
+                    tracing::info!(agent = %minted.agent_id, "launched the agent made for the task");
                 }
                 Err(error) => {
                     tracing::warn!(agent = %minted.agent_id, %error, "the agent made for the task could not be launched");
@@ -609,4 +594,22 @@ mod tests {
             selection_area(window, Some(caret), None)
         );
     }
+}
+
+/// The active workspace's room, the person in it, and its agent members.
+fn active_room_agents(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<(String, crate::shell::state::UserId, Vec<String>)> {
+    use crate::shell::state::WorkspaceAuthority as _;
+    let tree = state.tree();
+    let workspace = tree.desktop.active_workspace()?;
+    let room = workspace.room().to_string();
+    let members = workspace
+        .agent_members()
+        .into_iter()
+        .map(|(agent, _)| agent)
+        .collect();
+    let person = state.active_local_user_in(&tree);
+    drop(tree);
+    Some((room, person, members))
 }

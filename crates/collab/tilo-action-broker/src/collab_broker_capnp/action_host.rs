@@ -2041,14 +2041,7 @@ impl CapnpBrokerState {
         let address = &current_address(destination.resource.as_deref(), request);
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
-        let expired = || ActionHostError::Unavailable {
-            reason: format!(
-                "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
-                address.action,
-                timeout.as_secs_f32(),
-                self.publishers_seen(app_id, &room, address),
-            ),
-        };
+        let expired = || self.not_offered(app_id, &room, address, timeout);
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         // Taken before the first look, so a publication between that look
@@ -2130,7 +2123,6 @@ impl CapnpBrokerState {
                 launched = true;
                 continue;
             }
-            let mut start_ended = None;
             tokio::select! {
                 seen = changes.changed() => if seen.is_err() {
                     return Err(ActionHostError::Unavailable {
@@ -2141,21 +2133,29 @@ impl CapnpBrokerState {
                 () = &mut abandoned => return Err(stopped_waiting()),
                 () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => {},
                 // A start that failed is the action's answer now, with why.
-                ended = async { starting.as_mut().expect("guarded by is_some").await }, if starting.is_some() => {
-                    start_ended = Some(ended);
+                failed = super::windowless_instances::start_failed(&mut starting, app_id) => {
+                    return Err(failed);
                 }
             }
-            if let Some(ended) = start_ended {
-                starting = None;
-                let why = match ended {
-                    Ok(Ok(())) => continue,
-                    Ok(Err(why)) => why,
-                    Err(_) => "the host stopped starting it".into(),
-                };
-                return Err(ActionHostError::Unavailable {
-                    reason: format!("{app_id} could not run without a window: {why}"),
-                });
-            }
+        }
+    }
+
+    /// `app_id` was launched in `room` but did not offer `address` within
+    /// `timeout`: why, with what its connections publish.
+    fn not_offered(
+        &self,
+        app_id: &str,
+        room: &str,
+        address: &tilo_actions::ActionAddress,
+        timeout: std::time::Duration,
+    ) -> ActionHostError {
+        ActionHostError::Unavailable {
+            reason: format!(
+                "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
+                address.action,
+                timeout.as_secs_f32(),
+                self.publishers_seen(app_id, room, address),
+            ),
         }
     }
 

@@ -264,6 +264,10 @@ impl Freshness {
     }
 }
 
+/// The last ask ticket handed out: unique across every owner's asks, so a
+/// ticket names one ask.
+static NEXT_ASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Default)]
 pub(super) struct AgentActions {
     owner: Option<ComposerOwner>,
@@ -405,6 +409,37 @@ impl AgentActions {
         });
     }
 
+    /// Who the person is in the owner's room changed since the session
+    /// opened: every call is refused and the session ends. Whether there
+    /// was one to end; `None` while the identity stands.
+    fn end_on_identity_change(
+        &mut self,
+        owner: &ComposerOwner,
+        composer: &mut AgentQuickComposer,
+    ) -> Option<bool> {
+        if self
+            .source
+            .as_ref()
+            .and_then(|source| source.identity_revision(&owner.room))
+            == Some(owner.identity_revision)
+        {
+            return None;
+        }
+        let changed = self.session.is_some();
+        for call in std::mem::take(&mut self.calls) {
+            self.refuse(
+                &call.operation,
+                composer,
+                &Refusal::unknown("who you are in this workspace changed"),
+            );
+        }
+        self.followed = None;
+        self.session = None;
+        self.sent.clear();
+        composer.project(owner, None);
+        Some(changed)
+    }
+
     pub(super) fn pump(
         &mut self,
         composer: &mut AgentQuickComposer,
@@ -414,24 +449,7 @@ impl AgentActions {
             return false;
         };
         let active = composer.owner() == Some(&owner) && composer.is_open();
-        if self
-            .source
-            .as_ref()
-            .and_then(|source| source.identity_revision(&owner.room))
-            != Some(owner.identity_revision)
-        {
-            let changed = self.session.is_some();
-            for call in std::mem::take(&mut self.calls) {
-                self.refuse(
-                    &call.operation,
-                    composer,
-                    &Refusal::unknown("who you are in this workspace changed"),
-                );
-            }
-            self.followed = None;
-            self.session = None;
-            self.sent.clear();
-            composer.project(&owner, None);
+        if let Some(changed) = self.end_on_identity_change(&owner, composer) {
             return changed && active;
         }
         let pending = std::mem::take(&mut self.calls);
@@ -584,9 +602,11 @@ impl AgentActions {
             tracing::warn!(%error, "the agent's session could not be opened for the ask");
             return None;
         }
-        // Unique across every owner's asks, so a ticket names one ask.
-        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let issued = AskTicket(LAST.fetch_add(1, Ordering::Relaxed) + 1);
+        let issued = AskTicket(
+            NEXT_ASK_TICKET
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+        );
         let mut operation = match queue_operation(owner, None, (title, body), about, None, quick) {
             Ok(operation) => operation,
             Err(error) => {

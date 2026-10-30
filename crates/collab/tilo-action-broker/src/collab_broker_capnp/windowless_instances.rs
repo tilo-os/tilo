@@ -64,3 +64,25 @@ impl CapnpBrokerState {
                 .is_ok_and(|windowless| !windowless.contains(&peer_id))
     }
 }
+
+/// Why the start of an instance with no window failed, once it does;
+/// pending while there is none to wait on, or once it runs. Cancel-safe: a
+/// wait dropped before the start ended leaves `starting` as it was.
+pub(super) async fn start_failed(
+    starting: &mut Option<crate::services::WindowlessStart>,
+    app_id: &str,
+) -> ActionHostError {
+    let Some(start) = starting.as_mut() else {
+        return std::future::pending().await;
+    };
+    let ended = start.await;
+    *starting = None;
+    let why = match ended {
+        Ok(Ok(())) => return std::future::pending().await,
+        Ok(Err(why)) => why,
+        Err(_) => "the host stopped starting it".into(),
+    };
+    ActionHostError::Unavailable {
+        reason: format!("{app_id} could not run without a window: {why}"),
+    }
+}

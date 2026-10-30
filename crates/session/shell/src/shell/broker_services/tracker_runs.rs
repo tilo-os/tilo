@@ -245,12 +245,13 @@ impl NativeTrackerRuns {
         {
             HeldSealed::Readable(mut doc) => {
                 let revision = tilo_peer_state::committed_document_revision(&doc.get_heads());
-                let mut held = self.read.lock_recover();
                 if known == Some(revision) {
-                    return Ok(held_view(&held));
+                    return Ok(held_view(&self.read.lock_recover()));
                 }
                 let tracker = view_of(&doc)?;
-                held.insert(room.to_owned(), (revision, tracker.clone()));
+                self.read
+                    .lock_recover()
+                    .insert(room.to_owned(), (revision, tracker.clone()));
                 Ok(Some(tracker))
             }
             HeldSealed::Waiting => Ok(held_view(&self.read.lock_recover())),
@@ -338,12 +339,12 @@ fn with_conversation(instruction: String, said: &[tasks::model::Said]) -> String
         if line.len() > room {
             break;
         }
-        room -= line.len();
+        room = room.saturating_sub(line.len());
         kept.push(line);
     }
     let mut out = instruction;
     out.push_str(runtime_collab::INSTRUCTION_CONVERSATION);
-    let left_out = said.len() - kept.len();
+    let left_out = said.len().saturating_sub(kept.len());
     if left_out > 0 {
         let _ = std::fmt::Write::write_fmt(
             &mut out,

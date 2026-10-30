@@ -107,17 +107,19 @@ pub(crate) fn asked() -> Vec<(String, String)> {
 /// told; a failed one is forgotten, so the next action asks again.
 pub(crate) fn settle(app: &str, room: &str, instance: Instance) {
     let key = (app.to_owned(), room.to_owned());
-    let waiting = {
-        let mut instances = INSTANCES.lock_recover();
-        let instances = instances.get_or_insert_with(HashMap::new);
-        let previous = match &instance {
-            Instance::Running => instances.insert(key, Slot::Running),
-            Instance::Failed(_) => instances.remove(&key),
-        };
-        match previous {
-            Some(Slot::Asked(waiting)) => waiting,
-            Some(Slot::Running) | None => Vec::new(),
-        }
+    let previous = match &instance {
+        Instance::Running => INSTANCES
+            .lock_recover()
+            .get_or_insert_with(HashMap::new)
+            .insert(key, Slot::Running),
+        Instance::Failed(_) => INSTANCES
+            .lock_recover()
+            .get_or_insert_with(HashMap::new)
+            .remove(&key),
+    };
+    let waiting = match previous {
+        Some(Slot::Asked(waiting)) => waiting,
+        Some(Slot::Running) | None => Vec::new(),
     };
     let ended = match instance {
         Instance::Running => Ok(()),
