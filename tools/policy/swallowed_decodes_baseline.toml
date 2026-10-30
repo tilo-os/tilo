@@ -75,8 +75,6 @@
 "crates/session/shell/src/shell/live_presence.rs" = 4
 "crates/session/shell/src/shell/live_waves.rs" = 2
 "crates/session/shell/src/shell/memory_report.rs" = 1
-"crates/session/shell/src/shell/mpris/mod.rs" = 1
-"crates/session/shell/src/shell/mpris/observer.rs" = 4
 "crates/session/shell/src/shell/net_answers.rs" = 1
 "crates/session/shell/src/shell/network.rs" = 10
 "crates/session/shell/src/shell/network/embedded_host.rs" = 1
