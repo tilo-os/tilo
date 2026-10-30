@@ -179,30 +179,12 @@ mod nested {
             cpu(moving)
         );
 
-        // A resize of the output the window fills: the session is asked for a
-        // bigger window and must draw it at that size.
-        let resized = Instant::now();
-        outer
-            .configure_outputs(&[OutputChange {
-                mode: Some(ModeRequest {
-                    size: (1000, 700),
-                    refresh_mhz: None,
-                }),
-                ..OutputChange::enable("HEADLESS-1")
-            }])
-            .expect("resize");
-        let grown = pump_until(&mut outer, &mut session, RESIZING, |compositor, _| {
-            compositor
-                .windows()
-                .into_iter()
-                .find(|(_, rect)| (rect.2, rect.3) == (1000, 700))
-        });
-        let Some((_, (_, _, width, height))) = grown else {
-            panic!("the session never drew its window at 1000x700");
-        };
-        let resized = resized.elapsed();
-        eprintln!("the session drew {width}x{height} after {resized:?}");
-        assert!(resized <= PROMPT, "the resize took {resized:?}");
+        // Resizes of the output the window fills, one after the other: the
+        // session is asked for a window of that size and must draw it at
+        // that size, each time it happens.
+        for size in [(1000, 700), (500, 400), (1200, 800)] {
+            resize(&mut outer, &mut session, size);
+        }
 
         // Closing the window, as its own close button does.
         let closed = Instant::now();
@@ -220,6 +202,38 @@ mod nested {
         let closed = closed.elapsed();
         eprintln!("the session ended {closed:?} after its window was closed ({status})");
         assert!(closed <= PROMPT, "closing took {closed:?}");
+    }
+
+    /// Ask the output the window fills for `size`, and answer how long the
+    /// session took to draw at it.
+    fn resize(outer: &mut Compositor, session: &mut Session, size: (i32, i32)) -> Duration {
+        let (width, height) = size;
+        let resized = Instant::now();
+        outer
+            .configure_outputs(&[OutputChange {
+                mode: Some(ModeRequest {
+                    size,
+                    refresh_mhz: None,
+                }),
+                ..OutputChange::enable("HEADLESS-1")
+            }])
+            .expect("resize");
+        let grown = pump_until(outer, session, RESIZING, |compositor, _| {
+            compositor
+                .windows()
+                .into_iter()
+                .find(|(_, rect)| (rect.2, rect.3) == size)
+        });
+        let took = resized.elapsed();
+        let Some((_, (_, _, drawn_width, drawn_height))) = grown else {
+            panic!("the session never drew its window at {width}x{height}");
+        };
+        eprintln!("the session drew {drawn_width}x{drawn_height} after {took:?}");
+        assert!(
+            took <= PROMPT,
+            "the resize to {width}x{height} took {took:?}"
+        );
+        took
     }
 
     /// The session binary, beside this example's own directory (`cargo build
