@@ -1,19 +1,28 @@
-//! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [--host-desktop] [--no-x11] [--session-bus ADDRESS|none] [--system-bus
-//! ADDRESS|none] [-- command args...]`. Listens on a fresh `wayland-N`
-//! socket, starts Xwayland for X11 clients (unless `--no-x11`), prints both
-//! displays and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set
-//! to them; with a command, the session lasts as long as it does. The desktop
-//! services serve on the buses the environment names unless a flag names
-//! another (or none).
+//! The native session: `tilo-session [--backend drm|headless|nested]
+//! [--size WxH] [--host-desktop] [--no-x11] [--session-bus ADDRESS|none]
+//! [--system-bus ADDRESS|none] [-- command args...]`. Listens on a fresh
+//! `wayland-N` socket, starts Xwayland for X11 clients (unless `--no-x11`),
+//! prints both displays and starts `command` with `WAYLAND_DISPLAY` and
+//! `DISPLAY` set to them; with a command, the session lasts as long as it
+//! does. The desktop services serve on the buses the environment names
+//! unless a flag names another (or none); a nested session, which runs in a
+//! window of a desktop it did not start, serves no bus unless a flag names
+//! one and exports nothing to that desktop's systemd user manager and D-Bus
+//! activation. A command started in the session is given the session bus a
+//! flag named, so the portal and the notifications it reaches are the
+//! session's own.
+
+#[cfg(target_os = "linux")]
+use tilo_session::desktop_services::{Bus, Buses};
+#[cfg(target_os = "linux")]
+use tilo_session::{Backend, Reach, SessionEnvironment};
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
-    use tilo_compositor::{DisplayConfig, OutputConfig};
-    use tilo_session::desktop_services::{Bus, Buses};
-    use tilo_session::{Options, Session, SessionEnvironment};
+    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
+    use tilo_session::{Options, Session};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -23,31 +32,22 @@ fn main() -> std::process::ExitCode {
         ),
         None => (args.as_slice(), &[][..]),
     };
-    let value = |flag: &str| {
-        ours.iter()
-            .position(|arg| arg == flag)
-            .and_then(|index| ours.get(index.saturating_add(1)))
-    };
-    let backend = value("--backend").map_or("drm", String::as_str);
-    let size = value("--size")
-        .and_then(|size| size.split_once('x'))
-        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
-        .unwrap_or((1280, 720));
-
-    let bus = |flag: &str| match value(flag).map(String::as_str) {
-        None => Bus::Default,
-        Some("none") => Bus::None,
-        Some(address) => Bus::Address(address.to_owned()),
-    };
-    let buses = Buses {
-        session: bus("--session-bus"),
-        system: bus("--system-bus"),
+    let Launch {
+        backend,
+        size,
+        reach,
+    } = match launch(ours) {
+        Ok(launch) => launch,
+        Err(error) => {
+            eprintln!("tilo-session: {error}");
+            return ExitCode::FAILURE;
+        }
     };
     let wake = tilo_service::LoopWake::default();
     let (mut services, _following) = services(&wake);
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
-    let _desktop = desktop_services(&buses, &wake, Arc::new(capture), &mut services);
+    let _desktop = desktop_services(&reach.buses, &wake, Arc::new(capture), &mut services);
     let options = Options {
         services,
         wake,
@@ -56,14 +56,22 @@ fn main() -> std::process::ExitCode {
         ..device_options()
     };
     let started = match backend {
-        "headless" => {
-            Session::headless(options, &[OutputConfig::new("HEADLESS-1", size.0, size.1)])
-        }
-        "drm" => Session::drm(options, DisplayConfig::default()),
-        other => {
-            eprintln!("tilo-session: unknown backend {other} (drm, headless)");
-            return ExitCode::FAILURE;
-        }
+        Backend::Headless => Session::headless(
+            options,
+            &[OutputConfig::new(
+                "HEADLESS-1",
+                i32::from(size.0),
+                i32::from(size.1),
+            )],
+        ),
+        Backend::Drm => Session::drm(options, DisplayConfig::default()),
+        Backend::Nested => Session::nested(
+            options,
+            &NestedConfig {
+                size,
+                ..NestedConfig::default()
+            },
+        ),
     };
     let mut session = match started {
         Ok(session) => session,
@@ -85,15 +93,17 @@ fn main() -> std::process::ExitCode {
     } else {
         start_x11(session.compositor())
     };
-    SessionEnvironment {
-        wayland_display: socket.clone(),
-        x11_display: x11_display.clone(),
+    let environment = SessionEnvironment {
+        wayland_display: socket,
+        x11_display,
         x11_authority: None,
+    };
+    if reach.export_displays {
+        environment.clone().export();
     }
-    .export();
-    let mut child = command
-        .split_first()
-        .and_then(|(program, rest)| start_command(program, rest, &socket, x11_display.as_deref()));
+    let mut child = command.split_first().and_then(|(program, rest)| {
+        start_command(program, rest, &environment, reach.session_bus())
+    });
     let result = session.run(|_| {
         child
             .as_mut()
@@ -106,6 +116,49 @@ fn main() -> std::process::ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// What the flags ask for: the backend to start, the size it starts at, and
+/// what it reaches of this desktop.
+#[cfg(target_os = "linux")]
+struct Launch {
+    backend: Backend,
+    size: (u16, u16),
+    reach: Reach,
+}
+
+/// What the flags (before `--`) ask for, or why they are unusable.
+#[cfg(target_os = "linux")]
+fn launch(ours: &[String]) -> Result<Launch, String> {
+    let value = |flag: &str| {
+        ours.iter()
+            .position(|arg| arg == flag)
+            .and_then(|index| ours.get(index.saturating_add(1)))
+    };
+    let name = value("--backend").map_or("drm", String::as_str);
+    let backend = Backend::named(name)
+        .ok_or_else(|| format!("unknown backend {name} (drm, headless, nested)"))?;
+    let size: (u16, u16) = value("--size")
+        .and_then(|size| size.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+        .unwrap_or((1280, 720));
+    let bus = |flag: &str| match value(flag).map(String::as_str) {
+        None => Bus::Default,
+        Some("none") => Bus::None,
+        Some(address) => Bus::Address(address.to_owned()),
+    };
+    let reach = Reach::new(
+        backend,
+        Buses {
+            session: bus("--session-bus"),
+            system: bus("--system-bus"),
+        },
+    );
+    Ok(Launch {
+        backend,
+        size,
+        reach,
+    })
 }
 
 /// The desktop services on `buses`, their resources added to `services`;
@@ -172,20 +225,26 @@ fn start_x11(compositor: &mut tilo_compositor::Compositor) -> Option<String> {
     }
 }
 
-/// `program` started with `rest`, on the session's displays.
+/// `program` started with `rest` on `environment`'s displays and, when a
+/// flag named the session bus, on that bus rather than the one it inherits.
 #[cfg(target_os = "linux")]
 fn start_command(
     program: &str,
     rest: &[String],
-    wayland: &str,
-    x11: Option<&str>,
+    environment: &SessionEnvironment,
+    session_bus: Option<&str>,
 ) -> Option<std::process::Child> {
     let mut started = std::process::Command::new(program);
-    started.args(rest).env("WAYLAND_DISPLAY", wayland);
-    match x11 {
+    started
+        .args(rest)
+        .env("WAYLAND_DISPLAY", &environment.wayland_display);
+    match &environment.x11_display {
         Some(display) => started.env("DISPLAY", display),
         None => started.env_remove("DISPLAY"),
     };
+    if let Some(address) = session_bus {
+        started.env("DBUS_SESSION_BUS_ADDRESS", address);
+    }
     started
         .spawn()
         .map_err(|error| eprintln!("tilo-session: {program}: {error}"))

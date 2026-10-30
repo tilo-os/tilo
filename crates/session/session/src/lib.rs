@@ -35,6 +35,7 @@ mod env;
 mod keys;
 mod lists;
 mod panels;
+pub mod run;
 mod search;
 mod setup;
 mod sheets;
@@ -47,7 +48,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{Compositor, DisplayConfig, Error, OutputConfig, WindowPolicy};
+use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
@@ -70,6 +71,7 @@ pub use controls::{
 pub use env::SessionEnvironment;
 pub use keys::{Invocation, KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE, QUICK_SETTINGS};
 pub use lists::{AppLists, Lists};
+pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
@@ -823,6 +825,17 @@ impl Session {
     /// The compositor did not start.
     pub fn drm(options: Options, config: DisplayConfig) -> Result<Self, Error> {
         let mut session = Self::new(options, |policy| Compositor::drm(policy, config))?;
+        session.warm()?;
+        Ok(session)
+    }
+
+    /// A session in a window of the desktop it is started from, for
+    /// development (see [`tilo_compositor::backend::nested`]).
+    ///
+    /// # Errors
+    /// The compositor or its window did not start.
+    pub fn nested(options: Options, config: &NestedConfig) -> Result<Self, Error> {
+        let mut session = Self::new(options, |policy| Compositor::nested(policy, config))?;
         session.warm()?;
         Ok(session)
     }
