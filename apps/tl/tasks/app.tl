@@ -536,6 +536,16 @@ scenario "a busy week" -> Task {
     call
 }
 
+/// A launch post half written: its window, with the steps it was broken into, one done.
+scenario "a task's steps" -> Task {
+    let launch = tasks.projects.insert(Project(name: "Website launch"))
+    let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: "Lead with the offline editor, then sharing."))
+    tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
+    tasks.steps.insert(Step(title: "First draft, with the quotes from the beta testers", task: copy))
+    tasks.steps.insert(Step(title: "Screenshots", task: copy))
+    copy
+}
+
 /// A week everyone has finished.
 scenario "all done" {
     tasks.items.insert(Task(title: "Passports", done: true))

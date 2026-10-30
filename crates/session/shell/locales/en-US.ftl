@@ -612,16 +612,19 @@ capability-network = Network access
 # terminal) asks to work in a workspace as an agent member.
 agent-door-client = { $client } ({ $program })
 agent-door-client-in-app = { $who } in { $app }
-agent-door-admission = Work in “{ $workspace }” as the agent { $agent }
-agent-door-param-agent = The agent to admit it as: an existing agent member, or a new one by this name. Defaults to the name the prompt proposes.
-agent-door-param-preset = A new agent's preset: Observer, Contributor, Operator, or Custom. Presets never grant access to a surface by themselves.
-agent-door-preset-invalid = Choose Observer, Contributor, Operator, or Custom.
+agent-door-admission = Work in “{ $workspace }” as { $agent }, in a task you can follow and stop in Tasks
+agent-door-param-agent = The name it works under, which titles its task. Defaults to the name the prompt proposes.
 agent-door-agent-invalid = An agent needs a name of up to 128 characters.
 agent-door-workspace-gone = The workspace this client asked to work in is gone.
-agent-door-not-administrator = You do not administer this workspace, so { $agent } was not added.
 agent-door-no-workspace = There is no workspace here to work in.
 agent-door-withdrawn = The request was withdrawn before anyone answered it.
 agent-door-declined = The person at this desktop declined this connection.
+agent-door-run-title = { $agent } in this session
+agent-door-run-body = { $who } works for you through this session's agent door. Its steps show here, and stopping this task ends what it may do.
+agent-door-run-refused = Tasks did not start a task for this connection: { $reason }
+agent-door-run-unknown = Tasks did not say which task this connection works in.
+agent-door-run-ended = This connection's task ended before it could start working.
+agent-door-identity-unavailable = This device has no identity in this workspace yet, so it cannot start a task for this connection.
 
 # The shortcut-guide pill in the display corner
 help-pill = Help
@@ -637,6 +640,7 @@ overview-site-here = { $count ->
 }
 
 # Search filter chips
+search-scope-in-resource = In { $resource }
 search-filter-all = All
 search-filter-more = More
 

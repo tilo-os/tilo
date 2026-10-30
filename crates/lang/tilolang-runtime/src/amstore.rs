@@ -36,6 +36,7 @@ use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
 use crate::store::{
     Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
     NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store, StoreError, SubId, Txn,
+    Version,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
@@ -875,6 +876,64 @@ impl Store for AmStore {
             .iter()
             .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
             .collect())
+    }
+
+    fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {
+        let inner = self.inner.borrow();
+        let mut out = Vec::new();
+        for (id, doc) in &inner.docs {
+            let notes: Vec<ChangeNote> = doc
+                .committed_document()
+                .get_changes(&[])
+                .iter()
+                .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
+                .collect();
+            let mut touched: Vec<&String> = notes
+                .iter()
+                .filter(|note| note.group.as_ref().is_some_and(|group| group.id == run))
+                .flat_map(|note| note.touched.iter())
+                .collect();
+            touched.sort();
+            touched.dedup();
+            for resource in touched {
+                let at = ResourceRef::parse_id(resource, String::new())
+                    .unwrap_or_else(|| ResourceRef::root(id.clone(), String::new()));
+                out.extend(
+                    crate::store::versions_in(&notes, &at)
+                        .into_iter()
+                        .filter(|v| v.task.as_ref().is_some_and(|task| task.id == run)),
+                );
+            }
+        }
+        out.sort_by(|a, b| a.at.cmp(&b.at));
+        Ok(out)
+    }
+
+    fn read_before(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        change: &str,
+    ) -> Result<FieldValue, StoreError> {
+        let inner = self.inner.borrow();
+        let doc = inner.doc(&at.doc)?;
+        let n: usize = change
+            .parse()
+            .map_err(|_| not_found(format!("change {change}")))?;
+        let committed = doc.committed_document();
+        let changes = committed.get_changes(&[]);
+        let made = changes
+            .get(n)
+            .ok_or_else(|| not_found(format!("change {change}")))?;
+        let before = committed.fork_at(made.deps()).map_err(backend)?;
+        let before = AutoCommit::load(&before.save()).map_err(backend)?;
+        let obj = match &at.item {
+            None => ROOT,
+            Some(item) => {
+                item_obj(&before, item).ok_or_else(|| not_found(format!("item `{item}`")))?
+            }
+        };
+        read_field(&before, &obj, field)
     }
 
     /// Only the last `window` changes are read: their notes, newest first.

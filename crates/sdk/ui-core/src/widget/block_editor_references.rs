@@ -251,6 +251,7 @@ impl Described for BlockEditor {
             .with_wrap_lines(true)
             .with_compact_paragraph_spacing(true)
             .with_block_handles(false)
+            .with_flush_text()
             .with_read_only(true);
         let _ = key;
         editor.set_props(props);
@@ -518,6 +519,27 @@ mod tests {
             !editor.blocks()[0].text().starts_with("Ask"),
             "the time reads as it does now: {}",
             editor.blocks()[0].text()
+        );
+    }
+
+    #[test]
+    fn a_shown_body_starts_at_its_edge_as_what_stands_beside_it_does() {
+        let props = RichTextProps {
+            value: text(Vec::new()),
+            open_reference: Event::default(),
+        };
+        let mut editor = BlockEditor::from_props("post", props);
+        let mut renderer = TextRenderer::new();
+        laid_out(&mut editor, &mut renderer);
+        assert_eq!(
+            editor.text_inset(&Theme::light()),
+            0.0,
+            "a message's body lines up with its author's name, quote and chips"
+        );
+        let editable = BlockEditor::new();
+        assert!(
+            editable.text_inset(&Theme::light()) > 0.0,
+            "a document keeps its inset"
         );
     }
 }

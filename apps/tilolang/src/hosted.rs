@@ -290,12 +290,37 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
+/// The window's undo and redo (Ctrl+Z, Ctrl+Shift+Z, Edit › Undo) are the record's, and the
+/// record is the instance's: they go to the instance, which takes back the person's last step
+/// there, typing into a field included, and sends the window what it shows then. The window
+/// holds no record, so no undo of its own could take anything back; and a field keeps no
+/// history beside the record's.
+impl ui::undo::LocalUndo for HostedWindow {
+    fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
+        let Some(connected) = &mut self.connected else {
+            // Nothing shown yet: nothing of the person's to take back.
+            return false;
+        };
+        // What the person typed before asking goes first: the undo takes it back too.
+        connected.view.flush();
+        connected.view.tell(match request {
+            ui::undo::UndoRequest::Undo => tilo_render_protocol::patch::ToApp::Undo,
+            ui::undo::UndoRequest::Redo => tilo_render_protocol::patch::ToApp::Redo,
+        });
+        connected.view.flush();
+        true
+    }
+}
+
 /// The window stands for what it shows (the UI host's window, or the loading state before it)
 /// in the layout and in every walk of the widgets: it adds no node of its own.
 impl ui::widget::Decorator for HostedWindow {
     type Inner = dyn Widget;
 
-    ui::provides!(dyn ui::component_lifecycle::WindowActivation);
+    ui::provides!(
+        dyn ui::component_lifecycle::WindowActivation,
+        dyn ui::undo::LocalUndo
+    );
 
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.content()
