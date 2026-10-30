@@ -33,7 +33,6 @@ use tilo_portal::file_chooser::{
     FILE_CHOOSER_QUESTION, FileChooserQuestion, PickerFilter, file_uri,
 };
 use tilo_portal::screenshot::ScreenshotQuestion;
-use tilo_resource::Effect as _;
 use tilo_service::{Answer, Asked, Question, Questions, Service, Started, decode, offer};
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
@@ -126,10 +125,24 @@ fn arguments(value: Value) -> Map<String, Value> {
 /// Press `effect` on the sheet publishing it, as the person would.
 #[track_caller]
 fn press(session: &mut Session, effect: &str, args: Value) {
+    let mut args = arguments(args);
+    let handle = session
+        .portal()
+        .and_then(tilo_sheets::portal::PortalSeat::dialog)
+        .map(|dialog| dialog.handle)
+        .or_else(|| {
+            session
+                .file_picker()
+                .and_then(tilo_sheets::file_picker::FilePickerSeat::request)
+                .map(|request| request.handle)
+        });
+    if let Some(handle) = handle
+        && !args.contains_key("handle")
+    {
+        args.insert("handle".to_owned(), handle.into());
+    }
     let sheet = publisher(session, effect).expect("the sheet publishes that");
-    session
-        .invoke(&sheet, effect, &arguments(args))
-        .expect("press");
+    session.invoke(&sheet, effect, &args).expect("press");
     session.step(Duration::from_millis(1)).expect("step");
 }
 
@@ -969,10 +982,11 @@ fn the_file_question_is_answered_with_what_the_chooser_gave() {
         let listing = picker.listing();
         !listing.reading && !listing.folder.as_os_str().is_empty()
     });
-    let named = FilePickerEffect::SetFilename {
-        name: "Holiday.png".to_owned(),
-    };
-    press(&mut session, named.id(), json!({ "name": "Holiday.png" }));
+    press(
+        &mut session,
+        FilePickerEffect::SET_FILENAME.id,
+        json!({ "name": "Holiday.png" }),
+    );
     pump(&mut session, |_| picker.listing().can_confirm);
     press(&mut session, FilePickerEffect::CONFIRM.id, json!({}));
 

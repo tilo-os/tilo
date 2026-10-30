@@ -139,6 +139,7 @@ portal-usb-row-read-write = Lesen und Schreiben
 portal-usb-row-read-only = Nur lesen
 portal-a11y-name = Name
 portal-no-such-field = Die Frage hat kein solches Feld zum Eintippen.
+portal-request-gone = Diese Frage steht nicht mehr offen.
 portal-secret-incomplete = Fülle zuerst aus, was die Frage verlangt.
 portal-a11y-answer = Antwort
 portal-allow = Erlauben
@@ -240,6 +241,7 @@ portal-auth-rejected = Dieses Passwort wurde nicht angenommen.
 
 file-chooser-nothing-asked = Die Dateiauswahl fragt gerade nichts.
 file-chooser-answered = Die Dateiauswahl hat schon geantwortet.
+file-chooser-request-gone = Diese Dateiauswahl steht nicht mehr offen.
 file-chooser-not-listed = Das steht nicht in der Liste der Dateiauswahl.
 file-chooser-not-a-folder = Das ist eine Datei, kein Ordner.
 file-chooser-outside = Das liegt außerhalb der Ordner, die die Dateiauswahl öffnen darf.

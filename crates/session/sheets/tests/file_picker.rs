@@ -46,6 +46,11 @@ fn request(home: &Path, mode: FileMode) -> FileRequest {
     }
 }
 
+/// The request the choosers here ask about, which every step names.
+fn request_1() -> String {
+    "request-1".to_owned()
+}
+
 fn seated(request: FileRequest) -> (HeadlessApp<FilePickerApp>, FilePickerSeat) {
     let seat = FilePickerSeat::default();
     seat.presentation().open(true);
@@ -122,12 +127,19 @@ fn opening_a_file_lists_the_folder_and_answers_with_the_choice() {
         &mut app,
         &seat,
         &FilePickerEffect::Select {
+            handle: request_1(),
             path: beach.clone(),
         },
     );
     assert!(seat.listing().can_confirm);
     assert!(seat.take_answer().is_none(), "choosing is not answering");
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     assert_eq!(
         seat.take_answer(),
         Some(FileAnswer::Chosen(vec![PathBuf::from(beach)]))
@@ -143,15 +155,29 @@ fn folders_open_through_the_list_up_and_any_folder_in_reach() {
     let home = home();
     let (mut app, seat) = seated(request(home.path(), FileMode::Open));
     let trips = path(&seat, "Trips");
-    step(&mut app, &seat, &FilePickerEffect::Navigate { path: trips });
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Navigate {
+            handle: request_1(),
+            path: trips,
+        },
+    );
     assert_eq!(names(&seat), ["alps.png"]);
-    step(&mut app, &seat, &FilePickerEffect::Up);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Up {
+            handle: request_1(),
+        },
+    );
     assert_eq!(seat.listing().folder, home.path().join("Pictures"));
     let documents = home.path().join("Documents");
     step(
         &mut app,
         &seat,
         &FilePickerEffect::Navigate {
+            handle: request_1(),
             path: documents.to_string_lossy().into_owned(),
         },
     );
@@ -165,12 +191,14 @@ fn nothing_outside_the_folders_in_reach_is_opened_or_chosen() {
     let (mut app, seat) = seated(request(home.path(), FileMode::Open));
     assert!(
         app.effect(&FilePickerEffect::Navigate {
+            handle: request_1(),
             path: "/etc".to_owned()
         })
         .is_err()
     );
     assert!(
         app.effect(&FilePickerEffect::Select {
+            handle: request_1(),
             path: "/etc/passwd".to_owned()
         })
         .is_err(),
@@ -178,8 +206,11 @@ fn nothing_outside_the_folders_in_reach_is_opened_or_chosen() {
     );
     let notes = path(&seat, "notes.txt");
     assert!(
-        app.effect(&FilePickerEffect::Navigate { path: notes })
-            .is_err(),
+        app.effect(&FilePickerEffect::Navigate {
+            handle: request_1(),
+            path: notes,
+        })
+        .is_err(),
         "a file is not a folder"
     );
     // At the top of what it may reach, there is no Up.
@@ -187,11 +218,18 @@ fn nothing_outside_the_folders_in_reach_is_opened_or_chosen() {
         &mut app,
         &seat,
         &FilePickerEffect::Navigate {
+            handle: request_1(),
             path: home.path().to_string_lossy().into_owned(),
         },
     );
     assert!(!seat.listing().can_up);
-    step(&mut app, &seat, &FilePickerEffect::Up);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Up {
+            handle: request_1(),
+        },
+    );
     assert!(seat.listing().refused.is_some(), "the refusal is said");
     assert_eq!(seat.listing().folder, home.path());
 }
@@ -209,6 +247,7 @@ fn several_files_are_chosen_one_by_one_when_the_app_takes_several() {
         &mut app,
         &seat,
         &FilePickerEffect::Select {
+            handle: request_1(),
             path: beach.clone(),
         },
     );
@@ -216,6 +255,7 @@ fn several_files_are_chosen_one_by_one_when_the_app_takes_several() {
         &mut app,
         &seat,
         &FilePickerEffect::AlsoSelect {
+            handle: request_1(),
             path: forest.clone(),
         },
     );
@@ -227,7 +267,13 @@ fn several_files_are_chosen_one_by_one_when_the_app_takes_several() {
         .map(|entry| entry.name)
         .collect();
     assert_eq!(chosen, ["beach.png", "forest.jpg"]);
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     let Some(FileAnswer::Chosen(mut paths)) = seat.take_answer() else {
         panic!("the chooser answers with the files")
     };
@@ -241,15 +287,29 @@ fn one_file_is_the_answer_when_the_app_takes_one() {
     let (mut app, seat) = seated(request(home.path(), FileMode::Open));
     let beach = path(&seat, "beach.png");
     let forest = path(&seat, "forest.jpg");
-    step(&mut app, &seat, &FilePickerEffect::Select { path: beach });
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Select {
+            handle: request_1(),
+            path: beach,
+        },
+    );
     step(
         &mut app,
         &seat,
         &FilePickerEffect::AlsoSelect {
+            handle: request_1(),
             path: forest.clone(),
         },
     );
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     assert_eq!(
         seat.take_answer(),
         Some(FileAnswer::Chosen(vec![PathBuf::from(forest)]))
@@ -281,12 +341,33 @@ fn a_type_narrows_the_list_and_all_files_widens_it() {
     assert_eq!(listing.filter, 0);
     assert!(names(&seat).contains(&"beach.png".to_owned()));
     assert!(!names(&seat).contains(&"forest.jpg".to_owned()));
-    step(&mut app, &seat, &FilePickerEffect::Filter { index: 1 });
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Filter {
+            handle: request_1(),
+            index: 1,
+        },
+    );
     assert!(names(&seat).contains(&"forest.jpg".to_owned()));
     assert!(!names(&seat).contains(&"beach.png".to_owned()));
-    step(&mut app, &seat, &FilePickerEffect::Filter { index: 2 });
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Filter {
+            handle: request_1(),
+            index: 2,
+        },
+    );
     assert!(names(&seat).contains(&"notes.txt".to_owned()));
-    step(&mut app, &seat, &FilePickerEffect::Filter { index: 9 });
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Filter {
+            handle: request_1(),
+            index: 9,
+        },
+    );
     assert!(seat.listing().refused.is_some());
 }
 
@@ -302,23 +383,43 @@ fn saving_names_the_file_and_asks_before_replacing_one() {
         &mut app,
         &seat,
         &FilePickerEffect::SetFilename {
+            handle: request_1(),
             name: "beach.png".to_owned(),
         },
     );
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     let existing = home.path().join("Pictures").join("beach.png");
     assert_eq!(seat.listing().replace.as_deref(), Some(existing.as_path()));
     assert!(seat.take_answer().is_none(), "the person is asked first");
-    step(&mut app, &seat, &FilePickerEffect::KeepExisting);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::KeepExisting {
+            handle: request_1(),
+        },
+    );
     assert!(seat.listing().replace.is_none());
     step(
         &mut app,
         &seat,
         &FilePickerEffect::SetFilename {
+            handle: request_1(),
             name: "sunset.png".to_owned(),
         },
     );
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     assert_eq!(
         seat.take_answer(),
         Some(FileAnswer::Chosen(vec![
@@ -334,9 +435,21 @@ fn replacing_answers_with_the_existing_file() {
         suggested_name: Some("beach.png".to_owned()),
         ..request(home.path(), FileMode::Save)
     });
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     assert!(seat.listing().replace.is_some());
-    step(&mut app, &seat, &FilePickerEffect::Replace);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Replace {
+            handle: request_1(),
+        },
+    );
     assert_eq!(
         seat.take_answer(),
         Some(FileAnswer::Chosen(vec![
@@ -355,10 +468,17 @@ fn a_folder_is_chosen_without_opening_it() {
         &mut app,
         &seat,
         &FilePickerEffect::Select {
+            handle: request_1(),
             path: trips.clone(),
         },
     );
-    step(&mut app, &seat, &FilePickerEffect::Confirm);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: request_1(),
+        },
+    );
     assert_eq!(
         seat.take_answer(),
         Some(FileAnswer::Chosen(vec![PathBuf::from(trips)]))
@@ -373,7 +493,13 @@ fn recent_shows_what_the_app_was_given_before() {
         recent: vec![alps.clone()],
         ..request(home.path(), FileMode::Open)
     });
-    step(&mut app, &seat, &FilePickerEffect::Recent);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Recent {
+            handle: request_1(),
+        },
+    );
     let listing = seat.listing();
     assert_eq!(listing.showing, Showing::Recent);
     assert_eq!(
@@ -391,11 +517,28 @@ fn cancelling_answers_nothing_and_a_new_request_starts_afresh() {
     let home = home();
     let (mut app, seat) = seated(request(home.path(), FileMode::Open));
     let trips = path(&seat, "Trips");
-    step(&mut app, &seat, &FilePickerEffect::Navigate { path: trips });
-    step(&mut app, &seat, &FilePickerEffect::Cancel);
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Navigate {
+            handle: request_1(),
+            path: trips,
+        },
+    );
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Cancel {
+            handle: request_1(),
+        },
+    );
     assert_eq!(seat.take_answer(), Some(FileAnswer::Cancelled));
     assert!(
-        app.effect(&FilePickerEffect::Up).is_err() || seat.take_answer().is_none(),
+        app.effect(&FilePickerEffect::Up {
+            handle: request_1()
+        })
+        .is_err()
+            || seat.take_answer().is_none(),
         "an answered request takes no more steps"
     );
     seat.presentation().gone();
@@ -460,4 +603,64 @@ fn every_step_is_published() {
             "{id} is published: {published:?}"
         );
     }
+}
+
+#[test]
+fn a_step_for_a_chooser_that_is_no_longer_showing_is_refused() {
+    let home = home();
+    let (mut app, seat) = seated(request(home.path(), FileMode::Open));
+    let beach = path(&seat, "beach.png");
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Select {
+            handle: request_1(),
+            path: beach,
+        },
+    );
+    let for_the_first = FilePickerEffect::Confirm {
+        handle: request_1(),
+    };
+    // The next request opens before that step reaches the chooser.
+    seat.ask(Some(FileRequest {
+        handle: "request-2".to_owned(),
+        title: "Choose where to import from".to_owned(),
+        mode: FileMode::Folder,
+        initial_dir: home.path().to_path_buf(),
+        roots: vec![home.path().to_path_buf()],
+        ..FileRequest::default()
+    }));
+    settled(&mut app, &seat);
+    let refused = app
+        .effect(&for_the_first)
+        .expect_err("a step for the chooser that is gone is refused");
+    assert!(
+        format!("{refused:?}").contains("no longer showing"),
+        "the refusal says the chooser is gone: {refused:?}"
+    );
+    assert!(
+        seat.take_answer().is_none(),
+        "the chooser that is up was not answered"
+    );
+    // The chooser that is up answers itself, naming itself.
+    let documents = path(&seat, "Documents");
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Select {
+            handle: "request-2".to_owned(),
+            path: documents.clone(),
+        },
+    );
+    step(
+        &mut app,
+        &seat,
+        &FilePickerEffect::Confirm {
+            handle: "request-2".to_owned(),
+        },
+    );
+    assert_eq!(
+        seat.take_answer(),
+        Some(FileAnswer::Chosen(vec![PathBuf::from(documents)]))
+    );
 }

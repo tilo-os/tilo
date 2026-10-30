@@ -55,6 +55,11 @@ fn dialog(body: Body) -> Dialog {
     }
 }
 
+/// The request the questions here ask about, which every answer names.
+fn request_1() -> String {
+    "request-1".to_owned()
+}
+
 fn choices(items: &[&str]) -> Body {
     Body::Choices(items.iter().map(|item| (*item).to_owned()).collect())
 }
@@ -101,11 +106,24 @@ fn up_and_down_move_the_choice_enter_answers_and_escape_declines() {
     assert_eq!(
         seat.take_asked(),
         [
-            PortalEffect::Select { index: 1 },
-            PortalEffect::Select { index: 2 },
-            PortalEffect::Select { index: 1 },
-            PortalEffect::Confirm,
-            PortalEffect::Cancel,
+            PortalEffect::Select {
+                handle: request_1(),
+                index: 1,
+            },
+            PortalEffect::Select {
+                handle: request_1(),
+                index: 2,
+            },
+            PortalEffect::Select {
+                handle: request_1(),
+                index: 1,
+            },
+            PortalEffect::Confirm {
+                handle: request_1()
+            },
+            PortalEffect::Cancel {
+                handle: request_1()
+            },
         ]
     );
 }
@@ -128,7 +146,13 @@ fn the_shell_moves_the_highlight_and_a_reader_hears_every_choice() {
         );
     }
     key(&mut app, "ArrowDown");
-    assert_eq!(seat.take_asked(), [PortalEffect::Select { index: 0 }]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Select {
+            handle: request_1(),
+            index: 0,
+        }]
+    );
 }
 
 #[test]
@@ -140,7 +164,17 @@ fn a_paged_review_turns_its_pages_before_it_can_be_allowed() {
     let (mut app, seat) = seated(paged.clone());
     key(&mut app, "Enter");
     key(&mut app, "ArrowRight");
-    assert_eq!(seat.take_asked(), [PortalEffect::Next, PortalEffect::Next]);
+    assert_eq!(
+        seat.take_asked(),
+        [
+            PortalEffect::Next {
+                handle: request_1()
+            },
+            PortalEffect::Next {
+                handle: request_1()
+            }
+        ]
+    );
     assert!(
         app.harness().a11y_node_named("Continue").is_some(),
         "the primary button says the review goes on"
@@ -154,7 +188,14 @@ fn a_paged_review_turns_its_pages_before_it_can_be_allowed() {
     key(&mut app, "Enter");
     assert_eq!(
         seat.take_asked(),
-        [PortalEffect::Back, PortalEffect::Confirm]
+        [
+            PortalEffect::Back {
+                handle: request_1()
+            },
+            PortalEffect::Confirm {
+                handle: request_1()
+            }
+        ]
     );
     assert!(app.harness().a11y_node_named("Back").is_some());
 }
@@ -181,7 +222,15 @@ fn space_ticks_only_the_device_in_focus() {
     key(&mut app, "Enter");
     assert_eq!(
         seat.take_asked(),
-        [PortalEffect::Toggle { index: 1 }, PortalEffect::Confirm]
+        [
+            PortalEffect::Toggle {
+                handle: request_1(),
+                index: 1,
+            },
+            PortalEffect::Confirm {
+                handle: request_1()
+            }
+        ]
     );
 }
 
@@ -194,7 +243,12 @@ fn backspace_clears_the_shortcut_in_focus() {
     }])));
     assert!(app.harness().a11y_node_named("Push to talk").is_some());
     key(&mut app, "Backspace");
-    assert_eq!(seat.take_asked(), [PortalEffect::Unbind]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Unbind {
+            handle: request_1()
+        }]
+    );
 }
 
 #[test]
@@ -220,6 +274,7 @@ fn a_shortcut_takes_the_keys_pressed_by_their_place_on_the_keyboard() {
     assert_eq!(
         seat.take_asked(),
         [PortalEffect::Bind {
+            handle: request_1(),
             keys: "CTRL+SHIFT+KEYK".to_owned()
         }]
     );
@@ -242,14 +297,28 @@ fn each_way_to_open_a_drive_is_its_own_answer() {
     assert_eq!(
         seat.take_asked(),
         [
-            PortalEffect::Remember,
-            PortalEffect::Select { index: 1 },
-            PortalEffect::Answer { index: 0 },
+            PortalEffect::Remember {
+                handle: request_1()
+            },
+            PortalEffect::Select {
+                handle: request_1(),
+                index: 1,
+            },
+            PortalEffect::Answer {
+                handle: request_1(),
+                index: 0,
+            },
         ]
     );
     app.harness().click_named("portal-answer-1").unwrap();
     app.settle();
-    assert_eq!(seat.take_asked(), [PortalEffect::Answer { index: 1 }]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Answer {
+            handle: request_1(),
+            index: 1,
+        }]
+    );
 }
 
 #[test]
@@ -264,7 +333,12 @@ fn a_typed_answer_reaches_the_shell_through_the_seat_alone() {
     assert_eq!(seat.text(Field::Answer).as_str(), "4711");
     key(&mut app, "Enter");
     let asked = seat.take_asked();
-    assert_eq!(asked, [PortalEffect::Confirm]);
+    assert_eq!(
+        asked,
+        [PortalEffect::Confirm {
+            handle: request_1()
+        }]
+    );
     assert!(!asked_text(&asked).contains("4711"));
     // A refusal is said in the sheet; what was typed stays.
     seat.show(Some(Dialog {
@@ -341,18 +415,41 @@ fn the_person_changes_the_draft_on_the_sheet() {
     // The check row: Space ticks it; then the answers.
     key(&mut app, "Tab");
     key(&mut app, "Space");
-    assert_eq!(seat.take_asked(), [PortalEffect::Toggle { index: 2 }]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Toggle {
+            handle: request_1(),
+            index: 2,
+        }]
+    );
     key(&mut app, "Tab");
-    assert_eq!(seat.take_asked(), [PortalEffect::Select { index: 0 }]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Select {
+            handle: request_1(),
+            index: 0,
+        }]
+    );
     // A press on the check row ticks it.
     app.harness()
         .perform_named("portal-draft-2", &ui::a11y::Action::Activate)
         .unwrap();
     app.settle();
-    assert_eq!(seat.take_asked(), [PortalEffect::Toggle { index: 2 }]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Toggle {
+            handle: request_1(),
+            index: 2,
+        }]
+    );
     with_modifiers(&mut app, &["Control"], "Enter");
     let asked = seat.take_asked();
-    assert_eq!(asked, [PortalEffect::Confirm]);
+    assert_eq!(
+        asked,
+        [PortalEffect::Confirm {
+            handle: request_1()
+        }]
+    );
     assert!(!asked_text(&asked).contains("example"));
 }
 
@@ -418,7 +515,12 @@ fn a_secret_goes_to_the_shell_through_the_seat_and_never_into_an_effect() {
     );
     key(&mut app, "Enter");
     let asked = seat.take_asked();
-    assert_eq!(asked, [PortalEffect::Submit]);
+    assert_eq!(
+        asked,
+        [PortalEffect::Submit {
+            handle: request_1()
+        }]
+    );
     assert!(!asked_text(&asked).contains("hunter2"));
     let answer = seat.take_answer().expect("the answer waits in the seat");
     assert_eq!(answer.values[0].as_str(), "adax");
@@ -436,7 +538,12 @@ fn escape_backs_out_of_a_secret_prompt() {
     let (mut app, seat) = seated(network());
     app.harness().type_text("ada");
     key(&mut app, "Escape");
-    assert_eq!(seat.take_asked(), [PortalEffect::Cancel]);
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Cancel {
+            handle: request_1()
+        }]
+    );
     assert!(seat.take_answer().is_none());
 }
 
@@ -457,6 +564,7 @@ fn only_the_person_answers_but_anyone_may_decline() {
 fn typing_is_a_published_step_whose_text_stays_in_the_seat() {
     let (mut app, seat) = seated(dialog(draft()));
     app.effect(&PortalEffect::Type {
+        handle: request_1(),
         field: "draft-0".to_owned(),
         text: "grace@example.org".to_owned(),
     })
@@ -478,6 +586,7 @@ fn typing_is_a_published_step_whose_text_stays_in_the_seat() {
     for field in ["draft-2", "draft-7", "answer", "name"] {
         assert!(
             app.effect(&PortalEffect::Type {
+                handle: request_1(),
                 field: field.to_owned(),
                 text: "x".to_owned(),
             })
@@ -491,13 +600,22 @@ fn typing_is_a_published_step_whose_text_stays_in_the_seat() {
         choices: Vec::new(),
     }));
     app.effect(&PortalEffect::Type {
+        handle: request_1(),
         field: "answer".to_owned(),
         text: "4711".to_owned(),
     })
     .unwrap();
-    app.effect(&PortalEffect::Confirm).unwrap();
+    app.effect(&PortalEffect::Confirm {
+        handle: request_1(),
+    })
+    .unwrap();
     let asked = seat.take_asked();
-    assert_eq!(asked, [PortalEffect::Confirm]);
+    assert_eq!(
+        asked,
+        [PortalEffect::Confirm {
+            handle: request_1()
+        }]
+    );
     assert!(!asked_text(&asked).contains("4711"));
     assert_eq!(seat.text(Field::Answer).as_str(), "4711");
 }
@@ -507,16 +625,23 @@ fn a_secret_prompt_is_answered_through_the_door_as_the_prompt_checks_it() {
     let (mut app, seat) = seated(network());
     // A required field still empty: the prompt refuses, and nothing is
     // asked.
-    assert!(app.effect(&PortalEffect::Submit).is_err());
+    assert!(
+        app.effect(&PortalEffect::Submit {
+            handle: request_1()
+        })
+        .is_err()
+    );
     assert!(seat.take_asked().is_empty());
     assert!(seat.take_answer().is_none());
     app.effect(&PortalEffect::TypeSecret {
+        handle: request_1(),
         field: 1,
         value: "hunter2".to_owned(),
     })
     .unwrap();
     assert!(
         app.effect(&PortalEffect::TypeSecret {
+            handle: request_1(),
             field: 5,
             value: "x".to_owned(),
         })
@@ -524,9 +649,17 @@ fn a_secret_prompt_is_answered_through_the_door_as_the_prompt_checks_it() {
     );
     app.settle();
     assert_eq!(seat.secrets()[1].lock().unwrap().as_str(), "hunter2");
-    app.effect(&PortalEffect::Submit).unwrap();
+    app.effect(&PortalEffect::Submit {
+        handle: request_1(),
+    })
+    .unwrap();
     let asked = seat.take_asked();
-    assert_eq!(asked, [PortalEffect::Submit]);
+    assert_eq!(
+        asked,
+        [PortalEffect::Submit {
+            handle: request_1()
+        }]
+    );
     assert!(!asked_text(&asked).contains("hunter2"));
     let answer = seat.take_answer().expect("the answer waits in the seat");
     assert_eq!(answer.values[0].as_str(), "ada");
@@ -545,14 +678,66 @@ fn remember_ticks_a_secret_prompts_check_row() {
         }),
         ..network()
     });
-    app.effect(&PortalEffect::Remember).unwrap();
+    app.effect(&PortalEffect::Remember {
+        handle: request_1(),
+    })
+    .unwrap();
     app.settle();
     assert_eq!(seat.option(), Some(false));
     app.effect(&PortalEffect::TypeSecret {
+        handle: request_1(),
         field: 1,
         value: "hunter2".to_owned(),
     })
     .unwrap();
-    app.effect(&PortalEffect::Submit).unwrap();
+    app.effect(&PortalEffect::Submit {
+        handle: request_1(),
+    })
+    .unwrap();
     assert_eq!(seat.take_answer().unwrap().option, Some(false));
+}
+
+#[test]
+fn an_answer_for_a_question_that_is_no_longer_showing_never_answers_the_next() {
+    let (mut app, seat) = seated(dialog(choices(&["Writer", "Editor"])));
+    // The person answers the first question.
+    key(&mut app, "Enter");
+    let mut asked = seat.take_asked();
+    assert_eq!(
+        asked,
+        [PortalEffect::Confirm {
+            handle: request_1()
+        }]
+    );
+    let for_the_first = asked.remove(0);
+    // The next question opens before that answer reaches the shell.
+    seat.show(Some(Dialog {
+        handle: "request-2".to_owned(),
+        title: "Record your screen?".to_owned(),
+        ..dialog(choices(&["Whole screen", "One window"]))
+    }));
+    app.settle();
+    let refused = app
+        .effect(&for_the_first)
+        .expect_err("an answer for the question that is gone is refused");
+    assert!(
+        format!("{refused:?}").contains("no longer showing"),
+        "the refusal says the question is gone: {refused:?}"
+    );
+    assert!(
+        seat.take_asked().is_empty(),
+        "the question that is up was not answered"
+    );
+    assert!(
+        app.harness().a11y_node_named("Whole screen").is_some(),
+        "the question that is up is still up"
+    );
+    // The question that is up answers itself, naming itself.
+    key(&mut app, "Enter");
+    assert_eq!(
+        seat.take_asked(),
+        [PortalEffect::Confirm {
+            handle: "request-2".to_owned()
+        }]
+    );
 }

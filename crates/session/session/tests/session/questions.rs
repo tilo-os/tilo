@@ -43,12 +43,21 @@ fn answered(session: &mut Session, questions: &tilo_service::Questions, asked: A
         .expect("answered, not declined")
 }
 
-/// Press `effect` on the sheet publishing it, as the person would.
+/// Press `effect` on the sheet publishing it, as the person would: a
+/// portal answer names the question that is up.
 fn press(session: &mut Session, effect: &str, args: serde_json::Value) {
+    let mut args = arguments(args);
+    let handle = session
+        .portal()
+        .and_then(|portal| portal.dialog())
+        .map(|dialog| dialog.handle);
+    if let Some(handle) = handle
+        && !args.contains_key("handle")
+    {
+        args.insert("handle".to_owned(), handle.into());
+    }
     let sheet = publisher(session, effect).expect("the sheet publishes that");
-    session
-        .invoke(&sheet, effect, &arguments(args))
-        .expect("press");
+    session.invoke(&sheet, effect, &args).expect("press");
     session.step(Duration::from_millis(1)).expect("step");
 }
 
@@ -570,13 +579,16 @@ fn the_file_chooser_question_is_answered_with_the_file_chosen() {
             request.handle.ends_with("portal.file-chooser") && request.title == "Choose a picture"
         }) && !seat.listing().reading
     });
+    let handle = || seat.request().expect("a request").handle;
     let navigate = FilePickerEffect::NAVIGATE.id;
     let sheet = publisher(&session, navigate).expect("the chooser publishes walking");
     session
         .invoke(
             &sheet,
             navigate,
-            &arguments(serde_json::json!({"path": home.path().to_string_lossy()})),
+            &arguments(
+                serde_json::json!({"handle": handle(), "path": home.path().to_string_lossy()}),
+            ),
         )
         .expect("go");
     pump(&mut session, &mut [], |_, _| {
@@ -590,7 +602,7 @@ fn the_file_chooser_question_is_answered_with_the_file_chosen() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({"path": beach.to_string_lossy()})),
+            &arguments(serde_json::json!({"handle": handle(), "path": beach.to_string_lossy()})),
         )
         .expect("select");
     pump(&mut session, &mut [], |_, _| seat.listing().can_confirm);
@@ -598,7 +610,7 @@ fn the_file_chooser_question_is_answered_with_the_file_chosen() {
         .invoke(
             &sheet,
             FilePickerEffect::CONFIRM.id,
-            &serde_json::Map::new(),
+            &arguments(serde_json::json!({"handle": handle()})),
         )
         .expect("confirm");
     let answer = answered(&mut session, &questions, asked);

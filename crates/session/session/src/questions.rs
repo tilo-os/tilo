@@ -236,6 +236,17 @@ impl Asker {
                         return;
                     };
                     for effect in portal.take_asked() {
+                        // An answer asked of another question than the one
+                        // up answers nothing: it expired with its request.
+                        // What the sheet says once a question is answered
+                        // names itself, and its answers name that.
+                        if effect.handle() != shown.dialog.handle {
+                            tracing::debug!(
+                                request = effect.handle(),
+                                "an answer for a question that is no longer up"
+                            );
+                            continue;
+                        }
                         match shown.apply(&effect, portal) {
                             Step::Nothing => {}
                             Step::Redraw => redraw = true,
@@ -492,15 +503,15 @@ impl Shown {
     /// Take `effect` into the sheet, and what came of it.
     fn apply(&mut self, effect: &PortalEffect, seat: &PortalSeat) -> Step {
         match effect {
-            PortalEffect::Select { index } | PortalEffect::Icon { index } => {
+            PortalEffect::Select { index, .. } | PortalEffect::Icon { index, .. } => {
                 self.highlight(*index);
                 Step::Redraw
             }
-            PortalEffect::Toggle { index } => {
+            PortalEffect::Toggle { index, .. } => {
                 self.toggle(*index);
                 Step::Redraw
             }
-            PortalEffect::Remember => {
+            PortalEffect::Remember { .. } => {
                 self.remember = !self.remember;
                 if let Body::Answers {
                     remember: Some(row),
@@ -511,19 +522,19 @@ impl Shown {
                 }
                 Step::Redraw
             }
-            PortalEffect::Bind { keys } => self.rebind(Some(keys)),
-            PortalEffect::Unbind => self.rebind(None),
+            PortalEffect::Bind { keys, .. } => self.rebind(Some(keys)),
+            PortalEffect::Unbind { .. } => self.rebind(None),
             // Keys and typing are the sheet's own: what is typed stays in
             // its buffers until the person confirms.
-            PortalEffect::Next
-            | PortalEffect::Back
+            PortalEffect::Next { .. }
+            | PortalEffect::Back { .. }
             | PortalEffect::Type { .. }
             | PortalEffect::TypeSecret { .. } => Step::Nothing,
             // Confirming answers with the highlight as it stands; an
             // answer names its own.
-            PortalEffect::Confirm => self.decide(seat, None),
-            PortalEffect::Answer { index } => self.decide(seat, Some(*index)),
-            PortalEffect::Submit => match self.plan {
+            PortalEffect::Confirm { .. } => self.decide(seat, None),
+            PortalEffect::Answer { index, .. } => self.decide(seat, Some(*index)),
+            PortalEffect::Submit { .. } => match self.plan {
                 Plan::Password { identity } => {
                     let Some(answer) = seat.take_answer() else {
                         return Step::Nothing;
@@ -548,7 +559,7 @@ impl Shown {
                 }
                 _ => Step::Nothing,
             },
-            PortalEffect::Cancel => Step::Decide(Decision::Decline),
+            PortalEffect::Cancel { .. } => Step::Decide(Decision::Decline),
         }
     }
 

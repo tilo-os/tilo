@@ -1741,15 +1741,22 @@ fn a_portal_question_is_answered_through_the_sheets_actions() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({ "index": 1 })),
+            &arguments(serde_json::json!({ "handle": "request-1", "index": 1 })),
         )
         .expect("select");
     session
-        .invoke(&sheet, PortalEffect::CONFIRM.id, &serde_json::Map::new())
+        .invoke(
+            &sheet,
+            PortalEffect::CONFIRM.id,
+            &arguments(serde_json::json!({ "handle": "request-1" })),
+        )
         .expect("confirm");
     let asked = seat.take_asked();
     assert!(
-        asked.contains(&PortalEffect::Select { index: 1 }),
+        asked.contains(&PortalEffect::Select {
+            handle: "request-1".to_owned(),
+            index: 1
+        }),
         "the service reads what was chosen: {asked:?}"
     );
 }
@@ -1788,7 +1795,10 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         .invoke(
             &sheet,
             select,
-            &arguments(serde_json::json!({ "path": beach.to_string_lossy() })),
+            &arguments(serde_json::json!({
+                "handle": "request-1",
+                "path": beach.to_string_lossy(),
+            })),
         )
         .expect("select");
     // Choosing takes the choice at once; confirming checks it off the loop.
@@ -1797,7 +1807,7 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         .invoke(
             &sheet,
             FilePickerEffect::CONFIRM.id,
-            &serde_json::Map::new(),
+            &arguments(serde_json::json!({ "handle": "request-1" })),
         )
         .expect("confirm");
     let mut answer = None;
