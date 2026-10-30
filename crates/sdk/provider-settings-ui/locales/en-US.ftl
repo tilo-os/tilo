@@ -278,3 +278,4 @@ agent-model-use = Use
 agent-model-use-named = Use { $model }
 agent-provider-where = Where it runs
 agent-endpoint-fill-in = Put { $what }, then save the details.
+agent-key-unencrypted = This key is sent unencrypted on your network: the endpoint uses http, not https.
