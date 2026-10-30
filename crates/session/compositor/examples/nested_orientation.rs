@@ -1,11 +1,11 @@
 //! The window shows a scene the same way up as an output with no display.
 //!
-//! The nested backend draws the scene into a window the desktop's compositor
-//! shows; a headless output draws the same scene on the CPU. Both are
-//! pictures of the same hosted layer, and both must have its red half above
-//! its blue one. winit only builds its window on the process's main thread,
-//! so this is one run rather than a harness of cases; a machine with no
-//! display runs nothing.
+//! The nested backend draws the scene into a window; the window is a client of
+//! a compositor with no display in this process, so the run needs no desktop
+//! and nothing it draws reaches one. Three pictures of the same hosted layer
+//! must have its red half above its blue one: the window's output as the
+//! backend reads it back, the same window as the compositor around it shows
+//! it, and a headless output.
 //!
 //!     cargo run -p tilo-compositor --example nested_orientation
 #![allow(
@@ -24,6 +24,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod nested {
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     use smithay::backend::allocator::Fourcc;
@@ -89,32 +90,61 @@ mod nested {
     }
 
     pub(crate) fn main() {
-        if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
-            eprintln!("no display: nothing to compare");
-            return;
+        let mut outer = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+        outer
+            .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
+            .expect("output");
+        let socket = outer.listen().expect("socket");
+        // The window opens on the compositor here, by its full path: the
+        // process gets no other display to open it on.
+        let socket = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(
+            || PathBuf::from(&socket),
+            |directory| Path::new(&directory).join(&socket),
+        );
+        // SAFETY: this run is one thread and has opened no window yet; winit
+        // reads the display when it does, below.
+        unsafe {
+            std::env::set_var("WAYLAND_DISPLAY", &socket);
+            std::env::remove_var("DISPLAY");
         }
-        let headless = headless_picture();
-        let shown = match window_picture() {
-            Some(shown) => shown,
-            None => {
-                eprintln!("no window: nothing to compare");
-                return;
-            }
+
+        let mut window = match Compositor::nested(
+            Box::new(StackPolicy),
+            &NestedConfig {
+                size: (
+                    u16::try_from(WIDTH).expect("width"),
+                    u16::try_from(HEIGHT).expect("height"),
+                ),
+                ..NestedConfig::default()
+            },
+        ) {
+            Ok(compositor) => compositor,
+            Err(error) => panic!("the window did not open on the output here: {error}"),
         };
+        window.add_host(Box::new(Marker::new()));
+        // Both sides run: the window draws into its own output, and the
+        // compositor around it takes the window's frames.
+        for _ in 0..10 {
+            window.dispatch(Duration::from_millis(16)).expect("wait");
+            window.render().expect("render");
+            outer.dispatch(Duration::from_millis(16)).expect("wait");
+            outer.render().expect("render");
+        }
+
+        let headless = headless_picture();
+        let read_back = window.screenshot("NESTED-1").expect("screenshot");
+        let shown = outer.screenshot("HEADLESS-1").expect("screenshot");
         let top = (WIDTH / 2, HEIGHT / 4);
         let bottom = (WIDTH / 2, HEIGHT * 3 / 4);
-        let (headless_top, headless_bottom) = (pixel(&headless, top), pixel(&headless, bottom));
-        let (shown_top, shown_bottom) = (pixel(&shown, top), pixel(&shown, bottom));
-        eprintln!("headless: top {headless_top:?}, bottom {headless_bottom:?}");
-        eprintln!("window:   top {shown_top:?}, bottom {shown_bottom:?}");
-        assert!(
-            is_red(headless_top) && is_blue(headless_bottom),
-            "the headless output is upside down"
-        );
-        assert!(
-            is_red(shown_top) && is_blue(shown_bottom),
-            "the window is upside down"
-        );
+        for (what, picture) in [
+            ("headless", &headless),
+            ("the window", &read_back),
+            ("the window as shown", &shown),
+        ] {
+            let (above, below) = (pixel(picture, top), pixel(picture, bottom));
+            eprintln!("{what}: top {above:?}, bottom {below:?}");
+            assert!(is_red(above) && is_blue(below), "{what} is upside down");
+        }
     }
 
     /// The scene on an output with no display.
@@ -126,34 +156,6 @@ mod nested {
         compositor.add_host(Box::new(Marker::new()));
         compositor.render().expect("render");
         compositor.screenshot("HEADLESS-1").expect("screenshot")
-    }
-
-    /// The scene in a window on the desktop's compositor.
-    fn window_picture() -> Option<Screenshot> {
-        let mut compositor = match Compositor::nested(
-            Box::new(StackPolicy),
-            &NestedConfig {
-                size: (
-                    u16::try_from(WIDTH).expect("width"),
-                    u16::try_from(HEIGHT).expect("height"),
-                ),
-                ..NestedConfig::default()
-            },
-        ) {
-            Ok(compositor) => compositor,
-            Err(error) => {
-                eprintln!("the window did not open: {error}");
-                return None;
-            }
-        };
-        compositor.add_host(Box::new(Marker::new()));
-        for _ in 0..10 {
-            compositor
-                .dispatch(Duration::from_millis(16))
-                .expect("wait");
-            compositor.render().expect("render");
-        }
-        Some(compositor.screenshot("NESTED-1").expect("screenshot"))
     }
 
     fn pixel(picture: &Screenshot, (x, y): (i32, i32)) -> [u8; 4] {
