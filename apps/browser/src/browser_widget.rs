@@ -709,6 +709,12 @@ pub struct BrowserWidget {
     /// Set when live browsing has no running engine; the page area explains
     /// it instead of showing a blank page.
     engine_failed: bool,
+    /// A credential was entered into this window's page: the person typed
+    /// into a password field, or a secret was filled in for them. From then
+    /// on the page holds a sign-in, whatever the window opened as. Only ever
+    /// set, never cleared: a page signed in stays one the window must treat
+    /// as signed in.
+    sign_in_entered: bool,
 }
 
 impl BrowserWidget {
@@ -1124,6 +1130,55 @@ impl BrowserWidget {
         self.browsing_mode
     }
 
+    /// Whether the page may hold a sign-in of the person's: always in their
+    /// own window, and in one opened as a visitor once a credential was
+    /// entered there ([`Self::hold_sign_in`]). Reading such a page takes the
+    /// authority to operate it.
+    pub(crate) const fn page_holds_sign_in(&self) -> bool {
+        self.browsing_mode.holds_account_custody() || self.sign_in_entered
+    }
+
+    /// The page holds a sign-in from now on: a credential was entered into
+    /// it. One-way; the window republishes its page actions as what they
+    /// now are, and its bar stops saying it is not signed in.
+    pub(crate) fn hold_sign_in(&mut self) {
+        if !self.sign_in_entered {
+            self.sign_in_entered = true;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Whether `event`, reaching the page, is the person typing into the
+    /// page's focused password field: entering a credential. Moving between
+    /// fields, modifiers alone and Escape enter nothing.
+    fn types_a_password(&self, event: &WindowEvent) -> bool {
+        let typing = match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                key.state == ElementState::Pressed
+                    && !matches!(
+                        key.logical_key,
+                        WKey::Named(
+                            WNamedKey::Tab
+                                | WNamedKey::Escape
+                                | WNamedKey::Shift
+                                | WNamedKey::Control
+                                | WNamedKey::Alt
+                                | WNamedKey::Super
+                                | WNamedKey::Meta
+                        )
+                    )
+            }
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => !text.is_empty(),
+            _ => false,
+        };
+        typing
+            && self.control_focused("browser.surface")
+            && self
+                .engine
+                .text_field()
+                .is_some_and(|field| field.purpose == ui::ime::InputPurpose::Password)
+    }
+
     pub fn engine_handle(&self) -> SharedEngine {
         self.engine.clone()
     }
@@ -1521,6 +1576,7 @@ impl BrowserWidget {
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
             engine_failed: false,
+            sign_in_entered: false,
         }
     }
 
@@ -2041,6 +2097,11 @@ impl BrowserWidget {
             let refused = dialog::blocked_output(invocation, Some(dialog));
             self.page_operation_result = Some(refused);
             return Ok(());
+        }
+        // A secret filled into the page is the person's credential: the page
+        // holds a sign-in from the moment it is sent.
+        if matches!(request, PageRequest::Fill { secret: true, .. }) {
+            self.hold_sign_in();
         }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
         let act = request.described();
@@ -4650,6 +4711,10 @@ impl Widget for BrowserWidget {
                 return;
             }
         }
+        // Past the dialog, popover and menu above, a key reaches the page.
+        if self.types_a_password(event) {
+            self.hold_sign_in();
+        }
         let navigation_hit = [
             (NavigationDirection::Back, self.can_go_back, "browser.back"),
             (
@@ -5446,7 +5511,7 @@ impl BrowserWidget {
             // authority to operate it. Without them it takes only what any
             // visitor has: what only looks at the page is a read. Acting
             // on the page reaches the web either way.
-            if observes && !self.browsing_mode.holds_account_custody() {
+            if observes && !self.page_holds_sign_in() {
                 spec.type_mut().contract.kind = ui::tilo_actions::ActionKind::Read;
             }
             page.actions.push(if web_page {

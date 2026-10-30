@@ -957,3 +957,51 @@ fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
         );
     }
 }
+
+/// A secret filled into a visitor's page is the person's credential: from
+/// then on the page holds a sign-in. Its reads ask first like every other
+/// page action, the bar no longer says it is not signed in, and nothing
+/// the window does later takes that back.
+#[test]
+fn a_secret_filled_into_a_visitors_page_makes_it_signed_in_for_good() {
+    use ui::permissions::policy::Answer::{Allow, Ask};
+    let mut visitor = page_in(BrowsingMode::Visitor, "https://github.com/login");
+    assert_eq!(agent_default(&visitor, "read-page"), Allow);
+    assert_eq!(
+        visitor.window_toolbar().leading.len(),
+        1,
+        "it says it is not signed in"
+    );
+
+    let invocation = ui::tilo_actions::InvocationId::new();
+    let fill = crate::effects::BrowserEffect::FillPageSecret {
+        element: "d1e5".into(),
+        text: "hunter2".into(),
+        frame: None,
+    };
+    let _ = visitor.admit(invocation, fill.operation());
+    for id in [
+        "read-page",
+        "capture-page",
+        "find-page-element",
+        "click-page",
+    ] {
+        assert_eq!(
+            agent_default(&visitor, id),
+            Ask,
+            "{id} once a secret was entered"
+        );
+    }
+    assert!(
+        visitor.window_toolbar().leading.is_empty(),
+        "the bar no longer says it is not signed in"
+    );
+
+    // Whatever comes next, the page stays signed in: another page, a
+    // reload, a key that is no password.
+    visitor
+        .engine
+        .send(WebViewCommand::Navigate("https://example.org/".into()));
+    let _ = synced(&mut visitor);
+    assert_eq!(agent_default(&visitor, "read-page"), Ask);
+}
