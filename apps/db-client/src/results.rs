@@ -164,7 +164,7 @@ impl ResultsTable {
     pub fn new(name: &str) -> Self {
         let clicked = Rc::new(Flag::new(None));
         Self {
-            table: Self::table_for(None, &clicked, name),
+            table: Self::table_for(None, &clicked, name, None),
             clicked,
             link: None,
             result: None,
@@ -180,12 +180,8 @@ impl ResultsTable {
     #[must_use]
     pub fn reporting_to(mut self, link: &crate::link::Link) -> Self {
         self.link = Some(link.clone());
-        let ask = link.clone();
-        self.table = std::mem::replace(&mut self.table, DataTable::new(Vec::new()))
-            .selectable(true)
-            .on_row_click(move |row, _, _| {
-                ask.ask(crate::link::Intent::SelectRow(Some(row)));
-            });
+        let result = self.result.take();
+        self.bind(result);
         self
     }
 
@@ -193,6 +189,7 @@ impl ResultsTable {
         result: Option<&Arc<QueryResult>>,
         clicked: &Rc<Flag<Option<usize>>>,
         name: &str,
+        link: Option<&crate::link::Link>,
     ) -> DataTable<RowIndex> {
         let columns = result.map_or_else(Vec::new, |result| {
             result
@@ -220,11 +217,20 @@ impl ResultsTable {
                 .collect()
         });
         let flag = Rc::clone(clicked);
-        DataTable::new(columns)
+        let table = DataTable::new(columns)
             .ruled()
             .with_id(name)
             .with_accessible_name(name)
-            .on_header_click(move |column| flag.set(Some(column)))
+            .on_header_click(move |column| flag.set(Some(column)));
+        match link {
+            Some(link) => {
+                let ask = link.clone();
+                table.selectable(true).on_view(name, move |row| {
+                    ask.ask(crate::link::Intent::SelectRow(Some(row)));
+                })
+            }
+            None => table,
+        }
     }
 
     /// Show `result`, replacing whatever was there. The sort a person chose
@@ -232,7 +238,12 @@ impl ResultsTable {
     pub fn bind(&mut self, result: Option<Arc<QueryResult>>) {
         self.sort = None;
         self.body = 0.0;
-        self.table = Self::table_for(result.as_ref(), &self.clicked, &self.name);
+        self.table = Self::table_for(
+            result.as_ref(),
+            &self.clicked,
+            &self.name,
+            self.link.as_ref(),
+        );
         if let Some(result) = &result {
             self.table.set_rows((0..result.rows.len()).collect());
         }

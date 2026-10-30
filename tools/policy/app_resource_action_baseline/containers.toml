@@ -1,5 +1,2 @@
 [ratchets.closure_action_button]
 "apps/containers/src/view.rs" = 1
-
-[ratchets.closure_control]
-"apps/containers/src/view.rs" = 2

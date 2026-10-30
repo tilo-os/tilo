@@ -62,6 +62,12 @@ impl ViewChoice {
         Self::resource_of(&self.id, self.label, Some(Choices::Labelled(entries)))
     }
 
+    /// The control as published now, its entries too many to list (a long
+    /// table's rows): an entry is checked when it is chosen.
+    pub(crate) fn resource_unlisted(&self) -> tilo_actions::ResourceSpec {
+        Self::resource_of(&self.id, self.label, None)
+    }
+
     /// The control as published now, offering its entries by key alone, for
     /// entries whose labels change (a renamed page) while what is offered
     /// stays as it was.

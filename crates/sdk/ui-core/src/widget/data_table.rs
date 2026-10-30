@@ -718,6 +718,8 @@ struct AddRow {
 )]
 pub struct DataTableCore {
     test_id: String,
+    /// Choosing a row, published as the table's view action `select`.
+    row_choice: Option<RowChoice>,
     accessible_name: Option<String>,
     columns: Vec<ColumnDef<AnyRow>>,
     rows: Vec<Box<AnyRow>>,
@@ -1114,6 +1116,12 @@ impl<Row: 'static> DataTable<Row> {
         Self::of(self.core.on_activate(f))
     }
 
+    /// [`DataTableCore::on_view`].
+    #[must_use]
+    pub fn on_view(self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
+        Self::of(self.core.on_view(id, f))
+    }
+
     /// [`DataTableCore::on_header_click`].
     #[must_use]
     pub fn on_header_click<F: FnMut(usize) + 'static>(self, f: F) -> Self {
@@ -1189,6 +1197,7 @@ impl DataTableCore {
             .collect();
         Self {
             test_id: "data_table".to_owned(),
+            row_choice: None,
             accessible_name: None,
             columns,
             rows: Vec::new(),
@@ -1681,6 +1690,27 @@ impl DataTableCore {
     pub fn on_activate<F: FnMut(usize) + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
         self
+    }
+
+    /// Called with the row chosen, by its index in the rows the host set:
+    /// the table, as control `id`, publishes choosing a row as its view
+    /// action `select`, so a person's click, a screen reader, a script and
+    /// an agent choose through the same action. What is chosen is the
+    /// window's own state, never an edit.
+    #[must_use]
+    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(usize) + 'static) -> Self {
+        let id = id.into();
+        self.test_id.clone_from(&id);
+        self.row_choice = Some(RowChoice {
+            choice: super::view_choice::ViewChoice::new(id, "Select"),
+            handler: Box::new(f),
+        });
+        self
+    }
+
+    /// How many rows the host set.
+    fn row_total(&self) -> usize {
+        self.model.as_ref().map_or(self.rows.len(), |model| model.len())
     }
 
     #[must_use]
@@ -3359,6 +3389,9 @@ impl DataTableCore {
         self.apply_selection_click(ri, ctrl, shift);
         *focus_target = Some(node_id);
         let source = self.source_row(ri);
+        if let Some(view) = &mut self.row_choice {
+            view.choice.emit(source.to_string());
+        }
         if let Some(cb) = &mut self.on_row_click {
             cb(source, ctrl, shift);
         }
@@ -3509,6 +3542,11 @@ impl DataTableCore {
         match &ke.logical_key {
             Key::Named(NamedKey::Enter) => {
                 let source = cur.map(|c| self.source_row(c));
+                if let Some(c) = source
+                    && let Some(view) = &mut self.row_choice
+                {
+                    view.choice.emit(c.to_string());
+                }
                 if let Some(c) = source
                     && let Some(cb) = &mut self.on_activate
                 {
@@ -3674,7 +3712,108 @@ fn accessible_sort_description<Row: ?Sized>(
     })
 }
 
+/// A table's published row choice and the app's handler.
+struct RowChoice {
+    choice: super::view_choice::ViewChoice,
+    handler: Box<dyn FnMut(usize)>,
+}
+
+impl crate::widget::ResourceOperations for DataTableCore {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        let history = crate::widget::resource_operation::local_history_handlers(self);
+        match (self.row_choice.is_some(), history.is_empty()) {
+            (false, _) => history,
+            (true, true) => &[super::view_choice::CHOICE_SELECT],
+            (true, false) => &[super::view_choice::CHOICE_SELECT, crate::undo::EDIT_OPERATION],
+        }
+    }
+
+    /// Answer a `select` addressed to this table: select the row and report
+    /// it, whoever chose it.
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let chosen = self
+            .row_choice
+            .as_ref()
+            .map(|view| view.choice.start(op))
+            .transpose()?
+            .flatten();
+        let Some(entry) = chosen else {
+            return crate::widget::resource_operation::start_by_default(self, op, doc, path);
+        };
+        let row = entry
+            .parse::<usize>()
+            .ok()
+            .filter(|row| *row < self.row_total())
+            .ok_or_else(|| format!("no row `{entry}`"))?;
+        // A person's click selected it already, perhaps beside others.
+        if !self.selected_rows().contains(&row) {
+            self.select_row(row);
+        }
+        if let Some(view) = self.row_choice.as_mut() {
+            (view.handler)(row);
+        }
+        Ok(Some(super::view_choice::chosen()))
+    }
+}
+
+impl crate::resources::PublishesResources for DataTableCore {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.row_choice
+            .as_ref()
+            .map(|view| view.choice.resource_unlisted())
+            .into_iter()
+            .collect()
+    }
+}
+
+impl crate::widget::controls::ActionControls for DataTableCore {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(view) = self.row_choice.as_mut() {
+            view.choice.install_custody(domain, attachment);
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.row_choice.as_mut().and_then(|view| view.choice.take()) {
+            return Some(invocation);
+        }
+        Widget::children_mut(self)
+            .into_iter()
+            .find_map(crate::widget::controls::take_control_invocation)
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(view) = self.row_choice.as_mut() {
+            view.choice.refresh_availability(allowed);
+        }
+        for child in Widget::children_mut(self) {
+            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
+}
+
 impl Widget for DataTableCore {
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
+
     /// Rows fading in after a long reveal, on their way after a sort or a
     /// change, or whose placeholder steps on, repaint the table; otherwise
     /// what its mounted cells say.
@@ -4645,6 +4784,9 @@ impl Widget for DataTableCore {
                 }
                 self.select_only_index(row);
                 let source = self.source_row(row);
+                if let Some(view) = &mut self.row_choice {
+                    view.choice.emit(source.to_string());
+                }
                 if let Some(cb) = &mut self.on_activate {
                     cb(source);
                 }
@@ -4715,11 +4857,16 @@ impl Widget for DataTableCore {
                     .scroll_to_index(index, ScrollAlignment::Nearest);
                 true
             }
-            Action::Activate if self.selectable || self.on_activate.is_some() => {
+            Action::Activate
+                if self.selectable || self.on_activate.is_some() || self.row_choice.is_some() =>
+            {
                 if self.selectable {
                     self.select_only_index(index);
                 }
                 let source = self.source_row(index);
+                if let Some(view) = &mut self.row_choice {
+                    view.choice.emit(source.to_string());
+                }
                 if let Some(callback) = &mut self.on_activate {
                     callback(source);
                 }
@@ -4740,6 +4887,14 @@ impl Widget for DataTableCore {
 /// The table's widget is its core's: a `DataTable<Row>` names its rows'
 /// type, and nothing else.
 impl<Row: 'static> Widget for DataTable<Row> {
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        self.core.provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        self.core.provide_mut(request);
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,

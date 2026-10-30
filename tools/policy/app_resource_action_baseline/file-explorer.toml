@@ -3,5 +3,4 @@
 
 [ratchets.closure_control]
 "apps/file-explorer/src/files_app/cloud_browse.rs" = 1
-"apps/file-explorer/src/path_bar.rs" = 1
 "apps/file-explorer/src/places_sidebar.rs" = 1

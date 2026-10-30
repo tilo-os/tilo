@@ -4,4 +4,3 @@
 [ratchets.closure_control]
 "apps/db-client/src/navigator.rs" = 1
 "apps/db-client/src/query.rs" = 1
-"apps/db-client/src/results.rs" = 1
