@@ -220,7 +220,7 @@ fn send_members_delta(
     client: &crate::RelayClient,
     workspace_id: u64,
     member: &ed25519_dalek::SigningKey,
-    delta: crate::CoeditPayload,
+    delta: &crate::CoeditPayload,
 ) {
     client
         .send(crate::Envelope::Delta {
@@ -252,7 +252,7 @@ fn seal_and_send_title(
         client,
         workspace_id,
         key,
-        crate::CoeditPayload::RetainedDelta {
+        &crate::CoeditPayload::RetainedDelta {
             channel,
             body: postcard::to_stdvec(&message).unwrap(),
         },
@@ -314,7 +314,7 @@ async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
         &client,
         workspace_id,
         &member_key,
-        crate::CoeditPayload::Checkpoint {
+        &crate::CoeditPayload::Checkpoint {
             channel,
             body: postcard::to_stdvec(&compaction).unwrap(),
         },
