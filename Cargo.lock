@@ -18588,6 +18588,7 @@ dependencies = [
  "settings-store",
  "tempfile",
  "tilo-actions",
+ "tilo-files",
  "tilo-lock",
  "tilo-paths",
  "tilo-reference",
@@ -21313,6 +21314,7 @@ name = "tilo-session"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
+ "app-cli",
  "rustix 1.1.4",
  "serde_json",
  "settings-store",
@@ -21329,6 +21331,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-files",
  "tilo-installed-apps",
  "tilo-media",
  "tilo-network-secret-agent",

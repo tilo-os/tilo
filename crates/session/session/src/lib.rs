@@ -20,6 +20,7 @@
 
 mod chrome;
 pub mod desktop_services;
+mod lists;
 mod panels;
 mod search;
 
@@ -42,6 +43,7 @@ use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
 
+pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::host::PanelHost;
 pub use tilo_service::{Service, Services};

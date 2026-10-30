@@ -118,6 +118,17 @@ impl BlockList {
         )
     }
 
+    /// The directories holding the files [`Self::load`] reads, to watch for
+    /// a block made or lifted.
+    #[must_use]
+    pub fn directories() -> Vec<PathBuf> {
+        person_list_path()
+            .into_iter()
+            .chain([PathBuf::from(DEVICE_POLICY_PATH)])
+            .filter_map(|file| file.parent().map(Path::to_path_buf))
+            .collect()
+    }
+
     /// [`Self::load`] from the given files.
     #[must_use]
     pub fn load_from(person: Option<&Path>, device: Option<&Path>) -> Self {
