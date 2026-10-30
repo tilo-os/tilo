@@ -200,6 +200,55 @@ impl SealingMember {
         result
     }
 
+    /// The member folds the record's sealed history, as the room holds it
+    /// now, into one signed checkpoint under its own author: what its engine
+    /// publishes in place of the writes the checkpoint covers.
+    pub async fn compact(&self, rooms: &Rooms, room: &str) -> NeighbourMsg {
+        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
+        let artifact = collab_types::document_artifact_id(app, room, record);
+        let mut candidate = rooms.room(room).await.unwrap().lock().await.peer().clone();
+        let message = candidate
+            .publication_mut()
+            .compact_sealed_history(
+                app,
+                record,
+                &mut |op| self.open(op),
+                &mut |snapshot| {
+                    self.keys
+                        .seal_content(artifact, ContentRetention::Checkpoint, snapshot)
+                        .map_err(|error| error.to_string())
+                },
+                &self.key,
+                SystemTime::now(),
+            )
+            .unwrap();
+        // The compaction took this device's next place in the record's
+        // sequence, as its engine's own writes see it: the writes after it
+        // carry the numbers after that.
+        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+            panic!("a compaction is a document write")
+        };
+        self.seq
+            .store(envelope.seq, std::sync::atomic::Ordering::Relaxed);
+        message
+    }
+
+    /// Open `op`, any write of the record's history, under any epoch this
+    /// member holds, a compaction included.
+    fn open(&self, op: &SignedOp) -> Result<Vec<u8>, String> {
+        let Some(metadata) = op.encryption else {
+            return Ok(op.payload.clone());
+        };
+        self.keys
+            .open_content(
+                op.artifact,
+                &metadata,
+                &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?,
+            )
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    }
+
     /// The member's next write of the record, `change` made to its replica,
     /// sealed and signed as its page publishes it.
     pub fn seal<R>(

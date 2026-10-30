@@ -8,7 +8,11 @@
 //! opening that history over the record's cleartext base, writes to it
 //! sealed like any member does, and compacts the history before it reaches
 //! its bound, so its copy goes on following the record however long the
-//! room keeps writing.
+//! room keeps writing. Every other device taking part in a channel does the
+//! same with its own copy and publishes the checkpoint
+//! ([`tilo_peer_state::PeerPublicationMut::compact_sealed_history`]): the
+//! governor's copy follows that checkpoint like any other member write, and
+//! no device's history waits for someone else to fold it.
 
 use channel_crypto::ChannelContentKeys;
 use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, SignedOp};

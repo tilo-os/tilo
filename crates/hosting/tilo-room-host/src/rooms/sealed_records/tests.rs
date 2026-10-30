@@ -182,12 +182,12 @@ async fn retained_writes(
         .collect()
 }
 
-/// A record its members wrote sealed for a long time is folded by the node
-/// that takes part in its channel: a newcomer is sent one sealed snapshot and the
-/// writes since, not every write ever made, and they open to the record as
-/// its members wrote it.
+/// A record its members wrote sealed for a long time is folded by its
+/// member device: a newcomer is sent the member's checkpoint and the writes
+/// since, not every write ever made, and they open to the record as its
+/// members wrote it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
+async fn a_members_checkpoint_folds_what_a_newcomer_replays() {
     const WRITES: usize = 400;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
@@ -246,8 +246,55 @@ async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
             })
             .unwrap();
     }
-    // What a newcomer is sent, opened: every write, and the newest last.
-    let newest = format!("line {}", WRITES - 1);
+    tilo_test_env::within("the node to follow the member's writes", async {
+        while readable(&rooms, &room).await.as_deref() != Some("line 399") {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    // The member's engine folds the history it holds into one checkpoint
+    // and publishes it in place of every write it covers.
+    let compaction = member.compact(&rooms, &room).await;
+    let (channel, _) = neighbour_wire::retention(&compaction, false).unwrap();
+    client
+        .send(crate::Envelope::Delta {
+            workspace_id,
+            author_device_public_key: member_key.verifying_key().to_bytes(),
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta: crate::CoeditPayload::Checkpoint {
+                channel,
+                body: postcard::to_stdvec(&compaction).unwrap(),
+            }
+            .encode()
+            .unwrap(),
+            signature: [0; 64],
+        })
+        .unwrap();
+    // What a newcomer is sent past the checkpoint travels as itself.
+    for index in WRITES..WRITES + 3 {
+        let ((), message) = member.seal(&room, |doc| {
+            doc.put(ROOT, "title", format!("line {index}")).unwrap();
+            doc.commit_edit("fixture", "title");
+        });
+        let (channel, _) = neighbour_wire::retention(&message, false).unwrap();
+        client
+            .send(crate::Envelope::Delta {
+                workspace_id,
+                author_device_public_key: member_key.verifying_key().to_bytes(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
+                delta: crate::CoeditPayload::RetainedDelta {
+                    channel,
+                    body: postcard::to_stdvec(&message).unwrap(),
+                }
+                .encode()
+                .unwrap(),
+                signature: [0; 64],
+            })
+            .unwrap();
+    }
+    // What a newcomer is sent, opened: the member's checkpoint, then the
+    // writes after it.
+    let newest = format!("line {}", WRITES + 2);
     let newcomer_reads = |held: &[SignedOp]| {
         let mut newcomer = automerge::AutoCommit::new();
         for op in held {
@@ -255,11 +302,13 @@ async fn a_node_folds_the_sealed_history_a_newcomer_replays() {
         }
         title(&newcomer.save())
     };
-    let held = tilo_test_env::within("the node folds the record's sealed history", async {
+    let held = tilo_test_env::within("the node retains the member's checkpoint", async {
         loop {
             let held = retained_writes(&relay, workspace_id, RECORD).await;
             let folded = held.iter().any(|op| {
-                op.author.as_bytes() == &cert.device_public_key && op.encryption.is_some()
+                op.author.as_bytes() == &member_key.verifying_key().to_bytes()
+                    && op.kind == collab_types::OpKind::Compaction
+                    && op.encryption.is_some()
             });
             if folded
                 && held.len() < WRITES / 4
