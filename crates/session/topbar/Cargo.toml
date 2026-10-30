@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "tilo-topbar"
+path = "src/main.rs"
+
 [dependencies]
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
