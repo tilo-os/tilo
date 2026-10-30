@@ -898,6 +898,19 @@ impl Checker<'_> {
         let ExprKind::Call { args, .. } = &call.kind else {
             return;
         };
+        // An application that leaves a parameter for its form to ask (`button(check())`) has
+        // nothing to read it with: the button shows what the declaration says.
+        let positional = args.iter().filter(|a| a.name.is_none()).count();
+        let complete = callee.params.iter().enumerate().all(|(at, p)| {
+            at < positional
+                || p.default.is_some()
+                || args
+                    .iter()
+                    .any(|a| a.name.as_ref().is_some_and(|name| name.name == p.name))
+        });
+        if !complete {
+            return;
+        }
         let sig = callee.signature(&self.env.app);
         let bound =
             self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false);
