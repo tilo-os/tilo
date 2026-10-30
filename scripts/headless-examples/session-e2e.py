@@ -40,8 +40,17 @@ unit tests and found only by starting a session by hand:
   restart  the session stopped and started again on the same state: the four windows come
            back, present frames, and hold what was written (the note in Notes, the channel in
            Chat).
+  dev      the session started once more, and while its four windows come back four
+           `tilolang dev` at once, each installing an app the session has not had (DEV_APPS):
+           each window presents a first frame within DEV_BOUND (3 s) of its install; 0.5 to
+           0.9 s here. Catches an app's first opening in a room waiting on the broker's
+           invocation journal (its authorship grant was an invocation, answered once its
+           admission and outcome were synced behind every other one, with a 30 s timeout as
+           the way out), the dev tool waiting for the whole catalogue listing to settle, and
+           concurrent `tilolang dev` writing over each other's builds: on 00c953abf01 no window
+           presented a frame within 30 s.
 
-Speed: one session serves every check; the restart is the only second start. No check sleeps a
+Speed: one session serves every check; the restart and `dev` start it again. No check sleeps a
 fixed time: each waits for the condition it needs (a listing answered with `--wait`, a frame
 presented, a line from the REPL), bounded by HANG_BOUND seconds, and fails with what it saw.
 
@@ -616,9 +625,98 @@ def check_restart(session: Session) -> dict:
     return {"seconds_to_content": round(time.monotonic() - began, 2)}
 
 
+# The tilolang apps `tilolang dev` installs into the running session, ones it has not had yet,
+# each by a `tilolang dev` of its own, all at once.
+DEV_APPS = ["counter", "today", "board", "views"]
+# How long after its install each app's window may take to present its first frame.
+DEV_BOUND = float(os.environ.get("TILO_TEST_DEV_OPEN_BOUND_SECS", "3.0"))
+
+
+class DevRun:
+    """One `tilolang dev` of `name`, its output read on a thread of its own: when it said the
+    app was installed and when it said it was open."""
+
+    def __init__(self, session: Session, name: str, ready: Path) -> None:
+        env = {**session.env(), "TILO_NESTED_SESSION_BUILD": str(session.build),
+               "XDG_STATE_HOME": str(session.out / "tilolang-state")}
+        self.name = name
+        self.installed: float | None = None
+        self.opened: float | None = None
+        self.lines: list[str] = []
+        self.log = open(session.out / f"dev-{name}.log", "w")
+        self.proc = subprocess.Popen(
+            [str(session.bin("tilolang")), "dev", str(REPO / "apps/tl" / name),
+             "--search", str(REPO / "apps/tl"), "--session", str(ready), "--repo", str(REPO)],
+            cwd=REPO, env=env, stdout=self.log, stderr=subprocess.PIPE, text=True)
+        self.reader = threading.Thread(target=self.read, daemon=True)
+        self.reader.start()
+
+    def read(self) -> None:
+        assert self.proc.stderr is not None
+        for line in self.proc.stderr:
+            now = time.monotonic()
+            self.lines.append(line)
+            self.log.write(line)
+            self.log.flush()
+            # The packages an app uses install before it; its own install is the last before
+            # it opens.
+            if "installed in" in line and self.opened is None:
+                self.installed = now
+            if "is open" in line and self.opened is None:
+                self.opened = now
+
+    def stop(self) -> None:
+        self.proc.terminate()
+        self.proc.wait(10)
+        self.reader.join(10)
+        self.log.close()
+
+
+def check_dev(session: Session) -> dict:
+    """The session started again, and while its four windows come back (a desktop just signed
+    in to), one `tilolang dev` for each of DEV_APPS at once, apps the session has not had: each
+    window presents its first frame within DEV_BOUND of its install."""
+    session.stop()
+    session.start(install=False)
+    ready = session.out / f"ready-start-{session.starts}.json"
+    runs = [DevRun(session, name, ready) for name in DEV_APPS]
+    framed: dict[str, float] = {}
+    try:
+        def every_window() -> bool:
+            now = time.monotonic()
+            shown = presented(session)
+            for run in runs:
+                if run.name not in framed and app_id(run.name) in shown:
+                    framed[run.name] = now
+                if run.proc.poll() is not None and run.name not in framed:
+                    raise Failed(f"`tilolang dev` for {run.name} ended: {''.join(run.lines)[-2000:]}")
+            return len(framed) == len(runs)
+
+        wait_for("every dev app's first frame", every_window,
+                 lambda: f"framed {sorted(framed)}\n{session.log_tail()}")
+    finally:
+        for run in runs:
+            run.stop()
+    result: dict[str, Any] = {}
+    late = []
+    for run in runs:
+        if run.installed is None:
+            raise Failed(f"`tilolang dev` showed {run.name} without installing it: {''.join(run.lines)}")
+        seconds = round(framed[run.name] - run.installed, 3)
+        result[run.name] = {"seconds_install_to_first_frame": seconds,
+                            "seconds_install_to_open": None if run.opened is None
+                            else round(run.opened - run.installed, 3)}
+        if seconds > DEV_BOUND:
+            late.append(f"{run.name} {seconds} s")
+    if late:
+        raise Failed(f"first frames later than {DEV_BOUND} s after the install: {', '.join(late)}; "
+                     f"{json.dumps(result)}\n{session.log_tail()}")
+    return result
+
+
 # --- the run -------------------------------------------------------------------------------
 
-CHECKS = ["open", "canvas", "repl", "ask", "restart"]
+CHECKS = ["open", "canvas", "repl", "ask", "restart", "dev"]
 
 
 def build_session(out: Path) -> Path:
@@ -687,6 +785,7 @@ def main() -> int:
             "repl": lambda: check_repl(session, out),
             "ask": lambda: check_ask(session, model),
             "restart": lambda: check_restart(session),
+            "dev": lambda: check_dev(session),
         }
         for name in CHECKS:
             if name not in only:
