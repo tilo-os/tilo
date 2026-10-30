@@ -37,7 +37,7 @@ impl NativeWorkspaceOwner {
         {
             return Err("a shortcut change is signed by this device's own key".into());
         }
-        let governs = candidate.device() == candidate.governor();
+        let governs = candidate.hosted_here();
         let before = candidate.peer.room_heads().unwrap_or_default();
         let mut peer = candidate.peer.clone();
         if !peer

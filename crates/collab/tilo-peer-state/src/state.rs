@@ -298,11 +298,15 @@ struct DurableDocumentRef<'a> {
     covered: &'a BTreeMap<String, u64>,
     covered_snapshot: Option<&'a [u8]>,
 }
+/// The durable base layout. Version 4 names the room's owner by their root
+/// key; earlier versions pinned a governing device and are refused.
+const DURABLE_BASE_VERSION: u32 = 4;
+
 #[derive(Serialize, Deserialize)]
 struct Durable {
     version: u32,
     room: String,
-    authority: DeviceCert,
+    owner: [u8; 32],
     room_bytes: Option<Vec<u8>>,
     documents: Vec<DurableDocument>,
     receipts: BTreeMap<String, Vec<u8>>,
@@ -512,10 +516,11 @@ fn check_governed_snapshot(
 }
 
 impl StatePeer {
-    /// Build a replica for `room` pinned to `authority` and its certified roster.
+    /// Build a replica for `room`, owned by the person `owner_device` belongs
+    /// to, with that device and the certified `roster`.
     pub fn new(
         room: &str,
-        authority: DeviceCert,
+        owner_device: DeviceCert,
         roster: Vec<DeviceCert>,
         revocations: RevocationList,
         now: SystemTime,
@@ -525,11 +530,11 @@ impl StatePeer {
             .into_iter()
             .map(|certificate| VerifiedCertificate::new(certificate, now))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::with_roster(room, authority, roster, revocations, now)
+        Self::with_roster(room, owner_device, roster, revocations, now)
     }
 
-    /// A replica of a room another device governs, from what its join
-    /// answered: the governing `authority`, which must be valid at `now`, and
+    /// A replica of a room joined through `admitter`, a device of the room's
+    /// owner, which must be valid at `now`, and
     /// the room's `roster` as its governance admitted it. A roster
     /// certificate is the room's evidence, checked by its signature alone:
     /// a guest certified for an hour stays in the roster after its hour, as
@@ -538,7 +543,7 @@ impl StatePeer {
     /// so no device could join a room anyone had watched.
     pub fn joined(
         room: &str,
-        authority: DeviceCert,
+        admitter: DeviceCert,
         roster: Vec<DeviceCert>,
         revocations: RevocationList,
         now: SystemTime,
@@ -547,12 +552,12 @@ impl StatePeer {
             .into_iter()
             .map(|certificate| VerifiedCertificate::historical_typed(certificate).map_err(err))
             .collect::<Result<Vec<_>, _>>()?;
-        Self::with_roster(room, authority, roster, revocations, now_ns(now))
+        Self::with_roster(room, admitter, roster, revocations, now_ns(now))
     }
 
     fn with_roster(
         room: &str,
-        authority: DeviceCert,
+        owner_device: DeviceCert,
         roster: Vec<VerifiedCertificate>,
         revocations: RevocationList,
         now: u64,
@@ -562,7 +567,7 @@ impl StatePeer {
         for certificate in roster
             .into_iter()
             .map(Ok)
-            .chain([VerifiedCertificate::new(authority.clone(), now)])
+            .chain([VerifiedCertificate::new(owner_device.clone(), now)])
         {
             let certificate = certificate?;
             if revocations.is_revoked(&certificate.device_public_key) {
@@ -573,7 +578,8 @@ impl StatePeer {
         Ok(Self {
             core: PeerCore {
                 room,
-                authority,
+                owner: owner_device.user_public_key,
+                origin: owner_device.device_public_key,
                 certificates: certificates.into(),
                 revocations,
                 receipts: Shared::default(),
@@ -606,7 +612,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_governance_writer(key, now)?;
-        if cert.user_public_key != self.core.authority.user_public_key {
+        if cert.user_public_key != self.core.owner {
             return Err("enrollment root mismatch".into());
         }
         tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
@@ -637,7 +643,6 @@ impl StatePeer {
             revocations: vec![],
             admission: None,
             admissions: vec![],
-            workspace_delegations: vec![],
             delegate: None,
         };
         self.put_identity(doc, &identity, key, now)
@@ -698,7 +703,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         self.require_member_writer(key, now)?;
-        if user_public_key == self.core.authority.user_public_key {
+        if user_public_key == self.core.owner {
             return Err("owner role cannot be changed through member governance".into());
         }
         let mut doc = self
@@ -727,7 +732,7 @@ impl StatePeer {
         // go together.
         let moderation_id = tilo_action_policy::roles::administrator_moderation_grant_id(&person);
         if administrator {
-            let giver = Subject::Person(hex::encode(self.core.authority.user_public_key));
+            let giver = Subject::Person(hex::encode(self.core.owner));
             let room = self.core.room.clone();
             for grant in [
                 tilo_action_policy::roles::administrator_grant(&room, &person, giver.clone()),
@@ -782,7 +787,7 @@ impl StatePeer {
     /// and a revoked one hands nothing over.
     fn owner_device(&self, device: &[u8; 32], now: SystemTime) -> Result<&DeviceCert, String> {
         let cert = self.certificate(device, now)?;
-        if cert.user_public_key != self.core.authority.user_public_key {
+        if cert.user_public_key != self.core.owner {
             return Err("governance writer is not the owner's device".into());
         }
         Ok(cert)
@@ -795,7 +800,7 @@ impl StatePeer {
         self.core
             .certificates
             .get(device)
-            .is_some_and(|cert| cert.user_public_key == self.core.authority.user_public_key)
+            .is_some_and(|cert| cert.user_public_key == self.core.owner)
             && !self.core.revocations.is_revoked(device)
     }
 
@@ -833,7 +838,7 @@ impl StatePeer {
             doc,
             &self.core.certificates,
             &self.core.revocations,
-            &self.core.authority,
+            &self.core.owner,
             now,
         )
         .map_err(err)?;
@@ -889,8 +894,20 @@ impl StatePeer {
                     .is_ok_and(|age| age <= Duration::from_secs(300))
             })
     }
-    pub fn authority(&self) -> &DeviceCert {
-        &self.core.authority
+    /// The person who owns the room: their root key.
+    #[must_use]
+    pub fn owner(&self) -> [u8; 32] {
+        self.core.owner
+    }
+    /// The certificates of the owner's devices this replica knows.
+    #[must_use]
+    pub fn owner_certificates(&self) -> Vec<DeviceCert> {
+        self.core
+            .certificates
+            .values()
+            .filter(|cert| cert.user_public_key == self.core.owner)
+            .map(|cert| cert.as_ref().clone())
+            .collect()
     }
     pub fn room(&self) -> &str {
         &self.core.room
@@ -927,7 +944,7 @@ impl StatePeer {
             role,
             person: person.id().to_owned(),
             policy,
-            foreign: backend::member::foreign(cert, &self.core.authority),
+            foreign: backend::member::foreign(cert, &self.core.origin),
             delegate: agent,
         })
     }
@@ -981,7 +998,7 @@ impl StatePeer {
         if heads.is_empty() || room::base::root(&mut doc).is_some_and(|root| heads == [root]) {
             return Ok(false);
         }
-        let actor = self.room_actor_for(&self.core.authority.device_public_key);
+        let actor = self.room_actor_for(&self.core.owner);
         let base = room::base::rebase(&doc, actor).map_err(err)?;
         self.core.room_doc = Some(base.into());
         Ok(true)
@@ -1557,7 +1574,7 @@ impl StatePeer {
         before: &StatePeer,
     ) -> Result<Vec<DocumentAdmission>, AdmissionError> {
         if self.core.room != before.core.room
-            || self.core.authority != before.core.authority
+            || self.core.owner != before.core.owner
             || (before.core.admission_v5 && !self.core.admission_v5)
         {
             return Err(
@@ -1770,14 +1787,14 @@ impl StatePeer {
         }
         let cert = self.certificate(&source, now)?;
         let person = cert.user_public_key;
-        let foreign = backend::member::foreign(cert, &self.core.authority);
+        let foreign = backend::member::foreign(cert, &self.core.origin);
         // The owner's devices write governance on their certificate alone:
         // the device this replica was joined through supplies the first
         // governance before any roster exists.
-        if person != self.core.authority.user_public_key {
+        if person != self.core.owner {
             self.role(&source, now)?;
         }
-        let owner = self.core.authority.user_public_key;
+        let owner = self.core.owner;
         let from = hex::encode(source);
         // The one room admission the shell's workspace tree runs too.
         let room::AdmittedRoom {
@@ -3091,9 +3108,9 @@ impl StatePeer {
         head = put(&4u32, head)?;
         head = put(
             &(
-                3u32,
+                DURABLE_BASE_VERSION,
                 &self.core.room,
-                &self.core.authority,
+                &self.core.owner,
                 self.core.room_doc.as_ref().map(CachedDocument::saved_bytes),
                 documents.len(),
             ),
@@ -3166,9 +3183,9 @@ impl StatePeer {
         let value = DurableV4 {
             version: 4,
             base: Durable {
-                version: 3,
+                version: DURABLE_BASE_VERSION,
                 room: self.core.room.clone(),
-                authority: self.core.authority.clone(),
+                owner: self.core.owner,
                 room_bytes: self.core.room_doc.as_ref().map(CachedDocument::saved),
                 documents,
                 receipts: (*self.core.receipts).clone(),
@@ -3230,7 +3247,7 @@ impl StatePeer {
     pub fn restore(
         bytes: &[u8],
         room: &str,
-        authority: DeviceCert,
+        owner_device: DeviceCert,
         roster: Vec<DeviceCert>,
         revocations: RevocationList,
         now: SystemTime,
@@ -3276,21 +3293,25 @@ impl StatePeer {
             }
             _ => return Err("unsupported durable admission version".into()),
         };
-        if durable.version != 3 || durable.room != room || durable.authority != authority {
+        if durable.version != DURABLE_BASE_VERSION
+            || durable.room != room
+            || durable.owner != owner_device.user_public_key
+        {
             return Err("durable admission namespace mismatch".into());
         }
         let canonical_room = uuid::Uuid::parse_str(room).map_err(err)?.to_string();
         let verified_certificates = backend::restore_certificate_roster(
             durable.certificates,
             roster,
-            &authority,
+            &owner_device,
             now_ns(now),
         )
         .map_err(err)?;
         let mut peer = Self {
             core: PeerCore {
                 room: canonical_room,
-                authority,
+                owner: owner_device.user_public_key,
+                origin: owner_device.device_public_key,
                 certificates: verified_certificates.into(),
                 revocations: RevocationList::new(),
                 receipts: Shared::default(),
@@ -3313,7 +3334,6 @@ impl StatePeer {
             durable.revocations,
             &revocations,
             &peer.core.certificates,
-            peer.core.authority.device_public_key,
         )
         .map_err(err)?;
         peer.core.receipts = durable.receipts.into();
@@ -3472,7 +3492,7 @@ impl PeerPublicationMut<'_> {
         let snapshots = candidate.signed_snapshots_in_place(key, now)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(None));
+        messages.extend(candidate.own_sealed_publications(key.verifying_key().to_bytes(), None));
         *self.peer = candidate;
         Ok(messages)
     }
@@ -3499,7 +3519,7 @@ impl PeerPublicationMut<'_> {
         crate::durability::monotonic(self.peer.core.room_doc.as_deref(), room)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(None));
+        messages.extend(candidate.own_sealed_publications(key.verifying_key().to_bytes(), None));
         *self.peer = candidate;
         Ok(messages)
     }
@@ -3520,9 +3540,7 @@ impl PeerPublicationMut<'_> {
         generation: u64,
     ) -> Result<Vec<NeighbourMsg>, String> {
         self.peer.admissions_since(before).map_err(err)?;
-        if self.peer.core.room != before.core.room
-            || self.peer.core.authority != before.core.authority
-        {
+        if self.peer.core.room != before.core.room || self.peer.core.owner != before.core.owner {
             return Err("publication cannot replace the session namespace".into());
         }
         self.peer.require_governance_writer(key, now)?;
@@ -3631,7 +3649,9 @@ impl PeerPublicationMut<'_> {
             });
         }
         messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(Some(before)));
+        messages.extend(
+            candidate.own_sealed_publications(key.verifying_key().to_bytes(), Some(before)),
+        );
         *self.peer = candidate;
         Ok(messages)
     }
@@ -3802,7 +3822,6 @@ pub fn seed_room(
             revocations: vec![],
             admission: None,
             admissions: vec![],
-            workspace_delegations: vec![],
             delegate: None,
         };
         doc.put(

@@ -146,7 +146,7 @@ impl Native {
                         let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                         let governor = self
                             .owner
-                            .with_current(self.room, |view| Ok(view.governor().device_public_key))
+                            .with_current(self.room, |view| Ok(view.room_host().device_public_key))
                             .unwrap();
                         match self
                             .scope

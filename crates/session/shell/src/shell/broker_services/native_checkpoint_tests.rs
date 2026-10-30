@@ -1100,7 +1100,7 @@ fn native_checkpoint_service_refuses_remote_governed_room_without_substituting_l
     let (_directory, owner, room, _, _) = native_workspace_owner::test_enrolled_owner();
     let certificate = owner
         .with_current(room, |view| {
-            assert_ne!(view.device(), view.governor());
+            assert_ne!(view.device(), view.room_host());
             Ok(view.device().clone())
         })
         .unwrap();

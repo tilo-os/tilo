@@ -128,7 +128,7 @@ impl Rooms {
         };
         let primary_governor = (source.record.is_empty()
             && room.peer().holds_document(&source.app_id, ""))
-        .then_some(room.peer().authority().device_public_key);
+        .then_some(room.record.authority.device_public_key);
         if keys.is_none() && primary_governor.is_none() {
             return Err(if room.participation.is_none() {
                 "this relay takes part in no channel of the source's room".into()

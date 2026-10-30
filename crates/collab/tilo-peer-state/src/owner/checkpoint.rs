@@ -246,7 +246,7 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
             || id != &ack.id
             || ack.captured_generation == 0
             || ack.publication_generation <= ack.captured_generation
-            || (view.device() == view.governor() && ack.publication_generation > view.generation())
+            || (view.hosted_here() && ack.publication_generation > view.generation())
         {
             return Err("invalid native checkpoint acknowledgement".into());
         }
@@ -270,7 +270,7 @@ fn index(view: &NativeCommittedView, store: &dyn Store) -> Result<Index, String>
         if !index.checkpoints.contains_key(&entry.id)
             || !bound.insert((entry.name.clone(), entry.id))
             || entry.generation == 0
-            || (view.device() == view.governor() && entry.generation > view.generation())
+            || (view.hosted_here() && entry.generation > view.generation())
         {
             return Err("invalid native checkpoint name binding".into());
         }
@@ -392,7 +392,7 @@ pub(crate) fn validate_restore(
     view: &NativeCommittedView,
     store: &dyn Store,
 ) -> Result<(), String> {
-    if view.device() != view.governor() {
+    if !view.hosted_here() {
         view.peer.workspace().workspace_checkpoint_root()?;
         return Ok(());
     }
@@ -490,9 +490,6 @@ impl NativeWorkspaceOwner {
         request.digest()?;
         let room = RoomId::parse(&request.room).ok_or("invalid checkpoint room")?;
         self.with_current(room, |view| {
-            if view.device() != view.governor() {
-                return Err("checkpoint requires the actual governing owner".into());
-            }
             view.peer.workspace().check_checkpoint_writer(key, now)
         })?;
         match &request.command {
@@ -574,11 +571,6 @@ impl NativeWorkspaceOwner {
         }
         let _turn = self.0.mutation.lock();
         let candidate = self.with_current(room, |v| Ok(v.clone()))?;
-        if candidate.device() != candidate.governor()
-            || key.verifying_key().to_bytes() != candidate.governor().device_public_key
-        {
-            return Err("native checkpoint lacks current governor signing custody".into());
-        }
         candidate
             .peer
             .workspace()
@@ -720,11 +712,6 @@ impl NativeWorkspaceOwner {
         let now = SystemTime::now();
         let _turn = self.0.mutation.lock();
         let candidate = self.with_current(room, |v| Ok(v.clone()))?;
-        if candidate.device() != candidate.governor()
-            || key.verifying_key().to_bytes() != candidate.governor().device_public_key
-        {
-            return Err("native checkpoint naming lacks governor custody".into());
-        }
         candidate
             .peer
             .workspace()

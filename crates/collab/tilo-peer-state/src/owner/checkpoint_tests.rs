@@ -1430,7 +1430,7 @@ fn checkpoint_receiving_member_reads_hydrated_signed_index_with_different_genera
     receiver
         .with_current(room(), |view| {
             assert_eq!(view.device(), &member);
-            assert_ne!(view.device(), view.governor());
+            assert_ne!(view.device(), view.room_host());
             assert_eq!(
                 view.peer().workspace().workspace_checkpoint_root()?,
                 fixture

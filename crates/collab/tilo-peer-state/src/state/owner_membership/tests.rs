@@ -14,6 +14,7 @@ fn proof(
         .governance()
         .membership_challenge(
             7,
+            &peer.owner_certificates()[0],
             cert,
             [10; 32],
             [11; 32],
@@ -54,7 +55,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let root = SigningKey::from_bytes(&[41; 32]);
     let key = SigningKey::from_bytes(&[42; 32]);
-    let mut cert = peer.authority().clone();
+    let mut cert = peer.owner_certificates()[0].clone();
     cert.user_public_key = root.verifying_key().to_bytes();
     cert.device_public_key = key.verifying_key().to_bytes();
     tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
@@ -62,9 +63,7 @@ fn all_collaborator_roles_remain_refreshable_until_removed() {
         InviteGrant {
             workspace_id: 7,
             room: peer.room().into(),
-            authority: peer.authority().clone(),
-            issuer: peer.authority().clone(),
-            delegation: None,
+            issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],
             recipient_user_public_key: Some(cert.user_public_key),

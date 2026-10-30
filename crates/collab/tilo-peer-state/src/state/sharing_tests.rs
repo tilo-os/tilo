@@ -76,7 +76,7 @@ fn durable_parts_reuse_what_a_write_did_not_change() {
     let restored = StatePeer::restore(
         &after.concat(),
         candidate.room(),
-        candidate.authority().clone(),
+        candidate.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,

@@ -249,15 +249,13 @@ impl Hosting {
         governor
             .validate_bootstrap(&request.bootstrap)
             .map_err(|error| error.to_string())?;
-        let authority = governor.governing_authority.clone();
+        // The owner device serving the room, whose own address the hint is.
+        let authority = governor.host_device_certificate.clone();
         if governor.room != request.room
             || governor.workspace_id != request.workspace_id
             || authority.user_public_key != own.user_public_key
         {
-            return Err("the room is not governed by a device of this host's person".into());
-        }
-        if request.governor_hint.host.device_public_key != authority.device_public_key {
-            return Err("the governor's address is not the governor's own".into());
+            return Err("the room is not served by a device of this host's person".into());
         }
         let now = SystemTime::now();
         let mut peer = replica(&request.bootstrap, now)?;
@@ -283,6 +281,7 @@ impl Hosting {
         let (tap, notices) = tokio::sync::mpsc::channel(NOTICES);
         let replica = Arc::new(HostedReplica {
             peer: std::sync::Mutex::new(peer.clone()),
+            room_host: request.bootstrap.host.clone(),
             generation: request.bootstrap.generation,
         });
         {
@@ -352,7 +351,6 @@ fn own_hint(
         mode: WorkspaceHostMode::CertifiedHost,
         room: governor.room.clone(),
         workspace_id: governor.workspace_id,
-        governing_authority: governor.governing_authority.clone(),
         endpoint_addr,
         host_user_public_key: services.cert.user_public_key,
         host_device_certificate: services.cert.clone(),
@@ -368,7 +366,7 @@ fn own_hint(
 fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
     let mut peer = StatePeer::from_join(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         &bootstrap.revocations,
         now,
@@ -376,7 +374,7 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
     // This host's copy: it writes under the host's own actor, never the
     // one its device's replica of the room writes under.
     peer.write_as_room_host();
-    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
+    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg =
             postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
@@ -454,6 +452,8 @@ async fn stop_following(services: &RoomServices, workspace_id: u64) {
 /// current with each governance change the room's governor published.
 pub(crate) struct HostedReplica {
     peer: std::sync::Mutex<StatePeer>,
+    /// The device that answered the room's join for its owner.
+    room_host: DeviceCert,
     generation: u64,
 }
 
@@ -462,7 +462,13 @@ impl HostedReplica {
     /// ([`crate::rooms::member_bootstrap`]).
     pub(crate) fn bootstrap(&self, workspace_id: u64, device: &DeviceCert) -> Option<Vec<u8>> {
         let peer = self.peer.lock_recover();
-        crate::rooms::member_bootstrap(&peer, workspace_id, self.generation, device)
+        crate::rooms::member_bootstrap(
+            &peer,
+            &self.room_host,
+            workspace_id,
+            self.generation,
+            device,
+        )
     }
 }
 

@@ -73,7 +73,7 @@ pub(super) async fn join(
     let bootstrap = admission.bootstrap;
     let mut peer = StatePeer::new(
         &bootstrap.room,
-        bootstrap.authority.clone(),
+        bootstrap.host.clone(),
         bootstrap.certified_roster.clone(),
         RevocationList::new(),
         SystemTime::now(),
@@ -82,7 +82,7 @@ pub(super) async fn join(
         .map_err(|error| error.to_string())?;
     for bytes in &bootstrap.governance_messages {
         peer.receive_from(
-            TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key),
+            TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
             postcard::from_bytes(bytes).map_err(|error| error.to_string())?,
             SystemTime::now(),
         )?;

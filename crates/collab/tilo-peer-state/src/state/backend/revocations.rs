@@ -6,14 +6,12 @@ use tilo_user_identity::{RevocationEntry, RevocationError};
 pub(in crate::state) enum RestoreRevocationsError {
     RootMismatch,
     Signature(RevocationError),
-    AuthorityRevoked,
 }
 impl std::fmt::Display for RestoreRevocationsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RootMismatch => formatter.write_str("durable revocation root mismatch"),
             Self::Signature(error) => error.fmt(formatter),
-            Self::AuthorityRevoked => formatter.write_str("pinned authority device is revoked"),
         }
     }
 }
@@ -38,32 +36,18 @@ fn verified_union(
     Ok(revocations)
 }
 
-fn restore(
-    entries: impl IntoIterator<Item = RevocationEntry>,
-    root_for: impl Fn(&[u8; 32]) -> Option<[u8; 32]>,
-    authority: [u8; 32],
-) -> Result<RevocationList, RestoreRevocationsError> {
-    let revocations = verified_union(entries, root_for)?;
-    if revocations.is_revoked(&authority) {
-        return Err(RestoreRevocationsError::AuthorityRevoked);
-    }
-    Ok(revocations)
-}
-
 pub(in crate::state) fn restore_legacy(
     stored: Vec<RevocationEntry>,
     enrollment: &RevocationList,
     certificates: &BTreeMap<[u8; 32], VerifiedCertificate>,
-    authority: [u8; 32],
 ) -> Result<RevocationList, RestoreRevocationsError> {
-    restore(
+    verified_union(
         stored.into_iter().chain(enrollment.iter().cloned()),
         |key| {
             certificates
                 .get(key)
                 .map(|certificate| certificate.user_public_key)
         },
-        authority,
     )
 }
 #[cfg(test)]

@@ -233,8 +233,7 @@ impl PeerGovernanceMut<'_> {
             return Err("the delegation is not an agent's".into());
         }
         self.peer.require_governance_writer(key, now)?;
-        if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN
-            && cert.user_public_key != self.peer.core.authority.user_public_key
+        if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN && cert.user_public_key != self.peer.core.owner
         {
             return Err("only the room owner's agents are admitted".into());
         }
@@ -281,7 +280,6 @@ impl PeerGovernanceMut<'_> {
                 revocations: vec![],
                 admission: None,
                 admissions: vec![],
-                workspace_delegations: vec![],
                 delegate: Some(row),
             },
             Some(prior) if prior.device_cert != cert => {

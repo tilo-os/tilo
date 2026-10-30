@@ -217,7 +217,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
     reopened
         .with_current(room, |view| {
             assert_eq!(view.device(), &member);
-            assert_ne!(view.device(), view.governor());
+            assert_ne!(view.device(), view.room_host());
             assert_eq!(view.record.effect_history_root, None);
             assert_eq!(
                 view.peer()
@@ -229,7 +229,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
             assert_eq!(
                 view.peer()
                     .workspace()
-                    .workspace_effect_history_root(view.governor())?,
+                    .workspace_effect_history_root(view.room_host())?,
                 signed_root
             );
             assert_eq!(
@@ -293,7 +293,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
             assert_ne!(
                 view.peer()
                     .workspace()
-                    .workspace_effect_history_root(view.governor())?,
+                    .workspace_effect_history_root(view.room_host())?,
                 signed_root
             );
             assert_eq!(

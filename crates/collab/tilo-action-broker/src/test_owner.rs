@@ -219,13 +219,22 @@ impl SessionOwner {
     pub fn peer(&self) -> &StatePeer {
         &self.peer
     }
-    /// The governing person's root key.
+    /// The owner's root key.
     pub fn person_key(&self) -> &SigningKey {
         &self.person
     }
-    /// The governing device's key.
+    /// This owner device's key.
     pub fn signing_key(&self) -> &SigningKey {
         &self.key
+    }
+    /// This owner device's certificate.
+    pub fn device(&self) -> DeviceCert {
+        let device = self.key.verifying_key().to_bytes();
+        self.peer
+            .owner_certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == device)
+            .expect("the owner fixture's device is in its room")
     }
     pub fn status(&self) -> Status {
         Status {
@@ -255,7 +264,7 @@ impl SessionOwner {
         let bytes = postcard::to_stdvec(&Stored {
             person: self.person.to_bytes(),
             key: self.key.to_bytes(),
-            authority: peer.authority().clone(),
+            authority: self.device(),
             room: peer.room().into(),
             peer: peer.durable()?,
             generation,

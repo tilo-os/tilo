@@ -1,7 +1,7 @@
 //! A room's governor and its certified host, as a test's issuing side.
 //!
-//! It governs one room with a Chat document, lets its host issue invitations
-//! under a room delegation, and answers the join exchange the way a certified
+//! It governs one room with a Chat document, lets its host (another device
+//! of the owner) issue invitations, and answers the join exchange the way a certified
 //! host does: the challenge binds the authenticated endpoint, completion
 //! admits the member and returns the room's full checkpoint. Its outgoing
 //! publications are that checkpoint, re-signed on every mutation and refresh.
@@ -10,7 +10,6 @@ use crate::{
     join::{
         self, JoinBootstrap, JoinChallenge, JoinChallengeResponse, JoinInspection,
         JoinTransportRequest, JoinTransportResponse, MemberRole, TransportHint,
-        WorkspaceDelegation, WorkspaceDelegationPermissions,
     },
     seed_room,
 };
@@ -27,10 +26,12 @@ const CHALLENGE_NS: u64 = 60_000_000_000;
 
 pub struct TestGovernor {
     peer: StatePeer,
+    cert: DeviceCert,
     governor_key: SigningKey,
     host: DeviceCert,
     host_key: SigningKey,
-    delegation: Option<WorkspaceDelegation>,
+    /// The host is a dedicated certified host, not the governor itself.
+    certified_host: bool,
     workspace_id: u64,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
@@ -112,34 +113,15 @@ impl TestGovernor {
         )
         .unwrap();
         peer.select_admission_v5().unwrap();
-        let delegation = join::sign_workspace_delegation(
-            room,
-            workspace_id,
-            &governor,
-            host.clone(),
-            WorkspaceDelegationPermissions {
-                issue_invitations: true,
-                admit_invited_members: true,
-            },
-            random(),
-            None,
-            &governor_key,
-        )
-        .unwrap();
-        peer.governance_mut()
-            .admit_certificate_with_workspace_delegation(
-                host.clone(),
-                delegation.clone(),
-                &governor_key,
-                now,
-            )
+        peer.admit_certificate(host.clone(), &governor_key, now)
             .unwrap();
         let mut governor = Self {
             peer,
+            cert: governor,
             governor_key,
             host,
             host_key,
-            delegation: Some(delegation),
+            certified_host: true,
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -194,10 +176,11 @@ impl TestGovernor {
             .map_err(|error| error.to_string())?;
         let mut fixture = Self {
             peer,
+            cert: governor.clone(),
             host: governor,
             host_key: governor_key.clone(),
             governor_key,
-            delegation: None,
+            certified_host: false,
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -225,8 +208,8 @@ impl TestGovernor {
         self.workspace_id
     }
     #[must_use]
-    pub fn governor(&self) -> &DeviceCert {
-        self.peer.authority()
+    pub fn room_host(&self) -> &DeviceCert {
+        &self.cert
     }
     #[must_use]
     pub fn governor_key(&self) -> &SigningKey {
@@ -257,14 +240,13 @@ impl TestGovernor {
     pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
         IrohWorkspaceHostHintV1 {
             version: 1,
-            mode: if self.delegation.is_some() {
+            mode: if self.certified_host {
                 WorkspaceHostMode::CertifiedHost
             } else {
                 WorkspaceHostMode::NativeInteractiveWorkspaceOwner
             },
             room: self.room().into(),
             workspace_id: self.workspace_id,
-            governing_authority: self.governor().clone(),
             endpoint_addr,
             host_user_public_key: self.host.user_public_key,
             host_device_certificate: self.host.clone(),
@@ -288,9 +270,7 @@ impl TestGovernor {
             join::InviteGrant {
                 workspace_id: self.workspace_id,
                 room: self.room().into(),
-                authority: self.governor().clone(),
                 issuer: self.host.clone(),
-                delegation: self.delegation.clone(),
                 role,
                 nonce: random(),
                 recipient_user_public_key,
@@ -584,7 +564,7 @@ impl TestGovernor {
             role: redemption.join().grant().role,
             room: self.room().into(),
             workspace_id: self.workspace_id,
-            authority: self.governor().clone(),
+            host: self.host.clone(),
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
             records: self.peer.rows(),
@@ -606,7 +586,7 @@ mod empty_interactive_tests {
     fn checkpoint_refresh_follows_admitted_native_receipts() {
         let mut governor = TestGovernor::new();
         let key = governor.governor_key().clone();
-        let publisher = governor.governor().device_public_key;
+        let publisher = governor.room_host().device_public_key;
         let messages = governor
             .peer()
             .clone()
@@ -638,8 +618,8 @@ mod empty_interactive_tests {
         let cert = certificate(&signing_identity, &key, "Fixture session");
         let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
         let governor = TestGovernor::empty_interactive(cert.clone(), key, &room).unwrap();
-        assert_eq!(governor.governor(), &cert);
-        assert!(!governor.governor().capabilities.can_act_as_host);
+        assert_eq!(governor.room_host(), &cert);
+        assert!(!governor.room_host().capabilities.can_act_as_host);
         assert!(governor.peer().rows().is_empty());
         let endpoint = iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(
@@ -653,7 +633,7 @@ mod empty_interactive_tests {
             payload.mode,
             WorkspaceHostMode::NativeInteractiveWorkspaceOwner
         );
-        assert_eq!(payload.governing_authority, cert);
+        assert_eq!(payload.host_device_certificate, cert);
         assert!(
             TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &room)
                 .is_err()
@@ -705,9 +685,9 @@ mod empty_interactive_tests {
         let JoinTransportResponse::Complete(bootstrap) = response else {
             panic!("actual session completion refused: {response:?}");
         };
-        assert_eq!(bootstrap.authority, cert);
+        assert_eq!(bootstrap.host, cert);
         assert_eq!(bootstrap.device_cert, cert);
         assert!(bootstrap.records.is_empty());
-        assert!(!bootstrap.authority.capabilities.can_act_as_host);
+        assert!(!bootstrap.host.capabilities.can_act_as_host);
     }
 }

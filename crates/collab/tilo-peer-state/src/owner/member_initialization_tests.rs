@@ -31,7 +31,7 @@ fn governor_creates_empty_record(joined: &Enrolled) {
                 joined.now,
                 view.generation().checked_add(1).unwrap(),
             )?;
-            Ok((messages, view.governor().device_public_key))
+            Ok((messages, view.room_host().device_public_key))
         })
         .unwrap();
     for message in messages {

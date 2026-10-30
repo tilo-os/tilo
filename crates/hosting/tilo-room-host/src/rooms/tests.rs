@@ -2671,11 +2671,11 @@ async fn a_join_the_host_completed_before_the_room_moved_on_is_finished_through_
     assert_eq!(current.role, delivered.role);
     assert_eq!(current.room, delivered.room);
     assert_eq!(current.workspace_id, delivered.workspace_id);
-    assert_eq!(current.authority, delivered.authority);
+    assert_eq!(current.host, delivered.host);
     assert!(current.generation > 0);
     assert!(current.certified_roster.contains(&laptop_cert));
     assert!(current.certified_roster.contains(&other_cert));
-    assert!(current.certified_roster.contains(&current.authority));
+    assert!(current.certified_roster.contains(&current.host));
     relay.shutdown().await;
 }
 

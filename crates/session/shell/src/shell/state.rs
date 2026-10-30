@@ -1270,7 +1270,12 @@ impl WorkspaceTree {
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
-    pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &tilo_peer_state::StatePeer) {
+    pub(crate) fn project_native_room(
+        &mut self,
+        room: RoomId,
+        peer: &tilo_peer_state::StatePeer,
+        host: &tilo_user_identity::DeviceCert,
+    ) {
         let Some(document) = peer.admitted_room() else {
             return;
         };
@@ -1278,7 +1283,7 @@ impl WorkspaceTree {
         // takes part in the channels of the rooms it governs exactly as the
         // host decides it (`tilo_room_host`'s participation): the room is
         // sealed.
-        if peer.authority().capabilities.takes_part_in_room_channels() {
+        if host.capabilities.takes_part_in_room_channels() {
             self.sealed_rooms.insert(room);
             self.committed_record_rooms.remove(&room);
         } else {

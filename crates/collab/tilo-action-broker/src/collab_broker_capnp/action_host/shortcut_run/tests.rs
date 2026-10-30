@@ -97,7 +97,7 @@ impl Fixture {
         .unwrap();
         let owner =
             crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
-        let certificate = owner.peer().authority().clone();
+        let certificate = owner.device();
         let (clock, _control) = crate::peer_actions::OwnerPolicyClock::for_test(
             certificate.issued_at_ns.saturating_add(1_000_000_000),
         );

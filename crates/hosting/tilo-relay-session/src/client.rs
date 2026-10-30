@@ -967,7 +967,7 @@ impl RelayClient {
         let scope = InteractiveWorkspaceScope {
             workspace_id: trust.workspace_id(),
             room,
-            authority: trust.authority().clone(),
+            authority: trust.host().clone(),
         };
         Self::connect_version(
             endpoint,

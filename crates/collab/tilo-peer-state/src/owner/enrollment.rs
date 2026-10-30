@@ -41,7 +41,7 @@ pub(crate) fn restore(
     let peer = StatePeer::restore(
         &record.peer,
         &room.to_string(),
-        record.governor.clone(),
+        record.room_host.clone(),
         vec![record.device.clone()],
         tilo_user_identity::RevocationList::new(),
         now,
@@ -66,7 +66,7 @@ fn validate_enrollment(
     let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
     let grant = intent.verified_join().grant();
     if intent.room() != room
-        || record.governor != grant.authority
+        || record.room_host != grant.issuer
         || record.workspace != grant.workspace_id
         || (record.device != *intent.local_device()
             && !crate::owner::renewal::renews(&record.device, intent.local_device()))
@@ -346,7 +346,7 @@ impl NativeWorkspaceOwner {
         let bootstrap = enrollment.bootstrap();
         let mut peer = StatePeer::from_join(
             &bootstrap.room,
-            bootstrap.authority.clone(),
+            bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,
             now,
@@ -366,7 +366,7 @@ impl NativeWorkspaceOwner {
         // A device of the governing person is the room's owner whatever its
         // invitation granted: the owner holds its room like any member.
         let expected =
-            if enrollment.local_device().user_public_key == bootstrap.authority.user_public_key {
+            if enrollment.local_device().user_public_key == bootstrap.host.user_public_key {
                 collab_types::Role::Owner
             } else {
                 enrollment.verified_join().grant().role.into()
@@ -379,7 +379,7 @@ impl NativeWorkspaceOwner {
             version: 2,
             room,
             workspace: bootstrap.workspace_id,
-            governor: bootstrap.authority.clone(),
+            room_host: bootstrap.host.clone(),
             device: enrollment.local_device().clone(),
             enrollment: Some(crate::owner::record::StoredEnrollment {
                 invitation: enrollment.verified_join().signed_invitation().to_vec(),
@@ -515,7 +515,7 @@ pub(crate) fn install_governance(
     bootstrap: &crate::join::JoinBootstrap,
     now: SystemTime,
 ) -> Result<usize, String> {
-    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.authority.device_public_key);
+    let origin = TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key);
     let mut app_messages = 0usize;
     for bytes in &bootstrap.governance_messages {
         let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;

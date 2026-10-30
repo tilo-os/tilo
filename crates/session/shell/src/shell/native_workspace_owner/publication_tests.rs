@@ -329,7 +329,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
     );
     let governor_key = SigningKey::from_bytes(&[61; 32]);
     let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: remote.authority().user_public_key,
+        user_public_key: remote.owner(),
         revoked_device_public_key: [98; 32],
         revoked_at_ns: 10,
         reason: tilo_user_identity::RevocationReason::Retired,

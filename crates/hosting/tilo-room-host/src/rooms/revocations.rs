@@ -85,7 +85,7 @@ impl Rooms {
         entries: &[RevocationEntry],
     ) -> Result<(), String> {
         let key = &self.inner.host.key;
-        let authority = room.peer().authority().clone();
+        let authority = room.record.authority.clone();
         let certified = room.peer().certificates();
         let carried = room.peer().revocations();
         let live = self.revocations();

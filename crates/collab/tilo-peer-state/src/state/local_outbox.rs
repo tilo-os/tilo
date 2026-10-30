@@ -155,8 +155,7 @@ impl StatePeer {
         Ok(coverage.room == self.core.room
             && coverage.app == route.app
             && coverage.record == route.record
-            && coverage.author == self.core.authority.device_public_key
-            && !self.core.revocations.is_revoked(&coverage.author)
+            && self.signed_by_owner(&coverage.author)
             && accepted.heads == coverage.heads
             && accepted.payload_hash == coverage.payload_hash
             && coverage.watermarks.iter().all(|(author, sequence)| {

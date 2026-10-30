@@ -1,8 +1,8 @@
 //! Native governance transactions. Public policy data is never an authority proof.
-use super::facades::{PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut};
+use super::facades::{PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
-    BTreeMap, DeviceCert, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Role,
-    Route, SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin, err, now_ns, room,
+    BTreeMap, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc, RevocationList, Role, Route,
+    SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin, err, room,
 };
 use room::media::{self, RoomMediaV1};
 
@@ -14,7 +14,7 @@ impl StatePeer {
             || room::governance_of(self.core.room_doc.as_deref())
                 .owner
                 .as_deref()
-                != Some(&hex::encode(self.core.authority.user_public_key))
+                != Some(&hex::encode(self.core.owner))
         {
             return Err("media governor is not the structural owner".into());
         }
@@ -29,134 +29,6 @@ impl StatePeer {
             return Err("media governor lacks exact room administration".into());
         }
         Ok(())
-    }
-}
-impl StatePeer {
-    /// The enrollment transaction behind
-    /// [`PeerGovernanceMut::admit_certificate_with_workspace_delegation`].
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the certificate, through the governance view"
-    )]
-    fn admit_certificate_with_delegation(
-        &mut self,
-        cert: DeviceCert,
-        delegation: crate::join::WorkspaceDelegation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let issuer = self
-            .owner_device(&key.verifying_key().to_bytes(), now)?
-            .clone();
-        if cert.user_public_key != self.core.authority.user_public_key
-            || cert != delegation.delegate
-        {
-            return Err("enrollment/delegation certificate mismatch".into());
-        }
-        tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
-            return Err("device revoked".into());
-        }
-        if self
-            .core
-            .certificates
-            .get(&cert.device_public_key)
-            .is_some_and(|known| known.as_ref() != &cert)
-        {
-            return Err("certificate conflict".into());
-        }
-        if room::governance_of(self.core.room_doc.as_deref())
-            .owner
-            .as_deref()
-            != Some(&hex::encode(self.core.authority.user_public_key))
-        {
-            return Err("delegation authority is not structural owner".into());
-        }
-        crate::join::verify_workspace_delegation(
-            &delegation,
-            &issuer,
-            &self.core.revocations,
-            now_ns(now),
-        )?;
-        if delegation.room != self.core.room {
-            return Err("delegation room mismatch".into());
-        }
-        let mut doc = self.core.room_doc.clone().ok_or("missing room")?;
-        let before = doc.get_heads();
-        let identities = doc
-            .get(ROOT, "peer_identities_v1")
-            .map_err(err)?
-            .ok_or("missing identities")?
-            .1;
-        let peers = doc
-            .get(ROOT, "peers")
-            .map_err(err)?
-            .ok_or("missing peers")?
-            .1;
-        let rows = room::governance_of(Some(&doc)).identities;
-        let authority_id = hex::encode(issuer.device_public_key);
-        let mut authority: GovernedIdentity =
-            serde_json::from_slice(rows.get(&authority_id).ok_or("missing issuer")?)
-                .map_err(err)?;
-        if authority.device_cert != issuer {
-            return Err("governed issuer mismatch".into());
-        }
-        let id = hex::encode(cert.device_public_key);
-        doc.set_actor(self.room_actor_of(key));
-        if let Some(bytes) = rows.get(&id) {
-            let known: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
-            if known.device_cert != cert {
-                return Err("governed certificate conflict".into());
-            }
-        } else {
-            let row = GovernedIdentity {
-                device_cert: cert.clone(),
-                revocations: vec![],
-                admission: None,
-                admissions: vec![],
-                workspace_delegations: vec![],
-                delegate: None,
-            };
-            doc.put(
-                &identities,
-                &id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&row).map_err(err)?),
-            )
-            .map_err(err)?;
-            doc.put(&peers, &id, cert.device_label.as_str())
-                .map_err(err)?;
-        }
-        if !authority.workspace_delegations.contains(&delegation) {
-            authority.workspace_delegations.push(delegation);
-            authority
-                .workspace_delegations
-                .sort_by_key(|d| (d.delegate.device_public_key, d.nonce));
-            doc.put(
-                &identities,
-                &authority_id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&authority).map_err(err)?),
-            )
-            .map_err(err)?;
-        }
-        doc.commit();
-        if before == doc.get_heads() {
-            return Ok(false);
-        }
-        self.apply_governance_doc(doc, &before, key, now)
-    }
-}
-
-impl PeerGovernanceMut<'_> {
-    /// Host enrollment and its invitation-only delegation share one basis change.
-    pub fn admit_certificate_with_workspace_delegation(
-        self,
-        cert: DeviceCert,
-        delegation: crate::join::WorkspaceDelegation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.peer
-            .admit_certificate_with_delegation(cert, delegation, key, now)
     }
 }
 impl PeerMediaGovernance<'_> {

@@ -21,8 +21,8 @@ impl ShellNetwork {
         self.check_native_custody(&owner, room)?;
         owner.with_current(room, |view| {
             view.peer()
-                .permissions(view.governor().device_public_key, SystemTime::now())?;
-            Ok((view.device().clone(), view.governor().clone()))
+                .permissions(view.room_host().device_public_key, SystemTime::now())?;
+            Ok((view.device().clone(), view.room_host().clone()))
         })
     }
     pub(crate) fn initialize_native_application(
@@ -233,7 +233,7 @@ impl ShellNetwork {
             .with_current(room, |view| {
                 let now = SystemTime::now();
                 let own = view.device().device_public_key;
-                let governor = view.governor().device_public_key;
+                let governor = view.room_host().device_public_key;
                 Ok(view
                     .peer()
                     .certificates()
@@ -325,11 +325,7 @@ impl ShellNetwork {
         self.opened_native_owner().is_some_and(|owner| {
             owner
                 .with_current(room, |view| {
-                    Ok(view
-                        .peer()
-                        .authority()
-                        .capabilities
-                        .takes_part_in_room_channels())
+                    Ok(view.room_host().capabilities.takes_part_in_room_channels())
                 })
                 .unwrap_or(false)
         })

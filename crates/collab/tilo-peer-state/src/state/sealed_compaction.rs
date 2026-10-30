@@ -497,11 +497,15 @@ impl PeerPublication<'_> {
 }
 
 impl StatePeer {
-    /// This replica's own sealed writes (the compactions it minted) that
-    /// `before` does not hold. A governed snapshot cannot carry sealed
-    /// history, so they are published as themselves.
-    pub(super) fn own_sealed_publications(&self, before: Option<&Self>) -> Vec<NeighbourMsg> {
-        let author = Ed25519PublicKey::from_bytes(self.core.authority.device_public_key);
+    /// The sealed writes the device `author` minted here (its compactions)
+    /// that `before` does not hold. A snapshot cannot carry sealed history,
+    /// so they are published as themselves.
+    pub(super) fn own_sealed_publications(
+        &self,
+        author: [u8; 32],
+        before: Option<&Self>,
+    ) -> Vec<NeighbourMsg> {
+        let author = Ed25519PublicKey::from_bytes(author);
         let mut messages = Vec::new();
         for (route, document) in &self.core.documents {
             let prior = before.and_then(|before| before.core.documents.get(route));

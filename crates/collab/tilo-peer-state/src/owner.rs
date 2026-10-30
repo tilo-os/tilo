@@ -138,6 +138,8 @@ pub enum Change<'a> {
     Room {
         room: RoomId,
         peer: &'a StatePeer,
+        /// The host the room's commits are ordered by.
+        host: &'a DeviceCert,
         into: Option<&'a EnrollmentTarget>,
     },
     /// This device no longer holds `room`: its replica and any enrollment
@@ -180,11 +182,21 @@ impl NativeCommittedView {
     pub fn peer(&self) -> &StatePeer {
         &self.peer
     }
-    /// Who governs the room now: the invitation's governor, or the device
-    /// its root named in its place.
+    /// The person who owns the room: their root key.
     #[must_use]
-    pub fn governor(&self) -> &DeviceCert {
-        self.peer.authority()
+    pub fn owner(&self) -> [u8; 32] {
+        self.peer.owner()
+    }
+    /// The host the room is pinned to: the device whose host orders the
+    /// room's commits.
+    #[must_use]
+    pub fn room_host(&self) -> &DeviceCert {
+        &self.record.room_host
+    }
+    /// Whether this device's own host orders the room's commits.
+    #[must_use]
+    pub fn hosted_here(&self) -> bool {
+        self.record.device == self.record.room_host
     }
     /// The signed invitation this device enrolled with.
     ///
@@ -669,6 +681,7 @@ impl NativeWorkspaceOwner {
             Change::Room {
                 room,
                 peer: &candidate.peer,
+                host: candidate.room_host(),
                 into: enrollment.and_then(|pending| pending.target.as_ref()),
             },
             &mut || {

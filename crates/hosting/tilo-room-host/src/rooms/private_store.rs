@@ -567,9 +567,7 @@ mod tests {
             join::InviteGrant {
                 workspace_id: room.record.workspace_id,
                 room: room.record.room.clone(),
-                authority: room.record.authority.clone(),
                 issuer: room.record.authority.clone(),
-                delegation: None,
                 role: join::MemberRole::Editor,
                 nonce: [device_seed; 16],
                 recipient_user_public_key: Some(cert.user_public_key),

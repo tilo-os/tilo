@@ -2,7 +2,7 @@
 //!
 //! The invitation, join and membership contract a workspace speaks before any
 //! room state is exchanged: signed invitations and their text form, join and
-//! membership proofs, owner transport hints, workspace delegations, and the
+//! membership proofs, owner transport hints, and the
 //! rows a join bootstrap and the governed member list carry. Pure types and
 //! signature checks over [`tilo_user_identity`] certificates: no Automerge, no
 //! admission, no transport. `tilo-peer-state` re-exports this crate as
@@ -30,7 +30,6 @@ const INVITATION_DOMAIN: &[u8] = b"tilo/workspace-invitation/v1\0";
 const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
 const MEMBERSHIP_PROOF_DOMAIN: &[u8] = b"tilo/workspace-membership-proof/v1\0";
 const TRANSPORT_PIN_DOMAIN: &[u8] = b"tilo/workspace-transport-pin/v1\0";
-const DELEGATION_DOMAIN: &[u8] = b"tilo/workspace-delegation/v1\0";
 
 pub const TRANSPORT_IROH_OWNER_ENDPOINT_ADDR_V1: &str = "iroh-owner-endpoint-addr-v1";
 pub const TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1: &str =
@@ -120,11 +119,9 @@ struct TransportPinView<'a> {
 pub struct InviteGrant {
     pub workspace_id: u64,
     pub room: String,
-    pub authority: DeviceCert,
-    /// Device that signs this invitation. It is either `authority` or an
-    /// explicitly delegated room-scoped workspace service.
+    /// Device that signs this invitation: a device of a member the room's
+    /// policy lets invite, which every participant checks on admission.
     pub issuer: DeviceCert,
-    pub delegation: Option<WorkspaceDelegation>,
     pub role: MemberRole,
     pub nonce: [u8; 16],
     /// `Some` is a recipient-bound invitation and must match exactly. `None`
@@ -133,38 +130,6 @@ pub struct InviteGrant {
     pub invitee_name: Option<String>,
     pub expires_at_ns: u64,
     pub transport: Vec<TransportHint>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceDelegationPermissions {
-    pub issue_invitations: bool,
-    pub admit_invited_members: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceDelegation {
-    pub version: u32,
-    pub room: String,
-    pub workspace_id: u64,
-    pub authority_device_public_key: [u8; 32],
-    pub delegate: DeviceCert,
-    pub permissions: WorkspaceDelegationPermissions,
-    pub nonce: [u8; 16],
-    pub expires_at_ns: Option<u64>,
-    #[serde(with = "serde_bytes")]
-    pub signature: [u8; 64],
-}
-
-#[derive(Serialize)]
-struct DelegationView<'a> {
-    version: u32,
-    room: &'a str,
-    workspace_id: u64,
-    authority_device_public_key: &'a [u8; 32],
-    delegate: &'a DeviceCert,
-    permissions: WorkspaceDelegationPermissions,
-    nonce: &'a [u8; 16],
-    expires_at_ns: Option<u64>,
 }
 
 /// The person who sent an invitation, as the issuer recorded them under its
@@ -239,7 +204,6 @@ pub struct JoinChallenge {
     pub signed_invitation: Vec<u8>,
     pub room: String,
     pub workspace_id: u64,
-    pub authority_device_public_key: [u8; 32],
     pub user_public_key: [u8; 32],
     pub device_public_key: [u8; 32],
     pub request_id: [u8; 32],
@@ -273,7 +237,6 @@ impl JoinChallenge {
             signed_invitation: join.signed_invitation.clone(),
             room: join.grant.room.clone(),
             workspace_id: join.grant.workspace_id,
-            authority_device_public_key: join.grant.authority.device_public_key,
             user_public_key: device_cert.user_public_key,
             device_public_key: device_cert.device_public_key,
             request_id,
@@ -302,7 +265,8 @@ pub struct MembershipChallenge {
     pub version: u32,
     pub room: String,
     pub workspace_id: u64,
-    pub authority_device_public_key: [u8; 32],
+    /// The device answering: a device of the room's owner.
+    pub host_device_public_key: [u8; 32],
     pub user_public_key: [u8; 32],
     pub device_public_key: [u8; 32],
     pub request_id: [u8; 32],
@@ -315,7 +279,7 @@ impl MembershipChallenge {
     pub fn new(
         room: &str,
         workspace_id: u64,
-        authority: &DeviceCert,
+        host: &DeviceCert,
         device_cert: &DeviceCert,
         request_id: [u8; 32],
         nonce: [u8; 32],
@@ -325,7 +289,7 @@ impl MembershipChallenge {
         let room = uuid::Uuid::parse_str(room)
             .map_err(|_| "membership room is not a UUID".to_string())?
             .to_string();
-        validate_certificate(authority, &RevocationList::new(), now_ns)?;
+        validate_certificate(host, &RevocationList::new(), now_ns)?;
         validate_certificate(device_cert, &RevocationList::new(), now_ns)?;
         if expires_at_ns <= now_ns {
             return Err("membership challenge has invalid expiry".into());
@@ -334,7 +298,7 @@ impl MembershipChallenge {
             version: JOIN_VERSION,
             room,
             workspace_id,
-            authority_device_public_key: authority.device_public_key,
+            host_device_public_key: host.device_public_key,
             user_public_key: device_cert.user_public_key,
             device_public_key: device_cert.device_public_key,
             request_id,
@@ -364,8 +328,8 @@ impl VerifiedMembership {
     pub fn workspace_id(&self) -> u64 {
         self.challenge.workspace_id
     }
-    pub fn authority_device_public_key(&self) -> [u8; 32] {
-        self.challenge.authority_device_public_key
+    pub fn host_device_public_key(&self) -> [u8; 32] {
+        self.challenge.host_device_public_key
     }
     pub fn request_id(&self) -> [u8; 32] {
         self.challenge.request_id
@@ -447,7 +411,8 @@ pub struct JoinBootstrap {
     pub role: MemberRole,
     pub room: String,
     pub workspace_id: u64,
-    pub authority: DeviceCert,
+    /// The device that answered: a device of the room's owner.
+    pub host: DeviceCert,
     pub certified_roster: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
     pub records: Vec<DocumentRow>,
@@ -463,7 +428,8 @@ pub struct OwnerBootstrapV1 {
     pub device_cert: DeviceCert,
     pub room: String,
     pub workspace_id: u64,
-    pub authority: DeviceCert,
+    /// The device that answered: a device of the room's owner.
+    pub host: DeviceCert,
     pub certified_roster: Vec<DeviceCert>,
     pub revocations: Vec<RevocationEntry>,
     pub records: Vec<DocumentRow>,
@@ -484,86 +450,6 @@ pub enum JoinTransportResponse {
     MembershipComplete(JoinBootstrap),
     Error { code: u16, message: String },
     OwnerMembershipComplete(OwnerBootstrapV1),
-}
-
-/// Sign a delegation of workspace permissions from `authority` to `delegate`.
-pub fn sign_workspace_delegation(
-    room: impl Into<String>,
-    workspace_id: u64,
-    authority: &DeviceCert,
-    delegate: DeviceCert,
-    permissions: WorkspaceDelegationPermissions,
-    nonce: [u8; 16],
-    expires_at_ns: Option<u64>,
-    authority_key: &ed25519_dalek::SigningKey,
-) -> Result<WorkspaceDelegation, String> {
-    if authority_key.verifying_key().to_bytes() != authority.device_public_key {
-        return Err("delegation signer is not the room authority device".into());
-    }
-    let room = uuid::Uuid::parse_str(&room.into())
-        .map_err(|_| "delegation room is not a UUID".to_string())?
-        .to_string();
-    let mut delegation = WorkspaceDelegation {
-        version: JOIN_VERSION,
-        room,
-        workspace_id,
-        authority_device_public_key: authority.device_public_key,
-        delegate,
-        permissions,
-        nonce,
-        expires_at_ns,
-        signature: [0; 64],
-    };
-    let digest = tagged_digest(DELEGATION_DOMAIN, &delegation.view())?;
-    delegation.signature = authority_key.sign(&digest).to_bytes();
-    Ok(delegation)
-}
-
-impl WorkspaceDelegation {
-    fn view(&self) -> DelegationView<'_> {
-        DelegationView {
-            version: self.version,
-            room: &self.room,
-            workspace_id: self.workspace_id,
-            authority_device_public_key: &self.authority_device_public_key,
-            delegate: &self.delegate,
-            permissions: self.permissions,
-            nonce: &self.nonce,
-            expires_at_ns: self.expires_at_ns,
-        }
-    }
-}
-
-/// Verify a workspace delegation against `authority` and `revocations`.
-pub fn verify_workspace_delegation(
-    delegation: &WorkspaceDelegation,
-    authority: &DeviceCert,
-    revocations: &RevocationList,
-    now_ns: u64,
-) -> Result<(), String> {
-    if delegation.version != JOIN_VERSION
-        || delegation.authority_device_public_key != authority.device_public_key
-        || uuid::Uuid::parse_str(&delegation.room)
-            .map_or(true, |room| room.to_string() != delegation.room)
-    {
-        return Err("workspace delegation binding is invalid".into());
-    }
-    if delegation
-        .expires_at_ns
-        .is_some_and(|expiry| now_ns >= expiry)
-    {
-        return Err("workspace delegation has expired".into());
-    }
-    validate_certificate(authority, revocations, now_ns)?;
-    validate_certificate(&delegation.delegate, revocations, now_ns)?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&authority.device_public_key)
-        .map_err(|_| "invalid delegation authority key".to_string())?;
-    let digest = tagged_digest(DELEGATION_DOMAIN, &delegation.view())?;
-    key.verify(
-        &digest,
-        &ed25519_dalek::Signature::from_bytes(&delegation.signature),
-    )
-    .map_err(|_| "workspace delegation signature did not verify".to_string())
 }
 
 /// Sign an invitation grant, returning its wire bytes.
@@ -725,9 +611,7 @@ pub fn decode_and_verify_invitation(
         _ => return Err("unsupported invitation version".into()),
     };
     validate_grant(&grant, now_ns, true)?;
-    validate_certificate(&grant.authority, revocations, now_ns)?;
     validate_certificate(&grant.issuer, revocations, now_ns)?;
-    validate_invitation_delegation(&grant, revocations, now_ns)?;
     for hint in &grant.transport {
         verify_transport_hint_at(hint, revocations, now_ns)?;
     }
@@ -814,7 +698,6 @@ pub fn verify_join_proof(
     )?;
     if join.grant.room != proof.challenge.room
         || join.grant.workspace_id != proof.challenge.workspace_id
-        || join.grant.authority.device_public_key != proof.challenge.authority_device_public_key
     {
         return Err("join challenge does not match signed invitation".into());
     }
@@ -896,12 +779,6 @@ fn validate_grant(grant: &InviteGrant, now_ns: u64, enforce_expiry: bool) -> Res
     if enforce_expiry && now_ns >= grant.expires_at_ns {
         return Err("invitation has expired".into());
     }
-    if grant.issuer != grant.authority && grant.delegation.is_none() {
-        return Err("delegated invitation is missing workspace delegation".into());
-    }
-    if grant.issuer == grant.authority && grant.delegation.is_some() {
-        return Err("direct authority invitation must not carry delegation".into());
-    }
     if grant.transport.len() > 32
         || grant.transport.iter().any(|hint| {
             hint.kind.is_empty()
@@ -918,35 +795,6 @@ fn validate_grant(grant: &InviteGrant, now_ns: u64, enforce_expiry: bool) -> Res
         .is_some_and(|name| tilo_user_identity::display_name(name).is_err())
     {
         return Err("invitation display name is invalid".into());
-    }
-    Ok(())
-}
-
-fn validate_invitation_delegation(
-    grant: &InviteGrant,
-    revocations: &RevocationList,
-    now_ns: u64,
-) -> Result<(), String> {
-    let Some(delegation) = &grant.delegation else {
-        return if grant.issuer == grant.authority {
-            Ok(())
-        } else {
-            Err("delegated invitation is missing workspace delegation".into())
-        };
-    };
-    verify_workspace_delegation(delegation, &grant.authority, revocations, now_ns)?;
-    // The delegate is the invitation's issuer, not another delegate.
-    let issued_by_delegate = delegation.delegate == grant.issuer;
-    if delegation.room != grant.room
-        || delegation.workspace_id != grant.workspace_id
-        || !issued_by_delegate
-        || !delegation.permissions.issue_invitations
-        || !delegation.permissions.admit_invited_members
-        || delegation
-            .expires_at_ns
-            .is_some_and(|expiry| grant.expires_at_ns > expiry)
-    {
-        return Err("workspace delegation does not authorize this invitation".into());
     }
     Ok(())
 }

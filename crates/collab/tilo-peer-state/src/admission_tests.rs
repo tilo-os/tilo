@@ -261,8 +261,8 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     let restored = StatePeer::restore(
         &browser.durable().unwrap(),
         room,
-        native.authority().clone(),
-        vec![native.authority().clone()],
+        native.owner_certificates()[0].clone(),
+        vec![native.owner_certificates()[0].clone()],
         RevocationList::new(),
         now,
     )
@@ -410,14 +410,16 @@ pub(crate) fn add_editor(
             .as_nanos(),
     )
     .unwrap();
-    let owner = peer.authority().clone();
+    let owner = peer
+        .owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == authority.verifying_key().to_bytes())
+        .unwrap();
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: 7,
             room: peer.room().into(),
-            authority: owner.clone(),
             issuer: owner,
-            delegation: None,
             role: MemberRole::Editor,
             nonce: [53; 16],
             recipient_user_public_key: Some(cert.user_public_key),
@@ -523,9 +525,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         InviteGrant {
             workspace_id: 7,
             room: peer.room().into(),
-            authority: peer.authority().clone(),
-            issuer: peer.authority().clone(),
-            delegation: None,
+            issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [43; 16],
             recipient_user_public_key: Some(guest_cert.user_public_key),
@@ -589,18 +589,14 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         access
             .member_devices
-            .contains(&peer.authority().device_public_key)
+            .contains(&peer.owner_certificates()[0].device_public_key)
     );
     assert!(
         access
             .member_user_roots
             .contains(&guest_cert.user_public_key)
     );
-    assert!(
-        access
-            .member_user_roots
-            .contains(&peer.authority().user_public_key)
-    );
+    assert!(access.member_user_roots.contains(&peer.owner()));
     assert!(
         !peer
             .governance_mut()
@@ -651,7 +647,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     let mut restored = StatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -775,6 +771,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         .governance()
         .membership_challenge(
             7,
+            &restored.owner_certificates()[0],
             &guest_cert,
             [49; 32],
             [50; 32],
@@ -798,6 +795,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .governance()
             .membership_challenge(
                 7,
+                &restored.owner_certificates()[0],
                 &guest_cert,
                 [51; 32],
                 [52; 32],
@@ -827,108 +825,9 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         restored
             .governance_mut()
-            .remove_member(peer.authority().user_public_key, &authority_key, now)
+            .remove_member(peer.owner(), &authority_key, now)
             .is_err(),
         "the owner cannot be removed through member governance"
-    );
-}
-
-#[test]
-fn host_without_device_enrollment_power_needs_explicit_room_delegation() {
-    use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, WorkspaceDelegationPermissions,
-        decode_and_verify_invitation, issue_invitation, sign_join_proof, sign_workspace_delegation,
-        verify_join_proof,
-    };
-    let (mut peer, authority_key, host_key, _, now) = seeded();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
-    let host = peer
-        .certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == host_key.verifying_key().to_bytes())
-        .unwrap();
-    assert!(!host.capabilities.can_admit_devices);
-    let delegation = sign_workspace_delegation(
-        peer.room(),
-        9,
-        peer.authority(),
-        host.clone(),
-        WorkspaceDelegationPermissions {
-            issue_invitations: true,
-            admit_invited_members: true,
-        },
-        [61; 16],
-        Some(now_ns + 20_000_000_000),
-        &authority_key,
-    )
-    .unwrap();
-    assert!(
-        peer.governance_mut()
-            .install_workspace_delegation(delegation.clone(), &authority_key, now)
-            .unwrap()
-    );
-
-    let guest_root = SigningKey::from_bytes(&[62; 32]);
-    let guest_key = SigningKey::from_bytes(&[63; 32]);
-    let mut guest = DeviceCert {
-        user_public_key: guest_root.verifying_key().to_bytes(),
-        device_public_key: guest_key.verifying_key().to_bytes(),
-        device_label: "Delegated guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut guest, &guest_root).unwrap();
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: 9,
-            room: peer.room().into(),
-            authority: peer.authority().clone(),
-            issuer: host,
-            delegation: Some(delegation),
-            role: MemberRole::Commenter,
-            nonce: [64; 16],
-            recipient_user_public_key: Some(guest.user_public_key),
-            invitee_name: None,
-            expires_at_ns: now_ns + 10_000_000_000,
-            transport: vec![],
-        },
-        &host_key,
-    )
-    .unwrap();
-    let join = decode_and_verify_invitation(
-        &signed,
-        Some(guest.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &guest,
-        [65; 32],
-        [66; 32],
-        now_ns + 1_000_000_000,
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
-    let redemption =
-        verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns).unwrap();
-    assert!(
-        peer.governance_mut()
-            .admit_invited_member(&redemption, &host_key, now)
-            .unwrap()
-    );
-    assert_eq!(
-        peer.permissions(guest.device_public_key, now).unwrap().role,
-        collab_types::Role::Commenter
     );
 }
 
@@ -949,9 +848,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
         InviteGrant {
             workspace_id: 10,
             room: base.room().into(),
-            authority: base.authority().clone(),
-            issuer: base.authority().clone(),
-            delegation: None,
+            issuer: base.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [70; 16],
             recipient_user_public_key: None,
@@ -1010,7 +907,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
             .unwrap()
     );
 
-    let authority = base.authority().device_public_key;
+    let authority = base.owner_certificates()[0].device_public_key;
     let mut receiver = base;
     receiver
         .receive_from(
@@ -1041,9 +938,8 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
 )]
 fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore() {
     use crate::join::{
-        InviteGrant, JoinChallenge, MemberRole, WorkspaceDelegationPermissions,
-        decode_and_verify_invitation, issue_invitation, sign_join_proof, sign_workspace_delegation,
-        verify_join_proof,
+        InviteGrant, JoinChallenge, MemberRole, decode_and_verify_invitation, issue_invitation,
+        sign_join_proof, verify_join_proof,
     };
     let (mut base, authority_key, delegate_key, _, now) = seeded();
     let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
@@ -1080,23 +976,6 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         .into_iter()
         .find(|cert| cert.device_public_key == delegate_key.verifying_key().to_bytes())
         .unwrap();
-    let delegation = sign_workspace_delegation(
-        base.room(),
-        11,
-        base.authority(),
-        delegate.clone(),
-        WorkspaceDelegationPermissions {
-            issue_invitations: true,
-            admit_invited_members: true,
-        },
-        [80; 16],
-        Some(now_ns + 20_000_000_000),
-        &authority_key,
-    )
-    .unwrap();
-    base.governance_mut()
-        .install_workspace_delegation(delegation.clone(), &authority_key, now)
-        .unwrap();
 
     let guest_root = SigningKey::from_bytes(&[81; 32]);
     let guest_key = SigningKey::from_bytes(&[82; 32]);
@@ -1110,12 +989,10 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         signature: [0; 64],
     };
     sign_device_cert(&mut guest, &guest_root).unwrap();
-    let grant = |nonce, issuer, delegation| InviteGrant {
+    let grant = |nonce, issuer| InviteGrant {
         workspace_id: 11,
         room: base.room().into(),
-        authority: base.authority().clone(),
         issuer,
-        delegation,
         role: MemberRole::Editor,
         nonce: [nonce; 16],
         recipient_user_public_key: Some(guest.user_public_key),
@@ -1123,9 +1000,12 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         expires_at_ns: now_ns + 10_000_000_000,
         transport: vec![],
     };
-    let signed_a =
-        issue_invitation(grant(83, base.authority().clone(), None), &authority_key).unwrap();
-    let signed_b = issue_invitation(grant(84, delegate, Some(delegation)), &delegate_key).unwrap();
+    let signed_a = issue_invitation(
+        grant(83, base.owner_certificates()[0].clone()),
+        &authority_key,
+    )
+    .unwrap();
+    let signed_b = issue_invitation(grant(84, delegate), &delegate_key).unwrap();
     let redeem = |signed: &[u8], request: u8, nonce: u8, cert: &DeviceCert, key: &SigningKey| {
         let join = decode_and_verify_invitation(
             signed,
@@ -1158,7 +1038,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         .admit_invited_member(&redemption_b, &delegate_key, now)
         .unwrap();
 
-    let authority = base.authority().device_public_key;
+    let authority = base.owner_certificates()[0].device_public_key;
     let mut merged = base;
     merged
         .receive_from(
@@ -1177,7 +1057,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     let mut restored = StatePeer::restore(
         &merged.durable().unwrap(),
         merged.room(),
-        merged.authority().clone(),
+        merged.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -1277,7 +1157,7 @@ fn retained_relay_replay_accepts_certified_document_after_live_freshness_window(
     let replayed_at = authored_at + Duration::from_secs(301);
     let mut browser = StatePeer::new(
         governor.room(),
-        governor.authority().clone(),
+        governor.owner_certificates()[0].clone(),
         vec![browser_cert],
         RevocationList::new(),
         replayed_at,
@@ -1316,7 +1196,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
         .unwrap();
     let mut fresh = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc.clone()],
         RevocationList::new(),
         now,
@@ -1355,7 +1235,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     let mut reload = StatePeer::restore(
         &checkpoint,
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1390,7 +1270,7 @@ fn state_on_presence_cannot_install_governance_or_advance_watermarks() {
         .unwrap();
     let mut fresh = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1429,7 +1309,7 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
         .unwrap();
     let mut fresh = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1496,7 +1376,7 @@ fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
     };
     let mut receiver = StatePeer::new(
         &room,
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1535,7 +1415,7 @@ fn fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation() {
     let (mut native, a, _, bc, now) = seeded();
     let mut receiver = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1582,7 +1462,7 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
     let (mut native, a, _, bc, now) = seeded();
     let mut receiver = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc.clone()],
         RevocationList::new(),
         now,
@@ -1632,7 +1512,7 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
     let mut restored = StatePeer::restore(
         &receiver.durable().unwrap(),
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1689,8 +1569,8 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
         .unwrap();
     let mut receiver = StatePeer::new(
         native.room(),
-        native.authority().clone(),
-        vec![native.authority().clone(), browser_cert],
+        native.owner_certificates()[0].clone(),
+        vec![native.owner_certificates()[0].clone(), browser_cert],
         RevocationList::new(),
         delayed,
     )
@@ -1737,7 +1617,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let (mut native, a, b, bc, now) = seeded();
     let mut receiver = StatePeer::new(
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -1775,7 +1655,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let restored = StatePeer::restore(
         &receiver.durable().unwrap(),
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -1796,7 +1676,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
             TransportOrigin::UntrustedPresence(a.verifying_key().to_bytes()),
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
-                cert: Box::new(native.authority().clone()),
+                cert: Box::new(native.owner_certificates()[0].clone()),
                 revocations: vec![revocation],
             },
             now,
@@ -1813,7 +1693,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     let mut restored = StatePeer::restore(
         &receiver.durable().unwrap(),
         native.room(),
-        native.authority().clone(),
+        native.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -1855,7 +1735,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         let (mut native, a, b, bc, now) = seeded();
         let mut receiver = StatePeer::new(
             native.room(),
-            native.authority().clone(),
+            native.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now,
@@ -1957,7 +1837,7 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         let mut restored = StatePeer::restore(
             &receiver.durable().unwrap(),
             native.room(),
-            native.authority().clone(),
+            native.owner_certificates()[0].clone(),
             vec![],
             RevocationList::new(),
             now,
@@ -1986,7 +1866,7 @@ fn unsupported_durable_version_is_rejected_without_mutating_the_bytes() {
     let error = StatePeer::restore(
         &bytes,
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         vec![bc],
         RevocationList::new(),
         now,
@@ -2033,7 +1913,7 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
     let mut receiver = StatePeer::restore(
         &receiver.durable().unwrap(),
         receiver.room(),
-        receiver.authority().clone(),
+        receiver.owner_certificates()[0].clone(),
         vec![author_cert],
         RevocationList::new(),
         now,
@@ -2054,7 +1934,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let new_key = SigningKey::from_bytes(&[8; 32]);
     let stranger = SigningKey::from_bytes(&[0x5a; 32]);
-    let mut cert = governor.authority().clone();
+    let mut cert = governor.owner_certificates()[0].clone();
     cert.device_public_key = new_key.verifying_key().to_bytes();
     cert.device_label = "dynamic client".into();
     sign_device_cert(&mut cert, &root).unwrap();
@@ -2111,7 +1991,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     let restored = StatePeer::restore(
         &existing.durable().unwrap(),
         existing.room(),
-        existing.authority().clone(),
+        existing.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,
@@ -2128,7 +2008,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
 fn expired_known_identity_does_not_block_governed_join() {
     let (mut governor, a, _, _, now) = seeded();
     let root = SigningKey::from_bytes(&[1; 32]);
-    let mut cert = governor.authority().clone();
+    let mut cert = governor.owner_certificates()[0].clone();
     cert.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
     cert.expires_at_ns = Some(
         (now + Duration::from_secs(1))
@@ -2150,7 +2030,11 @@ fn expired_known_identity_does_not_block_governed_join() {
             .contains("expired"),
         "a warm policy cache must not cache certificate validity"
     );
-    let mut next = governor.authority().clone();
+    let mut next = governor
+        .owner_certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == a.verifying_key().to_bytes())
+        .unwrap();
     next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
     sign_device_cert(&mut next, &root).unwrap();
     assert!(governor.admit_certificate(next.clone(), &a, later).unwrap());
@@ -2170,7 +2054,7 @@ fn expired_known_identity_does_not_block_governed_join() {
     let restored = StatePeer::restore(
         &existing.durable().unwrap(),
         existing.room(),
-        existing.authority().clone(),
+        existing.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         later,
@@ -2185,7 +2069,7 @@ fn expired_known_identity_does_not_block_governed_join() {
     );
     let mut empty = StatePeer::new(
         governor.room(),
-        governor.authority().clone(),
+        next.clone(),
         vec![],
         RevocationList::new(),
         later,
@@ -2232,7 +2116,7 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
     let error = StatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         vec![future],
         RevocationList::new(),
         now,
@@ -2245,7 +2129,7 @@ fn restore_validates_fresh_roster_not_before_and_interval_while_retaining_histor
     let error = StatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         vec![backwards],
         RevocationList::new(),
         now,
@@ -2324,7 +2208,7 @@ fn governed_import_is_atomic_even_for_direct_admission() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let (mut source, a, _, _, now) = seeded();
     let mut receiver = source.clone();
-    let mut valid = source.authority().clone();
+    let mut valid = source.owner_certificates()[0].clone();
     valid.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
     sign_device_cert(&mut valid, &root).unwrap();
     source.admit_certificate(valid, &a, now).unwrap();
@@ -2563,9 +2447,7 @@ fn guest_redemption(
         InviteGrant {
             workspace_id: 7,
             room: peer.room().into(),
-            authority: peer.authority().clone(),
-            issuer: peer.authority().clone(),
-            delegation: None,
+            issuer: peer.owner_certificates()[0].clone(),
             role: MemberRole::Editor,
             nonce: [nonce; 16],
             recipient_user_public_key: Some(guest_cert.user_public_key),
@@ -2625,7 +2507,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
             .admit_invited_member(&first, &authority_key, now)
             .unwrap()
     );
-    let owner = hex::encode(peer.authority().user_public_key);
+    let owner = hex::encode(peer.owner());
     assert!(
         peer.governance_mut()
             .ban_member(guest_cert.user_public_key, &owner, &authority_key, now)

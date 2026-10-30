@@ -138,13 +138,13 @@ pub(super) fn hosting_governor(
 ) -> Result<Option<iroh::EndpointId>, String> {
     let (hint, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
         .map_err(|error| error.to_string())?;
-    if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
+    if hint.room != room.to_string() || &hint.host_device_certificate != view.room_host() {
         return Err("the room's host differs from its current admitted governor".into());
     }
-    if &hint.host_device_certificate != view.governor() {
+    if &hint.host_device_certificate != view.room_host() {
         return Ok(None);
     }
-    iroh::EndpointId::from_bytes(&view.governor().device_public_key)
+    iroh::EndpointId::from_bytes(&view.room_host().device_public_key)
         .map(Some)
         .map_err(|error| error.to_string())
 }
@@ -293,7 +293,7 @@ impl ShellNetwork {
         owner
             .with_current(room, |view| {
                 let (certificate, _) = identity.current_native_material(view.workspace())?;
-                if view.governor().user_public_key != certificate.user_public_key {
+                if view.owner() != certificate.user_public_key {
                     return Err("another person governs the room".into());
                 }
                 Ok(())
@@ -776,7 +776,7 @@ impl ShellNetwork {
             .filter_map(|room| {
                 let host = owner
                     .with_current(room, |view| {
-                        if view.governor().user_public_key != user {
+                        if view.owner() != user {
                             return Ok(None);
                         }
                         Ok(Some(view.transport_hint()?.host.device_public_key))

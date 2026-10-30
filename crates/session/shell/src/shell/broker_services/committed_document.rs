@@ -527,7 +527,7 @@ impl NativeOwnerCommitService {
                 view.peer()
                     .document(&route.app_id, &route.record_id)
                     .is_none(),
-                view.governor().capabilities.can_act_as_host,
+                view.room_host().capabilities.can_act_as_host,
             ))
         }) else {
             return;

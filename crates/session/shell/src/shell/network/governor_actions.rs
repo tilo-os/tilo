@@ -274,8 +274,8 @@ impl ShellNetwork {
                 ws: room_topic_id(room),
                 room: room_uuid,
                 source: view.device().device_public_key,
-                target: view.governor().device_public_key,
-                governor_user: view.governor().user_public_key,
+                target: view.room_host().device_public_key,
+                governor_user: view.owner(),
             })
         })
     }

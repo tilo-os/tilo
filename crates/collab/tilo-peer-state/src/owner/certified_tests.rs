@@ -71,7 +71,6 @@ fn actual_redemption_at(
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
         room: room.into(),
         workspace_id,
-        governing_authority: governor.clone(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
@@ -85,9 +84,7 @@ fn actual_redemption_at(
         InviteGrant {
             workspace_id,
             room: room.into(),
-            authority: governor.clone(),
             issuer: governor.clone(),
-            delegation: None,
             role: MemberRole::Editor,
             nonce: [75; 16],
             recipient_user_public_key: Some(device.user_public_key),
@@ -146,7 +143,7 @@ fn actual_redemption_at(
         role: MemberRole::Editor,
         room: room.into(),
         workspace_id,
-        authority: governor,
+        host: governor,
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
@@ -191,7 +188,7 @@ fn native_enrollment_refuses_bootstrap_scope_and_identity_substitution() {
             0 => bootstrap.invite_id[0] ^= 1,
             1 => bootstrap.workspace_id ^= 1,
             2 => bootstrap.room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
-            3 => bootstrap.device_cert = bootstrap.authority.clone(),
+            3 => bootstrap.device_cert = bootstrap.host.clone(),
             4 => bootstrap.role = MemberRole::Viewer,
             _ => bootstrap.generation = 0,
         }

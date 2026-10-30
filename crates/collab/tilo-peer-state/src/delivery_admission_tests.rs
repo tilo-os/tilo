@@ -23,7 +23,7 @@ fn restore(peer: &StatePeer, now: SystemTime) -> StatePeer {
     StatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
-        peer.authority().clone(),
+        peer.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,

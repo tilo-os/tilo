@@ -1918,9 +1918,7 @@ mod tests {
         let grant = InviteGrant {
             workspace_id: 41,
             room: crate::shell::state::RoomId::new().to_string(),
-            authority: host.clone(),
             issuer: host,
-            delegation: None,
             role: MemberRole::Editor,
             nonce: [5; 16],
             recipient_user_public_key: None,

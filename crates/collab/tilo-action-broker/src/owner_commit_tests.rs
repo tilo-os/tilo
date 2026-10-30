@@ -416,9 +416,7 @@ mod owner_commit_tests {
             uuid::Uuid::parse_str(owner.peer().room()).unwrap().into(),
             "Actual owner barrier",
         );
-        workspace.set_owner(principal_id_for_root(
-            owner.peer().authority().user_public_key,
-        ));
+        workspace.set_owner(principal_id_for_root(owner.peer().owner()));
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         tree.shared()
@@ -554,8 +552,8 @@ mod owner_commit_tests {
             &membership.read(),
             &route,
             VerifiedJoinIdentity {
-                user_public_key: owner.peer().authority().user_public_key,
-                device_public_key: owner.peer().authority().device_public_key,
+                user_public_key: owner.peer().owner(),
+                device_public_key: owner.device().device_public_key,
                 capped: false,
             },
         )
@@ -745,11 +743,11 @@ mod owner_commit_tests {
             host: f.state.invocation_host().unwrap(),
             invocation,
             owner: InvocationOwner::Certified {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
             },
         };
-        let actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        let actor = principal_id_for_root(f.owner.peer().owner());
         let context =
             tilo_actions::ActionContext::for_resource("record:bounded", "document", "Receipt test");
         f.state
@@ -1015,7 +1013,7 @@ mod owner_commit_tests {
             crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let initial_generation = owner.status().generation;
         let mut remote = owner.peer().clone();
-        let cert = owner.peer().authority().clone();
+        let cert = owner.device();
         let room: uuid::Uuid = owner.peer().room().parse().unwrap();
         let key = owner.signing_key().clone();
         let record = RecordId::for_tab(1);
@@ -1837,8 +1835,8 @@ mod owner_commit_tests {
                     caller: None,
                     activity: None,
                     owner: InvocationOwner::Certified {
-                        root: f.owner.peer().authority().user_public_key,
-                        device: f.owner.peer().authority().device_public_key,
+                        root: f.owner.peer().owner(),
+                        device: f.owner.device().device_public_key,
                     },
                     network_evidence: None,
                     original: None,
@@ -1849,7 +1847,7 @@ mod owner_commit_tests {
                     update: tilo_actions::InvocationUpdate::Accepted { invocation },
                     prepared_effect: Arc::default(),
                     last_sequence: 0,
-                    actor: principal_id_for_root(f.owner.peer().authority().user_public_key),
+                    actor: principal_id_for_root(f.owner.peer().owner()),
                     cancellable: false,
                     retryable_on_disconnect: false,
                     execution: tilo_actions::ExecutionMode::Immediate,
@@ -1899,10 +1897,10 @@ mod owner_commit_tests {
         let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
         pending.cluster_id = f.route.cluster_id.clone();
         pending.owner = InvocationOwner::Certified {
-            root: f.owner.peer().authority().user_public_key,
-            device: f.owner.peer().authority().device_public_key,
+            root: f.owner.peer().owner(),
+            device: f.owner.device().device_public_key,
         };
-        pending.actor = principal_id_for_root(f.owner.peer().authority().user_public_key);
+        pending.actor = principal_id_for_root(f.owner.peer().owner());
         pending.prepared_effect = Arc::default();
         let state = f.state.clone();
         let retry_pending = pending.clone();
@@ -2041,7 +2039,7 @@ mod owner_commit_tests {
     }
 
     fn effect_owner_caller(f: &OwnerFixture) -> VerifiedActionCaller {
-        let certificate = f.owner.peer().authority();
+        let certificate = &f.owner.device();
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: f.route.cluster_id.clone(),
             device_certificate: serde_json::to_vec(certificate).unwrap(),
@@ -2144,8 +2142,8 @@ mod owner_commit_tests {
         assert_eq!(
             key.owner,
             InvocationOwner::AuthenticatedLocal {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
                 agent: Some("mcp-7".into()),
             },
             "the durable owner is the person's device delegated to its agent"
@@ -2180,7 +2178,7 @@ mod owner_commit_tests {
             let caller = delegated_owner_caller(&f, "mcp-7");
             // The person themselves, another agent, or a nameless agent: none
             // of them acted, so none may be named.
-            let person = principal_id_for_root(f.owner.peer().authority().user_public_key);
+            let person = principal_id_for_root(f.owner.peer().owner());
             let actor = mistaken.unwrap_or(&person);
             let refusal = prepare_owner_effect_claiming(&f, &caller, actor)
                 .expect_err("a mismatched actor is still refused");
@@ -2206,8 +2204,8 @@ mod owner_commit_tests {
         assert_eq!(
             owner,
             InvocationOwner::AuthenticatedLocal {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
                 agent: Some("mcp-7".into()),
             }
         );
@@ -2267,8 +2265,8 @@ mod owner_commit_tests {
         assert_eq!(
             current.owner().unwrap(),
             InvocationOwner::Certified {
-                root: f.owner.peer().authority().user_public_key,
-                device: f.owner.peer().authority().device_public_key,
+                root: f.owner.peer().owner(),
+                device: f.owner.device().device_public_key,
             }
         );
     }

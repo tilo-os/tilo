@@ -125,11 +125,7 @@ impl HostedRooms for NativeHostedRooms {
                 owner.contains_room(room)
                     && !owner
                         .with_current(room, |view| {
-                            Ok(view
-                                .peer()
-                                .authority()
-                                .capabilities
-                                .takes_part_in_room_channels())
+                            Ok(view.room_host().capabilities.takes_part_in_room_channels())
                         })
                         .unwrap_or(false)
             }

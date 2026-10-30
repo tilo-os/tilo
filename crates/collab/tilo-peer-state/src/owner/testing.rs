@@ -162,7 +162,6 @@ pub fn raw_fixture_at(
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
         room: ROOM.into(),
         workspace_id,
-        governing_authority: governor.clone(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
@@ -176,9 +175,7 @@ pub fn raw_fixture_at(
         join::InviteGrant {
             workspace_id,
             room: ROOM.into(),
-            authority: governor.clone(),
             issuer: governor.clone(),
-            delegation: None,
             role: join::MemberRole::Editor,
             nonce: [65; 16],
             recipient_user_public_key: Some(device.user_public_key),
@@ -286,7 +283,7 @@ pub fn raw_fixture_at(
         role: join::MemberRole::Editor,
         room: ROOM.into(),
         workspace_id,
-        authority: governor.clone(),
+        host: governor.clone(),
         certified_roster: peer.certificates(),
         revocations: peer.revocations(),
         records: peer.rows(),
@@ -418,7 +415,7 @@ pub fn stored(storage: &NativeAuthorityStorage, room: RoomId) -> Option<Stored> 
     let record = storage.rooms.get(&room)?;
     Some(Stored {
         peer: record.peer.clone(),
-        governor: record.governor.clone(),
+        governor: record.room_host.clone(),
         device: record.device.clone(),
         projection: record
             .publication

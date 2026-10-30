@@ -164,7 +164,7 @@ impl NativeWorkspaceOwner {
         if candidate.peer.document(&route.app, &route.record).is_some() {
             return Ok(false);
         }
-        if creator != candidate.governor() {
+        if creator != candidate.room_host() {
             if !member
                 .policy
                 .app_authors(&route.app, &tilo_action_policy::Context::at_time(now))
@@ -210,7 +210,7 @@ fn member_bootstrap(
     now: SystemTime,
 ) -> Result<Option<Vec<u8>>, String> {
     if creator != view.device()
-        || creator == view.governor()
+        || creator == view.room_host()
         || key.verifying_key().to_bytes() != creator.device_public_key
     {
         return Err("application initialization lacks current member custody".into());

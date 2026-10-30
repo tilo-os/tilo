@@ -1053,8 +1053,8 @@ impl Device {
                 .with_current(room, |view| {
                     Ok(format!(
                         "{:?} {:?}",
-                        view.governor().device_label,
-                        view.governor().capabilities
+                        view.room_host().device_label,
+                        view.room_host().capabilities
                     ))
                 })
                 .ok()

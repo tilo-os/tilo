@@ -70,6 +70,7 @@ impl GovernedRoom {
 fn governed<'a>(record: &'a RoomRecord, peer: &'a tilo_peer_state::StatePeer) -> Governed<'a> {
     Governed {
         peer,
+        host: &record.authority,
         workspace_id: record.workspace_id,
         generation: record.generation,
         governance_messages: record,

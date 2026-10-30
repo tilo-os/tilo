@@ -296,7 +296,7 @@ pub(super) fn check() -> Result<(), Box<dyn std::error::Error>> {
         if enrollment {
             if view.peer().room() != room_text
                 || view.peer().admitted_room().is_none()
-                || view.governor().device_public_key != view.device().device_public_key
+                || !view.hosted_here()
             {
                 return Err("exact current-device native owner is not admitted".into());
             }

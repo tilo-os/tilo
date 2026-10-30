@@ -111,7 +111,7 @@ fn actual_readiness_checks_complete_chat_before_independent_local_revocation_bas
     };
     assert_eq!(run(&peer), original_ready(&peer, &policy));
     let mut entry = tilo_user_identity::RevocationEntry {
-        user_public_key: peer.authority().user_public_key,
+        user_public_key: peer.owner(),
         revoked_device_public_key: [71; 32],
         revoked_at_ns: 1,
         reason: tilo_user_identity::RevocationReason::Compromised,
@@ -135,7 +135,7 @@ fn actual_readiness_checks_complete_chat_before_independent_local_revocation_bas
 
 fn media_fixture() -> (StatePeer, SigningKey, SystemTime) {
     let (source, key, _, _, now) = crate::admission_tests::seeded();
-    let cert = source.authority().clone();
+    let cert = source.owner_certificates()[0].clone();
     let mut peer = StatePeer::new(
         source.room(),
         cert.clone(),

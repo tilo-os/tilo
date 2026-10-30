@@ -875,7 +875,7 @@ fn retained_replay_reuses_exact_committed_publication() {
     let joined = enrolled();
     let governor = joined
         .owner
-        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .with_current(joined.room, |view| Ok(view.room_host().device_public_key))
         .unwrap();
     let message = joined.replay.clone();
     let before = std::fs::read(&joined.path).unwrap();

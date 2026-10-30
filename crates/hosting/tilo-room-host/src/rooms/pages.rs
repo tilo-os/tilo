@@ -112,7 +112,7 @@ const fn room_role(role: MemberRole) -> RoomRole {
 fn page_room(room: &GovernedRoom, spectator: Option<[u8; 32]>) -> Room {
     let summary = room.summary();
     let certificates = room.peer().certificates();
-    let owner = room.peer().authority().user_public_key;
+    let owner = room.peer().owner();
     let mut members: Vec<_> = summary
         .members
         .into_iter()
@@ -139,7 +139,7 @@ fn page_room(room: &GovernedRoom, spectator: Option<[u8; 32]>) -> Room {
             0,
             RoomMember {
                 user_public_key: owner,
-                name: Some(room.peer().authority().device_label.clone()),
+                name: Some(room.record.authority.device_label.clone()),
                 role: RoomRole::Editor,
                 owner: true,
                 removed: false,

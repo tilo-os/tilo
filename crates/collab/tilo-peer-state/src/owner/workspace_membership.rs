@@ -47,7 +47,7 @@ impl NativeWorkspaceOwner {
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("membership mutation is not signed by this device".into());
         }
-        let governs = candidate.device() == candidate.governor();
+        let governs = candidate.hosted_here();
         if !governs && !any_member_commits(&command) {
             return Err("only the room's governor commits this change".into());
         }
@@ -419,7 +419,7 @@ mod tests {
             crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
         assert_eq!(outgoing(&reopened).len(), 1, "kept until it is admitted");
         fixture.governor.refresh_checkpoint().unwrap();
-        let governor = fixture.governor.governor().device_public_key;
+        let governor = fixture.governor.room_host().device_public_key;
         for (bytes, _) in fixture.governor.outgoing() {
             reopened
                 .receive(

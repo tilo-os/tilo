@@ -650,7 +650,7 @@ impl GovernedRoom {
         state: impl FnOnce(&RoomRecord, &StatePeer) -> Result<collaboration::CollaborationState, String>,
     ) -> Result<u64, String> {
         let committing = crate::timing::start();
-        if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
+        if candidate.room() != self.peer.room() || candidate.owner() != self.peer.owner() {
             return Err("a room change cannot replace the room".into());
         }
         // A member admitted from now on is given the room as it stands, not
@@ -1527,6 +1527,7 @@ impl Rooms {
         let room = room.lock().await;
         member_bootstrap(
             room.peer(),
+            &room.record.authority,
             room.workspace_id(),
             room.record.generation,
             device,
@@ -2358,7 +2359,6 @@ impl Rooms {
             mode: host.mode,
             room: room.room().to_owned(),
             workspace_id: room.workspace_id(),
-            governing_authority: room.peer().authority().clone(),
             endpoint_addr,
             host_user_public_key: host.cert.user_public_key,
             host_device_certificate: host.cert.clone(),
@@ -2446,6 +2446,7 @@ fn system_time(now_ns: u64) -> SystemTime {
 /// records stay out: the replay that follows carries them.
 pub(crate) fn member_bootstrap(
     peer: &StatePeer,
+    host: &DeviceCert,
     workspace_id: u64,
     generation: u64,
     device: &DeviceCert,
@@ -2463,7 +2464,7 @@ pub(crate) fn member_bootstrap(
                 device_cert: device.clone(),
                 room: peer.room().to_owned(),
                 workspace_id,
-                authority: peer.authority().clone(),
+                host: host.clone(),
                 certified_roster: peer.certificates(),
                 revocations: peer.revocations(),
                 records: Vec::new(),
@@ -2483,7 +2484,7 @@ pub(crate) fn member_bootstrap(
             },
             room: peer.room().to_owned(),
             workspace_id,
-            authority: peer.authority().clone(),
+            host: host.clone(),
             certified_roster: peer.certificates(),
             revocations: peer.revocations(),
             records: Vec::new(),

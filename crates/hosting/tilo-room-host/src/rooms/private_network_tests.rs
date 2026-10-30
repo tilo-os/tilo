@@ -79,7 +79,7 @@ impl NativeEditor {
         let joined = tilo_desktop_model::RoomId::parse(room).unwrap();
         owner
             .with_current(joined, |view| {
-                assert_eq!(view.governor(), governor);
+                assert_eq!(view.room_host(), governor);
                 assert_eq!(
                     view.peer()
                         .permissions(cert.device_public_key, SystemTime::now())?
@@ -175,9 +175,7 @@ async fn admit(
             join::InviteGrant {
                 workspace_id: room.workspace_id(),
                 room: room_id.into(),
-                authority: room.record.authority.clone(),
                 issuer: room.record.authority.clone(),
-                delegation: None,
                 role: join::MemberRole::Editor,
                 nonce: [cert.device_public_key[0]; 16],
                 recipient_user_public_key: Some(cert.user_public_key),

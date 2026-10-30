@@ -630,8 +630,7 @@ fn identities(
             && held.role_of(&person).is_some()
             && identity.admission.is_none()
             && identity.admissions.is_empty()
-            && identity.delegate.is_none()
-            && identity.workspace_delegations.is_empty();
+            && identity.delegate.is_none();
         if person != actor
             && !redeemed
             && !further

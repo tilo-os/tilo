@@ -46,9 +46,9 @@ impl NativeWorkspaceOwner {
         }
         if bootstrap.device_cert != *renewed
             || bootstrap.room != room.to_string()
-            || bootstrap.authority != *candidate.peer.authority()
+            || bootstrap.host.user_public_key != candidate.owner()
         {
-            return Err("the governor's answer is not this room's renewal".into());
+            return Err("the answer is not this room's renewal".into());
         }
         crate::owner::enrollment::install_governance(&mut candidate.peer, bootstrap, now)?;
         if !candidate.peer.certificates().contains(renewed) {

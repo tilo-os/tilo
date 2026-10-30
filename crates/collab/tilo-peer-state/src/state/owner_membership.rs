@@ -8,7 +8,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Role, String> {
         if membership.room() != self.core.room
-            || !self.signed_by_owner(&membership.authority_device_public_key())
+            || !self.signed_by_owner(&membership.host_device_public_key())
         {
             return Err("membership proof is not from a device of the room's owner".into());
         }

@@ -117,14 +117,11 @@ fn current<'peer, P: Policy>(
     };
     Ok((role, delegate))
 }
-/// Whether `cert`'s device is held to the foreign-device bound in the room
-/// `governor` governs: a device that is not the person's own, unless it is the
-/// governing device itself.
-pub(in crate::state) fn foreign(
-    cert: &tilo_user_identity::DeviceCert,
-    governor: &tilo_user_identity::DeviceCert,
-) -> bool {
-    cert.capabilities.foreign && cert.device_public_key != governor.device_public_key
+/// Whether `cert`'s device is held to the foreign-device bound: a device
+/// that is not the person's own, unless the replica was made on it or joined
+/// through it (`origin`).
+pub(in crate::state) fn foreign(cert: &tilo_user_identity::DeviceCert, origin: &[u8; 32]) -> bool {
+    cert.capabilities.foreign && cert.device_public_key != *origin
 }
 struct LegacyPolicy<'a> {
     data: &'a crate::cached_document::PolicyData,

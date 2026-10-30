@@ -201,7 +201,6 @@ impl StatePeer {
                     revocations: vec![],
                     admission: None,
                     admissions: vec![],
-                    workspace_delegations: vec![],
                     delegate: Some(row),
                 }
             }
@@ -323,7 +322,6 @@ impl StatePeer {
                     revocations: vec![],
                     admission: None,
                     admissions: vec![],
-                    workspace_delegations: vec![],
                     delegate: Some(fresh),
                 },
             ]
@@ -719,7 +717,6 @@ impl StatePeer {
             revocations: vec![],
             admission: None,
             admissions: vec![],
-            workspace_delegations: vec![],
             delegate: Some(fresh),
         };
         self.put_bot_change(

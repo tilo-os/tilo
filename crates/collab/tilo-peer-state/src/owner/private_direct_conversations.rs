@@ -235,7 +235,7 @@ fn caller<'a>(
     authority: &'a CallerAuthority,
     now: SystemTime,
 ) -> Result<&'a tilo_user_identity::DeviceCert, String> {
-    if view.device() != view.governor() {
+    if !view.hosted_here() {
         return Err("private conversations require trusted workspace host custody".into());
     }
     view.peer()
@@ -632,9 +632,7 @@ mod tests {
                     )
                     .unwrap(),
                     room: crate::owner::testing::ROOM.into(),
-                    authority: self.governor.clone(),
                     issuer: self.governor.clone(),
-                    delegation: None,
                     role,
                     nonce: [device_seed; 16],
                     recipient_user_public_key: Some(cert.user_public_key),

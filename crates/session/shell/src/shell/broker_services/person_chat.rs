@@ -98,7 +98,7 @@ fn check_local_governor(
     caller: &tilo_user_identity::DeviceCert,
 ) -> Result<(), String> {
     owner.with_current(room, |view| {
-        if caller != view.device() || view.governor() != view.device() {
+        if caller != view.device() || view.room_host() != view.device() {
             return Err(
                 "private conversations require the actual governor or authenticated RPC".into(),
             );

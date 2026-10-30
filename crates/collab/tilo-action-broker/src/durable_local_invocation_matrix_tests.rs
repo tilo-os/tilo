@@ -57,7 +57,7 @@ mod durable_local_matrix {
             )
             .expect("provision real host receipt signer");
             let mut owner = initialize(&root.path().join("owner")).unwrap();
-            let cert = owner.peer().authority().clone();
+            let cert = owner.device();
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
             let start = cert.issued_at_ns + 1_000_000_000;

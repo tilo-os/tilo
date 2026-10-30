@@ -285,7 +285,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     let restored = StatePeer::restore(
         &member.durable().unwrap(),
         member.room(),
-        member.authority().clone(),
+        member.owner_certificates()[0].clone(),
         vec![],
         tilo_user_identity::RevocationList::new(),
         now,
@@ -507,7 +507,6 @@ fn identities_without_an_agent_keep_their_bytes() {
         revocations: vec![],
         admission: None,
         admissions: vec![],
-        workspace_delegations: vec![],
         delegate: None,
     };
     let bytes = serde_json::to_string(&identity).unwrap();

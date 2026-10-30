@@ -275,7 +275,7 @@ impl Joined {
         self.owner
             .with_current(room, |view| {
                 Ok(collab_types::Ed25519PublicKey::from_bytes(
-                    view.governor().device_public_key,
+                    view.room_host().device_public_key,
                 ))
             })
             .ok()

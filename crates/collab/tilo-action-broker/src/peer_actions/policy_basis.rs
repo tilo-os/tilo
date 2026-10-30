@@ -128,7 +128,7 @@ mod tests {
         );
         let empty = tilo_peer_state::StatePeer::new(
             source.room(),
-            source.authority().clone(),
+            source.owner_certificates()[0].clone(),
             source.certificates(),
             RevocationList::new(),
             std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),

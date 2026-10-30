@@ -166,7 +166,6 @@ impl Rooms {
             || address.mode != WorkspaceHostMode::CertifiedHost
             || address.room != room
             || address.workspace_id != workspace_id
-            || address.governing_authority != host.cert
         {
             return Err("the host answered an address that is not its own for the room".into());
         }

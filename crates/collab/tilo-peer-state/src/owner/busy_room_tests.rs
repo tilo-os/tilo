@@ -39,9 +39,7 @@ fn redemption(
         join::InviteGrant {
             workspace_id: tilo_relay_protocol::room_workspace_id(ROOM).unwrap(),
             room: ROOM.into(),
-            authority: governor.clone(),
             issuer: governor.clone(),
-            delegation: None,
             role: join::MemberRole::Editor,
             nonce: [nonce; 16],
             recipient_user_public_key: Some(device.user_public_key),
@@ -146,7 +144,6 @@ fn busy_room(messages_each: u64) -> BusyRoom {
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
         room: ROOM.into(),
         workspace_id,
-        governing_authority: governor.clone(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),
         ),
@@ -251,7 +248,7 @@ fn busy_room(messages_each: u64) -> BusyRoom {
         role: join::MemberRole::Editor,
         room: ROOM.into(),
         workspace_id,
-        authority: governor.clone(),
+        host: governor.clone(),
         // The authors' certificates reach the device only through the
         // governance that admits them, after their messages.
         certified_roster: vec![governor, device.clone()],

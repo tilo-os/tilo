@@ -97,12 +97,12 @@ pub(crate) fn governing_relay(
             view.transport_hint().ok()?,
         )
         .ok()?;
-    if !view.governor().capabilities.can_act_as_host
-        || &hint.host_device_certificate != view.governor()
+    if !view.room_host().capabilities.can_act_as_host
+        || &hint.host_device_certificate != view.room_host()
     {
         return None;
     }
-    iroh::EndpointId::from_bytes(&view.governor().device_public_key).ok()
+    iroh::EndpointId::from_bytes(&view.room_host().device_public_key).ok()
 }
 
 /// Decide whether the person this device acts as in `workspace`'s room,
@@ -152,7 +152,7 @@ pub(crate) fn native_governor(
     owner?
         .with_current(room, |view| {
             Ok(Governor {
-                person: view.governor().user_public_key,
+                person: view.owner(),
                 relay: governing_relay(view).is_some(),
             })
         })

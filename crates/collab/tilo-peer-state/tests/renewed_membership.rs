@@ -42,6 +42,8 @@ impl GovernanceMessages for Admitted {
 /// One room as its governor holds it in memory.
 struct HeldRoom {
     peer: Admitted,
+    /// The device answering the join: the governor's own.
+    host: DeviceCert,
     ledger: JoinLedger,
     generation: u64,
 }
@@ -50,6 +52,7 @@ impl HeldRoom {
     fn governed(&self) -> Governed<'_> {
         Governed {
             peer: &self.peer.0,
+            host: &self.host,
             workspace_id: join::room_workspace_id(ROOM).unwrap(),
             generation: self.generation,
             governance_messages: &self.peer,
@@ -82,6 +85,7 @@ impl RoomTxn for HeldRoom {
     ) -> Result<(), JoinError> {
         let next = HeldRoom {
             peer: Admitted(peer),
+            host: self.host.clone(),
             ledger: JoinLedger::default(),
             generation: self.generation.saturating_add(1),
         };
@@ -152,6 +156,7 @@ impl MemoryGovernor {
             nonce: Mutex::new(0),
             room: Mutex::new(HeldRoom {
                 peer: Admitted(peer),
+                host: device.clone(),
                 ledger: JoinLedger::default(),
                 generation: 1,
             }),
@@ -166,7 +171,7 @@ impl MemoryGovernor {
     ) -> IssuedInvitation {
         let mut room = self.room.lock().unwrap();
         let mut ledger = room.ledger.clone();
-        let administrator = room.peer.0.authority().clone();
+        let administrator = room.peer.0.owner_certificates()[0].clone();
         let issued = ledger
             .issue(
                 &room.governed(),
@@ -249,7 +254,6 @@ fn a_device_whose_certificate_expires_while_it_runs_keeps_its_membership() {
         mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
         room: ROOM.into(),
         workspace_id,
-        governing_authority: device.clone(),
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&device.device_public_key).unwrap(),
         ),

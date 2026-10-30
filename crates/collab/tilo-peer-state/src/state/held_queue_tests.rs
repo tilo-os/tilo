@@ -99,7 +99,7 @@ fn a_held_message_whose_prerequisite_never_comes_is_let_go_with_why_and_the_room
     let restored = StatePeer::restore(
         &receiver.durable().unwrap(),
         receiver.room(),
-        receiver.authority().clone(),
+        receiver.owner_certificates()[0].clone(),
         vec![],
         RevocationList::new(),
         now,

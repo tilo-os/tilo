@@ -201,7 +201,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             }
         }
         owner.with_current(room_id, |view| {
-            if view.device() != view.governor() {
+            if !view.hosted_here() {
                 return Err("native checkpoint requires the actual governing owner".into());
             }
             Ok(())
@@ -210,7 +210,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
         let now = std::time::SystemTime::now();
         owner.with_current(room_id, |view| {
-            if view.device() != view.governor() || view.governor() != &governor {
+            if !view.hosted_here() || view.room_host() != &governor {
                 return Err("checkpoint governor custody changed".into());
             }
             view.peer().workspace().check_checkpoint_writer(&key, now)?;
@@ -245,7 +245,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 }
             }
             owner.with_current(room, |view| {
-                if view.device() != view.governor() {
+                if !view.hosted_here() {
                     return Err("native checkpoint requires the actual governing owner".into());
                 }
                 Ok(())
@@ -253,7 +253,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
                 .map_err(|error| format!("checkpoint governor custody unavailable: {error}"))?;
             owner.with_current(room, |view| {
-                if view.governor() != &governor {
+                if view.room_host() != &governor {
                     return Err("checkpoint governor custody changed".into());
                 }
                 Ok(())
@@ -332,7 +332,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             return false;
         }
         self.opened_owner("native checkpoint governor unavailable")
-            .and_then(|owner| owner.with_current(room, |view| Ok(view.device() == view.governor())))
+            .and_then(|owner| owner.with_current(room, |view| Ok(view.hosted_here())))
             .unwrap_or(false)
     }
 

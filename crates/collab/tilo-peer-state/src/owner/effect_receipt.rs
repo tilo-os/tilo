@@ -224,7 +224,7 @@ impl NativeWorkspaceOwner {
         if !is_new {
             return Err("signed effect UUID lacks its immutable receipt history".into());
         }
-        let governs = candidate.device() == candidate.governor();
+        let governs = candidate.hosted_here();
         let before = candidate.peer.room_heads().unwrap_or_default();
         if candidate.record.effect_receipts.len() >= 128 {
             archive_one(&mut candidate, self.0.store.as_ref(), key, now)?;

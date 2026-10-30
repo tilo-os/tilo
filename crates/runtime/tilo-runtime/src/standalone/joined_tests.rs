@@ -162,7 +162,7 @@ struct HostedRoom {
 impl HostedRoom {
     async fn start(dir: &std::path::Path) -> Self {
         let governing = TestGovernor::new();
-        let governor = governing.governor().clone();
+        let governor = governing.room_host().clone();
         let governor_key = governing.governor_key().clone();
         let host = governing.host().clone();
         let host_key = governing.host_key().clone();

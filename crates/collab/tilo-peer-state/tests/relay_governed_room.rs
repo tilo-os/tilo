@@ -177,7 +177,7 @@ impl Native {
                         let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                         let governor = self
                             .owner
-                            .with_current(self.room, |view| Ok(view.governor().device_public_key))
+                            .with_current(self.room, |view| Ok(view.room_host().device_public_key))
                             .unwrap();
                         let input = self.scope.input(author, author == governor, message);
                         if let Err(error) = input.admit(&self.identity) {
@@ -344,7 +344,8 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
                     match alice_session.recv().await.expect("the session stays open") {
                         Inbound::Delta { author, data } => {
                             let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                            let origin = if author == peer.authority().device_public_key {
+                            let origin = if author == peer.owner_certificates()[0].device_public_key
+                            {
                                 TransportOrigin::RetainedRelayDelta(author)
                             } else {
                                 TransportOrigin::RelayDelta(author)

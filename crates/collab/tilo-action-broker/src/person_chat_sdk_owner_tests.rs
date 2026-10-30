@@ -101,7 +101,7 @@ fn enroll_contact(
     );
     let ns = tilo_peer_state::owner::testing::ns(now).unwrap();
     let hint = governor.hint(iroh::EndpointAddr::new(
-        iroh::EndpointId::from_bytes(&governor.governor().device_public_key).unwrap(),
+        iroh::EndpointId::from_bytes(&governor.room_host().device_public_key).unwrap(),
     ));
     let invitation = governor.issue(
         vec![hint],
@@ -134,7 +134,7 @@ fn enroll_contact(
             .receive(
                 room,
                 tilo_peer_state::TransportOrigin::RetainedRelayDelta(
-                    governor.governor().device_public_key,
+                    governor.room_host().device_public_key,
                 ),
                 message,
                 now,
@@ -146,7 +146,7 @@ fn enroll_contact(
             .direct_contacts(
                 room,
                 &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.governor().clone(),
+                    caller: governor.room_host().clone(),
                 },
                 now
             )

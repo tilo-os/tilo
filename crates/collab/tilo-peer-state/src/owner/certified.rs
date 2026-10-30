@@ -197,7 +197,6 @@ fn validate_historical_iroh(
         || value.workspace_id != join.grant().workspace_id
         || !tilo_relay_protocol::room_workspace_id_matches(&value.room, value.workspace_id)
         || RoomId::parse(&value.room).is_none()
-        || value.governing_authority != join.grant().authority
         || value.host_device_certificate != hint.host
         || value.host_user_public_key != hint.host.user_public_key
         || *value.endpoint_addr.id.as_bytes() != hint.service_public_key
@@ -206,17 +205,14 @@ fn validate_historical_iroh(
     {
         return Err("native signed Iroh scope mismatch".into());
     }
-    tilo_user_identity::verify_device_cert_at(&value.governing_authority, at)
-        .map_err(|e| e.to_string())?;
     match value.mode {
         WorkspaceHostMode::CertifiedHost if !hint.host.capabilities.can_act_as_host => {
             return Err("native data host lacks host capability".into());
         }
         WorkspaceHostMode::NativeInteractiveWorkspaceOwner
-            if hint.host != value.governing_authority
-                || !hint.host.capabilities.can_own_workspaces =>
+            if !hint.host.capabilities.can_own_workspaces =>
         {
-            return Err("interactive data host is not exact governor".into());
+            return Err("interactive data host cannot own workspaces".into());
         }
         _ => {}
     }
@@ -290,7 +286,7 @@ impl VerifiedNativeEnrollment {
             || bootstrap.role != grant.role
             || bootstrap.room != grant.room
             || bootstrap.workspace_id != grant.workspace_id
-            || bootstrap.authority != grant.authority
+            || bootstrap.host != grant.issuer
             || bootstrap.generation == 0
         {
             return Err(
@@ -298,7 +294,7 @@ impl VerifiedNativeEnrollment {
             );
         }
         if !bootstrap.certified_roster.contains(&bootstrap.device_cert)
-            || !bootstrap.certified_roster.contains(&grant.authority)
+            || !bootstrap.certified_roster.contains(&bootstrap.host)
         {
             return Err("native Complete omitted exact enrolled certificates".into());
         }
@@ -308,7 +304,7 @@ impl VerifiedNativeEnrollment {
         // certificate expired since is still in it.
         crate::StatePeer::from_join(
             &bootstrap.room,
-            bootstrap.authority.clone(),
+            bootstrap.host.clone(),
             bootstrap.certified_roster.clone(),
             &bootstrap.revocations,
             SystemTime::now(),
