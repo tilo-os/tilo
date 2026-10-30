@@ -1,90 +1,208 @@
-//! Keyboard accessibility filters that sit between libinput and xkb: bounce
-//! keys and mouse keys.
+//! Keyboard accessibility filters that sit between libinput and xkb: sticky
+//! keys, slow keys, bounce keys, mouse keys and switch scanning.
 //!
-//! Both are pure state machines over raw evdev keycodes and caller-supplied
-//! instants, so their timing is deterministic under test. [`AccessKeys`]
-//! puts them in front of the compositor's input routing: physical key edges
-//! go in, the keys and pointer events they stand for come out.
+//! Each is a pure state machine over raw evdev keycodes and caller-supplied
+//! instants, so their timing is deterministic under test. [`AccessKeys`] puts
+//! them in front of the compositor's input routing: physical key edges go in,
+//! the keys and pointer events they stand for come out.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use crate::input::InputEvent;
+use crate::sticky_keys::{SlowKeys, SlowPress, SlowRelease, StickyKeys};
+use crate::switch_scan::{Scan, Scanner, SwitchConfig};
 
-/// Bounce keys and mouse keys as one filter over device input.
+/// The typing and pointing assists, as the person set them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Assists {
+    /// Modifiers stay down until the chord they were pressed for is typed.
+    pub sticky_keys: bool,
+    /// How long a key must be held before it counts; `None` with slow keys
+    /// off.
+    pub slow_keys: Option<Duration>,
+    /// How soon a repeated press is contact bounce; `None` with bounce keys
+    /// off.
+    pub bounce_keys: Option<Duration>,
+    /// Show a pressed key that was contact bounce instead of typing it.
+    pub bounce_alert: bool,
+    /// The keypad as a pointer.
+    pub mouse_keys: bool,
+    /// Switch scanning; `None` with it off.
+    pub switch: Option<SwitchConfig>,
+}
+
+impl Assists {
+    /// Whether every assist is off, so the filter passes everything through.
+    pub fn is_off(&self) -> bool {
+        !self.sticky_keys
+            && self.slow_keys.is_none()
+            && self.bounce_keys.is_none()
+            && !self.mouse_keys
+            && self.switch.is_none()
+    }
+}
+
+/// The assists as one filter over device input.
 #[derive(Debug, Default)]
 pub struct AccessKeys {
+    sticky: StickyKeys,
+    slow: SlowKeys,
     bounce: BounceKeys,
     mouse: MouseKeys,
-    /// The bounce window, or `None` with bounce keys off.
-    bounce_window: Option<Duration>,
-    mouse_keys: bool,
+    scanner: Scanner,
+    assists: Assists,
+    alert: bool,
 }
 
 impl AccessKeys {
-    /// Switch the filters. Turning mouse keys off releases the buttons it
-    /// holds; the returned events deliver those releases.
-    pub fn configure(&mut self, bounce: Option<Duration>, mouse_keys: bool) -> Vec<InputEvent> {
-        if bounce != self.bounce_window {
+    /// Whether a press was dropped as contact bounce since the last call:
+    /// the caller shows it, for someone who cannot hear a key click.
+    pub fn take_alert(&mut self) -> bool {
+        std::mem::take(&mut self.alert)
+    }
+
+    /// Switch the assists. Turning mouse keys off releases the buttons it
+    /// holds and turning sticky keys off releases the modifiers it holds;
+    /// the returned events deliver those releases.
+    pub fn configure(&mut self, assists: &Assists, now: Instant) -> Vec<InputEvent> {
+        if assists.bounce_keys != self.assists.bounce_keys {
             self.bounce.reset();
-            self.bounce_window = bounce;
+        }
+        if assists.slow_keys != self.assists.slow_keys {
+            // Presses still waiting never counted; deliveries already made
+            // keep their releases, which pass through with slow keys off.
+            self.slow.reset();
+        }
+        if assists.switch != self.assists.switch {
+            self.scanner.configure(assists.switch, now);
         }
         let mut released = Vec::new();
-        if self.mouse_keys && !mouse_keys {
-            released = self.mouse.reset().into_iter().map(button_event).collect();
+        if self.assists.sticky_keys && !assists.sticky_keys {
+            released.extend(self.sticky.reset().into_iter().map(key_event));
         }
-        self.mouse_keys = mouse_keys;
+        if self.assists.mouse_keys && !assists.mouse_keys {
+            released.extend(self.mouse.reset().into_iter().map(button_event));
+        }
+        self.assists = assists.clone();
         released
     }
 
-    /// The events `event` stands for at `now`: none for a bounce or a key
-    /// mouse keys took, its pointer motion and buttons for the latter, the
-    /// event itself otherwise.
+    /// Forget everything, releasing what the assists hold: for a session or
+    /// device boundary that may have lost releases.
+    pub fn reset(&mut self, now: Instant) -> Vec<InputEvent> {
+        self.slow.reset();
+        self.bounce.reset();
+        self.scanner.configure(self.assists.switch, now);
+        let mut released: Vec<InputEvent> =
+            self.sticky.reset().into_iter().map(key_event).collect();
+        released.extend(self.mouse.reset().into_iter().map(button_event));
+        released
+    }
+
+    /// The events `event` stands for at `now`: none for a brush, a bounce, a
+    /// key mouse keys took or a switch, its pointer motion and buttons for
+    /// mouse keys, the keys it types for everything else.
     pub fn filter(&mut self, event: InputEvent, now: Instant) -> Vec<InputEvent> {
         let InputEvent::Key { keycode, pressed } = event else {
             return vec![event];
         };
-        if let Some(window) = self.bounce_window {
+        if self.assists.switch.is_some()
+            && let Some(action) = self.scanner.key(keycode, pressed, now)
+        {
+            // A switch press steps the focus on or activates it; its release
+            // is swallowed so no client sees a switch key.
+            return Scan::edges(action).into_iter().map(key_event).collect();
+        }
+        if let Some(delay) = self.assists.slow_keys {
+            let counts = if pressed {
+                self.slow.press(keycode, now, Some(delay)) == SlowPress::Deliver
+            } else {
+                self.slow.release(keycode, now) == SlowRelease::Deliver
+            };
+            if !counts {
+                return Vec::new();
+            }
+        }
+        self.deliver(keycode, pressed, now)
+    }
+
+    /// The events owed at `now` without any key edge: keys held past their
+    /// slow-keys delay, the focus walking on by itself and a mouse-keys
+    /// glide.
+    pub fn tick(&mut self, now: Instant) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+        for keycode in self.slow.due(now) {
+            events.extend(self.deliver(keycode, true, now));
+        }
+        if self.assists.switch.is_some()
+            && let Some(scan) = self.scanner.tick(now)
+        {
+            events.extend(Scan::edges([scan]).into_iter().map(key_event));
+        }
+        if self.assists.mouse_keys {
+            let (dx, dy) = self.mouse.motion(now);
+            if dx != 0.0 || dy != 0.0 {
+                events.push(InputEvent::PointerMotionRelative { dx, dy });
+            }
+        }
+        events
+    }
+
+    /// When [`Self::tick`] is next due.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        let slow = self.slow.next_deadline();
+        let mouse = self
+            .assists
+            .mouse_keys
+            .then(|| self.mouse.next_deadline())
+            .flatten();
+        let scan = self.scanner.next_deadline();
+        [slow, mouse, scan].into_iter().flatten().min()
+    }
+
+    /// A key edge past slow keys and switch scanning: bounce keys, mouse
+    /// keys and sticky keys in that order.
+    fn deliver(&mut self, keycode: u32, pressed: bool, now: Instant) -> Vec<InputEvent> {
+        if let Some(window) = self.assists.bounce_keys {
             let verdict = if pressed {
                 self.bounce.press(keycode, now, window)
             } else {
                 self.bounce.release(keycode, now)
             };
             if verdict == BounceVerdict::Reject {
+                self.alert |= self.assists.bounce_alert;
                 return Vec::new();
             }
         }
-        if !self.mouse_keys {
-            return vec![event];
+        if self.assists.mouse_keys
+            && let Some(out) = self.mouse.key(keycode, pressed, now)
+        {
+            let mut events = Vec::new();
+            if out.motion != (0.0, 0.0) {
+                events.push(InputEvent::PointerMotionRelative {
+                    dx: out.motion.0,
+                    dy: out.motion.1,
+                });
+            }
+            events.extend(out.buttons.into_iter().map(button_event));
+            return events;
         }
-        let Some(out) = self.mouse.key(keycode, pressed, now) else {
-            return vec![event];
-        };
-        let mut events = Vec::new();
-        if out.motion != (0.0, 0.0) {
-            events.push(InputEvent::PointerMotionRelative {
-                dx: out.motion.0,
-                dy: out.motion.1,
-            });
+        if !self.assists.sticky_keys {
+            return vec![key_event((keycode, pressed))];
         }
-        events.extend(out.buttons.into_iter().map(button_event));
-        events
-    }
-
-    /// The glide owed at `now`, while a direction key is held.
-    pub fn tick(&mut self, now: Instant) -> Option<InputEvent> {
-        let (dx, dy) = self.mouse.motion(now);
-        (dx != 0.0 || dy != 0.0).then_some(InputEvent::PointerMotionRelative { dx, dy })
-    }
-
-    /// When [`Self::tick`] is next due.
-    pub fn next_deadline(&self) -> Option<Instant> {
-        if self.mouse_keys {
-            self.mouse.next_deadline()
+        let edges = if pressed {
+            self.sticky.press(keycode, now)
         } else {
-            None
-        }
+            self.sticky.release(keycode, now)
+        };
+        edges.into_iter().map(key_event).collect()
     }
+}
+
+/// A key edge as a compositor input event.
+const fn key_event((keycode, pressed): (u32, bool)) -> InputEvent {
+    InputEvent::Key { keycode, pressed }
 }
 
 /// A mouse-keys button edge as a pointer button event.
@@ -761,17 +879,29 @@ mod tests {
         assert_eq!(keys.key(KP_6, false, t), None, "released after reset");
     }
 
+    const SHIFT: u32 = 42;
+    const F6: u32 = 64;
+    const F7: u32 = 65;
+
+    fn key(keycode: u32, pressed: bool) -> InputEvent {
+        InputEvent::Key { keycode, pressed }
+    }
+
     #[test]
     fn the_filter_drops_bounces_and_turns_the_keypad_into_a_mouse() {
         let t0 = Instant::now();
-        let key = |keycode, pressed| InputEvent::Key { keycode, pressed };
         let mut filter = AccessKeys::default();
         assert_eq!(
             filter.filter(key(A, true), t0),
             [key(A, true)],
             "off: untouched"
         );
-        assert!(filter.configure(Some(ms(100)), true).is_empty());
+        let assists = Assists {
+            bounce_keys: Some(ms(100)),
+            mouse_keys: true,
+            ..Assists::default()
+        };
+        assert!(filter.configure(&assists, t0).is_empty());
         assert_eq!(filter.filter(key(A, false), t0), [key(A, false)]);
         assert!(
             filter.filter(key(A, true), t0 + ms(20)).is_empty(),
@@ -783,7 +913,7 @@ mod tests {
             [InputEvent::PointerMotionRelative { dx: 1.0, dy: 0.0 }]
         );
         assert!(filter.next_deadline().is_some(), "a held direction glides");
-        assert!(filter.tick(t0 + ms(1_500)).is_some());
+        assert!(!filter.tick(t0 + ms(1_500)).is_empty());
         assert!(filter.filter(key(KP_6, false), t0 + ms(1_600)).is_empty());
         assert_eq!(filter.next_deadline(), None);
         assert_eq!(
@@ -809,7 +939,7 @@ mod tests {
             "keypad 0 holds"
         );
         assert_eq!(
-            filter.configure(None, false),
+            filter.configure(&Assists::default(), t0),
             [InputEvent::PointerButton {
                 button: 0x110,
                 pressed: false
@@ -817,5 +947,164 @@ mod tests {
             "switching mouse keys off lets go of what it held"
         );
         assert_eq!(filter.filter(key(KP_6, true), t0), [key(KP_6, true)]);
+    }
+
+    #[test]
+    fn slow_keys_hold_a_press_until_it_has_been_held_long_enough() {
+        let t0 = Instant::now();
+        let mut filter = AccessKeys::default();
+        let assists = Assists {
+            slow_keys: Some(ms(200)),
+            ..Assists::default()
+        };
+        assert!(filter.configure(&assists, t0).is_empty());
+        assert!(
+            filter.filter(key(A, true), t0).is_empty(),
+            "the press waits"
+        );
+        assert_eq!(filter.next_deadline(), Some(t0 + ms(200)));
+        assert_eq!(filter.tick(t0 + ms(100)), Vec::<InputEvent>::new());
+        assert!(
+            filter.filter(key(A, false), t0 + ms(150)).is_empty(),
+            "a brush types nothing"
+        );
+        assert_eq!(filter.next_deadline(), None, "and leaves nothing due");
+
+        assert!(filter.filter(key(A, true), t0 + ms(300)).is_empty());
+        assert_eq!(filter.tick(t0 + ms(500)), [key(A, true)]);
+        assert!(filter.tick(t0 + ms(500)).is_empty());
+        assert_eq!(
+            filter.filter(key(A, false), t0 + ms(550)),
+            [key(A, false)],
+            "its release follows once it counted"
+        );
+    }
+
+    #[test]
+    fn a_waiting_press_goes_through_every_later_assist() {
+        let t0 = Instant::now();
+        let mut filter = AccessKeys::default();
+        let assists = Assists {
+            slow_keys: Some(ms(100)),
+            sticky_keys: true,
+            ..Assists::default()
+        };
+        assert!(filter.configure(&assists, t0).is_empty());
+        assert_eq!(
+            filter.filter(key(SHIFT, true), t0),
+            Vec::<InputEvent>::new(),
+            "a modifier waits its delay too"
+        );
+        assert_eq!(filter.tick(t0 + ms(100)), [key(SHIFT, true)]);
+        assert!(filter.filter(key(SHIFT, false), t0 + ms(150)).is_empty());
+        assert!(
+            filter.filter(key(A, true), t0 + ms(200)).is_empty(),
+            "the letter waits too"
+        );
+        assert_eq!(filter.tick(t0 + ms(300)), [key(A, true)]);
+        assert_eq!(
+            filter.filter(key(A, false), t0 + ms(350)),
+            [key(A, false), key(SHIFT, false)],
+            "the chord lets the modifier go"
+        );
+    }
+
+    #[test]
+    fn sticky_keys_hold_a_modifier_for_one_chord() {
+        let t0 = Instant::now();
+        let mut filter = AccessKeys::default();
+        let assists = Assists {
+            sticky_keys: true,
+            ..Assists::default()
+        };
+        assert!(filter.configure(&assists, t0).is_empty());
+        assert_eq!(filter.filter(key(SHIFT, true), t0), [key(SHIFT, true)]);
+        assert!(filter.filter(key(SHIFT, false), t0 + ms(50)).is_empty());
+        assert_eq!(filter.filter(key(A, true), t0 + ms(100)), [key(A, true)]);
+        assert_eq!(
+            filter.filter(key(A, false), t0 + ms(200)),
+            [key(A, false), key(SHIFT, false)]
+        );
+        assert_eq!(filter.filter(key(B, true), t0 + ms(300)), [key(B, true)]);
+        assert_eq!(
+            filter.filter(key(B, false), t0 + ms(400)),
+            [key(B, false)],
+            "the next key is unmodified"
+        );
+        // Switching sticky keys off releases a held modifier.
+        assert_eq!(
+            filter.filter(key(SHIFT, true), t0 + ms(10_000)),
+            [key(SHIFT, true)]
+        );
+        assert_eq!(
+            filter.configure(&Assists::default(), t0 + ms(10_100)),
+            [key(SHIFT, false)]
+        );
+    }
+
+    #[test]
+    fn switch_scanning_turns_the_switch_keys_into_tab_and_return() {
+        let t0 = Instant::now();
+        let mut filter = AccessKeys::default();
+        let assists = Assists {
+            switch: Some(SwitchConfig {
+                pair: crate::switch_scan::SwitchPair::F6F7,
+                period: None,
+            }),
+            ..Assists::default()
+        };
+        assert!(filter.configure(&assists, t0).is_empty());
+        assert_eq!(
+            filter.filter(key(F6, true), t0),
+            [key(15, true), key(15, false)],
+            "the first switch steps the focus on"
+        );
+        assert!(
+            filter.filter(key(F6, false), t0 + ms(50)).is_empty(),
+            "no client sees the switch key"
+        );
+        assert_eq!(
+            filter.filter(key(F7, true), t0 + ms(500)),
+            [key(28, true), key(28, false)],
+            "the second presses what has the focus"
+        );
+        assert!(filter.filter(key(F7, false), t0 + ms(550)).is_empty());
+        assert_eq!(
+            filter.filter(key(A, true), t0 + ms(600)),
+            [key(A, true)],
+            "every other key is typed as usual"
+        );
+        assert_eq!(filter.next_deadline(), None, "no automatic walking");
+    }
+
+    #[test]
+    fn automatic_scanning_walks_the_focus_by_itself() {
+        let t0 = Instant::now();
+        let mut filter = AccessKeys::default();
+        let assists = Assists {
+            switch: Some(SwitchConfig {
+                pair: crate::switch_scan::SwitchPair::F6F7,
+                period: Some(ms(1_000)),
+            }),
+            ..Assists::default()
+        };
+        assert!(filter.configure(&assists, t0).is_empty());
+        assert_eq!(filter.next_deadline(), Some(t0 + ms(1_000)));
+        assert_eq!(filter.tick(t0 + ms(999)), Vec::<InputEvent>::new());
+        assert_eq!(filter.tick(t0 + ms(1_000)), [key(15, true), key(15, false)]);
+        assert_eq!(filter.next_deadline(), Some(t0 + ms(2_000)));
+        // The person's own press restarts the period, so nothing moves
+        // twice in a row.
+        let _ = filter.filter(key(F7, true), t0 + ms(1_900));
+        let _ = filter.filter(key(F7, false), t0 + ms(1_950));
+        assert_eq!(filter.next_deadline(), Some(t0 + ms(2_900)));
+        // Switching scanning off stops it.
+        assert!(
+            filter
+                .configure(&Assists::default(), t0 + ms(2_000))
+                .is_empty()
+        );
+        assert_eq!(filter.next_deadline(), None);
+        assert_eq!(filter.tick(t0 + ms(3_000)), Vec::<InputEvent>::new());
     }
 }

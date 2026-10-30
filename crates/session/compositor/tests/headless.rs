@@ -2349,3 +2349,229 @@ fn a_modal_dialog_keeps_the_keyboard_from_the_window_it_belongs_to() {
     assert_eq!(focused(&compositor).as_deref(), Some("editor"));
     drop(parent_surface);
 }
+
+/// The accessibility settings with `change` applied to the compositor's own.
+fn with_a11y(compositor: &mut Compositor, change: impl FnOnce(&mut tilo_compositor::A11y)) {
+    let mut a11y = compositor.a11y().clone();
+    change(&mut a11y);
+    compositor.set_a11y(a11y).expect("accessibility settings");
+}
+
+/// Every pixel of `frame` that is `wanted`.
+fn count(frame: &tilo_compositor::Screenshot, wanted: [u8; 4]) -> usize {
+    (0..frame.height)
+        .flat_map(|y| (0..frame.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| frame.pixel(x, y) == Some(wanted))
+        .count()
+}
+
+#[test]
+fn sticky_keys_hold_a_modifier_for_one_chord() {
+    const KEY_LEFTSHIFT: u32 = 42;
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "sticky", (200, 100), [0, 255, 0, 255]);
+    with_a11y(&mut compositor, |a11y| a11y.assists.sticky_keys = true);
+
+    // Shift, pressed and let go, then a letter: the shift stays down for
+    // the letter and comes up with it.
+    for (keycode, pressed) in [
+        (KEY_LEFTSHIFT, true),
+        (KEY_LEFTSHIFT, false),
+        (KEY_A, true),
+        (KEY_A, false),
+    ] {
+        compositor
+            .input(InputEvent::Key { keycode, pressed })
+            .expect("input");
+    }
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.len() == 4
+    });
+    assert_eq!(
+        client.seen.keys,
+        vec![
+            (KEY_LEFTSHIFT, true),
+            (KEY_A, true),
+            (KEY_A, false),
+            (KEY_LEFTSHIFT, false)
+        ]
+    );
+}
+
+#[test]
+fn slow_keys_wait_for_a_key_to_be_held_long_enough() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "slow", (200, 100), [0, 255, 0, 255]);
+    with_a11y(&mut compositor, |a11y| {
+        a11y.assists.slow_keys = Some(Duration::from_millis(300));
+    });
+
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: true,
+        })
+        .expect("input");
+    compositor.dispatch(Duration::ZERO).expect("dispatch");
+    client.exchange();
+    assert!(
+        client.seen.keys.is_empty(),
+        "a brush past a key types nothing"
+    );
+
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        !clients[0].seen.keys.is_empty()
+    });
+    assert_eq!(client.seen.keys, vec![(KEY_A, true)], "held, so it counts");
+
+    compositor
+        .input(InputEvent::Key {
+            keycode: KEY_A,
+            pressed: false,
+        })
+        .expect("input");
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.len() == 2
+    });
+    assert_eq!(client.seen.keys, vec![(KEY_A, true), (KEY_A, false)]);
+}
+
+#[test]
+fn switch_keys_step_the_focus_and_activate_it() {
+    const KEY_F6: u32 = 64;
+    const KEY_F7: u32 = 65;
+    const KEY_TAB: u32 = 15;
+    const KEY_RETURN: u32 = 28;
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "switch", (200, 100), [0, 255, 0, 255]);
+    with_a11y(&mut compositor, |a11y| {
+        a11y.assists.switch = Some(tilo_compositor::SwitchConfig {
+            pair: tilo_compositor::SwitchPair::F6F7,
+            period: None,
+        });
+    });
+
+    for keycode in [KEY_F6, KEY_F7] {
+        for pressed in [true, false] {
+            compositor
+                .input(InputEvent::Key { keycode, pressed })
+                .expect("input");
+        }
+    }
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keys.len() == 4
+    });
+    assert_eq!(
+        client.seen.keys,
+        vec![
+            (KEY_TAB, true),
+            (KEY_TAB, false),
+            (KEY_RETURN, true),
+            (KEY_RETURN, false)
+        ],
+        "the switches become the keys that move on and activate"
+    );
+}
+
+#[test]
+fn the_crosshair_guides_follow_the_pointer() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    compositor
+        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+        .expect("input");
+    compositor.render().expect("render");
+    let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(plain.pixel(10, 240), Some(BACKGROUND));
+
+    with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = true);
+    compositor.render().expect("render");
+    let guided = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_ne!(
+        guided.pixel(10, 240),
+        Some(BACKGROUND),
+        "a guide runs across at the pointer's height"
+    );
+    assert_ne!(
+        guided.pixel(320, 10),
+        Some(BACKGROUND),
+        "and down at its width"
+    );
+    assert_eq!(
+        guided.pixel(10, 232),
+        Some(BACKGROUND),
+        "the guides are thin"
+    );
+
+    with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = false);
+    compositor.render().expect("render");
+    let plain_again = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(plain_again.pixel(10, 240), Some(BACKGROUND));
+}
+
+#[test]
+fn the_visual_alert_flashes_the_screen_and_fades() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    compositor.render().expect("render");
+    let before = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(before.pixel(10, 10), Some(BACKGROUND));
+
+    compositor.flash();
+    compositor.render().expect("render");
+    let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    let lit = lit.pixel(10, 10).expect("pixel");
+    assert!(
+        lit[0] > 200 && lit[1] > 200 && lit[2] > 200,
+        "the alert is on screen: {lit:?}"
+    );
+
+    // It fades frame by frame as the loop runs, and the frame that draws it
+    // gone is still due.
+    for _ in 0..40 {
+        compositor
+            .dispatch(Duration::from_millis(16))
+            .expect("dispatch");
+        compositor.render().expect("render");
+    }
+    let after = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    assert_eq!(after.pixel(10, 10), Some(BACKGROUND), "and it fades out");
+}
+
+#[test]
+fn the_lens_magnifies_the_scene_around_the_pointer() {
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "lens", (300, 200), GREEN);
+    compositor
+        .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+        .expect("input");
+    compositor.render().expect("render");
+    let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    let plain_green = count(&plain, GREEN);
+    assert!(plain_green > 0, "the window is drawn");
+
+    with_a11y(&mut compositor, |a11y| {
+        a11y.magnifier = tilo_compositor::Magnifier {
+            zoom: 2,
+            view: tilo_compositor::MagnifierView::Lens,
+        };
+    });
+    compositor.render().expect("render");
+    let lensed = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    let lensed_green = count(&lensed, GREEN);
+    assert!(
+        lensed_green > plain_green * 3 / 2,
+        "the lens shows the window twice as big: {plain_green} then {lensed_green}"
+    );
+
+    // Full screen magnifies the whole scene instead.
+    with_a11y(&mut compositor, |a11y| {
+        a11y.magnifier.view = tilo_compositor::MagnifierView::FullScreen;
+    });
+    compositor.render().expect("render");
+    let full = compositor.screenshot("HEADLESS-1").expect("screenshot");
+    let full_green = count(&full, GREEN);
+    assert!(
+        full_green > lensed_green,
+        "the whole screen is magnified, past the lens's edges: {lensed_green} then {full_green}"
+    );
+}

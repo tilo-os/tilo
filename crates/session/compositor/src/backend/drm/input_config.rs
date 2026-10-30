@@ -94,11 +94,6 @@ pub struct InputConfig {
     /// Multiplier on every scroll distance, wheel and finger alike. Applied
     /// by the compositor rather than libinput, which has no such setting.
     pub scroll_speed: f64,
-    /// Bounce keys: a key pressed again within this window of its release
-    /// is ignored. `None` is off.
-    pub bounce_keys: Option<Duration>,
-    /// Mouse keys: the keypad moves and clicks the pointer.
-    pub mouse_keys: bool,
     /// Each drawing tablet's settings, by [`device_key`].
     pub tablets: BTreeMap<String, TabletConfig>,
 }
@@ -127,8 +122,6 @@ impl Default for InputConfig {
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
             scroll_speed: 1.0,
-            bounce_keys: None,
-            mouse_keys: false,
             tablets: BTreeMap::new(),
         }
     }
@@ -480,8 +473,6 @@ mod tests {
         assert_eq!(d.key_repeat, 0.5);
         assert_eq!(plan_for(&d, &touchpad()).natural_scroll, Some(true));
         assert_eq!(plan_for(&d, &mouse()).natural_scroll, Some(false));
-        assert_eq!(d.bounce_keys, None);
-        assert!(!d.mouse_keys);
     }
 
     #[test]

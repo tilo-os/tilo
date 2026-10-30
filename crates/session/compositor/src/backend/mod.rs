@@ -42,6 +42,11 @@ pub trait Backend {
     /// ignore them.
     fn set_input_config(&mut self, _state: &mut State, _config: InputConfig) {}
 
+    /// Apply the person's typing and pointing assists to the backend's
+    /// devices, now and as they are plugged in. Backends whose input comes
+    /// already shaped (a host window, a test) ignore them.
+    fn set_assists(&mut self, _state: &mut State, _assists: &crate::Assists) {}
+
     /// Keep the person's display configuration for outputs that appear
     /// later (the compositor applies it to the present ones).
     fn set_display_config(&mut self, _config: &crate::config::DisplayConfig) {}

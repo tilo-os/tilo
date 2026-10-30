@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use smithay::utils::Transform;
 
+use crate::a11y::A11y;
 use crate::backend::InputConfig;
 use crate::backend::drm::devices::RequestedMode;
 use crate::idle::IdleConfig;
@@ -22,6 +23,8 @@ pub struct Settings {
     pub input: InputConfig,
     pub keyboard: KeyboardLayout,
     pub idle: IdleConfig,
+    /// The person's accessibility settings.
+    pub a11y: A11y,
 }
 
 /// The keyboard layout, as XKB names it.

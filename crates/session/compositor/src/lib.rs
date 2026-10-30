@@ -22,10 +22,12 @@
 
 #![cfg(target_os = "linux")]
 
+mod a11y;
 pub mod backdrop;
 pub mod backend;
 pub mod capture;
 pub mod clipboard_history;
+pub mod color_filter;
 pub mod config;
 mod cursor;
 pub mod dim;
@@ -53,6 +55,8 @@ pub mod selection;
 pub mod settings_bridge;
 mod snapshot;
 mod state;
+pub mod sticky_keys;
+pub mod switch_scan;
 mod tablet;
 mod text_input;
 mod touch;
@@ -70,15 +74,19 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction};
 use smithay::reexports::wayland_server::Display;
 
+use crate::backend::drm::access_keys::AccessKeys;
 use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
+pub use a11y::{A11y, CursorA11y, Magnifier, MagnifierView};
 pub use backdrop::{BackdropImage, BackdropRequest};
+pub use backend::drm::access_keys::Assists;
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
     NestedConfig, Screenshot, TabletConfig,
 };
+pub use color_filter::ColorFilter;
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
@@ -99,6 +107,7 @@ pub use selection::Selection;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
+pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
 pub use window_frame::{Edge, Shadow, WindowFrame};
 pub use x11_windows::{Icon, Identity as X11Identity};
 
@@ -186,6 +195,12 @@ pub struct Compositor {
     /// Told of every turn of the loop's wait, when someone watches for a loop
     /// that has stopped.
     turns: Option<Arc<dyn LoopTurns>>,
+    /// The person's accessibility settings as they apply now.
+    a11y: A11y,
+    /// The typing and pointing assists for input handed to
+    /// [`Compositor::input`]; a backend's own devices filter theirs before
+    /// they get there.
+    keys: AccessKeys,
 }
 
 impl Compositor {
@@ -224,6 +239,8 @@ impl Compositor {
             hosted: false,
             displays: settings_bridge::Published::default(),
             turns: None,
+            a11y: A11y::default(),
+            keys: AccessKeys::default(),
         };
         compositor.publish_displays();
         Ok(compositor)
@@ -281,10 +298,16 @@ impl Compositor {
         /// The longest the loop sleeps with nothing due, so a caller's own
         /// checks still run.
         const IDLE: Duration = Duration::from_millis(250);
-        self.data.backend.next_deadline().map_or(IDLE, |at| {
-            at.saturating_duration_since(std::time::Instant::now())
-                .min(IDLE)
-        })
+        let now = std::time::Instant::now();
+        let backend = self.data.backend.next_deadline();
+        // A running visual alert fades frame by frame.
+        let alert = a11y::flashing(&self.data.state, now).then(|| now + a11y::FLASH_STEP);
+        backend
+            .into_iter()
+            .chain(self.keys.next_deadline())
+            .chain(alert)
+            .min()
+            .map_or(IDLE, |at| at.saturating_duration_since(now).min(IDLE))
     }
 
     /// Add an output the backend simulates.
@@ -378,6 +401,16 @@ impl Compositor {
         }
         dispatched?;
         self.data.state.repeat_keys();
+        let due = self.keys.tick(Instant::now());
+        for event in due {
+            self.data.state.handle_input(event);
+        }
+        if self.keys.take_alert() {
+            self.flash();
+        }
+        if a11y::flashing(&self.data.state, Instant::now()) {
+            self.data.state.mark_redraw_all();
+        }
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
         if let Some(x11) = self.data.x11_windows.as_mut() {
@@ -406,6 +439,53 @@ impl Compositor {
     /// The magnifier's zoom; 1 is off.
     pub fn zoom(&self) -> f64 {
         self.data.state.zoom
+    }
+
+    /// Apply the person's accessibility settings: typing and pointing
+    /// assists, the pointer's size and crosshair, the colour filter, the
+    /// magnifier and visual alerts. Everything applies live, and to
+    /// outputs and devices that appear later.
+    pub fn set_a11y(&mut self, a11y: A11y) -> Result<(), Error> {
+        let now = Instant::now();
+        let released = self.keys.configure(&a11y.assists, now);
+        let LoopData { state, backend } = &mut self.data;
+        backend.set_assists(state, &a11y.assists);
+        state.zoom = a11y.magnifier.factor();
+        state.cursor.set_size(a11y.cursor.size);
+        for event in released {
+            state.handle_input(event);
+        }
+        self.a11y = a11y;
+        self.seed_visuals();
+        self.data.state.mark_redraw_all();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Bring every output's visuals in line with the settings, outputs a
+    /// backend found on its own since the last frame included.
+    fn seed_visuals(&mut self) {
+        let a11y = &self.a11y;
+        for output in self.data.state.space.outputs() {
+            a11y::change(output, |visual| {
+                visual.color_filter = a11y.color_filter;
+                visual.magnifier_view = a11y.magnifier.view;
+                visual.crosshair = a11y.cursor.crosshair;
+            });
+        }
+    }
+
+    /// The accessibility settings in force.
+    #[must_use]
+    pub fn a11y(&self) -> &A11y {
+        &self.a11y
+    }
+
+    /// Flash every output: a visual alert for what a person who cannot hear
+    /// the alert sound would otherwise miss.
+    pub fn flash(&mut self) {
+        a11y::flash_all(&self.data.state, Instant::now());
+        self.data.state.mark_redraw_all();
     }
 
     /// How held keys repeat, for clients (the seat's repeat info) and
@@ -866,6 +946,7 @@ impl Compositor {
         self.set_input_config(settings.input.clone());
         self.set_keyboard_layout(&settings.keyboard);
         self.set_idle_config(settings.idle);
+        self.set_a11y(settings.a11y.clone())?;
         Ok(())
     }
 
@@ -978,9 +1059,16 @@ impl Compositor {
         self.data.state.keycode_for_keysym(keysym)
     }
 
-    /// Route one input event (see [`InputEvent`]) and flush what it sent.
+    /// Route one input event (see [`InputEvent`]) through the person's
+    /// assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
-        self.data.state.handle_input(event);
+        let events = self.keys.filter(event, Instant::now());
+        for event in events {
+            self.data.state.handle_input(event);
+        }
+        if self.keys.take_alert() {
+            self.flash();
+        }
         self.start_asked_drags();
         // Input wakes blanked panels at once.
         self.sync_power();
@@ -991,6 +1079,8 @@ impl Compositor {
     /// Draw a frame on every output that can take one and tell clients it
     /// was shown.
     pub fn render(&mut self) -> Result<(), Error> {
+        self.seed_visuals();
+        let mut drew = false;
         for host in &mut self.data.state.hosts {
             let _ = host.prepare_frame();
         }

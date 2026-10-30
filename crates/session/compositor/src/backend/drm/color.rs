@@ -30,6 +30,7 @@ use smithay::reexports::drm::control::{Device as _, connector, property};
 use smithay::utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use super::Renderer;
+use crate::color_filter::ColorFilter;
 use crate::config::Hdr;
 use crate::render::OutputRenderElement;
 use settings_store::hardware::HdrUnavailable;
@@ -323,6 +324,11 @@ uniform sampler2D lut;
 uniform float use_lut;
 uniform float pq;
 uniform float sdr_white;
+uniform vec3 filter_row_r;
+uniform vec3 filter_row_g;
+uniform vec3 filter_row_b;
+uniform vec3 filter_offset;
+uniform float use_filter;
 const float N = 33.0;
 
 vec3 calibrate(vec3 c) {
@@ -355,10 +361,21 @@ vec3 encode_pq(vec3 c) {
     return vec3(pq_inverse_eotf(nits.r), pq_inverse_eotf(nits.g), pq_inverse_eotf(nits.b));
 }
 
+// The whole-desktop colour filter: a matrix and an offset, so turning
+// colour off and inverting it are the same one operation.
+vec3 colour_filter(vec3 c) {
+    return clamp(vec3(dot(filter_row_r, c),
+                      dot(filter_row_g, c),
+                      dot(filter_row_b, c)) + filter_offset, 0.0, 1.0);
+}
+
 void main() {
     vec3 rgb = texture2D(tex, v_coords).rgb;
     if (use_lut > 0.5) {
         rgb = calibrate(rgb);
+    }
+    if (use_filter > 0.5) {
+        rgb = colour_filter(rgb);
     }
     if (pq > 0.5) {
         rgb = encode_pq(rgb);
@@ -376,11 +393,14 @@ void main() {
 pub(crate) struct Wanted {
     pub profile: Option<PathBuf>,
     pub hdr: Option<Hdr>,
+    /// The whole-desktop colour filter.
+    pub filter: ColorFilter,
 }
 
 impl Wanted {
+    /// Whether the output shows the scene as it is, needing no pass.
     pub(crate) fn plain(&self) -> bool {
-        self.profile.is_none() && self.hdr.is_none()
+        self.profile.is_none() && self.hdr.is_none() && self.filter.is_off()
     }
 }
 
@@ -419,6 +439,11 @@ impl ColorPass {
                     UniformName::new("use_lut", UniformType::_1f),
                     UniformName::new("pq", UniformType::_1f),
                     UniformName::new("sdr_white", UniformType::_1f),
+                    UniformName::new("filter_row_r", UniformType::_3f),
+                    UniformName::new("filter_row_g", UniformType::_3f),
+                    UniformName::new("filter_row_b", UniformType::_3f),
+                    UniformName::new("filter_offset", UniformType::_3f),
+                    UniformName::new("use_filter", UniformType::_1f),
                 ],
             )
             .map_err(|error| format!("colour shader: {error:?}"))?;
@@ -517,6 +542,7 @@ impl ColorPass {
             })?;
         }
         let flag = |on: bool| if on { 1.0_f32 } else { 0.0 };
+        let filter = self.wanted.filter.matrix();
         let drawn = frame.render_texture_from_to(
             &self.texture,
             src,
@@ -537,6 +563,11 @@ impl ColorPass {
                         .as_ref()
                         .map_or(0.0, |hdr| hdr.sdr_white_nits),
                 ),
+                Uniform::new("filter_row_r", filter.rows[0]),
+                Uniform::new("filter_row_g", filter.rows[1]),
+                Uniform::new("filter_row_b", filter.rows[2]),
+                Uniform::new("filter_offset", filter.offset),
+                Uniform::new("use_filter", flag(!self.wanted.filter.is_off())),
             ],
         );
         if lut.is_some() {
@@ -697,6 +728,25 @@ mod tests {
         assert_eq!(pixel(0, 0, 0), [0, 0, 0, 255]);
         assert_eq!(pixel(side - 1, side - 1, side - 1), [255, 255, 255, 255]);
         assert_eq!(pixel(16, 0, 32), [127, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_colour_filter_asks_for_the_final_pass() {
+        assert!(
+            Wanted::default().plain(),
+            "an untouched output needs no pass"
+        );
+        for filter in [
+            ColorFilter::Grayscale,
+            ColorFilter::Inverted,
+            ColorFilter::GrayscaleInverted,
+        ] {
+            let wanted = Wanted {
+                filter,
+                ..Wanted::default()
+            };
+            assert!(!wanted.plain(), "{filter:?} is drawn by the pass");
+        }
     }
 
     #[test]

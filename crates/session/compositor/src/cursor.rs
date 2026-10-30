@@ -68,9 +68,11 @@ impl Cursor {
         }
     }
 
-    /// Show the pointer at `size` logical pixels; `0` keeps the size it has.
+    /// Show the pointer at `size` logical pixels, inside what a person can
+    /// still aim with; `1` when it is not set.
     pub(crate) fn set_size(&mut self, size: u32) {
-        if size == 0 || size == self.size {
+        let size = size.clamp(1, crate::a11y::MAX_CURSOR_SIZE);
+        if size == self.size {
             return;
         }
         self.size = size;

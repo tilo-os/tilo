@@ -53,8 +53,9 @@ pub(super) struct Input {
     config: InputConfig,
     devices: Vec<Device>,
     access: AccessKeys,
-    /// The mouse-keys glide timer, while one is armed.
-    glide: Option<RegistrationToken>,
+    /// The assists' timer (a mouse-keys glide, a slow key, automatic
+    /// switch scanning), while one is armed.
+    ticker: Option<RegistrationToken>,
     /// The keymap shortcut chords are typed on.
     keymap: Option<xkb::Keymap>,
     /// Pad rings and strips turned into scroll steps.
@@ -72,24 +73,29 @@ struct Pad {
 
 impl Input {
     pub(super) fn new(config: InputConfig) -> Self {
-        let mut access = AccessKeys::default();
-        let _released = access.configure(config.bounce_keys, config.mouse_keys);
         Self {
             config,
             devices: Vec::new(),
-            access,
-            glide: None,
+            access: AccessKeys::default(),
+            ticker: None,
             keymap: None,
             dials: super::input_source::DialSteps::default(),
             pads: Vec::new(),
         }
     }
 
+    /// Take the person's typing and pointing assists, returning the events
+    /// that switching one off releases.
+    pub(super) fn set_assists(
+        &mut self,
+        assists: &crate::Assists,
+        now: Instant,
+    ) -> Vec<InputEvent> {
+        self.access.configure(assists, now)
+    }
+
     /// Take a new configuration and apply it to every attached device.
-    pub(super) fn set_config(&mut self, config: InputConfig, state: &mut State) {
-        for event in self.access.configure(config.bounce_keys, config.mouse_keys) {
-            state.handle_input(event);
-        }
+    pub(super) fn set_config(&mut self, config: InputConfig) {
         self.config = config;
         input_config::reconfigure_all(&self.config, &mut self.devices);
     }
@@ -354,7 +360,16 @@ pub(super) fn dispatch(
     for event in events {
         state.handle_input(event);
     }
-    arm_glide(input, handle);
+    show_alert(input, state, Instant::now());
+    arm_ticker(input, handle);
+}
+
+/// Flash the outputs if the assists dropped a press as contact bounce.
+pub(super) fn show_alert(input: &Rc<RefCell<Input>>, state: &mut State, now: Instant) {
+    if input.borrow_mut().access.take_alert() {
+        crate::a11y::flash_all(state, now);
+        state.mark_redraw_all();
+    }
 }
 
 /// A touch's place in the logical layout: on the touchscreen's own output
@@ -409,10 +424,11 @@ where
     crate::input::touch_slot(event.slot())
 }
 
-/// Keep the mouse-keys glide ticking while a direction key is held.
-fn arm_glide(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static, LoopData>) {
+/// Keep the assists' timer armed while they owe anything: a mouse-keys
+/// glide, a held slow key, the focus walking on by itself.
+pub(super) fn arm_ticker(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static, LoopData>) {
     let mut this = input.borrow_mut();
-    if this.glide.is_some() {
+    if this.ticker.is_some() {
         return;
     }
     let Some(deadline) = this.access.next_deadline() else {
@@ -421,19 +437,23 @@ fn arm_glide(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static, LoopData>)
     let ticking = Rc::clone(input);
     let token = handle.insert_source(Timer::from_deadline(deadline), move |now, (), data| {
         let mut this = ticking.borrow_mut();
-        if let Some(event) = this.access.tick(now) {
+        for event in this.access.tick(now) {
             data.state.handle_input(event);
+        }
+        if this.access.take_alert() {
+            crate::a11y::flash_all(&data.state, now);
+            data.state.mark_redraw_all();
         }
         if let Some(next) = this.access.next_deadline() {
             TimeoutAction::ToInstant(next)
         } else {
-            this.glide = None;
+            this.ticker = None;
             TimeoutAction::Drop
         }
     });
     match token {
-        Ok(token) => this.glide = Some(token),
-        Err(error) => tracing::warn!(?error, "mouse keys: glide timer not armed"),
+        Ok(token) => this.ticker = Some(token),
+        Err(error) => tracing::warn!(?error, "accessibility assists: timer not armed"),
     }
 }
 

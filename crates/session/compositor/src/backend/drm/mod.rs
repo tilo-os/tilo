@@ -261,6 +261,8 @@ fn renderer_for(
 pub struct DrmBackend {
     inner: Rc<RefCell<Inner>>,
     input: Rc<RefCell<libinput::Input>>,
+    /// The loop the assists' timer is armed on.
+    handle: LoopHandle<'static, LoopData>,
 }
 
 impl DrmBackend {
@@ -368,7 +370,11 @@ impl DrmBackend {
             })
             .map_err(|error| failed("udev source", error.error))?;
 
-        Ok(Self { inner, input })
+        Ok(Self {
+            inner,
+            input,
+            handle: handle.clone(),
+        })
     }
 }
 
@@ -617,8 +623,20 @@ impl Backend for DrmBackend {
         self.inner.borrow_mut().config = config.clone();
     }
 
-    fn set_input_config(&mut self, state: &mut State, config: input_config::InputConfig) {
-        self.input.borrow_mut().set_config(config, state);
+    fn set_input_config(&mut self, _state: &mut State, config: input_config::InputConfig) {
+        self.input.borrow_mut().set_config(config);
+        libinput::arm_ticker(&self.input, &self.handle);
+    }
+
+    fn set_assists(&mut self, state: &mut State, assists: &crate::Assists) {
+        let released = self
+            .input
+            .borrow_mut()
+            .set_assists(assists, std::time::Instant::now());
+        for event in released {
+            state.handle_input(event);
+        }
+        libinput::arm_ticker(&self.input, &self.handle);
     }
 
     fn next_deadline(&self) -> Option<Instant> {
@@ -711,6 +729,7 @@ fn render_gpu(
         let wanted = color::Wanted {
             profile: config.color_profiles.get(&name).cloned(),
             hdr: config.hdr.get(&name).cloned(),
+            filter: crate::a11y::visual(&lit.output).color_filter,
         };
         // An output another GPU shows gets a copy in its swapchain's
         // format; only one the primary draws directly changes depth.
