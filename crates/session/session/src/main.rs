@@ -1,11 +1,21 @@
-//! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [--host-desktop] [--firstboot|--firstboot-only] [--no-x11] [--session-bus ADDRESS|none] [--system-bus
-//! ADDRESS|none] [-- command args...]`. Listens on a fresh `wayland-N`
-//! socket, starts Xwayland for X11 clients (unless `--no-x11`), prints both
-//! displays and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set
-//! to them; with a command, the session lasts as long as it does. The desktop
-//! services serve on the buses the environment names unless a flag names
-//! another (or none).
+//! The native session: `tilo-session [--backend drm|headless|nested]
+//! [--size WxH] [--host-desktop] [--firstboot|--firstboot-only] [--no-x11]
+//! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
+//! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
+//! Xwayland for X11 clients (unless `--no-x11`), prints both displays and
+//! starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to them; with a
+//! command, the session lasts as long as it does. The desktop services serve
+//! on the buses the environment names unless a flag names another (or none);
+//! a nested session, which runs in a window of a desktop it did not start,
+//! serves no bus unless a flag names one and exports nothing to that
+//! desktop's systemd user manager and D-Bus activation. A command started in
+//! the session is given the session bus a flag named, so the portal and the
+//! notifications it reaches are the session's own.
+
+#[cfg(target_os = "linux")]
+use tilo_session::desktop_services::{Bus, Buses};
+#[cfg(target_os = "linux")]
+use tilo_session::{Backend, Reach, SessionEnvironment};
 
 /// Byte string stamped into a session built with `--features dev-session`, so
 /// the package's developer entry can tell a deliberately built session from
@@ -21,8 +31,7 @@ static DEV_SESSION_BUILD_MARKER: [u8; 32] = *b"tilo-app-session-build-marker-v1"
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use std::sync::Arc;
-    use tilo_compositor::{DisplayConfig, OutputConfig};
-    use tilo_session::desktop_services::{Bus, Buses};
+    use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
     use tilo_session::{Options, Session};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,21 +75,30 @@ fn main() -> std::process::ExitCode {
             .position(|arg| arg == flag)
             .and_then(|index| ours.get(index.saturating_add(1)))
     };
-    let backend = value("--backend").map_or("drm", String::as_str);
-    let size = value("--size")
+    let name = value("--backend").map_or("drm", String::as_str);
+    let Some(backend) = Backend::named(name) else {
+        eprintln!("tilo-session: unknown backend {name} (drm, headless, nested)");
+        return ExitCode::FAILURE;
+    };
+    let size: (u16, u16) = value("--size")
         .and_then(|size| size.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
-
     let bus = |flag: &str| match value(flag).map(String::as_str) {
         None => Bus::Default,
         Some("none") => Bus::None,
         Some(address) => Bus::Address(address.to_owned()),
     };
-    let buses = Buses {
-        session: bus("--session-bus"),
-        system: bus("--system-bus"),
-    };
+    // What a session in a window of another desktop reaches of it: no bus of
+    // it unless a flag names one, and no displays exported to it.
+    let reach = Reach::new(
+        backend,
+        Buses {
+            session: bus("--session-bus"),
+            system: bus("--system-bus"),
+        },
+    );
+    let buses = reach.buses.clone();
     record_panics(backend);
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is
@@ -129,14 +147,22 @@ fn main() -> std::process::ExitCode {
         ..device_options()
     };
     let started = match backend {
-        "headless" => {
-            Session::headless(options, &[OutputConfig::new("HEADLESS-1", size.0, size.1)])
-        }
-        "drm" => Session::drm(options, DisplayConfig::default()),
-        other => {
-            eprintln!("tilo-session: unknown backend {other} (drm, headless)");
-            return ExitCode::FAILURE;
-        }
+        Backend::Headless => Session::headless(
+            options,
+            &[OutputConfig::new(
+                "HEADLESS-1",
+                i32::from(size.0),
+                i32::from(size.1),
+            )],
+        ),
+        Backend::Drm => Session::drm(options, DisplayConfig::default()),
+        Backend::Nested => Session::nested(
+            options,
+            &NestedConfig {
+                size,
+                ..NestedConfig::default()
+            },
+        ),
     };
     let mut session = match started {
         Ok(session) => session,
@@ -150,7 +176,14 @@ fn main() -> std::process::ExitCode {
         Bus::Address(address) => Some(address.clone()),
         _ => None,
     };
-    run(session, ours, command, Some(&launch), session_bus)
+    run(
+        session,
+        ours,
+        command,
+        Some(&launch),
+        session_bus,
+        reach.export_displays,
+    )
 }
 
 /// `session` running until `command` exits, its displays printed.
@@ -161,9 +194,9 @@ fn run(
     command: &[String],
     launch: Option<&std::rc::Rc<tilo_session::mount::apps::Apps>>,
     session_bus: Option<String>,
+    export_displays: bool,
 ) -> std::process::ExitCode {
     use std::process::ExitCode;
-    use tilo_session::SessionEnvironment;
 
     let socket = match session.compositor().listen() {
         Ok(socket) => socket,
@@ -185,19 +218,21 @@ fn run(
         launch.set_displays(
             tilo_paths::xdg::runtime_dir_or_default().join(&socket),
             x11_display.clone().map(|display| (display, None)),
-            session_bus,
+            session_bus.clone(),
         );
     }
-    SessionEnvironment {
-        wayland_display: socket.clone(),
-        x11_display: x11_display.clone(),
+    let environment = SessionEnvironment {
+        wayland_display: socket,
+        x11_display,
         x11_authority: None,
+    };
+    if export_displays {
+        environment.clone().export();
     }
-    .export();
-    let mut child = command
-        .split_first()
-        .and_then(|(program, rest)| start_command(program, rest, &socket, x11_display.as_deref()));
-    match session.run(|_| {
+    let mut child = command.split_first().and_then(|(program, rest)| {
+        start_command(program, rest, &environment, session_bus.as_deref())
+    });
+    let result = session.run(|_| {
         child
             .as_mut()
             .is_some_and(|child| child.try_wait().is_ok_and(|status| status.is_some()))
@@ -214,8 +249,8 @@ fn run(
 /// with no idea why: the one that owns the machine leaves a record of every
 /// panic, which its next start tells them about.
 #[cfg(target_os = "linux")]
-fn record_panics(backend: &str) {
-    if backend == "drm" {
+fn record_panics(backend: Backend) {
+    if backend == Backend::Drm {
         tilo_crash_records::install(tilo_crash_records::PANIC_TITLE);
     }
 }
@@ -225,8 +260,8 @@ fn record_panics(backend: &str) {
 /// session in a window of another desktop, or a headless one, has that
 /// machine's storage, updates and history to leave alone.
 #[cfg(target_os = "linux")]
-fn tell_the_person(backend: &str, desktop: Option<&tilo_session::desktop_services::DesktopServices>) {
-    if backend == "drm"
+fn tell_the_person(backend: Backend, desktop: Option<&tilo_session::desktop_services::DesktopServices>) {
+    if backend == Backend::Drm
         && let Some(desktop) = desktop
     {
         tilo_session::notices::start(desktop.notifications());
@@ -238,8 +273,8 @@ fn tell_the_person(backend: &str, desktop: Option<&tilo_session::desktop_service
 /// the person comes back to the login screen. Only the TTY backend owns the
 /// display; a window or a headless run leaves nothing to hand back.
 #[cfg(target_os = "linux")]
-fn watch_the_loop(backend: &str, session: &mut tilo_session::Session) {
-    if backend == "drm"
+fn watch_the_loop(backend: Backend, session: &mut tilo_session::Session) {
+    if backend == Backend::Drm
         && let Err(error) = tilo_session::notices::guard_main_loop(session.compositor())
     {
         tracing::warn!(%error, "the main loop is not watched");
@@ -320,20 +355,26 @@ fn start_x11(compositor: &mut tilo_compositor::Compositor) -> Option<String> {
     }
 }
 
-/// `program` started with `rest`, on the session's displays.
+/// `program` started with `rest` on `environment`'s displays and, when a
+/// flag named the session bus, on that bus rather than the one it inherits.
 #[cfg(target_os = "linux")]
 fn start_command(
     program: &str,
     rest: &[String],
-    wayland: &str,
-    x11: Option<&str>,
+    environment: &SessionEnvironment,
+    session_bus: Option<&str>,
 ) -> Option<std::process::Child> {
     let mut started = std::process::Command::new(program);
-    started.args(rest).env("WAYLAND_DISPLAY", wayland);
-    match x11 {
+    started
+        .args(rest)
+        .env("WAYLAND_DISPLAY", &environment.wayland_display);
+    match &environment.x11_display {
         Some(display) => started.env("DISPLAY", display),
         None => started.env_remove("DISPLAY"),
     };
+    if let Some(address) = session_bus {
+        started.env("DBUS_SESSION_BUS_ADDRESS", address);
+    }
     started
         .spawn()
         .map_err(|error| eprintln!("tilo-session: {program}: {error}"))

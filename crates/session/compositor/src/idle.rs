@@ -232,6 +232,12 @@ impl SessionManager {
         }
     }
 
+    /// The idle policy this manager runs: what the session applied to it.
+    #[must_use]
+    pub const fn config(&self) -> IdleConfig {
+        self.config
+    }
+
     /// Whether the display is currently blanked (DPMS off).
     pub fn is_blanked(&self) -> bool {
         matches!(self.panel, Panel::Off { .. })
