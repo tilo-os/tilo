@@ -72,6 +72,12 @@ SECOND_SHARE = 0.25
 # The packages kept on x86_64 when a test set is split: their code or tests differ by
 # architecture and CI tests them on x86_64.
 X86_ONLY = {"shell"}
+# A change to what the session's real paths cross (the shell, collaboration, the tilolang host
+# and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
+# session of this tree, built on the arm builder and run here, since the builders' containers
+# cannot start Tilo's sandboxes.
+SESSION_E2E_PATHS = ("crates/session/shell/", "crates/collab/", "crates/platform/tilolang-host/",
+                     "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(
     r"^\s*(?:TRY \d+ )?(FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
@@ -465,9 +471,21 @@ def main() -> int:
     # The repository policy suite (tools/policy/run.sh: the policy checks and every Python
     # test under tools/tests and .codex/hooks), as CI's quality job runs it: here, beside the
     # builder jobs, since its tests build Git repositories of their own from this checkout.
+    # Its tests of Node.js scripts (steps.toml `node_tests`) need Node.js, which the builder's
+    # container has and this machine may not, and no Git checkout, which the builder's copy of
+    # the worktree lacks: without Node.js here they run there, the rest here.
     if want("policy"):
-        spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
-                                            ["bash", "tools/policy/run.sh"]))
+        if shutil.which("node") or primary.prefix is None:
+            spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
+                                                ["bash", "tools/policy/run.sh"]))
+        else:
+            spawn("policy", lambda job: job.run("repository policy suite without its Node.js tests",
+                                                Builder("local", None),
+                                                ["bash", "tools/policy/run.sh", "--no-node"]))
+            # No bytecode: the copy's __pycache__ would come back as conflicts with this one's.
+            spawn("policy-node", lambda job: job.run(
+                "repository policy tests of Node.js scripts", primary,
+                ["env", "PYTHONDONTWRITEBYTECODE=1", "bash", "tools/policy/run.sh", "--node"]))
 
     # Type-check only (other architectures, `--full`): on the arm builder when there is one.
     if want("check") and checks:
@@ -516,6 +534,14 @@ def main() -> int:
             if mine:
                 spawn(f"{label}-failed", failed_first(builder, packages, mine))
             spawn(label, test_share(builder, packages, mine))
+
+    # The session's real paths, end to end: built once on the arm builder, run on this machine.
+    changed_files = plan.get("changed_files", [])
+    if args.changed and want("test") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
+        spawn("session-e2e", lambda job: job.run(
+            "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
+            [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",
+             "--out", "target/session-e2e"]))
 
     for thread in threads:
         thread.join()

@@ -29,18 +29,18 @@ use serde_json::{Value as Json, json};
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::flow::Journal;
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
-use tilolang_runtime::meta::Meta;
+use tilolang_runtime::meta::{Meta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
     Scalar, Store, StoreError, SubId, Txn,
 };
-use tilolang_runtime::value::{ResourceRef, Value, from_json, to_json};
+use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, Runtime};
 
 use crate::bundle::Bundle;
-use crate::host::Host;
+use crate::host::{Host, argument_json};
 use crate::meta::MetaExt as _;
 use crate::publish::{package_resource_id, resource_id};
 
@@ -321,7 +321,7 @@ impl Invoker for DoorInvoker {
         let Some(meta) = self.apps.get(app) else {
             return Invoked::Refused(format!("this task may use no app {app}"));
         };
-        let call = match call_of(meta, invocation) {
+        let call = match call_of(&self.apps, meta, invocation) {
             Ok(call) => call,
             Err(why) => return Invoked::Failed(why),
         };
@@ -368,7 +368,11 @@ impl Invoker for DoorInvoker {
 /// The door's call for `invocation` of the package `meta`: a declared action on its subject
 /// (its first parameter, when it is one of the package's types) or on the package, its other
 /// arguments by name; a field edit on its resource.
-fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
+fn call_of(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    invocation: &Invocation,
+) -> Result<Json, String> {
     match invocation {
         Invocation::Action {
             app, action, args, ..
@@ -385,23 +389,18 @@ fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
             };
             let mut arguments = serde_json::Map::new();
             for (name, value) in args.iter().skip(usize::from(subject.is_some())) {
-                let param = declared.params.iter().find(|param| param.name == *name);
-                let json = match (value, param) {
-                    // A flag travels as the integer the guest boxed it as.
-                    (Value::Int(n), Some(param)) if param.ty == "Bool" => json!(*n != 0),
-                    // A resource of the app's own type, as the catalogue refers to it.
-                    (Value::Ref(r), Some(param)) => match meta.type_named(&param.ty) {
-                        Some(ty) => json!({
-                            "app": app,
-                            "kind": meta.kind_of(&ty.name),
-                            "id": r.target.id_string(),
-                            "label": "",
-                        }),
-                        None => argument_json(value)?,
-                    },
-                    _ => argument_json(value)?,
+                let param = declared
+                    .params
+                    .iter()
+                    .find(|param| param.name == *name)
+                    .ok_or_else(|| format!("{action} takes no argument `{name}`"))?;
+                let ty = parse_ty(&param.ty, app)?;
+                let owner = |other: &str| {
+                    apps.get(other)
+                        .cloned()
+                        .ok_or_else(|| format!("this task may use no app {other}"))
                 };
-                arguments.insert(name.clone(), json);
+                arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
             }
             Ok(json!({
                 "app": app,
@@ -434,15 +433,6 @@ fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
                 "arguments": {"field": field_id, "value": value},
             }))
         }
-    }
-}
-
-/// An argument as the app's published action takes it ([`crate::host`]'s `value_of`): a resource
-/// by its published id, anything else as the runtime encodes it.
-fn argument_json(value: &Value) -> Result<Json, String> {
-    match value {
-        Value::Ref(r) => Ok(Json::String(r.target.id_string())),
-        other => to_json(other),
     }
 }
 

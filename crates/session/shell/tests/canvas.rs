@@ -128,6 +128,120 @@ fn drawn_at_places(state: &Value) -> bool {
     })
 }
 
+/// How much of each placed window's rect on screen the last frame painted:
+/// the share of its pixels that differ from the empty canvas beside them
+/// (`None` for a window wholly off screen).
+/// Layout alone can place every window and draw none of them; this reads
+/// the frame the compositor submitted.
+fn painted_shares(desktop: &Desktop, state: &Value, groups: &[u64]) -> Vec<(u64, Option<f64>)> {
+    let path = desktop
+        .state_path()
+        .with_file_name(format!("canvas-frame-{}.png", std::process::id()));
+    if path.exists() {
+        std::fs::remove_file(&path).expect("remove an earlier snapshot");
+    }
+    let answer = desktop.call(&json!({"op": "snapshot", "path": path}));
+    assert!(
+        answer.get("err").is_none(),
+        "the snapshot was refused: {answer}"
+    );
+    let frame = image::open(&path)
+        .unwrap_or_else(|error| panic!("the snapshot {} decodes: {error}", path.display()))
+        .to_rgba8();
+    std::fs::remove_file(&path).expect("remove the snapshot");
+    let (width, height) = frame.dimensions();
+    let canvas_frame = four(&state["frame"]).expect("the canvas has a frame");
+    let scale = f64::from(width) / f64::from(SCREEN.0);
+    let pixel = |x: f64, y: f64| {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped into the frame first"
+        )]
+        let at = |v: f64, side: u32| (v * scale).clamp(0.0, f64::from(side - 1)) as u32;
+        *frame.get_pixel(at(x, width), at(y, height))
+    };
+    // The empty canvas: the first point of the deck, scanning up from its
+    // bottom-right corner, that no window stands over (with a margin for
+    // shadows).
+    let windows: Vec<[f64; 4]> = state["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|w| four(&w["screen"]))
+        .collect();
+    let empty = (0..40)
+        .flat_map(|i| (0..40).map(move |j| (i, j)))
+        .map(|(i, j)| {
+            (
+                canvas_frame[0] + canvas_frame[2] - 4.0 - f64::from(i) * canvas_frame[2] / 40.0,
+                canvas_frame[1] + canvas_frame[3] - 4.0 - f64::from(j) * canvas_frame[3] / 40.0,
+            )
+        })
+        .find(|(x, y)| {
+            windows.iter().all(|w| {
+                *x < w[0] - 24.0
+                    || *x > w[0] + w[2] + 24.0
+                    || *y < w[1] - 24.0
+                    || *y > w[1] + w[3] + 24.0
+            })
+        })
+        .expect("some of the canvas is empty");
+    let backdrop = pixel(empty.0, empty.1);
+    let differs = |p: image::Rgba<u8>| {
+        p.0.iter()
+            .zip(backdrop.0.iter())
+            .take(3)
+            .any(|(a, b)| a.abs_diff(*b) > 6)
+    };
+    groups
+        .iter()
+        .map(|group| {
+            let Some((_, screen)) = window(state, *group) else {
+                return (*group, Some(0.0));
+            };
+            let mut painted = 0_u32;
+            let mut seen = 0_u32;
+            for i in 1..20 {
+                for j in 1..20 {
+                    let x = screen[0] + screen[2] * f64::from(i) / 20.0;
+                    let y = screen[1] + screen[3] * f64::from(j) / 20.0;
+                    if x < canvas_frame[0]
+                        || y < canvas_frame[1]
+                        || x >= canvas_frame[0] + canvas_frame[2]
+                        || y >= canvas_frame[1] + canvas_frame[3]
+                    {
+                        continue;
+                    }
+                    seen += 1;
+                    if differs(pixel(x, y)) {
+                        painted += 1;
+                    }
+                }
+            }
+            (
+                *group,
+                (seen > 0).then(|| f64::from(painted) / f64::from(seen)),
+            )
+        })
+        .collect()
+}
+
+/// Every placed window on screen is drawn, not only laid out: most of the
+/// rect it stands in holds its pixels.
+#[track_caller]
+fn assert_windows_painted(desktop: &Desktop, what: &str, groups: &[u64]) {
+    let state = canvas(desktop);
+    let shares = painted_shares(desktop, &state, groups);
+    assert!(
+        shares.iter().any(|(_, share)| share.is_some())
+            && shares
+                .iter()
+                .all(|(_, share)| share.is_none_or(|share| share > 0.5)),
+        "{what}: the canvas places its windows but does not draw them: painted share per group {shares:?}\ncanvas: {state}"
+    );
+}
+
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -143,6 +257,7 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
             state["shown"] == json!(true) && drawn_at_places(&state)
         },
     );
+    assert_windows_painted(&desktop, "on the canvas", &[FIRST, SECOND, THIRD]);
     let frame = four(&canvas(&desktop)["frame"]).expect("the canvas has a frame");
 
     // Free space: a click puts the caret there, and typing goes to it.
@@ -162,14 +277,19 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
         json!(true),
         "the caret has the keyboard"
     );
-    // Enter with no agent in the workspace says so at the caret, and keeps
-    // what was typed; typing again takes the reason away.
+    // Enter where no agent can be made for the task (the test session runs
+    // no agent runtime) says so at the caret, and keeps what was typed;
+    // typing again takes the reason away.
     desktop.key("Enter");
-    wait(&desktop, "the caret says no agent works here", || {
-        let caret = &canvas(&desktop)["caret"];
-        caret["refused"] == json!("canvas-ask-no-agent")
-            && caret["text"] == json!("show me this week's release work")
-    });
+    wait(
+        &desktop,
+        "the caret says no agent can be asked here",
+        || {
+            let caret = &canvas(&desktop)["caret"];
+            caret["refused"] == json!("agent-quick-blocked-no-runtime")
+                && caret["text"] == json!("show me this week's release work")
+        },
+    );
     desktop.type_text("!");
     wait(&desktop, "typing again takes the reason away", || {
         canvas(&desktop)["caret"]["refused"].is_null()
@@ -223,6 +343,7 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
             .is_some_and(|z| (z - 1.0).abs() > 0.05)
             && drawn_at_places(&state)
     });
+    assert_windows_painted(&desktop, "panned and zoomed", &[FIRST, SECOND, THIRD]);
 
     // The strips come back, and the canvas finds everything where it was.
     desktop.invoke_action("actions", "workspace.show-strips");
@@ -235,6 +356,11 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
         let state = canvas(&desktop);
         state["shown"] == json!(true) && drawn_at_places(&state)
     });
+    assert_windows_painted(
+        &desktop,
+        "back on the canvas from the strips",
+        &[FIRST, SECOND, THIRD],
+    );
 
     // A window carried by its bar stays where it is let go.
     let (_, second) = window(&canvas(&desktop), SECOND).expect("the second window is drawn");
@@ -287,5 +413,48 @@ fn point_at_empty_canvas_and_type_select_pan_zoom_and_keep_places_across_a_resta
                     .and_then(|(place, _)| place)
                     .is_some_and(|place| close(place[0], 40.0) && close(place[1], 40.0))
         },
+    );
+}
+
+/// A window opened while the canvas shows is placed where the person sees
+/// it, and drawn there with every other window: beside the window in front
+/// when that is on screen, else wherever is; with no room on screen, this
+/// device's lens zooms out to take every window in.
+#[test]
+fn a_window_opened_on_the_canvas_is_drawn_on_screen_with_the_others() {
+    let desktop = Desktop::start(SCREEN, &canvas_tree());
+    wait(&desktop, "the canvas shows its windows", || {
+        let state = canvas(&desktop);
+        state["shown"] == json!(true) && drawn_at_places(&state)
+    });
+    desktop.invoke_action("actions", "feedback.open");
+    let opened = || {
+        let state = canvas(&desktop);
+        let frame = four(&state["frame"])?;
+        let windows = state["windows"].as_array()?;
+        let on_screen = |entry: &Value| {
+            four(&entry["place"]).is_some()
+                && four(&entry["screen"]).is_some_and(|screen| {
+                    screen[0] >= frame[0] - 0.5
+                        && screen[1] >= frame[1] - 0.5
+                        && screen[0] + screen[2] <= frame[0] + frame[2] + 0.5
+                        && screen[1] + screen[3] <= frame[1] + frame[3] + 0.5
+                })
+        };
+        let new = windows
+            .iter()
+            .find(|w| ![FIRST, SECOND, THIRD].contains(&w["group"].as_u64().unwrap_or(FIRST)))?;
+        (windows.len() == 4 && windows.iter().all(on_screen)).then(|| new["group"].as_u64())?
+    };
+    wait(
+        &desktop,
+        "the opened window and every other is placed wholly on screen",
+        || opened().is_some(),
+    );
+    let group = opened().expect("the opened window");
+    assert_windows_painted(
+        &desktop,
+        "the window opened on the canvas",
+        &[FIRST, SECOND, THIRD, group],
     );
 }

@@ -55,7 +55,11 @@ pub enum OverviewEffect {
     #[effect(view, own_device, idempotent)]
     Close,
     /// Go to workspace
-    #[effect(own_device, idempotent, keywords = "switch workspace, room")]
+    #[effect(
+        own_device,
+        idempotent,
+        keywords = "switch workspace, change workspace, open workspace"
+    )]
     SwitchWorkspace {
         #[param("The workspace to go to, by name or id")]
         workspace: String,
