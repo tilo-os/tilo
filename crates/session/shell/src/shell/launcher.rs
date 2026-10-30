@@ -4009,7 +4009,9 @@ fn apply_launch_context(
                     detail: "a visitor window opens one web address".into(),
                 });
             }
-            command.args.push(ui::webview::VISITOR_WINDOW_FLAG.into());
+            // The launcher's own switch: it hands the app its visitor switch
+            // after the address (`runtime_portal::windows::VISITOR_WINDOW_FLAG`).
+            command.args.push("--open-as-visitor".into());
         }
     }
     Ok(())

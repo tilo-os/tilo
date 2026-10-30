@@ -47,6 +47,12 @@ enum Started {
     Child { wire: u64, owner: InvocationOwner },
     /// A host step, admitted by the run and taken by the task agent.
     HostStep,
+    /// A child the run is still admitting (an app it launches for it):
+    /// accepted until its admission answers.
+    Starting,
+    /// A child the run refused, and why: what a caller that stopped
+    /// waiting for the admission reads when it looks again.
+    Refused(String),
 }
 
 /// The run a host works in, as the broker delivered it.
@@ -489,13 +495,29 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
                 )
             }
             Started::HostStep => self.0.state.action_observe(&self.0.caller, id),
+            Started::Starting => Some(InvocationState::new(
+                *id,
+                tilo_actions::InvocationUpdate::Accepted { invocation: *id },
+            )),
+            Started::Refused(reason) => Some(InvocationState::new(
+                *id,
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: *id,
+                    error: tilo_actions::ActionFailure {
+                        code: "run_refused".into(),
+                        message: reason,
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            )),
         }
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
         self.check(caller).ok()?;
         match self.started(id)? {
-            Started::Child { .. } => {
+            Started::Child { .. } | Started::Starting => {
                 let mut seen = self.0.state.invocation_changes();
                 let runtime = tokio::runtime::Handle::try_current().ok()?;
                 let (changed, change) = pending();
@@ -513,6 +535,7 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
                 .0
                 .state
                 .action_next_change_after_now(&self.0.caller, id),
+            Started::Refused(_) => None,
         }
     }
 
@@ -532,6 +555,12 @@ impl tilo_actions::remote::ActionHost for TaskRunHost {
                     .map_err(|reason| ActionHostError::NotCancellable { reason }),
             ),
             Some(Started::HostStep) => self.0.state.action_cancel(&self.0.caller, id),
+            Some(Started::Starting) => Pending::ready(Err(ActionHostError::NotCancellable {
+                reason: "the run is still admitting it".into(),
+            })),
+            Some(Started::Refused(reason)) => {
+                Pending::ready(Err(ActionHostError::NotCancellable { reason }))
+            }
             None => Pending::ready(Err(ActionHostError::UnknownInvocation)),
         }
     }
@@ -577,6 +606,7 @@ impl TaskRunHost {
             },
             caller: &caller,
         };
+        self.remember(request.invocation, Started::Starting);
         let started = self
             .0
             .state
@@ -586,6 +616,7 @@ impl TaskRunHost {
             Ok(started) => started,
             Err(error) => {
                 let error = error.to_string();
+                self.remember(request.invocation, Started::Refused(error.clone()));
                 // The run pauses for its person: the question goes on its
                 // issue, as a launched agent puts it there, and the agent
                 // asks again with the same arguments once they answered.
