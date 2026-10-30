@@ -122,6 +122,7 @@ macro_rules! read_through_json_value {
 }
 
 pub mod action;
+pub mod agent_disclosure;
 pub mod appearance;
 pub mod compact;
 pub mod content;
@@ -155,6 +156,7 @@ pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
     undo_takes_back,
 };
+pub use agent_disclosure::hidden_from_agents;
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
     CONTENT_PART_THRESHOLD, CONTENT_REFERENCE_KEY, ContentParts, MissingContent, keep_content_in,
