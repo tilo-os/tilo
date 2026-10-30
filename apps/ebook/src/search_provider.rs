@@ -1439,12 +1439,24 @@ mod tests {
             highlight_actions.sort_unstable();
             assert_eq!(
                 highlight_actions,
-                ["add-comment", "change-color", "delete-highlight", "open"]
+                [
+                    "add-comment",
+                    "change-color",
+                    "delete-highlight",
+                    "open",
+                    "read-highlight"
+                ]
             );
 
             for (query, expected) in [
-                ("peer comment", ["delete-annotation", "open"].as_slice()),
-                ("reader note", ["delete-annotation", "open"].as_slice()),
+                (
+                    "peer comment",
+                    ["delete-annotation", "open", "read-annotation"].as_slice(),
+                ),
+                (
+                    "reader note",
+                    ["delete-annotation", "open", "read-annotation"].as_slice(),
+                ),
             ] {
                 let resource = provider
                     .books

@@ -478,6 +478,7 @@ files-nothing-to-move = Nothing to move
 ## Context, view and sort menus
 files-menu-open = Open
 files-action-reveal = Reveal in Files
+files-action-read = Get info
 files-menu-restore = Restore
 files-menu-delete-permanently = Delete permanently
 files-menu-empty-trash = Empty Trash

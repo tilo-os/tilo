@@ -629,6 +629,9 @@ impl WindowsApp {
             self.perform_effect(effect)?;
             return Ok(ui::framework::Effected::done());
         }
+        if let E::ReadApp { app } = effect {
+            return self.read_app(app).map(ui::framework::Effected::value);
+        }
         if self.resource_reply.is_some() {
             return Err("another Windows operation is still running".into());
         }
@@ -689,6 +692,7 @@ impl WindowsApp {
         use actions::WindowsEffect as E;
         match effect {
             E::Show { app } => self.show_app(app),
+            E::ReadApp { app } => self.read_app(app).map(drop),
             E::Install { path } => self.install(path.as_deref()),
             E::ImportIso { path } => self.import_iso(path.as_deref()),
             E::Recovery => self.appliance_owner.open_recovery(),
@@ -719,6 +723,40 @@ impl WindowsApp {
     }
 
     /// Show the application `app` names, as choosing its row does.
+    /// What the application `app` is and where it stands, its row's read.
+    fn read_app(&self, app: &str) -> Result<serde_json::Value, String> {
+        let app = self
+            .catalogue
+            .apps
+            .iter()
+            .find(|item| item.id == app)
+            .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
+        Ok(serde_json::json!({
+            "id": app.id,
+            "name": app.name,
+            "publisher": app.publisher,
+            "route": app.route,
+            "recommended_route": app.recommended_route,
+            "runner": app.runner,
+            "capsule": app.capsule,
+            "catalogue_source": app.catalogue_source,
+            "confidence": app.confidence,
+            "reason": app.reason,
+            "status": app.status,
+            "installation": app.installation_detail,
+            "grants": app
+                .grants
+                .iter()
+                .map(|grant| serde_json::json!({
+                    "label": grant.label,
+                    "detail": grant.detail,
+                    "enabled": grant.enabled,
+                }))
+                .collect::<Vec<_>>(),
+            "launch_unavailable": app.launch_unavailable_reason,
+        }))
+    }
+
     fn show_app(&mut self, app: &str) -> Result<(), String> {
         let index = self
             .catalogue

@@ -24,6 +24,19 @@ pub enum WindowsEffect {
         #[param("The application id")]
         app: String,
     },
+    /// Read application
+    ///
+    /// Answers what one application is and where it stands: its name and
+    /// publisher, how it runs and how it is recommended to run, how well
+    /// the catalogue knows it, its installation state and what it may use.
+    /// It is the application row's read: what discloses the row, so
+    /// launching, publishing, uninstalling and its other operations are
+    /// offered to whoever may read it, an agent too.
+    #[effect(view, row, returns, idempotent, label = "Read application")]
+    ReadApp {
+        #[param("The application id")]
+        app: String,
+    },
     /// Install Windows application.
     #[effect(job, privileged, kind = "outside")]
     Install {
@@ -218,6 +231,13 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
         crate::search::app_resource_id(&app.id),
         "windows.compat-app",
         &app.name,
+    )
+    .operation(
+        WindowsEffect::ReadApp {
+            app: app.id.clone(),
+        }
+        .bound()
+        .reads_document(),
     )
     .operation(
         WindowsEffect::Show {
