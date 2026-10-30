@@ -279,21 +279,23 @@ impl Backend for NestedBackend {
         let size = Size::<i32, Buffer>::from((mode.size.w, mode.size.h));
         let renderer = inner.window.renderer();
         // The scene is drawn again, off screen, and read back.
-        let mut target: smithay::backend::renderer::gles::GlesTexture = renderer
-            .create_buffer(Fourcc::Abgr8888, size)
-            .map_err(|error| failed("screenshot image", error))?;
-        let mut framebuffer = renderer
-            .bind(&mut target)
-            .map_err(|error| failed("bind screenshot image", error))?;
-        let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
-            state.cursor_elements(renderer, &inner.output);
-        elements.extend(output_elements(renderer, state, &inner.output));
-        OutputDamageTracker::from_output(&inner.output)
-            .render_output(renderer, &mut framebuffer, 0, &elements, BACKGROUND)
-            .map_err(|error| failed("render screenshot", error))?;
-        let mapping = renderer
-            .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Abgr8888)
-            .map_err(|error| failed("read back", error))?;
+        let mapping = {
+            let mut target: smithay::backend::renderer::gles::GlesTexture = renderer
+                .create_buffer(Fourcc::Abgr8888, size)
+                .map_err(|error| failed("screenshot image", error))?;
+            let mut framebuffer = renderer
+                .bind(&mut target)
+                .map_err(|error| failed("bind screenshot image", error))?;
+            let mut elements: Vec<OutputRenderElement<GlesRenderer>> =
+                state.cursor_elements(renderer, &inner.output);
+            elements.extend(output_elements(renderer, state, &inner.output));
+            OutputDamageTracker::from_output(&inner.output)
+                .render_output(renderer, &mut framebuffer, 0, &elements, BACKGROUND)
+                .map_err(|error| failed("render screenshot", error))?;
+            renderer
+                .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Abgr8888)
+                .map_err(|error| failed("read back", error))?
+        };
         let bytes = renderer
             .map_texture(&mapping)
             .map_err(|error| failed("map", error))?;
