@@ -26,7 +26,7 @@ use tilo_desktop_model::commands::{
     move_tab_to_workspace,
 };
 use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
-use tilo_desktop_surface::navigation::{ActivityView, Command};
+use tilo_desktop_surface::navigation::{ActivityView, Command, Route, RouteIds};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
@@ -49,7 +49,9 @@ use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer
 use crate::strip_switcher::Command as StripCommand;
 use crate::topbar::{TOPBAR_HEIGHT_PX, TopBarChrome};
 use crate::window_flight::WindowFlight;
-use crate::window_switcher::WindowSource;
+use crate::window_switcher::{
+    NoThumbnails, SwitcherOutcome, SwitcherScope, WindowSource, WindowSwitcher,
+};
 use crate::workspace_menu::{
     WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
@@ -595,6 +597,12 @@ struct PlainOverview {
     user: String,
 }
 
+/// The switcher's view of a host: every window carries its app's mark, and
+/// none is pictured ([`NoThumbnails`]).
+struct SwitcherWindows;
+
+impl WindowSource for SwitcherWindows {}
+
 impl WindowSource for PlainOverview {}
 
 impl OverviewHost for PlainOverview {
@@ -622,6 +630,9 @@ pub struct DesktopChrome {
     /// Where the person is in the workspace (the strip ribbon grown into
     /// the strip switcher, and the window rail).
     navigator: StripNavigator,
+    /// The Alt+Tab switcher: the windows of the workspace by when they were
+    /// last used, shown over the desk while Alt is held.
+    switcher: WindowSwitcher,
     /// Where the navigator's ribbon and rail stand and what they report.
     navigator_frame: StripFrame,
     /// What the navigator last read: the navigation and who-is-here
@@ -675,6 +686,7 @@ impl DesktopChrome {
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
+            switcher: WindowSwitcher::default(),
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
@@ -738,7 +750,59 @@ impl DesktopChrome {
     /// a menu, the overview or the strip switcher is up.
     #[must_use]
     pub fn wants_keyboard(&self) -> bool {
-        self.menu_open() || self.overview.is_open() || self.navigator.takes_keys()
+        self.menu_open()
+            || self.overview.is_open()
+            || self.navigator.takes_keys()
+            || self.switcher.is_active()
+    }
+
+    /// The Alt+Tab switcher is open: Alt is held after Tab, and every key
+    /// until it comes up is the switcher's.
+    #[must_use]
+    pub fn switcher_active(&self) -> bool {
+        self.switcher.is_active()
+    }
+
+    /// The window a release of Alt would go to.
+    #[must_use]
+    pub fn switcher_selected(&self) -> Option<u64> {
+        self.switcher.selected().map(|window| window.address.tab)
+    }
+
+    /// Where the switcher's panel is: empty while it is not up.
+    #[must_use]
+    pub fn switcher_panel(&self) -> Rect {
+        if self.switcher.is_active() {
+            self.switcher.panel_rect()
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    /// The panel is up rather than waiting out its reveal delay.
+    #[must_use]
+    pub fn switcher_revealed(&self) -> bool {
+        self.switcher.is_revealed(ui::time::now())
+    }
+
+    /// Carry out what the switcher decided: go to the window it settled on,
+    /// or nothing when it was cancelled.
+    fn take_switcher(&self, outcome: SwitcherOutcome) -> bool {
+        if let SwitcherOutcome::Commit(address) = outcome {
+            let workspace = self.handle.read(|tree| tree.active);
+            let route = Route::from_ids(RouteIds {
+                workspace,
+                strip: address.strip,
+                group: address.group,
+                tab: address.tab,
+            });
+            self.dispatch(&Command::Select {
+                generation: self.generation.clone(),
+                route,
+            });
+            return true;
+        }
+        outcome != SwitcherOutcome::Ignored
     }
 
     /// Whether a wheel at `point` steps strips (over the ribbon or its
@@ -1387,6 +1451,32 @@ impl DesktopChrome {
         if let Some(action) = action {
             return self.shortcut(action);
         }
+        // Alt+Tab walks the workspace's windows, and Alt with the key above
+        // Tab the focused app's: fixed chords, as Super+Tab is the
+        // overview, since Alt is a modifier the shortcut table never holds.
+        if let Some(scope) = SwitcherScope::for_chord(&event.logical_key, modifiers.state()) {
+            let outcome = if self.switcher.is_active() {
+                self.switcher
+                    .key(&event.logical_key, event.state, modifiers.state())
+            } else {
+                let tree = self.rules.tree();
+                let opened = self.switcher.begin(
+                    &tree,
+                    &SwitcherWindows,
+                    scope,
+                    modifiers.state().shift_key(),
+                    ui::time::now(),
+                );
+                if opened {
+                    SwitcherOutcome::Consumed
+                } else {
+                    SwitcherOutcome::Ignored
+                }
+            };
+            self.take_switcher(outcome);
+            // Taken either way: a switcher's chord never reaches a window.
+            return true;
+        }
         // Super+S opens the strip switcher for the keyboard, fixed rather
         // than rebindable.
         let strips = page_chord(&event.logical_key, event.physical_key, *modifiers, self.mac)
@@ -1443,6 +1533,9 @@ impl DesktopChrome {
         self.navigator_frame = StripFrame::of_tree(&tree, self.content, (&shown, scroll), covered);
         self.navigator
             .observe(&self.navigator_frame, ui::time::now());
+        // Which window has focus now, however it got there, so Alt+Tab
+        // walks them in the order they were used.
+        self.switcher.observe(&tree);
     }
 
     /// Carry out what the strip ribbon, its labels or the rail asked for.
@@ -1588,7 +1681,11 @@ impl DesktopChrome {
             ShortcutAction::NextWorkspace => self.apply_intent(ChromeIntent::SwitchWorkspace(1)),
             ShortcutAction::MaximizeWindow => self.maximize_focused(Some(true)),
             ShortcutAction::RestoreWindow => self.maximize_focused(Some(false)),
-            ShortcutAction::ToggleMaximize => self.maximize_focused(None),
+            // A tab covers the display by filling the strip it is laid out
+            // in, so the fullscreen chord fills the strip and gives it back.
+            ShortcutAction::ToggleMaximize | ShortcutAction::ToggleFullscreen => {
+                self.maximize_focused(None);
+            }
             ShortcutAction::ReportProblem => self.asks.borrow_mut().push(DesktopAsk::ReportProblem),
             other => {
                 if let Some(index) = other.focus_strip_index() {
@@ -1607,7 +1704,8 @@ impl DesktopChrome {
 
     /// Whether anything of the chrome is due a redraw.
     fn chrome_needs_redraw(&self) -> bool {
-        self.navigator.needs_animation_frame(ui::time::now())
+        self.switcher.is_active()
+            || self.navigator.needs_animation_frame(ui::time::now())
             || [
                 &self.bar as &dyn Widget,
                 &self.overview,
@@ -1891,6 +1989,17 @@ impl Widget for DesktopChrome {
         self.overview.draw(scene, transform, text, theme, presence);
         // Last, so what the bar opens below its band stays above the rest.
         self.bar.draw(scene, transform, text, theme, presence);
+        // Above even that: while Alt is held, the switcher is what the
+        // person is looking at.
+        self.switcher.draw(
+            scene,
+            transform,
+            text,
+            theme,
+            self.rect,
+            ui::time::now(),
+            &mut NoThumbnails,
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -1920,6 +2029,21 @@ impl Widget for DesktopChrome {
             self.tilo_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, tilo_menu));
             if *ctx.handled {
+                return;
+            }
+        }
+        // While the switcher is open every key is the switcher's, and the
+        // pointer is once its panel is up.
+        if self.switcher.is_active() {
+            let outcome = self.switcher.route_event(
+                event,
+                ctx.modifiers.state(),
+                self.cursor,
+                ui::time::now(),
+            );
+            if self.take_switcher(outcome) {
+                *ctx.handled = true;
+                self.keyboard.set(self.wants_keyboard());
                 return;
             }
         }
@@ -1997,7 +2121,8 @@ impl Widget for DesktopChrome {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.navigator.needs_animation_frame(ui::time::now())
+        self.switcher.needs_frame(ui::time::now())
+            || self.navigator.needs_animation_frame(ui::time::now())
             || [
                 &self.bar as &dyn Widget,
                 &self.overview,
