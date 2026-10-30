@@ -59,14 +59,6 @@ pub(crate) enum Action {
     Copy(SnippetId),
     ToggleFavorite(SnippetId),
     Duplicate(SnippetId),
-    SetLanguage(SnippetId, Language),
-    Rename(SnippetId, String),
-    /// File the snippet under `folder`; empty files it nowhere.
-    SetFolder(SnippetId, String),
-    /// What the snippet is for.
-    SetDescription(SnippetId, String),
-    /// Tag the snippet.
-    AddTag(SnippetId, String),
     /// Take a tag off the snippet.
     RemoveTag(SnippetId, String),
 }
@@ -88,11 +80,6 @@ impl Action {
             Self::Copy(id) => format!("snippets.snippet:{id}.copy"),
             Self::ToggleFavorite(id) => format!("snippets.snippet:{id}.toggle-favorite"),
             Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
-            Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
-            Self::Rename(id, _) => format!("snippets.snippet:{id}.title"),
-            Self::SetFolder(id, _) => format!("snippets.snippet:{id}.folder"),
-            Self::SetDescription(id, _) => format!("snippets.snippet:{id}.description"),
-            Self::AddTag(id, _) => format!("snippets.snippet:{id}.add-tag"),
             Self::RemoveTag(id, tag) => format!("snippets.snippet:{id}.tag:{tag}.remove"),
         }
     }
@@ -130,6 +117,9 @@ pub(crate) struct Core {
     /// The resource's dispatcher, once the framework attaches the view.
     /// Each on-screen control submits a field edit or a verb through it.
     dispatch: Option<Dispatcher<Snippets>>,
+    /// The resource's published actions, once the framework attaches the
+    /// view: the open snippet's fields are bound to their edits.
+    pub(crate) actions: Option<ui::framework::Actions<Snippets>>,
     pub(crate) pointer: Point,
     /// The window, for dialogs.
     pub(crate) window: Rect,
@@ -159,6 +149,7 @@ impl Core {
             notice: None,
             copy: ui::CopyWatch::default(),
             dispatch: None,
+            actions: None,
             pointer: Point::ZERO,
             window: Rect::ZERO,
             reveal: None,
@@ -578,62 +569,6 @@ impl Core {
         }));
     }
 
-    fn set_language(&self, id: &SnippetId, language: Language) {
-        self.submit(Self::paths(id).language.set(language));
-    }
-
-    /// Name the snippet `title`; a cleared field keeps the old name until
-    /// something is typed.
-    fn rename(&self, id: &SnippetId, title: &str) {
-        let title = title.trim();
-        if title.is_empty() || self.library.get(id).is_some_and(|s| s.title == title) {
-            return;
-        }
-        self.submit(Self::paths(id).title.set(title.to_owned()));
-    }
-
-    /// File the snippet under `folder`. The name is what the sidebar lists,
-    /// so it is trimmed and a blank name means "no folder" — the same rule
-    /// the record refuses a padded name with.
-    fn set_folder(&self, id: &SnippetId, folder: &str) {
-        let folder = folder.trim();
-        if self.library.get(id).is_some_and(|s| s.folder.0 == folder) {
-            return;
-        }
-        self.submit(
-            Self::paths(id)
-                .folder
-                .set(ui::tilo_resource::Atom(folder.to_owned())),
-        );
-    }
-
-    /// What the snippet is for: the line the list shows under its name.
-    fn set_description(&self, id: &SnippetId, description: &str) {
-        if self
-            .library
-            .get(id)
-            .is_some_and(|s| s.description == description)
-        {
-            return;
-        }
-        self.submit(Self::paths(id).description.set(description.to_owned()));
-    }
-
-    /// Tag the snippet with `tag` (blank, padded and already-present tags
-    /// change nothing).
-    fn add_tag(&self, id: &SnippetId, tag: &str) {
-        let tag = tag.trim();
-        if tag.is_empty()
-            || self
-                .library
-                .get(id)
-                .is_some_and(|s| s.tags.contains(&tag.to_owned()))
-        {
-            return;
-        }
-        self.submit(Self::paths(id).tags.insert(&tag.to_owned()));
-    }
-
     /// Take `tag` off the snippet; its other snippets keep it.
     fn remove_tag(&self, id: &SnippetId, tag: &str) {
         if !self
@@ -658,13 +593,6 @@ impl Core {
             Action::Copy(id) => self.copy(&id),
             Action::ToggleFavorite(id) => self.toggle_favorite(&id),
             Action::Duplicate(id) => self.duplicate(&id),
-            Action::SetLanguage(id, lang) => self.set_language(&id, lang),
-            Action::Rename(id, title) => self.rename(&id, &title),
-            Action::SetFolder(id, folder) => self.set_folder(&id, &folder),
-            Action::SetDescription(id, description) => {
-                self.set_description(&id, &description);
-            }
-            Action::AddTag(id, tag) => self.add_tag(&id, &tag),
             Action::RemoveTag(id, tag) => self.remove_tag(&id, &tag),
         }
     }
@@ -1406,6 +1334,7 @@ fn show(core: &Shared, view: SnippetsView, cx: &EffectCx<Snippets>) -> EffectAns
 pub(crate) fn window(cx: &ViewCx<Snippets>) -> Element {
     let mut window = SnippetsWindow::new(Some(cx.live().clone()));
     window.attach_dispatcher(cx.dispatcher());
+    window.core.borrow_mut().actions = Some(cx.actions());
     cx.on_open_item(window.opener());
     let core = Rc::clone(&window.core);
     cx.effects(move |view: SnippetsView, cx| show(&core, view, cx));

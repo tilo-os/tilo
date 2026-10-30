@@ -1056,18 +1056,20 @@ fn the_window_bars_new_snippet_adds_one() {
 #[test]
 fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
-    let (id, _) = by_title(&app, "Deploy");
-
-    let view = app.surface_mut::<SnippetsWindow>();
-    view.request_for_test(Action::SetFolder(id.clone(), "  Releases  ".into()));
-    view.request_for_test(Action::SetDescription(
-        id.clone(),
-        "Roll the cluster forward".into(),
-    ));
-    view.request_for_test(Action::AddTag(id.clone(), " k8s ".into()));
-    view.request_for_test(Action::AddTag(id.clone(), "k8s".into()));
-    view.request_for_test(Action::AddTag(id, "   ".into()));
-    app.settle();
+    open_row(&mut app, "Deploy");
+    let set = |app: &mut TestApp<SnippetsShell>, field: &str, value: &str| {
+        let harness = app.harness();
+        let node = harness.a11y_node_named(&crate::tr(field)).unwrap();
+        harness
+            .perform_a11y_action(node, &ui::a11y::Action::SetValue(value.into()))
+            .unwrap();
+        app.settle();
+    };
+    set(&mut app, "snippets-folder", "  Releases  ");
+    set(&mut app, "snippets-description", "Roll the cluster forward");
+    for tag in [" k8s ", "k8s", "   "] {
+        set(&mut app, "snippets-add-tag", tag);
+    }
 
     let (_, stored) = by_title(&app, "Deploy");
     assert_eq!(
