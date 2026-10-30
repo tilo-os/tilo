@@ -22,6 +22,7 @@ mod bar_popovers;
 mod canvas;
 mod control_hints;
 mod cursor_chat;
+mod desktop_served;
 mod feedback_pick;
 mod feedback_point;
 mod topbar_host;

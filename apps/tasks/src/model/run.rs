@@ -505,6 +505,10 @@ pub struct Run {
     pub agent: Atom,
     /// The person who approved it: the agent acts for them.
     pub starter: String,
+    /// The task delegation the starter's device signed for the task agent
+    /// made for this run, hex: its authority, verified by the broker. `None`
+    /// for a collaborator's run.
+    pub delegation: Option<String>,
     /// Where it stopped, when a person paused it: the phase it goes on in
     /// and the message boundary it reached. A paused run takes no new step,
     /// and resuming it continues from there, so what it already did is never

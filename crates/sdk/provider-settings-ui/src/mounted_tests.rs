@@ -10,6 +10,23 @@ fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
         .find_map(|child| rendered_enabled(child, id))
 }
 
+/// Narrow the catalogue to `query` through its filter and press the Add of
+/// preset `slug`, as a person does.
+macro_rules! add_from_catalogue {
+    ($app:ident, $query:expr, $slug:expr) => {
+        $app.harness()
+            .click_named("agent-models-add-provider")
+            .unwrap();
+        $app.harness().type_text($query);
+        $app.settle();
+
+        $app.harness()
+            .click_named(&format!("agent-models-preset-{}", $slug))
+            .unwrap();
+        $app.settle();
+    };
+}
+
 #[test]
 fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions() {
     let backend = Arc::new(FakeAdminBackend::default());
@@ -17,22 +34,10 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
     // Choosing a provider adds it and opens its form, the endpoint to fill.
-    app.harness()
-        .click_named("agent-models-add-provider")
-        .unwrap();
-    app.harness().type_text("Anthropic-compatible provider");
-    app.harness()
-        .click_named("agent-models-preset-anthropic-compatible")
-        .unwrap();
-    app.settle();
+    add_from_catalogue!(app, "Anthropic-compatible provider", "anthropic-compatible");
     let [added] = config(&mut app).profiles.try_into().unwrap();
-    assert_eq!(
-        (added.label, added.endpoint),
-        (
-            "Anthropic-compatible provider".into(),
-            "https://api.example.com".into()
-        )
-    );
+    let expected = ("Anthropic-compatible provider", "https://api.example.com");
+    assert_eq!((added.label.as_str(), added.endpoint.as_str()), expected);
     let id = added.id;
     let save = format!("agent-models-save-provider-{id}");
     assert_eq!(

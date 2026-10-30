@@ -42,6 +42,7 @@ fn the_default_engines_answer_and_a_result_can_be_read() {
             &FetchLimits::default(),
         ))
         .unwrap();
-    assert!(page.text.contains("Rust"), "{}", page.text);
-    assert!(page.title.is_some());
+    let text = page.text().unwrap();
+    assert!(text.contains("Rust"), "{text}");
+    assert!(page.title().is_some());
 }

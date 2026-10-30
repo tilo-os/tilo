@@ -35,6 +35,7 @@ fn run() -> TrackerRun {
         model: None,
         directions: vec![direction("a", true), direction("b", false)],
         question: None,
+        delegation: None,
     }
 }
 

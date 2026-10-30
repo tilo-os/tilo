@@ -158,6 +158,33 @@ impl OpenDoor {
     pub(crate) fn surfaces_generation(&self) -> u64 {
         self.broker.surfaces_generation()
     }
+
+    /// The broker provider the window launched as `instance` publishes its
+    /// own actions under, once it has.
+    pub(crate) fn window_peer(&self, instance: u64) -> Option<u64> {
+        self.broker.window_peer(instance)
+    }
+
+    /// The app publishing `resource` in `room`, running or retained:
+    /// the one naming it exactly, else one publishing its kind (the part
+    /// before its first `:`).
+    pub(crate) fn publisher_of(&self, room: &str, resource: &str) -> Option<String> {
+        let kind = resource.split_once(':').map_or(resource, |(kind, _)| kind);
+        let surfaces: Vec<PublishedSurface> = self
+            .broker
+            .surfaces()
+            .into_iter()
+            .filter(|surface| surface.route.cluster_id == room)
+            .collect();
+        let publishes = |matches: &dyn Fn(&PublishedAction) -> bool| {
+            surfaces
+                .iter()
+                .find(|surface| surface.actions.iter().any(matches))
+                .map(|surface| surface.app_id.clone())
+        };
+        publishes(&|action| action.resource == resource)
+            .or_else(|| publishes(&|action| action.resource_kind == kind))
+    }
 }
 
 /// Open `app` in the workspace of `room` at `anchor`, through its `open`
