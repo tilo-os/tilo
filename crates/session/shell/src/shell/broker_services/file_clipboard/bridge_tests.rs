@@ -307,7 +307,7 @@ impl Fixture {
     }
     #[expect(
         clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
+        reason = "the connection's route state is Rc-backed and runs on this test's LocalSet"
     )]
     async fn connect(&self, record: &str) -> Connection {
         crate::shell::launcher::register_in_process_launch(APP, &self.room);
@@ -439,7 +439,7 @@ impl Connection {
     }
     #[expect(
         clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
+        reason = "the connection's route state is Rc-backed and runs on this test's LocalSet"
     )]
     async fn compensate(&self, command: Command) -> Result<Reply, String> {
         let operation = match &command {
@@ -458,7 +458,7 @@ impl Connection {
 
     #[expect(
         clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
+        reason = "the connection's route state is Rc-backed and runs on this test's LocalSet"
     )]
     #[track_caller]
     fn settled<'a>(&'a self, operation: &'a str) -> impl std::future::Future<Output = Reply> + 'a {
@@ -468,7 +468,7 @@ impl Connection {
 
     #[expect(
         clippy::future_not_send,
-        reason = "Cap'n Proto runs on this test's LocalSet"
+        reason = "the connection's route state is Rc-backed and runs on this test's LocalSet"
     )]
     async fn settled_at(&self, operation: &str, awaited: &std::panic::Location<'_>) -> Reply {
         let last = std::cell::RefCell::new(None);

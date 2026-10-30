@@ -526,7 +526,7 @@ impl AppActionBroker {
     /// Bounded, nonblocking bridge from shell chrome into the broker's
     /// `LocalSet`-owned application directory capabilities. Palette code must
     /// poll the returned oneshot in its cache owner; it must never block a
-    /// compositor frame on a Cap'n Proto RPC.
+    /// compositor frame on a broker round trip.
     #[must_use]
     pub fn action_directory_request_queue(
         &self,
@@ -1088,7 +1088,7 @@ impl BrokerHandle {
             .certified_agent_identity(room, actor)
     }
 
-    /// The bound Cap'n Proto socket.
+    /// The bound collaboration socket.
     pub fn capnp_socket(&self) -> &std::path::Path {
         &self.capnp_socket_path
     }

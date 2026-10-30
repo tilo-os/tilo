@@ -1117,7 +1117,7 @@ impl CapnpChannelHandle {
     /// No document byte and no readiness ever comes from this answer.
     #[allow(
         clippy::future_not_send,
-        reason = "capnp-rpc channel handles are Rc-based; driven only on the broker LocalSet"
+        reason = "channel handles are Rc-based; driven only on the broker LocalSet"
     )]
     pub(super) async fn await_committed_change(
         self: Rc<Self>,

@@ -74,7 +74,7 @@ mod tracker_runs;
     not(test),
     allow(
         dead_code,
-        reason = "the collaboration socket serves Cap'n Proto until every endpoint speaks the wire"
+        reason = "some wire helpers are reached only from the broker's tests"
     )
 )]
 mod wire;
@@ -2471,7 +2471,7 @@ impl LocalActionDirectoryRegistry {
     }
 
     fn remove(&self, peer_id: u64) {
-        // Dropping the removed Cap'n Proto client can synchronously release a
+        // Dropping the removed directory handle can synchronously release a
         // connection lease and re-enter this idempotent cleanup. Release the
         // registry borrow before capability drop so the nested removal sees
         // an ordinary absent entry instead of panicking on RefCell reborrow.
@@ -2481,7 +2481,7 @@ impl LocalActionDirectoryRegistry {
 }
 
 /// Inert result returned from the broker `LocalSet` to shell chrome.  It never
-/// carries a Cap'n Proto capability or widget reference across threads.
+/// carries a broker handle or widget reference across threads.
 #[derive(Debug)]
 pub enum ActionDirectoryBridgeResponse {
     Page(runtime_collab::ActionDirectoryPage),
@@ -3673,8 +3673,8 @@ impl CapnpBrokerState {
     const MAX_RETAINED_INVOCATIONS: usize = 256;
     const INVOCATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
     const CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
-    /// Broker ceilings are deliberately lower than Cap'n Proto list limits:
-    /// applications must not turn a palette keystroke into an unbounded RPC.
+    /// Broker ceilings are deliberately small: an application must not turn
+    /// a palette keystroke into an unbounded RPC.
     const DIRECTORY_MAX_RESULTS: u32 = 256;
     const DIRECTORY_MAX_BYTES: u32 = 256 * 1024;
     const DIRECTORY_MAX_WORK: u32 = 4_096;
@@ -4708,7 +4708,7 @@ impl CapnpBrokerState {
     /// eager cross-app catalogue for every shell keystroke.
     #[allow(
         clippy::future_not_send,
-        reason = "the registered Cap'n Proto capability is Rc-backed and is awaited on the shell LocalSet"
+        reason = "the registered directory handle is Rc-backed and is awaited on the shell LocalSet"
     )]
     async fn query_action_directory_for_actor(
         &self,
@@ -4784,7 +4784,7 @@ impl CapnpBrokerState {
     /// this instant; callers must never execute from an earlier page cache.
     #[allow(
         clippy::future_not_send,
-        reason = "the registered Cap'n Proto capability is Rc-backed and is awaited on the shell LocalSet"
+        reason = "the registered directory handle is Rc-backed and is awaited on the shell LocalSet"
     )]
     async fn resolve_action_directory_for_actor(
         &self,
@@ -9399,13 +9399,12 @@ impl HostWorkerReadGuard {
 
 // Stream servers
 
-// The four stream servers below share a shape: an `Rc<AsyncMutex<mpsc::UnboundedReceiver<_>>>`
-// rather than an `Rc<RefCell<_>>`. capnp-rpc will happily dispatch a second
-// pipelined `read()` on the same stream before the first one's `recv().await`
-// resolves; a `RefCell` would then panic on the second `borrow_mut()` (and
-// this crate is `panic = "abort"`, so that panic takes the whole desktop
-// session down). The async mutex instead makes the second reader simply wait
-// its turn — the two calls serialize instead of racing.
+// The queues below are `Rc<AsyncMutex<mpsc::UnboundedReceiver<_>>>` rather
+// than `Rc<RefCell<_>>`. Two readers can ask for the next invocation before
+// the first one's `recv().await` resolves; a `RefCell` would then panic on the
+// second `borrow_mut()` (and this crate is `panic = "abort"`, so that panic
+// takes the whole desktop session down). The async mutex instead makes the
+// second reader wait its turn — the two calls serialize instead of racing.
 
 /// What the host is told each time an invocation is handed to `app` in
 /// `room`; nothing when no launcher hosts it.
@@ -9609,16 +9608,16 @@ impl NativeContextReadGuard {
 
 // Listener wiring
 
-/// Bind `socket_path` and spawn the capnp accept loop. Attaches the
+/// Bind `socket_path` and spawn the broker's accept loop. Attaches the
 /// created [`CapnpBrokerState`] to `fanout` so every event flowing
 /// through the fanout core lands on typed subscribers.
 ///
 /// `publisher` is the other direction — attaching to the peer table lets
-/// a capnp app *receive*, `publisher` lets it *send*, same instance
+/// an app *receive*, `publisher` lets it *send*, same instance
 /// [`crate::collab_broker`] uses for peer replication.
 ///
 /// The accept thread runs a `current_thread` tokio runtime + `LocalSet`
-/// (capnp-rpc futures are `!Send`), polling `quit` on a 100 ms cadence.
+/// (the broker's futures are `!Send`), polling `quit` on a 100 ms cadence.
 ///
 /// # Errors
 ///
@@ -10229,7 +10228,7 @@ async fn sleep_until(deadline: Option<std::time::Instant>) {
 )]
 #[expect(
     clippy::future_not_send,
-    reason = "Cap'n Proto RPC and its action-directory registry are Rc-backed and run only on the broker LocalSet"
+    reason = "the broker state and its Rc-backed action-directory registry run only on the broker LocalSet"
 )]
 #[expect(
     clippy::significant_drop_tightening,
@@ -10377,18 +10376,8 @@ async fn serve_broker_thread(
     }
 }
 
-// Every `*::Server` impl in this file takes `self: Rc<Self>` (capnp-rpc's
-// dispatch convention), so the client/capability chain built here and the
-// `RpcSystem` future it drives are inherently `!Send`. That is fine: this
-// future is only ever polled via `tokio::task::spawn_local` inside the
-// single-threaded `LocalSet` set up in `spawn`, never via `tokio::spawn`,
-// so nothing here needs to cross threads.
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc's Rc-based server dispatch (self: Rc<Self> throughout this file) makes this future !Send by construction; it is only ever driven via spawn_local on the single-threaded LocalSet in `spawn`, never tokio::spawn"
-)]
-/// Peek at an incoming descriptor without consuming Cap'n Proto's segment
-/// header. Raw endpoint diagnostics intentionally omit the launcher marker;
+/// Peek at an incoming descriptor without consuming the wire's framing
+/// prefix. Raw endpoint diagnostics intentionally omit the launcher marker;
 /// only a marker-bearing connection is subject to shell-process attestation.
 async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<bool, capnp::Error> {
     let incomplete =
@@ -10474,14 +10463,14 @@ fn peek_launch_marker(
     Ok(marker)
 }
 
-/// Why a connection was refused before its first Cap'n Proto call.
+/// Why a connection was refused before its first wire call.
 struct LaunchRefusal {
     error: capnp::Error,
     /// What the connection said it was, as far as it got: the process and
     /// the app and room its launcher named.
     peer: String,
     /// The handoff was read whole, so the app can still be told the reason
-    /// over Cap'n Proto instead of seeing its connection reset.
+    /// on the wire instead of seeing its connection reset.
     answerable: bool,
 }
 
@@ -10707,7 +10696,7 @@ const REFUSED_LAUNCH_ANSWER_WINDOW: Duration = Duration::from_secs(5);
 
 #[allow(
     clippy::future_not_send,
-    reason = "Cap'n Proto RPC and its action-directory registry are Rc-backed and intentionally run only on the broker LocalSet"
+    reason = "the broker state and its Rc-backed action-directory registry intentionally run only on the broker LocalSet"
 )]
 async fn drive_connection(
     stream: tokio::net::UnixStream,
@@ -12641,7 +12630,7 @@ pub mod tests {
 
     #[allow(
         clippy::future_not_send,
-        reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
+        reason = "the directory bridge is deliberately driven on the LocalSet because its state contains Rc values"
     )]
     pub async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         fixture

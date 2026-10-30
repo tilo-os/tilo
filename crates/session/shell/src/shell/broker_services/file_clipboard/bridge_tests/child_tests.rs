@@ -123,7 +123,7 @@ fn apply_landlock(info: &ChildInfo) {
 
 #[expect(
     clippy::future_not_send,
-    reason = "Cap'n Proto runs on the disposable sandbox child's LocalSet"
+    reason = "the connection's route state is Rc-backed and runs on the sandbox child's LocalSet"
 )]
 async fn child_journey(info: &ChildInfo) {
     let source = info.root.join("source");

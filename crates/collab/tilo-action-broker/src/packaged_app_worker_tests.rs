@@ -42,7 +42,7 @@ impl crate::services::LauncherServices for LaunchedHere {
 }
 
 /// Connect as the launcher connects the app it starts: its marker and
-/// handoff first, then the app's own Cap'n Proto session.
+/// handoff first, then the app's own wire session.
 fn launched_app_connection(
     state: &Arc<CapnpBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,

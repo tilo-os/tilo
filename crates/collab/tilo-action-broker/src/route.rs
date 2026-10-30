@@ -9,8 +9,7 @@ const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
 /// scope (both fields set) carries CRDT payloads, so one app's deltas
 /// never reach another; cluster scope (`app_id` empty) carries chrome
 /// traffic, where every app in the cluster is a legitimate audience, and
-/// the Cap'n Proto transport, whose `joinChannel` surface has a channel
-/// id but no app identity.
+/// an unbound connection, which has a channel id but no app identity.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct CrdtRoute {
     /// App identity from the sender's `Hello`. Empty means "this

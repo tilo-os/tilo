@@ -355,10 +355,10 @@ wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"
 # names the RNG traits ed25519-dalek and threshold-identity take.
 getrandom.workspace = true
 rand_core.workspace = true
-# The shell serves the SDK-facing Cap'n Proto broker interface
-# natively. `runtime-collab` provides the generated schema types and
-# the SDK-side client wrappers we reuse in tests; `runtime-portal`
-# supplies the connected-fd lift + service-fd lookup.
+# The shell serves the SDK-facing collaboration wire natively.
+# `runtime-collab` provides the wire types and the SDK-side client
+# wrappers we reuse in tests; `runtime-portal` supplies the connected-fd
+# lift + service-fd lookup.
 runtime-collab = { path = "../../runtime/runtime-collab" }
 # Document media: content an app asks the shell to open in another app is read
 # from the filesystem daemon's content store through that app's scope.

@@ -4,7 +4,7 @@ use super::{CollabLaunchHandoff, has_collab_launch_marker, native_media};
 use tokio::io::AsyncReadExt;
 
 /// A launcher's handoff, read whole: the stream is now where the app's
-/// first Cap'n Proto message begins.
+/// first wire frame begins.
 pub(super) struct LauncherHandoff {
     pub handoff: CollabLaunchHandoff,
     pub pid: u32,

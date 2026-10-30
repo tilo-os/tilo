@@ -1,7 +1,3 @@
-#![allow(
-    refining_impl_trait,
-    reason = "the Cap'n Proto server impls return the concrete `Promise` where the generated traits declare `impl Future`"
-)]
 //! Adapters from the shared broker to the native session's existing services.
 use super::state::WorkspaceTreeHandle;
 #[cfg(target_os = "linux")]

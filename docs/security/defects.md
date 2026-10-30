@@ -536,7 +536,7 @@ tests. A channel-browser widget with no shell call site has since been removed.
 **Resolved.** Both production ingress paths now call
 `validate_admitted_inbound_op` before recording or fanning out an operation.
 The network broker validates the certified route and current workspace role;
-the Cap'n Proto broker uses the independently admitted join identity and the
+the collaboration broker uses the independently admitted join identity and the
 same artifact state. Invalid signatures, live operations dated outside the
 five-minute clock window, per-author sequence replays, route mismatches, role
 violations and already-redacted targets are rejected before publication.
