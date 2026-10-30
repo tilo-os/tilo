@@ -2,8 +2,4 @@
 "apps/music/src/app/media_grid.rs" = 2
 
 [ratchets.closure_control]
-"apps/music/src/app/media_grid.rs" = 1
-"apps/music/src/app/recommendations.rs" = 1
-"apps/music/src/app/render.rs" = 1
-"apps/music/src/app/render/query_view.rs" = 1
 "apps/music/src/app/track_table.rs" = 1

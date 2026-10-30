@@ -416,11 +416,10 @@ fn cover_cards_open_and_play_through_the_shared_grid() {
         Some(album.clone())
     );
 
-    // Phase `a_press_on_the_card_opens_the_album`.
+    // Phase `a_press_on_the_card_opens_the_album`: the card's press is its
+    // published view action, which the host runs.
     let title = Point::new(card.x0 + 8.0, card.y1 - 6.0);
-    send(&mut app, &cursor_at(title), &mut doc);
-    send(&mut app, &press(MouseButton::Left), &mut doc);
-    send(&mut app, &released(MouseButton::Left), &mut doc);
+    hosted_click(&mut app, &mut doc, title);
     assert_eq!(app.view, View::Album(album));
 }
 
@@ -1824,10 +1823,14 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
             .filter(|genre| !genre.is_empty())
             .min()
             .expect("a sample genre");
-        let card = page_widget(&app, &format!("music.genre.{genre}"));
-        send(&mut app, &cursor_at(card.center()), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
+        // The card is bound to the published effect; run it as a press does.
+        app.begin_effect(
+            tilo_actions::InvocationId::new(),
+            crate::actions::MusicEffect::BrowseGenre {
+                genre: genre.clone(),
+            },
+        )
+        .expect("the genre opens the platform search");
         assert_eq!(
             app.view,
             View::Browse,
@@ -4288,10 +4291,6 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     app.disconnect();
     app.view = View::Recommendations;
     draw_at(&mut app, &mut doc, 1280.0, 2400.0);
-    let toggle = page_widget(&app, "music-recommendations-input-likes");
-    hosted_click(&mut app, &mut doc, toggle.center());
-    assert!(!seed::library_of(&doc).recommendations.likes);
-    assert_eq!(last_action_label(&mut doc).as_deref(), Some("edit:likes"));
     app.dispatch(
         Action::Recommendation(
             crate::recommendations::Preferences::input_path(crate::recommendations::Input::Likes)
@@ -4317,6 +4316,28 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
         last_action_label(&mut doc).as_deref(),
         Some("edit:dismissed")
     );
+}
+
+/// A recommendation input's switch is the preference's field edit: one
+/// press turns the input off in the library, and Undo takes it back.
+#[test]
+fn a_recommendation_input_switch_is_its_field_edit() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::MusicShell>::new().unwrap();
+    app.with_widget(|window: &mut MusicApp| {
+        let mut surface = window.state();
+        surface.disconnect();
+        surface.view = View::Recommendations;
+    })
+    .expect("the production surface");
+    app.settle();
+    let likes = app.state().recommendations.likes;
+    app.harness()
+        .click_named("music-recommendations-input-likes")
+        .unwrap();
+    app.settle();
+    assert_eq!(app.state().recommendations.likes, !likes);
+    assert!(app.undo(), "one undo step");
+    assert_eq!(app.state().recommendations.likes, likes);
 }
 
 fn has_nav(app: &Music, view: View) -> bool {

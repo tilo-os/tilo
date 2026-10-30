@@ -139,8 +139,13 @@ impl MediaGridHost {
             (None, None) => MediaSource::Placeholder,
         };
         let built = MediaCard::new(format!("music.card.{}", card.art_id), source).title(card.title);
-        let mut built = bound(actions, built, &card.action)
-            .unwrap_or_else(|built| built.on_activate(asking(&self.asked, card.action)));
+        let mut built = bound(actions, built, &card.action).unwrap_or_else(|built| {
+            if card.action.only_shows() {
+                built.on_view(asking(&self.asked, card.action))
+            } else {
+                built.on_effect(asking(&self.asked, card.action))
+            }
+        });
         if card.portrait {
             built = built.aspect(MediaAspect::Circle);
         }

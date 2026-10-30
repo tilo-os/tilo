@@ -112,18 +112,13 @@ fn heading(key: &str) -> Element {
 /// The switch of `input`, bound to the library edit that turns it on or off;
 /// before the framework attaches, it asks for that edit.
 fn bound_input(toggle: Toggle, input: Input, asked: &Controls<'_>) -> Toggle {
-    if let Some(binding) = asked
+    match asked
         .actions
         .and_then(|actions| actions.field_binding(Preferences::input_path(input)))
     {
-        return toggle.on_action(binding);
+        Some(binding) => toggle.on_action(binding),
+        None => toggle,
     }
-    let queue = asked.asked.clone();
-    toggle.on_change(move |enabled| {
-        queue.borrow_mut().push(Action::Recommendation(
-            Preferences::input_path(input).set(enabled),
-        ));
-    })
 }
 
 fn inputs(mut content: Column, asked: &Controls<'_>, values: Vec<(Input, bool)>) -> Column {
