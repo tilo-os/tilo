@@ -1472,8 +1472,7 @@ pub(crate) struct SessionLaunches {
     /// The tabs kept for windows whose app went away with them open, by
     /// launch key: kept until the launch's end
     /// says whether memory ended it (then its notice reopens them) or not.
-    lost_tabs:
-        Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::state::TabId)>>>,
+    lost_tabs: Mutex<HashMap<String, Vec<(std::time::Instant, crate::shell::state::TabId)>>>,
     /// Launch keys whose app has been handed an action invocation since it
     /// started: an agent, another device or the person drove it, so a
     /// window it then closes was closed on request.

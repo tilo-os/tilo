@@ -20,7 +20,9 @@ use wayland_client::protocol::{wl_compositor, wl_shm};
 use wayland_client::{Connection, EventQueue};
 use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
-use crate::support::wayland::{Globals as _, Toplevel, create_toplevel, foreign_tabs, shm_buffer, solid};
+use crate::support::wayland::{
+    Globals as _, Toplevel, create_toplevel, foreign_tabs, shm_buffer, solid,
+};
 
 #[derive(Default)]
 struct Client {
@@ -59,12 +61,18 @@ impl Session {
         let (bystander, _bystander_client) = UnixStream::pair().expect("socketpair");
         display
             .handle()
-            .insert_client(bystander, Arc::new(shell::compositor::state::ClientState::default()))
+            .insert_client(
+                bystander,
+                Arc::new(shell::compositor::state::ClientState::default()),
+            )
             .expect("insert bystander");
         let (server_side, client_side) = UnixStream::pair().expect("socketpair");
         display
             .handle()
-            .insert_client(server_side, Arc::new(shell::compositor::state::ClientState::default()))
+            .insert_client(
+                server_side,
+                Arc::new(shell::compositor::state::ClientState::default()),
+            )
             .expect("insert client");
         let kill_switch = client_side.try_clone().expect("clone client socket");
         client_side.set_nonblocking(true).expect("non-blocking");
@@ -104,7 +112,11 @@ impl Session {
                 .find(|(id, _)| id == app_id)
                 .cloned()
                 .unwrap_or_else(|| panic!("{app_id}'s window was adopted into a tab: {tabs:?}"));
-            assert_ne!(surface_id >> 32, 0, "the tab is filed under a client-qualified id");
+            assert_ne!(
+                surface_id >> 32,
+                0,
+                "the tab is filed under a client-qualified id"
+            );
             // The window is shown: configured where layout placed it, and a
             // frame drawn. (A window gone before its first frame is no
             // window anyone saw, and its place is withdrawn.)
@@ -121,7 +133,9 @@ impl Session {
                 shell::shell::foreign::store().is_mapped(surface_id),
                 "{app_id}'s window is shown"
             );
-            session.windows.push(((*app_id).to_owned(), surface_id, window));
+            session
+                .windows
+                .push(((*app_id).to_owned(), surface_id, window));
         }
         session
     }
@@ -150,9 +164,8 @@ impl Session {
             .flat_map(|strip| strip.window_groups.iter())
             .flat_map(|group| group.tabs.iter())
             .filter(|tab| match &tab.tile {
-                TileContent::Foreign { app_id: id, .. } | TileContent::LocalApp { app_id: id, .. } => {
-                    id == app_id
-                }
+                TileContent::Foreign { app_id: id, .. }
+                | TileContent::LocalApp { app_id: id, .. } => id == app_id,
                 _ => false,
             })
             .map(|tab| tab.tile.clone())
@@ -170,7 +183,9 @@ fn a_client_that_exits_with_its_windows_open_keeps_their_tabs() {
     session.pump();
     let dead: Vec<u64> = session.windows.iter().map(|(_, id, _)| *id).collect();
     assert!(
-        foreign_tabs(&session.state).iter().all(|(_, id)| !dead.contains(id)),
+        foreign_tabs(&session.state)
+            .iter()
+            .all(|(_, id)| !dead.contains(id)),
         "no tab shows a surface of the exited client: {:?}",
         foreign_tabs(&session.state)
     );
@@ -198,7 +213,9 @@ fn a_running_client_that_destroys_a_window_closes_that_tab_only() {
     );
     let (_, staying, _) = &session.windows[1];
     assert!(
-        foreign_tabs(&session.state).iter().any(|(_, id)| id == staying),
+        foreign_tabs(&session.state)
+            .iter()
+            .any(|(_, id)| id == staying),
         "the app's other window keeps its live tab: {:?}",
         foreign_tabs(&session.state)
     );

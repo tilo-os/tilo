@@ -7411,9 +7411,11 @@ impl XdgShellHandler for State {
                 // why can open the app again into it
                 // (`launcher::take_lost_tabs`).
                 WindowEnd::AppGone => {
-                    if let Some(tab) =
-                        tab_binding::keep_tab_of_vanished_surface(&mut tree, surface_id, launch.as_deref())
-                        && let Some(key) = launch.as_deref()
+                    if let Some(tab) = tab_binding::keep_tab_of_vanished_surface(
+                        &mut tree,
+                        surface_id,
+                        launch.as_deref(),
+                    ) && let Some(key) = launch.as_deref()
                     {
                         crate::shell::launcher::note_lost_tab(key, tab);
                     }
