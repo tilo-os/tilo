@@ -29,7 +29,6 @@ def load(name: str, path: Path):
 
 pieces = load("os_pieces_under_test", REPO / "tools/ci/os/pieces.py")
 layers = load("oci_layers_under_test", REPO / "tools/ci/os/oci_layers.py")
-os_toml = load("os_toml_under_test", REPO / "tools/ci/os/os_toml.py")
 
 
 def tar(*entries: tuple) -> bytes:

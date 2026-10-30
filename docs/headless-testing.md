@@ -34,21 +34,21 @@ Best for: regression captures, golden-image diffs, video walkthroughs of known U
 
 ```bash
 # Inventory the catalogue (currently ~22 scenarios — palette typing, workspace switch, etc.):
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --list-scenarios
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --list-scenarios
 
 # Capture every scenario in offscreen mode (default). Produces one PNG per scene
 # under `target/<dir>/`. Pixel-identical to a live run.
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode offscreen --out target/snapshots
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode offscreen --out target/snapshots
 
 # A single scenario, with explicit viewport:
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
 
 # H.264 video of a scenario (30 fps default; one second per scenario step).
 # Output is raw Annex-B NALU stream — playable by mpv / ffplay / vlc.
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
 
 # Interactive window mode (real winit window — useful for eyeballing while developing):
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode window --scenario palette_typing
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
 Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
@@ -182,8 +182,7 @@ After launch, enumerate again and inspect the app actions' `application`,
 `resource`, `operation`, `params`, and `contract` fields. Invoke the returned
 provider/ID with its declared arguments, adding `--wait` so the answer is the
 result and not the admission. To follow a pending receipt, use
-`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop (see
-`docs/agent-action-api.md`). Then read back the affected resource or desktop state to verify the
+`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop. Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
 presented app identity, surface, frame count, and rendering errors for foreign
@@ -659,8 +658,7 @@ A gate that runs inside the pull-request test shard shares the runner with
 other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
 counts only voluntary switches, one per wakeup. Both gates in
 `idle_quiet_tests`, the lone desktop and the converged pair, use it, each
-together with a CPU bound that catches a thread spinning without blocking
-.
+together with a CPU bound that catches a thread spinning without blocking.
 
 ## Idle memory
 
@@ -922,20 +920,15 @@ its content whenever the shots are taken: `${TODAY}`, `${TODAY+3}`, `${MON+2}`
 Each situation runs the app once, headless, in a fresh profile (its own HOME,
 XDG directories and runtime directory, no display, no session bus), and takes
 four pictures: dark and light, wide (1280x800) and compact (420x800). An app
-without a plan is photographed as it opens. One command builds every app on a
-t server, renders all of them there on the software renderer and downloads
-the result:
+without a plan is photographed as it opens.
 
-```bash
-t outputs app-screenshots      # -> target/app-screenshots/<app>/<situation>-<theme>-<size>.png
-```
-
-Each app's directory holds `manifest.json` (its situations, titles and
+Each app's directory (`<out>/<app>/`, pictures named
+`<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and
 pictures) and `resources.json` (what its plan can invoke); `summary.json` at
 the top lists every situation that failed, with the end of its log, and
 `<situation>.log` beside the pictures has the whole log. With a build of the
-apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner works
-locally too, one app or all; on a laptop take the GPU lock:
+apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes
+one app or all, on the software renderer; on a laptop take the GPU lock:
 
 ```bash
 flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir DIR/lib \
@@ -1003,7 +996,7 @@ memory pressure. Both take seconds once the shell tests are built.
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
 ```
 
-It is part of the shell test target, so t's `test-x86_64/shell` check runs it
+It is part of the shell test target, so `check.yml`'s test shards run it
 whenever a change reaches the shell.
 
 **Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build

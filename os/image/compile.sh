@@ -155,7 +155,7 @@ export LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
 # time, which sccache cannot cache: a warm CI rebuild that hit the compiler
 # cache for every object still spent fifteen minutes relinking. Without it a
 # one-crate change relinks in seconds. The build scripts choose the value from
-# what the build is for (os/dev/build-image.sh, tools/ci/os/os_toml.py),
+# what the build is for (os/dev/build-image.sh),
 # and the image says which it got in its org.tilo.rust-lto label.
 # How the build directory is trusted. `cargo` (the default) trusts cargo's own
 # fingerprints: t's build directories come from build snapshots whose sources

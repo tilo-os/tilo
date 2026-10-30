@@ -33,8 +33,8 @@ run() {
   ) &
 }
 
-# Tests build Git repositories of their own: a GIT_DIR from the environment (a caller's
-# tools/ci/t-git-index.sh) would take over their Git commands.
+# Tests build Git repositories of their own: a GIT_DIR from the environment would take over
+# their Git commands.
 run_tests() {
   local label=$1
   shift
@@ -57,9 +57,9 @@ settle() {
   shown=${#labels[@]}
 }
 
-# The steps (tools/policy/steps.toml), which t runs one check each: first the checks of the
-# tree, then the tests, once nothing reads the tree any more: their fixtures create
+# The steps (tools/policy/steps.toml): first the checks of the tree, then the tests, once nothing reads the tree any more: their fixtures create
 # repositories and scratch files beside the sources.
+python3 tools/policy/steps.py list >"$work/steps"
 tests=()
 while IFS= read -r -d '' kind && IFS= read -r -d '' label && IFS= read -r -d '' command; do
   if [[ $kind == tests ]]; then
@@ -67,7 +67,7 @@ while IFS= read -r -d '' kind && IFS= read -r -d '' label && IFS= read -r -d '' 
   else
     run "$label" bash -c "$command"
   fi
-done < <(python3 tools/policy/steps.py list)
+done <"$work/steps"
 settle
 
 for (( index = 0; index < ${#tests[@]}; index += 2 )); do

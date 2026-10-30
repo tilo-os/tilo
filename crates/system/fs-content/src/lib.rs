@@ -1,5 +1,4 @@
-//! The content format of the storage daemon (`docs/architecture/storage.md`,
-//! §7).
+//! The content format of the storage daemon.
 //!
 //! A file version's bytes are split into content-defined chunks with
 //! normalised `FastCDC`. The chunk targets scale with the body size

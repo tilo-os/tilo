@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,11 +43,7 @@ def build() -> dict[str, int]:
     """Both builds of the bench, keeping the one with wasmtime; the sizes of each."""
     without = build_bench(features=False)
     with_wasmtime = build_bench(features=True)
-    # With t, cargo builds on the server and brings back programs, not wasm libraries.
-    if shutil.which("t") and (ROOT / "t.toml").is_file():
-        subprocess.run(["t", "outputs", "bench-imagefilter"], cwd=ROOT, check=True)
-    else:
-        subprocess.run([str(LIBRARY_DIR / "build.sh")], check=True)
+    subprocess.run([str(LIBRARY_DIR / "build.sh")], check=True)
     return {"without": without, "with": with_wasmtime}
 
 

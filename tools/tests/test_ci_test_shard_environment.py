@@ -33,6 +33,8 @@ class PrepareTestShardScript(unittest.TestCase):
             (tree / "os/dev").mkdir(parents=True)
             bin_dir.mkdir()
             shutil.copy(SCRIPT, tree / "tools/ci/prepare-test-shard.sh")
+            for name in ("nested_sandboxes.py", "nested-sandboxes.toml"):
+                shutil.copy(ROOT / "tools/ci" / name, tree / "tools/ci" / name)
             recorder = '#!/usr/bin/env bash\nprintf "%s %s\\n" "{name}" "$*" >> "$CALLS"\n{tail}'
             stubs = {
                 tree / "tools/ensure-headless-audio.sh": "",
@@ -47,6 +49,7 @@ class PrepareTestShardScript(unittest.TestCase):
                 bin_dir / "node": "",
                 bin_dir / "chromium": "",
                 bin_dir / "stat": "echo xfs\n",
+                bin_dir / "bwrap": "",
             }
             for path, tail in stubs.items():
                 name = path.name if path.parent == bin_dir else path.relative_to(tree).as_posix()
@@ -75,6 +78,12 @@ class PrepareTestShardScript(unittest.TestCase):
     def test_shell_shards_get_the_x11_bridge(self) -> None:
         calls, _ = self.prepare("-p tilo-ui -p shell")
         self.assertIn("tools/ci/ensure-x11-bridge-tools.sh", self.tools(calls))
+
+    def test_nested_sandbox_shards_probe_user_namespaces(self) -> None:
+        calls, _ = self.prepare("-p collab-types -p ush")
+        self.assertEqual(self.tools(calls)[0], "bwrap")
+        calls, _ = self.prepare("-p collab-types -p ush-extra")
+        self.assertNotIn("bwrap", self.tools(calls))
 
     def test_secret_service_shards_get_the_session_bus_client(self) -> None:
         calls, _ = self.prepare("-p tilo-secret-service")

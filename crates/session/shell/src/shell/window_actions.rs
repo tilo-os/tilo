@@ -160,8 +160,8 @@ pub(crate) fn open_hosted_after_setup(
     id
 }
 
-/// A tab of the app `kind` at `placement`: the app's own process where the
-/// session runs its apps that way, else drawn here.
+/// A tab of the app `kind` at `placement`: the app's own process for a
+/// packaged app, else drawn here.
 fn open_app_tab(
     st: &ChromeState,
     kind: AppKind,
@@ -170,9 +170,7 @@ fn open_app_tab(
 ) -> TabId {
     let title = title.into();
     let mut tree = st.tree_mut();
-    if st.hosted_inputs.apps_as_processes()
-        && let Some(id) = tab_binding::open_app_process(&mut tree, &kind, title.clone(), placement)
-    {
+    if let Some(id) = tab_binding::open_app_process(&mut tree, &kind, title.clone(), placement) {
         return id;
     }
     tab_binding::open_hosted_app(&mut tree, kind, title, placement)
@@ -462,7 +460,6 @@ pub(crate) fn close_tab_unrecorded(
     if !removed {
         return Err(TabActionError::UnknownTab);
     }
-    st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().queue_save();
     // A window still to open in a room not ready yet: its launch goes with

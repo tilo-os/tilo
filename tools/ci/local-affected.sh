@@ -178,7 +178,7 @@ while IFS= read -r row; do
     # shellcheck disable=SC2086
     if [ "$use_nextest" = 1 ]; then
       step "nextest shard $shard ($tests)" \
-        bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+        bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
     else
       step "cargo test shard $shard ($tests)" cargo test --locked $tests
     fi

@@ -11,8 +11,7 @@
 //! app's own view of it into the app's sandbox at [`SANDBOX_DIR`]. The view
 //! starts empty; a choice adds a document to it, visible inside at once
 //! (`/run/tilo/documents/<token>/<name>`). This is how `xdg-document-portal`
-//! solves the same problem; `docs/architecture/security.md` ("Filesystem")
-//! records why it is this and not a launch-time grant or a live re-bind.
+//! solves the same problem.
 //!
 //! An app's view is keyed by the room it was launched into and its package
 //! ([`AppKey`]), so the same app in another workspace sees none of it, and no

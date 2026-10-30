@@ -5,7 +5,7 @@
 //! view has nothing a link could open, so it has no link. The specs are bound
 //! here, where the views are attached, so every way a resource is published
 //! (the resource itself, an item, a live row) offers them the same way; the
-//! framework's root answers them. See `docs/architecture/web-routing.md` §4.3.
+//! framework's root answers them.
 
 use std::sync::Arc;
 

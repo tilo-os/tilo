@@ -81,7 +81,7 @@ remain separate qualification steps.
 
 Run on the approved remote builder in a **disposable rootless Alpine container**
 with two CPUs, 2 GiB memory and 256 PIDs. Use the official immutable base recorded
-in `docs/android-compatibility.md`, signed Alpine repositories and pinned
+in the qualification receipt, signed Alpine repositories and pinned
 `art_standalone-dev=0_git20251009-r2`, plus `openjdk17-jdk`, `build-base`, `python3`, `glib-dev`, `gtk4.0-dev`, `pkgconf`.
 Keep the unmodified primary-source archive and the complete package/provenance
 record. `build_framework.sh PINNED_SOURCE NEW_OUTPUT` compiles all framework Java

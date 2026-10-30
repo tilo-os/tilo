@@ -308,9 +308,9 @@ source = "#4000: shared runtime budget targets"
 # stored run is a baseline, and growth of more than 5 % over the baseline
 # fails on the second night running; an intended growth is accepted by
 # dispatch (`accept`). The ceilings are enforced, set at 5 % over the image
-# #4003 measured (docs/benchmarks/os-image-size-2026-10-09.md) and lowered by
-# what each later change saved (#4055, #4064, #4072: docs/benchmarks/os-image-size-2026-10-10.md;
-# #4190, content-based layers: docs/benchmarks/os-image-size-2026-10-10-rechunk.md),
+# #4003 measured and lowered by
+# what each later change saved (#4055, #4064, #4072;
+# #4190, content-based layers),
 # so creep below the nightly rule fails too. They may only be lowered, except
 # by a change that says why. The KPI targets, 3.5 GB compressed and 7 GB of content for x86_64,
 # are not met yet: Windows compatibility is most of the gap.
@@ -652,8 +652,7 @@ source = "KPI: Workspace switch, dropped frames (compositor side, headless)"
 # regression, and are lowered there as each idle fix lands.
 #
 # A count of timers moves little with the runner, so the default tolerances
-# hold (#3986 removed the frame-loop spin that once made these bimodal,
-# docs/benchmarks/idle-wakeups-2026-10-09.md). The floor keeps a single
+# hold (#3986 removed the frame-loop spin that once made these bimodal). The floor keeps a single
 # extra timer tick from reading as a percentage regression.
 
 [kpi."wakeups.headless_two_apps"]
@@ -2011,7 +2010,7 @@ source = "KPI: Relay cost per active collaborator-hour"
 # A public room host at 100 guests: crates/dev/room-load, three runs on
 # runner-large (tools/ci/perf-scheduled.sh, `hosting-room`; adapters.py room-load),
 # each run one sample. 100 is the largest room the capacity sweep of
-# 2026-10-14 (docs/benchmarks/room-host-capacity-2026-10.md, Perf / room host
+# 2026-10-14 (Perf / room host
 # capacity run 112979) admitted whole: there, 100 guests joined with join p99
 # 9.9 s and chat delivery p99 5.5 s, the host's process tree peaked at
 # 122 MiB and used 1.14 cores; past about 250 members joins time out at any
@@ -2056,8 +2055,8 @@ p99_tolerance = 2.0
 min_delta = 20.0
 source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
 
-# The same room host at its declared capacity, under a host it does not own
-# (docs/architecture/hosting-capacity.md): room_capacity.py degraded through
+# The same room host at its declared capacity, under a host it does not own:
+# room_capacity.py degraded through
 # tools/ci/perf-room-degraded.sh, one sample a run (adapters.py room-degraded),
 # beside the pair above on the same node. The ceilings are the service level
 # at 100 guests the page states, which the probe itself refuses to pass

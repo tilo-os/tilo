@@ -5,7 +5,7 @@
 # inside a -sys crate without naming it. This asks pkg-config the same questions.
 #
 # Checks pkg-config modules, not package names: the module is what the build asks for,
-# the package providing it differs per distribution (DEVELOPMENT.md maps them).
+# the package providing it differs per distribution (CONTRIBUTING.md maps them).
 
 set -uo pipefail
 
@@ -106,6 +106,6 @@ echo
 if [ "$missing" -eq 0 ]; then
   echo "all ${#MODULES[@]} pkg-config libraries, libclang, ${#BINARIES[@]} binaries, ${#FONTS[@]} fonts, and ${#GSTREAMER_ELEMENTS[@]} media elements present"
 else
-  echo "$missing missing — see DEVELOPMENT.md for the package that provides each"
+  echo "$missing missing — see CONTRIBUTING.md for the package that provides each"
 fi
 exit $(( missing > 0 ))

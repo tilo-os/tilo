@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared by the publishing checks in t.toml (docs/publishing-on-t.md). Sourced, not run.
+# Shared by the publishing scripts. Sourced, not run.
 #
 # A publishing check learns what it publishes for from t: T_REF is the branch (`main`,
 # `stable`) or `tag:<name>` of the trusted run, T_COMMIT its commit. Everyone pushes to main,
@@ -20,16 +20,6 @@ channel() {
     '') die 'T_REF is not set: publishing runs only in trusted runs (on = [...] or t dispatch)' ;;
     *) echo branch ;;
   esac
-}
-
-# The branch of a `branch` run as a tag part: lower case, every run of other characters a dash,
-# at most 48 characters (tilo-vm's ci.rs ref_slug computes the same).
-ref_slug() {
-  local slug
-  slug=$(printf '%s' "${T_REF:?}" | tr 'A-Z' 'a-z' | tr -cs 'a-z0-9.' '-' | sed 's/^[-.]*//; s/-*$//' | cut -c1-48)
-  slug=${slug%-}
-  [[ -n $slug ]] || die "no tag can name the branch $T_REF"
-  printf '%s' "$slug"
 }
 
 require_commit() {
@@ -75,12 +65,11 @@ aws_role() {
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION=$region
 }
 
-# Log in to the registry $1 into the auth file $2. registry.tilo.so takes an identity token from t
-# (`id_token = ["registry.tilo.so"]`) as the password of the user `oidc`; it lasts minutes, so a
-# long push logs in again. Where there is no identity token (tools/ci/run-checks.py off t), it
-# takes REGISTRY_TOKEN, a Forgejo token that may push to this repository, as its owner. The
-# forge's registry, code.tilo.so, takes no identity token: there REGISTRY_TOKEN
-# (`secrets = ["REGISTRY_TOKEN"]`), as its owner.
+# Log in to the registry $1 into the auth file $2. registry.tilo.so takes an OpenID Connect
+# identity token as the password of the user `oidc`; it lasts minutes, so a long push logs in
+# again. Where there is no identity token, it takes REGISTRY_TOKEN, a Forgejo token that may push
+# to this repository, as its owner. The forge's registry, code.tilo.so, takes no identity token:
+# there REGISTRY_TOKEN, as its owner.
 registry_login() {
   local registry=$1 auth=$2 user password
   if [[ $registry != code.tilo.so && -z ${ACTIONS_ID_TOKEN_REQUEST_URL:-} && -n ${REGISTRY_TOKEN:-} ]]; then

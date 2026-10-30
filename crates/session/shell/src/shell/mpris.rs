@@ -165,6 +165,7 @@ impl Client {
 
 fn decode_artwork(image: ArtworkImage) -> Option<Artwork> {
     use base64::Engine as _;
+    // optional-decode: art the helper sent that does not decode is left out; the player still shows
     let rgba = base64::engine::general_purpose::STANDARD
         .decode(image.rgba)
         .ok()?;

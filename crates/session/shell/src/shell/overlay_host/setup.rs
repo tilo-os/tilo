@@ -594,7 +594,6 @@ impl ShellOverlayHost {
             placed_toolbar_events: Vec::new(),
             chrome_input_clock: 0,
             live_shares: live_shares::NativeLiveShares::default(),
-            hosted_windows_revision: None,
             desktop_control: desktop_control_chips::DesktopControlMarks::default(),
             window_share_controls: window_share_controls::WindowShareControls::default(),
             shared_window_follow: shared_window_follow::SharedWindowFollow::default(),

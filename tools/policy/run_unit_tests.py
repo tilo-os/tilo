@@ -10,11 +10,10 @@ Each file runs as discover runs it (`-s DIR -p FILE`): DIR is the top of the imp
 file is imported as a module of that name, so a test passes or fails here as it does there.
 Files share nothing but the machine: a test that needs a scratch directory makes its own.
 
-At the end each file is reported as libtest reports a test, which t reads (docs/t.md): a file
-that passed as `test <file> ... ok`, each test that failed in one as `test <file>::<test id> ...
-FAILED` with the file's output under it, and a file that failed without naming a test (it
-crashed, or did not import) as `test <file> ... FAILED`. t then compares each failing test with
-main's, so a test that fails on main too passes and one more failing is refused.
+At the end each file is reported as libtest reports a test: a file that passed as
+`test <file> ... ok`, each test that failed in one as `test <file>::<test id> ... FAILED` with the
+file's output under it, and a file that failed without naming a test (it crashed, or did not
+import) as `test <file> ... FAILED`.
 
 A file whose tests each run for seconds (end-to-end script tests) would hold the suite for as
 long as all of them take one after another, so the files SHARDS names run in several processes,
@@ -22,13 +21,7 @@ each a share of the file's tests as discover finds them (`--shard`), and those s
 first; the file is still reported as one. The slowest files are listed at the end of every run:
 one that holds the run up belongs in SHARDS.
 
-With --pruned, the one file named runs in a copy of the tree holding only what it reads
-(tools/policy/unit_test_inputs.py), as its own t check does (tools/policy/steps.py,
-split_checks): a read of anything its inputs leave out finds nothing and fails the test, so a check
-keyed too narrowly fails instead of passing on another commit's result.
-
 Usage: run_unit_tests.py [--jobs N] DIR|FILE [DIR|FILE ...]
-       run_unit_tests.py --pruned FILE
        run_unit_tests.py --shard I N FILE    (the I-th of N shares of FILE's tests, from 0)
 """
 from __future__ import annotations
@@ -48,15 +41,13 @@ PATTERN = "test_*.py"
 DEFAULT_JOBS = 32
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
 # Files whose tests are run in this many processes, by name: those whose tests each take
-# seconds, measured on t (the run's "Slowest files"). A share should take under ten seconds there.
+# seconds, measured in CI (the run's "Slowest files"). A share should take under ten seconds there.
 SHARDS = {
     "test_app_artifact_handoff.py": 12,
     "test_extension_publish.py": 8,
     "test_commit_hooks.py": 6,
-    "test_t_toml.py": 6,
     "test_publish_chain.py": 4,
     "test_ci_run.py": 3,
-    "test_pre_push.py": 3,
     "test_component_manifest.py": 3,
     "test_unused_dependencies.py": 6,
     "test_changed_rust_comparison.py": 2,
@@ -64,7 +55,6 @@ SHARDS = {
     "test_stage_sdk_services.py": 2,
     "test_workflow_package_paths.py": 2,
     "test_font_artifacts.py": 3,
-    "test_native_envelope.py": 3,
     "test_font_catalog.py": 2,
     "test_chrome_process_cleanup.py": 2,
     "test_copy_language.py": 2,
@@ -96,27 +86,6 @@ def files(arguments: list[Path]) -> list[Path]:
     if missing:
         raise SystemExit(f"run_unit_tests.py: no such file or directory: {', '.join(missing)}")
     return found
-
-
-def pruned(test: Path) -> Path:
-    """A copy of the tree holding only what `test` reads (tools/policy/unit_test_inputs.py), where
-    it then runs: a read of anything its inputs leave out finds nothing, so a test whose check is
-    keyed too narrowly fails instead of passing on a stale result."""
-    import tempfile
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import unit_test_inputs
-
-    root = Path(__file__).resolve().parents[2]
-    tree = unit_test_inputs.Tree(root)
-    relative = test.resolve().relative_to(root).as_posix()
-    found, why = unit_test_inputs.inputs(relative, tree)
-    if found is None:
-        raise SystemExit(f"run_unit_tests.py: {relative} reads the whole tree ({why}): run it without --pruned")
-    destination = Path(tempfile.mkdtemp(prefix="unit-pruned-"))
-    count = unit_test_inputs.prune(tree, found, destination)
-    print(f"run_unit_tests.py: {relative} runs with {count} files of the tree, its inputs:\n  "
-          + "\n  ".join(found), flush=True)
-    return destination
 
 
 def run(path: Path, shard: tuple[int, int] | None = None) -> Result:
@@ -155,7 +124,7 @@ def run_shard(index: int, count: int, path: Path) -> int:
 
 
 def joined(results: list[Result]) -> Result:
-    """A file's shards as one result: t names a file's test once."""
+    """A file's shards as one result: the report names a file's test once."""
     first = results[0]
     return replace(first, ok=all(r.ok for r in results), seconds=max(r.seconds for r in results),
                    tests=sum(r.tests for r in results), output="\n".join(r.output for r in results),
@@ -164,7 +133,7 @@ def joined(results: list[Result]) -> Result:
 
 def failed_tests(output: str) -> dict[str, str]:
     """The tests a file's unittest output says failed, by id in order, each with its report: its
-    header and traceback, without unittest's rules of dashes (t ends a test's output at one)."""
+    header and traceback, without unittest's rules of dashes."""
     found: dict[str, str] = {}
     matches = list(FAILED.finditer(output))
     for index, match in enumerate(matches):
@@ -203,25 +172,10 @@ def main(argv: list[str]) -> int:
             parser.error("--shard I N FILE")
         return run_shard(int(argv[1]), int(argv[2]), Path(argv[3]))
     parser.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
-    parser.add_argument("--pruned", action="store_true",
-                        help="run each file in a copy of the tree holding only what it reads")
     parser.add_argument("directories", nargs="+", type=Path)
     args = parser.parse_args(argv)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
-    if args.pruned:
-        if len(args.directories) != 1 or args.directories[0].is_dir():
-            parser.error("--pruned runs one test file")
-        test = args.directories[0]
-        name = test.resolve().relative_to(Path(__file__).resolve().parents[2])
-        top = pruned(test)
-        try:
-            # From the copy's top, so the file is reported by the same path as from the tree's.
-            os.chdir(top)
-            return main([*([] if args.jobs == DEFAULT_JOBS else ["--jobs", str(args.jobs)]), str(name)])
-        finally:
-            import shutil
-            shutil.rmtree(top, ignore_errors=True)
     paths = files(args.directories)
     if not paths:
         print(f"run_unit_tests.py: no {PATTERN} in {', '.join(map(str, args.directories))}", file=sys.stderr)

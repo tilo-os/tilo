@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the runtimes the signed local model catalog ships (crates/agent/local-model-service/
-# RELEASE.md, "Signed runtimes"), as t's checks run them (t.toml, "Local model runtimes"). A
+# RELEASE.md, "Signed runtimes"). A
 # build holds no secrets and writes OUT/<id>.oci.tar, an OCI archive whose index names the image,
 # so `podman load` gives it the name and digest the catalog signs, and OUT/runtime.json, the
 # runtime's entry for dist/local-models/catalog-source.json with the archive's receipt.

@@ -26,4 +26,4 @@ tilo-app run examples/apps/tree-browser
 tilo-app check examples/apps/tree-browser
 ```
 
-`tilo-app examples` lists every example, and `docs/examples.md` in the Tilo repository explains how examples differ from templates.
+`tilo-app examples` lists every example.

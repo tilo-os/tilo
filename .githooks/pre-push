@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# The push gate is off for now: pushes to main are plain pushes. main's CI still runs on every
-# commit and reports what broke to whoever pushed it (docs/t.md, "How changes reach a release").
-exit 0

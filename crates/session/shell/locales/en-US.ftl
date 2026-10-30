@@ -1836,9 +1836,6 @@ peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
 peer-window-unavailable = { $app } isn't available for this device.
 hosted-window-running-on = Running on { $device }
-shell-document-unavailable = Document unavailable
-shell-named-document-unavailable = { $name } unavailable
-shell-path-open-failed = Cannot open { $path }: { $error }
 editor-disk-conflict = File changed on disk; unsaved edits are preserved for conflict resolution
 editor-hint-disk-conflict = File changed on disk. Your unsaved edits are kept.
 editor-hint-focused = Live-shared code  ·  Ctrl+Z to undo
@@ -2262,7 +2259,6 @@ airdrop-error-verification = Fingerprint differs. Check the receiver; nothing se
 airdrop-error-fresh-consent = Start a new AirDrop attempt to verify the receiver and approve this file again.
 
 # A document a tab could not restore
-hosted-document-unavailable = { $path } is unavailable: { $error }
 
 # A camera, microphone or scanner shared from another of your devices
 remote-capture-source-label = { $app } on another device

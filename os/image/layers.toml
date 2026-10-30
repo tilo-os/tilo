@@ -1,7 +1,5 @@
 # The OS image's actions, bottom first: what each builds, over what, and given what.
-# tools/ci/os/os_toml.py writes their checks into t.toml from this file, keyed by
-# exactly the files each piece reads (found in the piece itself: what it COPYs and
-# bind-mounts, and the pieces it builds on); tools/ci/os/pieces.py writes
+# tools/ci/os/pieces.py writes
 # os/Containerfile, every piece in this order, for a build of the whole image at
 # once.
 

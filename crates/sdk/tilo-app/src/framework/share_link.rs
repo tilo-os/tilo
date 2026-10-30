@@ -4,7 +4,7 @@
 //! the web entry the room's host announces. The host is asked for a fresh
 //! locator every time, so a link never names an entry or a room the host no
 //! longer serves, and is refused when the host serves no web page rather than
-//! guessing one. See `docs/architecture/web-routing.md` §4.3.
+//! guessing one.
 
 use tilo_actions::remote::{CatalogueQuery, ViewResourceQuery};
 use tilo_reference::link::{

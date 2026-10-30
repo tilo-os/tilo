@@ -57,8 +57,7 @@ refuse unsupported hardware rather than offer an install. Two audiences:
   names, no ids.
 - **The person keeping the board list.** A refused medium records the whole
   identity table above (plus the kernel version and the initramfs's DTB list)
-  into `/run/tilo-live-audit/`, the same volatile directory
-  `docs/lenovo-83ed-live-media-checklist.md` already writes to. Adding a board
+  into `/run/tilo-live-audit/`, a volatile directory. Adding a board
   begins with that record; "the installer said no" on its own tells no one what
   to add.
 

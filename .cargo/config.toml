@@ -17,7 +17,7 @@ rustflags = [
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
     # Every test binary carries its own copy of all crates' line tables; this
-    # halves each one (see docs/measurements/build-speed.md).
+    # halves each one.
     "-C", "link-arg=-Wl,--compress-debug-sections=zlib",
     "-C", "link-arg=-Wl,-z,shstk",
     # Keep in-image paths reproducible without allowing RUSTFLAGS to replace
@@ -35,7 +35,7 @@ rustflags = [
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
     # Every test binary carries its own copy of all crates' line tables; this
-    # halves each one (see docs/measurements/build-speed.md).
+    # halves each one.
     "-C", "link-arg=-Wl,--compress-debug-sections=zlib",
     "--remap-path-prefix=/build=.",
 ]

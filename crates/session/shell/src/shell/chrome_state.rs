@@ -29,73 +29,6 @@ fn visual_notification_alerts_enabled() -> bool {
     tilo_accessibility_settings::AccessibilitySettings::load().visual_alerts
 }
 
-#[cfg(test)]
-mod dropped_content_startup_tests {
-    use super::ChromeState;
-    use crate::shell::hosted_inputs::{HostedDocumentState, HostedTileInputs};
-    use crate::shell::state::WorkspaceTree;
-    use crate::shell::tab_binding::Placement;
-
-    #[test]
-    fn dropped_plain_text_is_bound_to_the_exact_hosted_editor_tab() {
-        let temp = tempfile::tempdir().unwrap();
-        let document = temp.path().join("carried.txt");
-        std::fs::write(&document, "carried words\n").unwrap();
-        let tree = WorkspaceTree::bootstrap_demo();
-        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
-        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
-
-        let tab = chrome
-            .borrow_mut()
-            .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
-            .unwrap();
-        assert!(matches!(
-            chrome.borrow().hosted_inputs.document(tab),
-            Some(HostedDocumentState::Ready(opened))
-                if opened.path == document.canonicalize().unwrap()
-        ));
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let group = tree.desktop.workspaces[0].strips[0]
-            .window_groups
-            .iter()
-            .find(|candidate| candidate.id == group)
-            .unwrap();
-        assert_eq!(group.tabs[0].id, tab);
-        drop(tree);
-        drop(state);
-    }
-
-    /// A Wayland drop is handled on the compositor loop, and a file dropped
-    /// from the workspace mount hydrates from a peer on its first read. The
-    /// drop opens the editor on the file without reading it: a file whose
-    /// bytes never arrive (a FIFO nobody writes) still opens at once.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn dropping_a_file_never_reads_it_on_the_loop() {
-        let temp = tempfile::tempdir().unwrap();
-        let document = crate::shell::disk_sync_guard::blocking_source(temp.path(), "hydrating.txt");
-        let tree = WorkspaceTree::bootstrap_demo();
-        let group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
-        let inputs = HostedTileInputs::fixture_in(temp.path()).unwrap();
-        let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
-
-        let (tab, read) = crate::shell::disk_sync_guard::read_while(&document, b"words\n", || {
-            chrome
-                .borrow_mut()
-                .handle_file_drop_at_placement(&document, Placement::TabAt(group, 0))
-        });
-        assert!(!read, "the drop read the file on the loop");
-        let tab = tab.expect("the drop opened a tab");
-        assert!(matches!(
-            chrome.borrow().hosted_inputs.document(tab),
-            Some(HostedDocumentState::Ready(opened))
-                if opened.path == document.canonicalize().unwrap()
-        ));
-    }
-}
-
 /// Whether a banner may surface while the person types into a window:
 /// only what is addressed to them (a message or mention from a verified
 /// person, a call, a reminder they set, an ask waiting on them), and the
@@ -2477,34 +2410,8 @@ impl ChromeState {
         path: &std::path::Path,
         placement: crate::shell::tab_binding::Placement,
     ) -> Option<u64> {
-        const MAX_HOSTED_TEXT_BYTES: u64 = 32 * 1024 * 1024;
-        let mut hosted_document = None;
-        let mut files_directory = None;
         if path.exists() {
-            let canonical = path.canonicalize().ok()?;
-            if canonical.is_dir() {
-                files_directory = Some(canonical);
-            } else {
-                let is_editor = canonical
-                    .extension()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|extension| {
-                        super::workspace_drop::EDITOR_EXTENSIONS
-                            .iter()
-                            .any(|candidate| candidate.eq_ignore_ascii_case(extension))
-                    });
-                if is_editor {
-                    // The size is metadata; the bytes are the editor's to
-                    // read. A drop from the workspace mount would hydrate
-                    // the file from a peer, which the loop must not wait for.
-                    if canonical.metadata().ok()?.len() > MAX_HOSTED_TEXT_BYTES {
-                        return None;
-                    }
-                    hosted_document = Some(canonical);
-                } else {
-                    files_directory = canonical.parent().map(std::path::Path::to_path_buf);
-                }
-            }
+            path.canonicalize().ok()?;
         }
         let tab_id = {
             let mut tree = self.tree_mut();
@@ -2528,29 +2435,6 @@ impl ChromeState {
         };
         if let Some((strip, group)) = address {
             self.grant_dropped_file_access(path, strip, group, tab_id);
-        }
-        // Exact placement is only half of opening a drop: hosted apps also
-        // need device-local startup data naming the thing they should show.
-        // Synthetic/nonexistent paths used by shell layout fixtures retain the
-        // historical placeholder behaviour; real paths are bound here.
-        if let Some(directory) = files_directory {
-            self.hosted_inputs.bind_files_directory(tab_id, directory);
-        }
-        if let Some(path) = hosted_document {
-            self.hosted_inputs.bind_document(
-                tab_id,
-                super::hosted_inputs::HostedDocument {
-                    provider_id: "org.tilo.Editor",
-                    path: path.clone(),
-                },
-            );
-            self.tree_mut().native_document_tabs.insert(
-                tab_id,
-                crate::shell::state::NativeDocumentReference {
-                    provider_id: "org.tilo.Editor".to_string(),
-                    path,
-                },
-            );
         }
         self.bump();
         Some(tab_id)

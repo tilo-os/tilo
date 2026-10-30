@@ -14,7 +14,7 @@ INPUTS = (
     "tools/test-env-setup.sh",
     "tools/with-test-environment.sh", "tools/with-headless-audio.sh", "tools/cargo-runner.sh",
     ".config/nextest-filters.toml", "tools/ci/nextest_filters.py", "tools/ci/clippy-check.sh",
-    "tools/ci/t-nextest.sh", "tools/ci/package_features.py",
+    "tools/ci/nextest.sh", "tools/ci/package_features.py",
     "tools/ci/compiler_inputs.py", "tools/ci/measure.sh", "tools/ci/process_progress.py",
     "tools/ci/cgroup_memory.py", "scripts/ci-run.sh", "tools/ensure-headless-audio.sh",
     "tools/ci/prepare-test-shard.sh", "os/dev/assert-native-arch.sh", "tools/font-catalog.py",

@@ -382,7 +382,7 @@ RATCHET_FILTERS = {
 # Ratchets of the shipped app: test files and `#[cfg(test)]` items are exempt.
 PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
 
-# The one resource/action/view model (docs/architecture/README.md): an app's
+# The one resource/action/view model: an app's
 # edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
 # its durable state is the resource's document, and nothing beside
 # `Action::apply` writes that document. These count production code only (test

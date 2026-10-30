@@ -346,9 +346,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
-    # The login test of these RPMs on stock Fedora is t's check host-session-e2e
-    # (tools/ci/products.toml), which no job here runs. The reviewed Desktop
-    # catalog additionally requires the complete journey.
+    # The reviewed Desktop catalog requires the complete journey.
     needs: [validate, package, sign-rpm]
     runs-on: runner
     timeout-minutes: 60

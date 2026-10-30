@@ -3833,8 +3833,9 @@ impl DrmDispatchState {
                     self.push(BackendEvent::TabletPadAdded(pad_description(&device)));
                 }
                 eprintln!(
-                    "tilo compositor: DRM input: device added name={:?} kind={:?}",
+                    "tilo compositor: DRM input: device added name={:?} sysname={:?} kind={:?}",
                     device.name(),
+                    device.sysname(),
                     device_caps(&device).kind()
                 );
                 self.devices.push(device);
@@ -3842,8 +3843,9 @@ impl DrmDispatchState {
             }
             InputEvent::DeviceRemoved { device } => {
                 eprintln!(
-                    "tilo compositor: DRM input: device removed name={:?}",
-                    device.name()
+                    "tilo compositor: DRM input: device removed name={:?} sysname={:?}",
+                    device.name(),
+                    device.sysname()
                 );
                 // libinput cannot deliver a release after the keyboard that
                 // owned the key disappears. Never let a held editing key keep

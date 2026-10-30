@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import struct
 import tempfile
-import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -199,26 +198,6 @@ class RpmBrokerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'protected pin'):
             CLIENT.verify_published(self.response, 'amd64', '0.1.13',
                                     self.env | {'TILO_RPM_SIGNING_FINGERPRINT': 'B' * 40})
-
-    def test_workflow_keeps_main_session_gate_and_isolates_oidc_from_builds(self):
-        workflow = (ROOT / '.forgejo/workflows/release-desktop.yml').read_text()
-        package = workflow.split('  package:\n')[1].split('  sign-rpm:\n')[0]
-        signer = workflow.split('  sign-rpm:\n')[1].split('  publish-os-payload:\n')[0]
-        self.assertNotIn('TILO_RPM_SIGNING_KEY_', workflow)
-        self.assertNotIn('enable-openid-connect', package)
-        self.assertIn('enable-openid-connect: true', signer)
-        self.assertIn('needs: [validate, package]', signer)
-        self.assertIn('needs: [validate, package, sign-rpm]', workflow)
-        checks = {check['name']: check
-                  for matrix in tomllib.loads((ROOT / 'tools/ci/products.toml').read_text())['matrix']
-                  for check in matrix['check']}
-        self.assertIn('host-session-e2e', checks['publish-desktop-payload']['needs'])
-        self.assertEqual(['desktop-package-amd64'], checks['host-session-e2e']['needs'])
-        verifier_step = workflow.split('- name: Check release version and create checksums', 1)[1].split('- name:', 1)[0]
-        self.assertIn('TILO_RPM_SIGNING_FINGERPRINT: ${{ vars.TILO_RPM_SIGNING_FINGERPRINT }}', verifier_step)
-        build = (ROOT / 'dist/ci/run-package-job.sh').read_text()
-        self.assertNotIn('--env TILO_RPM_SIGNING', build)
-        self.assertNotIn('dist/rpm/sign-rpms.sh', build)
 
 
 if __name__ == '__main__':

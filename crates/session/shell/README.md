@@ -58,8 +58,3 @@ Targeted verification:
 cargo test --locked -p shell --bin shell --no-default-features
 cargo clippy --locked -p shell --bin shell --no-default-features
 ```
-
-## UX testing
-
-See the [desktop UX bench](../docs/ux-testing-bench.md) for repeatable user
-journeys, interaction budgets, scroll checks and visual reports.

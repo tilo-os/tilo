@@ -293,7 +293,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the
-    // fragment and never reaches the server; see docs/architecture/web-routing.md.
+    // fragment and never reaches the server.
     import {startEntryPage} from './entry-page.mjs';
     await startEntryPage({mode: 'desktop'});
   </script>

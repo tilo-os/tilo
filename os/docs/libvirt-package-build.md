@@ -28,9 +28,7 @@ positive integer. Use a native x86-64 or ARM64 builder for each output; tests
 run as part of `rpmbuild`, not through cross-architecture emulation.
 
 The source archive's SHA-256 is in the shared external asset manifest. Its
-detached signature was checked against the upstream HTTPS key; see
-[platform support](../../docs/architecture/platform-support.md) for the archive
-digest and key fingerprint. No independent key certification is claimed.
+detached signature was checked against the upstream HTTPS key. No independent key certification is claimed.
 
 Do not treat a local development tag as an approved release input. The packages
 still need inclusion in the frozen RPM snapshot, signed publication, and full

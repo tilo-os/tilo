@@ -8,7 +8,7 @@ held anywhere change meaning. Name-based encodings (JSON) cannot read a
 removed variant either. So for each enum that derives `Serialize` or
 `Deserialize`:
 
-``against BASE`` (t's ``changes`` check, against main) fails when a variant
+``against BASE`` (run against main before landing) fails when a variant
 it had at BASE is gone, or, for an enum encoded by position (externally
 tagged, the default), when the variants it had no longer lead it in the
 same order. New variants go at the end.

@@ -20,8 +20,7 @@
 #                                               nested-session
 #   dist/dev/nested-session-build.sh --apps     print the apps it builds
 #
-# The env-runtime is sealed from the tree t.toml's image-env-runtime-dev-tree-ARCH
-# check builds from the tree's own RPM package set, as a run's dev images get
+# The env-runtime is sealed from the tree built from the tree's own RPM package set, as a run's dev images get
 # theirs: TILO_ENV_RUNTIME_TREES names the directory holding
 # env-runtime-tree-ARCH.tar. A builder without those trees (one with no RPM
 # snapshot) builds everything else, and the session it

@@ -467,9 +467,6 @@ The size is only a hint; decide by use when they disagree.
 | Long-form documents | `Reading` |
 | Size that belongs to the document or canvas | `with_content_size(px)` / `TextStyle::content(px)` |
 
-The exact API changes for code written against the old size-based calls are
-in the Typography section of `docs/ui-migration.md`.
-
 ## Editing contract
 
 Caret movement and character deletion use Unicode extended grapheme clusters.
@@ -674,8 +671,7 @@ Mesa llvmpipe renders, and the comparison refuses other adapters.
 dimensions without a GPU, so a card that changed size fails every test run.
 
 After visually approving an intentional change, regenerate the references with
-t's `visual-baselines` check (`t outputs visual-baselines`,
-tools/ci/visual-baselines.sh), which pins the builder image and llvmpipe, and
+tools/ci/visual-baselines.sh in the builder image, which pins llvmpipe, and
 review its candidates. Inside that image the
 equivalent command is:
 

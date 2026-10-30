@@ -1,6 +1,6 @@
 /**
  * The fetch proxy the page's apps read cross-origin sites through
- * (tilo-net's `proxy`, wire protocol v1; docs/architecture/network.md). The
+ * (tilo-net's `proxy`, wire protocol v1). The
  * workspace host the page is admitted to serves it at `/peer/v1/fetch` to
  * its members' sessions, and says so when the session starts.
  *

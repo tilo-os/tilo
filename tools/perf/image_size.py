@@ -682,8 +682,7 @@ def directory_totals(files: dict[str, Entry], depth: int) -> dict[str, int]:
 
 
 # The image's own ostree repository: the base's objects, hard-linked to its
-# /usr. bootc does not deploy /sysroot from an image (the receipt in
-# docs/benchmarks/os-runtime-current-main-2026-10-06.md: deleting it leaves the
+# /usr. bootc does not deploy /sysroot from an image (deleting it leaves the
 # composefs root digest unchanged), so a file only it names is pulled but never
 # installed.
 UNDEPLOYED = "sysroot/"

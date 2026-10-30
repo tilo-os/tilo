@@ -124,7 +124,7 @@
 "crates/session/shell/src/shell/device_fabric.rs" = 5000
 "crates/session/shell/src/shell/device_fabric_runtime/mod.rs" = 11000
 "crates/session/shell/src/shell/foreign.rs" = 8500
-"crates/session/shell/src/shell/frame.rs" = 11000
+"crates/session/shell/src/shell/frame.rs" = 10500
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 7000
 "crates/session/shell/src/shell/network.rs" = 13000

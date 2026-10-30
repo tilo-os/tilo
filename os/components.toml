@@ -559,7 +559,7 @@ files = [
   { from = "tilo-enroll", to = "/usr/libexec/tilo/tilo-enroll", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-enroll" },
   { from = "tilo-home-peer-control", to = "/usr/libexec/tilo-home-peer-control", mode = "0755" },
-  # A node (docs/node-machine.md).
+  # A node.
   { from = "@manifest/usr/lib/tilo/node-relay.toml", to = "/usr/lib/tilo/node-relay.toml", mode = "0644" },
   { from = "@manifest/usr/lib/sysusers.d/tilo-relay.conf", to = "/usr/lib/sysusers.d/tilo-relay.conf", mode = "0644" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-relay@.service", to = "/usr/lib/systemd/system/tilo-node-relay@.service", mode = "0644" },
@@ -746,7 +746,7 @@ files = [
 ]
 
 # Dual boot: run by hand after the first Tilo boot to enlist it after Windows
-# in the firmware boot order (docs/windows-first-tilo-boot-order.md). The
+# in the firmware boot order. The
 # installer image, and so every target it installs, inherits it from here.
 [[component]]
 name = "boot-order"

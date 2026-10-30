@@ -96,8 +96,7 @@
 //! its own (`tilo-egress`). It is kept on purpose: apps whose manifests
 //! say `host` take OAuth redirects on a loopback listener the host's
 //! browser must reach, and the gate carries TCP only. The grammar and the
-//! decision are shared; the backend differs
-//! (`docs/architecture/security.md`).
+//! decision are shared; the backend differs.
 //!
 //! ## A refusal looks like an absence of network
 //!
@@ -1468,7 +1467,7 @@ mod tests {
     /// policy are the same (`EgressPolicy::Any`); the backend is not. Apps
     /// whose manifests say `host` (Music, Mail) take OAuth redirects on a
     /// loopback listener the host's browser must reach, and the gate carries
-    /// TCP only. See `docs/architecture/security.md`.
+    /// TCP only.
     #[test]
     fn a_star_grant_keeps_the_host_network_for_apps_deliberately() {
         let decision = EgressDecision::resolve("off", &[], &v(&["*"]));

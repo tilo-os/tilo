@@ -36,8 +36,7 @@ output. `rollback-boot-check.sh` gets this right and is the model.
 
 ## Related, outside this directory
 
-- `docs/architecture/security.md` — the earlier workspace-scoped threat model. Still the most detailed account of the remote-input firewall and the per-workspace sandbox; superseded on identity and boot.
 - [`design-rationale.md`](design-rationale.md) — the earlier security rationale. Its §6.1 first stated the device-key ≠ account-key invariant this design is built on.
 - [`spaces-channels-and-roles.md`](spaces-channels-and-roles.md) — the role/attestation model behind §7's authorship half.
 - [`cooperative-redaction.md`](cooperative-redaction.md) — redaction as a cooperative protocol, and why it is not a security mechanism.
-- `docs/app-model/sandbox.md`, `docs/app-model/trust.md` — the `.tapp` sandbox and package-signing detail.
+- [`docs/app-model/trust.md`](../app-model/trust.md) — the `.tapp` sandbox and package-signing detail.

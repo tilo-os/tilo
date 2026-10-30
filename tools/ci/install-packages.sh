@@ -4,10 +4,8 @@
 #
 #   install-packages.sh tools/ci/packages/<name>.txt...
 #
-# A check runs it as its `setup` (t.toml), so t makes the installs a layer over the
-# check's image once, cached by the image, this script and the lists; the job's own
-# script runs it too, where it finds everything installed and returns at once, so
-# the same script still works in an image without that layer.
+# Where everything is installed already it returns at once, so a job's script can
+# always run it.
 set -euo pipefail
 (($# > 0)) || { echo "usage: install-packages.sh LIST..." >&2; exit 2; }
 mapfile -t wanted < <(sed -e 's/#.*//' -e 's/[[:space:]]//g' -e '/^$/d' "$@")

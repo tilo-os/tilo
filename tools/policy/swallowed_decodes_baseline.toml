@@ -23,11 +23,7 @@
 "crates/session/shell/src/compositor/state.rs" = 1
 "crates/session/shell/src/compositor/watchdog.rs" = 1
 "crates/session/shell/src/compositor/xwayland_composer.rs" = 2
-"crates/session/shell/src/firstboot.rs" = 3
 "crates/session/shell/src/network/native_media/observer.rs" = 2
-"crates/session/shell/src/onboarding.rs" = 1
-"crates/session/shell/src/onboarding_nearby.rs" = 2
-"crates/session/shell/src/onboarding_view/recovery_key.rs" = 1
 "crates/session/shell/src/portal/desktop_services.rs" = 1
 "crates/session/shell/src/portal/global_shortcuts.rs" = 1
 "crates/session/shell/src/portal/mod.rs" = 1
@@ -44,7 +40,6 @@
 "crates/session/shell/src/shell/broker_services.rs" = 1
 "crates/session/shell/src/shell/broker_services/airdrop_transfer.rs" = 1
 "crates/session/shell/src/shell/broker_services/file_clipboard/journal.rs" = 2
-"crates/session/shell/src/shell/broker_services/tracker_runs.rs" = 1
 "crates/session/shell/src/shell/catalogue.rs" = 2
 "crates/session/shell/src/shell/collab_broker.rs" = 1
 "crates/session/shell/src/shell/continuation.rs" = 2
@@ -81,8 +76,6 @@
 "crates/session/shell/src/shell/live_presence.rs" = 4
 "crates/session/shell/src/shell/live_waves.rs" = 2
 "crates/session/shell/src/shell/memory_report.rs" = 1
-"crates/session/shell/src/shell/mpris/mod.rs" = 1
-"crates/session/shell/src/shell/mpris/observer.rs" = 4
 "crates/session/shell/src/shell/net_answers.rs" = 1
 "crates/session/shell/src/shell/network.rs" = 10
 "crates/session/shell/src/shell/network/embedded_host.rs" = 1
@@ -97,7 +90,6 @@
 "crates/session/shell/src/shell/network/room_rosters.rs" = 1
 "crates/session/shell/src/shell/network/room_window_carriers.rs" = 1
 "crates/session/shell/src/shell/network/room_window_views.rs" = 2
-"crates/session/shell/src/shell/network/shortcut_saves.rs" = 1
 "crates/session/shell/src/shell/network/site_join.rs" = 4
 "crates/session/shell/src/shell/notification.rs" = 1
 "crates/session/shell/src/shell/osd.rs" = 1
@@ -117,16 +109,13 @@
 "crates/session/shell/src/shell/personal_workspaces.rs" = 1
 "crates/session/shell/src/shell/pointer_readiness.rs" = 1
 "crates/session/shell/src/shell/portal_dialog/accessibility.rs" = 2
-"crates/session/shell/src/shell/projection_overlay.rs" = 1
 "crates/session/shell/src/shell/room_activity.rs" = 4
-"crates/session/shell/src/shell/search/files_index.rs" = 1
 "crates/session/shell/src/shell/search/held_pages.rs" = 3
 "crates/session/shell/src/shell/search/mod.rs" = 1
 "crates/session/shell/src/shell/search/providers/actions.rs" = 1
 "crates/session/shell/src/shell/search/providers/happening_now.rs" = 1
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 11
 "crates/session/shell/src/shell/search/providers/live_app_jobs.rs" = 1
-"crates/session/shell/src/shell/search/providers/quick_answers/currency.rs" = 1
 "crates/session/shell/src/shell/search/providers/waiting_on_you.rs" = 1
 "crates/session/shell/src/shell/search/recent_places.rs" = 1
 "crates/session/shell/src/shell/settings_records.rs" = 1

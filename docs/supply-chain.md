@@ -160,9 +160,8 @@ operate it. Companion to `docs/security/design-rationale.md`.
   twice → identical `podman image inspect --format '{{.Id}}'`.
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
-  set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built by
-  t's `image-rpms-<arch>` checks and published by `publish-rpms` to
-  `registry.tilo.so/tilo/rpms`) and
+  set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built and
+  published by **Build / RPM snapshot** to `registry.tilo.so/tilo/rpms`) and
   addressed as `set-<fingerprint>`, where the fingerprint hashes both
   architectures' package sets, `BASE_REF`, and the files that shape the snapshot
   (`os/dev/rpm-snapshot-fingerprint.py`). Builds call
@@ -190,15 +189,15 @@ operate it. Companion to `docs/security/design-rationale.md`.
   offline, so an incomplete snapshot fails in CI rather than in an image build.
 - **Kernel buildroots.** The kernel's build dependencies and the Fedora kernel
   SRPM come from their own snapshot, `os/Containerfile.kernel-buildroot`,
-  instead of the OS frozen RPM snapshot. t's `image-kernel-buildroot-<arch>`
-  checks resolve it natively on x86-64 and ARM64 against the mirrored base, checks the SRPM's
+  instead of the OS frozen RPM snapshot. `tools/ci/publish/kernel-buildroot.sh build`
+  resolves it natively on x86-64 and ARM64 against the mirrored base, checks the SRPM's
   Fedora signature, records its checksum, the base and the package manifest
   (the x86-64 one also carries Fedora's aarch64 cross compiler and binutils,
   refused unless their versions are the native ones'),
   deletes every repository file so a kernel build cannot fall back to the
   network, and stable signs each digest through the non-exportable release key.
   Both pins land in `os/kernel-buildroot-snapshot.env` through
-  `pin-kernel-buildroot`, which commits them to main. A base
+  `kernel-buildroot.sh pin`. A base
   refresh re-runs it; an OS package change does not.
 - **Native custom kernels.** Kernel CI rebuilds the hardened kernel separately
   on native x86-64 and ARM64 runners, checks the runner architecture, signs
@@ -263,7 +262,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
   `os/dev/ensure-base-mirror.sh` copies `BASE_SOURCE` into the mirror when the
   pinned digest is missing. Changing `BASE_REF` changes the
   RPM fingerprint, so the next snapshot publishes a new `set-<fingerprint>`
-  tag; then `pin-kernel-buildroot` and `pin-kernel` commit the new buildroot and
+  tag; then `kernel-buildroot.sh pin` and `kernel.sh pin` write the new buildroot and
   kernel pins once stable has published them. The ensure step refuses a `BASE_SOURCE`
   whose digest no longer matches the pin, so a silent major bump fails closed
   instead of shipping.
@@ -271,12 +270,9 @@ operate it. Companion to `docs/security/design-rationale.md`.
   snapshot, catalogue, and license consumed by the OS image is declared once
   in `os/external-assets/github-assets.tsv` with an immutable URL and SHA-256.
   `os/dev/cache-github-assets.sh` performs resumable downloads and refuses a
-  checksum mismatch. In t, the `os-assets` check runs it once per manifest and
-  keeps the verified files as its outputs; every image build that takes an
-  asset needs that check and only verifies what it is given
-  (`TILO_ASSET_OFFLINE=1`), so no build job downloads one from upstream.
-  Cosign, which every verifying and signing step runs, comes the same way
-  from the smaller `signing-tools` check.
+  checksum mismatch. Workflows run it through the `cache-github-assets`
+  action; a build given the verified files only verifies them
+  (`TILO_ASSET_OFFLINE=1`).
   CI and local scripts expose the cache as a separate named build context;
   Containerfiles consume it through read-only mounts. Archives therefore never
   enter layer history or the Rust workspace context, and builds never fetch

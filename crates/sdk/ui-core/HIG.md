@@ -525,8 +525,7 @@ recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
 
 Promoted so far, each as a retained widget and a `*Face` painter with the
-same geometry (`docs/ui-migration.md`, "Content widgets", maps the app code
-each replaces):
+same geometry:
 
 | Pattern | Primitive |
 |---|---|
@@ -1796,8 +1795,6 @@ Not automated yet; grep a diff for these:
 - `Duration::from_millis(` with a literal in an animation (use
   `tokens::motion`)
 - a `Command::new` / blocking read reachable from `draw`
-
-`docs/ui-migration.md` maps each key to the API that replaces it.
 
 ---
 

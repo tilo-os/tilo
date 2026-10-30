@@ -11,7 +11,8 @@
 # builds, the medium); give each checkout one of its own. --out receives signin-e2e's report.md,
 # report.json, screenshots and logs. --variant picks signin_e2e.py's variants (default: one-secret
 # and separate-disk-secret); the rollback variant takes the image from before pam_tilo as a
-# reference the guest can pull or as an OCI archive here.
+# reference the guest can pull (a sealed release) or as an OCI archive here (a dev build, which
+# tools/ci/seal-dev-image.sh seals first).
 #
 #   1. tools/ci/run-checks.py builds os-image-<arch> and tilo-vm-binary-<arch>.
 #   2. tools/ci/medium-in-worker-vm.sh runs dev-installer-medium-<arch>'s script in a worker VM,
@@ -70,9 +71,10 @@ fi
 inputs=(--input "variants=${variants[*]}")
 if [[ -n $old_image ]]; then
   if [[ -f $old_image ]]; then
-    # The check sees /target only: the archive goes there, a reflink where the filesystem has them.
+    # A dev build of the old commit is unsealed, which the installed machine's bootc refuses to
+    # switch to: sealed as a release is, into /target, which is all the check sees.
     mkdir -p "$target/signin-e2e-inputs"
-    cp --reflink=auto "$old_image" "$target/signin-e2e-inputs/pre-pam-tilo.ociarchive"
+    bash tools/ci/seal-dev-image.sh "$old_image" "$target/signin-e2e-inputs/pre-pam-tilo.ociarchive"
     inputs+=(--input pre_pam_tilo_image=/target/signin-e2e-inputs/pre-pam-tilo.ociarchive)
   else
     inputs+=(--input "pre_pam_tilo_image=$old_image")

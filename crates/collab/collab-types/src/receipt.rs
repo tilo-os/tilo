@@ -1,6 +1,6 @@
 //! Deciding a received document op change by change, before it is merged.
 //!
-//! Every peer checks every incoming change ([`permissions.md`] §5.2). This
+//! Every peer checks every incoming change. This
 //! is the check that needs no app code and reads no content, so a relay runs
 //! it on cleartext and sealed ops alike: each change's [`ChangeClaim`] names
 //! an action the record's app publishes, the author is granted that action
@@ -13,8 +13,6 @@
 //! A device that has the app also replays each change
 //! ([`tilo_actions::verify_change`]), which catches an author who is granted
 //! an action but wrote something else inside its units.
-//!
-//! [`permissions.md`]: ../../../../docs/architecture/permissions.md
 
 use std::collections::BTreeSet;
 

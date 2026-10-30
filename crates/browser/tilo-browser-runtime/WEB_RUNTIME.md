@@ -5,8 +5,7 @@ WebAssembly module holding the toolkit, the page host and every application
 it was built with. `wasm32` has no dynamic linking, so apps are compiled in,
 not loaded at run time. `web/host.mjs` owns the DOM (input and IME,
 clipboard, the accessibility projection, font fetching, `IndexedDB`); the
-crate owns the components, their records and the GPU. See
-`docs/architecture/browser-runtime.md` for the design.
+crate owns the components, their records and the GPU.
 
 ## Building
 
@@ -53,9 +52,8 @@ against the SDK checkout it names. The bundle lands in
 for the same release optimisation with `debug_assertions` and overflow
 checks kept (`wasm-assert`), which is what a qualified or measured bundle is
 built with; `--assertions` alone is refused, because an unoptimised build
-already asserts. Page URLs (which room, app and
-resource a page opens, desktop or full-tab app mode, history, share links) follow
-`docs/architecture/web-routing.md`, which replaces these query parameters. `package --target web` writes
+already asserts.
+`package --target web` writes
 it in the immutable layout Cloud serves.
 
 ## Mounting

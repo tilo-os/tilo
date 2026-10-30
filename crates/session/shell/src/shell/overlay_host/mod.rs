@@ -1020,9 +1020,6 @@ pub struct ShellOverlayHost {
     /// Windows shared live into a conversation: the menus offering it, the
     /// sharing app's connections and the views windows embed.
     live_shares: live_shares::NativeLiveShares,
-    /// The tree revision the windows lent to apps the shell mounts were
-    /// last matched against the tabs at ([`Self::sync_hosted_windows`]).
-    hosted_windows_revision: Option<u64>,
     /// The tabs whose bar says "Controls your desktop", and the
     /// generations they were read at ([`desktop_control_chips`]).
     desktop_control: desktop_control_chips::DesktopControlMarks,
@@ -1814,10 +1811,6 @@ mod transient_zone_tests;
 #[cfg(test)]
 #[path = "window_bar_location_tests.rs"]
 mod window_bar_location_tests;
-
-#[cfg(test)]
-#[path = "hosted_window_tests.rs"]
-mod hosted_window_tests;
 
 #[cfg(test)]
 #[path = "room_window_stream_tests.rs"]

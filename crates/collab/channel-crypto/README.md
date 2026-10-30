@@ -79,8 +79,7 @@ history.
   finer split would add key-management state without narrowing who can read
   what, because channel membership is the access boundary. Membership is
   decided per record: a Read Deny on a record, its app or any pattern over it
-  keeps the denied devices out of that record's channel alone
-  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
+  keeps the denied devices out of that record's channel alone.
 
 ### Security properties
 
@@ -342,8 +341,7 @@ If the lost machine was the room's governor, see the known limits above.
   everyone, as it may be a member's own record. A Deny below a
   record (an item, a field) still binds only honest clients and doors: one key
   opens the whole record, so against a modified client the record is the
-  confidentiality boundary
-  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
+  confidentiality boundary.
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 
 ## Cipher suite

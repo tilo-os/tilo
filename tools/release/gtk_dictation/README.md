@@ -43,6 +43,5 @@ recording. GTK PRIVATE means no updates to personalized data, not secret-field
 refusal. The separate no-learning contract remains the OS speech service's
 responsibility; the field fixture checks consent, cancellation and ordinary input.
 
-See [the evidence and limits](../../../docs/architecture/dictation-gtk-client-transaction.md).
 No model, audio, development headers or native library is distributed here.
 These original sources use the repository's AGPL-3.0-only licence.

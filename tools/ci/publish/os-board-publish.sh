@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish main's board dev image and its flashable disk (publish-os-board-<board> in t.toml),
+# Publish main's board dev image and its flashable disk,
 # from what `os-image.sh board` left in OUT, with the development key's signature
 # sign-dev-os-board-<board> wrote beside it: under the development-only name tilo-vm, which
 # devices accept only with that signature (os/etc/containers/policy.json).

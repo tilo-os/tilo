@@ -12,8 +12,7 @@ REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
 FILTERS = REPO / ".config" / "nextest-filters.toml"
 SHELL = REPO / "crates" / "session" / "shell" / "src"
-T_NEXTEST = REPO / "tools" / "ci" / "t-nextest.sh"
-T_TOML = REPO / "t.toml"
+T_NEXTEST = REPO / "tools" / "ci" / "nextest.sh"
 
 
 def native_4k_tests() -> set[str]:
@@ -132,9 +131,6 @@ class NextestPolicyTests(unittest.TestCase):
         self.assertEqual(len(set(normalised.values())), 1, normalised)
 
     def test_checks_read_filters_from_the_tested_tree(self) -> None:
-        # A filterset copied into t.toml would name packages a later tree may
-        # have renamed, and nextest rejects a package() that matches nothing.
-        self.assertNotRegex(T_TOML.read_text(encoding="utf-8"), r"(?m)^\s*(GOLDEN|PUSH_ONLY|MICRO_VM)_FILTER\s*=")
         self.assertIn("import nextest_filters", T_NEXTEST.read_text(encoding="utf-8"))
         output = subprocess.run([sys.executable, str(REPO / "tools/ci/nextest_filters.py")],
                                 check=True, capture_output=True, text=True).stdout

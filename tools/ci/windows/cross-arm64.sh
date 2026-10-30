@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cross-build exact-source Windows ARM64 binaries on Linux ARM64, for hosts without a Rust build
-# tree or a Windows build machine (t.toml: windows-arm64-tilo-vm, windows-arm64-imager):
+# tree or a Windows build machine:
 #
 #   cross-arm64.sh tilo-vm OUT  the development CLI, to iterate with WHPX, and its unit tests
 #   cross-arm64.sh imager OUT   the imager and its test executable, which runs on the target

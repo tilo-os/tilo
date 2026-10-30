@@ -115,8 +115,8 @@ image, because the image decides which bytes are acceptable:
    manifest that pins every artifact by URL, exact byte length and SHA-256, and
    the exact base it was resolved for. CI signs the manifest bytes with the
    extension-manifest key: a non-exportable KMS key
-   (`alias/tilo-extension-manifests`) that only t's
-   `publish-extension-manifests` check on main can use, separate from the OS
+   (`alias/tilo-extension-manifests`) that only
+   `tools/ci/publish/extension-manifests.sh publish` on main can use, separate from the OS
    release key. Its public half is
    `keys/extensions.pub`.
 3. The device fetches the manifest and its detached signature, verifies the
@@ -324,18 +324,12 @@ URL, upstream signature, license and base constraint, then compute:
 python3 tools/extensions/resolve.py content-sha256 media-codecs.json
 ```
 
-Dispatch t's extension-manifest checks on main with that exact
-digest-qualified image and the reviewed hash:
-
-```sh
-t dispatch publish-extension-manifests \
-  --input images=registry.tilo.so/tilo/tilo@sha256:… \
-  --input expected_content_sha256=… \
-  --input publish=false
-```
+Run `tools/ci/publish/extension-manifests.sh resolve` and then `publish` on main with
+that exact digest-qualified image, the reviewed hash and publishing turned off (the
+script's header names the variables that take them).
 
 It re-resolves using the same production recipe and rejects any material
-change before signing; with `publish=false`,
+change before signing; with publishing turned off,
 `tools/ci/publish/extension-manifests.sh` signs without publishing
 (`publish.sh --sign-only`). Only
 `created` and `revision` timestamps are excluded from this hash; the image,
@@ -351,8 +345,8 @@ consumer's signature, upstream-package and compatibility checks before a
 synthetic encode/decode or encrypted-session test; a test key is not evidence
 of image admission. A passing HEVC or VP8 test does not qualify H.264 or AirPlay.
 
-Later promotion is a separate explicit dispatch of the same immutable image
-and the same reviewed hash with `publish=true` (the default), so
+Later promotion is a separate explicit run of the same immutable image
+and the same reviewed hash with publishing turned on (the default), so
 re-resolution or copy drift fails rather than silently publishing an untested
 package set. Revision and
 creation time may advance; archive the exact signed bytes used by each test.

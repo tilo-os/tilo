@@ -8,8 +8,8 @@
 #
 #   tools/ci/example-scenarios.sh -p example-counter -p tilo-app ...
 #
-# t.toml's `example-scenarios` check runs it under tools/test-env.sh. An example with no saved scenario fails: every example
-# ships one (docs/examples.md).
+# Run it under tools/test-env.sh. An example with no saved scenario fails: every example
+# ships one.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
