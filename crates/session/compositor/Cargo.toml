@@ -10,8 +10,8 @@ license.workspace = true
 # The protocol server, the desktop element model and the renderers: pixman
 # composites headless outputs on the CPU, GLES real ones; the TTY backend's
 # session, udev, libinput and KMS (DrmCompositor) come from smithay too, as
-# does the X11 window of the nested development backend. renderer_multi
-# lets the primary GPU render for displays on other GPUs.
+# does the window of the nested development backend. renderer_multi lets the
+# primary GPU render for displays on other GPUs.
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "desktop",
@@ -24,9 +24,14 @@ smithay = { version = "0.7", default-features = false, features = [
     "backend_libinput",
     "backend_udev",
     "backend_session_libseat",
-    "backend_x11",
+    "backend_winit",
     "xwayland",
 ] }
+# The window of the nested development backend: the toolkit's winit fork, the
+# same one smithay's backend builds; it opens a Wayland window where the
+# desktop is Wayland and an X11 one otherwise (X11 comes with smithay's own
+# winit dependency).
+winit.workspace = true
 # Turns an output's ICC profile into the lookup table its colour pass reads.
 qcms.workspace = true
 tracing.workspace = true

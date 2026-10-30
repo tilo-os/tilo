@@ -1172,7 +1172,7 @@ impl Compositor {
 
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
-        Ok(self.data.backend.screenshot(name)?)
+        Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
     }
 
     /// The processes whose clients disconnected since the last look: the

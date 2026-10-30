@@ -161,7 +161,7 @@ pub trait Backend {
     }
 
     /// The last frame drawn on the output named `name`.
-    fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
+    fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(
             "{name}: this backend does not read frames back"
         )))
