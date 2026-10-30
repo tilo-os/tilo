@@ -192,7 +192,7 @@ impl PersonCursors {
                     ui::icons::Icon::MessageSquare,
                     &label,
                 )
-                .on_click(move || activation.set(Some(clicked.get())));
+                .on_view(move || activation.set(Some(clicked.get())));
                 self.controls.push(Box::new(CursorControl {
                     source,
                     selected,
@@ -346,6 +346,17 @@ mod tests {
             marker: Rect::new(10.0, 20.0, 42.0, 52.0),
         }
     }
+    /// Deliver what a press on a cursor published, as the compositor runs
+    /// the queue after input.
+    fn deliver(cursors: &mut PersonCursors, doc: &mut automerge::AutoCommit) {
+        for control in cursors.children_mut() {
+            ui::widget::controls::start_pending_control_invocations(
+                control,
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT,
+            );
+        }
+    }
     #[test]
     fn semantics_follow_key_not_name_or_pointer_and_departures_retire_controls() {
         let room = "11111111-1111-4111-8111-111111111111";
@@ -361,10 +372,11 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
+        deliver(&mut cursors, &mut doc);
         assert_eq!(
             cursors.take_activation(),
             Some(source.clone()),
-            "semantic activation uses the shared Button callback"
+            "semantic activation presses the marker's button"
         );
         cursors.refresh(true);
         assert!(cursors.semantic_action(
@@ -373,6 +385,7 @@ mod tests {
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
+        deliver(&mut cursors, &mut doc);
         assert!(
             cursors.take_activation().is_none(),
             "modal suppression cannot queue a later activation"

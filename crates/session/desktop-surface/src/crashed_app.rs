@@ -32,7 +32,7 @@ impl CrashedApp {
             .push(Box::new(
                 Button::new(REOPEN_ID, &crate::i18n::t("browser-app-crashed-reopen"))
                     .role(ButtonRole::Primary)
-                    .on_click(reopen),
+                    .on_view(reopen),
             ));
         Self {
             title: title.to_owned(),
