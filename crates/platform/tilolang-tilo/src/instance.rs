@@ -1445,6 +1445,30 @@ impl Instance {
         view
     }
 
+    /// Take in what the window tells of itself and of the person at it, which runs nothing
+    /// there and then: where the keyboard is, whether an input method composes, what it calls
+    /// people, the space a view has, and the undos and redos asked for, which the one who runs
+    /// the instance carries out on the record ([`Self::take_history`]).
+    fn window_told(&mut self, told: ToApp) {
+        match told {
+            ToApp::Undo => self.history.push(HistoryAsk::Undo),
+            ToApp::Redo => self.history.push(HistoryAsk::Redo),
+            ToApp::Focus { at } => self.focus = at,
+            ToApp::Composing(composing) => self.composing = composing,
+            ToApp::Names { me, others } => {
+                if self.told.tell(me, others) {
+                    self.names_changed = true;
+                }
+            }
+            ToApp::Space {
+                lane,
+                width,
+                height,
+            } => self.offer_space(lane, f64::from(width), f64::from(height)),
+            other => tracing::error!(?other, "the window told of something it does not"),
+        }
+    }
+
     fn event(&mut self, message: ToApp) {
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
@@ -1500,35 +1524,13 @@ impl Instance {
                 }
                 Ok(())
             }
-            asked @ (ToApp::Undo | ToApp::Redo) => {
-                let redo = matches!(asked, ToApp::Redo);
-                self.history.push(if redo {
-                    HistoryAsk::Redo
-                } else {
-                    HistoryAsk::Undo
-                });
-                Ok(())
-            }
-            ToApp::Focus { at } => {
-                self.focus = at;
-                Ok(())
-            }
-            ToApp::Composing(composing) => {
-                self.composing = composing;
-                Ok(())
-            }
-            ToApp::Names { me, others } => {
-                if self.told.tell(me, others) {
-                    self.names_changed = true;
-                }
-                Ok(())
-            }
-            ToApp::Space {
-                lane,
-                width,
-                height,
-            } => {
-                self.offer_space(lane, f64::from(width), f64::from(height));
+            told @ (ToApp::Undo
+            | ToApp::Redo
+            | ToApp::Focus { .. }
+            | ToApp::Composing(_)
+            | ToApp::Names { .. }
+            | ToApp::Space { .. }) => {
+                self.window_told(told);
                 Ok(())
             }
         };
