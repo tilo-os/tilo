@@ -138,6 +138,11 @@ impl Store {
                 let opened = Opened::find(&item, &cx.live().get(), &self.calendars)?;
                 self.asks.push(Ask::Open(opened));
             }
+            CalendarEffect::ReadCalendar { id } => {
+                return self
+                    .read_calendar(&id, &cx.live().get())
+                    .map(Effected::value);
+            }
             CalendarEffect::ShowAllCalendars => self.asks.push(Ask::ShowAllCalendars),
             CalendarEffect::ShowView { view } => {
                 let view = match view.as_str() {
@@ -291,6 +296,35 @@ impl Store {
             ));
         }
         statuses
+    }
+
+    /// What the calendar `id` is, its row's read: its name, whether its
+    /// events are shown, its colour and how many of `model`'s events it
+    /// holds.
+    fn read_calendar(&self, id: &str, model: &Calendar) -> Result<serde_json::Value, String> {
+        let calendar = self
+            .calendars
+            .iter()
+            .find(|calendar| calendar.id == id)
+            .ok_or_else(|| "calendar no longer exists".to_string())?;
+        let local = id == crate::actions::LOCAL_CALENDAR_ID;
+        let events = model
+            .events
+            .iter()
+            .filter(|event| match &event.calendar_id {
+                Some(of) => of == id,
+                None => local,
+            })
+            .count();
+        Ok(serde_json::json!({
+            "id": calendar.id,
+            "name": calendar.label,
+            "visible": calendar.visible,
+            "color": calendar
+                .color
+                .map(|color| Palette::from_index(color).name().to_ascii_lowercase()),
+            "events": events,
+        }))
     }
 
     /// The calendars of the accounts on this device, which can be opened,
