@@ -254,3 +254,40 @@ fn the_palettes_strip_actions_take_the_same_path_and_each_is_the_persons_own() {
     assert_eq!(created.changes, 1);
     assert_eq!(name(&chrome), None);
 }
+
+/// A document has one writer: content already open in a window answers
+/// with that window, wherever it was asked to open, instead of launching a
+/// second process that contends for its record and stops.
+#[test]
+fn content_already_open_answers_with_its_window() {
+    let (chrome, room, notes) = chrome();
+    let agent = agent();
+    let hash = "c".repeat(64);
+    let address = format!("tilo.content:{hash}");
+    let tab = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+    chrome
+        .borrow_mut()
+        .desktop_layout
+        .opened
+        .insert(tab, address.clone());
+    let strip = super::create_strip(
+        &mut chrome.borrow_mut(),
+        room,
+        "Grace Hopper",
+        &agent,
+        false,
+    )
+    .expect("a strip");
+    let again = super::open(
+        &mut chrome.borrow_mut(),
+        room,
+        &Target::parse(&address).unwrap(),
+        Place::NewWindow { strip: Some(strip) },
+        true,
+        &agent,
+        &publisher,
+    )
+    .expect("the open window answers");
+    assert_eq!((again.tab, again.group), (tab, notes));
+    assert!(windows_of(&chrome, strip).is_empty(), "nothing else opened");
+}

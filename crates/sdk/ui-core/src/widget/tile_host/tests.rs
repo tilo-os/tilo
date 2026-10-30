@@ -1411,3 +1411,41 @@ fn a_desktop_window_presents_history_on_its_tab_not_in_a_band() {
     assert!(!driver.targets().contains_key("activity_timeline"));
     assert_eq!(window_history_control(&driver), Some(false));
 }
+
+/// A tile that is never drawn (its window is on a strip that is not shown)
+/// still lets its arrival's steps pass: once its first frame is due, the
+/// tile asks for no wake at all, instead of a due deadline on every turn of
+/// the loop.
+#[test]
+fn an_undrawn_tile_asks_for_no_wake_once_its_arrival_is_due() {
+    let t0 = crate::time::now();
+    for presented in [false, true] {
+        // The place held for a window while it opens, the window arriving
+        // into it: what an agent's `open` on another strip leaves there.
+        let mut host = crate::time::testing::with_monotonic_time(t0, || {
+            let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+            let mut host = TileHost::new(TileContent::Notice {
+                title: "Word Processor".into(),
+                detail: "Opening here…".into(),
+            });
+            host.rect = rect;
+            host.replace_content(TileContent::App(Box::new(Starting {
+                rect,
+                drawn: std::rc::Rc::default(),
+                presented,
+            })));
+            host
+        });
+        let doc = automerge::AutoCommit::new();
+        for seconds in [5, 6] {
+            let later = t0 + crate::time::Duration::from_secs(seconds);
+            crate::time::testing::with_monotonic_time(later, || {
+                let _ = Widget::update(&mut host, &doc, &automerge::ROOT);
+                assert!(
+                    Widget::next_wake_deadline(&host).is_none_or(|at| at > later),
+                    "presented={presented}: no due wake {seconds} s after opening, undrawn"
+                );
+            });
+        }
+    }
+}
