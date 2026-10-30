@@ -1229,8 +1229,10 @@ impl Session {
         ));
         let watched_wallpapers = std::sync::Arc::clone(&wallpapers);
         // Artwork the session resolves off the loop wakes it when it is
-        // ready, so the frame that painted the letter repaints with it.
+        // ready, so the frame that painted the letter repaints with it; the
+        // apps installed here are the lists' to resolve, on their worker.
         app_icons::set_wake(options.wake.handle());
+        app_icons::set_lists(options.search.lists.clone());
         let settings_watch = settings_store::watch::watch_settings(move || {
             let document = settings_store::load();
             *watched.lock_recover() =

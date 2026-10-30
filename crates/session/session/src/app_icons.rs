@@ -9,7 +9,9 @@
 //! An icon is looked up in the person's themes and rasterised at the size
 //! the banner paints it, which reads the disk. That happens on a worker,
 //! and the loop is woken with the answer, so a banner paints its app's
-//! letter for the frame before its artwork is there.
+//! letter for the frame before its artwork is there. The icon an installed
+//! package signed is resolved by the app lists' own worker
+//! ([`crate::lists::AppLists::icons`]), for the same reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
@@ -20,6 +22,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use desktop_entry::icon_theme::{self, IconFormat};
 use tilo_lock::MutexRecover as _;
 use ui::icons::{AppImage, AppImageSource};
+
+use crate::lists::Lists;
 
 /// The most bytes of an icon file the worker reads: an icon is kilobytes,
 /// and a hostile or broken theme must not make it parse megabytes.
@@ -115,13 +119,34 @@ fn entry_icon(desktop_id: &str) -> Option<String> {
         .and_then(|entry| entry.icon.clone())
 }
 
-/// The absolute path of the icon the installed package `app_id` signed.
+/// The absolute path of the icon the installed package `app_id` signed, as
+/// the app lists' worker last resolved it. Never touches the disk: a package
+/// installed since is artwork of its own only once the lists were read
+/// again, and until then the theme icon named like the id shows.
 fn installed_icon(app_id: &str) -> Option<String> {
-    tilo_installed_apps::read_one_from_env(app_id)
-        .ok()
-        .flatten()
-        .and_then(|app| app.icon_path())
+    let lists = LISTS.lock_recover().as_ref()?.latest();
+    let icons = &lists.icons;
+    let app = if icons.contains_key(app_id) {
+        app_id.to_owned()
+    } else {
+        // A notification can name an app by an id it no longer installs
+        // under: the package that took its place signed the artwork.
+        tilo_action_policy::earlier::held_current(app_id)
+    };
+    icons
+        .get(&app)
         .and_then(|path| path.to_str().map(str::to_owned))
+}
+
+/// The app lists search reads of this device, where a notification's app
+/// icon is found: set once at startup, kept current by their own worker.
+static LISTS: Mutex<Option<Lists>> = Mutex::new(None);
+
+/// Answer an app's artwork from `lists`. Before this — and in a session given
+/// lists fixed up front, which are all the artwork there is — only the icons
+/// those lists carry are named.
+pub(crate) fn set_lists(lists: Lists) {
+    *LISTS.lock_recover() = Some(lists);
 }
 
 /// Wake the loop once artwork is ready, so the banner repaints with it.

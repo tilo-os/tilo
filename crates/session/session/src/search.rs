@@ -444,6 +444,7 @@ mod tests {
                     })
                     .collect(),
                 catalogue: Vec::new(),
+                icons: std::collections::BTreeMap::new(),
             }
         }
     }
