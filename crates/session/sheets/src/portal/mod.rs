@@ -130,6 +130,9 @@ pub struct Dialog {
     pub heading: String,
     /// What the person reviews: this page of it, when it is paged.
     pub detail: String,
+    /// A code to read out or compare, shown large above the detail: a
+    /// pairing's passkey or PIN.
+    pub code: Option<String>,
     pub body: Body,
     pub confirm_label: String,
     pub cancel_label: String,
@@ -413,9 +416,7 @@ impl PortalSeat {
                 ..
             }) = &dialog
             {
-                *self.secrets.borrow_mut() = prompt
-                    .fields
-                    .iter()
+                *self.secrets.borrow_mut() = (0..secret_fields(prompt))
                     .map(|_| Arc::new(Mutex::new(String::new())))
                     .collect();
             }
@@ -615,6 +616,17 @@ impl PortalSeat {
             shown.update(|shown| shown.typed = shown.typed.wrapping_add(1));
         }
         self.presentation.wake();
+    }
+}
+
+/// How many secrets the sheet asks for `prompt`: one buffer is lent per
+/// field, so this is what the view builds rather than what the question
+/// listed. A SIM locked by wrong PINs asks for its PUK and the new PIN
+/// typed twice, however the question words the two it reads back.
+fn secret_fields(prompt: &Prompt) -> usize {
+    match prompt.kind {
+        PromptKind::SimPuk { .. } => 3,
+        PromptKind::Fields | PromptKind::SimPin { .. } => prompt.fields.len(),
     }
 }
 

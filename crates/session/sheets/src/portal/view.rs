@@ -78,6 +78,13 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
             Text::new(&dialog.detail).with_role(TextRole::Body),
         ));
     }
+    if let Some(code) = &dialog.code {
+        body = body.push(Box::new(
+            Text::new(code)
+                .with_role(TextRole::Title)
+                .with_id("portal-code"),
+        ));
+    }
     body = body.push(rows(dialog, shown.focus, parts));
     if let Some(error) = &dialog.error {
         body = body.push(Box::new(

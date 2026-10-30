@@ -20,6 +20,9 @@ pub(super) const SCENARIOS: &[&str] = &[
     "network",
     "sim-pin",
     "sim-puk",
+    "cannot-join",
+    "pairing",
+    "allowed",
 ];
 
 fn base(handle: &str, title: &str, heading: &str, detail: &str) -> Dialog {
@@ -279,6 +282,42 @@ pub(super) fn dialog(scenario: Option<&str>) -> Dialog {
                 ..Prompt::default()
             }),
             ..base("sim-puk", "The SIM is locked", "Network", "")
+        },
+        Some("cannot-join") => Dialog {
+            body: Body::Choices(strings(&["Enter password"])),
+            confirm_label: "Enter password".to_owned(),
+            ..base(
+                "cannot-join",
+                "Couldn't join Cafe",
+                "Cafe",
+                "Enter the password to connect.",
+            )
+        },
+        Some("pairing") => Dialog {
+            title: "Does Keyboard show this code?".to_owned(),
+            heading: "Keyboard".to_owned(),
+            detail: "Compare it with the code on the other device. If they differ, \
+                     something else is trying to pair, so say no."
+                .to_owned(),
+            code: Some("123456".to_owned()),
+            body: Body::Answers {
+                choices: Vec::new(),
+                suggested: 0,
+                remember: None,
+            },
+            confirm_label: "They match".to_owned(),
+            cancel_label: "Don't pair".to_owned(),
+            ..Dialog::default()
+        },
+        Some("allowed") => Dialog {
+            title: "Allowed for good".to_owned(),
+            heading: "Meet".to_owned(),
+            detail: "Meet may now use your screen without asking. \
+                     Revoke it to make Tilo ask again next time."
+                .to_owned(),
+            confirm_label: "Revoke".to_owned(),
+            cancel_label: "Keep".to_owned(),
+            ..Dialog::default()
         },
         _ => Dialog {
             confirm_label: "Share".to_owned(),

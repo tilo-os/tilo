@@ -36,6 +36,9 @@ struct Inner {
     /// The last opening came from a key, so the sheet starts on its first
     /// control.
     by_keyboard: Cell<bool>,
+    /// The rectangle the shell wants the sheet on, when it named one: the
+    /// output the person is working on, say.
+    place: Cell<Option<(i32, i32, u32, u32)>>,
     /// Wakes the sheet's app when the shell changes the phase.
     wake: RefCell<Option<ui::WakeHandle>>,
 }
@@ -86,6 +89,22 @@ impl Presentation {
     /// closes it.
     pub fn wake_with(&self, wake: ui::WakeHandle) {
         *self.0.wake.borrow_mut() = Some(wake);
+    }
+
+    /// The shell puts the sheet at `place` (`None`: wherever it puts sheets
+    /// of its own), in logical pixels.
+    pub fn place_at(&self, place: Option<(i32, i32, u32, u32)>) {
+        if self.0.place.get() == place {
+            return;
+        }
+        self.0.place.set(place);
+        self.wake();
+    }
+
+    /// Where the shell wants the sheet now: a rectangle of the display, or
+    /// `None` for the sheet's own place.
+    pub fn place(&self) -> Option<(i32, i32, u32, u32)> {
+        self.0.place.get()
     }
 
     /// The sheet dismissed itself (Escape, a press outside it, a choice).
