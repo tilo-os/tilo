@@ -284,7 +284,12 @@ mod tests {
         tilo_test_env::require_capability!(
             Chown,
             tilo_test_env::chown_to(2000),
-            "the loader fixture's ownership and mounts"
+            "the loader fixture's ownership"
+        );
+        tilo_test_env::require_capability!(
+            UserNamespace,
+            tilo_test_env::mount_namespace(),
+            "the loader fixture's readonly overlay mount"
         );
         let executable = std::env::current_exe().unwrap();
         let loader = interpreter(Path::new("/usr/bin/bash")).unwrap().unwrap();
