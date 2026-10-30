@@ -15,9 +15,9 @@ power-restart = Neu starten
 power-restart-detail = Geöffnete Apps werden geschlossen
 power-shut-down = Ausschalten
 power-shut-down-detail = Geöffnete Apps werden geschlossen
-power-shut-down-session-detail = Beendet diese Sitzung; das Fenster schließt sich
-power-not-offered-switch-user = Diese Sitzung kann keinen Benutzerwechsel
-power-not-offered-power = Diese Sitzung verfügt nicht über die Energieverwaltung des Rechners
+power-shut-down-session-detail = Das Fenster schließt sich; der Rechner bleibt an
+power-not-offered-switch-user = Benutzerwechsel ist in diesem Fenster nicht möglich
+power-not-offered-power = Dieses Fenster kann die Energieverwaltung des Rechners nicht ändern
 
 ## Display change
 
