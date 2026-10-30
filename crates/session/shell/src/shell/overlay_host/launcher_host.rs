@@ -31,10 +31,6 @@ use super::*;
 /// The record the launcher is mounted on: one per session, never a tab's.
 const LAUNCHER_INSTANCE: u64 = u64::MAX - 1;
 
-/// The card's height less its list until the launcher measured it: a field
-/// and its padding.
-const SEARCH_CHROME_HEIGHT: f64 = 72.0;
-
 /// The launcher the shell shows, and its side of the link.
 pub(crate) struct LauncherHost {
     link: Link,
@@ -161,12 +157,13 @@ impl ShellOverlayHost {
             && self.palette_visible
     }
 
-    /// The height of the card less its list, as the launcher measured it.
-    pub(super) fn search_chrome_height(&self) -> f64 {
+    /// The height of the card less its list, once the launcher measured
+    /// it; `None` before, when only the launcher knows it.
+    pub(super) fn search_chrome_height(&self) -> Option<f64> {
         self.launcher
             .as_ref()
             .and_then(|launcher| launcher.link.fit())
-            .map_or(SEARCH_CHROME_HEIGHT, |fit| fit.chrome_height)
+            .map(|fit| fit.chrome_height)
     }
 
     /// Mount the launcher once the session lends the apps it mounts in its
@@ -460,7 +457,9 @@ impl ShellOverlayHost {
         // focus order ([`Widget::children`] leaves it out): opening it then
         // changes no layout, and the first key finds its field.
         let (frame, _) = self.palette_place(theme);
-        let height = self.search_chrome_height() + list_max;
+        // As tall as the card may grow once the launcher measured its
+        // chrome; until then the launcher's own layout sizes it.
+        let height = self.search_chrome_height().map(|chrome| chrome + list_max);
         let Some(launcher) = self.launcher.as_mut() else {
             // No launcher: an empty place keeps the host's children where
             // they are.
@@ -474,7 +473,9 @@ impl ShellOverlayHost {
             let mut style = style.clone();
             style.size = Size {
                 width: Dimension::length(f32_of_f64(frame.width())),
-                height: Dimension::length(f32_of_f64(height)),
+                height: height.map_or(style.size.height, |height| {
+                    Dimension::length(f32_of_f64(height))
+                }),
             };
             let _ = taffy.set_style(node, style);
         }
