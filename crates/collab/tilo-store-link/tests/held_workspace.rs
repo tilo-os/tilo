@@ -8,6 +8,10 @@
 //! guest hands a later guest an invitation of its own: the workspace outlives
 //! every device that takes part in it, and a device that has none of its
 //! history starts from the store's copy alone.
+//!
+//! A share is the same thing at another scale: the device that shares an app
+//! founds a workspace for it, and the people it shares with join and write in
+//! it as members, sealed, while the store keeps every member's line.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -440,6 +444,203 @@ async fn a_short_lived_room_is_a_workspace_a_store_device_holds() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shared_app_is_a_workspace_its_guests_write_in() {
+    let directory = tempfile::tempdir().unwrap();
+    let a_root = SigningKey::from_bytes(&[61; 32]);
+    let b_root = SigningKey::from_bytes(&[71; 32]);
+    let c_root = SigningKey::from_bytes(&[81; 32]);
+    let store_root = SigningKey::from_bytes(&[91; 32]);
+    let (a_key, a_cert) = device(&a_root, 62, DeviceCapabilities::primary());
+    let (b_key, b_cert) = device(&b_root, 63, DeviceCapabilities::member());
+    let (c_key, c_cert) = device(&c_root, 64, DeviceCapabilities::member());
+    let (store_key, _) = device(&store_root, 65, DeviceCapabilities::host());
+    let now = SystemTime::now();
+    let a_author = a_key.verifying_key().to_bytes();
+
+    // The sharer founds the workspace and writes what it shares.
+    let a = open_file(&directory.path().join("a.json")).unwrap();
+    let room = a
+        .create_workspace("Shared notes", &a_cert, &a_key, now)
+        .unwrap();
+    let workspace = workspace_of(&room.to_string()).unwrap();
+    let record = ApplicationRecord::host(APP, RECORD).unwrap();
+    a.prepare_application_record(room, &a_cert, &a_key, &record, now)
+        .unwrap();
+    let group =
+        ChannelGroup::create(channel(&room), MemberKey::generate("owner").unwrap()).unwrap();
+    let keys = group.content_keys().unwrap();
+    let b_keys = keys.clone();
+    let c_keys = keys.clone();
+    let artifact = artifact(&room);
+    let mut document = AutoCommit::new();
+    document.put(ROOT, "value", "the sharer's line").unwrap();
+    document.commit_edit("sharer", "value");
+    let change = document.save_incremental();
+    publish(&a, room, &change, &keys, artifact, &a_key, now);
+    // What it shares is a baseline: the checkpoint a guest's copy starts from.
+    compact(&a, room, &keys, artifact, &a_key, now);
+
+    let store = Arc::new(Store::open(directory.path().join("store"), Appetite::StoreAll).unwrap());
+    let mut access = FixedAccess::new();
+    for member in [
+        a_author,
+        b_key.verifying_key().to_bytes(),
+        c_key.verifying_key().to_bytes(),
+    ] {
+        access.admit(workspace, member);
+    }
+    let store_endpoint = endpoint(&store_key).await;
+    let _store_router = iroh::protocol::Router::builder(store_endpoint.clone())
+        .accept(ALPN, StoreNode::new(store.clone(), Arc::new(access)))
+        .spawn();
+    let a_endpoint = endpoint(&a_key).await;
+    let a_router = iroh::protocol::Router::builder(a_endpoint.clone())
+        .accept(
+            WORKSPACE_JOIN_ALPN,
+            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinRooms::new(a.clone(), a_key.clone()))),
+        )
+        .spawn();
+    let mut a_session = StoreSession::join(
+        &a_endpoint,
+        addr(&store_endpoint),
+        a_cert.clone(),
+        Vec::new(),
+        workspace,
+    )
+    .await
+    .unwrap();
+    assert!(a_session.keep_room(&a, room, now).await.unwrap() >= 1);
+
+    // The guest joins by invitation and reads the share from the store.
+    let b = open_file(&directory.path().join("b.json")).unwrap();
+    let b_endpoint = endpoint(&b_key).await;
+    joins(
+        b_endpoint.clone(),
+        &b_cert,
+        &b_key,
+        workspace,
+        invitation(
+            &a,
+            &room,
+            &a_cert,
+            &a_key,
+            &b_cert,
+            hint(&a_endpoint, &a_cert, &a_key, &room, workspace),
+            now,
+        ),
+        &b,
+        now,
+    )
+    .await;
+    let mut b_session = StoreSession::join(
+        &b_endpoint,
+        addr(&store_endpoint),
+        b_cert.clone(),
+        Vec::new(),
+        workspace,
+    )
+    .await
+    .unwrap();
+    assert_eq!(b_session.catch_up_room(&b, room, now).await.unwrap(), 1);
+    assert_eq!(read_value(&b, room, &b_keys), "\"the sharer's line\"");
+
+    // The guest writes too: a member's own sealed line, kept at the store
+    // beside the sharer's.
+    let mut guest = read_document(&b, room, &b_keys);
+    let heads = guest.get_heads();
+    guest.put(ROOT, "value", "the guest's line").unwrap();
+    guest.commit_edit("guest", "value");
+    let change = guest.save_after(&heads);
+    publish(&b, room, &change, &b_keys, artifact, &b_key, now);
+    assert!(b_session.keep_room(&b, room, now).await.unwrap() >= 1);
+    let lineages = store.lineages(workspace);
+    assert_eq!(
+        lineages.len(),
+        2,
+        "the store holds the sharer's sealed line and the guest's"
+    );
+
+    // The sharer catches up from the store and sees the guest's edit.
+    a_session.catch_up_room(&a, room, now).await.unwrap();
+    assert_eq!(read_value(&a, room, &keys), "\"the guest's line\"");
+
+    // The guest may hand the share on, as the sharer allows before it goes.
+    a.commit_workspace_membership_command(
+        OwnerCommitRequest {
+            room: room.to_string(),
+            operation: CommitOperation::WorkspaceMembershipCommand {
+                invocation: uuid::Uuid::new_v4(),
+                caller: a_cert.clone(),
+                command: WorkspaceMembershipCommand::Grant {
+                    grant: invite_grant(&a_cert, &b_cert, &room),
+                },
+            },
+        },
+        &a_key,
+        now,
+    )
+    .unwrap();
+    for message in outgoing(&a, room, now) {
+        let _report = b
+            .receive(
+                room,
+                TransportOrigin::RetainedRelayDelta(a_author),
+                message,
+                now,
+            )
+            .unwrap();
+    }
+
+    // The sharer's device is gone; a later guest reads the whole share,
+    // written by both, from the store alone.
+    drop(a_session);
+    drop(a);
+    drop(a_router);
+    a_endpoint.close().await;
+    let _b_router = iroh::protocol::Router::builder(b_endpoint.clone())
+        .accept(
+            WORKSPACE_JOIN_ALPN,
+            WorkspaceJoinProtocol::new(JoinAnswer(OwnerJoinRooms::new(b.clone(), b_key.clone()))),
+        )
+        .spawn();
+    let c = open_file(&directory.path().join("c.json")).unwrap();
+    let c_endpoint = endpoint(&c_key).await;
+    joins(
+        c_endpoint.clone(),
+        &c_cert,
+        &c_key,
+        workspace,
+        invitation(
+            &b,
+            &room,
+            &b_cert,
+            &b_key,
+            &c_cert,
+            hint(&b_endpoint, &b_cert, &b_key, &room, workspace),
+            now,
+        ),
+        &c,
+        now,
+    )
+    .await;
+    let mut c_session = StoreSession::join(
+        &c_endpoint,
+        addr(&store_endpoint),
+        c_cert,
+        Vec::new(),
+        workspace,
+    )
+    .await
+    .unwrap();
+    c_session.catch_up_room(&c, room, now).await.unwrap();
+    assert_eq!(
+        read_value(&c, room, &c_keys),
+        "\"the guest's line\"",
+        "the later guest reads what both members wrote, from the store alone"
+    );
+}
+
 /// Publish `change` to the record as A's sealed write.
 fn publish(
     owner: &NativeWorkspaceOwner,
@@ -520,7 +721,12 @@ fn document_write(message: NeighbourMsg) -> Result<OwnerCommitRequest, String> {
     })
 }
 
-fn read_value(owner: &NativeWorkspaceOwner, room: RoomId, keys: &ChannelContentKeys) -> String {
+/// The record's document as `owner` holds it.
+fn read_document(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    keys: &ChannelContentKeys,
+) -> AutoCommit {
     let opened = owner
         .with_current(room, |view| {
             view.peer()
@@ -530,7 +736,11 @@ fn read_value(owner: &NativeWorkspaceOwner, room: RoomId, keys: &ChannelContentK
         .unwrap()
         .expect("the workspace holds the record");
     assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
-    let read = AutoCommit::load(&opened.document).unwrap();
+    AutoCommit::load(&opened.document).unwrap()
+}
+
+fn read_value(owner: &NativeWorkspaceOwner, room: RoomId, keys: &ChannelContentKeys) -> String {
+    let read = read_document(owner, room, keys);
     read.get(ROOT, "value")
         .unwrap()
         .expect("the record has a value")
