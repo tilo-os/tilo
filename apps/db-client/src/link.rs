@@ -122,8 +122,6 @@ pub enum Intent {
     ConfirmRun,
     /// Close whichever dialog is open.
     CloseDialog,
-    /// Replace the editor's text with a starter query.
-    LoadSnippet(usize),
     /// Clear the error the last action ended with.
     DismissStatus,
     /// Stop the query in flight.

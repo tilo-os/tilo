@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use taffy::{NodeId, TaffyTree};
 use ui::TextRole;
+use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::{
@@ -24,6 +25,7 @@ use crate::i18n::{t, t_args};
 use crate::link::{Dialog, Intent, Link};
 use crate::model::QueryResult;
 use crate::query::query_pane;
+use crate::record::Workspace as Record;
 use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
 use crate::session::{MainTab, RunStatus};
 use crate::structure::StructureView;
@@ -328,6 +330,9 @@ impl Part {
 /// The content column of the window.
 pub struct Workspace {
     link: Link,
+    /// The workspace's published actions, which the query tab's starter
+    /// menu picks through; `None` outside the framework.
+    actions: Option<Actions<Record>>,
     column: Column,
     /// What `column` holds now.
     shown: Vec<Part>,
@@ -337,9 +342,10 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(link: &Link) -> Self {
+    pub fn new(link: &Link, actions: Option<&Actions<Record>>) -> Self {
         let mut workspace = Self {
             link: link.clone(),
+            actions: actions.cloned(),
             column: Column::new(),
             shown: Vec::new(),
             kept: HashMap::new(),
@@ -376,7 +382,7 @@ impl Workspace {
         match part {
             Part::Banner(message) => Box::new(ErrorBanner::new(link, message)),
             Part::FirstRun => Box::new(Placeholder::first_run(link)),
-            Part::Query => query_pane(link),
+            Part::Query => query_pane(link, self.actions.as_ref()),
             Part::Data => Box::new(DataPane::new(link)),
             Part::Structure => Box::new(StructureView::new(link)),
             Part::NoTable(MainTab::Data) => {
@@ -474,7 +480,7 @@ mod tests {
         let link = Link::new();
         let mut harness = FrameHarness::for_root(
             ui::State::new(),
-            Workspace::new(&link),
+            Workspace::new(&link, None),
             (900, 700),
             Theme::dark(),
         );
@@ -536,7 +542,7 @@ mod tests {
         link.publish(open_model(MainTab::Query));
         let mut harness = FrameHarness::for_root(
             ui::State::new(),
-            Workspace::new(&link),
+            Workspace::new(&link, None),
             (900, 700),
             Theme::dark(),
         );
