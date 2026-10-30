@@ -75,6 +75,7 @@ fn analysis() -> Derived<PhotoLibrary> {
     Derived::new(crate::strings::tr("photos-act-photo-analysis"))
         .of_kind("analysis")
         .identified("analysis")
+        .with_effect(&PhotosEffect::ReadLibraryAnalysis)
         .with_effect(&PhotosEffect::ViewLibraryAnalysis)
         .with_effect(&PhotosEffect::AnalyzeLibrary)
         .with_effect(&PhotosEffect::PauseLibraryAnalysis)
@@ -138,6 +139,7 @@ fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
     let mut root = Derived::new(crate::strings::tr("photos-people"))
         .of_kind("people")
         .identified("people")
+        .with_effect(&PhotosEffect::ReadPeople)
         .with_effect(&PhotosEffect::ViewPeople)
         .with_effect(&PhotosEffect::ManagePeopleRecognition)
         .with_effect(&PhotosEffect::EnablePeopleRecognition)
@@ -151,6 +153,9 @@ fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
             Derived::new(person.clone())
                 .of_kind("person")
                 .identified(label_id("person", person))
+                .with_effect(&PhotosEffect::ReadPerson {
+                    person: person.clone(),
+                })
                 .with_effect(&PhotosEffect::ViewPerson {
                     person: person.clone(),
                 })
