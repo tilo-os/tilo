@@ -78,6 +78,8 @@ const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
 
 struct Hosted {
+    /// The host's device: what it writes itself is its own.
+    host: [u8; 32],
     relay: Relay,
     web: WebHandle,
     agents: AgentHost,
@@ -127,7 +129,12 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
         })
         .await
         .unwrap();
-    Hosted { relay, web, agents }
+    Hosted {
+        host: host.cert.device_public_key,
+        relay,
+        web,
+        agents,
+    }
 }
 
 impl Hosted {
@@ -140,6 +147,7 @@ impl Hosted {
             .await
             .unwrap();
         let (readable, _) = common::retained_documents(
+            &self.host,
             retained
                 .into_iter()
                 .map(|retained| (retained.author, retained.body)),
@@ -237,7 +245,7 @@ impl Browser {
             device.key.clone(),
         );
         let events = peer.events();
-        peer.join(workspace()).unwrap();
+        peer.join_placed(ROOM, "Workspace").unwrap();
         ready(&[&peer]).await;
         Self {
             peer,
