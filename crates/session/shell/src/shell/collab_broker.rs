@@ -1600,7 +1600,7 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 pub(crate) fn hosted_channel_keys_of(
     net: Arc<crate::shell::network::ShellNetwork>,
 ) -> crate::shell::channel_policy::HostedChannelKeys {
-    Box::new(move |room, channel, route, create| {
+    std::sync::Arc::new(move |room, channel, route, create| {
         net.hosted_channel_keys(room, channel, route, create)
     })
 }
