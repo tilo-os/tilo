@@ -107,6 +107,14 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(any("-p tilo-web-desktop" in row["test_packages"]
                             for row in plan["matrix"]["include"]))
 
+    def test_near_is_the_change_its_direct_dependants_and_what_is_tested(self):
+        plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+        # The closure reaches leaf through middle; one edge from the change does not.
+        self.assertIn("leaf", plan["selected"])
+        self.assertEqual(set(plan["near"]), {"base", "middle"} | set(plan["tested"]))
+        self.assertNotIn("leaf", plan["near"])
+        self.assertLessEqual(set(plan["near"]), set(plan["selected"]))
+
     def test_the_desktop_gate_runs_whenever_a_change_reaches_the_desktop(self):
         gate = ci_select.path_suites.ReaderScope((), "it", "binary(it) and test(desktop_smoke::)")
         saved = ci_select.DESKTOP_GATE

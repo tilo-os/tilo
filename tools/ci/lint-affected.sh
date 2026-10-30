@@ -49,6 +49,13 @@ if [ "$default_builds" = 1 ]; then
     exit "$status"
 fi
 [ $# -gt 0 ] || { echo "lint-affected.sh: no packages" >&2; exit 2; }
+# Every member resolves its features as in a whole-workspace build, whatever packages are
+# named (tools/ci/workspace_unify.py; the package adds no unit): a member a narrower selection
+# reaches is otherwise a unit of other features, checked again instead of found fresh.
+case " $* " in
+    *" workspace-unify "*) ;;
+    *) set -- "$@" -p workspace-unify ;;
+esac
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}/lint"
 export CLIPPY_CHECK_DEFAULT_BUILDS=0

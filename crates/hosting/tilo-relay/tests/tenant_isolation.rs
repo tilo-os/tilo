@@ -846,7 +846,10 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
         issued.checked_add(600_000_000_000).unwrap(),
     )
     .unwrap();
-    t.relay.register_agent(delegation).unwrap();
+    t.relay
+        .register_agent(&agent.cert, delegation)
+        .await
+        .unwrap();
 
     // An agent governs nothing, not even the room it is delegated, and it
     // is no host person: the one decision every door asks refuses it
