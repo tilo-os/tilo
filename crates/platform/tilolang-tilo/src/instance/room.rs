@@ -94,6 +94,10 @@ pub struct RoomRecord {
     /// Whether this device governs the room: the record's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
+    /// The person's gesture open now, and its last action: the next action of theirs that goes
+    /// on from it ([`DynAction::continues`]) is a change of the same gesture, which undo takes
+    /// back with it as one step. Any other step, an undo or a redo closes it.
+    gesture: Option<(tilo_actions::ActionId, DynAction)>,
 }
 
 impl RoomRecord {
@@ -126,6 +130,7 @@ impl RoomRecord {
             words: HostWords::new("en-US"),
             writer,
             governs: true,
+            gesture: None,
         }
     }
 
@@ -419,6 +424,8 @@ impl RoomRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(Option<Json>, Option<String>), RoomError> {
+        // An undo or redo ends the gesture: what is typed after it is a step of its own.
+        self.gesture = None;
         let action = HostHistoryEdit {
             edit: edit.clone(),
             words: self.words.clone(),
@@ -560,7 +567,13 @@ impl RoomRecord {
             .committed(ticket)
             .ok_or(RoomError::NoAction(ticket))?;
         let invoker = ActionInvoker::actor(self.person.clone());
-        self.apply(&action, invoker, None)
+        let gesture = match self.gesture.take() {
+            Some((gesture, last)) if last.continues(&action) => gesture,
+            _ => tilo_actions::ActionId::new(),
+        };
+        self.apply_in_gesture(&action, invoker, None, Some(gesture))?;
+        self.gesture = Some((gesture, action));
+        Ok(())
     }
 
     /// Apply `action`, which the door built for `invoker` (a person or an agent task the broker
@@ -590,14 +603,29 @@ impl RoomRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<(), RoomError> {
+        // A step of its own ends the gesture open before it.
+        self.gesture = None;
+        self.apply_in_gesture(action, invoker, ambient, None)
+    }
+
+    /// As [`Self::apply`], the change a part of `gesture` when there is one: the changes of one
+    /// gesture are one undo step.
+    fn apply_in_gesture(
+        &mut self,
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+        gesture: Option<tilo_actions::ActionId>,
+    ) -> Result<(), RoomError> {
         let encoded = action
             .encode()
             .map_err(|error| RoomError::Refused(error.to_string()))?;
-        let context = ActionContext::for_resource(
+        let mut context = ActionContext::for_resource(
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
         );
+        context.gesture = gesture;
         self.apply_with(action, encoded, context, invoker, ambient)
     }
 
