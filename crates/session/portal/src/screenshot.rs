@@ -17,7 +17,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue};
 use crate::consent::AccessQuestion;
 use crate::file_chooser::file_uri;
 use crate::reply::{Ended, OrFail, Outcome, Reply, Results, answer};
-use crate::{Portal, PortalCaller, lockdown, option, question_handle};
+use crate::{CaptureTarget, Portal, PortalCaller, lockdown, option, question_handle};
 
 /// The kind of the question an interactive screenshot asks.
 pub const SCREENSHOT_QUESTION: &str = "portal.screenshot";
@@ -56,6 +56,22 @@ fn decision(options: &HashMap<String, OwnedValue>) -> Decision {
     }
 }
 
+/// What the app asks to capture: its `target` option, which is one of the
+/// bits this session offers in `available`; everything the displays show
+/// when it names none.
+fn target(options: &HashMap<String, OwnedValue>, available: u32) -> Result<CaptureTarget, Ended> {
+    let Some(raw) = option::<u32>(options, "target") else {
+        return Ok(CaptureTarget::Screen);
+    };
+    match CaptureTarget::of_bit(raw) {
+        Some(target) if available & target.bit() != 0 => Ok(target),
+        _ => {
+            tracing::warn!(target = raw, available, "a screenshot target nobody offers");
+            Err(Ended::Failed)
+        }
+    }
+}
+
 /// The `org.freedesktop.impl.portal.Screenshot` interface.
 pub struct Screenshot {
     portal: Portal,
@@ -77,6 +93,9 @@ async fn take(
     options: &HashMap<String, OwnedValue>,
 ) -> Outcome {
     let handle = question_handle(path);
+    // What is asked for is settled before the person is asked anything: a
+    // target this session cannot take is refused at once.
+    let target = target(options, portal.capture.targets())?;
     match decision(options) {
         Decision::Ask => {
             let question = ScreenshotQuestion {
@@ -114,7 +133,7 @@ async fn take(
         }
         Decision::Granted => {}
     }
-    let picture = portal.capture.screenshot().await.map_err(|error| {
+    let picture = portal.capture.screenshot(target).await.map_err(|error| {
         tracing::warn!(%error, "screenshot not captured");
         Ended::Failed
     })?;
@@ -129,9 +148,16 @@ async fn take(
 
 #[interface(name = "org.freedesktop.impl.portal.Screenshot")]
 impl Screenshot {
+    /// The bits an app may name as its `target`, one per kind of capture
+    /// this session can take.
+    #[zbus(property, name = "AvailableTargets")]
+    fn available_targets(&self) -> u32 {
+        self.portal.capture.targets()
+    }
+
     #[zbus(property, name = "version")]
     const fn version(&self) -> u32 {
-        2
+        3
     }
 
     async fn screenshot(
@@ -249,6 +275,21 @@ mod tests {
             Decision::Granted
         );
         assert_eq!(decision(&HashMap::new()), Decision::Access);
+    }
+
+    #[test]
+    fn the_target_option_names_what_to_capture_and_only_what_is_offered() {
+        let with = |target: u32| HashMap::from([("target".to_owned(), OwnedValue::from(target))]);
+        let offered = CaptureTarget::Screen.bit() | CaptureTarget::ActiveWindow.bit();
+        assert_eq!(target(&HashMap::new(), offered), Ok(CaptureTarget::Screen));
+        assert_eq!(target(&with(1), offered), Ok(CaptureTarget::Screen));
+        assert_eq!(target(&with(8), offered), Ok(CaptureTarget::ActiveWindow));
+        // Nobody picks a window or draws an area in this session: both are
+        // refused, as is a bit that stands for no target at all.
+        assert_eq!(target(&with(2), offered), Err(Ended::Failed));
+        assert_eq!(target(&with(4), offered), Err(Ended::Failed));
+        assert_eq!(target(&with(16), offered), Err(Ended::Failed));
+        assert_eq!(target(&with(0), offered), Err(Ended::Failed));
     }
 
     #[test]

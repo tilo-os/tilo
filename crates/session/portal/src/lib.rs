@@ -152,20 +152,68 @@ impl PortalCaller {
 /// A future the session answers on its own thread.
 pub type Pending<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+/// What a screenshot is of, as the interface's `target` option names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CaptureTarget {
+    /// Everything the displays show.
+    Screen,
+    /// One window the person picks.
+    Window,
+    /// An area the person draws.
+    Area,
+    /// The window with the keyboard's focus.
+    ActiveWindow,
+}
+
+impl CaptureTarget {
+    /// The bit of the interface's `AvailableTargets` that stands for this
+    /// target.
+    #[must_use]
+    pub const fn bit(self) -> u32 {
+        match self {
+            Self::Screen => 1,
+            Self::Window => 2,
+            Self::Area => 4,
+            Self::ActiveWindow => 8,
+        }
+    }
+
+    /// The target whose bit is `raw`, which is what the interface's
+    /// `target` option holds; `None` for anything else.
+    #[must_use]
+    pub const fn of_bit(raw: u32) -> Option<Self> {
+        Some(match raw {
+            1 => Self::Screen,
+            2 => Self::Window,
+            4 => Self::Area,
+            8 => Self::ActiveWindow,
+            _ => return None,
+        })
+    }
+}
+
 /// What the session captures for the portal: the compositor's pictures of
 /// what the displays show.
 pub trait Capture: Send + Sync {
-    /// A picture of every display as they show now, written as a PNG the
-    /// asking app may read; its path.
-    fn screenshot(&self) -> Pending<Result<PathBuf, String>>;
+    /// A picture of `target` as it shows now, written as a PNG the asking
+    /// app may read; its path.
+    fn screenshot(&self, target: CaptureTarget) -> Pending<Result<PathBuf, String>>;
+
+    /// The targets this session can take, as the interface's
+    /// `AvailableTargets` bits: it is asked nothing it cannot answer.
+    fn targets(&self) -> u32;
 }
 
 /// A session that captures nothing.
 pub struct NoCapture;
 
 impl Capture for NoCapture {
-    fn screenshot(&self) -> Pending<Result<PathBuf, String>> {
+    fn screenshot(&self, _target: CaptureTarget) -> Pending<Result<PathBuf, String>> {
         Box::pin(async { Err("this session captures nothing".to_owned()) })
+    }
+
+    fn targets(&self) -> u32 {
+        0
     }
 }
 
