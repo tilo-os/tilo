@@ -232,6 +232,38 @@ fn what_only_the_desktop_can_do_comes_back_to_the_session() {
 }
 
 #[test]
+fn the_wired_link_is_switched_from_the_network_section() {
+    // Where things rest: the motion on the way is its own test.
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::desk();
+    let mut desk = Desk::on(&machine);
+    desk.until("the first reading", |state| {
+        state.wired.as_ref().is_some_and(|wired| wired.connected)
+    });
+    desk.host.set_open(true);
+    desk.app
+        .invoke(QuickSettings::OPEN_SECTION.with(QsSection::Wifi))
+        .unwrap();
+    desk.app.settle();
+    desk.until("the open section", |state| state.wired.is_some());
+    assert!(desk.has("qs-wired"), "the cable's row");
+    assert!(
+        desk.app.harness().targets().contains_key("qs-wired-switch"),
+        "a switch for the cable"
+    );
+
+    desk.app.harness().click_named("qs-wired-switch").unwrap();
+    assert!(
+        !desk.host.state().wired.unwrap_or_default().connected,
+        "it goes at once"
+    );
+    desk.until("the wired change and its read-back", |state| {
+        state.wired.as_ref().is_some_and(|wired| !wired.connected)
+    });
+    assert_eq!(machine.calls(), ["wired:false"]);
+}
+
+#[test]
 fn bluetooth_devices_are_looked_for_paired_and_forgotten_in_the_section() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();

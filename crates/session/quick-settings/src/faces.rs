@@ -177,7 +177,16 @@ pub(crate) fn section_of(
     state: &QuickSettingsState,
 ) -> Option<QsSection> {
     match control {
-        QuickSettingsControl::Wifi if state.radios.wifi_available => Some(QsSection::Wifi),
+        // The wired link is listed here too, on a machine without a radio.
+        QuickSettingsControl::Wifi
+            if state.radios.wifi_available
+                || state
+                    .wired
+                    .as_ref()
+                    .is_some_and(|wired| wired.device.is_some()) =>
+        {
+            Some(QsSection::Wifi)
+        }
         QuickSettingsControl::Bluetooth => Some(QsSection::Bluetooth),
         QuickSettingsControl::Vpn => Some(QsSection::Vpn),
         // The one place the power mode is chosen.
@@ -609,6 +618,12 @@ pub(crate) enum Item {
     /// A sentence standing for an empty or unavailable list.
     Message(String),
     Network(NetworkFace),
+    /// The wired link, when this machine has an ethernet device.
+    Wired {
+        connected: bool,
+        /// The cable's address while it is up, else the device's name.
+        detail: Option<String>,
+    },
     Accessory(crate::BtDevice),
     /// "Look for devices", or "Stop looking" while the panel is looking.
     LookForDevices {
@@ -665,7 +680,19 @@ pub(crate) fn section(section: QsSection, state: &QuickSettingsState) -> Vec<Ite
 
 fn wifi(state: &QuickSettingsState) -> Vec<Item> {
     let mut items = Vec::new();
-    if state.radio_change_pending {
+    if let Some(wired) = &state.wired {
+        items.push(Item::Wired {
+            connected: wired.connected,
+            detail: if wired.connected {
+                wired.ipv4.clone().or_else(|| wired.device.clone())
+            } else {
+                wired.device.clone()
+            },
+        });
+    }
+    if !state.radios.wifi_available {
+        // A machine on a cable: there is no radio to switch.
+    } else if state.radio_change_pending {
         let on = matches!(
             state.radio_change,
             Some(os_actions::RadioChange::Wifi(true) | os_actions::RadioChange::Airplane(false))
@@ -725,7 +752,11 @@ fn wifi(state: &QuickSettingsState) -> Vec<Item> {
         }
     }
     items.push(Item::Settings {
-        label: t("qs-wifi-settings"),
+        label: t(if state.radios.wifi_available {
+            "qs-wifi-settings"
+        } else {
+            "qs-network-settings"
+        }),
         link: "settings://network",
     });
     items

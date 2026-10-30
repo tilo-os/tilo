@@ -23,6 +23,7 @@ struct Inner {
     bluetooth: bool,
     power: Option<os_actions::PowerProfile>,
     radios: os_actions::RadioState,
+    wired: Option<os_actions::WiredInfo>,
     vpns: Vec<os_actions::VpnConnectionInfo>,
     networks: Vec<os_actions::WifiNetworkInfo>,
     accessories: Vec<os_actions::BtDeviceInfo>,
@@ -85,6 +86,27 @@ impl Machine {
         machine
     }
 
+    /// A desktop on a cable, with no Wi-Fi radio.
+    #[must_use]
+    pub fn desk() -> Self {
+        let machine = Self::laptop();
+        {
+            let mut inner = machine.0.lock().unwrap();
+            inner.radios.wifi_available = false;
+            inner.radios.wifi_enabled = false;
+            inner.wired = Some(os_actions::WiredInfo {
+                connected: true,
+                device: Some("eth0".into()),
+                speed: Some("1000 Mb/s".into()),
+                ipv4: Some("10.0.0.5".into()),
+            });
+            inner.networks.clear();
+            inner.accessories.clear();
+            inner.nearby.clear();
+        }
+        machine
+    }
+
     /// The changes made, oldest first.
     #[must_use]
     pub fn calls(&self) -> Vec<String> {
@@ -134,7 +156,7 @@ impl DeviceReads for Machine {
         ])
     }
     fn wired(&self) -> Option<os_actions::WiredInfo> {
-        None
+        self.0.lock().unwrap().wired.clone()
     }
     fn battery(&self) -> tilo_power_mgmt::BatterySnapshot {
         tilo_power_mgmt::BatterySnapshot {
@@ -262,6 +284,16 @@ impl os_actions::Dispatcher for Machine {
                 .accessories
                 .retain(|accessory| accessory.mac != address);
             inner.nearby.retain(|device| device.address != address);
+        }
+        Ok(())
+    }
+    fn set_wired(&self, enabled: bool) -> Result<(), String> {
+        self.change(format!("wired:{enabled}"), "wired")?;
+        {
+            let mut inner = self.0.lock().unwrap();
+            if let Some(wired) = inner.wired.as_mut() {
+                wired.connected = enabled;
+            }
         }
         Ok(())
     }

@@ -78,6 +78,22 @@ fn item_rows(cx: &ViewCx<QuickSettings>, section: QsSection, item: &Item) -> Vec
                 .with_id(format!("qs-{}-message", section_id(section))),
         )],
         Item::Network(network) => network_rows(cx, network),
+        Item::Wired { connected, detail } => {
+            let switch = actions.bind_effect(
+                Toggle::from_state(&LocalState::new(*connected))
+                    .with_id("qs-wired-switch")
+                    .with_accessible_name(&t("qs-wired-network")),
+                QsEffect::SET_WIRED,
+            );
+            let mut row = ListRow::new("qs-wired", t("qs-wired-network"))
+                .icon(Icon::EthernetPort)
+                .selected(*connected)
+                .trailing(Box::new(switch));
+            if let Some(detail) = detail {
+                row = row.secondary(detail);
+            }
+            vec![Box::new(row)]
+        }
         Item::Accessory(device) => {
             let mut row = ListRow::new(format!("qs-accessory-{}", device.address), &device.name)
                 .icon(Icon::Bluetooth)
