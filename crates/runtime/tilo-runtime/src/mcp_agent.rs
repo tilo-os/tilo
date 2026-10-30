@@ -555,6 +555,98 @@ fn pick_action<'a>(
     })
 }
 
+/// The names below an app that reach `node`, in the levels this call read
+/// (`Notebook/Todo`), or `None` when they do not reach it.
+fn path_of(node: &Node, levels: &Levels) -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut current = node.clone();
+    for _ in 0..DEEP_READS {
+        let level = levels
+            .values()
+            .find(|level| level.children.iter().any(|seen| seen.id == current.id))?;
+        names.push(current.name(&level.children));
+        if current.parent.is_empty() {
+            names.reverse();
+            return Some(names.join("/"));
+        }
+        current = levels
+            .values()
+            .flat_map(|level| level.children.iter())
+            .find(|seen| seen.id == current.parent)?
+            .clone();
+    }
+    None
+}
+
+/// The action `name` means anywhere in what `resolved` names: the target's
+/// own actions (`notes/Todo#rename`), else, for a path naming the app, one
+/// the app publishes on a resource of its own — the live Settings'
+/// `add-email-account` is on the resource it lists as `settings.root`, so
+/// `settings#add-email-account` names it. `ranked` is what the app answered
+/// for `name`, each action with how well it is named and the key of the
+/// resource it is published on.
+/// Several resources carrying it equally well is refused naming them, each
+/// with the path that names it: the app alone does not mean one of two.
+fn pick_action_anywhere<'a>(
+    name: &str,
+    resolved: &'a Resolved,
+    ranked: Vec<(u8, String, &'a ActionDescriptor)>,
+) -> Result<(Option<String>, &'a ActionDescriptor), String> {
+    let error = match pick_action(name, &resolved.actions, &resolved.path) {
+        Ok(action) => return Ok((None, action)),
+        Err(error) => error,
+    };
+    // An action some way below what the path names is not that resource's:
+    // a note's own action is the note's, not the notebook's. The app is the
+    // one name that stands for what it publishes anywhere in its directory.
+    if resolved.node.is_some() {
+        return Err(error);
+    }
+    let Some(best) = ranked.iter().map(|(rank, ..)| *rank).min() else {
+        return Err(error);
+    };
+    let mut found: Vec<(String, &'a ActionDescriptor)> = Vec::new();
+    for (_, key, action) in ranked.iter().filter(|(rank, ..)| *rank == best) {
+        if !found.iter().any(|(_, seen)| seen.address == action.address) {
+            found.push((key.clone(), action));
+        }
+    }
+    match found.as_slice() {
+        [(key, only)] => Ok((Some(key.clone()), only)),
+        many => Err(format!(
+            "{name} names {} actions in {}: {}; name one with the resource it is on",
+            many.len(),
+            resolved.path,
+            many.iter()
+                .take(NAMES_LISTED)
+                .map(|(key, action)| format!("{}/{}#{}", resolved.path, key, action.address.action))
+                .chain(
+                    (many.len() > NAMES_LISTED)
+                        .then(|| format!("… +{}", many.len().saturating_sub(NAMES_LISTED)))
+                )
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// How well `name` names `action`: its id, its label, the start of its id,
+/// or not at all.
+fn action_rank(name: &str, action: &ActionDescriptor) -> Option<u8> {
+    if action.address.action.eq_ignore_ascii_case(name) {
+        return Some(0);
+    }
+    if action.action_label.eq_ignore_ascii_case(name) {
+        return Some(1);
+    }
+    action
+        .address
+        .action
+        .to_lowercase()
+        .starts_with(&name.to_lowercase())
+        .then_some(2)
+}
+
 /// [`list_names`], or `none` for no names: an empty list reads as a
 /// sentence cut short.
 fn list_or_none(names: &[String]) -> String {
@@ -1871,8 +1963,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Err(note) => return Ok(Reply::ok(note)),
         };
         if let Some(action) = &parsed.action {
-            let found = pick_action(action, &resolved.actions, &resolved.path)?;
-            return Ok(Reply::ok(action_page(&resolved.path, found)));
+            let (named_at, found) = self.pick_action_in(action, &resolved).await?;
+            return Ok(Reply::ok(action_page(&named_at, &found)));
         }
         let mut lines: Vec<String> = Vec::new();
         if want_resources {
@@ -2207,27 +2299,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut resolved = self
             .resolve_published(&parsed, app_id, provider, false)
             .await?;
-        let descriptor = if let Some(descriptor) = self.action_named(&resolved, &action).await? {
-            descriptor
-        } else {
-            // Not one of the target's actions by its id: what the target
-            // offers decides (a label, the start of an id), as listing it
-            // shows.
-            if let Some(node) = resolved.node.clone() {
-                let mut levels = std::mem::take(&mut resolved.levels);
-                let here = self
-                    .level(&resolved.provider, &node.id, &mut levels)
-                    .await?;
-                resolved.actions = if here.own.is_empty() {
-                    node.actions.clone()
-                } else {
-                    here.own
-                };
-            }
-            pick_action(&action, &resolved.actions, &resolved.path)
-                .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?
-                .clone()
-        };
+        let (named_at, descriptor) =
+            if let Some(descriptor) = self.action_named(&resolved, &action).await? {
+                (resolved.path.clone(), descriptor)
+            } else {
+                // Not one of the target's actions by its id: what the target
+                // offers decides (a label, the start of an id), as listing it
+                // shows. A path naming the app alone means the app's own
+                // actions and those it publishes on its resources.
+                if let Some(node) = resolved.node.clone() {
+                    let mut levels = std::mem::take(&mut resolved.levels);
+                    let here = self
+                        .level(&resolved.provider, &node.id, &mut levels)
+                        .await?;
+                    resolved.actions = if here.own.is_empty() {
+                        node.actions.clone()
+                    } else {
+                        here.own
+                    };
+                }
+                let (named_at, descriptor) = self
+                    .pick_action_in(&action, &resolved)
+                    .await
+                    .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?;
+                (named_at, descriptor)
+            };
         let value = Box::pin(self.invoke_one(OneCall {
             provider: Addressed {
                 provider: resolved.provider.clone(),
@@ -2244,9 +2340,62 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         .await?;
         Ok(Done::Invoked {
             value,
-            path: resolved.path,
+            path: named_at,
             descriptor: Box::new(descriptor),
         })
+    }
+
+    /// The action `name` means in what `resolved` names, with the path to
+    /// the resource it is published on: the target's own actions, else — a
+    /// path naming the app — the actions the app publishes on the resources
+    /// it lists, one bounded read deep (a Settings root, a notebook's
+    /// notes), never a walk of the app.
+    async fn pick_action_in(
+        &self,
+        name: &str,
+        resolved: &Resolved,
+    ) -> Result<(String, ActionDescriptor), String> {
+        // A path naming the app means what the app publishes on its
+        // resources: its root's, and those of the resources one level down
+        // in the containers it lists (a notebook's notes are the app's), as
+        // far as one listing reads, never a walk of the app.
+        let mut levels = resolved.levels.clone();
+        let mut published: Vec<(String, ActionDescriptor)> = Vec::new();
+        if resolved.node.is_none() {
+            let root = self.app_children(&resolved.provider, &mut levels).await?;
+            let siblings = &root.children;
+            for node in siblings {
+                let path = path_of(node, &levels).unwrap_or_else(|| node.name(siblings));
+                for action in &node.actions {
+                    published.push((path.clone(), action.clone()));
+                }
+                if !node.container {
+                    continue;
+                }
+                let inside = self
+                    .level(&resolved.provider, &node.id, &mut levels)
+                    .await?;
+                let held = &inside.children;
+                for child in held {
+                    let at = format!("{path}/{}", child.name(held));
+                    for action in &child.actions {
+                        published.push((at.clone(), action.clone()));
+                    }
+                }
+            }
+        }
+        let ranked: Vec<(u8, String, &ActionDescriptor)> = published
+            .iter()
+            .filter_map(|(path, action)| Some((action_rank(name, action)?, path.clone(), action)))
+            .collect();
+        let (path, action) = pick_action_anywhere(name, resolved, ranked)?;
+        // The path to the resource it is published on; the action follows
+        // its `#`, as every path's does.
+        let named_at = match path {
+            Some(path) => format!("{}/{}", resolved.path, path),
+            None => resolved.path.clone(),
+        };
+        Ok((named_at, action.clone()))
     }
 
     /// The action `action` on the resolved target, by its id, asked of the
