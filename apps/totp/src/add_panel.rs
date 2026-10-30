@@ -689,7 +689,7 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
     } else {
         section.collapsed()
     };
-    section.on_toggle(move |_| toggle())
+    section.on_expand(move |_| toggle())
 }
 
 /// How tall the form may be in a window `viewport_h` tall before it scrolls:

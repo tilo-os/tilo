@@ -274,7 +274,7 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     ])
     .with_header(SectionHeader::group("Windows").count(2))
     .collapsed()
-    .on_toggle(move |open| seen.set(Some(open)));
+    .on_expand(move |open| seen.set(Some(open)));
     assert!(!section.is_expanded());
     assert_eq!(Widget::children(&section).len(), 1, "only the header");
     let header = section.parts.children[0].as_mut();

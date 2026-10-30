@@ -378,7 +378,7 @@ fn a_collapsible_section_header_carries_its_press_across_a_rebuild() {
                     "Details",
                     vec![Box::new(crate::widget::Text::new("Body"))],
                 )
-                .on_toggle(move |_| ran()),
+                .on_expand(move |_| ran()),
             )
         },
         |h| pressable_centre(h),
