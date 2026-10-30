@@ -156,6 +156,18 @@ mod cases {
         }
     }
 
+    /// The id of `app`'s field `field` of its type `ty`: what a control bound to it names.
+    fn field_id(app: &App, ty: &str, field: &str) -> String {
+        app.meta()
+            .types
+            .iter()
+            .find(|t| t.name == ty)
+            .and_then(|t| t.fields.iter().find(|f| f.name == field))
+            .unwrap_or_else(|| panic!("{ty}.{field} is declared"))
+            .id
+            .clone()
+    }
+
     fn res(r: &ResourceRef) -> Value {
         Value::resource(r)
     }
@@ -484,13 +496,16 @@ mod cases {
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
         let title = of_kind(found[0], "ui.TextInput")[0];
         let binding = title.binding.clone().expect("the title input is bound");
-        assert_eq!(binding.field().map(|(target, _)| target), Some(&note));
+        assert_eq!(
+            binding.field(),
+            Some((&note, &field_id(&apps.notes, "Note", "title"))),
+            "the first input edits the note's title"
+        );
         assert_eq!(
             &binding.author,
             w.id_of(0),
             "the nested view is the notes package's code, not the agent's"
         );
-        assert_eq!(text_prop(title, "placeholder"), "Title");
 
         let key = title.key.clone();
         assert_eq!(
@@ -1019,7 +1034,14 @@ mod cases {
         let editor = w.rt.open_resource(&me(), &note, None).unwrap();
         assert_eq!(editor.window(), note.id_string());
         let title = of_kind(editor.tree(), "ui.TextInput")[0];
-        assert_eq!(text_prop(title, "placeholder"), "Title");
+        assert_eq!(
+            title
+                .binding
+                .as_ref()
+                .and_then(tilolang_runtime::Binding::field),
+            Some((&note, &field_id(&apps.notes, "Note", "title"))),
+            "the note's editor edits its title"
+        );
         assert_eq!(
             w.rt.default_view(&note.ty).as_deref(),
             Some(apps.notes.view("note_editor").as_str())

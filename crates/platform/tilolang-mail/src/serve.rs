@@ -172,13 +172,15 @@ impl Connector {
     /// How many messages wait for an instance to attach: what the queue holds.
     #[must_use]
     pub fn queued(&self) -> usize {
-        self.arrived.len()
-            + self.unreachable.len()
-            + self
-                .sends
-                .values()
-                .filter(|sending| sending.outcome.is_some())
-                .count()
+        let answered = self
+            .sends
+            .values()
+            .filter(|sending| sending.outcome.is_some())
+            .count();
+        self.arrived
+            .len()
+            .saturating_add(self.unreachable.len())
+            .saturating_add(answered)
     }
 
     fn attach(&mut self, stream: UnixStream, woken: &Sender<Wakeup>) {

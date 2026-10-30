@@ -61,16 +61,10 @@ pub struct WorkspaceChannelDirectory {
 
 /// A channel's content keys from the room host this device runs, for a room
 /// that host takes part in; `None` for any other room. See
-/// [`ChannelDirectory::hosted_channel_keys`].
-pub type HostedChannelKeys = Box<
-    dyn Fn(
-            RoomId,
-            ChannelId,
-            Option<&ChannelRoute>,
-            bool,
-        ) -> Option<Result<channel_crypto::ChannelContentKeys, String>>
-        + Send,
->;
+/// [`ChannelDirectory::hosted_channel_keys`]. Its answer waits on that host,
+/// so the channel service asks it with no lock of its own held
+/// ([`ChannelDirectory::hosted_keys`]).
+pub type HostedChannelKeys = tilo_action_broker::channel_encryption::HostedKeys;
 
 /// The device keys of this device and of `room`'s governor, as the room's
 /// admitted document names them: the governor takes part in every channel
@@ -182,6 +176,10 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         create: bool,
     ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
         (self.hosted.as_ref()?)(room, channel, route, create)
+    }
+
+    fn hosted_keys(&self) -> Option<tilo_action_broker::channel_encryption::HostedKeys> {
+        self.hosted.clone()
     }
 
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
