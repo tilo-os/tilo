@@ -22,8 +22,11 @@ use std::cell::Cell;
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
-use smithay::utils::Transform;
-use tilo_compositor::{HostKey, HostLayer, KeyModifiers, SurfaceHost};
+use smithay::utils::{Buffer, Rectangle, Transform};
+use tilo_compositor::{
+    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostKey, HostLayer, KeyModifiers,
+    SurfaceHost,
+};
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use ui::device_local_door::SharedDoor;
@@ -39,6 +42,9 @@ use canvas::Canvas;
 
 /// Cores the rasterizer uses for a large damaged region.
 const RASTER_THREADS: u16 = 2;
+
+/// The format files are dragged in.
+const URI_LIST: &str = "text/uri-list";
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
@@ -78,6 +84,8 @@ struct Surface {
     size: PhysicalSize<u32>,
     scale: f64,
     redraw: Cell<bool>,
+    /// The pointer shape the app asked for last.
+    cursor: Cell<CursorIcon>,
 }
 
 impl AppSurface for Surface {
@@ -93,7 +101,20 @@ impl AppSurface for Surface {
         self.redraw.set(true);
     }
 
-    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+    fn set_cursor(&self, cursor: winit::window::CursorIcon) {
+        self.cursor.set(cursor);
+    }
+}
+
+/// The files a dropped `text/uri-list` names: its `file:` URIs as paths,
+/// comments and other schemes skipped.
+fn dropped_paths(data: &[u8]) -> Vec<std::path::PathBuf> {
+    String::from_utf8_lossy(data)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
+        .collect()
 }
 
 /// One toolkit app shown on a rectangle of the desktop.
@@ -114,12 +135,21 @@ pub struct AppHost {
     /// The app's actions for this device: what it publishes, and what the
     /// session's catalogue asked of it, run on the next frame.
     door: SharedDoor,
+    /// The regions the app drew translucent material in last frame, in
+    /// its physical pixels: bounds, blur deviation, texel size.
+    backdrops: Vec<(vello::kurbo::Rect, f64, (u32, u32))>,
+    /// The blurred backdrops the compositor made, by region.
+    provided: Vec<Option<vello::peniko::ImageData>>,
+    /// The next frame is rasterized whole (its backdrops changed).
+    full: bool,
 }
 
 impl AppHost {
     /// Show `app` at `placement`. Nothing is drawn before the first
     /// [`SurfaceHost::prepare_frame`].
     pub fn new(app: App, placement: Placement) -> Self {
+        // Drags the app starts come to the compositor through this host.
+        ui::dnd::host_drags_in_process();
         let (width, height) = placement.physical_size();
         Self {
             app,
@@ -128,6 +158,7 @@ impl AppHost {
                 size: PhysicalSize::new(width, height),
                 scale: placement.scale,
                 redraw: Cell::new(true),
+                cursor: Cell::new(CursorIcon::Default),
             },
             canvas: Canvas::new((width, height), RASTER_THREADS),
             buffer: buffer_for((width, height)),
@@ -137,6 +168,9 @@ impl AppHost {
             keyboard: false,
             modifiers: ModifiersState::empty(),
             door: SharedDoor::default(),
+            backdrops: Vec::new(),
+            provided: Vec::new(),
+            full: false,
         }
     }
 
@@ -323,6 +357,80 @@ impl SurfaceHost for AppHost {
         self.input(key_event(key));
     }
 
+    fn cursor(&self) -> CursorIcon {
+        self.surface.cursor.get()
+    }
+
+    /// The toolkit takes files dropped on it (as a window of the desktop
+    /// it runs in would), so a drag that offers files is taken.
+    fn drop_offered(&mut self, mimes: &[String], x: f64, y: f64) -> Option<String> {
+        if !mimes.iter().any(|mime| mime == URI_LIST) {
+            return None;
+        }
+        // Drop zones learn where the drag is from the pointer.
+        self.pointer_motion(x, y);
+        Some(URI_LIST.to_owned())
+    }
+
+    fn drop_left(&mut self) {
+        self.input(WindowEvent::HoveredFileCancelled);
+        self.pointer_leave();
+    }
+
+    fn drop_data(&mut self, mime: &str, data: Vec<u8>) {
+        if mime != URI_LIST {
+            return;
+        }
+        for path in dropped_paths(&data) {
+            self.input(WindowEvent::HoveredFile(path.clone()));
+            self.input(WindowEvent::DroppedFile(path));
+        }
+    }
+
+    fn backdrops(&self) -> Vec<BackdropRequest> {
+        let (ox, oy) = self.placement.origin;
+        let scale = self.placement.scale;
+        self.backdrops
+            .iter()
+            .map(|(bounds, blur_px, texels)| BackdropRequest {
+                rect: (
+                    f64::from(ox) + bounds.x0 / scale,
+                    f64::from(oy) + bounds.y0 / scale,
+                    bounds.width() / scale,
+                    bounds.height() / scale,
+                ),
+                texels: *texels,
+                blur: blur_px * f64::from(texels.0) / bounds.width().max(1.0),
+            })
+            .collect()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<BackdropImage>>) {
+        self.provided.resize(images.len(), None);
+        self.provided.truncate(images.len());
+        for (slot, image) in images.into_iter().enumerate() {
+            if let (Some(image), Some(provided)) = (image, self.provided.get_mut(slot)) {
+                *provided = Some(ui::raster::rgba8_premultiplied(
+                    image.rgba,
+                    image.texels.0,
+                    image.texels.1,
+                ));
+            }
+        }
+        self.wants = true;
+        self.full = true;
+    }
+
+    fn take_drag(&mut self) -> Option<HostDrag> {
+        ui::dnd::take_hosted_drag().map(|offer| HostDrag { offer, icon: None })
+    }
+
+    /// The pointer may have moved anywhere while it carried the drag; the
+    /// compositor routes it anew, so the app hears it left.
+    fn drag_ended(&mut self, _dropped: bool) {
+        self.pointer_leave();
+    }
+
     fn prepare_frame(&mut self) {
         if self.door.has_queued() {
             self.serve_door();
@@ -334,10 +442,39 @@ impl SurfaceHost for AppHost {
         }
         self.app.surface_accessibility();
         self.scene.reset();
+        // Translucent material records what lies below it; the compositor
+        // blurs that and hands it back (`set_backdrops`).
+        // The images are this app's: every host on the thread provides its
+        // own before it draws.
+        ui::backdrop::provide_backdrops(
+            self.provided
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, image)| Some((slot, image.clone()?)))
+                .collect(),
+        );
+        let recording = ui::backdrop::BackdropRecording::begin();
+        ui::backdrop::layer_scene(&self.scene, 0);
         self.wants =
             self.app
                 .surface_frame_with_damage(&self.surface, &mut self.scene, &mut self.damage);
+        self.backdrops = recording
+            .finish()
+            .iter()
+            .map(|surface| {
+                (
+                    surface.bounds,
+                    surface.blur_px,
+                    ui::backdrop::backdrop_texels(surface.bounds),
+                )
+            })
+            .collect();
         let changed = self.damage.take();
+        let changed = if std::mem::take(&mut self.full) {
+            None
+        } else {
+            changed
+        };
         self.canvas
             .present(&self.scene, changed.as_deref(), &mut self.buffer);
         self.door
@@ -443,5 +580,22 @@ fn key_for(keysym: u32, text: Option<char>) -> (Key, KeyLocation) {
     match typed {
         Some(c) => (Key::Character(SmolStr::new(c.to_string())), location),
         None => (key, location),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dropped_paths;
+
+    #[test]
+    fn a_uri_list_drops_its_files_decoded_and_skips_the_rest() {
+        let list = b"# from a file manager\r\nfile:///home/ada/My%20Notes.txt\r\nhttps://tilo.so/\r\n\r\nfile://localhost/tmp/a\n";
+        assert_eq!(
+            dropped_paths(list),
+            vec![
+                std::path::PathBuf::from("/home/ada/My Notes.txt"),
+                std::path::PathBuf::from("/tmp/a"),
+            ]
+        );
     }
 }

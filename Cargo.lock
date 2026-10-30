@@ -15991,8 +15991,6 @@ dependencies = [
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "740cea6927892bc182d5bf70c8f79806c8bc9f68f2fb96e55a30be171b63af98"
 dependencies = [
  "aliasable",
  "appendlist",
@@ -18290,6 +18288,7 @@ dependencies = [
  "rustix 1.1.4",
  "smithay",
  "tempfile",
+ "tilo-frame-metrics",
  "tracing",
  "wayland-client",
  "wayland-protocols",
@@ -21630,6 +21629,7 @@ dependencies = [
  "tilo-vello",
  "tilo-winit",
  "tracing",
+ "url",
  "workspace-hack",
 ]
 

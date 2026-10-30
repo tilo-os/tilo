@@ -199,6 +199,18 @@ impl SurfaceHost for Setup {
         }
     }
 
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.widgets.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.widgets.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.widgets.set_backdrops(images);
+    }
+
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         self.widgets.outputs_changed(outputs);
     }

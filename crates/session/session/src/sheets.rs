@@ -153,6 +153,18 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         }
     }
 
+    fn cursor(&self) -> tilo_compositor::CursorIcon {
+        self.host.cursor()
+    }
+
+    fn backdrops(&self) -> Vec<tilo_compositor::BackdropRequest> {
+        self.host.backdrops()
+    }
+
+    fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
+        self.host.set_backdrops(images);
+    }
+
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
         let Some(&(x, y, w, h)) = outputs.first() else {
             return;

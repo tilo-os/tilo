@@ -1,5 +1,6 @@
 //! Drag-and-drop between real Wayland clients and hosted surface apps on a
-//! headless compositor: files travel as `text/uri-list`, byte for byte.
+//! headless compositor: files travel as `text/uri-list`, byte for byte,
+//! dragged with the pointer or a finger; a drag's icon is drawn under it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -27,7 +28,7 @@ use wayland_client::protocol::{
     wl_data_device_manager::WlDataDeviceManager, wl_data_offer, wl_data_offer::WlDataOffer,
     wl_data_source, wl_data_source::WlDataSource, wl_pointer, wl_pointer::WlPointer, wl_registry,
     wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
-    wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+    wl_shm_pool::WlShmPool, wl_surface::WlSurface, wl_touch, wl_touch::WlTouch,
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
@@ -49,6 +50,9 @@ struct Seen {
     wm_base: Option<XdgWmBase>,
     seat: Option<WlSeat>,
     pointer: Option<WlPointer>,
+    touch: Option<WlTouch>,
+    /// The serial of the last touch down on the window.
+    touched: Option<u32>,
     data_manager: Option<WlDataDeviceManager>,
     configured: bool,
     /// The serial of the last button press on the window.
@@ -62,6 +66,9 @@ struct Seen {
     sent: Vec<String>,
     /// What our data source serves.
     payload: Vec<u8>,
+    /// How our data source's drag ended: `action move`, `performed`,
+    /// `finished`, `cancelled`.
+    source_events: Vec<String>,
 }
 
 struct TestClient {
@@ -305,7 +312,7 @@ fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
         .create_data_source(&qh, ());
     source.offer(URI_LIST.into());
     source.offer("text/plain;charset=utf-8".into());
-    source.set_actions(DndAction::Copy | DndAction::Move);
+    source.set_actions(DndAction::Move);
     client.seen.payload = FILES.to_vec();
     client.data_device.as_ref().unwrap().start_drag(
         Some(&source),
@@ -336,6 +343,28 @@ fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
     assert_eq!(client.seen.sent, vec![URI_LIST.to_owned()]);
     let dropped = log.borrow().dropped.clone();
     assert_eq!(dropped, vec![(URI_LIST.to_owned(), FILES.to_vec())]);
+    pump(&mut compositor, &mut client, |_, client| {
+        client
+            .seen
+            .source_events
+            .iter()
+            .any(|event| event == "finished")
+    });
+    let events = &client.seen.source_events;
+    assert!(
+        !events.iter().any(|event| event == "cancelled"),
+        "the source moves its files, it is not told the drag failed: {events:?}"
+    );
+    let performed = events
+        .iter()
+        .position(|event| event == "performed")
+        .unwrap();
+    assert!(
+        events[..performed]
+            .iter()
+            .any(|event| event.contains("Move")),
+        "{events:?}"
+    );
     assert_eq!(
         log.borrow().buttons,
         Vec::<(u32, bool)>::new(),
@@ -408,6 +437,190 @@ fn files_dragged_out_of_a_hosted_surface_drop_on_a_window() {
     assert_eq!(received, FILES);
     offer.finish();
     settle(&mut compositor, &mut client);
+}
+
+/// Start a drag of `FILES` from the window, from the press or touch with
+/// `serial`, showing `icon`.
+fn drag_files(client: &mut TestClient, serial: u32, icon: Option<&WlSurface>) -> WlDataSource {
+    let qh = client.queue.handle();
+    let source = client
+        .seen
+        .data_manager
+        .as_ref()
+        .unwrap()
+        .create_data_source(&qh, ());
+    source.offer(URI_LIST.into());
+    source.set_actions(DndAction::Copy);
+    client.seen.payload = FILES.to_vec();
+    client.data_device.as_ref().unwrap().start_drag(
+        Some(&source),
+        client.surface.as_ref().unwrap(),
+        icon,
+        serial,
+    );
+    source
+}
+
+#[test]
+fn a_drag_shows_its_icon_under_the_pointer_until_it_drops() {
+    let log = Rc::new(RefCell::new(DropLog::default()));
+    let (mut compositor, mut client) = setup(&log);
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 300.0, y: 240.0 },
+    );
+    input(
+        &mut compositor,
+        InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: true,
+        },
+    );
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.pressed.is_some()
+    });
+
+    // A 10x10 blue icon, its centre on the pointer.
+    let qh = client.queue.handle();
+    let icon = client
+        .seen
+        .compositor
+        .as_ref()
+        .unwrap()
+        .create_surface(&qh, ());
+    let fd = rustix::fs::memfd_create("tilo-dnd-icon", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+    let mut file = std::fs::File::from(fd);
+    file.write_all(&[255, 0, 0, 255].repeat(100)).unwrap();
+    let pool = client
+        .seen
+        .shm
+        .as_ref()
+        .unwrap()
+        .create_pool(file.as_fd(), 400, &qh, ());
+    let buffer = pool.create_buffer(0, 10, 10, 40, wl_shm::Format::Argb8888, &qh, ());
+    let serial = client.seen.pressed.unwrap();
+    let _source = drag_files(&mut client, serial, Some(&icon));
+    icon.attach(Some(&buffer), 0, 0);
+    icon.offset(-5, -5);
+    icon.damage_buffer(0, 0, 10, 10);
+    icon.commit();
+    settle(&mut compositor, &mut client);
+
+    input(
+        &mut compositor,
+        InputEvent::PointerMotion { x: 100.0, y: 400.0 },
+    );
+    settle(&mut compositor, &mut client);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let blue = |x, y| frame.pixel(x, y) == Some([0, 0, 255, 255]);
+    assert!(
+        blue(96, 396) && blue(100, 400) && blue(104, 404),
+        "the icon"
+    );
+    assert!(!blue(106, 406) && !blue(94, 394), "only the icon");
+
+    input(
+        &mut compositor,
+        InputEvent::PointerButton {
+            button: BTN_LEFT,
+            pressed: false,
+        },
+    );
+    settle(&mut compositor, &mut client);
+    compositor.render().unwrap();
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_ne!(
+        frame.pixel(100, 400),
+        Some([0, 0, 255, 255]),
+        "gone with the drop"
+    );
+}
+
+#[test]
+fn files_dragged_out_of_a_window_with_a_finger_drop_on_a_hosted_surface() {
+    let log = Rc::new(RefCell::new(DropLog::default()));
+    let (mut compositor, mut client) = setup(&log);
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.touch.is_some()
+    });
+    input(
+        &mut compositor,
+        InputEvent::TouchDown {
+            slot: 0,
+            x: 300.0,
+            y: 240.0,
+        },
+    );
+    input(&mut compositor, InputEvent::TouchFrame);
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.touched.is_some()
+    });
+    let serial = client.seen.touched.unwrap();
+    let _source = drag_files(&mut client, serial, None);
+    settle(&mut compositor, &mut client);
+
+    input(
+        &mut compositor,
+        InputEvent::TouchMotion {
+            slot: 0,
+            x: 550.0,
+            y: 70.0,
+        },
+    );
+    settle(&mut compositor, &mut client);
+    assert!(
+        !log.borrow().offered.is_empty(),
+        "the finger carries the drag"
+    );
+    input(&mut compositor, InputEvent::TouchUp { slot: 0 });
+    pump(&mut compositor, &mut client, |_, _| {
+        !log.borrow().dropped.is_empty()
+    });
+    assert_eq!(
+        log.borrow().dropped.clone(),
+        vec![(URI_LIST.to_owned(), FILES.to_vec())]
+    );
+}
+
+#[test]
+fn a_hosted_surface_drags_files_with_the_finger_holding_it() {
+    let log = Rc::new(RefCell::new(DropLog::default()));
+    let (mut compositor, mut client) = setup(&log);
+    input(
+        &mut compositor,
+        InputEvent::TouchDown {
+            slot: 3,
+            x: 550.0,
+            y: 70.0,
+        },
+    );
+    assert!(
+        compositor
+            .start_drag(vec![(URI_LIST.to_owned(), FILES.to_vec())])
+            .unwrap()
+    );
+    input(
+        &mut compositor,
+        InputEvent::TouchMotion {
+            slot: 3,
+            x: 300.0,
+            y: 240.0,
+        },
+    );
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.entered.is_some()
+    });
+    input(&mut compositor, InputEvent::TouchUp { slot: 3 });
+    pump(&mut compositor, &mut client, |_, client| {
+        client.seen.dropped
+    });
+    assert_eq!(log.borrow().drag_ended, Some(true));
+    assert_eq!(
+        log.borrow().buttons,
+        vec![(BTN_LEFT, true), (BTN_LEFT, false)],
+        "the surface the finger held sees it lift"
+    );
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {
@@ -484,10 +697,13 @@ impl Dispatch<WlSeat, ()> for Seen {
         if let wl_seat::Event::Capabilities {
             capabilities: WEnum::Value(capabilities),
         } = event
-            && capabilities.contains(wl_seat::Capability::Pointer)
-            && seen.pointer.is_none()
         {
-            seen.pointer = Some(seat.get_pointer(qh, ()));
+            if capabilities.contains(wl_seat::Capability::Pointer) && seen.pointer.is_none() {
+                seen.pointer = Some(seat.get_pointer(qh, ()));
+            }
+            if capabilities.contains(wl_seat::Capability::Touch) && seen.touch.is_none() {
+                seen.touch = Some(seat.get_touch(qh, ()));
+            }
         }
     }
 }
@@ -508,6 +724,21 @@ impl Dispatch<WlPointer, ()> for Seen {
         } = event
         {
             seen.pressed = Some(serial);
+        }
+    }
+}
+
+impl Dispatch<WlTouch, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &WlTouch,
+        event: wl_touch::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_touch::Event::Down { serial, .. } = event {
+            seen.touched = Some(serial);
         }
     }
 }
@@ -566,9 +797,18 @@ impl Dispatch<WlDataSource, ()> for Seen {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_source::Event::Send { mime_type, fd } = event {
-            std::fs::File::from(fd).write_all(&seen.payload).unwrap();
-            seen.sent.push(mime_type);
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                std::fs::File::from(fd).write_all(&seen.payload).unwrap();
+                seen.sent.push(mime_type);
+            }
+            wl_data_source::Event::Action { dnd_action } => {
+                seen.source_events.push(format!("action {dnd_action:?}"));
+            }
+            wl_data_source::Event::DndDropPerformed => seen.source_events.push("performed".into()),
+            wl_data_source::Event::DndFinished => seen.source_events.push("finished".into()),
+            wl_data_source::Event::Cancelled => seen.source_events.push("cancelled".into()),
+            _ => {}
         }
     }
 }

@@ -26,6 +26,18 @@ pub struct HostLayer {
     pub buffer: MemoryRenderBuffer,
 }
 
+/// A drag a hosted app starts: bytes per format (files as
+/// `text/uri-list`) and, optionally, an image under the pointer with its
+/// hotspot (logical pixels from its top left).
+#[derive(Debug, Clone)]
+pub struct HostDrag {
+    pub offer: Vec<(String, Vec<u8>)>,
+    pub icon: Option<(
+        MemoryRenderBuffer,
+        smithay::utils::Point<i32, smithay::utils::Logical>,
+    )>,
+}
+
 /// A hosted surface app, as the compositor sees it.
 pub trait SurfaceHost {
     /// The layers this surface shows now, bottom first. Hosts draw above
@@ -86,6 +98,24 @@ pub trait SurfaceHost {
         KeyClaim::Pass
     }
 
+    /// Other clients' windows this surface pictures (thumbnails, cards),
+    /// bottom first: the compositor draws their live buffers there, in
+    /// front of this surface's layers.
+    fn window_pictures(&self) -> Vec<crate::WindowPicture> {
+        Vec::new()
+    }
+
+    /// The regions this surface draws translucent material in, which take
+    /// a blur of what lies below them ([`crate::backdrop`]).
+    fn backdrops(&self) -> Vec<crate::BackdropRequest> {
+        Vec::new()
+    }
+
+    /// Blurred images of what lies below [`SurfaceHost::backdrops`]'
+    /// regions, in their order; `None` where nothing changed since the
+    /// last.
+    fn set_backdrops(&mut self, _images: Vec<Option<crate::BackdropImage>>) {}
+
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}
 
@@ -114,6 +144,13 @@ pub trait SurfaceHost {
     /// The drag was dropped on the surface: its data in the format
     /// [`SurfaceHost::drop_offered`] chose, once it has been read.
     fn drop_data(&mut self, _mime: &str, _data: Vec<u8>) {}
+
+    /// A drag the app started while handling the input just routed to it
+    /// (a press held and moved on something draggable); the compositor
+    /// carries it like [`crate::Compositor::start_host_drag`].
+    fn take_drag(&mut self) -> Option<HostDrag> {
+        None
+    }
 
     /// A drag this surface started ([`crate::Compositor::start_drag`])
     /// ended: `dropped` when a target took it.

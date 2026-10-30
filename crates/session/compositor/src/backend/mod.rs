@@ -88,6 +88,33 @@ pub trait Backend {
         Ok(())
     }
 
+    /// Send the output named `name`'s signal through `ramp` (`None`: no
+    /// ramp), whose size the backend gave
+    /// ([`crate::gamma::Gamma::set_size`]). Backends without ramps carry
+    /// no sizes and are never asked.
+    fn set_gamma(
+        &mut self,
+        _state: &mut State,
+        name: &str,
+        _ramp: Option<&crate::gamma::Ramp>,
+    ) -> Result<(), BackendError> {
+        Err(BackendError(format!(
+            "{name}: this backend carries no gamma ramps"
+        )))
+    }
+
+    /// Draw and blur what lies below a hosted surface's translucent region
+    /// (see [`crate::backdrop::draw`]); `None` when it did not change.
+    /// Backends that cannot draw outside their frames have none.
+    fn backdrop(
+        &mut self,
+        _state: &mut State,
+        _region: (usize, usize),
+        _request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        Ok(None)
+    }
+
     /// Draw what a capture frame copies (part of an output, a window) into
     /// the client's buffer with the backend's renderer (see
     /// [`crate::capture::copy`]). Backends that cannot draw outside their
@@ -136,6 +163,25 @@ impl dyn Backend {
         state.rearrange();
         self.sync_power(state);
         Ok(())
+    }
+
+    /// Write the gamma ramps whose wanted value changed (night light, a
+    /// gamma tool).
+    pub(crate) fn sync_gamma(&mut self, state: &mut State) {
+        let shown: Vec<String> = state
+            .space
+            .outputs()
+            .map(smithay::output::Output::name)
+            .collect();
+        for (name, ramp) in state.gamma.changes(&shown) {
+            match self.set_gamma(state, &name, ramp.as_ref()) {
+                Ok(()) => state.gamma.applied(&name, ramp),
+                Err(error) => {
+                    tracing::warn!(%error, output = name, "gamma ramp not written");
+                    state.gamma.refused(&name);
+                }
+            }
+        }
     }
 
     /// Switch the panels whose wanted power changed (idle blanking, a power

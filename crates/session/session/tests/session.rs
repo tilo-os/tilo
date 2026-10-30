@@ -590,6 +590,11 @@ fn the_lock_action_locks_the_session_behind_the_lock_screen_which_a_password_unl
         locked.rgba, unlocked.rgba,
         "the lock screen hides the desktop"
     );
+    let colours: std::collections::BTreeSet<&[u8]> = locked.rgba.chunks(4).collect();
+    assert!(
+        colours.len() > 2,
+        "the lock screen draws its clock and prompt, not only the dim"
+    );
 
     let type_password = tilo_sheets::lock::LockEffect::TYPE_PASSWORD.id;
     session

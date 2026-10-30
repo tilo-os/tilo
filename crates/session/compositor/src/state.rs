@@ -109,6 +109,10 @@ pub struct State {
     pub(crate) touch: crate::touch::Touches,
     pub(crate) tablets: crate::tablet::Tablets,
     pub(crate) output_power: crate::output_power::OutputPower,
+    pub(crate) gamma: crate::gamma::Gamma,
+    pub(crate) backdrops: crate::backdrop::Backdrops,
+    /// How windows are drawn this frame instead of as they stand, by id.
+    pub(crate) effects: std::collections::HashMap<u64, crate::effects::WindowEffect>,
     pub(crate) capture: crate::capture::Capture,
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
@@ -173,6 +177,9 @@ impl State {
             touch: crate::touch::Touches::default(),
             tablets: crate::tablet::Tablets::default(),
             output_power: crate::output_power::OutputPower::new(display),
+            gamma: crate::gamma::Gamma::new(display),
+            backdrops: crate::backdrop::Backdrops::default(),
+            effects: std::collections::HashMap::new(),
             capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
@@ -332,6 +339,9 @@ impl State {
             InputEvent::TouchFrame => self.touch_frame(),
             InputEvent::TouchCancel => self.touch_cancel(),
             InputEvent::Tablet(event) => self.tablet_input(&event, serial, time),
+            InputEvent::TabletPad(event) => {
+                self.tablet_pad(&event, serial, time);
+            }
             InputEvent::Gesture(gesture) => self.gesture(gesture, serial, time),
             InputEvent::Switch { switch, on } => self.policy.switch(switch, on),
         }
@@ -825,6 +835,7 @@ impl CompositorHandler for State {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        self.drag_icon_commit(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -1030,6 +1041,7 @@ impl SeatHandler for State {
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|surface| self.display.get_client(surface.id()).ok());
         self.selection_focus(client.as_ref());
+        self.pads_follow_keyboard(focused);
     }
 }
 

@@ -12,6 +12,7 @@
     reason = "smithay geometry: logical and physical cursor positions, far from i32 limits"
 )]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use smithay::backend::allocator::Fourcc;
@@ -21,9 +22,11 @@ use smithay::backend::renderer::element::memory::{
 };
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
+use smithay::desktop::utils::bbox_from_surface_tree;
 use smithay::input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
-use smithay::utils::{Physical, Point, Scale, Transform};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Physical, Point, Scale, Size, Transform};
 
 use crate::render::OutputRenderElement;
 use crate::state::State;
@@ -32,8 +35,11 @@ use crate::state::State;
 const DEFAULT_SIZE: u32 = 24;
 
 /// One image of a named shape at one size.
+#[derive(Clone)]
 struct Image {
     buffer: MemoryRenderBuffer,
+    /// Its size in pixels.
+    size: Size<i32, Physical>,
     /// The hotspot, in the image's pixels.
     hotspot: Point<i32, Physical>,
 }
@@ -43,7 +49,7 @@ pub(crate) struct Cursor {
     pub(crate) status: CursorImageStatus,
     theme: xcursor::CursorTheme,
     size: u32,
-    images: HashMap<(CursorIcon, u32), Image>,
+    images: RefCell<HashMap<(CursorIcon, u32), Image>>,
 }
 
 impl Cursor {
@@ -58,16 +64,18 @@ impl Cursor {
             status: CursorImageStatus::default_named(),
             theme: xcursor::CursorTheme::load(&theme),
             size,
-            images: HashMap::new(),
+            images: RefCell::new(HashMap::new()),
         }
     }
 
     /// The image of `icon` at `pixels` physical size, loaded on first use.
-    fn image(&mut self, icon: CursorIcon, pixels: u32) -> &Image {
+    fn image(&self, icon: CursorIcon, pixels: u32) -> Image {
         let theme = &self.theme;
         self.images
+            .borrow_mut()
             .entry((icon, pixels))
             .or_insert_with(|| themed(theme, icon, pixels).unwrap_or_else(|| arrow(pixels)))
+            .clone()
     }
 }
 
@@ -96,6 +104,7 @@ fn themed(theme: &xcursor::CursorTheme, icon: CursorIcon, pixels: u32) -> Option
             Transform::Normal,
             None,
         ),
+        size: Size::from(size),
         hotspot: Point::from((
             i32::try_from(image.xhot).ok()?,
             i32::try_from(image.yhot).ok()?,
@@ -118,6 +127,7 @@ fn arrow(pixels: u32) -> Image {
             Transform::Normal,
             None,
         ),
+        size: Size::from((extent, extent)),
         hotspot: Point::from((0, 0)),
     }
 }
@@ -144,10 +154,44 @@ fn arrow_pixels(side: u32) -> Vec<u8> {
 }
 
 impl State {
+    /// What the pointer shows now: a hosted surface under it chooses its
+    /// shape, else the focused client.
+    fn cursor_status(&self) -> CursorImageStatus {
+        match self.host_under_pointer() {
+            Some(host) => CursorImageStatus::Named(host.cursor()),
+            None => self.cursor.status.clone(),
+        }
+    }
+
+    /// The pointer's image at `scale`: its size and hotspot in physical
+    /// pixels; `None` while it is hidden.
+    pub(crate) fn cursor_shape(
+        &self,
+        scale: f64,
+    ) -> Option<(Size<i32, Physical>, Point<i32, Physical>)> {
+        match self.cursor_status() {
+            CursorImageStatus::Hidden => None,
+            CursorImageStatus::Surface(surface) => {
+                let hotspot = surface_hotspot(&surface);
+                let size = bbox_from_surface_tree(&surface, (0, 0)).size;
+                Some((
+                    size.to_physical_precise_round(scale),
+                    hotspot.to_physical_precise_round(scale),
+                ))
+            }
+            CursorImageStatus::Named(icon) => {
+                let image = self
+                    .cursor
+                    .image(icon, cursor_pixels(self.cursor.size, scale));
+                Some((image.size, image.hotspot))
+            }
+        }
+    }
+
     /// The pointer's elements on `output`, front first, in its physical
     /// pixels; none when the pointer is elsewhere or hidden.
     pub(crate) fn cursor_elements<R>(
-        &mut self,
+        &self,
         renderer: &mut R,
         output: &Output,
     ) -> Vec<OutputRenderElement<R>>
@@ -164,21 +208,25 @@ impl State {
         let scale = output.current_scale().fractional_scale();
         let at: Point<i32, Physical> =
             (self.pointer - geometry.loc.to_f64()).to_physical_precise_round(scale);
-        // A hosted surface under the pointer chooses its shape.
-        let status = match self.host_under_pointer() {
-            Some(host) => CursorImageStatus::Named(host.cursor()),
-            None => self.cursor.status.clone(),
-        };
-        match status {
+        self.cursor_elements_at(renderer, at, scale)
+    }
+
+    /// The pointer's elements with its hotspot at `at` (physical pixels of
+    /// whatever they are drawn into) at `scale`; none while it is hidden.
+    pub(crate) fn cursor_elements_at<R>(
+        &self,
+        renderer: &mut R,
+        at: Point<i32, Physical>,
+        scale: f64,
+    ) -> Vec<OutputRenderElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        match self.cursor_status() {
             CursorImageStatus::Hidden => Vec::new(),
             CursorImageStatus::Surface(surface) => {
-                let hotspot = smithay::wayland::compositor::with_states(&surface, |states| {
-                    states
-                        .data_map
-                        .get::<CursorImageSurfaceData>()
-                        .and_then(|data| data.lock().ok().map(|data| data.hotspot))
-                        .unwrap_or_default()
-                });
+                let hotspot = surface_hotspot(&surface);
                 let origin = at - hotspot.to_physical_precise_round(scale);
                 render_elements_from_surface_tree(
                     renderer,
@@ -211,6 +259,17 @@ impl State {
             }
         }
     }
+}
+
+/// The hotspot a client set for its cursor surface, logical.
+fn surface_hotspot(surface: &WlSurface) -> Point<i32, Logical> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<CursorImageSurfaceData>()
+            .and_then(|data| data.lock().ok().map(|data| data.hotspot))
+            .unwrap_or_default()
+    })
 }
 
 /// The physical size of a `size`-logical-pixel cursor at `scale`.

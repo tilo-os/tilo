@@ -3,7 +3,7 @@
 //! smithay's libinput source hands on keyboards, pointers, touch, gestures,
 //! pens and switches but drops tablet pads' buttons, rings and strips. This
 //! source reads the same libinput context and delivers both: everything
-//! smithay models as its [`InputEvent`], pads as [`PadEvent`].
+//! smithay models as its [`InputEvent`], pads as [`PadAction`]s.
 
 use std::os::fd::AsFd as _;
 
@@ -12,29 +12,23 @@ use smithay::backend::libinput::{LibinputInputBackend, PointerScrollAxis};
 use smithay::reexports::calloop::{
     EventSource, Interest, Mode, Poll, PostAction, Readiness, Token, TokenFactory,
 };
-use smithay::reexports::input::event::tablet_pad::TabletPadEvent as LibinputPadEvent;
+use smithay::reexports::input::event::tablet_pad::{
+    TabletPadEvent as LibinputPadEvent, TabletPadEventTrait as _,
+};
 use smithay::reexports::input::event::{self, EventTrait as _};
 use smithay::reexports::input::{self as libinput, Libinput};
 
-/// One event of a tablet pad.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum PadEvent {
-    /// A button (numbered from zero) changed state.
-    Button { button: u32, pressed: bool },
-    /// A finger on a ring, at `degrees` (clockwise from the top), or lifted
-    /// (`None`).
-    Ring { ring: u32, degrees: Option<f64> },
-    /// A finger on a strip, at `position` (`0.0` top or left to `1.0`), or
-    /// lifted.
-    Strip { strip: u32, position: Option<f64> },
-}
+use crate::input::PadAction;
 
 /// What the source delivers.
 pub(crate) enum Delivered {
     Device(InputEvent<LibinputInputBackend>),
     Pad {
         device: libinput::Device,
-        event: PadEvent,
+        action: PadAction,
+        /// The mode group of the control and the mode it is in (after the
+        /// press, for a button that switches modes).
+        mode: (u32, u32),
     },
 }
 
@@ -53,24 +47,29 @@ impl Source {
     }
 }
 
-fn pad_event(event: LibinputPadEvent) -> Option<(libinput::Device, PadEvent)> {
+fn pad_event(event: LibinputPadEvent) -> Option<Delivered> {
     let device = event.device();
-    let pad = match event {
-        LibinputPadEvent::Button(event) => PadEvent::Button {
+    let mode = (event.mode_group().index(), event.mode());
+    let action = match event {
+        LibinputPadEvent::Button(event) => PadAction::Button {
             button: event.button_number(),
             pressed: event.button_state() == event::tablet_pad::ButtonState::Pressed,
         },
-        LibinputPadEvent::Ring(event) => PadEvent::Ring {
+        LibinputPadEvent::Ring(event) => PadAction::Ring {
             ring: event.number(),
             degrees: Some(event.position()).filter(|position| *position >= 0.0),
         },
-        LibinputPadEvent::Strip(event) => PadEvent::Strip {
+        LibinputPadEvent::Strip(event) => PadAction::Strip {
             strip: event.number(),
             position: Some(event.position()).filter(|position| *position >= 0.0),
         },
         _ => return None,
     };
-    Some((device, pad))
+    Some(Delivered::Pad {
+        device,
+        action,
+        mode,
+    })
 }
 
 /// smithay's model of a libinput event, as its own source makes it.
@@ -187,9 +186,7 @@ impl EventSource for Source {
         self.context.dispatch()?;
         for event in &mut self.context {
             let delivered = match event {
-                libinput::Event::TabletPad(pad) => {
-                    pad_event(pad).map(|(device, event)| Delivered::Pad { device, event })
-                }
+                libinput::Event::TabletPad(pad) => pad_event(pad),
                 other => device_event(other).map(Delivered::Device),
             };
             if let Some(delivered) = delivered {
@@ -246,15 +243,15 @@ pub(crate) const STRIP_STEP: f64 = 0.1;
 impl DialSteps {
     /// The whole steps the control moved, positive clockwise or down/right;
     /// a lifted finger ends the movement.
-    pub(crate) fn steps(&mut self, event: &PadEvent) -> i32 {
-        let (key, position, unit) = match *event {
-            PadEvent::Ring { ring, degrees } => (
+    pub(crate) fn steps(&mut self, action: &PadAction) -> i32 {
+        let (key, position, unit) = match *action {
+            PadAction::Ring { ring, degrees } => (
                 (true, ring),
                 degrees,
                 360.0 / f64::from(RING_STEPS_PER_TURN),
             ),
-            PadEvent::Strip { strip, position } => ((false, strip), position, STRIP_STEP),
-            PadEvent::Button { .. } => return 0,
+            PadAction::Strip { strip, position } => ((false, strip), position, STRIP_STEP),
+            _ => return 0,
         };
         let Some(position) = position else {
             self.last.remove(&key);
@@ -290,8 +287,8 @@ impl DialSteps {
 mod tests {
     use super::*;
 
-    fn ring(degrees: Option<f64>) -> PadEvent {
-        PadEvent::Ring { ring: 0, degrees }
+    fn ring(degrees: Option<f64>) -> PadAction {
+        PadAction::Ring { ring: 0, degrees }
     }
 
     #[test]
@@ -313,7 +310,7 @@ mod tests {
     #[test]
     fn a_strip_steps_every_tenth_of_its_length() {
         let mut dial = DialSteps::default();
-        let strip = |position| PadEvent::Strip { strip: 1, position };
+        let strip = |position| PadAction::Strip { strip: 1, position };
         assert_eq!(dial.steps(&strip(Some(0.2))), 0);
         assert_eq!(dial.steps(&strip(Some(0.55))), 3);
         assert_eq!(dial.steps(&strip(Some(0.3))), -2);

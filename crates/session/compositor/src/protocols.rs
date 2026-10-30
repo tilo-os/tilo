@@ -285,6 +285,18 @@ smithay::reexports::wayland_server::delegate_dispatch!(State: [
 smithay::reexports::wayland_server::delegate_dispatch!(State: [
     smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_v2::ZwpTabletV2: smithay::wayland::tablet_manager::TabletUserData
 ] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_v2::ZwpTabletPadV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2: smithay::wayland::tablet_manager::TabletPadUserData
+] => TabletManagerState);
 smithay::delegate_idle_inhibit!(State);
 smithay::delegate_keyboard_shortcuts_inhibit!(State);
 smithay::delegate_content_type!(State);

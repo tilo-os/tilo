@@ -6,6 +6,11 @@
 //! pen as a pointer: the tip presses the primary button and the barrel
 //! buttons the secondary and middle ones, so a pen works in an app that
 //! knows nothing about tablets.
+//!
+//! A tablet's pad (its buttons, rings and strips) follows the keyboard
+//! focus: the focused surface's client gets it when it took a tablet seat.
+//! Otherwise [`State::tablet_pad`] says nobody took the event and the
+//! backend acts on it itself (a ring scrolls).
 
 use std::collections::HashSet;
 
@@ -16,10 +21,10 @@ use smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_m
 use smithay::reexports::wayland_server::backend::ClientId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource};
-use smithay::utils::{Logical, Point, Serial};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
 use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatTrait};
 
-use crate::input::{TabletEvent, TabletPhase};
+use crate::input::{PadAction, TabletEvent, TabletPadEvent, TabletPhase};
 use crate::state::State;
 
 /// Linux button codes (`linux/input-event-codes.h`) a pen's buttons click
@@ -177,6 +182,63 @@ impl State {
             ),
             TabletPhase::ProximityIn | TabletPhase::ProximityOut | TabletPhase::Motion => {}
         }
+    }
+
+    /// Pads follow the keyboard: the focused surface's client gets their
+    /// buttons, rings and strips.
+    pub(crate) fn pads_follow_keyboard(&self, focused: Option<&WlSurface>) {
+        let time = self.now_ms();
+        self.seat
+            .tablet_seat()
+            .set_pad_focus(focused, SERIAL_COUNTER.next_serial(), time);
+    }
+
+    /// One pad event from a backend that acts on what no client takes; see
+    /// [`Self::tablet_pad`].
+    pub(crate) fn pad_input(&mut self, event: &TabletPadEvent) -> bool {
+        self.note_input();
+        let time = self.now_ms();
+        self.tablet_pad(event, SERIAL_COUNTER.next_serial(), time)
+    }
+
+    /// Route one pad event to the client the pad is focused on. Returns
+    /// whether a client took it: `false` leaves a button, ring or strip to
+    /// the compositor. Plugging, unplugging and mode switches are always
+    /// taken.
+    pub(crate) fn tablet_pad(&self, event: &TabletPadEvent, serial: Serial, time: u32) -> bool {
+        let tablet_seat = self.seat.tablet_seat();
+        if event.action == PadAction::Removed {
+            tablet_seat.remove_pad(&event.pad);
+            return true;
+        }
+        let dh = self.display.clone();
+        // A pad seen first through an event (its plug went unnoticed) is
+        // added then.
+        let tablet = tablet_seat.add_tablet::<Self>(&dh, &event.tablet);
+        let pad = tablet_seat.add_pad::<Self>(&dh, &event.pad, &tablet);
+        let pressed = |pressed| {
+            if pressed {
+                ButtonState::Pressed
+            } else {
+                ButtonState::Released
+            }
+        };
+        match event.action {
+            PadAction::Added | PadAction::Removed => {}
+            PadAction::Mode { group, mode } => {
+                pad.mode_switch(group as usize, mode, serial, time);
+            }
+            _ if !pad.has_focused_client() => return false,
+            PadAction::Button {
+                button,
+                pressed: down,
+            } => {
+                pad.button(button, pressed(down), time);
+            }
+            PadAction::Ring { ring, degrees } => pad.ring(ring, degrees, time),
+            PadAction::Strip { strip, position } => pad.strip(strip, position, time),
+        }
+        true
     }
 
     /// The pointer events a tool stands for where tablets are not taken:

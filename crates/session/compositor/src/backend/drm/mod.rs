@@ -38,6 +38,7 @@ use smithay::backend::drm::{
 };
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::libinput::LibinputSessionInterface;
+use smithay::backend::allocator::Format as DrmFormat;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::renderer::ImportDma as _;
 use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
@@ -60,15 +61,13 @@ use smithay::utils::{DeviceFd, Point, Transform};
 
 use super::{Backend, BackendError, failed};
 use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
+use crate::pacing::Pacing;
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
 use devices::{ModeInfo, select_mode};
 use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
-
-/// Formats tried for an output's primary plane, best first.
-const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
 
 pub use crate::config::DisplayConfig;
 
@@ -112,6 +111,7 @@ struct Lit {
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
+    pacing: Pacing,
 }
 
 /// The dma-buf feedback for client surfaces on one output: the primary
@@ -310,8 +310,12 @@ impl DrmBackend {
                         let extent = pointer_extent(&data.state);
                         libinput::dispatch(&devices, &input_handle, event, &mut data.state, extent);
                     }
-                    input_source::Delivered::Pad { device, event } => {
-                        libinput::dispatch_pad(&devices, &device, &event, &mut data.state);
+                    input_source::Delivered::Pad {
+                        device,
+                        action,
+                        mode,
+                    } => {
+                        libinput::dispatch_pad(&devices, &device, action, mode, &mut data.state);
                     }
                 },
             )
@@ -323,6 +327,8 @@ impl DrmBackend {
                 SessionEvent::PauseSession => pause(&session_inner),
                 SessionEvent::ActivateSession => {
                     resume(&session_inner);
+                    // Another session may have left its own ramps.
+                    data.state.gamma.forget_applied();
                     scan_connectors(&session_inner, &mut data.state);
                 }
             })
@@ -359,6 +365,29 @@ impl Backend for DrmBackend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         render_ready(&self.inner, state);
         Ok(())
+    }
+
+    fn backdrop(
+        &mut self,
+        state: &mut State,
+        region: (usize, usize),
+        request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        if !inner.active {
+            return Ok(None);
+        }
+        let primary = inner.primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = inner
+            .renderers
+            .single_renderer(&primary)
+            .map_err(|error| failed("renderer", error))?;
+        crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut renderer,
+            state,
+            region,
+            request,
+        )
     }
 
     fn capture(
@@ -500,6 +529,32 @@ impl Backend for DrmBackend {
         Ok(())
     }
 
+    /// Through the CRTC's legacy gamma ioctl, which atomic drivers turn
+    /// into their `GAMMA_LUT`: the display engine applies it after the
+    /// planes are blended, so it holds for directly scanned-out buffers too.
+    fn set_gamma(
+        &mut self,
+        _state: &mut State,
+        name: &str,
+        ramp: Option<&crate::gamma::Ramp>,
+    ) -> Result<(), BackendError> {
+        let mut inner = self.inner.borrow_mut();
+        let (gpu, crtc) = inner
+            .lit_mut(name)
+            .ok_or_else(|| BackendError(format!("{name}: not lit")))?;
+        let device = gpu.manager.device();
+        let identity;
+        let ramp = if let Some(ramp) = ramp {
+            ramp
+        } else {
+            identity = crate::gamma::Ramp::identity(gamma_size(device, crtc).unwrap_or(0));
+            &identity
+        };
+        device
+            .set_gamma(crtc, &ramp.red, &ramp.green, &ramp.blue)
+            .map_err(|error| failed(&format!("{name}: gamma ramp"), error))
+    }
+
     fn set_display_config(&mut self, config: &DisplayConfig) {
         self.inner.borrow_mut().config = config.clone();
     }
@@ -522,7 +577,7 @@ impl Backend for DrmBackend {
 
 /// Draw every output that is not waiting for a vertical blank and whose
 /// next frame is due.
-fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
+fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
     let mut inner = inner.borrow_mut();
     if !inner.active {
         return;
@@ -549,7 +604,7 @@ fn render_gpu(
     renderers: &mut Renderers,
     primary: DrmNode,
     config: &DisplayConfig,
-    state: &mut State,
+    state: &State,
     now: Instant,
 ) {
     let Gpu {
@@ -575,6 +630,13 @@ fn render_gpu(
         if lit.queued || lit.dark || now < lit.next_frame {
             continue;
         }
+        // The build starts at its deadline; a wakeup a refresh or more
+        // past it is off the grid, and starts it.
+        let start = if now.saturating_duration_since(lit.next_frame) < lit.interval {
+            lit.next_frame
+        } else {
+            now
+        };
         let name = lit.output.name();
         lit.follow_vrr(vrr_wanted(
             lit.vrr != Vrr::Unable,
@@ -592,7 +654,10 @@ fn render_gpu(
             profile: config.color_profiles.get(&name).cloned(),
             hdr: config.hdr.get(&name).cloned(),
         };
-        lit.follow_color(wanted, &mut renderer, device);
+        // An output another GPU shows gets a copy in its swapchain's
+        // format; only one the primary draws directly changes depth.
+        let depth = (*render == primary).then(|| manager.allocator());
+        lit.follow_color(wanted, &mut renderer, device, depth);
         // The pointer in front, where DrmCompositor can give it the cursor
         // plane.
         let mut elements: Vec<OutputRenderElement<Renderer<'_>>> =
@@ -621,7 +686,11 @@ fn render_gpu(
             }
             None => submit(lit, &mut renderer, &elements, None, state, device, now),
         }
-        lit.next_frame = now.checked_add(lit.interval).unwrap_or(now);
+        if lit.queued {
+            lit.pacing.queued(start, Instant::now(), lit.interval);
+        } else {
+            lit.next_frame = lit.pacing.idle(now, lit.interval, lit.vrr == Vrr::On);
+        }
     }
 }
 
@@ -704,7 +773,22 @@ fn vblank(
         Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }
     lit.queued = false;
-    lit.next_frame = Instant::now();
+    let shown = vblank_instant(metadata);
+    lit.next_frame = lit.pacing.shown(shown, lit.interval, lit.vrr == Vrr::On);
+    if let Some(summary) = lit.pacing.take_summary(shown, lit.interval) {
+        tracing::debug!(
+            output = lit.output.name(),
+            shown = summary.shown,
+            missed = summary.missed,
+            interval_us = lit.interval.as_micros(),
+            lead_us = summary.lead_us,
+            cost_p50_us = summary.cost.0,
+            cost_p99_us = summary.cost.1,
+            build_to_vblank_p50_us = summary.build_to_vblank.0,
+            build_to_vblank_p99_us = summary.build_to_vblank.1,
+            "frame pacing"
+        );
+    }
     match lit.wake.as_mut() {
         // The link is up; what the kernel holds says the rest.
         Some(wake) if !wake.judged => {
@@ -734,12 +818,15 @@ fn vrr_wanted(capable: bool, allowed: bool, fullscreen_here: bool) -> bool {
 }
 
 impl Lit {
-    /// Bring the output's colour pass and HDR signal to `wanted`.
+    /// Bring the output's colour pass, HDR signal and swapchain depth to
+    /// `wanted`; `depth` is the allocator for a swapchain of another depth,
+    /// `None` keeps the depth.
     fn follow_color(
         &mut self,
         mut wanted: color::Wanted,
         renderer: &mut Renderer<'_>,
         device: &DrmDevice,
+        depth: Option<&Allocator>,
     ) {
         let current = self.color.pass.as_ref().map(color::ColorPass::wanted);
         if current.map_or_else(|| wanted.plain(), |current| *current == wanted) {
@@ -771,8 +858,48 @@ impl Lit {
                 }
             }
         };
+        if let Some(allocator) = depth {
+            self.follow_depth(renderer, allocator);
+        }
         // A whole frame, through the new pass.
         self.surface.reset_buffers();
+    }
+
+    /// Ten bits a channel while the output signals HDR, eight otherwise:
+    /// the first format of [`color::depth_formats`] the primary plane takes.
+    fn follow_depth(&self, renderer: &mut Renderer<'_>, allocator: &Allocator) {
+        let gles: &mut GlesRenderer = renderer.as_mut();
+        let renderable: Vec<DrmFormat> = gles
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .copied()
+            .collect();
+        let current = self.surface.format();
+        let candidates = color::depth_formats(self.color.hdr_on, current, |code| {
+            renderable.iter().any(|format| format.code == code)
+        });
+        let name = self.output.name();
+        for code in candidates {
+            let modifiers = renderable
+                .iter()
+                .filter(|format| format.code == code)
+                .map(|format| format.modifier);
+            match self.surface.with_compositor(|compositor| {
+                compositor.set_format(allocator.clone(), code, modifiers)
+            }) {
+                Ok(()) => {
+                    tracing::info!(output = name, ?code, "swapchain format");
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(?error, output = name, ?code, "swapchain format refused");
+                }
+            }
+        }
+        if self.color.hdr_on && !color::HDR_FORMATS.contains(&current) {
+            tracing::warn!(output = name, ?current, "HDR without a 10-bit swapchain");
+        }
     }
 
     /// Engage or release variable refresh for the next frame. A driver that
@@ -870,6 +997,14 @@ fn judge_wake(
     }
 }
 
+/// The entries of `crtc`'s gamma ramp; `None` when it has none.
+fn gamma_size(device: &DrmDevice, crtc: crtc::Handle) -> Option<usize> {
+    let info = device.get_crtc(crtc).ok()?;
+    usize::try_from(info.gamma_length())
+        .ok()
+        .filter(|size| *size >= 2)
+}
+
 /// Whether `crtc` reads back active (its atomic `ACTIVE`, else a bound
 /// mode); `None` when it cannot be read.
 fn crtc_active(device: &DrmDevice, crtc: crtc::Handle) -> Option<bool> {
@@ -895,6 +1030,27 @@ fn vblank_shown(metadata: Option<&DrmEventMetadata>) -> Shown {
         },
         _ => Shown::Host,
     }
+}
+
+/// When a vertical blank happened: the kernel's monotonic stamp, or now
+/// when it gave none.
+fn vblank_instant(metadata: Option<&DrmEventMetadata>) -> Instant {
+    let now = Instant::now();
+    let Some(DrmEventMetadata {
+        time: DrmEventTime::Monotonic(time),
+        ..
+    }) = metadata
+    else {
+        return now;
+    };
+    let clock = smithay::reexports::rustix::time::clock_gettime(
+        smithay::reexports::rustix::time::ClockId::Monotonic,
+    );
+    let clock = Duration::new(
+        u64::try_from(clock.tv_sec).unwrap_or(0),
+        u32::try_from(clock.tv_nsec).unwrap_or(0),
+    );
+    now.checked_sub(clock.saturating_sub(*time)).unwrap_or(now)
 }
 
 fn pause(inner: &Rc<RefCell<Inner>>) {
@@ -1058,7 +1214,7 @@ fn open_gpu(
         allocator,
         exporter,
         Some(gbm),
-        COLOR_FORMATS,
+        color::SDR_FORMATS,
         renderer_formats,
     );
 
@@ -1068,7 +1224,7 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
-                render_ready(&vblank_inner, &mut data.state);
+                render_ready(&vblank_inner, &data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
         })
@@ -1435,6 +1591,9 @@ fn light(
     };
     crate::output::advertise(&output, &state.display);
     state.add_output(&output, location);
+    state
+        .gamma
+        .set_size(name, gamma_size(gpu.manager.device(), crtc));
     let interval = refresh_interval(output_mode.refresh);
     tracing::info!(output = name, ?interval, "output lit");
     Some(Lit {
@@ -1457,6 +1616,7 @@ fn light(
         feedback,
         next_frame: Instant::now(),
         interval,
+        pacing: Pacing::default(),
     })
 }
 

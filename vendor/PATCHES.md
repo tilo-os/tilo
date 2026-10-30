@@ -824,3 +824,15 @@ the Discord worker. The patch backports upstream's removal of that assertion;
 the worker's bridge tests cover it. See
 `vendor/twilight-http-ratelimiting/PROVENANCE.md`.
 
+
+## Smithay
+
+`smithay` 0.7.0 is the checksum-verified MIT registry release the compositor
+(`tilo-compositor`) is built on. Only the library is vendored. Its tablet
+seat gains pads (`zwp_tablet_pad_v2`): announced with their groups, rings and
+strips, focused on a surface, their buttons, rings, strips and mode switches
+sent to that client. A drop on a target the compositor serves itself (a
+hosted surface, a bridged X11 window) can complete instead of cancelling the
+source (`ClientDndGrabHandler::drop_target_action`). Five imports and a cast
+are fixed so it builds without warnings. See `vendor/smithay/TILO-PATCH.md`
+for the details and when to drop each change.

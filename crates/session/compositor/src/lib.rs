@@ -22,6 +22,7 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod backdrop;
 pub mod backend;
 pub mod capture;
 pub mod config;
@@ -29,6 +30,8 @@ mod cursor;
 pub mod dim;
 mod display_change;
 mod dnd;
+pub mod effects;
+pub mod gamma;
 pub mod gestures;
 pub mod host;
 pub mod idle;
@@ -38,6 +41,7 @@ mod lock;
 pub mod output;
 mod output_management;
 mod output_power;
+mod pacing;
 pub mod policy;
 mod power;
 mod present;
@@ -63,6 +67,7 @@ use smithay::reexports::wayland_server::Display;
 use crate::output_management::Pending;
 use smithay::wayland::socket::ListeningSocketSource;
 
+pub use backdrop::{BackdropImage, BackdropRequest};
 pub use backend::drm::devices::RequestedMode;
 pub use backend::{
     Backend, BackendError, DisplayConfig, DrmBackend, HeadlessBackend, InputConfig, NestedBackend,
@@ -71,10 +76,12 @@ pub use backend::{
 pub use config::{Hdr, KeyboardLayout, Settings};
 pub use dim::Backlight;
 pub use display_change::{CONFIRM_FOR, DisplayEvent};
-pub use host::{CursorIcon, HostLayer, SurfaceHost};
+pub use effects::{WindowEffect, WindowPicture};
+pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
-    GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
+    GestureEvent, HostKey, InputEvent, KeyModifiers, PadAction, Switch, TabletEvent,
+    TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
@@ -328,10 +335,40 @@ impl Compositor {
         }
     }
 
-    /// Switch the panels whose wanted power changed.
+    /// Switch the panels whose wanted power changed and write the gamma
+    /// ramps that changed.
     fn sync_power(&mut self) {
         let LoopData { state, backend } = &mut self.data;
         backend.sync_power(state);
+        backend.sync_gamma(state);
+    }
+
+    /// Turn night light on at a colour temperature in kelvin (clamped to
+    /// [`gamma::NIGHT_LIGHT_KELVIN`]; 6500 changes nothing, lower is
+    /// warmer) or off (`None`), on every output whose display engine
+    /// carries a gamma ramp. A gamma tool holding an output's ramp keeps
+    /// it until it lets go.
+    pub fn set_night_light(&mut self, kelvin: Option<u32>) -> Result<(), Error> {
+        self.data.state.gamma.set_night_light(kelvin);
+        self.sync_power();
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// Draw the window `id` with `effect` (moved, scaled about its centre,
+    /// faded) from the next frame on, or as it stands again (`None`). The
+    /// desktop animates windows by setting this every frame; input still
+    /// lands where the window stands.
+    pub fn set_window_effect(&mut self, id: u64, effect: Option<WindowEffect>) {
+        match effect {
+            Some(effect) => self.data.state.effects.insert(id, effect),
+            None => self.data.state.effects.remove(&id),
+        };
+    }
+
+    /// Night light's colour temperature, while it is on.
+    pub fn night_light(&self) -> Option<u32> {
+        self.data.state.gamma.night_light()
     }
 
     /// Apply idle transitions a session request caused, at once.
@@ -465,9 +502,32 @@ impl Compositor {
     /// app learns how it went ([`SurfaceHost::drag_ended`]). False when
     /// there is nothing to drag or no hosted surface under the pointer.
     pub fn start_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
-        let started = self.data.state.start_host_drag(offer);
+        self.start_host_drag(HostDrag { offer, icon: None })
+    }
+
+    /// [`Compositor::start_drag`] with an icon under the pointer, or a
+    /// drag that follows the finger holding the app when a touch holds it.
+    pub fn start_host_drag(&mut self, drag: HostDrag) -> Result<bool, Error> {
+        let started = self.data.state.start_host_drag(drag.offer, drag.icon);
         self.display.flush_clients()?;
         Ok(started)
+    }
+
+    /// Start the drags hosted apps asked for while handling input
+    /// ([`SurfaceHost::take_drag`]).
+    fn start_asked_drags(&mut self) {
+        let asked: Vec<HostDrag> = self
+            .data
+            .state
+            .hosts
+            .iter_mut()
+            .filter_map(|host| host.take_drag())
+            .collect();
+        for drag in asked {
+            if !self.data.state.start_host_drag(drag.offer, drag.icon) {
+                tracing::debug!("a hosted app's drag could not start");
+            }
+        }
     }
 
     /// The formats `selection` offers now, whoever owns it.
@@ -626,6 +686,9 @@ impl Compositor {
     /// cannot take is refused whole.
     pub fn set_display_config(&mut self, config: &DisplayConfig) -> Result<(), Error> {
         self.data.backend.set_display_config(config);
+        if config.night_light != self.night_light() {
+            self.set_night_light(config.night_light)?;
+        }
         let changes = config.changes(&self.data.state.output_states());
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
@@ -668,6 +731,7 @@ impl Compositor {
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         self.data.state.handle_input(event);
+        self.start_asked_drags();
         // Input wakes blanked panels at once.
         self.sync_power();
         self.display.flush_clients()?;
@@ -685,6 +749,7 @@ impl Compositor {
         self.data.state.rearrange();
         self.data.backend.render(&mut self.data.state)?;
         self.data.backend.serve_captures(&mut self.data.state);
+        self.data.backend.serve_backdrops(&mut self.data.state);
         self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())

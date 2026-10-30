@@ -28,7 +28,13 @@ struct HeadlessOutput {
     drawn: bool,
     /// Switched off: nothing is drawn, the image goes black.
     dark: bool,
+    /// The gamma ramp the simulated display engine applies to what it
+    /// shows (screenshots), not to what is drawn (captures).
+    gamma: Option<crate::gamma::Ramp>,
 }
+
+/// The ramp size headless outputs carry, as many display engines do.
+const GAMMA_SIZE: usize = 256;
 
 /// The CPU renderer and every headless output's image.
 pub struct HeadlessBackend {
@@ -58,6 +64,7 @@ impl Backend for HeadlessBackend {
             .create_buffer(Fourcc::Argb8888, size)
             .map_err(|error| failed("output image", error))?;
         state.add_output(&output, config.location());
+        state.gamma.set_size(&config.name, Some(GAMMA_SIZE));
         let damage = OutputDamageTracker::from_output(&output);
         self.outputs.push(HeadlessOutput {
             output,
@@ -65,6 +72,7 @@ impl Backend for HeadlessBackend {
             target,
             drawn: false,
             dark: false,
+            gamma: None,
         });
         Ok(())
     }
@@ -174,6 +182,35 @@ impl Backend for HeadlessBackend {
         Ok(())
     }
 
+    fn set_gamma(
+        &mut self,
+        _state: &mut State,
+        name: &str,
+        ramp: Option<&crate::gamma::Ramp>,
+    ) -> Result<(), BackendError> {
+        let output = self
+            .outputs
+            .iter_mut()
+            .find(|output| output.output.name() == name)
+            .ok_or_else(|| BackendError(format!("no output named {name}")))?;
+        output.gamma = ramp.cloned();
+        Ok(())
+    }
+
+    fn backdrop(
+        &mut self,
+        state: &mut State,
+        region: (usize, usize),
+        request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        crate::backdrop::draw::<_, Image<'static, 'static>>(
+            &mut self.renderer,
+            state,
+            region,
+            request,
+        )
+    }
+
     fn capture(
         &mut self,
         state: &mut State,
@@ -207,10 +244,14 @@ impl Backend for HeadlessBackend {
             .renderer
             .map_texture(&mapping)
             .map_err(|error| failed("map", error))?;
+        let mut rgba = bytes.to_vec();
+        if let Some(ramp) = &output.gamma {
+            ramp.apply(&mut rgba);
+        }
         Ok(Screenshot {
             width: u32::try_from(width).map_err(|error| failed("width", error))?,
             height: u32::try_from(height).map_err(|error| failed("height", error))?,
-            rgba: bytes.to_vec(),
+            rgba,
         })
     }
 }

@@ -289,6 +289,20 @@ impl Backend for NestedBackend {
         Ok(())
     }
 
+    fn backdrop(
+        &mut self,
+        state: &mut State,
+        region: (usize, usize),
+        request: &crate::BackdropRequest,
+    ) -> Result<Option<crate::BackdropImage>, BackendError> {
+        crate::backdrop::draw::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut self.inner.borrow_mut().renderer,
+            state,
+            region,
+            request,
+        )
+    }
+
     fn capture(
         &mut self,
         state: &mut State,
