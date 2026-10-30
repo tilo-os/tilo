@@ -1179,6 +1179,12 @@ def make_plan(
         "selected": sorted(selected),
         "reached": sorted(reached if not full else selected),
         "tested": sorted(tested),
+        # One edge from the change: the changed packages, the packages that read the changed
+        # files, every direct dependant of a changed package, and what is tested. A change being
+        # edited is linted over these (tools/ci/test-changed.sh); a batch over `selected`.
+        "near": sorted(selected if full else
+                       (seeds | checked | dev_only | readers | tested
+                        | {name for seed in seeds for name in reverse.get(seed, ())}) & selected),
         # Packages that only read a changed file through a scoped input; the
         # test job runs just the tests that read it.
         "scoped_tests": {name: f"--test {scope.test} -E '{scope.filter}'"

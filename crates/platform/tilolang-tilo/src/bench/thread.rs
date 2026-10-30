@@ -208,7 +208,7 @@ fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut work = None;
-    for _ in 0..sized.config.samples {
+    for _ in 0..sized.config.open_samples() {
         let room = sized.open()?;
         let before = Work::of(&room, &[]);
         let start = Instant::now();

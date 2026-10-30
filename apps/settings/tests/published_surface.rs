@@ -27,8 +27,35 @@ fn every_pane_publishes_a_surface_that_passes_contract_validation() {
         if !violations.is_empty() {
             failures.push(format!("{}: {violations:#?}", category.slug()));
         }
+        let stale = stale_control_bindings(&mut app);
+        if !stale.is_empty() {
+            failures.push(format!(
+                "{}: controls bound to unpublished actions {stale:?}",
+                category.slug()
+            ));
+        }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The controls on screen bound to an action no resource of the surface
+/// publishes: the live host refuses to publish a surface holding one
+/// ("stale control action binding"), and every Settings action is gone.
+fn stale_control_bindings(app: &mut TestApp<SettingsShell>) -> Vec<(String, String)> {
+    let resources = app.harness().resources();
+    ui::widget::controls::control_action_bindings(app.harness().root_widget())
+        .into_iter()
+        .filter_map(|binding| match binding.kind {
+            ui::widget::ControlBindingKind::Action(address)
+                // The window's search and History are the host's doors.
+                if !address.resource.starts_with("tilo.host:")
+                    && ui::tilo_actions::door::resolve(&resources, &address).is_none() =>
+            {
+                Some((binding.control_id, format!("{}#{}", address.resource, address.action)))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn navigation_semantics(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {

@@ -2021,8 +2021,10 @@ impl Inner {
                 at,
                 action: note.action.clone(),
             },
-            // No change yet: it orders before the record's own at the same time.
+            // No change yet: the action was invoked on top of every change this device
+            // holds, so it orders after each of them recorded in the same second.
             change: String::new(),
+            op: idx::reflect::PROVISIONAL,
         };
         let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
         let mut ends = Ends::new();

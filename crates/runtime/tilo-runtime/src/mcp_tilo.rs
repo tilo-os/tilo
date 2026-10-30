@@ -669,7 +669,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .rev()
             .find(|(_, instance)| instance["app_id"].as_str() == Some(app))
             .map(|(peer, _)| Addressed {
-                provider: peer.to_string(),
+                provider: peer.clone(),
                 app_id: Some(app.to_owned()),
             })
             .ok_or_else(|| {

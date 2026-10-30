@@ -114,7 +114,10 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let control = AgentControl::new(delegation.clone());
     let plans = Arc::new(Mutex::new(Vec::new()));
     let mut agent = AgentParticipant::start(
@@ -315,7 +318,10 @@ async fn ed_planning_with(
         now.saturating_add(3_600_000_000_000),
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_device.cert, delegation.clone())
+        .await
+        .unwrap();
     let control = AgentControl::new(delegation.clone());
     let mut agent = AgentParticipant::start(
         ParticipantConfig {

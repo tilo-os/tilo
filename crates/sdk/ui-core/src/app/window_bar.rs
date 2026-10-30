@@ -70,6 +70,7 @@ pub(crate) struct WindowBarRuntime {
 impl WindowBarRuntime {
     /// Whether the window handled the input with the serial `serial`: serials grow by one per
     /// event and wrap.
+    #[cfg(feature = "native")]
     fn handled(&self, serial: u32) -> bool {
         self.handled_input
             .is_some_and(|handled| handled.wrapping_sub(serial) < 1 << 31)

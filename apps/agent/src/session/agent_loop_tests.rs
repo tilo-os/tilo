@@ -1568,6 +1568,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
     )
 }
 
+#[path = "agent_loop/tests/follow_up.rs"]
+mod follow_up;
 #[path = "agent_loop/tests/long_run.rs"]
 mod long_run;
 #[path = "agent_loop/tests/native_pipeline.rs"]

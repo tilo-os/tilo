@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# dev-installer-medium-<arch> on a machine whose kernel can't build it, such as an rcargo builder:
+# dev-installer-medium-<arch> on a machine whose kernel can't build it, such as a remote build host:
 # its kernel has no EROFS for composefs and no btrfs, and its rootless podman no loop devices.
 # The check's own script, tools/ci/publish/dev-installer-medium.sh, runs unchanged in the
 # project's builder image, as t's micro-VM ran it, inside a worker VM booted from main's
