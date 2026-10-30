@@ -1836,47 +1836,65 @@ impl FrameHarness {
         &mut self.action_registry
     }
 
-    /// Undo through the component that owns the action decoders. The harness
-    /// registry is the fallback for a widget that registered actions on the
-    /// driver itself.
+    /// Undo or redo in `binding`'s document. A history holding a step that
+    /// queued an outside consequence is moved by the document's published
+    /// history action, as an agent or the palette invokes it, so its inverse
+    /// is a new admitted invocation; any other is moved in place.
     fn history_through_component(
-        root: &mut dyn crate::widget::Widget,
-        doc: &mut automerge::AutoCommit,
+        &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
         request: crate::undo::UndoRequest,
-        fallback: &tilo_actions::ActionRegistry,
     ) -> bool {
-        let mut acted = None;
-        let mut visit = |found: &crate::bound_dispatch::CallbackBinding,
-                         _: &mut dyn crate::widget::AppWidget,
-                         registry: &tilo_actions::ActionRegistry| {
-            if found.same_component(binding) {
-                acted = Some(
-                    found
-                        .history_request_with_registry(doc, request, Some(registry))
-                        .ok()
-                        .flatten()
-                        .is_some(),
-                );
-            }
-            None
+        match binding.history_uses_compensation(&mut self.state.doc) {
+            Ok(true) => self.invoke_bound_history(binding, request).is_ok(),
+            Ok(false) => binding
+                .history_request(&mut self.state.doc, request)
+                .ok()
+                .flatten()
+                .is_some(),
+            Err(_) => false,
+        }
+    }
+
+    /// Invoke the "undo" or "redo" action `binding`'s document publishes.
+    fn invoke_bound_history(
+        &mut self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        request: crate::undo::UndoRequest,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let action = match request {
+            crate::undo::UndoRequest::Undo => "undo",
+            crate::undo::UndoRequest::Redo => "redo",
         };
-        let visited = root.visit_components(&mut crate::bound_dispatch::ComponentRequest {
-            target: Some(binding),
-            found: false,
-            visit: &mut visit,
-        });
-        if let Some(acted) = acted {
-            return acted;
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        let mut candidates = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.binding.same_component(binding))
+            .flat_map(|snapshot| snapshot.resources().iter())
+            .filter(|resource| {
+                resource.actions.iter().any(|spec| {
+                    spec.id == action && spec.kind == tilo_actions::OperationKind::Document
+                })
+            });
+        let resource = candidates
+            .next()
+            .ok_or_else(|| tilo_actions::DoorError::Unavailable {
+                code: "history_action_unavailable".into(),
+                reason: "the current document does not publish its history action".into(),
+            })?;
+        if candidates.next().is_some() {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "history_action_ambiguous".into(),
+                reason: "the current document publishes more than one history target".into(),
+            });
         }
-        if visited.is_err() {
-            return false;
-        }
-        binding
-            .history_request_with_registry(doc, request, Some(fallback))
-            .ok()
-            .flatten()
-            .is_some()
+        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), action);
+        self.invoke_address(&address, &serde_json::Map::new(), false)
     }
 
     /// Undo the last action, the way the live host does — through
@@ -1918,21 +1936,11 @@ impl FrameHarness {
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root.callback_binding())
         {
-            Self::history_through_component(
-                &mut *self.root,
-                &mut self.state.doc,
-                &binding,
-                request,
-                &self.action_registry,
-            )
+            self.history_through_component(&binding, request)
         } else {
             match request {
-                crate::undo::UndoRequest::Undo => {
-                    self.state.undo_as(Some(&author), None, None, None)
-                }
-                crate::undo::UndoRequest::Redo => {
-                    self.state.redo_as(Some(&author), None, None, None)
-                }
+                crate::undo::UndoRequest::Undo => self.state.undo_as(Some(&author), None, None),
+                crate::undo::UndoRequest::Redo => self.state.redo_as(Some(&author), None, None),
             }
             .is_some()
         };
@@ -1986,13 +1994,7 @@ impl FrameHarness {
         let mut acted = false;
         for (binding, req) in requests {
             acted |= if let Some(binding) = binding {
-                Self::history_through_component(
-                    &mut *self.root,
-                    &mut self.state.doc,
-                    &binding,
-                    req,
-                    &self.action_registry,
-                )
+                self.history_through_component(&binding, req)
             } else {
                 match req {
                     crate::undo::UndoRequest::Undo => self.perform_undo(),

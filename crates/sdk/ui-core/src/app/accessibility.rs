@@ -596,28 +596,16 @@ impl App {
             }
             let request = control.flatten();
             if let Some(request) = request {
-                let entry = if let Some(binding) = &binding {
-                    binding
-                        .history_request(&mut self.state.doc, request)
-                        .ok()
-                        .flatten()
+                changed |= if let Some(binding) = &binding {
+                    self.move_bound_history(binding, request)
                 } else {
+                    let author = Some(&self.collaboration.local_author);
                     match request {
-                        crate::undo::UndoRequest::Undo => self.state.undo_as(
-                            Some(&self.collaboration.local_author),
-                            None,
-                            None,
-                            Some(&self.actions.action_registry),
-                        ),
-                        crate::undo::UndoRequest::Redo => self.state.redo_as(
-                            Some(&self.collaboration.local_author),
-                            None,
-                            None,
-                            Some(&self.actions.action_registry),
-                        ),
+                        crate::undo::UndoRequest::Undo => self.state.undo_as(author, None, None),
+                        crate::undo::UndoRequest::Redo => self.state.redo_as(author, None, None),
                     }
+                    .is_some()
                 };
-                changed |= entry.is_some();
                 embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
                 local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
                 bound_statuses.clear();
