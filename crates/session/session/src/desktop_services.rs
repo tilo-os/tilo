@@ -10,9 +10,17 @@
 
 use std::sync::Arc;
 
+use tilo_lock::MutexRecover as _;
 use tilo_network_secret_agent::store::{RoamingWifiSlot, VaultStore};
 use tilo_portal::{Portal, PortalAuthenticator, PortalCaller, Requesters, settings};
 use tilo_service::{Questions, Service};
+
+use crate::portal_link::PortalSide;
+
+/// How long the session waits for the monitors to answer before it says
+/// it ends, and how often it asks.
+const QUERY_END_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const QUERY_END_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Where a bus is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -56,9 +64,11 @@ pub struct DesktopServices {
 
 impl DesktopServices {
     /// Start every desktop service `buses` reach, the portal taking its
-    /// screenshots with `capture`. One that cannot start
-    /// (no bus, the name taken, no daemon behind it) is logged and the rest
-    /// carry on; the session bus services are serving when this returns.
+    /// screenshots with `capture` and sharing the screens, driving the
+    /// seat and passing the selection through `side` (the session's own
+    /// side of it). One that cannot start (no bus, the name taken, no
+    /// daemon behind it) is logged and the rest carry on; the session bus
+    /// services are serving when this returns.
     ///
     /// # Errors
     /// The runtime they run on could not be made.
@@ -66,6 +76,7 @@ impl DesktopServices {
         buses: &Buses,
         wake: &tilo_service::Wake,
         capture: Arc<dyn tilo_portal::Capture>,
+        side: &PortalSide,
     ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -84,6 +95,7 @@ impl DesktopServices {
             &notifications,
             Arc::clone(wake),
             capture,
+            side,
         ));
         let tray = runtime.block_on(tray_on(&buses.session));
         if buses.system != Bus::None {
@@ -135,6 +147,61 @@ impl DesktopServices {
     #[must_use]
     pub fn notifications(&self) -> tilo_notifications_service::Notifications {
         self.notifications.clone()
+    }
+
+    /// The portal backend, once it serves.
+    #[must_use]
+    pub const fn portal(&self) -> Option<&Portal> {
+        self.portal.as_ref()
+    }
+
+    /// An app exited: what it was granted while it ran is forgotten.
+    pub fn app_exited(&self, app_id: &str) {
+        if let Some(portal) = &self.portal {
+            portal.grants().app_exited(app_id);
+        }
+    }
+
+    /// The screen locked or unlocked: what apps were capturing is revoked
+    /// on the lock (nothing recorded is the lock screen), and the
+    /// monitors hear of the screensaver either way.
+    pub fn set_screen_locked(&self, locked: bool) {
+        if locked && let Some(portal) = &self.portal {
+            portal.captures().broker().lock_recover().screen_locked();
+        }
+        self.set_session_state(locked, tilo_portal::SessionState::Running);
+    }
+
+    /// The session is ending: apps are asked to wrap up, then told it ends.
+    pub fn end(&self) {
+        let (Some(portal), Some((connection, _))) = (&self.portal, &self.session) else {
+            return;
+        };
+        let (portal, connection) = (portal.clone(), connection.clone());
+        self.runtime.spawn(async move {
+            portal
+                .set_session_state(&connection, false, tilo_portal::SessionState::QueryEnd)
+                .await;
+            let asked = tokio::time::Instant::now();
+            while portal.awaiting_query_end() > 0 && asked.elapsed() < QUERY_END_WAIT {
+                tokio::time::sleep(QUERY_END_POLL).await;
+            }
+            portal
+                .set_session_state(&connection, false, tilo_portal::SessionState::Ending)
+                .await;
+        });
+    }
+
+    fn set_session_state(&self, screensaver_active: bool, state: tilo_portal::SessionState) {
+        let (Some(portal), Some((connection, _))) = (&self.portal, &self.session) else {
+            return;
+        };
+        let (portal, connection) = (portal.clone(), connection.clone());
+        self.runtime.spawn(async move {
+            portal
+                .set_session_state(&connection, screensaver_active, state)
+                .await;
+        });
     }
 
     /// Where the network secrets agent finds the Wi-Fi passphrases that
@@ -224,6 +291,7 @@ async fn on_session_bus(
     notifications: &tilo_notifications_service::Notifications,
     wake: tilo_service::Wake,
     capture: Arc<dyn tilo_portal::Capture>,
+    side: &PortalSide,
 ) -> (
     Option<Portal>,
     Option<(zbus::Connection, tilo_notifications_service::Server)>,
@@ -232,8 +300,14 @@ async fn on_session_bus(
         return (None, None);
     };
     // The frontend vouches for the app id it forwards; the app is the one
-    // it names.
-    let resolver = Arc::new(|app_id: &str, _window: Option<&str>| Some(PortalCaller::new(app_id)));
+    // it names, in the workspace the session sees it run in.
+    let named = side.clone();
+    let resolver = Arc::new(move |app_id: &str, _window: Option<&str>| {
+        Some(PortalCaller {
+            workspace: named.workspace_of(app_id),
+            ..PortalCaller::new(app_id)
+        })
+    });
     let portal = Portal::new(
         questions.clone(),
         PortalAuthenticator::session_bus(connection.clone(), resolver),
@@ -243,11 +317,25 @@ async fn on_session_bus(
         PortalAuthenticator::session_bus(connection.clone(), resolver)
             .with_identify(Requesters::host().resolver()),
     );
+    )
+    .with_capture(capture)
+    // What shares the session's screens, drives its seat and passes its
+    // selection.
+    .with_streams(side.streams())
+    .with_input(side.input())
+    .with_clipboard(side.clipboard())
+    // A workspace already granting an app what it asks for answers for the
+    // person.
+    .with_consent_grants(side.grants());
     // The appearance is also written to dconf, the environment's own: only
     // a portal on the environment's bus speaks for it.
     if *bus == Bus::Default {
         settings::follow_appearance(portal.settings().clone());
     }
+    // What the portal publishes of the live sessions changes outside the
+    // loop's turns: hearing of it lands on the next one.
+    let waking = Arc::clone(&wake);
+    portal.sessions().on_change(move || waking());
     let portal = match portal.serve(&connection).await {
         Ok(()) => Some(portal),
         Err(error) => {

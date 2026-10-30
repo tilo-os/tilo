@@ -11,6 +11,7 @@
 //! door every other caller uses; nothing here performs anything itself.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_actions::ActionAddress;
@@ -172,14 +173,38 @@ fn classify(keysym: u32) -> Option<Hardware> {
 pub(crate) struct SessionKeys {
     shortcuts: ShortcutConfig,
     invocations: Invocations,
+    /// The apps' shortcuts, which work wherever the keyboard is.
+    portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
+    /// The shortcut resources whose chords are held down, by key.
+    held: RefCell<BTreeMap<u32, String>>,
 }
 
 impl SessionKeys {
-    pub(crate) fn new(shortcuts: ShortcutConfig, invocations: Invocations) -> Self {
+    pub(crate) fn new(
+        shortcuts: ShortcutConfig,
+        invocations: Invocations,
+        portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
+    ) -> Self {
         Self {
             shortcuts,
             invocations,
+            portal,
+            held: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    /// The app shortcut a press of `key` is, as its published resource.
+    fn portal_shortcut(&self, key: &HostKey) -> Option<String> {
+        let portal = self.portal.as_ref()?;
+        portal.triggered(
+            key.keycode,
+            tilo_portal::trigger::Modifiers {
+                ctrl: key.modifiers.ctrl,
+                alt: key.modifiers.alt,
+                shift: key.modifiers.shift,
+                logo: key.modifiers.logo,
+            },
+        )
     }
 
     /// The invocation a press is, and how it is claimed.
@@ -199,6 +224,11 @@ impl SessionKeys {
         }
         if locked {
             return None;
+        }
+        // An app's bound shortcut is the person's answer to its sheet: it
+        // is pressed like the desktop's own chords are.
+        if let Some(resource) = self.portal_shortcut(key) {
+            return Some((Invocation::new(&resource, "activate"), KeyClaim::Take));
         }
         let (logical, modifiers) = tilo_surface_host::toolkit_key(key);
         let action = tilo_desktop::shortcuts::configured_shortcut_action(
@@ -230,10 +260,24 @@ impl SurfaceHost for SessionKeys {
 
     fn key(&mut self, key: &HostKey) {
         if !key.pressed {
+            // The app hears its shortcut released wherever the modifiers
+            // are by then: the chord is remembered by the key that held it.
+            if let Some(resource) = self.held.borrow_mut().remove(&key.keycode) {
+                self.invocations
+                    .borrow_mut()
+                    .push(Invocation::new(&resource, "deactivate"));
+            }
             return;
         }
         // A repeat of a key taken once is not run again (only a level key
         // repeats); the compositor repeats only keys claimed repeating.
+        if let Some(resource) = self.portal_shortcut(key) {
+            self.held.borrow_mut().insert(key.keycode, resource.clone());
+            self.invocations
+                .borrow_mut()
+                .push(Invocation::new(&resource, "activate"));
+            return;
+        }
         if let Some((invocation, _)) = self.resolve(key, false) {
             self.invocations.borrow_mut().push(invocation);
         }
@@ -258,7 +302,7 @@ mod tests {
     }
 
     fn keys() -> SessionKeys {
-        SessionKeys::new(ShortcutConfig::default(), Invocations::default())
+        SessionKeys::new(ShortcutConfig::default(), Invocations::default(), None)
     }
 
     #[test]

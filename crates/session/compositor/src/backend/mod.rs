@@ -129,6 +129,18 @@ pub trait Backend {
         )))
     }
 
+    /// What `target` shows now, read back as rows of R, G, B, A (see
+    /// [`crate::capture::read_back`]): what a share stream pushes.
+    fn read_back(
+        &mut self,
+        _state: &mut State,
+        _target: &crate::capture::Target,
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        Err(crate::capture::CaptureError::Backend(BackendError(
+            "this backend does not read frames back".into(),
+        )))
+    }
+
     /// The last frame drawn on the output named `name`.
     fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
         Err(BackendError(format!(

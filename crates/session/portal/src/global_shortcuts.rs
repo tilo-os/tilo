@@ -26,7 +26,7 @@ use zbus::zvariant::{ObjectPath, OwnedValue, Str, Value as Variant};
 
 use crate::reply::{Ended, OrFail, Reply, Results, answer, ensure};
 use crate::session::{SessionKind, Sessions};
-use crate::trigger::{Trigger, reserved};
+use crate::trigger::{Modifiers, Trigger, reserved};
 use crate::{OBJECT_PATH, Portal, PortalCaller, option, question_handle};
 
 /// The kind of the question that binds an app's shortcuts.
@@ -174,6 +174,21 @@ impl Shortcuts {
         state.table = table;
         drop(state);
         self.sessions.changed();
+    }
+
+    /// The resource of the shortcut bound to a press of `keycode` with
+    /// `modifiers`, if an app has one: the session's key handling invokes
+    /// its `activate` on the press and `deactivate` on the release.
+    #[must_use]
+    pub fn triggered(&self, keycode: u32, modifiers: Modifiers) -> Option<String> {
+        let state = self.state.lock_recover();
+        state.sessions.iter().find_map(|(path, session)| {
+            session
+                .bound
+                .iter()
+                .find(|bound| bound.trigger.matches(keycode, modifiers))
+                .map(|bound| resource_of(path, &bound.id))
+        })
     }
 
     /// The rows of a binding sheet for `requested` of session `path`.
@@ -735,6 +750,8 @@ impl GlobalShortcuts {
 
 #[cfg(test)]
 mod tests {
+    use settings_store::hardware::{KeyChord, ShortcutAction};
+
     use crate::Published as _;
 
     use super::*;
@@ -852,5 +869,49 @@ mod tests {
         let unbound = shortcuts.invoke(&published, &resource, "unbind", &Map::new());
         assert!(matches!(unbound, Some(Ok(_))));
         assert!(shortcuts.resources().is_empty());
+    }
+
+    #[test]
+    fn a_press_goes_to_the_shortcut_bound_to_its_chord() {
+        let shortcuts = Shortcuts::default();
+        assert!(shortcuts.begin("/s/a"));
+        let as_proposed = Answer {
+            choice: Some(BIND_AS_PROPOSED),
+            ..Answer::default()
+        };
+        let bound = shortcuts.bindings("/s/a", &requests(), &as_proposed);
+        assert!(shortcuts.finish("/s/a", Some(bound)));
+        // `talk` was bound to Ctrl+Shift+P, which is keycode 25.
+        let chord = Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            shortcuts.triggered(25, chord),
+            Some(resource_of("/s/a", "talk"))
+        );
+        // The same key with other modifiers, or another key, is the app's
+        // own to type.
+        assert_eq!(
+            shortcuts.triggered(
+                25,
+                Modifiers {
+                    ctrl: true,
+                    ..Modifiers::default()
+                }
+            ),
+            None
+        );
+        assert_eq!(shortcuts.triggered(24, chord), None);
+        // The desktop's own chords win: a binding that collides is let go.
+        shortcuts.set_shortcut_table(ShortcutConfig {
+            bindings: BTreeMap::from([(
+                ShortcutAction::WorkspaceOverview,
+                KeyChord::parse("Ctrl+Shift+P").expect("a chord"),
+            )]),
+            ..ShortcutConfig::default()
+        });
+        assert_eq!(shortcuts.triggered(25, chord), None);
     }
 }

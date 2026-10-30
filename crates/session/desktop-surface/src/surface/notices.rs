@@ -65,6 +65,12 @@ struct NoticeState {
     banners_elsewhere: Cell<bool>,
     /// Told of each outcome as it happens.
     taps: RefCell<Vec<OutcomeTap>>,
+    /// Why fresh banners are held right now (Do Not Disturb, a focus
+    /// schedule, presenting), as the bar and the centre's header say it.
+    quiet: RefCell<Option<String>>,
+    /// How many unread notifications each app says it has, by the id the
+    /// launcher attributed: what its icon badges.
+    badges: RefCell<std::collections::BTreeMap<String, u32>>,
 }
 
 type OutcomeTap = Rc<dyn Fn(&NotificationOutcome)>;
@@ -109,6 +115,9 @@ impl NotificationHost for NoticeState {
     fn open_center(&self) {
         self.centre_requested.set(true);
         self.touch();
+    }
+    fn quiet_status(&self) -> Option<String> {
+        self.quiet.borrow().clone()
     }
     fn dismiss(&self, id: u64) {
         self.retire_active(id);
@@ -233,6 +242,60 @@ impl DesktopNotifications {
         !asks.is_empty()
     }
 
+    /// Show `notification` in the centre without a banner: a quiet mode
+    /// (Do Not Disturb, a focus schedule) holds it back, and the person
+    /// reads it there. Returns its id.
+    pub fn post_quiet(&self, notification: Notification) -> u64 {
+        let id = notification.id;
+        self.log.unread.borrow_mut().insert(id);
+        self.log.log.borrow_mut().retain(notification);
+        self.log.touch();
+        id
+    }
+
+    /// Why fresh banners are held now, for the bar's silenced bell and the
+    /// centre's header; `None` while they show.
+    pub fn set_quiet(&self, quiet: Option<String>) {
+        let changed = *self.log.quiet.borrow() != quiet;
+        if changed {
+            *self.log.quiet.borrow_mut() = quiet;
+            self.log.touch();
+        }
+    }
+
+    /// Whether fresh banners are held now.
+    #[must_use]
+    pub fn quiet(&self) -> bool {
+        self.log.quiet.borrow().is_some()
+    }
+
+    /// How many unread notifications the app with verified id `app_id`
+    /// says it has, as its icon badges on the bar. Zero when it says none,
+    /// or when this person turned app badges off.
+    pub fn set_app_badge(&self, app_id: &str, count: u32) {
+        let changed = {
+            let mut badges = self.log.badges.borrow_mut();
+            if count == 0 {
+                badges.remove(app_id).is_some()
+            } else if badges.get(app_id) == Some(&count) {
+                false
+            } else {
+                badges.insert(app_id.to_owned(), count);
+                true
+            }
+        };
+        if changed {
+            self.log.touch();
+        }
+    }
+
+    /// How many unread notifications the app with verified id `app_id`
+    /// owns, as its icon badges.
+    #[must_use]
+    pub fn app_badge(&self, app_id: &str) -> u32 {
+        self.log.badges.borrow().get(app_id).copied().unwrap_or(0)
+    }
+
     /// Retire banners whose dwell ran out and forget a lapsed Clear all.
     /// Returns whether anything changed.
     pub fn expire(&self, now: Instant) -> bool {
@@ -329,6 +392,37 @@ impl DesktopNotifications {
 
     pub fn log(&self) -> Ref<'_, NotificationLog> {
         self.log.log.borrow()
+    }
+
+    /// Choose the retained notification `id` in the centre: its action runs,
+    /// its app opens, or nothing can act on it any more.
+    pub fn activate_history(&self, id: u64) -> HistoryActivation {
+        self.host().activate_history(id)
+    }
+
+    /// Dismiss the retained notification `id` from the centre.
+    pub fn dismiss_history(&self, id: u64) {
+        self.host().dismiss_history(id);
+    }
+
+    /// Run the action `key` of the retained notification `id`.
+    pub fn invoke_action(&self, id: u64, key: &str) {
+        self.host().invoke_action(id, key);
+    }
+
+    /// Clear the centre, keeping the clear undoable for a while.
+    pub fn clear_history(&self) {
+        self.host().clear_history();
+    }
+
+    /// Bring back what the last Clear all took.
+    pub fn undo_clear(&self) {
+        self.host().undo_clear();
+    }
+
+    /// Whether the last Clear all can still be undone.
+    pub fn can_undo_clear(&self) -> bool {
+        self.log.log.borrow().can_undo_clear()
     }
 
     fn host(&self) -> &dyn NotificationHost {

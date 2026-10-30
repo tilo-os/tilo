@@ -101,7 +101,9 @@ fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
             continue;
         };
         let shot = compositor
-            .screenshot(&output.name)
+            .read_back(&tilo_compositor::capture::Target::output(
+                output.name.clone(),
+            ))
             .map_err(|error| error.to_string())?;
         // The frame is in the output's pixels: its place in the layout
         // scales with it.

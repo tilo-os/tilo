@@ -40,7 +40,7 @@ use smithay::utils::{
     Buffer, Logical, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform,
 };
 
-use crate::backend::BackendError;
+use crate::backend::{BackendError, Screenshot};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 
@@ -103,9 +103,9 @@ pub(crate) enum Watcher {
 
 /// What a frame copies.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Target {
+pub enum Target {
     /// A part of an output, by name: the region in its physical pixels as
-    /// shown (after its transform).
+    /// shown (after its transform); an empty region is the whole output.
     Output {
         name: String,
         region: Rectangle<i32, Physical>,
@@ -115,6 +115,24 @@ pub(crate) enum Target {
     /// The pointer's image, while it is over the target it belongs to (a
     /// cursor session's), at that target's scale.
     Cursor(Box<Target>),
+}
+
+impl Target {
+    /// A whole output, by name (see [`Target::Output`]: an empty region is
+    /// the output's whole frame).
+    #[must_use]
+    pub fn output(name: impl Into<String>) -> Self {
+        Self::Output {
+            name: name.into(),
+            region: Rectangle::from_size(Size::from((0, 0))),
+        }
+    }
+
+    /// A window, by its foreign-toplevel identifier.
+    #[must_use]
+    pub fn window(identifier: impl Into<String>) -> Self {
+        Self::Window(identifier.into())
+    }
 }
 
 /// A target as it is now.
@@ -240,6 +258,21 @@ impl Capture {
         self.dmabuf = dmabuf_targets(device, formats);
     }
 
+    /// The window behind a foreign-toplevel identifier.
+    pub(crate) fn window(&self, identifier: &str) -> Option<&smithay::desktop::Window> {
+        self.toplevels.window(identifier)
+    }
+
+    /// The mapped windows an app may capture: their identifiers and what
+    /// they say.
+    pub(crate) fn shareable_windows(&self) -> Vec<(String, crate::policy::WindowInfo)> {
+        self.toplevels
+            .windows()
+            .into_iter()
+            .map(|(identifier, info)| (identifier, info.clone()))
+            .collect()
+    }
+
     fn queue(&mut self, frame: Frame) {
         self.pending.push(frame);
     }
@@ -343,13 +376,20 @@ impl State {
     fn view(&self, target: &Target) -> Option<View> {
         match target {
             Target::Output { name, region } => {
-                let (output, _) = self.shown_size(name)?;
+                let (output, shown) = self.shown_size(name)?;
                 let transform = output.current_transform();
+                // An empty region is the whole output: what a share stream
+                // of a screen copies.
+                let region = if region.size.w <= 0 || region.size.h <= 0 {
+                    Rectangle::from_size(shown)
+                } else {
+                    *region
+                };
                 Some(View {
                     scale: output.current_scale().fractional_scale(),
                     transform,
                     size: buffer_size(region.size, transform),
-                    scene: Scene::Output(output, *region),
+                    scene: Scene::Output(output, region),
                 })
             }
             Target::Window(identifier) => {
@@ -623,17 +663,13 @@ where
     } = state
         .view(&frame.target)
         .ok_or_else(|| BackendError("the captured output or window is gone".into()))?;
-    let (elements, offset, region, clear) = match scene {
-        Scene::Output(output, region) => {
-            let mut elements = if frame.cursor {
-                state.cursor_elements(renderer, &output)
-            } else {
-                Vec::new()
-            };
-            elements.extend(output_elements(renderer, state, &output));
-            let offset = Point::<i32, Physical>::from((-region.loc.x, -region.loc.y));
-            (elements, offset, region.size, BACKGROUND)
-        }
+    let region = match &scene {
+        Scene::Output(_, region) => region.size,
+        // A window's frame is its whole buffer.
+        Scene::Window(..) => size,
+    };
+    let Some((elements, clear)) = scene_elements(renderer, state, &scene, frame.cursor, scale)
+    else {
         // A locked session shows no windows: their frames wait for the
         // unlock.
         Scene::Window(..) if state.locked() => return Ok(Copied::Waiting),
@@ -662,11 +698,8 @@ where
             };
             (elements, Point::default(), size, [0.0; 4])
         }
+        return Ok(Copied::Waiting);
     };
-    let elements: Vec<_> = elements
-        .into_iter()
-        .map(|element| RelocateRenderElement::from_element(element, offset, Relocate::Relative))
-        .collect();
     let damage = state
         .capture
         .damage_since(&frame.watcher, size, scale, transform, &elements);
@@ -738,6 +771,86 @@ where
         .wait()
         .map_err(|error| crate::backend::failed("wait for capture", error))?;
     Ok(())
+}
+
+/// A scene's drawable elements and the colour cleared behind them.
+type SceneElements<R> = (Vec<RelocateRenderElement<OutputRenderElement<R>>>, [f32; 4]);
+
+/// What `scene` shows, drawn with `renderer`: its elements and what is
+/// cleared behind them. `None` while the session is locked, when no window
+/// is shown.
+fn scene_elements<R>(
+    renderer: &mut R,
+    state: &mut State,
+    scene: &Scene,
+    cursor: bool,
+    scale: f64,
+) -> Option<SceneElements<R>>
+where
+    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R::TextureId: Clone + Send + 'static,
+{
+    let (elements, offset, clear) = match scene {
+        Scene::Output(output, region) => {
+            let mut elements = if cursor {
+                state.cursor_elements(renderer, output)
+            } else {
+                Vec::new()
+            };
+            elements.extend(output_elements(renderer, state, output));
+            let offset = Point::<i32, Physical>::from((-region.loc.x, -region.loc.y));
+            (elements, offset, BACKGROUND)
+        }
+        Scene::Window(..) if state.locked() => return None,
+        Scene::Window(window, origin) => {
+            let elements = window.render_elements::<OutputRenderElement<R>>(
+                renderer,
+                Point::<i32, Logical>::from((-origin.x, -origin.y))
+                    .to_physical_precise_round(scale),
+                Scale::from(scale),
+                1.0,
+            );
+            // Around and behind a window is nothing: clear, for formats with
+            // alpha.
+            (elements, Point::default(), [0.0; 4])
+        }
+    };
+    Some((
+        elements
+            .into_iter()
+            .map(|element| RelocateRenderElement::from_element(element, offset, Relocate::Relative))
+            .collect(),
+        clear,
+    ))
+}
+
+/// What `target` shows now, drawn with `renderer` into an offscreen image
+/// and read back as rows of R, G, B, A: what a share stream pushes.
+pub(crate) fn read_back<R, T>(
+    renderer: &mut R,
+    state: &mut State,
+    target: &Target,
+) -> Result<Screenshot, CaptureError>
+where
+    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    let View {
+        scene,
+        scale,
+        transform,
+        size,
+    } = state
+        .view(target)
+        .ok_or_else(|| BackendError("the captured output or window is gone".into()))?;
+    let (elements, clear) = scene_elements(renderer, state, &scene, false, scale)
+        .ok_or_else(|| BackendError("the session is locked".into()))?;
+    let rgba = render_to_memory::<R, T, _>(renderer, size, scale, transform, &elements, clear)?;
+    Ok(Screenshot {
+        width: u32::try_from(size.w).map_err(|error| BackendError(format!("width: {error}")))?,
+        height: u32::try_from(size.h).map_err(|error| BackendError(format!("height: {error}")))?,
+        rgba,
+    })
 }
 
 /// Draw `elements` into an offscreen image of `size` and read it back as

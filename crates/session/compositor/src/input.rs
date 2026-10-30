@@ -53,6 +53,55 @@ pub enum InputEvent {
     Switch { switch: Switch, on: bool },
 }
 
+/// Input on its way to the desktop, as a capture sees it: what an input
+/// capture decides on before the desktop does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ObservedInput {
+    /// The pointer at (`x`, `y`) in the layout, having moved by
+    /// (`dx`, `dy`).
+    PointerMotion { x: f64, y: f64, dx: f64, dy: f64 },
+    /// A pointer button (evdev code) changed state.
+    PointerButton { button: u32, pressed: bool },
+    /// Scrolling, in logical pixels.
+    Scroll { dx: f64, dy: f64 },
+    /// A key (evdev code) changed state.
+    Key { keycode: u32, pressed: bool },
+}
+
+impl InputEvent {
+    /// `event` as a capture sees it, the pointer having been at `pointer`;
+    /// `None` for what captures never see.
+    #[must_use]
+    pub(crate) fn observed(self, pointer: (f64, f64)) -> Option<ObservedInput> {
+        Some(match self {
+            Self::PointerMotion { x, y } => ObservedInput::PointerMotion {
+                x,
+                y,
+                dx: x - pointer.0,
+                dy: y - pointer.1,
+            },
+            Self::PointerMotionRelative { dx, dy } => ObservedInput::PointerMotion {
+                x: pointer.0 + dx,
+                y: pointer.1 + dy,
+                dx,
+                dy,
+            },
+            Self::PointerButton { button, pressed } => {
+                ObservedInput::PointerButton { button, pressed }
+            }
+            Self::PointerAxis {
+                horizontal,
+                vertical,
+            } => ObservedInput::Scroll {
+                dx: horizontal,
+                dy: vertical,
+            },
+            Self::Key { keycode, pressed } => ObservedInput::Key { keycode, pressed },
+            _ => return None,
+        })
+    }
+}
+
 /// A switch the compositor hears about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Switch {

@@ -1150,6 +1150,10 @@ notification-alarm-action-subtitle = For this alarm occurrence
 notification-alarm-action-retry = Keep this notification and try again.
 notification-sender-claims = App says: { $name }
 notification-open = Open
+notification-quiet-do-not-disturb = Do Not Disturb
+notification-quiet-presenting = Do Not Disturb while presenting
+notification-quiet-sharing = Do Not Disturb while sharing
+notification-quiet-focus-until = Focus until { $time }
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source

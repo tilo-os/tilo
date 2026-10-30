@@ -49,6 +49,8 @@ pub struct OutputInfo {
     pub enabled: bool,
     /// Its logical rectangle `(x, y, w, h)` while it is on.
     pub rect: Option<(i32, i32, i32, i32)>,
+    /// What the panel calls itself (`Tilo 27"`), when it says.
+    pub description: Option<String>,
 }
 
 /// How a configuration (a display tool, Settings) changes one output.

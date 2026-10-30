@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::io::BufRead as _;
+use std::rc::Rc;
 
 use serde_json::{Map, Value, json};
 use tilo_actions::ResourceSpec;
@@ -72,20 +73,29 @@ fn published(resources: &[ResourceSpec], id: &str) -> bool {
 fn a_portal_file_chooser_request_is_the_sessions_question() {
     let bus = SessionBus::start();
     let wake = tilo_service::LoopWake::default();
-    let desktop = DesktopServices::start(
-        &Buses {
-            session: Bus::Address(bus.address.clone()),
-            system: Bus::None,
-        },
-        &wake.handle(),
-        std::sync::Arc::new(tilo_portal::NoCapture),
-    )
-    .unwrap();
+    let (side, link) = tilo_session::portal_link::channel(wake.handle());
+    let desktop = Rc::new(
+        DesktopServices::start(
+            &Buses {
+                session: Bus::Address(bus.address.clone()),
+                system: Bus::None,
+            },
+            &wake.handle(),
+            std::sync::Arc::new(tilo_portal::NoCapture),
+            &side,
+        )
+        .unwrap(),
+    );
+    let portal = desktop
+        .portal()
+        .map(|serving| link.with_captures(serving.input_captures().clone()));
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
             wake,
+            desktop: Some(Rc::clone(&desktop)),
+            portal,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
@@ -178,6 +188,18 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
     node.children.iter().find_map(|child| control(child, name))
 }
 
+/// Steps `session` until `asked` answers, for two seconds of session time at
+/// most.
+fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
+    for _ in 0..2000 {
+        session.step(std::time::Duration::from_millis(1)).unwrap();
+        if let Some(answer) = asked(session) {
+            return Some(answer);
+        }
+    }
+    None
+}
+
 /// An app's notification with its own image is shown by the banners and
 /// kept in the centre; the button the person presses on the banner reaches
 /// the app.
@@ -189,11 +211,30 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         system: Bus::None,
     })
     .unwrap();
+    let wake = tilo_service::LoopWake::default();
+    let (side, link) = tilo_session::portal_link::channel(wake.handle());
+    let desktop = Rc::new(
+        DesktopServices::start(
+            &Buses {
+                session: Bus::Address(bus.address.clone()),
+                system: Bus::None,
+            },
+            &wake.handle(),
+            std::sync::Arc::new(tilo_portal::NoCapture),
+            &side,
+        )
+        .unwrap(),
+    );
+    let portal = desktop
+        .portal()
+        .map(|serving| link.with_captures(serving.input_captures().clone()));
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
-            notifications: Some(desktop.notifications()),
+            wake,
+            desktop: Some(Rc::clone(&desktop)),
+            portal,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
@@ -241,20 +282,15 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         (app, id, invoked)
     });
 
-    let mut archive = None;
-    for _ in 0..2000 {
-        session.step(std::time::Duration::from_millis(1)).unwrap();
-        archive = session
+    let archive = until(&mut session, |session| {
+        session
             .banners()
             .shown()
             .accessibility
             .as_ref()
-            .and_then(|node| control(node, "Archive"));
-        if archive.is_some() {
-            break;
-        }
-    }
-    let archive = archive.expect("the banner shows with its button");
+            .and_then(|node| control(node, "Archive"))
+    })
+    .expect("the banner shows with its button");
     assert_eq!(session.banners().shown().banners.len(), 1);
 
     // The app hears what the person chose while the session runs.
@@ -268,14 +304,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     session
         .banners()
         .command(tilo_notification_banners::Command::Activate(archive));
-    let mut chosen = None;
-    for _ in 0..2000 {
-        session.step(std::time::Duration::from_millis(1)).unwrap();
-        chosen = hear.try_recv().ok();
-        if chosen.is_some() {
-            break;
-        }
-    }
+    let chosen = until(&mut session, |_| hear.try_recv().ok());
     drop(app);
     assert_eq!(chosen, Some((id, "archive".to_owned())));
 }

@@ -160,6 +160,7 @@ mod tests {
             label: name.into(),
             enabled: true,
             rect: Some((x, 0, 1280, 800)),
+            description: None,
         }
     }
 

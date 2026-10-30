@@ -1169,6 +1169,10 @@ notification-alarm-action-subtitle = Für dieses Weckereignis
 notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
 notification-sender-claims = App sagt: { $name }
 notification-open = Öffnen
+notification-quiet-do-not-disturb = Nicht stören
+notification-quiet-presenting = Nicht stören beim Präsentieren
+notification-quiet-sharing = Nicht stören beim Teilen
+notification-quiet-focus-until = Fokus bis { $time }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen

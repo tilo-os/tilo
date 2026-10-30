@@ -10,6 +10,7 @@
 )]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use smithay::backend::input::KeyState;
@@ -49,6 +50,10 @@ pub struct ClientState {
     /// The session started this client and trusts it with privileged
     /// protocols (locking the session).
     trusted: bool,
+    /// The client's process, once the socket said; 0 while unknown.
+    pid: AtomicU32,
+    /// The processes whose clients disconnected, for the session to hear.
+    exited: Arc<std::sync::Mutex<Vec<u32>>>,
 }
 
 impl ClientState {
@@ -60,7 +65,15 @@ impl ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {
+        let pid = self.pid.load(Ordering::Relaxed);
+        if pid != 0
+            && let Ok(mut exited) = self.exited.lock()
+        {
+            exited.push(pid);
+        }
+    }
 }
 
 /// How many windows that closed keep their last frame: a desktop animates
@@ -156,6 +169,13 @@ pub struct State {
     pub(crate) selections: crate::selection::Selections,
     pub(crate) dnd: crate::dnd::Dnd,
     pub(crate) display_changes: crate::display_change::DisplayChanges,
+    /// What is offered every input before the desktop sees it, and takes
+    /// what it answers `true` to.
+    pub(crate) input_observer:
+        Option<Arc<dyn Fn(crate::input::ObservedInput) -> bool + Send + Sync>>,
+    /// The processes whose clients disconnected since the session last
+    /// looked: the apps that exited.
+    pub(crate) exited: Arc<std::sync::Mutex<Vec<u32>>>,
     /// The compositor's event loop, for work the window manager schedules.
     pub(crate) loop_handle:
         Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
@@ -199,6 +219,7 @@ impl State {
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
             protocols,
+            exited: Arc::default(),
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
             cursor: crate::cursor::Cursor::new(),
@@ -226,6 +247,7 @@ impl State {
             selections,
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
+            input_observer: None,
             loop_handle: None,
         }
     }
@@ -312,7 +334,7 @@ impl State {
         self.space
             .elements()
             .filter_map(|window| {
-                let info = describe(window)?;
+                let info = describe(&self.display, window)?;
                 let location = self.space.element_location(window)?;
                 let size = window.geometry().size;
                 Some((info, Rectangle::new(location, size)))
@@ -438,6 +460,15 @@ impl State {
     /// Route one input event to the hosted surface or client it belongs to.
     pub(crate) fn handle_input(&mut self, event: InputEvent) {
         self.note_input();
+        // What a capture takes never reaches the desktop.
+        if let Some(observed) = event.clone().observed((self.pointer.x, self.pointer.y))
+            && self
+                .input_observer
+                .as_ref()
+                .is_some_and(|observer| observer(observed))
+        {
+            return;
+        }
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
         match event {
@@ -772,7 +803,7 @@ impl State {
     /// Map a toplevel whose first buffer arrived (or an X11 window that
     /// asked to be mapped), where the policy places it.
     pub(crate) fn map_window(&mut self, window: &Window) {
-        let Some(info) = describe(window) else {
+        let Some(info) = describe(&self.display, window) else {
             return;
         };
         // It came back before the desktop was done with its close.
@@ -805,7 +836,7 @@ impl State {
         };
         let stack: Vec<Window> = self.space.elements().cloned().collect();
         for window in stack {
-            let Some(id) = describe(&window).map(|info| info.id) else {
+            let Some(id) = describe(&self.display, &window).map(|info| info.id) else {
                 continue;
             };
             let Some(arrangement) = arrangements.iter().find(|arrangement| arrangement.id == id)
@@ -847,7 +878,7 @@ impl State {
             state
                 .space
                 .elements()
-                .find(|window| describe(window).is_some_and(|info| info.id == id))
+                .find(|window| describe(&self.display, window).is_some_and(|info| info.id == id))
                 .cloned()
         };
         for id in self.policy.take_close_requests() {
@@ -889,7 +920,8 @@ impl State {
     /// `window` asked for the keyboard: it gets it when the policy says so
     /// ([`WindowPolicy::activate`]).
     pub(crate) fn activation_requested(&mut self, window: &Window, fresh: bool) {
-        let focus = describe(window).map_or(fresh, |info| self.policy.activate(&info, fresh));
+        let focus = describe(&self.display, window)
+            .map_or(fresh, |info| self.policy.activate(&info, fresh));
         if focus {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
         }
@@ -902,7 +934,7 @@ impl State {
             return;
         }
         if let Some((window, _, _)) = self.surface_under(point) {
-            let info = describe(&window);
+            let info = describe(&self.display, &window);
             if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
                 self.focus_window(&window, serial);
             }
@@ -923,9 +955,9 @@ pub(crate) fn window_id(window: &Window) -> Option<u64> {
 
 /// What a policy learns about a window, Wayland or X11; `None` for
 /// override-redirect X11 windows, which place themselves.
-pub(crate) fn describe(window: &Window) -> Option<WindowInfo> {
+pub(crate) fn describe(display: &DisplayHandle, window: &Window) -> Option<WindowInfo> {
     if let Some(toplevel) = window.toplevel() {
-        return Some(window_info(toplevel));
+        return Some(window_info(display, toplevel));
     }
     let x11 = window.x11_surface()?;
     let size = |size: Option<smithay::utils::Size<i32, Logical>>| {
@@ -941,6 +973,7 @@ pub(crate) fn describe(window: &Window) -> Option<WindowInfo> {
             .map(|parent| X11_IDS | u64::from(parent)),
         min_size: size(x11.min_size()),
         max_size: size(x11.max_size()),
+        pid: x11.pid(),
     })
 }
 
@@ -955,8 +988,52 @@ fn is_modal(toplevel: &ToplevelSurface) -> bool {
     })
 }
 
+impl State {
+    /// The rectangle a shareable window holds in the layout, by its
+    /// foreign-toplevel identifier.
+    pub(crate) fn shareable_window_rect(&self, identifier: &str) -> Option<(i32, i32, i32, i32)> {
+        let window = self.capture.window(identifier)?;
+        let rect = self.space.element_geometry(window)?;
+        Some((rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    }
+
+    /// The evdev code of a key of the active layout that produces
+    /// `keysym`; `None` when the layout cannot type it.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the keymap read holds the seat's xkb lock for the whole scan"
+    )]
+    pub(crate) fn keycode_for_keysym(&mut self, keysym: u32) -> Option<u32> {
+        use smithay::input::keyboard::{Keycode, Keysym};
+        let keyboard = self.seat.get_keyboard()?;
+        let wanted = Keysym::new(keysym);
+        keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().ok()?;
+            let layout = xkb.active_layout();
+            // XKB keycodes start at 8 (evdev 0 is XKB 8); 8..=255 is a
+            // standard keyboard's range.
+            (8u32..=255).find_map(|raw| {
+                let keycode: Keycode = raw.into();
+                let syms = xkb.raw_syms_for_key_in_layout(keycode, layout);
+                syms.contains(&wanted).then(|| raw.saturating_sub(8))
+            })
+        })
+    }
+}
+
+/// The process of a client, as `pid`.
+fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
+    let client = client?;
+    let pid = u32::try_from(client.get_credentials(display).ok()?.pid).ok()?;
+    // Noted for the client, so the session hears when its process exits.
+    if let Some(data) = client.get_data::<ClientState>() {
+        data.pid.store(pid, Ordering::Relaxed);
+    }
+    Some(pid)
+}
+
 /// What a policy learns about a toplevel.
-fn window_info(toplevel: &ToplevelSurface) -> WindowInfo {
+fn window_info(display: &DisplayHandle, toplevel: &ToplevelSurface) -> WindowInfo {
     let id_of = |surface: &WlSurface| {
         smithay::wayland::compositor::with_states(surface, |states| {
             states.data_map.get::<WindowId>().map(|id| id.0)
@@ -993,6 +1070,7 @@ fn window_info(toplevel: &ToplevelSurface) -> WindowInfo {
             parent,
             min_size: size(min),
             max_size: size(max),
+            pid: pid_of(toplevel.wl_surface().client().as_ref(), display),
         }
     })
 }
@@ -1033,7 +1111,7 @@ impl CompositorHandler for State {
                 {
                     window.on_commit();
                     if !toplevel.is_initial_configure_sent() {
-                        let info = window_info(toplevel);
+                        let info = window_info(&self.display, toplevel);
                         let outputs = self.output_geometries();
                         if let Some((w, h)) = self.policy.initial_size(&info, &outputs) {
                             toplevel.with_pending_state(|state| state.size = Some((w, h).into()));
@@ -1188,7 +1266,7 @@ impl XdgShellHandler for State {
         self.unmapped
             .retain(|window| window.toplevel() != Some(&surface));
         if pending {
-            self.policy.withdrawn(&window_info(&surface));
+            self.policy.withdrawn(&window_info(&self.display, &surface));
         }
         let gone = self
             .space
@@ -1238,12 +1316,27 @@ smithay::delegate_seat!(State);
 smithay::delegate_data_device!(State);
 smithay::delegate_output!(State);
 
-/// A fresh client's data, for [`DisplayHandle::insert_client`].
-pub(crate) fn client_data(trusted: bool) -> Arc<ClientState> {
+/// A fresh client's data, for [`DisplayHandle::insert_client`], whose
+/// disconnect is recorded in `exited`.
+pub(crate) fn client_data(
+    trusted: bool,
+    exited: Arc<std::sync::Mutex<Vec<u32>>>,
+) -> Arc<ClientState> {
     Arc::new(ClientState {
         trusted,
+        exited,
         ..ClientState::default()
     })
+}
+
+impl State {
+    /// The processes of the clients that disconnected since the last look.
+    pub(crate) fn take_exited_pids(&self) -> Vec<u32> {
+        self.exited
+            .lock()
+            .map(|mut exited| std::mem::take(&mut *exited))
+            .unwrap_or_default()
+    }
 }
 
 impl State {
@@ -1262,6 +1355,6 @@ impl State {
             .elements()
             .filter_map(Window::toplevel)
             .find(|toplevel| toplevel.wl_surface() == &focus)
-            .map(window_info)
+            .map(|toplevel| window_info(&self.display, toplevel))
     }
 }

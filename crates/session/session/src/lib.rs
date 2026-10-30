@@ -20,6 +20,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod app_icons;
 pub mod capture;
 mod chrome;
 pub mod desktop_services;
@@ -35,6 +36,12 @@ mod panels;
 mod setup;
 mod sheets;
 mod search;
+pub mod portal_link;
+mod questions;
+mod search;
+mod setup;
+mod sheets;
+mod system_sounds;
 pub mod unlock;
 mod window_motion;
 
@@ -52,6 +59,7 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::osd::{OSD_RESOURCE, Osd, OsdKind};
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
+use tilo_lock::MutexRecover as _;
 use tilo_quick_settings::QsEffect;
 use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
 use tilo_surface_host::{DeskGesture, DesktopHost, Doors, WidgetHost, desktop_with};
@@ -143,6 +151,18 @@ pub struct Options {
     pub wake: tilo_service::LoopWake,
     /// The screenshots the portal asks for, which the session takes.
     pub captures: Option<capture::Captures>,
+    /// The desktop services the session runs beside: what apps sent their
+    /// notifications daemon, the questions they ask, and the portal they
+    /// serve. The session feeds it what it knows of itself: which apps run
+    /// and how, when the screen locks, which apps exited and what its
+    /// workspaces grant.
+    pub desktop: Option<Rc<desktop_services::DesktopServices>>,
+    /// The questions the session's sheets answer, when nothing runs beside
+    /// it to ask them: a session with desk services asks theirs.
+    pub questions: Option<tilo_service::Questions>,
+    /// The portal's link to the loop: what shares the session's screens,
+    /// drives its seat and passes its selection.
+    pub portal: Option<portal_link::SessionLink>,
 }
 
 /// Where quick settings reads the device from.
@@ -254,6 +274,9 @@ impl Layers {
             captures: None,
             services: Vec::new(),
             notifications: None,
+            desktop: None,
+            questions: None,
+            portal: None,
         }
     }
 }
@@ -320,6 +343,10 @@ fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
     }
     /// The daemon's notifications on the desktop.
     notifications: RefCell<notifications::SessionNotifications>,
+    /// The notification centre as the quick settings panel was last fed it.
+    notice_view: RefCell<Option<tilo_quick_settings::NotificationsView>>,
+    /// What the services ask the person, on the sheets.
+    asker: questions::Asker,
 }
 
 impl Shared {
@@ -450,6 +477,21 @@ impl Shared {
         }
     }
 
+    /// Open what the person chose on a scheduled notification, in the
+    /// workspace that scheduled it: the app that takes its scheme.
+    fn open_notifications(&self) {
+        for (room, uri) in self.notifications.borrow().take_opened() {
+            self.search.perform(
+                &room,
+                tilo_desktop_search::Target::Open {
+                    uri,
+                    fallback: None,
+                },
+                &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+            );
+        }
+    }
+
     fn close_quick_settings(&self) {
         if let Some(panel) = &self.quick_settings {
             panel.open.set(false);
@@ -480,6 +522,52 @@ impl Shared {
                     }
                     self.lock.set(true);
                 }
+                SessionRequest::Effect(QsEffect::OpenNotification { notification }) => {
+                    self.close_quick_settings();
+                    let room = self.active_room();
+                    match self.notifications.borrow().open(notification) {
+                        tilo_desktop_surface::notifications::HistoryActivation::OpenApp {
+                            app_id,
+                            ..
+                        } => self.search.perform(
+                            &room,
+                            tilo_desktop_search::Target::Launch { app: app_id },
+                            &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+                        ),
+                        other => tracing::debug!(?other, "notification chosen"),
+                    }
+                }
+                SessionRequest::Effect(QsEffect::DismissNotification { notification }) => {
+                    self.notifications
+                        .borrow()
+                        .dismiss(Some(notification), None);
+                }
+                SessionRequest::Effect(QsEffect::DismissNotificationGroup { group }) => {
+                    self.notifications.borrow().dismiss(None, Some(&group));
+                }
+                SessionRequest::Effect(QsEffect::RunNotificationAction {
+                    notification,
+                    action,
+                }) => {
+                    self.notifications
+                        .borrow()
+                        .run_action(notification, &action);
+                }
+                SessionRequest::Effect(QsEffect::ClearNotifications) => {
+                    self.notifications.borrow().clear();
+                }
+                SessionRequest::Effect(QsEffect::UndoClearNotifications) => {
+                    self.notifications.borrow().undo_clear();
+                }
+                SessionRequest::Effect(QsEffect::SetDoNotDisturb { on }) => {
+                    // The switch is persisted, so the settings app and the
+                    // desktop's own menu read the same one; the session's
+                    // settings watch brings it back into every arrival.
+                    if let Err(error) = notifications::SessionNotifications::set_do_not_disturb(on)
+                    {
+                        tracing::warn!(%error, on, "do not disturb not saved");
+                    }
+                }
                 SessionRequest::Effect(QsEffect::OpenSettings { .. }) => {
                     if let Some(open) = &self.quick_settings {
                         open.set(false);
@@ -497,6 +585,32 @@ impl Shared {
                 }
             }
         }
+        self.feed_notifications();
+    }
+
+    /// The workspace in front, as its room: where a chosen notification's
+    /// app opens.
+    fn active_room(&self) -> String {
+        self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Feed the panel's notification centre when it changed: the retained
+    /// notifications, why fresh banners are held and whether a Clear all can
+    /// be undone.
+    fn feed_notifications(&self) {
+        let Some(device) = &self.device else {
+            return;
+        };
+        let view = self.notifications.borrow().view();
+        if self.notice_view.borrow().as_ref() == Some(&view) {
+            return;
+        }
+        *self.notice_view.borrow_mut() = Some(view.clone());
+        device.update(|state| state.notifications = view);
     }
 
     /// Show workspace settings for the workspace in front.
@@ -650,6 +764,7 @@ impl Shared {
             tabs
         });
         self.search.observe(&self.layers.resources(), open_tabs);
+        self.asker.follow();
     }
 
     fn show_quick_settings(&self) {
@@ -991,6 +1106,20 @@ pub struct Session {
     captures: Option<capture::Captures>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// The portal's link to the loop, while the portal serves.
+    portal: Option<portal_link::SessionLink>,
+    /// The desktop services the portal and the notifications daemon run
+    /// in, fed what the session knows of itself.
+    desktop: Option<Rc<desktop_services::DesktopServices>>,
+    /// The apps the portal was last told run, and how.
+    running: Vec<(String, u32)>,
+    /// Whether the screens were locked when the portal was last told.
+    screen_locked: bool,
+    /// The app a process runs, for the windows it shows.
+    pids: std::collections::BTreeMap<u32, String>,
+    /// The watch that keeps the notification policy current; dropping it
+    /// stops the news.
+    _settings_watch: Option<settings_store::watch::SettingsWatch>,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1048,6 +1177,10 @@ impl Session {
     ///
     /// # Errors
     /// The compositor did not start.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the session is wired in one pass, where every part sees the others"
+    )]
     pub fn new(
         options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
@@ -1057,6 +1190,24 @@ impl Session {
         // widget trees.
         let asks = Rc::new(RefCell::new(Vec::new()));
         let notices = tilo_desktop_surface::DesktopNotifications::default();
+        // What the bar reads of the notifications, and the policy arrivals
+        // are judged by: the person may change it at any time.
+        let notice_signals = Rc::new(notifications::NoticeSignals::default());
+        let notification_policy = std::sync::Arc::new(std::sync::Mutex::new(
+            settings_store::notification_policy::NotificationPolicy::load(),
+        ));
+        let watched = std::sync::Arc::clone(&notification_policy);
+        let woken = options.wake.handle();
+        // Artwork the session resolves off the loop wakes it when it is
+        // ready, so the frame that painted the letter repaints with it.
+        app_icons::set_wake(options.wake.handle());
+        let settings_watch = settings_store::watch::watch_settings(move || {
+            *watched.lock_recover() =
+                settings_store::notification_policy::NotificationPolicy::load();
+            woken();
+        })
+        .map_err(|error| tracing::debug!(%error, "settings are not watched"))
+        .ok();
         let (desktop, policy) = desktop_with(options.salt, options.scale, |mut surface, handle| {
             surface.set_notifications(notices.clone());
             Box::new(
@@ -1086,6 +1237,7 @@ impl Session {
             &options,
             Rc::clone(&intents),
             Rc::clone(&asks),
+            Rc::clone(&notice_signals),
         )));
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
         doors.add(chrome);
@@ -1197,10 +1349,22 @@ impl Session {
             lock,
         } = mount_sheets(&mut compositor, &mut doors, &options);
 
+        let shortcuts = std::mem::take(&mut options.config.shortcuts);
+        // The desktop's own chords win over every app's: the portal's
+        // bindings step aside for the table the session answers first.
+        let portal_shortcuts = options
+            .desktop
+            .as_ref()
+            .and_then(|desktop| desktop.portal())
+            .map(|portal| portal.shortcuts().clone());
+        if let Some(portal) = &portal_shortcuts {
+            portal.set_shortcut_table(shortcuts.clone());
+        }
         let (commands, invocations) = mount_controls(
             &mut compositor,
             &mut doors,
-            std::mem::take(&mut options.config.shortcuts),
+            shortcuts,
+            portal_shortcuts,
             options.scale,
         );
 
@@ -1216,6 +1380,17 @@ impl Session {
         let services = mount_services(&mut doors, std::mem::take(&mut options.services));
 
         let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
+        let asker = questions::Asker::new(
+            options.questions.clone().or_else(|| {
+                options
+                    .desktop
+                    .as_ref()
+                    .map(|desktop| desktop.questions().clone())
+            }),
+            portal.clone(),
+            file_picker.clone(),
+        );
         let shared = Shared {
             handle,
             desktop,
@@ -1239,9 +1414,14 @@ impl Session {
             observed: Cell::new(None),
             places_seen: RefCell::default(),
             notifications: RefCell::new(notifications::SessionNotifications::new(
-                options.notifications,
+                options
+                    .desktop
+                    .as_ref()
+                    .map(|desktop| desktop.notifications()),
                 notices,
                 banners.clone(),
+                notification_policy,
+                notice_signals,
             )),
         });
         if let Some(kept) = shared.services.borrow().read(search::HISTORY) {
@@ -1249,6 +1429,15 @@ impl Session {
         }
         shared.observe();
         shared.start_search();
+            asker,
+            notice_view: RefCell::new(None),
+        };
+        shared.observe();
+        // What the portal brings comes from any thread, and wakes the loop
+        // instead of waiting for its next turn.
+        if let Some(portal) = &options.portal {
+            compositor.set_input_observer(Some(portal.input_observer()));
+        }
         let loop_wake = compositor.waker();
         Ok(Self {
             compositor,
@@ -1265,6 +1454,12 @@ impl Session {
             },
             captures: options.captures,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            portal: options.portal,
+            screen_locked: false,
+            desktop: options.desktop,
+            running: Vec::new(),
+            pids: std::collections::BTreeMap::new(),
+            _settings_watch: settings_watch,
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1567,6 +1762,10 @@ impl Session {
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
         }
+        if let Some(portal) = &mut self.portal {
+            portal.serve(&mut self.compositor, &self.shared.handle);
+        }
+        self.feed_portal();
         // Each round can ask for another (a key's shortcut the chrome
         // leaves to the session); a few rounds settle any chain.
         for _ in 0..4 {
@@ -1587,6 +1786,34 @@ impl Session {
             self.shared.desktop.with_widgets(WidgetHost::relayout);
         }
         Ok(())
+    }
+
+    /// Tell the portal what it asks of the session about its apps: which
+    /// run and how, which exited, and when the screen locks.
+    fn feed_portal(&mut self) {
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        for (window, _) in self.compositor.windows() {
+            if let (Some(pid), Some(app_id)) = (window.pid, window.app_id) {
+                self.pids.insert(pid, app_id);
+            }
+        }
+        let running = running_apps(&self.compositor);
+        if running != self.running {
+            desktop.set_running_apps(running.clone());
+            self.running = running;
+        }
+        let locked = self.compositor.locked();
+        if locked != self.screen_locked {
+            desktop.set_screen_locked(locked);
+            self.screen_locked = locked;
+        }
+        for pid in self.compositor.take_exited_pids() {
+            if let Some(app_id) = self.pids.remove(&pid) {
+                desktop.app_exited(&app_id);
+            }
+        }
     }
 
     /// Follow the session's lock: put the lock screen up when it locks
@@ -1686,6 +1913,11 @@ impl Session {
                 if let Err(error) = os_actions::request_logout() {
                     tracing::info!(%error, "no login wrapper to tell of the logout");
                 }
+                // Apps are told the session ends before the loop stops
+                // answering them.
+                if let Some(desktop) = &self.desktop {
+                    desktop.end();
+                }
                 self.ended = true;
                 Ok(())
             }
@@ -1715,6 +1947,13 @@ impl Session {
         self.shared.services.borrow_mut().poll();
         self.shared.notifications.borrow_mut().step();
         self.shared.follow_asks();
+        let compositor = &mut self.compositor;
+        self.shared
+            .notifications
+            .borrow_mut()
+            .step(&mut || Some(compositor.activation_token()));
+        self.shared.open_notifications();
+        self.settle()?;
         self.compositor.render()?;
         self.shared.follow_asks();
         self.follow_lock();
@@ -1756,6 +1995,31 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// The apps that run now, in the states the portal asks of them: the app
+/// in front is in use, the ones behind it only run.
+fn running_apps(compositor: &Compositor) -> Vec<(String, u32)> {
+    use tilo_portal::background::{ACTIVE, RUNNING};
+    let focused = compositor.focused_window().and_then(|window| window.app_id);
+    let mut apps: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for (window, _) in compositor.windows() {
+        let Some(app_id) = window.app_id else {
+            continue;
+        };
+        let state = if focused.as_deref() == Some(app_id.as_str()) {
+            ACTIVE
+        } else {
+            RUNNING
+        };
+        // An app showing more than one window is as in use as its best.
+        let state = apps
+            .get(&app_id)
+            .copied()
+            .map_or(state, |seen| seen.max(state));
+        apps.insert(app_id, state);
+    }
+    apps.into_iter().collect()
 }
 
 /// Quick settings as a popover under the bar, lent `panel`'s readings
@@ -1853,6 +2117,7 @@ fn mount_controls(
     compositor: &mut Compositor,
     doors: &mut Doors,
     shortcuts: ui::shortcut_table::ShortcutConfig,
+    portal: Option<tilo_portal::global_shortcuts::Shortcuts>,
     scale: f64,
 ) -> (Rc<RefCell<Vec<SessionCommand>>>, Invocations) {
     let readout = Rc::new(RefCell::new(Readout::new(scale)));
@@ -1866,6 +2131,7 @@ fn mount_controls(
     compositor.add_host(Box::new(SessionKeys::new(
         shortcuts,
         Rc::clone(&invocations),
+        portal,
     )));
     (commands, invocations)
 }

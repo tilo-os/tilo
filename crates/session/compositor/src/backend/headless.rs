@@ -219,6 +219,14 @@ impl Backend for HeadlessBackend {
         crate::capture::copy::<_, Image<'static, 'static>>(&mut self.renderer, state, frame)
     }
 
+    fn read_back(
+        &mut self,
+        state: &mut State,
+        target: &crate::capture::Target,
+    ) -> Result<Screenshot, crate::capture::CaptureError> {
+        crate::capture::read_back::<_, Image<'static, 'static>>(&mut self.renderer, state, target)
+    }
+
     fn screenshot(&mut self, name: &str) -> Result<Screenshot, BackendError> {
         let output = self
             .outputs

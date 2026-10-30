@@ -26,6 +26,9 @@ pub struct WindowInfo {
     pub min_size: Option<(i32, i32)>,
     /// The largest size the client accepts, when it set one.
     pub max_size: Option<(i32, i32)>,
+    /// The process that made the window: what it is asked of, the way a
+    /// portal request names the app it comes from.
+    pub pid: Option<u32>,
 }
 
 /// Where a window goes and the size it is asked to take.

@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use tilo_notifications_service::{Caller, Occurrence, Taken};
+use tilo_notifications_service::{Caller, ImageData, Occurrence, Taken};
 
 use super::*;
 
@@ -33,12 +33,15 @@ fn pixels() -> ImageData {
 #[derive(Default)]
 struct Heard {
     taken: Mutex<Vec<(u32, String)>>,
+    tokens: Mutex<Vec<Option<String>>>,
 }
 
 struct Rig {
     daemon: Notifications,
     desktop: DesktopNotifications,
     bridge: SessionNotifications,
+    policy: Arc<Mutex<NotificationPolicy>>,
+    signals: Rc<NoticeSignals>,
     heard: Arc<Heard>,
 }
 
@@ -48,23 +51,55 @@ fn rig() -> Rig {
     let tap = Arc::clone(&heard);
     daemon.on_taken(move |id, taken| {
         let said = match taken {
-            Taken::Action { key, .. } => format!("action {key}"),
-            Taken::Reply { text } => format!("reply {text}"),
+            Taken::Action {
+                key,
+                activation_token,
+            } => {
+                tap.tokens
+                    .lock()
+                    .unwrap()
+                    .push(activation_token.map(str::to_owned));
+                format!("action {key}")
+            }
+            Taken::Reply { text } => {
+                tap.tokens.lock().unwrap().push(None);
+                format!("reply {text}")
+            }
         };
         tap.taken.lock().unwrap().push((id, said));
     });
     let desktop = DesktopNotifications::default();
     desktop.show_banners_elsewhere();
-    let bridge = SessionNotifications::new(Some(daemon.clone()), desktop.clone(), Link::new());
+    let policy = Arc::new(Mutex::new(NotificationPolicy::default()));
+    let signals = Rc::new(NoticeSignals::default());
+    let bridge = SessionNotifications::new(
+        Some(daemon.clone()),
+        desktop.clone(),
+        Link::new(),
+        Arc::clone(&policy),
+        Rc::clone(&signals),
+    );
     Rig {
         daemon,
         desktop,
         bridge,
+        policy,
+        signals,
         heard,
     }
 }
 
 impl Rig {
+    /// A pass of the notifications, with no compositor to mint tokens.
+    fn step(&mut self) {
+        self.bridge.step(&mut || None);
+    }
+
+    /// A pass of the notifications, minting tokens as the compositor would.
+    fn step_minting(&mut self, mut mint: impl FnMut() -> Option<String>) {
+        self.bridge.step(&mut mint);
+    }
+
     /// What the person did on the banners app, as it asks it.
     fn ask(&self, ask: Ask) {
         self.bridge.ask(ask);
@@ -83,6 +118,11 @@ impl Rig {
 
     fn heard(&self) -> Vec<(u32, String)> {
         std::mem::take(&mut *self.heard.taken.lock().unwrap())
+    }
+
+    /// The activation tokens the apps were handed, in their order.
+    fn tokens(&self) -> Vec<Option<String>> {
+        std::mem::take(&mut *self.heard.tokens.lock().unwrap())
     }
 
     fn live(&self, id: u32) -> bool {
@@ -213,7 +253,7 @@ fn an_arrival_with_pixels_reaches_the_banners_and_the_centre() {
     let mut notification = sent(id);
     notification.image_data = Some(pixels());
     rig.daemon.push(notification);
-    rig.bridge.step();
+    rig.step();
 
     let feed = rig.feed();
     assert_eq!(feed.banners.len(), 1);
@@ -223,7 +263,7 @@ fn an_arrival_with_pixels_reaches_the_banners_and_the_centre() {
 
     // Closed by the person, it stays in the centre with its artwork.
     rig.ask(Ask::Banner(BannerAsk::Dismiss(banner.id)));
-    rig.bridge.step();
+    rig.step();
     assert!(rig.feed().banners.is_empty());
     assert_eq!(rig.history(), ["New mail"]);
     assert!(rig.desktop.log().history()[0].app_image.is_some());
@@ -243,23 +283,23 @@ fn a_banners_action_and_reply_reach_the_app() {
         ),
     ];
     rig.daemon.push(notification.clone());
-    rig.bridge.step();
+    rig.step();
     let banner = rig.banner().id;
     rig.ask(Ask::Banner(BannerAsk::Invoke(banner, "archive".into())));
-    rig.bridge.step();
+    rig.step();
     assert_eq!(rig.heard(), [(id, "action archive".into())]);
     assert!(!rig.live(id), "a chosen banner is closed");
 
     let id = rig.daemon.alloc_id();
     notification.id = id;
     rig.daemon.push(notification);
-    rig.bridge.step();
+    rig.step();
     let banner = rig.banner().id;
     rig.ask(Ask::Reply {
         id: banner,
         text: "on my way".into(),
     });
-    rig.bridge.step();
+    rig.step();
     assert_eq!(rig.heard(), [(id, "reply on my way".into())]);
     assert!(!rig.live(id));
 }
@@ -274,9 +314,9 @@ fn a_call_is_answered_by_the_callers_own_choice() {
         ("decline".into(), "Decline".into()),
     ];
     rig.daemon.push(call);
-    rig.bridge.step();
+    rig.step();
     rig.ask(Ask::DeclineCall(rig.banner().id));
-    rig.bridge.step();
+    rig.step();
     assert_eq!(rig.heard(), [(id, "action decline".into())]);
 }
 
@@ -285,18 +325,18 @@ fn a_replacement_takes_the_banners_place_and_a_withdrawal_takes_it_away() {
     let mut rig = rig();
     let id = rig.daemon.alloc_id();
     rig.daemon.push(sent(id));
-    rig.bridge.step();
+    rig.step();
     let mut replaced = sent(id);
     replaced.summary = "Two new mails".into();
     rig.daemon.push(replaced);
-    rig.bridge.step();
+    rig.step();
     let feed = rig.feed();
     assert_eq!(feed.banners.len(), 1);
     assert_eq!(feed.banners[0].notification.title, "Two new mails");
     assert!(rig.live(id), "a replacement is no close");
 
     assert!(rig.daemon.request_close(id));
-    rig.bridge.step();
+    rig.step();
     assert!(rig.feed().banners.is_empty());
     assert!(rig.history().is_empty(), "the app took it back");
 }
@@ -308,9 +348,9 @@ fn a_transient_notification_leaves_no_trace_in_the_centre() {
     let mut transient = sent(id);
     transient.transient = true;
     rig.daemon.push(transient);
-    rig.bridge.step();
+    rig.step();
     rig.ask(Ask::Banner(BannerAsk::Dismiss(rig.banner().id)));
-    rig.bridge.step();
+    rig.step();
     assert!(rig.history().is_empty());
     assert!(!rig.live(id));
 }
@@ -320,9 +360,108 @@ fn read_in_full_moves_it_to_the_centre() {
     let mut rig = rig();
     let id = rig.daemon.alloc_id();
     rig.daemon.push(sent(id));
-    rig.bridge.step();
+    rig.step();
     rig.ask(Ask::Read(rig.banner().id));
-    rig.bridge.step();
+    rig.step();
     assert!(rig.feed().banners.is_empty());
     assert_eq!(rig.history(), ["New mail"]);
+}
+
+#[test]
+fn do_not_disturb_holds_the_banner_and_the_bar_says_why() {
+    let mut rig = rig();
+    rig.policy.lock().unwrap().do_not_disturb = true;
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert!(rig.feed().banners.is_empty(), "quiet holds the banner");
+    assert_eq!(rig.history(), ["New mail"], "it goes to the centre");
+    assert!(rig.signals.quiet(), "the bar shows a silenced bell");
+    assert_eq!(rig.signals.unread(), 1, "and counts it unread");
+    assert!(rig.desktop.quiet());
+
+    rig.policy.lock().unwrap().do_not_disturb = false;
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert_eq!(rig.feed().banners.len(), 1, "and shows it again after");
+    assert!(!rig.signals.quiet());
+}
+
+#[test]
+fn an_apps_badge_follows_its_count_until_this_person_hides_it() {
+    let mut rig = rig();
+    let id = rig.daemon.alloc_id();
+    let mut message = sent(id);
+    message.caller = Some(Caller {
+        app_id: "so.tilo.chat".into(),
+        workspace: None,
+    });
+    message.badge_count = Some(7);
+    rig.daemon.push(message);
+    rig.step();
+    assert_eq!(rig.signals.badge("so.tilo.chat"), 7);
+    assert_eq!(rig.signals.badge("so.tilo.mail"), 0, "nothing for others");
+
+    rig.policy.lock().unwrap().show_badges = false;
+    rig.step();
+    assert_eq!(rig.signals.badge("so.tilo.chat"), 0, "hidden, not lost");
+
+    rig.policy.lock().unwrap().show_badges = true;
+    rig.step();
+    assert_eq!(rig.signals.badge("so.tilo.chat"), 7, "shown again as it is");
+
+    let id = rig.daemon.alloc_id();
+    let mut cleared = sent(id);
+    cleared.caller = Some(Caller {
+        app_id: "so.tilo.chat".into(),
+        workspace: None,
+    });
+    cleared.badge_count = Some(0);
+    rig.daemon.push(cleared);
+    rig.step();
+    assert_eq!(rig.signals.badge("so.tilo.chat"), 0, "the app says none");
+}
+
+#[test]
+fn choosing_a_scheduled_notification_names_the_target_it_rings_for() {
+    let mut rig = rig();
+    let id = rig.daemon.alloc_id();
+    let mut ringing = sent(id);
+    ringing.scheduled = Some(Occurrence {
+        room: "local".into(),
+        token: "0123456789abcdef0123456789abcdef".into(),
+        occurrence_ms: 1_000,
+        calendar_alarm: true,
+        uri: "tilo://clock/timer-1".into(),
+    });
+    rig.daemon.push(ringing);
+    rig.step();
+    rig.ask(Ask::Banner(BannerAsk::Activate(rig.banner().id)));
+    rig.step();
+    assert_eq!(
+        rig.bridge.take_opened(),
+        [("local".to_owned(), "tilo://clock/timer-1".to_owned())],
+        "the session opens it in the app that takes its scheme"
+    );
+    assert!(rig.bridge.take_opened().is_empty(), "taken once");
+}
+
+#[test]
+fn a_chosen_banner_hands_its_app_a_token_to_raise_its_window() {
+    let mut rig = rig();
+    let id = rig.daemon.alloc_id();
+    let mut notification = sent(id);
+    notification.actions = vec![("default".into(), "Go".into())];
+    rig.daemon.push(notification);
+    rig.step();
+    rig.ask(Ask::Banner(BannerAsk::Activate(rig.banner().id)));
+    let mut minted = 0;
+    rig.step_minting(|| {
+        minted += 1;
+        Some(format!("token-{minted}"))
+    });
+    assert_eq!(rig.heard(), [(id, "action default".into())]);
+    assert_eq!(rig.tokens(), [Some("token-1".into())]);
+    assert!(!rig.live(id), "and the banner closes behind it");
 }

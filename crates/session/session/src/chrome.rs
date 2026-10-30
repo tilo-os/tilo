@@ -19,6 +19,8 @@ use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::{Placement, WidgetHost};
 
+use crate::notifications::NoticeSignals;
+
 /// The bar's view of the session: the desktop's tree, the wall clock, and
 /// the person at this device.
 pub(crate) struct SessionChrome {
@@ -26,6 +28,12 @@ pub(crate) struct SessionChrome {
     /// Where the bar's intents go: the chrome carries them out.
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     pub(crate) person: String,
+    /// What the bar reads of the notifications: the unread count, the
+    /// silenced bell and each app's own badge.
+    pub(crate) signals: Rc<NoticeSignals>,
+    /// The session has no quick settings panel: the status cluster is the
+    /// bell that opens the notification centre.
+    pub(crate) notifications_only: bool,
     /// `(tree revision, minute)` the snapshot revision was last bumped for.
     seen: Cell<(u64, i64)>,
     revision: Cell<u64>,
@@ -36,11 +44,15 @@ impl SessionChrome {
         handle: DesktopHandle,
         intents: Rc<RefCell<Vec<ChromeIntent>>>,
         person: String,
+        signals: Rc<NoticeSignals>,
+        notifications_only: bool,
     ) -> Self {
         Self {
             handle,
             intents,
             person,
+            signals,
+            notifications_only,
             seen: Cell::new((u64::MAX, 0)),
             revision: Cell::new(0),
         }
@@ -62,8 +74,15 @@ impl DesktopChromeSource for SessionChrome {
                 rgb: ui::presence::user_color(&self.person),
                 identity: String::new(),
             }),
+            notification_badge: self.signals.unread(),
+            notifications_quiet: self.signals.quiet(),
+            notifications_only: self.notifications_only,
             ..DesktopChromeSnapshot::default()
         }
+    }
+
+    fn app_notification_badge(&self, app_id: &str) -> u32 {
+        self.signals.badge(app_id)
     }
 
     fn tree(&self) -> DesktopTree {
@@ -134,6 +153,7 @@ pub(crate) fn host(
     options: &crate::Options,
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    signals: Rc<NoticeSignals>,
 ) -> WidgetHost {
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
@@ -146,6 +166,8 @@ pub(crate) fn host(
         handle.clone(),
         Rc::clone(&intents),
         options.person.clone(),
+        signals,
+        options.quick_settings.is_none(),
     ));
     let bar = TopBarChrome::from_tree(&tree)
         .with_chrome(source)

@@ -13,6 +13,8 @@ path = "src/main.rs"
 [target.'cfg(target_os = "linux")'.dependencies]
 tilo-compositor = { path = "../compositor" }
 image = { workspace = true, features = ["png"] }
+# An application's themed icon is an SVG as often as a PNG.
+resvg = { version = "0.47", default-features = false }
 tilo-surface-host = { path = "../surface-host" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
@@ -43,8 +45,10 @@ tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }
 # The sound resource's specs, for the audio service the session starts.
 tilo-audio-service = { path = "../audio-service", default-features = false }
-# The desktop services the session starts on the buses.
-tilo-portal = { path = "../portal" }
+# The desktop services the session starts on the buses; screen shares
+# stream the frames the session captured.
+tilo-portal = { path = "../portal", features = ["pipewire"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
@@ -53,9 +57,12 @@ tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
+# The desktop's event sounds (a notification's ring, a screenshot's click).
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
 # Checks a password for the lock screen, through the unlock helper.
 bounded-command = { path = "../../system/bounded-command" }
 zeroize.workspace = true
+chrono = { workspace = true, default-features = true }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 os-actions = { path = "../../system/os-actions" }
 serde.workspace = true
@@ -73,7 +80,6 @@ tilo-test-env = { path = "../../dev/test-env" }
 futures-util.workspace = true
 tempfile.workspace = true
 url.workspace = true
-media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }
 tempfile.workspace = true

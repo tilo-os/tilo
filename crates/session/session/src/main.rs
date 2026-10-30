@@ -26,7 +26,7 @@ fn main() -> std::process::ExitCode {
     use tilo_session::{Options, Session};
     use tilo_session::{Options, Session, SessionConfig, SessionEnvironment};
     use tilo_session::desktop_services::{Bus, Buses};
-    use tilo_session::{Options, Session, SessionEnvironment};
+    use tilo_session::{Options, Session};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -73,6 +73,21 @@ fn main() -> std::process::ExitCode {
         }))),
         session_actions: os_actions::perform_session_action,
         search: search_options(),
+    // The portal's side of the desktop, which the session answers.
+    let (portal_side, link) = tilo_session::portal_link::channel(wake.handle());
+    let desktop = desktop_services(
+        &buses,
+        &wake,
+        Arc::new(capture),
+        &portal_side,
+        &mut services,
+    );
+    // Where input captures and the shared screens are is the portal's: its
+    // capture broker tells them what the session's seat and outputs are.
+    let portal = desktop
+        .as_ref()
+        .and_then(|desktop| desktop.portal())
+        .map(|serving| link.with_captures(serving.input_captures().clone()));
     let options = Options {
         config: SessionConfig::load(),
     let (mut services, _following) = services();
@@ -94,6 +109,8 @@ fn main() -> std::process::ExitCode {
         wake,
         setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
         captures: Some(captures),
+        desktop,
+        portal,
         ..device_options()
     };
     let started = match backend {
@@ -106,13 +123,26 @@ fn main() -> std::process::ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut session = match started {
+    let session = match started {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
             return ExitCode::FAILURE;
         }
     };
+    run(session, ours, command)
+}
+
+/// `session` running until `command` exits, its displays printed.
+#[cfg(target_os = "linux")]
+fn run(
+    mut session: tilo_session::Session,
+    ours: &[String],
+    command: &[String],
+) -> std::process::ExitCode {
+    use std::process::ExitCode;
+    use tilo_session::SessionEnvironment;
+
     let socket = match session.compositor().listen() {
         Ok(socket) => socket,
         Err(error) => {
@@ -135,12 +165,11 @@ fn main() -> std::process::ExitCode {
     let mut child = command
         .split_first()
         .and_then(|(program, rest)| start_command(program, rest, &socket, x11_display.as_deref()));
-    let result = session.run(|_| {
+    match session.run(|_| {
         child
             .as_mut()
             .is_some_and(|child| child.try_wait().is_ok_and(|status| status.is_some()))
-    });
-    match result {
+    }) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -170,12 +199,18 @@ fn desktop_services(
     buses: &tilo_session::desktop_services::Buses,
     wake: &tilo_service::LoopWake,
     capture: std::sync::Arc<dyn tilo_portal::Capture>,
+    side: &tilo_session::portal_link::PortalSide,
     services: &mut Vec<Box<dyn tilo_session::Service>>,
-) -> Option<tilo_session::desktop_services::DesktopServices> {
-    match tilo_session::desktop_services::DesktopServices::start(buses, &wake.handle(), capture) {
+) -> Option<std::rc::Rc<tilo_session::desktop_services::DesktopServices>> {
+    match tilo_session::desktop_services::DesktopServices::start(
+        buses,
+        &wake.handle(),
+        capture,
+        side,
+    ) {
         Ok(desktop) => {
             services.extend(desktop.services());
-            Some(desktop)
+            Some(std::rc::Rc::new(desktop))
         }
         Err(error) => {
             tracing::warn!(%error, "the desktop services did not start");

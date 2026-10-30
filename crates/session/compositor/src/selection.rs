@@ -103,6 +103,9 @@ pub(crate) struct Selections {
     ext: ExtDataControlState,
     /// The formats each selection offers, whoever owns it.
     offered: [Vec<String>; 2],
+    /// How often each selection changed hands: a snapshot of `offered`
+    /// and this number tells a new selection from none.
+    changes: [u64; 2],
 }
 
 impl Selections {
@@ -119,14 +122,33 @@ impl Selections {
             wlr: DataControlState::new::<State, _>(display, Some(primary), trusted),
             ext: ExtDataControlState::new::<State, _>(display, Some(primary), trusted),
             offered: [Vec::new(), Vec::new()],
+            changes: [0; 2],
         }
     }
 
-    fn offered_mut(&mut self, selection: Selection) -> &mut Vec<String> {
-        let [clipboard, primary] = &mut self.offered;
+    /// Who offers `selection` now, as a number that changes with every
+    /// selection that is set or dropped.
+    pub(crate) fn changes(&self, selection: Selection) -> u64 {
+        let [clipboard, primary] = self.changes;
         match selection {
             Selection::Clipboard => clipboard,
             Selection::Primary => primary,
+        }
+    }
+
+    /// `selection` now offers `mimes`.
+    fn set_offered(&mut self, selection: Selection, mimes: Vec<String>) {
+        let [clipboard, primary] = &mut self.offered;
+        let [changed_clipboard, changed_primary] = &mut self.changes;
+        match selection {
+            Selection::Clipboard => {
+                *clipboard = mimes;
+                *changed_clipboard = changed_clipboard.wrapping_add(1);
+            }
+            Selection::Primary => {
+                *primary = mimes;
+                *changed_primary = changed_primary.wrapping_add(1);
+            }
         }
     }
 
@@ -226,6 +248,10 @@ impl State {
                     Selection::Primary => clear_primary_selection(&display, &self.seat),
                 }
                 self.offer_to_x11(selection, None);
+                // A cleared selection offers nothing: whoever watches the
+                // formats sees the bytes are gone, as they do when a client
+                // drops its own.
+                self.selections.set_offered(selection, Vec::new());
             }
             return;
         };
@@ -240,7 +266,7 @@ impl State {
             }
         }
         self.offer_to_x11(selection, Some(mimes.clone()));
-        *self.selections.offered_mut(selection) = mimes;
+        self.selections.set_offered(selection, mimes);
     }
 
     /// Who serves `selection`, when the compositor set it.
@@ -350,7 +376,7 @@ impl State {
                 set_primary_selection(&display, &self.seat, mimes.clone(), Served::X11);
             }
         }
-        *self.selections.offered_mut(selection) = mimes;
+        self.selections.set_offered(selection, mimes);
     }
 
     /// An X11 client dropped `selection`; cleared if it still owns it.
@@ -363,7 +389,7 @@ impl State {
             Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
             Selection::Primary => clear_primary_selection(&display, &self.seat),
         }
-        self.selections.offered_mut(selection).clear();
+        self.selections.set_offered(selection, Vec::new());
     }
 
     /// Send keyboard focus's client the selections (`wl_data_device` and
@@ -395,7 +421,8 @@ impl SelectionHandler for State {
         _seat: Seat<Self>,
     ) {
         let mimes = source.map(|source| source.mime_types());
-        *self.selections.offered_mut(ty.into()) = mimes.clone().unwrap_or_default();
+        self.selections
+            .set_offered(ty.into(), mimes.clone().unwrap_or_default());
         self.offer_to_x11(ty.into(), mimes);
     }
 

@@ -60,6 +60,7 @@ mod xdnd_bridge;
 mod xwayland;
 
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::generic::Generic;
@@ -82,8 +83,8 @@ pub use effects::{WindowEffect, WindowPicture};
 pub use host::{CursorIcon, HostDrag, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
-    GestureEvent, HostKey, InputEvent, KeyModifiers, PadAction, Switch, TabletEvent,
-    TabletPadEvent, TabletPhase,
+    GestureEvent, HostKey, InputEvent, KeyModifiers, ObservedInput, PadAction, Switch,
+    TabletEvent, TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig, OutputInfo};
@@ -115,6 +116,17 @@ impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<capture::CaptureError> for Error {
+    fn from(error: capture::CaptureError) -> Self {
+        match error {
+            capture::CaptureError::Backend(error) => Self::Backend(error),
+            other @ capture::CaptureError::Buffer(_) => {
+                Self::Backend(BackendError(other.to_string()))
+            }
+        }
     }
 }
 
@@ -247,7 +259,10 @@ impl Compositor {
         let (ours, theirs) = UnixStream::pair()?;
         self.display
             .handle()
-            .insert_client(ours, state::client_data(false))
+            .insert_client(
+                ours,
+                state::client_data(false, std::sync::Arc::clone(&self.data.state.exited)),
+            )
             .map_err(io)?;
         Ok(theirs)
     }
@@ -258,7 +273,10 @@ impl Compositor {
         let (ours, theirs) = UnixStream::pair()?;
         self.display
             .handle()
-            .insert_client(ours, state::client_data(true))
+            .insert_client(
+                ours,
+                state::client_data(true, std::sync::Arc::clone(&self.data.state.exited)),
+            )
             .map_err(io)?;
         Ok(theirs)
     }
@@ -282,11 +300,10 @@ impl Compositor {
         self.event_loop
             .handle()
             .insert_source(source, |stream, (), data| {
-                if let Err(error) = data
-                    .state
-                    .display
-                    .insert_client(stream, state::client_data(false))
-                {
+                if let Err(error) = data.state.display.insert_client(
+                    stream,
+                    state::client_data(false, std::sync::Arc::clone(&data.state.exited)),
+                ) {
                     tracing::warn!(%error, "client not accepted");
                 }
             })
@@ -569,6 +586,14 @@ impl Compositor {
         }
     }
 
+    /// How often `selection` changed hands: with
+    /// [`Compositor::selection_formats`], tells a selection that was
+    /// replaced by one offering the same formats from one that stayed.
+    #[must_use]
+    pub fn selection_changes(&self, selection: Selection) -> u64 {
+        self.data.state.selections.changes(selection)
+    }
+
     /// The formats `selection` offers now, whoever owns it.
     pub fn selection_formats(&self, selection: Selection) -> Vec<String> {
         self.data.state.selections.offered(selection).to_vec()
@@ -767,6 +792,50 @@ impl Compositor {
         backend.set_input_config(state, config);
     }
 
+    /// Where the pointer is in the layout.
+    #[must_use]
+    pub fn pointer_location(&self) -> (f64, f64) {
+        let pointer = self.data.state.pointer;
+        (pointer.x, pointer.y)
+    }
+
+    /// Give every input to `observer` before the desktop sees it; what it
+    /// takes (returns `true` for) is not routed. An input capture takes the
+    /// input while it holds the person's keyboard and pointer.
+    pub fn set_input_observer(
+        &mut self,
+        observer: Option<Arc<dyn Fn(ObservedInput) -> bool + Send + Sync>>,
+    ) {
+        self.data.state.input_observer = observer;
+    }
+
+    /// The mapped windows an app may capture: its foreign-toplevel
+    /// identifier, app id and title, bottom first.
+    #[must_use]
+    pub fn shareable_windows(&self) -> Vec<(String, Option<String>, String)> {
+        self.data
+            .state
+            .capture
+            .shareable_windows()
+            .into_iter()
+            .map(|(identifier, info)| (identifier, info.app_id, info.title.unwrap_or_default()))
+            .collect()
+    }
+
+    /// Where a shareable window (`Compositor::shareable_windows`'s
+    /// identifier) is in the layout.
+    #[must_use]
+    pub fn shareable_window_rect(&self, identifier: &str) -> Option<(i32, i32, i32, i32)> {
+        self.data.state.shareable_window_rect(identifier)
+    }
+
+    /// The evdev code of a key of the active layout that produces
+    /// `keysym`; `None` when the layout cannot type it.
+    #[must_use]
+    pub fn keycode_for_keysym(&mut self, keysym: u32) -> Option<u32> {
+        self.data.state.keycode_for_keysym(keysym)
+    }
+
     /// Route one input event (see [`InputEvent`]) and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         self.data.state.handle_input(event);
@@ -794,9 +863,21 @@ impl Compositor {
         Ok(())
     }
 
+    /// What an output (or part of one) or a window shows now, read back as
+    /// rows of R, G, B, A: what a share stream pushes.
+    pub fn read_back(&mut self, target: &capture::Target) -> Result<Screenshot, Error> {
+        Ok(self.data.backend.read_back(&mut self.data.state, target)?)
+    }
+
     /// The last frame drawn on the output named `name`.
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(name)?)
+    }
+
+    /// The processes whose clients disconnected since the last look: the
+    /// apps that exited.
+    pub fn take_exited_pids(&mut self) -> Vec<u32> {
+        self.data.state.take_exited_pids()
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,
@@ -818,6 +899,13 @@ impl Compositor {
     /// The window with keyboard focus.
     pub fn focused_window(&self) -> Option<WindowInfo> {
         self.data.state.focused_window()
+    }
+
+    /// An activation token for something the session itself did (the
+    /// person chose a notification, so its app should come to the front):
+    /// handing it to the app lets that app raise its window.
+    pub fn activation_token(&mut self) -> String {
+        self.data.state.protocols.external_activation_token()
     }
 
     /// A waker for the loop, from any thread: waking it ends the wait of

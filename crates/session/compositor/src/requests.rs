@@ -102,7 +102,7 @@ impl State {
         request: &WindowRequest,
         serial: Option<Serial>,
     ) {
-        let Some(info) = crate::state::describe(window) else {
+        let Some(info) = crate::state::describe(&self.display, window) else {
             return;
         };
         if !self.policy.request(&info, request) {

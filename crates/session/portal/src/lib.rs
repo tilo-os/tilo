@@ -345,6 +345,14 @@ impl Portal {
         &self.app_states
     }
 
+    /// The same, letting what `grants` says of a caller's workspace stand
+    /// for the person's answer to an access question.
+    #[must_use]
+    pub fn with_consent_grants(mut self, grants: consent::WorkspaceGrants) -> Self {
+        self.consents = self.consents.clone().with_grants(grants);
+        self
+    }
+
     /// The same, keeping access answered for good in `consents`.
     #[must_use]
     pub fn with_consents(mut self, consents: Consents) -> Self {

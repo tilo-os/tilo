@@ -203,6 +203,22 @@ impl XdgDecorationHandler for State {
     }
 }
 
+impl Protocols {
+    /// A token for an activation the session itself caused (the person
+    /// chose a notification, so its app should come to the front): handing
+    /// it to that app lets it raise its window the way a click on a fresh
+    /// window would, without the app having to be linked to an input event
+    /// it never saw.
+    pub(crate) fn external_activation_token(&mut self) -> String {
+        let data = XdgActivationTokenData {
+            timestamp: std::time::Instant::now(),
+            ..XdgActivationTokenData::default()
+        };
+        let (token, _) = self.activation.create_external_token(Some(data));
+        token.as_str().to_owned()
+    }
+}
+
 impl XdgActivationHandler for State {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.protocols.activation

@@ -124,6 +124,7 @@ impl State {
                     .space
                     .output_geometry(output)
                     .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)),
+                description: Some(output.description()),
             })
             .chain(
                 self.disabled_outputs
@@ -134,6 +135,7 @@ impl State {
                         label: crate::output::monitor_of(output).1,
                         enabled: false,
                         rect: None,
+                        description: Some(output.description()),
                     }),
             )
             .collect()

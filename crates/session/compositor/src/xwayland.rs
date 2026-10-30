@@ -141,6 +141,14 @@ impl XwmHandler for State {
 
     fn destroyed_window(&mut self, _xwm: XwmId, surface: X11Surface) {
         self.unmap(&surface);
+        // An X11 app has no client of its own here: its window going says
+        // it exited.
+        if !surface.is_override_redirect()
+            && let Some(pid) = surface.pid()
+            && let Ok(mut exited) = self.exited.lock()
+        {
+            exited.push(pid);
+        }
     }
 
     fn configure_request(

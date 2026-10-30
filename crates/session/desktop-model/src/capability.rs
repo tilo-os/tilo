@@ -157,6 +157,27 @@ impl Capability {
         }
     }
 
+    /// The device this capability grants (`camera`, `screencast`, …): what
+    /// the portal's access questions name it by. `None` for what is not a
+    /// device (a path, a host).
+    #[must_use]
+    pub const fn device_scope(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Camera { .. } => "camera",
+            Self::Microphone { .. } => "microphone",
+            Self::Screencast { .. } => "screencast",
+            Self::RemoteDesktop { .. } => "remote-desktop",
+            Self::Print { .. } => "printer",
+            Self::HostShell { .. } => "host-shell",
+            Self::SystemInfo { .. } => "system-info",
+            Self::Processes { .. } => "processes",
+            Self::ProcessCommands { .. } => "process-commands",
+            Self::IoUring { .. } => "io-uring",
+            Self::DesktopControl { .. } => DESKTOP_CONTROL_DEVICE,
+            Self::Filesystem { .. } | Self::Network { .. } => return None,
+        })
+    }
+
     pub fn requested_expiry(&self) -> Expiry {
         match self {
             Capability::Filesystem { scope, .. }

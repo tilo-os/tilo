@@ -37,6 +37,14 @@ impl Toplevels {
         }
     }
 
+    /// The listed windows: their identifiers and what they say.
+    pub(crate) fn windows(&self) -> Vec<(String, &WindowInfo)> {
+        self.listed
+            .iter()
+            .map(|listed| (listed.handle.identifier(), &listed.info))
+            .collect()
+    }
+
     /// The window a handle's identifier names, while it is listed.
     pub(crate) fn window(&self, identifier: &str) -> Option<&Window> {
         self.listed
@@ -53,7 +61,7 @@ impl State {
         let windows: Vec<(Window, WindowInfo)> = self
             .space
             .elements()
-            .filter_map(|window| Some((window.clone(), describe(window)?)))
+            .filter_map(|window| Some((window.clone(), describe(&self.display, window)?)))
             .collect();
         let Toplevels { state, listed } = &mut self.capture.toplevels;
         listed.retain(|listed| {
