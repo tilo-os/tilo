@@ -188,9 +188,9 @@ impl Hosted {
             .as_mut()?
             .as_any_mut()?
             .downcast_mut::<ui::app::EmbeddedApp>()?;
-        let origin = Widget::get_rect(app).origin().to_vec2();
+        let place = vello::kurbo::Affine::translate(Widget::get_rect(app).origin().to_vec2());
         let control = ui::widget::find_test_id(app.component_root_mut()?, id)?;
-        Some(control.get_rect() + origin)
+        Some(place.transform_rect_bbox(control.get_rect()))
     }
 }
 
