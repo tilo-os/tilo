@@ -71,12 +71,10 @@ Summary:
 - Not exposing MCP without a token, loopback included (the runtime refuses
   that: every process and account on the machine can reach a loopback port)
 - Not collapsing the agent into the home-peer principal: agents that need an
-  `AgentDelegation` still use the agents path in [`agents.md`](agents.md)
+  `AgentDelegation` still use the agents path
 
 ## Related
 
-- [`../runtime-mcp.md`](../runtime-mcp.md) — MCP tools, HTTP transport, profiles
 - [`os/containers/tilo-relay/README.md`](../../os/containers/tilo-relay/README.md) — home peer
 - [`os/containers/tilo-agent-host/README.md`](../../os/containers/tilo-agent-host/README.md) — Compose recipe
-- [`collaboration.md`](collaboration.md) — identity, Iroh, hosts
-- [`agents.md`](agents.md) — agent principals and MCP projection
+- [`workspace.md`](workspace.md) — members, devices and Iroh

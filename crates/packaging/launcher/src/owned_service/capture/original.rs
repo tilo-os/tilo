@@ -10,9 +10,9 @@ use std::{
     },
 };
 pub(in crate::owned_service) mod credentials;
-mod delayed_filter;
+use crate::owned_service::delayed_filter;
 mod roots;
-mod workspace;
+use crate::owned_service::workspace;
 pub(super) use roots::reserved_fd;
 pub use roots::{
     OriginalMountedBinding, OriginalMountedIdentity, OriginalMountedInput,
@@ -27,6 +27,16 @@ const NS: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
 fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
+const WORKSPACE: workspace::Layout = workspace::Layout {
+    label: "Original reader",
+    person: workspace::Person::Delegated,
+    root,
+};
+const BASELINE: delayed_filter::Custody = delayed_filter::Custody {
+    label: "Original",
+    memfd: c"tilo-original-baseline",
+    root,
+};
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Stage {
     ReceiveBootstrap,
@@ -75,7 +85,7 @@ impl Facts {
         match (self.roots.is_empty(), self.baseline_filter.as_ref()) {
             (true, None) => Ok(None),
             (false, Some(binding)) => {
-                binding.validate()?;
+                binding.validate(BASELINE)?;
                 Ok(Some(binding))
             }
             _ => Err(refused("Original projection baseline admission differs")),
@@ -98,7 +108,7 @@ impl Facts {
             return Err(refused("Original-source credential token is not canonical"));
         }
         if let Some(binding) = &self.baseline_filter {
-            binding.validate()?;
+            binding.validate(BASELINE)?;
         }
         roots::validate(&self.roots)?;
         if let Some(expected) = self.mounted_table_sha256 {
@@ -285,7 +295,7 @@ impl Bootstrap {
             .as_ref()
             .ok_or_else(|| refused("Original root custody is absent"))?
             .prepare_launch()?;
-        let filter = delayed_filter::Filter::capture(baseline)?;
+        let filter = delayed_filter::Filter::capture(BASELINE, baseline)?;
         let mut facts = self.facts.clone();
         facts.roots = roots.projections();
         facts.baseline_filter = Some(filter.binding());
@@ -328,7 +338,17 @@ impl Bootstrap {
         if held.is_some() {
             return Err(refused("Worker workspace was already prepared"));
         }
-        *held = Some(workspace::prepare(root, &self.facts)?);
+        *held = Some({
+            self.facts.validate()?;
+            workspace::prepare(
+                WORKSPACE,
+                root,
+                workspace::Owner {
+                    uid: self.facts.uid,
+                    gid: self.facts.gid,
+                },
+            )?
+        });
         drop(held);
         Ok(())
     }
@@ -516,7 +536,7 @@ pub(crate) fn enter(keep: &mut Vec<i32>) -> io::Result<()> {
         .map(|binding| {
             phase(
                 Stage::ReceiveBaseline,
-                delayed_filter::Filter::receive(binding),
+                delayed_filter::Filter::receive(BASELINE, binding),
             )
         })
         .transpose()?;

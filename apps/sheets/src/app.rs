@@ -35,7 +35,6 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{
     Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, MenuItem as Row, Popover,
     PopoverSide, TextInput, Widget,
@@ -223,8 +222,8 @@ struct SettingChip {
 }
 
 /// The four extra parameters `Widget::handle_event` receives that only the
-/// command palette's own [`Widget::handle_event`] delegation needs, bundled
-/// so [`SheetsApp::handle_keyboard_input`] stays within the argument-count
+/// inline editors' own [`Widget::handle_event`] delegation needs, bundled
+/// so [`SheetsApp::route_inline_editor`] stays within the argument-count
 /// limit.
 struct PaletteRouteCtx<'a> {
     path: &'a ObjId,
@@ -517,9 +516,9 @@ pub struct SheetsApp {
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
     clipboard: Option<ClipboardGrid>,
-    /// The Ctrl+K command palette overlay. Seeded with the app's action set
-    /// each time it opens; closed by default.
-    palette: CommandPalette,
+    /// Opens the host's search: Ctrl+K's palette over the workbook's
+    /// actions, or one action asking for its argument.
+    search: ui::search::SearchOpener,
     /// The workbook's dispatcher: every edit is a field edit or a verb
     /// submitted here, checked, applied, undone and replayed like the
     /// palette's and an agent's. `None` until the view attaches the
@@ -820,10 +819,6 @@ impl Widget for SheetsApp {
         self.paint_overlays(scene, transform, text_renderer, theme, presence);
     }
 
-    fn set_motion_reduced(&mut self, reduced: bool) {
-        self.palette.set_motion_reduced(reduced);
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // A row or column arriving moves until it rests.
         self.grid.is_animating()
@@ -929,7 +924,6 @@ impl Widget for SheetsApp {
                 self.handle_left_press(
                     *event_ctx.modifiers,
                     &mut event_ctx.state,
-                    event_ctx.path,
                     event_ctx.handled,
                 );
             }
@@ -963,26 +957,18 @@ impl Widget for SheetsApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta, event_ctx.scale_factor, event_ctx.handled);
             }
-            WindowEvent::Ime(ime) if !self.palette.is_open() => {
+            WindowEvent::Ime(ime) => {
                 if self.grid.ime(ime) {
                     self.pending.redraw = true;
                     *event_ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { .. } => {
-                let mut ctx = PaletteRouteCtx {
-                    path: event_ctx.path,
-                    focus_target: event_ctx.focus_target,
-                    node_id: event_ctx.node_id,
-                    taffy: event_ctx.taffy,
-                };
                 self.handle_keyboard_input(
                     event,
-                    event_ctx.scale_factor,
                     *event_ctx.modifiers,
                     &mut event_ctx.state,
                     event_ctx.handled,
-                    &mut ctx,
                 );
             }
             _ => {}
@@ -995,12 +981,10 @@ impl Widget for SheetsApp {
 
     /// The grid owns Tab, as every spreadsheet's does: it commits the cell
     /// and moves right (Shift+Tab left) instead of handing focus to the next
-    /// control. An open palette, settings sheet or name-box edit leaves Tab
-    /// to the host's focus order.
+    /// control. An open settings sheet or name-box edit leaves Tab to the
+    /// host's focus order.
     fn wants_tab_input(&self) -> bool {
-        !self.palette.is_open()
-            && self.settings_panel == SettingsPanel::None
-            && self.name_box_edit.is_none()
+        self.settings_panel == SettingsPanel::None && self.name_box_edit.is_none()
     }
 
     /// A cell being edited takes input-method composition.
@@ -1387,15 +1371,11 @@ impl ui::presence::capability::PublishesPresence for SheetsApp {
 
 impl ui::widget::controls::ActionControls for SheetsApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation()
+        self.search.take()
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         use ui::widget::Widget as _;
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        if self.palette.is_open() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
+        ui::widget::semantic_action_bindings(self.accessibility())
     }
 }
 

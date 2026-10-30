@@ -3,7 +3,6 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -101,30 +100,5 @@ class UploadTransport(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid package publication credential"):
                 publisher.upload(Path("/tmp/reviewed-model.bin"), "https://code.tilo.so/model", "bad\nheader")
             run.assert_not_called()
-
-
-class PublicationCredentialContract(unittest.TestCase):
-    def test_publication_uses_existing_package_scoped_credential(self):
-        root = Path(__file__).resolve().parents[2]
-        sys.path.insert(0, str(root / "tools/ci"))
-        import t_matrix
-
-        checks = {check["name"]: check for check in t_matrix.checks(root)}
-        publish = checks["publish-model-catalog"]
-        self.assertEqual(publish["secrets"], ["REGISTRY_TOKEN"])
-        self.assertEqual(publish["run"], "bash tools/release/local-model-catalog.sh publish /target/model-catalog/signed")
-        # Only the signing checks hold the catalog seed; the publisher holds only the package token.
-        for name in ("sign-model-catalog", "review-model-catalog"):
-            self.assertNotIn("REGISTRY_TOKEN", checks[name]["secrets"])
-        # Dev images' catalog is signed with a throwaway key; main publishes its runtimes with
-        # the dev package token, never a release secret.
-        for arch in ("x86_64", "aarch64"):
-            self.assertFalse(checks[f"model-catalog-dev-{arch}"].get("secrets"))
-            self.assertEqual(checks[f"publish-model-runtime-llama-cpp-cpu-{arch}"]["secrets"], ["TILO_PACKAGES_TOKEN"])
-        script = (root / "tools/release/local-model-catalog.sh").read_text()
-        step = script.split("\n  publish)\n", 1)[1].split("\n    ;;", 1)[0]
-        self.assertIn('PACKAGE_TOKEN=$REGISTRY_TOKEN python3 -I tools/release/publish_speech_artifacts.py', step)
-        self.assertNotIn("RELEASE_TOKEN", script)
-
 if __name__ == "__main__":
     unittest.main()

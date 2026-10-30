@@ -948,6 +948,10 @@ impl LiveAppActionsProvider {
         let mut entries = broker
             .surfaces()
             .into_iter()
+            // The palette lists the shell's own actions from their
+            // declarations, as it does in a session that mounts no apps;
+            // agents and other devices reach them through the published app.
+            .filter(|surface| surface.app_id != crate::shell::actions::host::APP_ID)
             .filter(|surface| match scope.scope {
                 crate::shell::chrome_state::SearchScope::All => true,
                 crate::shell::chrome_state::SearchScope::Workspace => {
@@ -2645,6 +2649,27 @@ impl SearchProvider for LiveAppActionsProvider {
         self.row_picture(&result.id).1
     }
 
+    fn toggles_in_place(&self, result: &SearchResult) -> bool {
+        self.published_entry(&result.id, |action| action.state.toggles)
+            .unwrap_or(false)
+    }
+
+    /// An action with nothing to act on now (closing a sheet that is not
+    /// open) takes no row from one that would do something: it is offered
+    /// only when the query names it exactly, where running it says why not.
+    fn hidden_from_people(
+        &self,
+        result: &SearchResult,
+        needle: &str,
+        _chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> bool {
+        self.published_entry(&result.id, |action| {
+            !action.contract.availability.is_available()
+        })
+        .unwrap_or(false)
+            && tilo_search::fold(needle.trim()) != tilo_search::fold(&result.title)
+    }
+
     fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
         let mut parts = id.split(ID_SEPARATOR);
         if parts.next()? == "directory" {
@@ -2930,7 +2955,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 let open_start = Rc::clone(&start);
                 let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
-                    shortcut: None,
+                    shortcut: action.state.shortcut.clone(),
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
                     provider_id: PROVIDER_ID.to_string(),
@@ -2945,7 +2970,7 @@ impl SearchProvider for LiveAppActionsProvider {
                     } else {
                         Vec::new()
                     },
-                    badge: None,
+                    badge: action.state.badge.clone(),
                     score,
                     params,
                     contract: Some(action.contract.clone()),
@@ -3962,6 +3987,7 @@ mod tests {
 
     pub(super) fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
         tilo_actions::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(format!("resource:{action}"), action),
             resource_kind: "fixture".into(),
@@ -4204,6 +4230,7 @@ mod tests {
 
     pub(super) fn local_action(label: &str, action: &str) -> PublishedAction {
         PublishedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: format!("resource:{action}"),
             action: action.into(),
@@ -5317,8 +5344,8 @@ mod tests {
         room: &str,
         resource: &str,
         title: &str,
-    ) -> std::sync::Arc<crate::shell::search::app_content_index::AppContentIndex> {
-        use crate::shell::search::app_content_index::{AppContentIndex, SlotKey};
+    ) -> std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex> {
+        use tilo_desktop_search::content_index::{AppContentIndex, SlotKey};
         use ui::search::index_publication::{IndexDelta, IndexEntry};
 
         let index = std::sync::Arc::new(AppContentIndex::in_memory());

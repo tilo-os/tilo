@@ -6,7 +6,6 @@
 //! secrets beside it land in access logs. This module is the only parser and
 //! formatter for the grammar. The page reaches it through the runtime's wasm
 //! exports instead of keeping a second implementation that could drift.
-//! See `docs/architecture/web-routing.md`.
 
 mod encode;
 mod entry;

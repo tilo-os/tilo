@@ -20,7 +20,7 @@
 //! Every enforcer reads this grammar through [`EgressPolicy`]: the
 //! launcher's gate (apps, Windows capsules, the Windows guest relay) and
 //! `tilo-egress`'s DNS stub (environments, builds). They differ in backend
-//! only; `docs/architecture/security.md` says which sandbox uses which.
+//! only.
 
 use std::fmt;
 use std::net::IpAddr;

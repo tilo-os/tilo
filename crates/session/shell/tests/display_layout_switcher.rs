@@ -472,6 +472,7 @@ fn identify_puts_a_numbered_card_on_every_display() {
             shell::shell::display_identify::card_rect(
                 output,
                 (card.width(), card.height()),
+                f64::from(ui::tokens::Spacing::BASE.s6),
                 top_band,
                 window
             ),

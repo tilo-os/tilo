@@ -19,6 +19,9 @@ linux_type=0fc63daf-8483-4772-8e79-3d69d8477de4
 
 # Fixture lsblk: the boot ESP's parent disk is TILO_ROOT_TEST_DISK and its
 # partitions are TILO_ROOT_TEST_PARTS, space-separated NAME:PARTTYPE pairs.
+# As the real one, it has a partition's type from udev's database, so the type
+# reads as empty until udev has initialized that partition: the fixture udevadm
+# below initializes exactly the devices `udevadm wait --initialized=yes` names.
 cat >"$work/bin/lsblk" <<'EOF'
 #!/bin/bash
 case "$*" in
@@ -26,9 +29,23 @@ case "$*" in
   *NAME,TYPE,PARTTYPE*)
     printf '%s disk\n' "$TILO_ROOT_DEVROOT/$TILO_ROOT_TEST_DISK"
     for part in $TILO_ROOT_TEST_PARTS; do
-      printf '%s part %s\n' "$TILO_ROOT_DEVROOT/${part%%:*}" "${part#*:}"
+      dev="$TILO_ROOT_DEVROOT/${part%%:*}" type=""
+      grep -qxF "$dev" "$TILO_TEST_UDEV_DB" 2>/dev/null && type="${part#*:}"
+      printf '%s part %s\n' "$dev" "$type"
+    done ;;
+  *NAME,TYPE*)
+    printf '%s disk\n' "$TILO_ROOT_DEVROOT/$TILO_ROOT_TEST_DISK"
+    for part in $TILO_ROOT_TEST_PARTS; do
+      printf '%s part\n' "$TILO_ROOT_DEVROOT/${part%%:*}"
     done ;;
 esac
+EOF
+cat >"$work/bin/udevadm" <<'EOF'
+#!/bin/bash
+[ "$1" = settle ] && exit 0
+[ "$1" = wait ] && [ "$2" = --initialized=yes ] && [ "$3" = -- ] || exit 64
+shift 3
+printf '%s\n' "$@" >>"$TILO_TEST_UDEV_DB"
 EOF
 cat >"$work/bin/cryptsetup" <<'EOF'
 #!/bin/bash
@@ -51,12 +68,13 @@ printf 'root=tilo-auto rw composefs=abc quiet tilo.install\n' >"$work/live-cmdli
 discover() {
   local kind="$1" disk="$2"
   shift 2
-  rm -rf "$work/run/tilo-root"
+  rm -rf "$work/run/tilo-root" "$work/udev-db"
   env TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
     TILO_ROOT_CMDLINE_FILE="$work/$kind-cmdline" \
     TILO_ROOT_TEST_DISK="$disk" TILO_ROOT_TEST_PARTS="$*" \
     TILO_ROOT_DEVROOT="$work/dev" TILO_ROOT_RUNTIME="$work/run" \
     TILO_ROOT_LSBLK="$work/bin/lsblk" TILO_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
+    TILO_ROOT_UDEVADM="$work/bin/udevadm" TILO_TEST_UDEV_DB="$work/udev-db" \
     TILO_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/tilo-root-discover"
 }
 # expect_root NAME KIND DISK PARTS...: the resolver selects exactly NAME.
@@ -84,6 +102,13 @@ esp="esp:$esp_type"
 expect_root tilo-root installed disk0 "$esp" "linux-root:$linux_type" "tilo-root:$tilo_type"
 expect_root tilo-root installed disk0 "$esp" "tilo-root:${tilo_type^^}"
 echo 'ok: foreign Linux roots are ignored; the same-disk Tilo root is selected'
+
+# The partition types are read only once udev has initialized every partition
+# of the ESP's disk, not just the ESP whose link was found.
+expect_root tilo-root installed disk0 "$esp" "linux-root:$linux_type" "tilo-root:$tilo_type"
+printf '%s\n' "$work/dev/esp" "$work/dev/linux-root" "$work/dev/tilo-root" >"$work/expected-udev-db"
+cmp "$work/expected-udev-db" "$work/udev-db"
+echo 'ok: the root is looked for once udev has initialized every partition of the boot ESP disk'
 
 expect_refusal 'expected exactly one Tilo root.*found 2' installed disk0 \
   "$esp" "tilo-root:$tilo_type" "tilo-root-2:$tilo_type"
@@ -121,20 +146,67 @@ echo 'ok: an unreadable kernel command line fails closed'
 
 printf 'root=tilo-auto quiet\n' >"$work/cmdline"
 : >"$work/initrd-release"
-mkdir -p "$work/generator"
-TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/initrd-release" \
-  "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator"
-grep -q 'What=/run/tilo-root/device' "$work/generator/sysroot.mount"
-grep -q 'ExecStart=/usr/libexec/tilo-root-discover' "$work/generator/tilo-root-discover.service"
-grep -qx 'RemainAfterExit=yes' "$work/generator/tilo-root-discover.service"
+# A generator is run with systemd's normal, early and late directories.
+root_generator() {
+  local dirs="$1" release="$2"
+  mkdir -p "$dirs/normal" "$dirs/early" "$dirs/late"
+  TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$release" \
+    "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" \
+    "$dirs/normal" "$dirs/early" "$dirs/late"
+}
+fstab_generator() {
+  local dirs="$1"
+  mkdir -p "$dirs/normal" "$dirs/early" "$dirs/late"
+  : >"$work/fstab"
+  SYSTEMD_PROC_CMDLINE="$(cat "$work/cmdline")" SYSTEMD_IN_INITRD=1 SYSTEMD_LOG_LEVEL=err \
+    SYSTEMD_FSTAB="$work/fstab" SYSTEMD_SYSROOT_FSTAB="$work/fstab" \
+    /usr/lib/systemd/system-generators/systemd-fstab-generator \
+    "$dirs/normal" "$dirs/early" "$dirs/late"
+}
+# The unit file systemd loads: the first on its unit path, where the early
+# directory comes before the normal one and the late one comes last.
+loaded() {
+  local dir
+  for dir in early normal late; do
+    [ -e "$1/$dir/$2" ] && { printf '%s\n' "$1/$dir/$2"; return 0; }
+  done
+  return 1
+}
+root_generator "$work/generator" "$work/initrd-release"
+grep -q 'What=/run/tilo-root/device' "$(loaded "$work/generator" sysroot.mount)"
+grep -q 'ExecStart=/usr/libexec/tilo-root-discover' \
+  "$(loaded "$work/generator" tilo-root-discover.service)"
+grep -qx 'RemainAfterExit=yes' "$(loaded "$work/generator" tilo-root-discover.service)"
 echo 'ok: target-independent initrd units generated'
+
+# systemd runs its generators alongside, and systemd-fstab-generator makes a
+# sysroot.mount of its own out of root=tilo-auto (What=tilo-auto) in the normal
+# directory. Whichever order the two run in, and were they to run at once, no
+# file is written by both, and the root's units are the ones systemd loads.
+[ -x /usr/lib/systemd/system-generators/systemd-fstab-generator ] \
+  || { echo 'systemd-fstab-generator is missing; this suite needs systemd' >&2; exit 1; }
+[ -z "$(ls -A "$work/generator/normal")" ]
+[ -z "$(ls -A "$work/generator/late")" ]
+fstab_generator "$work/fstab-only"
+grep -qx 'What=tilo-auto' "$work/fstab-only/normal/sysroot.mount"
+for order in fstab-first root-first; do
+  dirs="$work/both-$order"
+  if [ "$order" = fstab-first ]; then
+    fstab_generator "$dirs"; root_generator "$dirs" "$work/initrd-release"
+  else
+    root_generator "$dirs" "$work/initrd-release"; fstab_generator "$dirs"
+  fi
+  cmp "$work/fstab-only/normal/sysroot.mount" "$dirs/normal/sysroot.mount"
+  cmp "$work/generator/early/sysroot.mount" "$(loaded "$dirs" sysroot.mount)"
+  cmp "$work/generator/early/tilo-root-discover.service" \
+    "$(loaded "$dirs" tilo-root-discover.service)"
+done
+echo 'ok: no unit file is shared with systemd-fstab-generator, and the root units win in either order'
 
 # The booted system runs its generators with the same command line; the root is
 # already mounted there, and the units must not appear.
-mkdir -p "$work/generator-booted"
-TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/no-initrd-release" \
-  "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator-booted"
-[ -z "$(ls -A "$work/generator-booted")" ]
+root_generator "$work/generator-booted" "$work/no-initrd-release"
+[ -z "$(find "$work/generator-booted" -mindepth 2)" ]
 echo 'ok: no root discovery units outside the initrd'
 
 # Exercise the encrypted production path with an attach implementation that
@@ -189,6 +261,8 @@ EOF
 chmod +x "$work/bin/encrypted" "$work/bin/attach" "$work/bin/plymouth" "$work/bin/systemctl" \
   "$work/bin/sibling"
 encrypted_discover() {
+rm -f "$work/udev-db"
+TILO_ROOT_UDEVADM="$work/bin/udevadm" TILO_TEST_UDEV_DB="$work/udev-db" \
 TILO_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
 TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_TEST_DISK=disk0 \
 TILO_ROOT_TEST_PARTS="$esp tilo-root:$tilo_type" \

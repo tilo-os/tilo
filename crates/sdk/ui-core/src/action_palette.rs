@@ -1193,6 +1193,32 @@ impl ActionPalette {
         self.rebuild(&query);
     }
 
+    /// Show what `request` opens search on: one of the app's actions asking
+    /// for its arguments, starting from the query, else the part of the app
+    /// it narrows to with the query typed and the resource it names under
+    /// the cursor. Whether it asks for an action.
+    pub(crate) fn open_on(&mut self, request: &crate::search::SearchRequest) -> bool {
+        if let Some(address) = request.asked()
+            && self.activate_address(&address.resource, &address.action)
+        {
+            if let Some(query) = &request.query {
+                self.set_query(query);
+                self.select_query();
+            }
+            return true;
+        }
+        self.set_scope(request.resource_scope().cloned());
+        if let Some(query) = &request.query {
+            self.set_query(query);
+            self.select_query();
+        }
+        if let Some(anchor) = request.anchored() {
+            self.set_query(&anchor.query);
+            self.select_resource(&anchor.resource);
+        }
+        false
+    }
+
     /// The part of the app the palette is narrowed to.
     pub fn scope(&self) -> Option<&ScopeDecl> {
         self.scope.as_ref()
@@ -3045,19 +3071,22 @@ impl ActionPalette {
             return true;
         }
 
-        // Normal step: navigation keys + Enter drive the results view; every
-        // other key edits the query and re-runs the search.
-        let nav = matches!(
+        // Normal step: the list's keys move through the results, Enter
+        // drives the results view; every other key edits the query and
+        // re-runs the search.
+        let held = modifiers.state();
+        let caret = self.field.selection_anchor_focus_or_caret();
+        let end = self.field.value().len();
+        if self.results.handle_list_key(
             &key.logical_key,
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Enter)
-        );
-        if nav {
-            if matches!(
-                &key.logical_key,
-                Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown)
-            ) {
-                self.missing_selection = None;
-            }
+            held.shift_key(),
+            held.control_key() || held.super_key(),
+            (caret == (0, 0), caret == (end, end)),
+        ) {
+            self.missing_selection = None;
+            return true;
+        }
+        if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
             self.route_to_results(event, *modifiers, doc, path);
             self.poll_view_activation();
         } else {

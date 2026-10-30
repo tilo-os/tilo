@@ -362,8 +362,8 @@ app-sdk = { path = "../../app_sdk" }
             )
 
     def test_shared_runtime_build_is_handed_to_app_builds(self):
-        """tools/apps/t-release.sh thin-runtime builds the runtime and its engines once and t
-        hands its build directory to each size check, which compiles only its app on it."""
+        """The runtime and its engines build once, and each size check compiles only its app
+        on that build directory."""
         units = ["python3", "-I", str(ROOT / "tools/apps/thin_runtime_units.py")]
         target = self.root / "target"
         profile = target / "thin-app"

@@ -390,6 +390,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
     ACTIONS
         .iter()
         .map(|(action, label, description)| ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(RESOURCE_ID, *action),
             resource_kind: AGENT_TRANSFORM_KIND.to_string(),
@@ -410,6 +411,7 @@ pub fn descriptors() -> Vec<ActionDescriptor> {
 
 fn exported(descriptor: &ActionDescriptor) -> ExportedAction {
     ExportedAction {
+        state: tilo_actions::ActionState::default(),
         view: None,
         input: ExportedInput::None,
         ..ExportedAction::from(descriptor)

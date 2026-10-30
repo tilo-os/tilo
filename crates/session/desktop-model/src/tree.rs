@@ -152,6 +152,21 @@ impl DesktopTree {
         self.outputs.displays.len() >= 2
     }
 
+    /// Bring this device's display partition in line with the displays
+    /// now connected, primary first ([`OutputPartition::reconcile`]), and
+    /// give every group without a display the focused one. A partition is
+    /// kept once a second display has been seen; a device that only ever
+    /// had one display carries none. Returns whether the partition changed.
+    pub fn reconcile_displays(&mut self, displays: &[crate::partition::Display]) -> bool {
+        if displays.len() < 2 && self.outputs.is_empty() {
+            return false;
+        }
+        let before = self.outputs.clone();
+        self.outputs.reconcile(&self.workspaces, displays);
+        self.outputs.place_unhomed(&self.workspaces);
+        self.outputs != before
+    }
+
     /// The strip `display` shows in the active workspace. Every display
     /// shows a strip of its own: the focused display the active strip, any
     /// other the one it showed when focus left it, else the active strip.

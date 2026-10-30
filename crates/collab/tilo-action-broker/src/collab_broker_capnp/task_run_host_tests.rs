@@ -43,6 +43,7 @@ impl crate::services::HostStepServices for Desktop {
             keywords: Vec::new(),
             icon: None,
             description: None,
+            state: tilo_actions::ActionState::default(),
             locus: tilo_actions::ExecutionLocus::default(),
             kind: tilo_actions::OperationKind::View,
             contract: tilo_actions::ActionContract::view(),

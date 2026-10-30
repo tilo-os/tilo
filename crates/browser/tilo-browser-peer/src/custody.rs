@@ -75,6 +75,16 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn save_channels(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
+    /// The stored record of the rooms this device holds
+    /// ([`tilo_joined_room::NativeWorkspaceOwner`]), if any. A store
+    /// without it holds them for the session only.
+    fn load_rooms(&self) -> Option<Vec<u8>> {
+        None
+    }
+    /// Replace the stored record of the rooms this device holds.
+    fn save_rooms(&self, _bytes: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
     /// The key channel state is sealed under at rest, kept apart from that
     /// state: in the page, wrapped by a non-extractable `WebCrypto` key. A
     /// store without one seals channel state under a key of the session's
@@ -85,11 +95,21 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
 }
 
 /// An in-memory [`PeerStore`] for native peers and tests.
-pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>, Mutex<Option<Vec<u8>>>, [u8; 32]);
+pub struct MemoryPeerStore(
+    Mutex<Option<PeerRecord>>,
+    Mutex<Option<Vec<u8>>>,
+    [u8; 32],
+    Mutex<Option<Vec<u8>>>,
+);
 
 impl Default for MemoryPeerStore {
     fn default() -> Self {
-        Self(Mutex::default(), Mutex::default(), rand::random())
+        Self(
+            Mutex::default(),
+            Mutex::default(),
+            rand::random(),
+            Mutex::default(),
+        )
     }
 }
 
@@ -114,6 +134,15 @@ impl PeerStore for MemoryPeerStore {
 
     fn channel_vault(&self) -> Option<[u8; 32]> {
         Some(self.2)
+    }
+
+    fn load_rooms(&self) -> Option<Vec<u8>> {
+        self.3.lock_recover().clone()
+    }
+
+    fn save_rooms(&self, bytes: &[u8]) -> Result<(), String> {
+        *self.3.lock_recover() = Some(bytes.to_vec());
+        Ok(())
     }
 }
 

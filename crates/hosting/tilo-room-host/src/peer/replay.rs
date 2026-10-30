@@ -157,7 +157,9 @@ pub(super) async fn authorize_state_recipient(
 /// ([`Envelope::RoomBootstrap`]), in a room this relay governs or hosts for
 /// its governor: what a member device builds its replica from before it
 /// admits the replay. A peer relay federating the room keeps its own
-/// replica and gets none.
+/// replica and gets none; this relay's own device takes one wherever it
+/// connects, so that the app-serving peer of a host that may act as host
+/// decides its rooms like any other member.
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     workspace_id: u64,
     ws: &SharedWorkspace,
@@ -165,7 +167,9 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     session: &SessionCtx<'_>,
     write: &mut W,
 ) -> Result<(), PeerError> {
-    if peer.role == crate::auth::PeerRole::PeerRelay {
+    if peer.role == crate::auth::PeerRole::PeerRelay
+        && peer.device_public_key != *session.own_device_public_key
+    {
         return Ok(());
     }
     let (authority, hosted) = {

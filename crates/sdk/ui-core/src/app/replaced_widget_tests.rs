@@ -137,7 +137,7 @@ fn a_topology_poll_that_replaces_widgets_retires_nodes_before_pointer_queries() 
     assert!(app.forget_replaced_widgets());
     assert!(app.layout.node_map.is_empty());
     assert!(app.layout.structure_dirty);
-    assert!(app.tooltip_target_at(Point::new(10.0, 10.0)).is_none());
+    assert!(app.tooltip_placed_at(Point::new(10.0, 10.0)).is_none());
     assert!(app.resolve_cursor(Point::new(10.0, 10.0)).is_none());
     app.rebuild_structure();
     assert!(!app.layout.node_map.is_empty());
@@ -272,7 +272,7 @@ fn a_replacement_nobody_reports_leaves_no_node_pointing_at_it() {
         "a layout node still points at the replaced control"
     );
     assert!(app.layout.structure_dirty, "the next frame rebuilds");
-    assert!(app.tooltip_target_at(Point::new(10.0, 10.0)).is_none());
+    assert!(app.tooltip_placed_at(Point::new(10.0, 10.0)).is_none());
     app.rebuild_structure();
     assert_eq!(app.focusable_order.len(), 1, "the new control is laid out");
 }

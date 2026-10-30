@@ -23,6 +23,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat as _;
 use crate::presence::PresenceCtx;
 use crate::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
@@ -223,6 +224,12 @@ pub struct SearchResultsView {
     /// The modifier held now: a selected command row shows the activation
     /// it would choose.
     held: Option<ActivationModifier>,
+    /// Its owner holds the keyboard: the selected row is the focused one
+    /// to assistive technology.
+    focused: bool,
+    /// What to try instead when nothing matches: the empty state then
+    /// stands composed, a search glyph over its line and this hint.
+    empty_hint: Option<String>,
 }
 
 impl SearchResultsView {
@@ -246,7 +253,15 @@ impl SearchResultsView {
             group_gap: 0.0,
             highlight: String::new(),
             held: None,
+            focused: false,
+            empty_hint: None,
         }
+    }
+
+    /// Whether the owner of the list holds the keyboard, so assistive
+    /// technology reads the selected row as focused.
+    pub(crate) fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     /// Space above every group or section header that follows rows.
@@ -320,6 +335,12 @@ impl SearchResultsView {
     }
 
     /// Update the empty-state copy without rebuilding the shared result view.
+    /// What to try instead when nothing matches, read under the empty
+    /// line ([`Self::set_empty_text`]); `None` for the line alone.
+    pub(crate) fn set_empty_hint(&mut self, hint: Option<String>) {
+        self.empty_hint = hint;
+    }
+
     pub fn set_empty_text(&mut self, text: impl Into<String>) {
         self.empty_text = text.into();
     }
@@ -412,6 +433,20 @@ impl SearchResultsView {
         self.cursor = index.unwrap_or(usize::MAX);
         self.reveal = true;
         index.is_some()
+    }
+
+    /// Select the row whose `action_id` is `id`, when there is one.
+    pub(crate) fn select_action(&mut self, id: &str) -> bool {
+        let Some(index) = self
+            .flat
+            .iter()
+            .position(|&(group, row)| self.groups[group].results[row].action_id == id)
+        else {
+            return false;
+        };
+        self.cursor = index;
+        self.reveal = true;
+        true
     }
 
     pub fn selected(&self) -> Option<&SearchResult> {
@@ -584,6 +619,75 @@ impl SearchResultsView {
         match (shown.first(), shown.last()) {
             (Some(&first), Some(&last)) => first..last.saturating_add(1),
             _ => 0..0,
+        }
+    }
+
+    /// Moves through the results: arrows step and wrap, Page keys move a
+    /// view's worth, Tab and Shift+Tab jump to the next and previous
+    /// group, and Home and End reach the first and last result when the
+    /// owner's caret has nowhere left to go in its field (`caret_at_ends`:
+    /// at its start, at its end), always with Ctrl. `true` when the key
+    /// belongs to the list, including at its ends, so it never scrolls or
+    /// tabs through whatever is behind it.
+    pub fn handle_list_key(
+        &mut self,
+        key: &Key,
+        shift: bool,
+        ctrl: bool,
+        caret_at_ends: (bool, bool),
+    ) -> bool {
+        let len = self.flat.len();
+        let last = len.saturating_sub(1);
+        let cursor = self.cursor.min(last);
+        let target = match key {
+            Key::Named(NamedKey::ArrowDown) => {
+                if self.cursor >= last {
+                    0
+                } else {
+                    cursor.saturating_add(1)
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                if self.cursor == 0 || self.cursor > last {
+                    last
+                } else {
+                    cursor.saturating_sub(1)
+                }
+            }
+            Key::Named(NamedKey::PageDown) => cursor.saturating_add(self.rows_per_page()).min(last),
+            Key::Named(NamedKey::PageUp) => cursor.saturating_sub(self.rows_per_page()),
+            Key::Named(NamedKey::Tab) => self.next_group_start(cursor, !shift),
+            Key::Named(NamedKey::Home) if ctrl || (!shift && caret_at_ends.0) => 0,
+            Key::Named(NamedKey::End) if ctrl || (!shift && caret_at_ends.1) => last,
+            _ => return false,
+        };
+        self.set_cursor(target);
+        true
+    }
+
+    /// The first result of the group after `cursor`'s (`forward`) or of
+    /// its own group, else the one before it; wrapping at the ends. An
+    /// ungrouped list has one group, so Tab stays put.
+    fn next_group_start(&self, cursor: usize, forward: bool) -> usize {
+        let starts = self.group_starts();
+        if forward {
+            starts
+                .iter()
+                .copied()
+                .find(|&s| s > cursor)
+                .or_else(|| starts.first().copied())
+                .unwrap_or(cursor)
+        } else {
+            let own = starts.iter().copied().rfind(|&s| s <= cursor);
+            match own {
+                Some(s) if s < cursor => s,
+                _ => starts
+                    .iter()
+                    .copied()
+                    .rfind(|&s| s < cursor)
+                    .or_else(|| starts.last().copied())
+                    .unwrap_or(cursor),
+            }
         }
     }
 
@@ -964,13 +1068,17 @@ impl SearchResultsView {
         (self.rect.x0 + PAD, width, style)
     }
 
-    fn draw_empty(
+    pub(crate) fn draw_empty(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        if let Some(hint) = &self.empty_hint {
+            self.draw_composed_empty(scene, transform, tr, theme, hint);
+            return;
+        }
         let (x, width, style) = self.empty_frame(theme);
         let (_, th) = tr.measure_style(&self.empty_text, Some(width), &style);
         let cy = (self.rect.y1 - self.empty_footer + self.rect.y0) / 2.0 - f64::from(th) / 2.0;
@@ -980,6 +1088,67 @@ impl SearchResultsView {
             theme.tokens.colors.text_dim,
             compose(transform, Affine::translate((x, cy))),
             Some(width),
+            &style,
+        );
+    }
+
+    /// A search glyph over the empty line, and the hint under it, centred
+    /// so the card keeps its shape instead of collapsing to a bare field.
+    fn draw_composed_empty(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hint: &str,
+    ) {
+        let colors = &theme.tokens.colors;
+        let (top, bottom) = (self.rect.y0 + PAD, self.rect.y1 - PAD);
+        if bottom <= top {
+            return;
+        }
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+        let cy = f64::midpoint(top, bottom);
+        let icon_size = 24.0;
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                cx - icon_size / 2.0,
+                cy - icon_size - 10.0,
+                cx + icon_size / 2.0,
+                cy - 10.0,
+            ),
+            crate::icons::Icon::Search,
+            colors.text_dim.with_alpha_factor(0.55),
+            1.5,
+        );
+        let style = theme.text(TextRole::Caption);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "card widths are logical pixels well within f32 range"
+        )]
+        let room = (self.rect.width() - 48.0).max(1.0) as f32;
+        let title = tr.elide_to_width_style(&self.empty_text, room, &style);
+        let (tw, th) = tr.measure_style(&title, None, &style);
+        tr.draw_style(
+            scene,
+            &title,
+            colors.text_primary,
+            compose(transform, Affine::translate((cx - f64::from(tw) / 2.0, cy))),
+            None,
+            &style,
+        );
+        let (hw, _) = tr.measure_style(hint, None, &style);
+        tr.draw_style(
+            scene,
+            hint,
+            colors.text_dim,
+            compose(
+                transform,
+                Affine::translate((cx - f64::from(hw) / 2.0, cy + f64::from(th) + 6.0)),
+            ),
+            None,
             &style,
         );
     }
@@ -1564,14 +1733,9 @@ impl Widget for SearchResultsView {
         ) {
             return false;
         }
-        let Some(index) = self
-            .flat
-            .iter()
-            .position(|&(group, row)| self.groups[group].results[row].action_id == target)
-        else {
+        if !self.select_action(target) {
             return false;
-        };
-        self.cursor = index;
+        }
         if matches!(action, crate::a11y::Action::Activate) {
             self.activate_selected();
         }
@@ -1582,38 +1746,80 @@ impl Widget for SearchResultsView {
         use crate::a11y::{AccessNode, AccessState, Role};
         let total = self.flat.len();
         let mut children = if self.flat.is_empty() {
-            vec![
-                AccessNode::new(Role::StaticText)
-                    .with_name(&self.empty_text)
-                    .with_live(crate::a11y::Politeness::Polite),
-            ]
+            let mut empty = AccessNode::new(Role::StaticText)
+                .with_name(&self.empty_text)
+                .with_bounds(self.rect)
+                .with_live(crate::a11y::Politeness::Polite);
+            if let Some(hint) = &self.empty_hint {
+                empty = empty.with_description(hint.clone());
+            }
+            vec![empty]
         } else {
-            self.plan()
-                .rows
-                .into_iter()
-                .filter_map(|row| {
-                    let result = self.groups.get(row.gi)?.results.get(row.ri)?;
-                    let description = result
-                        .row
-                        .as_ref()
-                        .map(SearchRow::spoken)
-                        .into_iter()
-                        .chain(result.subtitle.iter().cloned())
-                        .chain(result.preview.as_ref().map(SearchPreview::spoken))
-                        .collect::<Vec<_>>()
-                        .join(". ");
-                    let mut node = AccessNode::new(Role::ListItem)
-                        .with_name(result.title.clone())
-                        .with_action_target(&result.action_id)
-                        .with_bounds(row.rect)
-                        .with_position(row.flat.saturating_add(1), total)
-                        .with_state(AccessState::new().selected(row.flat == self.cursor));
-                    if !description.is_empty() {
-                        node = node.with_description(description);
+            let mut rows: Vec<(Option<&str>, AccessNode)> = Vec::new();
+            for row in self.plan().rows {
+                let Some(group) = self.groups.get(row.gi) else {
+                    continue;
+                };
+                let Some(result) = group.results.get(row.ri) else {
+                    continue;
+                };
+                let description = result
+                    .subtitle
+                    .iter()
+                    .cloned()
+                    .chain(result.row.as_ref().map(SearchRow::spoken))
+                    .chain(result.preview.as_ref().map(SearchPreview::spoken))
+                    .filter(|part| !part.is_empty())
+                    .fold(Vec::<String>::new(), |mut parts, part| {
+                        // A line shown as the subtitle and again as facts is
+                        // read once.
+                        if !parts.contains(&part) {
+                            parts.push(part);
+                        }
+                        parts
+                    })
+                    .join(". ");
+                let selected = row.flat == self.cursor;
+                let mut node = AccessNode::new(Role::ListItem)
+                    .with_name(result.title.clone())
+                    .with_action_target(&result.action_id)
+                    .with_bounds(row.rect)
+                    .with_position(row.flat.saturating_add(1), total)
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.focused && selected)
+                            .selected(selected),
+                    );
+                if !description.is_empty() {
+                    node = node.with_description(description);
+                }
+                rows.push((group.section.as_deref(), node));
+            }
+            // Rows in sections are read as named groups of their section,
+            // as they are seen under its header.
+            if rows.iter().all(|(section, _)| section.is_none()) {
+                rows.into_iter().map(|(_, node)| node).collect()
+            } else {
+                let mut sections: Vec<(Option<&str>, Vec<AccessNode>)> = Vec::new();
+                for (section, node) in rows {
+                    match sections.last_mut() {
+                        Some((last, nodes)) if *last == section => nodes.push(node),
+                        _ => sections.push((section, vec![node])),
                     }
-                    Some(node)
-                })
-                .collect()
+                }
+                sections
+                    .into_iter()
+                    .flat_map(|(section, nodes)| match section {
+                        Some(name) => vec![
+                            AccessNode::new(Role::Group)
+                                .with_name(name)
+                                .with_children(nodes),
+                        ],
+                        None => nodes,
+                    })
+                    .collect()
+            }
         };
         if self.loading && !self.flat.is_empty() {
             children.push(

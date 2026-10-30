@@ -366,6 +366,7 @@ struct LiveEnv {
     daemon_watch: Option<settings_store::watch::SettingsWatch>,
     events: Sender<PolicyEvent>,
     device_events: Box<dyn FnMut(DeviceEvent)>,
+    pause_players: Box<dyn FnMut() -> bool>,
     policy: PersistentAudioPolicy,
 }
 
@@ -379,9 +380,7 @@ impl PolicyEnv for LiveEnv {
     }
 
     fn pause_playing_players(&mut self) -> bool {
-        crate::mpris::pause_playing_players()
-            .inspect_err(|error| tracing::debug!(target: "tilo::audio_policy", %error, "MPRIS"))
-            .is_ok()
+        (self.pause_players)()
     }
 
     fn set_default_sink(&mut self, node_id: u32) -> Result<(), String> {
@@ -464,9 +463,11 @@ impl PolicyEnv for LiveEnv {
 
 /// Run the policy until [`PolicyEvent::Stop`] arrives on `received` (the
 /// other end of `events`, which the watches send on), telling `device_events` each
-/// device that arrives or leaves.
+/// device that arrives or leaves and asking `pause_players` to pause what
+/// plays when a private output goes away.
 pub fn serve(
     device_events: impl FnMut(DeviceEvent) + 'static,
+    pause_players: impl FnMut() -> bool + 'static,
     events: Sender<PolicyEvent>,
     received: &Receiver<PolicyEvent>,
 ) {
@@ -476,6 +477,7 @@ pub fn serve(
         daemon_watch: None,
         events,
         device_events: Box::new(device_events),
+        pause_players: Box::new(pause_players),
         policy: PersistentAudioPolicy::new(Arc::new(RealAudioRuntime)),
     };
     run(&mut env, received);

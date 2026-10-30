@@ -297,8 +297,6 @@ pub(crate) fn container_list(
         .collect();
     let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
     let select = intents.clone();
-    let open = intents.clone();
-    let opened = ids.clone();
     let mut table = DataTable::new(vec![
         ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
             .sortable(true)
@@ -322,14 +320,9 @@ pub(crate) fn container_list(
     .with_accessible_name("Containers")
     .with_sort_state(sort)
     .selectable(true)
-    .on_row_click(move |index, _, _| {
+    .on_view("containers-list", move |index| {
         if let Some(id) = ids.get(index) {
             select.push(Intent::Select(Some(id.clone())));
-        }
-    })
-    .on_activate(move |index| {
-        if let Some(id) = opened.get(index) {
-            open.push(Intent::Select(Some(id.clone())));
         }
     });
     let chosen = selected.and_then(|id| rows.iter().position(|row| row.id == id));

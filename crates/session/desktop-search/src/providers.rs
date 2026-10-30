@@ -1,5 +1,19 @@
 //! Portable sources: everything a desktop can search without a compositor.
-//! Each takes a snapshot the host collects when search opens.
+//! Each takes a snapshot the host collects when search opens, of what is
+//! published (resources, actions, the desktop's model) or what a service
+//! answers; none reads a host's own chrome state.
+
+#[cfg(feature = "catalogue")]
+pub mod catalogue;
+#[cfg(feature = "indexes")]
+pub mod files;
+pub mod host_apps;
+pub mod jobs;
+pub mod people;
+pub mod places;
+#[cfg(feature = "settings")]
+pub mod settings;
+pub mod waiting;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -221,6 +235,17 @@ fn offered(spec: &tilo_actions::ActionSpec) -> bool {
     spec.reaches_people() && matches!(spec.contract.availability, Availability::Available)
 }
 
+/// Whether `needle` asks for this action whatever its availability: an
+/// action with nothing to act on now (closing a sheet that is not open)
+/// takes no row from one that would do something, but naming it exactly
+/// still offers it, and running it says why not.
+fn offered_for(spec: &tilo_actions::ActionSpec, needle: &str) -> bool {
+    offered(spec)
+        || (spec.reaches_people()
+            && ui::search::fold_search_text(needle.trim())
+                == ui::search::fold_search_text(&spec.label))
+}
+
 fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> {
     let spec = resource
         .actions
@@ -254,7 +279,7 @@ impl Source for Actions {
             self.0.iter().map(|record| record.id.as_str()).collect();
         tilo_actions::flatten(&self.0)
             .into_iter()
-            .filter(|flat| offered(flat.action))
+            .filter(|flat| offered_for(flat.action, needle))
             .filter_map(|flat| {
                 // An open record's actions answer to what they do. An item's
                 // (one message of a chat, one card of a board) answer only to
@@ -289,6 +314,105 @@ impl Source for Actions {
                 })
             })
             .collect()
+    }
+}
+
+/// What one app publishes in one room, as the session's action host lists
+/// it: inert descriptors.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PublishedActions {
+    pub app: String,
+    /// The room (workspace) it publishes them in.
+    pub room: String,
+    pub actions: Vec<tilo_actions::ActionDescriptor>,
+}
+
+/// Whether a person may pick `action` for `needle`: it reaches people, and
+/// it has something to act on now or `needle` names it exactly (where
+/// running it says why not).
+fn descriptor_offered(action: &tilo_actions::ActionDescriptor, needle: &str) -> bool {
+    action.contract.reaches_people()
+        && (action.contract.availability.is_available()
+            || ui::search::fold_search_text(needle.trim())
+                == ui::search::fold_search_text(&action.action_label))
+}
+
+/// The actions providers publish through the session's action host, the
+/// same surface their own controls, agents and other devices invoke:
+/// ranked by label, other words and what they act on, run by address.
+pub struct Published(pub Vec<PublishedActions>);
+
+impl Published {
+    /// The id of one action's row.
+    fn row_id(published: &PublishedActions, address: &ActionAddress) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            published.app, published.room, address.resource, address.action
+        )
+    }
+}
+
+impl Source for Published {
+    fn id(&self) -> &'static str {
+        "published-actions"
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        // Every provider's actions would bury everything else unasked.
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
+        let mut hits = Vec::new();
+        for published in &self.0 {
+            for action in &published.actions {
+                if !descriptor_offered(action, needle) {
+                    continue;
+                }
+                let Some(score) = rank::action_match_score(
+                    needle,
+                    &action.action_label,
+                    &action.keywords,
+                    &action.resource_label,
+                ) else {
+                    continue;
+                };
+                hits.push(Hit {
+                    kind: ResourceKind::Action,
+                    provider: self.id().into(),
+                    id: Self::row_id(published, &action.address),
+                    title: action.action_label.clone(),
+                    subtitle: action.description.clone(),
+                    facts: Vec::new(),
+                    score,
+                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+                    target: Target::Invoke(Box::new(crate::model::InvokeTarget {
+                        app: published.app.clone(),
+                        room: published.room.clone(),
+                        address: action.address.clone(),
+                        arguments: serde_json::Map::new(),
+                        descriptor: Some(action.clone()),
+                    })),
+                });
+            }
+        }
+        // Equal matches: the action that does it in one step before the
+        // one asking for input, and a switch before a view of the same
+        // thing.
+        hits.sort_by_key(|hit| {
+            let descriptor = match &hit.target {
+                Target::Invoke(target) => target.descriptor.as_ref(),
+                _ => None,
+            };
+            let one_step = descriptor.is_some_and(|action| action.params.is_empty());
+            let toggles = descriptor.is_some_and(|action| action.state.toggles);
+            (
+                std::cmp::Reverse(hit.score),
+                2_i32
+                    .saturating_sub(i32::from(one_step))
+                    .saturating_sub(i32::from(toggles)),
+            )
+        });
+        hits
     }
 }
 
@@ -468,26 +592,41 @@ fn key(address: &ActionAddress) -> String {
 }
 
 /// The kind answers are grouped under.
-pub const ANSWERS_KIND: &str = "Answers";
+/// The kind worked-out answers are grouped under, in the desktop's
+/// language.
+#[must_use]
+pub fn answers_kind() -> ResourceKind {
+    ResourceKind::Custom(crate::i18n::t("search-kind-answers"))
+}
 
-/// What was typed, worked out ([`crate::answers`]): a sum or a conversion,
-/// which choosing copies, and an address, which choosing opens. Rows are
-/// addressed by what they answer (`sum:12*7`), as the native shell's are.
-pub struct Answers;
+/// How long fetched exchange rates answer without saying how old they are.
+const RATES_STALE_SECS: u64 = 24 * 60 * 60;
 
-impl Source for Answers {
-    fn id(&self) -> &'static str {
-        "quick-answers"
-    }
+/// What was typed, worked out ([`crate::answers`]): a sum, a conversion or
+/// an amount of money, which choosing copies, and an address, which
+/// choosing opens. Rows are addressed by what they answer (`sum:12*7`), so
+/// a row resolves without the query that found it.
+#[derive(Default)]
+pub struct Answers {
+    /// The exchange rates the host last fetched; money is answered only
+    /// with them.
+    pub rates: Option<crate::answers::currency::Rates>,
+    /// Now, in Unix seconds: how old the rates are.
+    pub now: u64,
+}
 
-    fn query(&self, needle: &str) -> Vec<Hit> {
+impl Answers {
+    /// The rows answering `typed`.
+    fn answers(&self, typed: &str) -> Vec<Hit> {
         use crate::answers::{address, evaluate, format_number, units};
-        let typed = needle.trim();
+        use crate::i18n::t_args;
+        let typed = typed.trim();
         if typed.is_empty() {
             return Vec::new();
         }
+        let kind = answers_kind();
         let answer = |id: &str, title: String, subtitle: Option<String>, target: Target| Hit {
-            kind: ResourceKind::Custom(ANSWERS_KIND.into()),
+            kind: kind.clone(),
             provider: self.id().into(),
             id: format!("{id}:{typed}"),
             title,
@@ -497,13 +636,15 @@ impl Source for Answers {
             icon: None,
             target,
         };
+        let sum =
+            |expression: String| t_args("search-answer-sum", &[("expression", expression.into())]);
         let mut out = Vec::new();
         if let Some(value) = evaluate(typed) {
             let text = format_number(value);
             out.push(answer(
                 "sum",
                 text.clone(),
-                Some(format!("{typed} =")),
+                Some(sum(typed.to_owned())),
                 Target::Copy { text },
             ));
         }
@@ -511,28 +652,82 @@ impl Source for Answers {
             out.push(answer(
                 "unit",
                 conversion.to.clone(),
-                Some(format!("{} =", conversion.from)),
+                Some(sum(conversion.from)),
                 Target::Copy {
                     text: conversion.to,
                 },
             ));
         }
+        if let Some(rates) = &self.rates
+            && let Some((from, to)) = crate::answers::currency::convert(typed, rates)
+        {
+            let age = self.now.saturating_sub(rates.fetched_at);
+            let subtitle = if age > RATES_STALE_SECS {
+                t_args(
+                    "search-answer-money-stale",
+                    &[
+                        ("amount", from.into()),
+                        (
+                            "age",
+                            ui::format::relative(i64::try_from(age).unwrap_or(i64::MAX)).into(),
+                        ),
+                    ],
+                )
+            } else {
+                sum(from)
+            };
+            out.push(answer(
+                "money",
+                to.clone(),
+                Some(subtitle),
+                Target::Copy { text: to },
+            ));
+        }
         if let Some((uri, shown)) = address(typed) {
             out.push(answer(
                 "address",
-                format!("Open {shown}"),
+                t_args("search-answer-open-address", &[("address", shown.into())]),
                 None,
-                Target::Open { uri },
+                Target::Open {
+                    uri,
+                    fallback: None,
+                },
             ));
         }
         out
     }
+
+    /// The row `id` names (`sum:12*7`).
+    #[must_use]
+    pub fn resolve(&self, id: &str) -> Option<Hit> {
+        let (_, typed) = id.split_once(':')?;
+        self.answers(typed).into_iter().find(|hit| hit.id == id)
+    }
 }
 
-/// The kind "Search the web for …" is grouped under.
-pub const WEB_KIND: &str = "Web";
-/// The kind the web services named in a query are grouped under.
-pub const WEBSITES_KIND: &str = "Websites";
+impl Source for Answers {
+    fn id(&self) -> &'static str {
+        "quick-answers"
+    }
+
+    fn query(&self, needle: &str) -> Vec<Hit> {
+        self.answers(needle)
+    }
+}
+
+/// The kind "Search the web for …" is grouped under, in the desktop's
+/// language.
+#[must_use]
+pub fn web_kind() -> ResourceKind {
+    ResourceKind::Custom(crate::i18n::t("search-kind-web"))
+}
+
+/// The kind the web services named in a query are grouped under, in the
+/// desktop's language.
+#[must_use]
+pub fn websites_kind() -> ResourceKind {
+    ResourceKind::Custom(crate::i18n::t("search-kind-websites"))
+}
 
 /// A service row's score when the query names the service alone: below an
 /// exact name's, so an app named the same way still leads.
@@ -550,10 +745,133 @@ const FALLBACK_INTENT: f32 = -10.0;
 
 /// The web as a source ([`crate::answers::web`]): "Search the web for …"
 /// for every query, last, and the web services a query names ("youtube
-/// cats"). The search opens on [`crate::answers::web::FALLBACK_ENGINE`]:
-/// a desktop inside a web browser has no browser app to run it on the
-/// person's own engine, as the native shell's does.
-pub struct WebSearch;
+/// cats").
+///
+/// A web search is handed to the browser as `web+search:`, which runs it on
+/// the engine the person chose, and opens on
+/// [`crate::answers::web::FALLBACK_ENGINE`] where nothing takes that scheme
+/// (a desktop inside a web browser). A service a Tilo app serves (Tube for
+/// `YouTube`) is searched in that app while it is installed
+/// ([`Self::app_for_scheme`]), on the web otherwise.
+pub struct WebSearch {
+    /// The installed app that claims a URI scheme, by name; `None` when
+    /// none does.
+    pub app_for_scheme: fn(&str) -> Option<String>,
+}
+
+impl Default for WebSearch {
+    fn default() -> Self {
+        Self {
+            app_for_scheme: |_| None,
+        }
+    }
+}
+
+impl WebSearch {
+    fn web_search_row(&self, query: &str) -> Hit {
+        use crate::answers::web::{fallback_search_url, web_search_uri};
+        Hit {
+            kind: web_kind(),
+            provider: self.id().into(),
+            id: format!("search:{query}"),
+            title: crate::i18n::t_args("search-web-for", &[("query", query.into())]),
+            subtitle: Some(crate::i18n::t("search-web-subtitle")),
+            facts: Vec::new(),
+            score: 1,
+            icon: Some(ui::icons::Icon::Globe),
+            target: Target::Open {
+                uri: web_search_uri(query),
+                fallback: Some(fallback_search_url(query)),
+            },
+        }
+    }
+
+    /// The service named alone: opens its site.
+    fn service_row(&self, service: &'static crate::answers::web::Service) -> Hit {
+        Hit {
+            kind: websites_kind(),
+            provider: self.id().into(),
+            id: format!("service:{}", service.id),
+            title: service.name.into(),
+            subtitle: Some(service.domain.into()),
+            facts: Vec::new(),
+            score: SERVICE_SCORE,
+            icon: Some(service.icon),
+            target: Target::Open {
+                uri: service.home.into(),
+                fallback: None,
+            },
+        }
+    }
+
+    /// "Search `service` for `query`": in the app that serves it when one
+    /// is installed, on the web otherwise.
+    fn service_search_row(
+        &self,
+        service: &'static crate::answers::web::Service,
+        query: &str,
+    ) -> Hit {
+        let web = service.web_search(query);
+        let in_app = service
+            .app_search(query)
+            .and_then(|(uri, scheme)| Some((uri, (self.app_for_scheme)(scheme)?)));
+        let (subtitle, target) = match in_app {
+            Some((uri, app)) => (
+                app,
+                // Removed since the row was built: the web serves.
+                Target::Open {
+                    uri,
+                    fallback: Some(web),
+                },
+            ),
+            None => (
+                service.domain.to_owned(),
+                Target::Open {
+                    uri: web,
+                    fallback: None,
+                },
+            ),
+        };
+        Hit {
+            kind: websites_kind(),
+            provider: self.id().into(),
+            id: format!("query:{}:{query}", service.id),
+            title: crate::i18n::t_args(
+                "search-web-service-for",
+                &[("service", service.name.into()), ("query", query.into())],
+            ),
+            subtitle: Some(subtitle),
+            facts: Vec::new(),
+            score: MAX_PROVIDER_SCORE,
+            icon: Some(service.icon),
+            target,
+        }
+    }
+
+    /// The row `id` names: what it answers is in its address
+    /// (`search:cats`, `query:youtube:cats`).
+    #[must_use]
+    pub fn resolve(&self, id: &str) -> Option<Hit> {
+        use crate::answers::web::Service;
+        let (row, rest) = id.split_once(':')?;
+        let found = match row {
+            "search" if !rest.trim().is_empty() => self.web_search_row(rest),
+            "service" => self.service_row(Service::by_id(rest)?),
+            "query" => {
+                let (service, query) = rest.split_once(':')?;
+                self.service_search_row(Service::by_id(service)?, query)
+            }
+            _ => return None,
+        };
+        (found.id == id).then_some(found)
+    }
+
+    /// Whether `hit` is the row every query gets.
+    #[must_use]
+    pub fn is_fallback(hit: &Hit) -> bool {
+        hit.id.starts_with("search:")
+    }
+}
 
 impl Source for WebSearch {
     fn id(&self) -> &'static str {
@@ -561,61 +879,28 @@ impl Source for WebSearch {
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
-        use crate::answers::web::{Named, fallback_search_url, named};
+        use crate::answers::web::{Named, named};
         let typed = needle.trim();
         if typed.is_empty() {
             return Vec::new();
         }
-        let row = |kind: &str, id: String, title: String, subtitle: &str, score, icon, uri| Hit {
-            kind: ResourceKind::Custom(kind.into()),
-            provider: self.id().into(),
-            id,
-            title,
-            subtitle: Some(subtitle.into()),
-            facts: Vec::new(),
-            score,
-            icon: Some(icon),
-            target: Target::Open { uri },
-        };
         let mut out = Vec::new();
         match named(typed) {
-            Some(Named::Search(service, query)) => out.push(row(
-                WEBSITES_KIND,
-                format!("query:{}:{query}", service.id),
-                format!("Search {} for {query}", service.name),
-                service.domain,
-                MAX_PROVIDER_SCORE,
-                service.icon,
-                service.web_search(&query),
-            )),
-            Some(Named::Service(service)) => out.push(row(
-                WEBSITES_KIND,
-                format!("service:{}", service.id),
-                service.name.into(),
-                service.domain,
-                SERVICE_SCORE,
-                service.icon,
-                service.home.into(),
-            )),
+            Some(Named::Search(service, query)) => {
+                out.push(self.service_search_row(service, &query));
+            }
+            Some(Named::Service(service)) => out.push(self.service_row(service)),
             None => {}
         }
-        out.push(row(
-            WEB_KIND,
-            format!("search:{typed}"),
-            format!("Search the web for {typed}"),
-            "Web",
-            1,
-            ui::icons::Icon::Globe,
-            fallback_search_url(typed),
-        ));
+        out.push(self.web_search_row(typed));
         out
     }
 
     /// "Search the web for …" answers every query, so it comes after every
-    /// row that answers it directly, as the native shell's fallback does
-    /// (its title holds what was typed and would otherwise lead). A query
-    /// naming a service is worth what the row's title typed whole is; a
-    /// service named alone yields to the app that serves it.
+    /// row that answers it directly (its title holds what was typed and
+    /// would otherwise lead). A query naming a service is worth what the
+    /// row's title typed whole is; a service named alone yields to the app
+    /// that serves it.
     fn intent(&self, hit: &Hit) -> f32 {
         let Some((row, rest)) = hit.id.split_once(':') else {
             return 0.0;
@@ -650,7 +935,10 @@ impl Recents {
     /// Remember `hit` as the newest choice. An answer or a web search is
     /// what one query typed came to, nothing to go back to.
     pub fn record(&mut self, hit: &Hit) {
-        if matches!(hit.target, Target::Copy { .. } | Target::Open { .. }) {
+        if matches!(
+            hit.target,
+            Target::Copy { .. } | Target::Open { .. } | Target::Cancel { .. }
+        ) {
             return;
         }
         self.0
@@ -941,13 +1229,19 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_and_programmatic_actions_are_not_offered() {
+    fn an_unavailable_action_answers_only_its_name() {
         let mut resource = resource_with_action("r", "Doc", "print", "Print");
         resource.actions[0].type_mut().contract.availability = Availability::Unavailable {
             code: "offline".into(),
             reason: "Offline".into(),
         };
-        assert!(Actions(vec![resource]).query("print").is_empty());
+        let actions = Actions(vec![resource]);
+        assert!(actions.query("prin").is_empty());
+        assert_eq!(
+            actions.query("print").len(),
+            1,
+            "named exactly, it says why not"
+        );
     }
 
     struct Pages;
@@ -1300,11 +1594,15 @@ mod tests {
     /// The rows `needle` comes to over the applications and the answers,
     /// as `(title, target)` in the order the palette shows them.
     fn answered(needle: &str) -> Vec<(String, Target)> {
-        search(needle, &[&apps(), &Answers, &WebSearch], 0)
-            .into_iter()
-            .flat_map(|group| group.results)
-            .map(|hit| (hit.title, hit.target))
-            .collect()
+        search(
+            needle,
+            &[&apps(), &Answers::default(), &WebSearch::default()],
+            0,
+        )
+        .into_iter()
+        .flat_map(|group| group.results)
+        .map(|hit| (hit.title, hit.target))
+        .collect()
     }
 
     #[test]
@@ -1324,7 +1622,7 @@ mod tests {
                 }
             ))
         );
-        let hit = Answers.query("5 km in miles").remove(0);
+        let hit = Answers::default().query("5 km in miles").remove(0);
         assert_eq!(hit.subtitle.as_deref(), Some("5 km ="));
         assert_eq!(hit.id, "unit:5 km in miles");
     }
@@ -1341,7 +1639,8 @@ mod tests {
             Some(&(
                 "Search the web for sheets".to_owned(),
                 Target::Open {
-                    uri: "https://duckduckgo.com/?q=sheets".into()
+                    uri: "web+search:sheets".into(),
+                    fallback: Some("https://duckduckgo.com/?q=sheets".into()),
                 }
             )),
             "the web comes last"
@@ -1352,32 +1651,123 @@ mod tests {
             Some(&(
                 "Search YouTube for cats".to_owned(),
                 Target::Open {
-                    uri: "https://www.youtube.com/results?search_query=cats".into()
+                    uri: "https://www.youtube.com/results?search_query=cats".into(),
+                    fallback: None,
                 }
             )),
             "a query naming a service searches it first"
         );
-        assert!(WebSearch.query("   ").is_empty());
-        assert!(Answers.query("   ").is_empty());
+        assert!(WebSearch::default().query("   ").is_empty());
+        assert!(Answers::default().query("   ").is_empty());
     }
 
     #[test]
     fn an_address_opens_and_answers_are_not_remembered() {
-        let hits = Answers.query("example.com");
+        let hits = Answers::default().query("example.com");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "Open example.com");
         assert_eq!(
             hits[0].target,
             Target::Open {
-                uri: "https://example.com".into()
+                uri: "https://example.com".into(),
+                fallback: None,
             }
         );
         let mut recents = Recents::default();
         recents.record(&hits[0]);
-        recents.record(&Answers.query("2+2").remove(0));
+        recents.record(&Answers::default().query("2+2").remove(0));
         assert!(
             recents.0.is_empty(),
             "what one query came to is not a recent"
+        );
+    }
+
+    #[test]
+    fn money_answers_from_the_kept_rates_and_says_when_they_are_old() {
+        let rates = crate::answers::currency::Rates {
+            base: "EUR".into(),
+            rates: [("USD".to_owned(), 1.25)].into_iter().collect(),
+            fetched_at: 1_000_000,
+        };
+        let fresh = Answers {
+            rates: Some(rates.clone()),
+            now: 1_000_000,
+        };
+        let row = fresh.query("10 usd in eur").remove(0);
+        assert_eq!(row.title, "8.00 EUR");
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("10.00 USD ="),
+            "fresh rates say nothing"
+        );
+        let stale = Answers {
+            rates: Some(rates),
+            now: 1_000_000 + 3 * 24 * 60 * 60,
+        };
+        let row = stale.query("10 usd in eur").remove(0);
+        assert!(
+            row.subtitle
+                .as_deref()
+                .is_some_and(|line| line.contains("3 days ago")),
+            "{:?}",
+            row.subtitle
+        );
+        assert!(
+            Answers::default().query("10 usd in eur").is_empty(),
+            "no rates, no money"
+        );
+    }
+
+    #[test]
+    fn an_installed_app_serves_its_service_and_says_so() {
+        let web = WebSearch {
+            app_for_scheme: |scheme| (scheme == "tube").then(|| "Tube".into()),
+        };
+        let row = web.query("youtube cats").remove(0);
+        assert_eq!(row.subtitle.as_deref(), Some("Tube"));
+        assert_eq!(
+            row.target,
+            Target::Open {
+                uri: "tube:search?q=cats".into(),
+                fallback: Some("https://www.youtube.com/results?search_query=cats".into()),
+            }
+        );
+        let row = WebSearch::default().query("youtube cats").remove(0);
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("youtube.com"),
+            "no Tube: the web serves"
+        );
+    }
+
+    #[test]
+    fn a_service_named_alone_yields_to_its_app_and_a_search_leads() {
+        let web = WebSearch::default();
+        let youtube = web.query("youtube").remove(0);
+        assert_eq!(youtube.title, "YouTube");
+        assert!(web.intent(&youtube) < 0.0);
+        let reddit = web.query("reddit").remove(0);
+        assert!(
+            web.intent(&reddit).abs() < f32::EPSILON,
+            "no app serves Reddit"
+        );
+        let search = web.query("youtube cats").remove(0);
+        assert!(web.intent(&search) > 0.0);
+        assert!(WebSearch::is_fallback(&web.query("weather").remove(0)));
+    }
+
+    #[test]
+    fn rows_resolve_from_their_address() {
+        let web = WebSearch::default();
+        for id in ["search:cats", "service:youtube", "query:youtube:cats"] {
+            assert_eq!(web.resolve(id).map(|row| row.id).as_deref(), Some(id));
+        }
+        assert_eq!(
+            Answers::default()
+                .resolve("sum:2+2")
+                .map(|row| row.title)
+                .as_deref(),
+            Some("4")
         );
     }
 }

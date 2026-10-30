@@ -1,5 +1,5 @@
 //! The content plane: one content store with one hash space and two
-//! backings (`docs/architecture/storage.md`, §7.4).
+//! backings.
 //!
 //! - **Loose** blobs live in an iroh-blobs store (`FsStore` rooted at
 //!   `--cache-dir`, `MemStore` in tests): manifests, the chunks of small

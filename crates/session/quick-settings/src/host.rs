@@ -79,6 +79,13 @@ impl Feed {
         self.readings.set(state);
     }
 
+    /// The device as it reads now: what a readout of a level shows after a
+    /// key changed it.
+    #[must_use]
+    pub fn current(&self) -> QuickSettingsState {
+        self.readings.current()
+    }
+
     /// Change the readings in place.
     pub fn update(&self, change: impl FnOnce(&mut QuickSettingsState)) {
         let mut state = self.readings.current();
@@ -141,6 +148,13 @@ impl Readings {
         let mut inner = self.inner.borrow_mut();
         let added = std::mem::replace(&mut inner.projections, projections);
         inner.projections.extend(added);
+    }
+
+    /// Hand every change of the readings to `follow`, starting with the
+    /// readings now.
+    pub(crate) fn watch(&self, follow: impl Fn(&QuickSettingsState) + 'static) {
+        self.read(&follow);
+        self.inner.borrow_mut().projections.push(Box::new(follow));
     }
 
     /// What `read` reads of the readings, kept current: a part keyed on it

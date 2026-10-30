@@ -6308,21 +6308,15 @@ mod tests {
     assert!(!app.join("target/tilo-app").exists());
 }
 
-/// Every example is listed with its lesson in examples/README.md and
-/// docs/examples.md, and every example passes the portability lint.
+/// Every example is listed with its lesson in examples/README.md, and every
+/// example passes the portability lint.
 #[test]
 fn every_example_is_indexed_and_portable() {
     let root = checkout_root();
     let index = std::fs::read_to_string(root.join("examples/README.md")).expect("index");
-    let design = std::fs::read_to_string(root.join("docs/examples.md")).expect("design");
     for example in examples::ALL {
         let link = format!("[`{}`](apps/{}/)", example.name, example.name);
         assert!(index.contains(&link), "examples/README.md lists {link}");
-        assert!(
-            design.contains(&format!("`{}`", example.name)),
-            "docs/examples.md describes {}",
-            example.name
-        );
         let report = portability::lint_app(&root.join(example.path())).expect("lint");
         assert!(report.passed(), "{}", report.render());
         assert_eq!(

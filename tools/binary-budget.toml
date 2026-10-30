@@ -50,7 +50,6 @@
 "tilo-cli-shim" = 1   # 0.5 MB
 "tilo-collab-probe" = 3   # 2.4 MB
 "tilo-control" = 1   # 0.5 MB
-"tilo-desktop-scan" = 1   # 0.4 MB
 "tilo-doc-text" = 2   # 1.6 MB
 "tilo-greeter" = 22   # 18.7 MB
 "tilo-hello" = 4   # 3.2 MB

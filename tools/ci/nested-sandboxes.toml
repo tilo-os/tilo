@@ -1,0 +1,16 @@
+# The test packages whose tests start sandboxes of their own (bubblewrap, user and mount
+# namespaces). Their tests need a runner where an unprivileged process may create user
+# namespaces; the other packages' tests may run as root in a namespace root owns, which
+# some of them check (runtime-fs's native fixtures). tools/ci/nested_sandboxes.py reads it.
+packages = [
+  "launcher",
+  "runtime-bundle",
+  "settings",
+  "shell",
+  "thumbnails",
+  "tilo-fs",
+  "tilo-runtime",
+  "tilo-sandbox-core",
+  "tilo-vmd",
+  "ush",
+]

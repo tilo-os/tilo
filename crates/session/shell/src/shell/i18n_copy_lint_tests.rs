@@ -10,6 +10,8 @@ const ALLOWED: &[(&str, &str)] = &[
     ("shell/state.rs", "Files"),
     ("shell/state.rs", "Notes"),
     ("shell/state.rs", "Terminal"),
+    // The shell's own app definition, named as the product is.
+    ("shell/actions/host.rs", "Tilo"),
     // wlr-output-management head description; display tools match on it.
     ("compositor/output_heads.rs", "Virtual display"),
     // The developer window backend's title.

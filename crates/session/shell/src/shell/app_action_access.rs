@@ -31,6 +31,14 @@ pub fn installed(app_id: &str) -> ActionAccess {
         .unwrap_or_default()
 }
 
+/// Whether the package `app_id` is installed; `false` when the installed
+/// list cannot be read.
+#[must_use]
+pub(crate) fn is_installed(app_id: &str) -> bool {
+    crate::shell::launcher::installed_apps()
+        .is_ok_and(|apps| apps.iter().any(|app| app.package_id == app_id))
+}
+
 #[must_use]
 pub fn installed_resolver() -> AccessResolver {
     Arc::new(installed)

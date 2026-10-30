@@ -29,8 +29,8 @@ disallowed-methods = [
     { path = "reqwest::blocking::Client::builder", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
     { path = "reqwest::blocking::ClientBuilder::new", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
     { path = "reqwest::blocking::get", reason = "use tilo_net::http::blocking_client()", allow-invalid = true },
-    { path = "std::env::set_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
-    { path = "std::env::remove_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
+    { path = "std::env::set_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests" },
+    { path = "std::env::remove_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests" },
     # A lock that merely closes stays held while a spawned child still shares
     # the descriptor. `advisory_lock::FileLock` unlocks explicitly on drop.
     { path = "std::fs::File::lock", reason = "use advisory_lock::FileLock" },

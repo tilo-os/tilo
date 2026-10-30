@@ -1,7 +1,7 @@
 //! Production-binary coverage for removed run modes.
 //!
 //! `--portal-server-only` once served the portal bus name from an empty tree
-//! with a prompt queue nothing drained (docs/architecture/security.md). The
+//! with a prompt queue nothing drained. The
 //! argument parser is otherwise permissive, so the binary must refuse the
 //! flag outright: a stale unit that still passes it fails loudly instead of
 //! claiming the bus name or starting a second compositor.
@@ -54,7 +54,7 @@ fn portal_server_only_is_refused_before_any_setup() {
     );
     assert!(
         stderr.contains("--portal-server-only was removed")
-            && stderr.contains("docs/architecture/security.md"),
+            && stderr.contains("backend in-process"),
         "the refusal names the flag and where the portal lives now, stderr: {stderr}"
     );
     assert!(

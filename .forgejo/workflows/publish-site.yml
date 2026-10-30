@@ -5,9 +5,7 @@ name: Publish / room service and web entry
 # by hand and independently of stable: whoever releases it dispatches this on
 # main and pins both receipts' digests in the infra repository.
 #
-# The same scripts as the t checks of the same names (t.toml:
-# room-service-binaries, web-desktop-wasm, web-desktop-bundle,
-# image-*-context, image-*, publish-*), in one job of the CI builder:
+# One job of the CI builder:
 # privileged only inside the disposable guest, where buildah builds and tests
 # each image chrooted, without a daemon.
 
@@ -63,7 +61,7 @@ jobs:
         # RUSTC_WRAPPER and starts the server. Without it every publish
         # compiled the room service and the web desktop from nothing.
         run: bash tools/ci/sccache.sh prepare
-      - name: Fetch fonts as on t
+      - name: Fetch fonts
         # The download cache step turns font fetching off for hermetic test
         # suites; the scripts here fetch and verify the fonts they ship.
         run: echo TILO_FONT_ASSETS_OFFLINE=0 >> "$GITHUB_ENV"

@@ -14,8 +14,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use crate::shell::device_fabric::{HardwareDecode, PersonalFabricAction, WindowView};
 use crate::shell::network::ShellNetwork;
+use tilo_device_fabric::{HardwareDecode, PersonalFabricAction, WindowView};
 use tilo_network_actor::fabric::DeviceId;
 
 /// How often an unchanged, non-empty list is repeated.
@@ -259,7 +259,7 @@ fn by_online_host(
     for views in hosts.values_mut() {
         views.sort_by_key(|view| view.tab);
         views.dedup_by_key(|view| view.tab);
-        views.truncate(crate::shell::device_fabric::MAX_WINDOW_VIEWS);
+        views.truncate(tilo_device_fabric::MAX_WINDOW_VIEWS);
     }
     hosts
 }

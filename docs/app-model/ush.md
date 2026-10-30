@@ -109,8 +109,7 @@ guest netns (owned by a user namespace the supervisor owns)
   `perm allow-host '*'` everything. An address cannot be granted: it would
   bypass the resolver that decides. The grammar is the one every `NetHost`
   grant is read with (`collab_types::caps::NetHostPattern`), so a host
-  allowed here means the same to an app; only `*` differs, by backend
-  (`docs/architecture/security.md`, "One grant grammar, two backends").
+  allowed here means the same to an app; only `*` differs, by backend.
 - **No address literal gets through.** An address is reachable only after the
   stub answered it for a granted name, and only until the answer ages out.
   Connections already open survive that; new ones need a new answer.
@@ -563,8 +562,7 @@ Agents read runs as data: each run is a published item with its fields and
 items, its `output` is read with the content it names, and "the second error"
 is `open-item` with the second error's position.
 
-Which commands an agent's `run` may start is a grant on the environment;
-see [permissions.md](../architecture/permissions.md).
+Which commands an agent's `run` may start is a grant on the environment.
 
 ### Search and history
 

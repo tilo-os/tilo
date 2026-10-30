@@ -60,7 +60,8 @@ pub enum SearchRequestScope {
 #[serde(default)]
 pub struct SearchRequest {
     pub scope: SearchRequestScope,
-    /// Text the search field starts with, selected so typing replaces it.
+    /// Text the search field starts with, selected so typing replaces it:
+    /// the argument an asked action starts from ([`SearchRequest::asking`]).
     pub query: Option<String>,
     /// One of the system's own actions the app prepares for the person:
     /// search opens on it with these arguments, and nothing runs until the

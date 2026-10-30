@@ -459,7 +459,7 @@ impl QuickFS {
                 &runtime.namespace_path,
                 move |delta| {
                     if let Some(sync) = &sync {
-                        sync.broadcast_delta(delta);
+                        sync.announce_delta(&delta);
                     }
                     Ok(())
                 },

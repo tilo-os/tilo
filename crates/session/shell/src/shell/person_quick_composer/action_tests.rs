@@ -66,6 +66,7 @@ impl ActionHost for ChatHost {
                     "opaque-native-chat",
                     "so.tilo.chat",
                     ActionDescriptor {
+                        state: tilo_actions::ActionState::default(),
                         address,
                         semantic_identity: None,
                         resource_kind: "chat.person".into(),

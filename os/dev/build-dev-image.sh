@@ -53,8 +53,8 @@
 #                     its base ships no published runtime. A dev image with neither
 #                     fails to build (os/scripts/ensure-dev-env-runtime.sh)
 #   TILO_DEV_MODEL_CATALOG  a directory with a signed local model catalog and its keys
-#                     (catalog.json, keys.json; `local-model-catalog.sh dev`, t's
-#                     model-catalog-dev-<arch>): what the dev image carries in place of the base's
+#                     (catalog.json, keys.json; `local-model-catalog.sh dev`):
+#                     what the dev image carries in place of the base's
 #                     catalog. Without it the dev image keeps the base's
 #   TILO_DEV_RUST_LTO thin (default here) or off, for that compile
 #   TILO_DEV_CARGO_BUILD_JOBS  parallel jobs of that compile (default: a CPU per

@@ -2,8 +2,8 @@
 //! turned into an ordered list of path-level changes.
 //!
 //! Writers are never intercepted. The journal only observes, in the order
-//! the kernel queued the events, and that order is what peers apply
-//! (`docs/architecture/storage.md`, §10, V3). The journal is an optimisation:
+//! the kernel queued the events, and that order is what peers apply.
+//! The journal is an optimisation:
 //! when it loses information (queue overflow, a directory that vanished
 //! before its events were read) it asks for a rescan, and capture then
 //! compares snapshots instead. The filesystem is the truth.

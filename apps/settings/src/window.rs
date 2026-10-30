@@ -478,8 +478,8 @@ fn shell(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> NavShell {
             }
         })
         .offered_while(move || offered.pane_query().is_some())
-        .on_open(move || opened.query_opened())
-        .on_close(move || {
+        .opening(move || opened.query_opened())
+        .closing(move || {
             if let Some(query) = closed.pane_query() {
                 query.query_closed();
             }
@@ -519,7 +519,7 @@ fn upkeep(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> Upkeep {
     let prefs = cx.settings::<crate::prefs::AppearancePrefs>();
     let device = cx.settings::<crate::prefs::AppearanceDevicePrefs>();
     Upkeep::new()
-        .on_sync(move || synced.sync())
+        .syncing(move || synced.sync())
         .busy(move || busy.areas().iter().any(crate::area::PaneArea::busy))
         .next_wake(move || waking.next_wake())
         .pending_visual_work(move || {
@@ -528,7 +528,7 @@ fn upkeep(cx: &ViewCx<Settings>, chrome: &Rc<Chrome>) -> Upkeep {
                     || crate::area::PaneArea::pending_visual_work(area)
             })
         })
-        .on_presented(move || {
+        .presenting(move || {
             presented.area_reads().presented();
             presented.area_reads().wake();
         })

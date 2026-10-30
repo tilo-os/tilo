@@ -130,7 +130,7 @@ TRUNCATING_SEARCH = re.compile(
 CONTROL_CALLBACKS = frozenset(
     {
         "on_activate", "on_activate_entry", "on_change", "on_check",
-        "on_chosen_change", "on_clear_filters", "on_click", "on_context_menu_item",
+        "on_clear_filters", "on_click", "on_context_menu_item",
         "on_delete", "on_drop", "on_files", "on_heading_action", "on_move",
         "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
         "on_rename", "on_retry",
@@ -144,9 +144,12 @@ CONTROL_CALLBACKS = frozenset(
 # widgets and the framework view is in one of the two sets, so a new one is
 # classified when it is added.
 NOT_CONTROL_CALLBACKS = {
+    "on_asked": "wakes the host's loop when an invocation arrives: it runs the app's own "
+    "frame, and activates no control",
     "on_effect": "activates a published native effect action",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
+    "on_activate_view": "activates the widget's published view action for the entry it opened",
     "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
     "a banner's follows its published dismiss button",
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
@@ -166,10 +169,10 @@ NOT_CONTROL_CALLBACKS = {
     "open, under the person's grants",
     "on_stage": "stages view state for a screenshot scenario",
     "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
-    "on_close": "a query view's observer of the window search closing: the view goes back to "
-    "what it showed, no edit",
-    "on_sync": "a view's upkeep hook run on every sync of its window, not a control",
-    "on_presented": "a view's upkeep hook run after each frame it draws, not a control",
+    "on_close": "the window search's close puts back what the view showed before it opened: "
+    "what this window shows, no edit",
+    "on_sync": "a view's per-sync upkeep hook, run by the framework, not a control",
+    "on_presented": "a view's after-frame hook, run by the framework, not a control",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a
@@ -198,6 +201,8 @@ NOT_ACTION_BUTTONS = {
     "icon_action": "a menu entry, published as the open menu's own control",
     "destructive_action": "a menu entry, published as the open menu's own control",
     "actions_group": "binds each hit to its published action",
+    "hover_action_view": "publishes the card's hover action as its own view action",
+    "hover_action_effect": "publishes the card's hover action as its own effect",
     "primary_action": "a dialog's footer button, published as the dialog's own control",
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
     "tertiary_action": "a dialog's footer button, published as the dialog's own control",
@@ -386,7 +391,7 @@ RATCHET_FILTERS = {
 # Ratchets of the shipped app: test files and `#[cfg(test)]` items are exempt.
 PRODUCTION_RATCHETS = {"closure_control", "closure_action_button"}
 
-# The one resource/action/view model (docs/architecture/README.md): an app's
+# The one resource/action/view model: an app's
 # edits go through the framework `Dispatcher`, it launches as a `ResourceApp`,
 # its durable state is the resource's document, and nothing beside
 # `Action::apply` writes that document. These count production code only (test

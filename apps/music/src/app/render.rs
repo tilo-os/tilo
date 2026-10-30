@@ -1654,6 +1654,10 @@ impl Music {
             MusicEffect::Open { place } => self.show(place).map(|()| done),
             MusicEffect::OpenAlbum { album } => self.show(Place::Album(album)).map(|()| done),
             MusicEffect::OpenArtist { artist } => self.show(Place::Artist(artist)).map(|()| done),
+            MusicEffect::BrowseGenre { genre } => {
+                self.on_browse_genre(&genre);
+                Ok(done)
+            }
             MusicEffect::Play { track, queued } => {
                 self.supersede_pending_stream_start();
                 let request = match queued {
@@ -4604,7 +4608,8 @@ impl Music {
         // A genre is a card; pressing it opens search for the genre.
         let key = format!("{genres:?}");
         let span = (body.x0 + look.gutter, body.x1 - look.gutter);
-        self.page_part(ctx, span, y, key, move |asked| {
+        let actions = self.actions.clone();
+        self.page_part(ctx, span, y, key, move |_| {
             let cards = genres
                 .into_iter()
                 .map(|(genre, artists)| {
@@ -4613,18 +4618,21 @@ impl Music {
                     } else {
                         format!("{artists} artists")
                     };
-                    Box::new(
-                        ui::widget::Card::new(Box::new(
-                            ui::widget::Text::new(&label)
-                                .with_role(TextRole::Caption)
-                                .dimmed(),
-                        ))
-                        .with_title(genre.clone())
-                        .on_activate(
-                            format!("music.genre.{genre}"),
-                            super::page_part::asking(asked, Action::BrowseGenre(genre)),
-                        ),
-                    ) as ui::widget::Element
+                    let card = ui::widget::Card::new(Box::new(
+                        ui::widget::Text::new(&label)
+                            .with_role(TextRole::Caption)
+                            .dimmed(),
+                    ))
+                    .with_title(genre.clone());
+                    let browse = actions.as_ref().and_then(|actions| {
+                        actions.effect(&crate::actions::MusicEffect::BrowseGenre {
+                            genre: genre.clone(),
+                        })
+                    });
+                    Box::new(match browse {
+                        Some(binding) => card.on_action(format!("music.genre.{genre}"), binding),
+                        None => card,
+                    }) as ui::widget::Element
                 })
                 .collect();
             Box::new(ui::widget::CardGrid::new(cards))

@@ -806,6 +806,17 @@ pub fn enumerate() -> AudioGraph {
 /// graph can hold or does not finish in time.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn try_enumerate() -> Result<AudioGraph, String> {
+    dump().map(|json| parse_pw_dump(&json))
+}
+
+/// The live graph once, as the JSON `pw-dump` prints, for readers of objects
+/// [`AudioGraph`] does not model (clients and their server-attested pids).
+///
+/// # Errors
+///
+/// As [`try_enumerate`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn dump() -> Result<String, String> {
     let out = bounded_command::run(
         "pw-dump",
         &[],
@@ -817,7 +828,7 @@ pub fn try_enumerate() -> Result<AudioGraph, String> {
     if !out.status.success() {
         return Err(format!("pw-dump exited with {}", out.status));
     }
-    Ok(parse_pw_dump(&String::from_utf8_lossy(&out.stdout)))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// There is no audio graph to read on this target.

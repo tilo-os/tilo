@@ -9,6 +9,11 @@ pub enum PickerOperation {
     Select {
         entry: String,
     },
+    /// Add the entry to the selection, or take it out, where several may
+    /// be chosen; elsewhere the same as `Select`.
+    AlsoSelect {
+        entry: String,
+    },
     Navigate {
         entry: String,
     },
@@ -21,6 +26,11 @@ pub enum PickerOperation {
     Replace,
     KeepExisting,
     NextFilter,
+    /// Show only the files of one of the types the app named, counted from
+    /// zero in [`FilePicker::filter_labels`].
+    Filter {
+        index: usize,
+    },
     /// Search every place the person can reach (the system search), as
     /// Enter in the search field does; an empty query goes back to the
     /// folder.
@@ -40,13 +50,40 @@ pub enum PickerRefusal {
     Unavailable,
 }
 
-fn entry_id(path: &std::path::Path) -> String {
+/// The id a semantic operation names an entry by: stable for its path, and
+/// saying nothing of the path to whoever only holds the id.
+pub fn entry_id(path: &std::path::Path) -> String {
     blake3::hash(path.as_os_str().as_encoded_bytes())
         .to_hex()
         .to_string()
 }
 
 impl FilePicker {
+    /// The types the list may be narrowed to, in the order the type menu
+    /// shows them.
+    pub fn filter_labels(&self) -> Vec<String> {
+        self.filters
+            .iter()
+            .map(|filter| filter.label.clone())
+            .collect()
+    }
+
+    /// Whether confirming now would answer: something fit is chosen, or a
+    /// name is typed to save as.
+    pub fn can_confirm(&self) -> bool {
+        self.can_commit_open()
+    }
+
+    /// The mode the chooser asks in.
+    pub fn mode(&self) -> FilePickerMode {
+        self.mode
+    }
+
+    /// Whether more than one entry may be chosen.
+    pub fn multiple(&self) -> bool {
+        self.multiple
+    }
+
     /// Binds an operation to the actual listing, selection and Save prompt.
     fn semantic_state(&self) -> String {
         let mut hash = blake3::Hasher::new();
@@ -130,8 +167,11 @@ impl FilePicker {
             return Err(PickerRefusal::Unavailable);
         }
         let navigate = matches!(operation, PickerOperation::Navigate { .. });
+        let also = matches!(operation, PickerOperation::AlsoSelect { .. });
         match operation {
-            PickerOperation::Select { entry } | PickerOperation::Navigate { entry } => {
+            PickerOperation::Select { entry }
+            | PickerOperation::AlsoSelect { entry }
+            | PickerOperation::Navigate { entry } => {
                 let row = self
                     .entries
                     .iter()
@@ -146,6 +186,10 @@ impl FilePicker {
                         return Err(PickerRefusal::UnavailableEntry);
                     }
                     self.navigate_to(&row.path);
+                } else if also && self.multiple {
+                    if let Some(index) = self.entries.iter().position(|e| e.path == row.path) {
+                        self.selection.apply_click(index, true, false);
+                    }
                 } else {
                     self.select_by_path(&row.path);
                 }
@@ -188,6 +232,12 @@ impl FilePicker {
                 self.keep_existing();
             }
             PickerOperation::NextFilter => self.cycle_filter(),
+            PickerOperation::Filter { index } => {
+                if index >= self.filters.len() {
+                    return Err(PickerRefusal::Unavailable);
+                }
+                self.set_filter(index);
+            }
             PickerOperation::Search { query } => {
                 if query.len() > 1024 {
                     return Err(PickerRefusal::Unavailable);

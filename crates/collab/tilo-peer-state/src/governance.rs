@@ -19,8 +19,7 @@ use crate::state::{
 /// and nothing they prove is lost: [`admit_invited_member`] copies every
 /// receipt it has seen into the per-invite `invitation_receipts_v1` ledger in
 /// the same transaction that drops one, and that ledger is what refuses a
-/// second redemption of the same invitation. See "Retention" in
-/// `docs/architecture/collaboration.md`.
+/// second redemption of the same invitation.
 pub const MAX_RETAINED_IDENTITY_ADMISSIONS: usize = 8;
 
 /// Keep the latest [`MAX_RETAINED_IDENTITY_ADMISSIONS`] receipts, in order.

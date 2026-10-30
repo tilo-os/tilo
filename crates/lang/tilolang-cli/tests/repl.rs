@@ -214,7 +214,10 @@ fn the_repl_is_admitted_as_the_persons_agent_and_never_writes_their_answers() {
         .find(|request| request["id"] == "allow-once@p1")
         .unwrap_or_else(|| panic!("the person admits it: {seen:?}"));
     assert_eq!(admitted["args"]["agent"], "tilolang-repl");
-    assert_eq!(admitted["args"]["preset"], "operator", "{admitted}");
+    assert!(
+        admitted["args"].get("preset").is_none(),
+        "the door takes no preset: the connection works in its task run: {admitted}"
+    );
     assert!(
         seen.iter()
             .all(|request| request["op"] != "allow" && request["op"] != "disallow"),

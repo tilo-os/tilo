@@ -15,7 +15,6 @@
 //! pictures it shows and at what size ([`Command::Show`]) and collects them
 //! ([`Command::Pictures`]).
 use super::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
-use super::realtime_session::VerifiedAppRegistration;
 use crate::portal::capture_broker::BorrowedCaptureHandle;
 use crate::portal::{
     CaptureBroker, CaptureKind, CaptureLeaseId, CaptureSessionBinding, GrantStoreHandle,
@@ -34,6 +33,7 @@ use std::time::{Duration, Instant};
 use tilo_action_broker::services::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
+use tilo_device_fabric::realtime_session::VerifiedAppRegistration;
 use tilo_lock::MutexRecover as _;
 
 const MAX_CALLS: usize = 16;

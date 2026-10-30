@@ -40,6 +40,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
+use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{TextInput, TextInputKind, Widget};
 
 /// One completion offered in the dropdown.
@@ -69,6 +70,11 @@ pub struct Suggestion {
     /// Dim text right after the label on the same line: a handle, a topic,
     /// a command's parameters.
     pub aside: Option<String>,
+    /// A state shown in a trailing check column: checked or not. A list
+    /// with any such row keeps the column on every row.
+    pub checked: Option<bool>,
+    /// The keys that do what the row does, at its trailing end.
+    pub shortcut: Option<String>,
 }
 
 /// What a row of a [`SuggestionList`] is.
@@ -118,6 +124,8 @@ impl Suggestion {
             role: RowRole::Item,
             matched: Vec::new(),
             aside: None,
+            checked: None,
+            shortcut: None,
         }
     }
 
@@ -133,6 +141,8 @@ impl Suggestion {
             role: RowRole::Item,
             matched: Vec::new(),
             aside: None,
+            checked: None,
+            shortcut: None,
         }
     }
 
@@ -161,12 +171,53 @@ impl Suggestion {
         self.person = Some(person);
         self
     }
+
+    /// Show `checked` in the trailing check column.
+    #[must_use]
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    /// Show the keys that do what the row does at its end.
+    #[must_use]
+    pub fn with_shortcut(mut self, keys: impl Into<String>) -> Self {
+        self.shortcut = Some(keys.into());
+        self
+    }
 }
 
 /// The width a row's trailing detail may take out of `free`: what the label
 /// (`label_w` wide) leaves, and at least half the row.
 fn detail_room(free: f64, label_w: f64, spacing: f64) -> f64 {
     (free - label_w - 2.0 * spacing).max(free / 2.0)
+}
+
+/// The pickable row after (or, not `forward`, before) row `from` of
+/// `count`: past the last it wraps round to the first, or without `wrap`
+/// stays on the last; from no row it is the first (last) pickable row.
+/// `None` when no row is pickable. Every menu's arrow keys step so.
+pub(crate) fn step_pickable(
+    count: usize,
+    from: Option<usize>,
+    forward: bool,
+    wrap: bool,
+    pickable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let first = (0..count).find(|&i| pickable(i))?;
+    let last = (0..count).rev().find(|&i| pickable(i))?;
+    let (past_end, past_start) = if wrap { (first, last) } else { (last, first) };
+    Some(match from {
+        None if forward => first,
+        None => last,
+        Some(cur) if forward => (cur.saturating_add(1)..count)
+            .find(|&i| pickable(i))
+            .unwrap_or(past_end),
+        Some(cur) => (0..cur.min(count))
+            .rev()
+            .find(|&i| pickable(i))
+            .unwrap_or(past_start),
+    })
 }
 
 /// How the most recent interaction ended. Returned once by
@@ -199,6 +250,10 @@ struct ListMetrics {
     pad: f64,
     /// A row's leading icon.
     icon: f64,
+    /// The trailing check of a row that shows a state.
+    check: f64,
+    /// The lane a scroll bar takes beside the rows.
+    gutter: f64,
     /// Between the icon, the label and the detail column.
     spacing: f64,
 }
@@ -221,6 +276,8 @@ impl ListMetrics {
             gap: f64::from(tokens.spacing.s1),
             pad: f64::from(tokens.spacing.s3),
             icon: f64::from(tokens.metrics.icon_sm).max(line.round() - 2.0),
+            check: f64::from(tokens.metrics.icon_sm),
+            gutter: f64::from(tokens.metrics.scrollbar_gutter),
             spacing: f64::from(tokens.spacing.s2),
         }
     }
@@ -240,30 +297,48 @@ impl ListMetrics {
             gap: f64::from(spacing.s1),
             pad: f64::from(spacing.s3),
             icon: f64::from(metrics.icon_sm),
+            check: f64::from(metrics.icon_sm),
+            gutter: f64::from(metrics.scrollbar_gutter),
             spacing: f64::from(spacing.s2),
         }
     }
 }
 
+/// What a list's width was measured with: its label style and geometry,
+/// and the renderer's fonts and text scale.
+struct WidthKey {
+    style: crate::text_render::TextStyle,
+    metrics: ListMetrics,
+    epoch: std::sync::Arc<()>,
+    text_scale: f32,
+}
+
 /// A floating list of suggestions under (or, without room, above) an
-/// anchor: the one list behind [`Autocomplete`] and a code editor's caret
-/// completion.
+/// anchor: the one menu list behind [`Autocomplete`], a code editor's caret
+/// completion, the filter and slash menus and a [`crate::widget::Dropdown`]'s
+/// open list.
 ///
 /// It is a floating Panel (`surface::panel`, `radii.panel`, the floating
-/// shadow) placed by `floating_surface::place_anchored`, so it flips above
+/// shadow) placed by `floating_surface::place_aligned`, so it flips above
 /// its anchor near the window's bottom and shifts to stay inside it. Rows
-/// are menu rows with the armed-row lift, an optional leading icon and an
-/// optional trailing detail column. More suggestions than fit scroll, the
-/// armed row always in view. While rows are on their way, the framework's
-/// placeholder stands where the first will be ([`crate::arriving`]); a
-/// status line stands in for rows when there are none.
+/// are menu rows with the armed-row lift, an optional leading icon, an
+/// optional trailing detail column, shortcut and check. More suggestions
+/// than fit scroll, the armed row always in view; a list taller than the
+/// room beside its anchor shrinks to it and scrolls. While rows are on
+/// their way, the framework's placeholder stands where the first will be
+/// ([`crate::arriving`]); a status line stands in for rows when there are
+/// none.
 pub struct SuggestionList {
     suggestions: Vec<Suggestion>,
     highlight: Option<usize>,
     hover: Option<usize>,
-    /// The first row in view.
-    first: usize,
+    /// How far the rows are scrolled, in pixels.
+    offset: f64,
     max_visible: usize,
+    /// The tallest the rows get before they scroll, in pixels.
+    max_height: Option<f64>,
+    /// The shortest a row is (a touch target).
+    min_row: f64,
     status: Option<String>,
     /// Rows on their way: the timing of their placeholder.
     arriving: Option<crate::arriving::ArrivalClock>,
@@ -277,6 +352,9 @@ pub struct SuggestionList {
     metrics: ListMetrics,
     /// The width the rows need, from the latest paint.
     content_width: f64,
+    /// What [`Self::content_width`] was measured with, so a repaint
+    /// reshapes no row; `None` once the rows changed.
+    measured: Option<WidthKey>,
     /// The narrowest the panel is, whatever its anchor and rows need.
     min_width: f64,
     /// A band its owner paints at the top of the panel, above the rows (a
@@ -284,6 +362,8 @@ pub struct SuggestionList {
     header: f64,
     /// The side of the anchor the panel opens on when there is room there.
     side: crate::widget::PopoverSide,
+    /// Which edge of the anchor the panel lines up with.
+    align: crate::widget::PanelAlign,
     /// The panel spans the viewport's width right above its anchor: a phone's
     /// drawer docked above the keyboard, its rows a finger tall.
     docked: bool,
@@ -291,6 +371,10 @@ pub struct SuggestionList {
     height: crate::motion::Extent,
     /// Turns beside a header whose rows are on their way.
     spinner: crate::widget::spinner::Spinner,
+    /// The scroll bar of an owner that routes the pointer to it.
+    scrollbar: Option<Scrollbar>,
+    /// Where the latest paint put the scroll bar's track.
+    scrollbar_track: Rect,
 }
 
 impl Default for SuggestionList {
@@ -306,8 +390,10 @@ impl SuggestionList {
             suggestions: Vec::new(),
             highlight: None,
             hover: None,
-            first: 0,
+            offset: 0.0,
             max_visible: DEFAULT_MAX_VISIBLE,
+            max_height: None,
+            min_row: 0.0,
             status: None,
             arriving: None,
             drawn_step: None,
@@ -316,12 +402,16 @@ impl SuggestionList {
             role: TextRole::Body,
             metrics: ListMetrics::stock(),
             content_width: 0.0,
+            measured: None,
             min_width: 0.0,
             header: 0.0,
             side: crate::widget::PopoverSide::Below,
+            align: crate::widget::PanelAlign::Leading,
             docked: false,
             height: crate::motion::Extent::default(),
             spinner: crate::widget::spinner::Spinner::new(),
+            scrollbar: None,
+            scrollbar_track: Rect::ZERO,
         }
     }
 
@@ -329,6 +419,12 @@ impl SuggestionList {
     /// composer at the bottom of a window, below a field near its top.
     pub fn set_side(&mut self, side: crate::widget::PopoverSide) {
         self.side = side;
+    }
+
+    /// Line the panel up with the anchor's `align` edge: a menu button's
+    /// list hangs from its trailing edge.
+    pub fn set_align(&mut self, align: crate::widget::PanelAlign) {
+        self.align = align;
     }
 
     /// Span the viewport's width right above the anchor, rows a finger tall:
@@ -403,15 +499,59 @@ impl SuggestionList {
         self
     }
 
+    /// Rows taller than `height` together scroll instead of growing the
+    /// panel; `None` leaves only [`Self::with_max_visible`].
+    pub fn set_max_height(&mut self, height: Option<f64>) {
+        self.max_height = height;
+        self.offset = self.offset.min(self.max_offset());
+    }
+
+    /// No row shorter than `height`: a touch target on a coarse pointer.
+    pub fn set_min_row_height(&mut self, height: f64) {
+        self.min_row = height.max(0.0);
+        self.metrics.row = self.metrics.row.max(self.min_row);
+    }
+
+    /// Show a scroll bar while the rows overflow, for an owner that routes
+    /// the pointer to it ([`Self::press_scrollbar`], [`Self::drag_scrollbar`],
+    /// [`Self::release_scrollbar`]).
+    #[must_use]
+    pub fn with_scrollbar(mut self) -> Self {
+        self.scrollbar = Some(Scrollbar::vertical());
+        self
+    }
+
     /// Set the rows' label role; see [`Self::with_text_role`].
     pub fn set_text_role(&mut self, role: TextRole) {
         self.role = role;
     }
 
+    /// Take `theme`'s geometry now, before a paint measures the labels, so
+    /// rows are hit where they will be drawn.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        let two_line = self.suggestions.iter().any(|s| s.subtitle.is_some());
+        self.metrics = ListMetrics::of(theme, self.role, two_line);
+        if self.docked {
+            // A finger's row: the panel row every touch list has.
+            self.metrics.row = self
+                .metrics
+                .row
+                .max(f64::from(theme.tokens.metrics.panel_row_height));
+        }
+        self.metrics.row = self.metrics.row.max(self.min_row);
+        self.offset = self.offset.min(self.max_offset());
+    }
+
     /// Replace the suggestions. Keeps the armed row when it still exists
-    /// and clears the status line once there are rows.
+    /// and clears the status line once rows arrive.
     pub fn set_suggestions(&mut self, suggestions: Vec<Suggestion>) {
+        // The same rows again leave the list as it is: scrolled where the
+        // person scrolled it, its width measured.
+        if self.suggestions == suggestions {
+            return;
+        }
         self.suggestions = suggestions;
+        self.measured = None;
         if !self.suggestions.is_empty() {
             self.status = None;
             self.arriving = None;
@@ -422,9 +562,7 @@ impl SuggestionList {
         {
             self.highlight = None;
         }
-        self.first = self
-            .first
-            .min(self.suggestions.len().saturating_sub(self.max_visible));
+        self.offset = self.offset.min(self.max_offset());
         self.reveal();
     }
 
@@ -458,6 +596,17 @@ impl SuggestionList {
             .collect()
     }
 
+    /// The whole rows in view, at least one.
+    fn rows_in_view(&self) -> usize {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a non-negative count of rows in view, floored"
+        )]
+        let rows = (self.view_height() / self.metrics.row.max(1.0)).floor() as usize;
+        rows.max(1)
+    }
+
     /// Arm the row a page (the rows in view) further on or back, stopping at
     /// the ends: Page Down and Page Up.
     pub fn page(&mut self, forward: bool) {
@@ -465,7 +614,7 @@ impl SuggestionList {
         let (Some(&first), Some(&last)) = (pickable.first(), pickable.last()) else {
             return;
         };
-        let step = self.max_visible.saturating_sub(1).max(1);
+        let step = self.rows_in_view().saturating_sub(1).max(1);
         let from = self.highlight.unwrap_or(if forward { first } else { last });
         let target = if forward {
             from.saturating_add(step)
@@ -491,28 +640,27 @@ impl SuggestionList {
 
     /// Arm the next (or previous) row, wrapping at both ends.
     pub fn move_highlight(&mut self, forward: bool) {
-        let pickable = self.pickable();
-        let (Some(&first), Some(&last)) = (pickable.first(), pickable.last()) else {
-            return;
-        };
-        let next = match self.highlight {
-            None if forward => first,
-            None => last,
-            Some(cur) if forward => pickable.iter().copied().find(|&i| i > cur).unwrap_or(first),
-            Some(cur) => pickable
-                .iter()
-                .rev()
-                .copied()
-                .find(|&i| i < cur)
-                .unwrap_or(last),
-        };
-        self.set_highlight(Some(next));
+        self.step_highlight(forward, true);
+    }
+
+    /// Arm the next (or previous) row; at either end wrap round, or stay
+    /// there without `wrap` (a chooser's list).
+    pub fn step_highlight(&mut self, forward: bool, wrap: bool) {
+        let next = step_pickable(self.suggestions.len(), self.highlight, forward, wrap, |i| {
+            self.suggestions.get(i).is_some_and(Suggestion::is_pickable)
+        });
+        if next.is_some() {
+            self.set_highlight(next);
+        }
     }
 
     /// A line shown while there are no rows ("Searching…", "No matches");
     /// `None` clears it.
     pub fn set_status(&mut self, status: Option<String>) {
-        self.status = status;
+        if self.status != status {
+            self.status = status;
+            self.measured = None;
+        }
     }
 
     /// Rows are on their way, with `clock`'s timing (asked when, from
@@ -575,9 +723,10 @@ impl SuggestionList {
     /// Clear rows, status and armed row.
     pub fn clear(&mut self) {
         self.suggestions.clear();
+        self.measured = None;
         self.highlight = None;
         self.hover = None;
-        self.first = 0;
+        self.offset = 0.0;
         self.status = None;
         self.arriving = None;
     }
@@ -585,20 +734,62 @@ impl SuggestionList {
     /// Keep the armed row in view.
     fn reveal(&mut self) {
         if let Some(h) = self.highlight {
-            if h < self.first {
-                self.first = h;
-            } else if h >= self.first.saturating_add(self.max_visible) {
-                self.first = h.saturating_add(1).saturating_sub(self.max_visible);
-            }
+            let row = self.metrics.row;
+            let top = f64_of_usize(h) * row;
+            self.offset = crate::widget::scroll_region::reveal_offset(
+                self.offset,
+                self.view_height(),
+                top..top + row,
+                self.max_offset(),
+            );
         }
     }
 
-    /// The rows in view.
-    fn visible_count(&self) -> usize {
-        self.suggestions
-            .len()
-            .saturating_sub(self.first)
-            .min(self.max_visible)
+    /// The height of every row together.
+    fn content_height(&self) -> f64 {
+        f64_of_usize(self.suggestions.len()) * self.metrics.row
+    }
+
+    /// The height of the rows in view: every row, up to
+    /// [`Self::with_max_visible`] rows, [`Self::set_max_height`] and the
+    /// room beside the anchor. One row's for a status line.
+    fn view_height(&self) -> f64 {
+        let m = &self.metrics;
+        if self.suggestions.is_empty() {
+            return m.row;
+        }
+        let mut height = self
+            .content_height()
+            .min(f64_of_usize(self.max_visible) * m.row);
+        if let Some(max) = self.max_height {
+            height = height.min(max.max(m.row));
+        }
+        if let Some(viewport) = self.viewport.filter(|_| !self.docked) {
+            use crate::widget::PopoverSide::{Above, Below};
+            let room = [Above, Below]
+                .into_iter()
+                .map(|side| {
+                    crate::widget::floating_surface::anchored_room(
+                        self.anchor,
+                        side,
+                        m.gap,
+                        viewport,
+                    )
+                })
+                .fold(0.0, f64::max);
+            height = height.min((room - 2.0 * m.inset - self.header).max(0.0));
+        }
+        height
+    }
+
+    /// The furthest the rows scroll.
+    fn max_offset(&self) -> f64 {
+        (self.content_height() - self.view_height()).max(0.0)
+    }
+
+    /// The rows' scroll geometry, for the scroll bar.
+    fn scroll_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_height(), self.view_height(), self.offset)
     }
 
     /// The panel's rect: under the anchor, or above it when there is more
@@ -608,12 +799,7 @@ impl SuggestionList {
             return None;
         }
         let m = &self.metrics;
-        let rows = if self.suggestions.is_empty() {
-            1
-        } else {
-            self.visible_count()
-        };
-        let height = f64_of_usize(rows) * m.row + 2.0 * m.inset + self.header;
+        let height = self.view_height() + 2.0 * m.inset + self.header;
         let viewport = self
             .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
@@ -631,10 +817,11 @@ impl SuggestionList {
             .max(self.min_width)
             .min(viewport.width().max(1.0));
         Some(
-            crate::widget::floating_surface::place_anchored(
+            crate::widget::floating_surface::place_aligned(
                 self.anchor,
                 (width, height),
                 self.side,
+                self.align,
                 m.gap,
                 viewport,
             )
@@ -642,32 +829,85 @@ impl SuggestionList {
         )
     }
 
-    /// Row `visible` (0 = the first in view) inside `panel`.
-    fn row_in(&self, panel: Rect, visible: usize) -> Rect {
+    /// The box the rows scroll in inside `panel`: inside the inset, under
+    /// the header, clear of a scroll bar.
+    fn rows_box(&self, panel: Rect) -> Rect {
         let m = &self.metrics;
-        let y0 = panel.y0 + m.inset + self.header + f64_of_usize(visible) * m.row;
-        Rect::new(panel.x0 + m.inset, y0, panel.x1 - m.inset, y0 + m.row)
+        let gutter = if self.scrollbar.is_some() && self.scroll_metrics().overflows() {
+            m.gutter
+        } else {
+            0.0
+        };
+        Rect::new(
+            panel.x0 + m.inset,
+            (panel.y0 + m.inset + self.header).min(panel.y1),
+            (panel.x1 - m.inset - gutter).max(panel.x0 + m.inset),
+            (panel.y1 - m.inset).max(panel.y0),
+        )
     }
 
+    /// Row `index` inside `panel`, where its scroll puts it.
+    fn row_in(&self, panel: Rect, index: usize) -> Rect {
+        let m = &self.metrics;
+        let rows = self.rows_box(panel);
+        let y0 = rows.y0 + f64_of_usize(index) * m.row - self.offset;
+        Rect::new(rows.x0, y0, rows.x1, y0 + m.row)
+    }
+
+    /// The rows at least partly in view.
+    fn in_view(&self) -> std::ops::Range<usize> {
+        let row = self.metrics.row.max(1.0);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "non-negative row positions, floored and ceiled"
+        )]
+        let (from, to) = (
+            (self.offset / row).floor() as usize,
+            ((self.offset + self.view_height()) / row).ceil() as usize,
+        );
+        from.min(self.suggestions.len())..to.min(self.suggestions.len())
+    }
+
+    /// The part of row `index` in view.
     pub fn row_rect(&self, index: usize) -> Option<Rect> {
         let panel = self.rect()?;
-        let visible = index.checked_sub(self.first)?;
-        (visible < self.visible_count()).then(|| self.row_in(panel, visible))
+        if index >= self.suggestions.len() {
+            return None;
+        }
+        let shown = self.row_in(panel, index).intersect(self.rows_box(panel));
+        (shown.height() > 0.0).then_some(shown)
     }
 
     pub fn row_at(&self, point: Point) -> Option<usize> {
         let panel = self.rect()?;
-        if !panel.contains(point) || self.suggestions.is_empty() {
+        let rows = self.rows_box(panel);
+        if !rows.contains(point) || self.suggestions.is_empty() {
             return None;
         }
-        (0..self.visible_count())
-            .find(|&visible| self.row_in(panel, visible).contains(point))
-            .map(|visible| visible.saturating_add(self.first))
-            .filter(|&index| {
-                self.suggestions
-                    .get(index)
-                    .is_some_and(Suggestion::is_pickable)
-            })
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the point is inside the rows' box, so its row is non-negative"
+        )]
+        let index =
+            ((point.y - rows.y0 + self.offset) / self.metrics.row.max(1.0)).floor() as usize;
+        self.suggestions
+            .get(index)
+            .is_some_and(Suggestion::is_pickable)
+            .then_some(index)
+    }
+
+    /// Arm the row under `point`, as a pointer on a menu does, without
+    /// scrolling a row half in view. Whether the armed row changed.
+    pub fn arm_at(&mut self, point: Point) -> bool {
+        match self.row_at(point) {
+            Some(index) if self.highlight != Some(index) => {
+                self.highlight = Some(index);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Track the pointer for the hover lift; returns whether it changed.
@@ -680,13 +920,89 @@ impl SuggestionList {
 
     /// Scroll by `rows` (positive scrolls down), within the rows.
     pub fn scroll_by(&mut self, rows: i32) {
-        let max_first = self.suggestions.len().saturating_sub(self.max_visible);
-        let step = usize::try_from(rows.unsigned_abs()).unwrap_or(usize::MAX);
-        self.first = if rows >= 0 {
-            self.first.saturating_add(step).min(max_first)
-        } else {
-            self.first.saturating_sub(step)
+        self.scroll_px(f64::from(rows) * self.metrics.row);
+    }
+
+    /// Scroll by `dy` pixels (positive scrolls down), within the rows.
+    pub fn scroll_px(&mut self, dy: f64) {
+        self.offset = (self.offset + dy).clamp(0.0, self.max_offset());
+    }
+
+    /// How far the rows are scrolled, in pixels.
+    #[must_use]
+    pub fn scroll_offset(&self) -> f64 {
+        self.offset
+    }
+
+    /// A press at `point` on the scroll bar: grabs its thumb or pages the
+    /// rows. Whether the bar took it.
+    pub fn press_scrollbar(&mut self, point: Point) -> bool {
+        let metrics = self.scroll_metrics();
+        let Some(bar) = self.scrollbar.as_mut() else {
+            return false;
         };
+        match bar.press(self.scrollbar_track, metrics, point) {
+            PressOutcome::Thumb => true,
+            PressOutcome::Page(offset) => {
+                self.offset = offset.clamp(0.0, self.max_offset());
+                true
+            }
+            PressOutcome::Miss => false,
+        }
+    }
+
+    /// The pointer moved to `point`: a held thumb follows it, else the bar
+    /// tracks hover. Whether a held thumb scrolled.
+    pub fn drag_scrollbar(&mut self, point: Point) -> bool {
+        let metrics = self.scroll_metrics();
+        let Some(bar) = self.scrollbar.as_mut() else {
+            return false;
+        };
+        if let Some(offset) = bar.drag_to(self.scrollbar_track, metrics, point) {
+            self.offset = offset.clamp(0.0, self.max_offset());
+            return true;
+        }
+        bar.update_hover(self.scrollbar_track, metrics, point);
+        false
+    }
+
+    /// The pointer left: the bar shows no hover.
+    pub fn leave_scrollbar(&mut self) {
+        if let Some(bar) = self.scrollbar.as_mut() {
+            bar.set_hover(false);
+        }
+    }
+
+    /// Let go of a held thumb. Whether one was held.
+    pub fn release_scrollbar(&mut self) -> bool {
+        self.scrollbar.as_mut().is_some_and(Scrollbar::release)
+    }
+
+    /// Whether the scroll bar is held or hovered (painted stronger).
+    #[must_use]
+    pub fn is_scrollbar_active(&self) -> bool {
+        self.scrollbar.as_ref().is_some_and(Scrollbar::is_active)
+    }
+
+    /// One row's height.
+    #[cfg(test)]
+    pub(crate) fn row_height(&self) -> f64 {
+        self.metrics.row
+    }
+
+    /// The scroll bar, its track and the rows' scroll geometry.
+    #[cfg(test)]
+    pub(crate) fn scrollbar_parts(&self) -> Option<(&Scrollbar, Rect, ScrollMetrics)> {
+        Some((
+            self.scrollbar.as_ref()?,
+            self.scrollbar_track,
+            self.scroll_metrics(),
+        ))
+    }
+
+    /// Whether any row shows a state, so every row keeps the check column.
+    fn has_check_column(&self) -> bool {
+        self.suggestions.iter().any(|s| s.checked.is_some())
     }
 
     /// The width every row needs: icon, label and the detail column.
@@ -694,11 +1010,16 @@ impl SuggestionList {
         let m = &self.metrics;
         let label_style = theme.text(self.role);
         let detail_style = theme.text(TextRole::Caption);
+        let check = if self.has_check_column() {
+            m.check + m.spacing
+        } else {
+            0.0
+        };
         let widest = self
             .suggestions
             .iter()
             .map(|s| {
-                let mut w = f64::from(text.measure_style(&s.label, None, &label_style).0);
+                let mut w = f64::from(text.measure_style(&s.label, None, &label_style).0) + check;
                 if let Some(aside) = &s.aside {
                     w += m.spacing + f64::from(text.measure_style(aside, None, &detail_style).0);
                 }
@@ -715,6 +1036,9 @@ impl SuggestionList {
                 if let Some(detail) = &s.detail {
                     w += 2.0 * m.spacing
                         + f64::from(text.measure_style(detail, None, &detail_style).0);
+                }
+                if let Some(keys) = &s.shortcut {
+                    w += m.spacing + f64::from(text.measure_style(keys, None, &label_style).0);
                 }
                 w
             })
@@ -733,16 +1057,23 @@ impl SuggestionList {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let two_line = self.suggestions.iter().any(|s| s.subtitle.is_some());
-        self.metrics = ListMetrics::of(theme, self.role, two_line);
-        if self.docked {
-            // A finger's row: the panel row every touch list has.
-            self.metrics.row = self
-                .metrics
-                .row
-                .max(f64::from(theme.tokens.metrics.panel_row_height));
+        self.set_theme(theme);
+        let style = theme.text(self.role);
+        let measured = self.measured.as_ref().is_some_and(|key| {
+            key.style == style
+                && key.metrics == self.metrics
+                && key.text_scale.to_bits() == text.text_scale().to_bits()
+                && std::sync::Arc::ptr_eq(&key.epoch, text.layout_epoch())
+        });
+        if !measured {
+            self.content_width = self.content_width_in(text, theme);
+            self.measured = Some(WidthKey {
+                style,
+                metrics: self.metrics,
+                epoch: std::sync::Arc::clone(text.layout_epoch()),
+                text_scale: text.text_scale(),
+            });
         }
-        self.content_width = self.content_width_in(text, theme);
         let Some(target) = self.rect() else {
             return;
         };
@@ -817,24 +1148,25 @@ impl SuggestionList {
             }
             return;
         }
+        let rows_box = self.rows_box(target);
         let rows = Rect::new(
-            panel.x0 + m.inset,
+            rows_box.x0,
             (panel.y0 + m.inset + self.header).max(panel.y0),
-            panel.x1 - m.inset,
+            rows_box.x1,
             (panel.y1 - m.inset).max(panel.y0),
         );
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
         let mut busy_at = None;
+        let check_column = self.has_check_column();
         {
             let mut ctx = PaintCtx::new(scene, transform, text, theme);
-            for visible in 0..self.visible_count() {
-                let index = visible.saturating_add(self.first);
+            for index in self.in_view() {
                 let Some(s) = self.suggestions.get(index) else {
                     continue;
                 };
-                let row = self.row_in(target, visible);
+                let row = self.row_in(target, index);
                 match s.role {
-                    RowRole::Item => self.paint_row(&mut ctx, row, index, s),
+                    RowRole::Item => self.paint_row(&mut ctx, row, index, s, check_column),
                     RowRole::Header { busy } => {
                         let end = self.paint_header(&mut ctx, row, s);
                         if busy {
@@ -867,11 +1199,37 @@ impl SuggestionList {
             }
         }
         scene.pop_layer();
+        let metrics = self.scroll_metrics();
+        if let Some(bar) = &self.scrollbar {
+            self.scrollbar_track = if metrics.overflows() {
+                bar.track_in(
+                    Rect::new(rows_box.x1, rows_box.y0, target.x1 - m.inset, rows_box.y1),
+                    theme,
+                )
+            } else {
+                Rect::ZERO
+            };
+            bar.draw(
+                scene,
+                transform,
+                self.scrollbar_track,
+                metrics,
+                theme,
+                false,
+            );
+        }
     }
 
     /// One row: the armed lift (or the hover veneer), the icon, the label,
     /// and the detail in a trailing column.
-    fn paint_row(&self, ctx: &mut PaintCtx<'_>, row: Rect, index: usize, s: &Suggestion) {
+    fn paint_row(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        row: Rect,
+        index: usize,
+        s: &Suggestion,
+        check_column: bool,
+    ) {
         let PaintCtx {
             scene,
             transform,
@@ -939,16 +1297,46 @@ impl SuggestionList {
             );
             x += m.icon + m.spacing;
         }
+        // The trailing end: the check column, then the keys that do the
+        // same, quieter than the label unless the row is armed.
+        let mut end = row.x1 - m.pad;
+        if check_column {
+            if s.checked == Some(true) {
+                let cy = row.center().y;
+                draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(end - m.check, cy - m.check / 2.0, end, cy + m.check / 2.0),
+                    Icon::Check,
+                    ink,
+                    LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            end -= m.check + m.spacing;
+        }
+        if let Some(keys) = &s.shortcut {
+            let (kw, kh) = text.measure_style(keys, None, &label_style);
+            let kx = end - f64::from(kw);
+            text.draw_style(
+                scene,
+                keys,
+                if armed { ink } else { dim },
+                transform.pre_translate(Vec2::new(kx, row.center().y - f64::from(kh) / 2.0)),
+                None,
+                &label_style,
+            );
+            end = kx - m.spacing;
+        }
         // The detail column is trailing; the label takes what is left. The
         // detail may use whatever the label leaves free, and never less than
         // half the row, so a short name keeps its whole "Region, Country".
         let label_x1 = if let Some(detail) = &s.detail {
-            let free = ((row.x1 - m.pad) - x).max(0.0);
+            let free = (end - x).max(0.0);
             let label_w = f64::from(text.measure_style(&s.label, None, &label_style).0);
             let room = f32_of_f64(detail_room(free, label_w, m.spacing));
             let shown = text.elide_to_width_style(detail, room, &detail_style);
             let (dw, dh) = text.measure_style(&shown, None, &detail_style);
-            let dx = row.x1 - m.pad - f64::from(dw);
+            let dx = end - f64::from(dw);
             text.draw_style(
                 scene,
                 &shown,
@@ -959,7 +1347,7 @@ impl SuggestionList {
             );
             dx - 2.0 * m.spacing
         } else {
-            row.x1 - m.pad
+            end
         };
         let room = f32_of_f64((label_x1 - x).max(0.0));
         let label = text.elide_to_width_style(&s.label, room, &label_style);
@@ -1124,10 +1512,10 @@ impl SuggestionList {
                 })
                 .collect();
         }
-        (0..self.visible_count())
-            .filter_map(|visible| {
-                let index = visible.saturating_add(self.first);
+        self.in_view()
+            .filter_map(|index| {
                 let s = self.suggestions.get(index)?;
+                let bounds = self.row_rect(index)?;
                 if !s.is_pickable() {
                     let busy = matches!(s.role, RowRole::Header { busy: true });
                     return Some(
@@ -1138,14 +1526,14 @@ impl SuggestionList {
                         })
                         .with_name(&s.label)
                         .with_key(key(s))
-                        .with_bounds(self.row_in(panel, visible))
+                        .with_bounds(bounds)
                         .with_state(AccessState::new().busy(busy)),
                     );
                 }
                 let mut row = AccessNode::new(Role::Button)
                     .with_name(&s.label)
                     .with_key(key(s))
-                    .with_bounds(self.row_in(panel, visible))
+                    .with_bounds(bounds)
                     .with_state(
                         AccessState::new()
                             .focusable(true)

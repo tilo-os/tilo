@@ -11,8 +11,9 @@
 use std::collections::HashSet;
 
 use super::capability::{capability, capability_mut};
+use super::resource_operation::{ResourceOperation, start_operation};
 use super::{
-    ControlBindingKind, ControlBindingMetadata, ResourceOperationStart, Widget,
+    ControlBindingKind, ControlBindingMetadata, Edits, ResourceOperationStart, Widget,
     semantic_action_bindings_into,
 };
 
@@ -259,6 +260,53 @@ pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::
         .children_mut()
         .into_iter()
         .find_map(take_control_invocation)
+}
+
+/// Run the queued control intents of a tree whose host keeps no resource
+/// tree of its own, such as the shell's own UI: an intent addressed to a
+/// `tilo.control:` handler ([`Button::on_effect`](super::Button::on_effect),
+/// [`Button::on_view`](super::Button::on_view) and the other published
+/// controls) is delivered to the control that published it, as a resource
+/// host delivers an admitted invocation. Answers how many ran.
+///
+/// Every other intent is the resource dispatcher's and is dropped here.
+pub fn start_pending_control_invocations(
+    root: &mut dyn Widget,
+    doc: &mut Edits<'_>,
+    path: &automerge::ObjId,
+) -> usize {
+    // A handler can queue another control (a confirmation, a follow-up); a
+    // tree that keeps queueing cannot hold the frame for longer than the
+    // per-control queue bounds it.
+    const MOST: usize = 64;
+    let mut started: usize = 0;
+    for _ in 0..MOST {
+        let Some(invocation) = take_control_invocation(&mut *root) else {
+            break;
+        };
+        let Some(control) = invocation.address.resource.strip_prefix("tilo.control:") else {
+            continue;
+        };
+        if invocation.address.action != "invoke" {
+            continue;
+        }
+        let Ok(payload) = serde_json::to_vec(control) else {
+            continue;
+        };
+        let operation = ResourceOperation::local(
+            tilo_actions::InvocationId::new(),
+            tilo_actions::OperationKind::Effect,
+            super::activation::NATIVE_INVOKE,
+            &payload,
+        );
+        if matches!(
+            start_operation(&mut *root, &operation, doc, path),
+            Ok(Some(_))
+        ) {
+            started = started.saturating_add(1);
+        }
+    }
+    started
 }
 
 /// [`take_control_invocation`], with the effect invocation the intent

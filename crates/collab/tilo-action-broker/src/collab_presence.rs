@@ -94,8 +94,11 @@ pub fn decode_peer(
                 .ok_or_else(|| format!("availability {state:?} is unknown"))?,
             call,
         },
-        // Talking beside a pointer is the desktop's to show, never an app's.
-        PeerPresencePayload::Chat { .. } | PeerPresencePayload::Reaction { .. } => return Ok(None),
+        // Talking, greeting and waves beside a pointer are the desktop's to
+        // show, never an app's.
+        PeerPresencePayload::Chat { .. }
+        | PeerPresencePayload::Reaction { .. }
+        | PeerPresencePayload::Wave { .. } => return Ok(None),
     };
     Ok(Some((key, payload)))
 }

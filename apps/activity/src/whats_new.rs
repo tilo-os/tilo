@@ -11,7 +11,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{DisclosureRow, DisclosureState, ListRow, Section};
 
-use crate::{Filter, Nav, Provider, ago, page, tr, trf};
+use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr, trf};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
@@ -72,7 +72,7 @@ fn parts(
     }
     parts.push(briefs(nav, opened, summary));
     if !summary.sources.is_empty() {
-        parts.push(sources(&provider, &summary.sources));
+        parts.push(sources(&provider, &cx.actions(), &summary.sources));
     }
     parts
 }
@@ -245,44 +245,44 @@ fn brief_body(index: usize, brief: &wire::Brief) -> Element {
     Box::new(column)
 }
 
-fn sources(provider: &Provider, sources: &[wire::Source]) -> Element {
+fn sources(provider: &Provider, actions: &Actions<Filter>, sources: &[wire::Source]) -> Element {
     let rows = sources
         .iter()
         .map(|source| {
-            let ask = |command| {
-                let (provider, key) = (provider.clone(), source.key.clone());
-                move || {
-                    provider.ask(
-                        wire::SOURCE,
-                        &wire::SourceRequest {
-                            key: key.clone(),
-                            command,
-                        },
-                    );
-                }
-            };
+            let (open, key) = (provider.clone(), source.key.clone());
             let mut row = ListRow::new(
                 format!("activity-source-{}", source.key),
                 source.label.clone(),
             )
             .subtitle(source.text.clone())
             .two_line_secondary()
-            .on_view(ask(wire::SourceCommand::Open));
+            .on_view(move || {
+                open.ask(
+                    wire::SOURCE,
+                    &wire::SourceRequest {
+                        key: key.clone(),
+                        command: wire::SourceCommand::Open,
+                    },
+                );
+            });
             if let Some(status) = &source.status {
                 row = row.meta(status.clone());
             }
-            if source.refreshable {
-                row = row.action(
-                    Icon::RotateCcw,
-                    tr("activity-morning-refresh"),
-                    ask(wire::SourceCommand::Refresh),
-                );
+            let refresh = source.refreshable.then(|| {
+                actions.effect(&ActivityEffect::RefreshSource {
+                    key: source.key.clone(),
+                })
+            });
+            if let Some(refresh) = refresh.flatten() {
+                row = row.action_binding(Icon::RotateCcw, tr("activity-morning-refresh"), refresh);
             }
-            Box::new(row.action(
-                Icon::X,
-                tr("activity-morning-remove"),
-                ask(wire::SourceCommand::Remove),
-            )) as Element
+            let remove = actions.effect(&ActivityEffect::RemoveSource {
+                key: source.key.clone(),
+            });
+            if let Some(remove) = remove {
+                row = row.action_binding(Icon::X, tr("activity-morning-remove"), remove);
+            }
+            Box::new(row) as Element
         })
         .collect();
     Box::new(Section::titled(tr("activity-morning-heading"), rows))

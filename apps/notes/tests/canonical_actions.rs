@@ -222,9 +222,7 @@ fn bound_rich_split_tree_moves_and_duplicates_are_owned_actions() {
             .unwrap();
         f.records
             .with_history(&checkout.id, |doc, history| {
-                history
-                    .undo_in(doc, &f.author, 11, None, None, None)
-                    .unwrap();
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(
                     read::page_block_snapshots(doc, page)
                         .iter()
@@ -489,9 +487,7 @@ fn bound_undo_to_empty_retypes_once_and_keeps_imports() {
         f.records
             .with_history(&checkout.id, |doc, history| {
                 assert_eq!(history.revision(), 1);
-                history
-                    .undo_in(doc, &f.author, 11, None, None, None)
-                    .unwrap();
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(content(doc), before);
                 assert!(history.next_undo_in(doc, &f.author, 11).is_none());
             })
@@ -766,9 +762,7 @@ fn peer_mounts_and_rejected_deltas_keep_owners_and_the_empty_cta() {
                 assert_eq!(pending.instance_id, Some(11));
                 assert_eq!(pending.author.as_ref(), Some(&f.author));
                 assert_eq!(pending.before, before.0);
-                history
-                    .undo_in(doc, &f.author, 11, None, None, None)
-                    .unwrap();
+                history.undo_in(doc, &f.author, 11, None, None).unwrap();
                 assert_eq!(read::page_block_snapshots(doc, f.root)[0].1, original);
                 assert_eq!(
                     read::list_pages(doc)
@@ -1139,9 +1133,7 @@ fn page_tree_bound_action_preserves_rich_bodies_owned_undo_and_revocation() {
         .unwrap();
     f.records
         .with_history(&checkout.id, |doc, history| {
-            history
-                .undo_in(doc, &f.author, 11, None, None, None)
-                .unwrap();
+            history.undo_in(doc, &f.author, 11, None, None).unwrap();
             assert_eq!(content(doc), before);
             assert!(history.next_undo_in(doc, &f.author, 11).is_none());
         })

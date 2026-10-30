@@ -777,6 +777,11 @@ impl<I> ActionEmitter<I> {
 }
 
 #[cfg(test)]
+mod test_controls;
+#[cfg(test)]
+pub(crate) use test_controls::{Uncustodied, test_value_action_binding};
+
+#[cfg(test)]
 pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
     use tilo_actions::{
         ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceSpec,
@@ -1884,7 +1889,8 @@ pub trait Widget {
     /// traversal. This is deliberately opt-in: ordinary form fields and
     /// controls retain platform-standard Tab/Shift+Tab navigation, while a
     /// code editor or terminal can receive the key for indentation or
-    /// completion.
+    /// completion. A widget around the focus may claim it too: a sheet that
+    /// walks its own controls with Tab.
     fn wants_tab_input(&self) -> bool {
         false
     }
@@ -3357,7 +3363,8 @@ pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
 mod resize_handle;
 pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
 mod overflow_door;
-pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
+pub(crate) use overflow_door::give_way;
+pub use overflow_door::{OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
     CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, GroupRow, GroupTopology,
@@ -3387,7 +3394,7 @@ pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod program_step;
-pub use program_step::ProgramStepView;
+pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
 pub use date_field::DateField;
@@ -3515,6 +3522,7 @@ pub use tree_view::{
     TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
+mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
     DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,

@@ -533,3 +533,72 @@ fn shortcut_commands_save_replace_and_delete_by_id_with_the_owner_as_saver() {
     assert!(workspace.shortcuts.is_empty());
     assert!(apply_command(&mut workspace, &delete("tidy"), &mut minter(0), &mut create).is_err());
 }
+
+/// A window sent to another workspace keeps being the same window, lands on
+/// the strip that workspace shows and where the person is stays put.
+#[test]
+fn a_window_moves_to_another_workspaces_last_strip_and_the_person_stays() {
+    let mut tree = DesktopTree {
+        workspaces: vec![
+            workspace_with_group(),
+            Workspace::new(WorkspaceId(2), "Other"),
+        ],
+        active: WorkspaceId(1),
+        ..DesktopTree::default()
+    };
+    let mut mint = minter(800);
+    let moved = 31;
+    tilo_desktop_model::commands::move_tab_to_workspace(
+        &mut tree,
+        moved,
+        WorkspaceId(2),
+        &mut mint,
+    )
+    .unwrap();
+    assert_eq!(
+        tree.active,
+        WorkspaceId(1),
+        "the person stays where they are"
+    );
+    assert_eq!(
+        tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>(),
+        [30],
+        "the rest of the group stays behind"
+    );
+    let landed = tree.workspaces[1]
+        .strips
+        .last()
+        .expect("the other workspace has a strip");
+    assert_eq!(
+        landed.window_groups[0].tabs[0].id, moved,
+        "the same window arrives"
+    );
+    assert_eq!(tree.active_strip.get(&WorkspaceId(2)), Some(&landed.id));
+    assert_eq!(
+        tree.active_group_for(landed.id),
+        Some(landed.window_groups[0].id)
+    );
+    assert!(
+        tilo_desktop_model::commands::move_tab_to_workspace(
+            &mut tree,
+            moved,
+            WorkspaceId(2),
+            &mut mint
+        )
+        .is_err(),
+        "a window already there is not moved again"
+    );
+    assert!(
+        tilo_desktop_model::commands::move_tab_to_workspace(
+            &mut tree,
+            9999,
+            WorkspaceId(2),
+            &mut mint
+        )
+        .is_err()
+    );
+}

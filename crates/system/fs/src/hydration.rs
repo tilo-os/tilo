@@ -161,7 +161,7 @@ impl Hydrator {
     }
 
     /// Wake `reachability` when the first peer is added: every peer the
-    /// daemon learns of — persisted, from a ticket, met over gossip or
+    /// daemon learns of — persisted, from a ticket or
     /// authenticated in a session — passes through [`Self::add_peer`].
     #[must_use]
     pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {

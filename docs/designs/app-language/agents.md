@@ -12,7 +12,7 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
 
 ## 1. One tool, programs, sessions
 
-- The door (Tilo's MCP server, `docs/runtime-mcp.md`) has a tool `tilo` that takes a
+- The door (Tilo's MCP server, `tilo-runtime-mcp`) has a tool `tilo` that takes a
   **program**. Everything sent and received is tilolang, and output pastes back as input.
 - Only what the task may use is mounted: installed apps' types, views and the actions the task
   is allowed. Anything else is a compile error that names what is allowed, so nothing denied is

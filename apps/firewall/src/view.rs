@@ -637,7 +637,7 @@ fn rule_table(
         table.select_row(index);
     }
     let select = intents.clone();
-    table.on_row_click(move |index, _, _| {
+    table.on_view("firewall-rules", move |index| {
         if let Some(id) = ids.get(index) {
             select.push(Intent::SelectRule(*id));
         }

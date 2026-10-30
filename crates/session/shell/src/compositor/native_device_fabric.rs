@@ -27,11 +27,11 @@ pub(super) fn start_device_fabric(
 
 pub(super) fn active_physical_gamepad_binding(
     tree: &crate::shell::state::WorkspaceTree,
-) -> Option<crate::shell::physical_gamepad::PhysicalGamepadBinding> {
+) -> Option<tilo_device_fabric::PhysicalGamepadBinding> {
     let (workspace, tab) = active_tab(tree)?;
     let app_id = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
     let workspace_id = workspace.room().to_string();
-    Some(crate::shell::physical_gamepad::PhysicalGamepadBinding {
+    Some(tilo_device_fabric::PhysicalGamepadBinding {
         app_id,
         session_id: format!("{workspace_id}:{}", tab.id),
         workspace_id,
@@ -243,7 +243,7 @@ pub(super) fn install_device_fabric_bridge(
                     approved,
                 } => {
                     crate::shell::device_fabric_runtime::require_speaker_groups()?;
-                    crate::shell::speaker_group_runtime::resolve_consent(
+                    tilo_speaker_service::groups::resolve_consent(
                         &fabric_net,
                         group,
                         kind,
@@ -251,7 +251,7 @@ pub(super) fn install_device_fabric_bridge(
                     )?;
                 }
                 DeviceFabricUiAction::LeaveSpeakerGroup { group, kind } => {
-                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group, kind)?;
+                    tilo_speaker_service::groups::leave_group(&fabric_net, group, kind)?;
                 }
                 DeviceFabricUiAction::StartSpeakerGroupAudio {
                     source_token,
@@ -271,7 +271,7 @@ pub(super) fn install_device_fabric_bridge(
                     )?;
                 }
                 DeviceFabricUiAction::StopSpeakerGroupSession { session_id } => {
-                    crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
+                    tilo_speaker_service::groups::stop_session(&fabric_net, session_id)?;
                 }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
                     let binding =
@@ -279,7 +279,7 @@ pub(super) fn install_device_fabric_bridge(
                             crate::shell::i18n::t("fabric-focus-app-for-remote-input")
                         })?;
                     let app =
-                        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+                        tilo_device_fabric::realtime_session::VerifiedAppRegistration::new_verified(
                             binding.app_id,
                             binding.workspace_id,
                         )
@@ -428,15 +428,13 @@ pub(super) fn end_spatial_control(
     let events = session
         .pressed_keys
         .into_iter()
-        .map(
-            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
-                keycode,
-                pressed: false,
-                modifiers: 0,
-            },
-        )
+        .map(|keycode| tilo_device_fabric::FabricInputEvent::Key {
+            keycode,
+            pressed: false,
+            modifiers: 0,
+        })
         .chain(session.pressed_buttons.into_iter().map(|button| {
-            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+            tilo_device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
             }

@@ -60,6 +60,17 @@ pub fn uri_list(paths: &[PathBuf]) -> String {
     out
 }
 
+/// The [`COPIED_FILES_MIME`] body for `paths`: a first line saying whether
+/// the copy is a cut or a copy, then the [`uri_list`], as a file manager
+/// writes it.
+#[must_use]
+pub fn copied_files_list(paths: &[PathBuf], cut: bool) -> String {
+    let mut body = String::from(if cut { "cut" } else { "copy" });
+    body.push_str("\r\n");
+    body.push_str(&uri_list(paths));
+    body
+}
+
 /// A path's `file://` URI. `url` has none on a target without a file system
 /// (`wasm32-unknown-unknown`), where no path is a local file.
 fn file_uri(path: &Path) -> Option<url::Url> {
@@ -71,6 +82,54 @@ fn file_uri(path: &Path) -> Option<url::Url> {
     {
         let _ = path;
         None
+    }
+}
+
+/// The mime type a file manager's copy of files travels as when it also says
+/// whether the copy is a cut, first line `copy` or `cut` and the URI list
+/// after it.
+pub const COPIED_FILES_MIME: &str = "x-special/gnome-copied-files";
+
+/// Whether `mime` is one of the formats a copy of files on the clipboard
+/// travels as.
+#[must_use]
+pub fn is_file_mime(mime: &str) -> bool {
+    mime == URI_LIST_MIME || mime == COPIED_FILES_MIME
+}
+
+/// The files a copy names: the paths of a [`URI_LIST_MIME`] body, or of a
+/// [`COPIED_FILES_MIME`] one with the cut it started with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CopiedFiles {
+    pub paths: Vec<PathBuf>,
+    /// The copy was a cut: the sources go away once they are pasted.
+    pub cut: bool,
+}
+
+/// Read back the files [`uri_list`] wrote, in `mime`.
+///
+/// Lines that are not file URIs are skipped rather than failing the read: a
+/// list may carry comments, and one bad line must not lose the rest of a
+/// paste.
+#[must_use]
+pub fn copied_files(mime: &str, body: &str) -> CopiedFiles {
+    let (body, cut) = if mime == COPIED_FILES_MIME {
+        match body.split_once('\n') {
+            Some((first, rest)) => (rest, first.trim().eq_ignore_ascii_case("cut")),
+            // A body with no second line names nothing.
+            None => ("", false),
+        }
+    } else {
+        (body, false)
+    };
+    CopiedFiles {
+        paths: body
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter_map(|line| url::Url::parse(line).ok()?.to_file_path().ok())
+            .collect(),
+        cut,
     }
 }
 
@@ -160,11 +219,45 @@ pub fn start_drag_offering(offers: Vec<(String, Vec<u8>)>) -> bool {
     )
 }
 
+/// Whether apps in this process are hosted by a compositor in the same
+/// process ([`host_drags_in_process`]).
+static HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The drag a hosted app asked for and its host has not taken yet.
+static HOSTED_DRAG: Mutex<Option<Vec<(String, Vec<u8>)>>> = Mutex::new(None);
+
+/// The compositor hosts this process's apps itself (no window): a drag an
+/// app starts is kept for the host to carry ([`take_hosted_drag`]).
+pub fn host_drags_in_process() {
+    HOSTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The drag a hosted app asked for since the last call: bytes per format.
+/// A file offered under its own content type is left out (the host would
+/// have to read it whole); the `text/uri-list` naming it stays.
+pub fn take_hosted_drag() -> Option<Vec<(String, Vec<u8>)>> {
+    HOSTED_DRAG.lock_recover().take()
+}
+
 fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
     let window = {
         let slot = DRAG_WINDOW.lock_recover();
         slot.as_ref().and_then(Weak::upgrade)
     };
+    if window.is_none() && HOSTED.load(std::sync::atomic::Ordering::Relaxed) {
+        let bytes: Vec<(String, Vec<u8>)> = offers
+            .into_iter()
+            .filter_map(|(mime, offer)| match offer {
+                Offer::Bytes(bytes) => Some((mime, bytes)),
+                Offer::File(_) => None,
+            })
+            .collect();
+        if bytes.is_empty() {
+            return false;
+        }
+        *HOSTED_DRAG.lock_recover() = Some(bytes);
+        return true;
+    }
     let Some(window) = window else {
         // Not an error: the compositor hosts several of these widgets in its
         // own process with no `App` and no window; reporting "no" is how it
@@ -205,6 +298,88 @@ fn start_drag_with(offers: Vec<(String, Offer)>) -> bool {
 #[cfg(test)]
 mod outgoing_tests {
     use super::*;
+
+    #[test]
+    fn a_copied_file_list_reads_back_as_the_files_it_names() {
+        // Case `a_uri_list_reads_back_as_the_paths_it_was_written_from`:
+        // what `uri_list` escapes has to come back as the same path, or a
+        // file with a space in its name is pasted under a broken name.
+        {
+            let paths = [PathBuf::from("/home/me/my photo#1.png")];
+            let body = uri_list(&paths);
+            assert_eq!(
+                copied_files(URI_LIST_MIME, &body),
+                CopiedFiles {
+                    paths: paths.to_vec(),
+                    cut: false
+                }
+            );
+            assert!(!copied_files(URI_LIST_MIME, &body).cut, "a uri list copies");
+            // The same list with the cut it started with, as a file manager
+            // writes it: the first line names the copy or the cut.
+            let copied = copied_files_list(&paths, false);
+            assert!(copied.starts_with("copy\r\n"), "a copy says so: {copied}");
+            assert_eq!(
+                copied_files(COPIED_FILES_MIME, &copied),
+                CopiedFiles {
+                    paths: paths.to_vec(),
+                    cut: false
+                },
+                "a copy reads back with every file it names"
+            );
+            assert!(copied_files(COPIED_FILES_MIME, &copied_files_list(&paths, true)).cut);
+        }
+
+        // Case `the_cut_of_a_file_managers_copy_is_read`:
+        // A cut removes its sources after the paste; the first line says so.
+        {
+            let body = "cut\r\nfile:///home/me/a.txt\r\nfile:///home/me/b.txt\r\n";
+            assert_eq!(
+                copied_files(COPIED_FILES_MIME, body),
+                CopiedFiles {
+                    paths: vec![
+                        PathBuf::from("/home/me/a.txt"),
+                        PathBuf::from("/home/me/b.txt")
+                    ],
+                    cut: true
+                }
+            );
+        }
+
+        // Case `a_list_with_a_comment_or_a_stray_line_keeps_its_files`:
+        // One line that is not a file URI must not lose the paste.
+        {
+            let body =
+                "# copied from Files\r\nfile:///a\r\nhttps://example.com/b\r\n\r\nfile:///c\r\n";
+            assert_eq!(
+                copied_files(URI_LIST_MIME, body).paths,
+                vec![PathBuf::from("/a"), PathBuf::from("/c")]
+            );
+        }
+
+        assert!(is_file_mime(URI_LIST_MIME));
+        assert!(is_file_mime(COPIED_FILES_MIME));
+        assert!(
+            !is_file_mime("text/plain;charset=utf-8"),
+            "text is not files"
+        );
+    }
+
+    #[test]
+    fn a_drag_in_a_hosted_process_waits_for_its_host() {
+        host_drags_in_process();
+        let files = file_offers(&[PathBuf::from("/a.png")]);
+        assert!(start_drag_with(files), "the host takes it");
+        assert_eq!(
+            take_hosted_drag(),
+            Some(vec![(
+                URI_LIST_MIME.to_owned(),
+                b"file:///a.png\r\n".to_vec()
+            )]),
+            "files travel as their URI list"
+        );
+        assert_eq!(take_hosted_drag(), None, "taken once");
+    }
 
     #[test]
     fn outgoing_drags_encode_uri_lists_and_content_types() {

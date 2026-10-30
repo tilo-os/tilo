@@ -137,17 +137,7 @@ impl AgentHostLink for RelayAgentLink {
     }
 
     fn register(&self, cert: &DeviceCert, delegation: &Delegation) -> Result<(), String> {
-        delegation
-            .verify(&self.user_public_key, tilo_clock::unix_now_ns())
-            .map_err(|error| error.to_string())?;
-        self.agents
-            .write_recover()
-            .insert(delegation.device_public_key, Some(delegation.clone()));
-        // A replacement may narrow an earlier delegation's rooms.
-        crate::authority_epoch::bump();
-        if cert.device_public_key != delegation.device_public_key {
-            return Err("the delegation names another device".into());
-        }
+        crate::daemon::register_agent_in(&self.agents, &self.user_public_key, cert, delegation)?;
         // The governed rooms it names put it on their rosters.
         self.reconcile_rooms(delegation.device_public_key, Some(cert.clone()));
         Ok(())

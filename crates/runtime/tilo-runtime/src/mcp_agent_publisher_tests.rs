@@ -45,6 +45,7 @@ fn row(provider: &str, app: &str, resource: &str, action: &str) -> CatalogueRow 
             keywords: Vec::new(),
             icon: None,
             description: None,
+            state: tilo_actions::ActionState::default(),
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: OperationKind::View,
             contract: tilo_actions::ActionContract::view(),

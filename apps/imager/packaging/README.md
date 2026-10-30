@@ -10,8 +10,8 @@ catalog keeps Desktop installation unavailable; it does not block other Imager
 features or invent a release.
 
 For a qualified Desktop release, retain the exact signed RPMs and their native
-reports from `release-desktop.yml`. The login test of those packages is t's
-check `host-session-e2e`, which the desktop payload's publication waits for;
+reports from `release-desktop.yml`. The login test of those packages is
+`dist/session/vm-e2e/run.py`;
 its report and `source.json` record each RPM's size and SHA-256. That basic
 session test does not by itself prove return to the prior session, selected
 folder import, or source preservation. Review the full native onboarding
@@ -227,9 +227,9 @@ The landing-page manifest records the public release root and package-channel
 state separately from signed download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,
 so the site recommends the signed setup EXE instead of showing a command that
-cannot resolve yet. The scheduled acceptance monitor (t's check
-`imager-winget-acceptance`) checks Microsoft's exact version manifest every six
-hours with the site token t's server config gives it (`TILO_SITE_TOKEN`).
+cannot resolve yet. The scheduled acceptance monitor (`release-imager-winget.yml`)
+checks Microsoft's exact version manifest every six
+hours with a site token from the credential broker.
 Once accepted, it runs the same idempotent site verification/build and changes
 WinGet to `available`; transient GitHub failures remain fail-safe as
 `submitted`.

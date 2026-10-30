@@ -9,45 +9,11 @@
     reason = "zbus interface methods are defined on &self"
 )]
 
-use std::io::BufRead;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
 
 use launcher::dbus_proxy::{ATSPI_FILTER_ARGS, session_filter_args};
+use tilo_test_env::PrivateBus;
 use zbus::blocking::Connection;
-
-/// A private bus, as `dbus-run-session` starts one, stopped on drop.
-struct Bus {
-    daemon: Child,
-    address: String,
-}
-
-impl Bus {
-    fn start(dir: &Path, name: &str) -> Self {
-        let mut daemon = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!("--address=unix:path={}", dir.join(name).display()))
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("the bus filter tests need dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-        }
-    }
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
 
 /// `xdg-dbus-proxy` in front of `upstream` with exactly `filter`.
 struct Proxy {
@@ -179,8 +145,8 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     let dir = tempfile::tempdir().unwrap();
 
     // Session bus: the accessibility launcher and an unrelated service.
-    let session = Bus::start(dir.path(), "session");
-    let _a11y_launcher = connect(&session.address)
+    let session = PrivateBus::start_at(&dir.path().join("session"));
+    let _a11y_launcher = connect(session.address())
         .name("org.a11y.Bus")
         .unwrap()
         .serve_at("/org/a11y/bus", A11yBus)
@@ -189,7 +155,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         .unwrap()
         .build()
         .unwrap();
-    let _other = connect(&session.address)
+    let _other = connect(session.address())
         .name("org.example.Other")
         .unwrap()
         .serve_at("/", Other)
@@ -198,8 +164,8 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         .unwrap();
 
     // AT-SPI bus: the registry, and another app's accessible tree.
-    let atspi = Bus::start(dir.path(), "atspi");
-    let _registry = connect(&atspi.address)
+    let atspi = PrivateBus::start_at(&dir.path().join("atspi"));
+    let _registry = connect(atspi.address())
         .name("org.a11y.atspi.Registry")
         .unwrap()
         .serve_at("/org/a11y/atspi/accessible/root", Socket)
@@ -210,7 +176,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         .unwrap()
         .build()
         .unwrap();
-    let other_app = connect(&atspi.address)
+    let other_app = connect(atspi.address())
         .serve_at("/org/a11y/atspi/accessible/root", Accessible)
         .unwrap()
         .build()
@@ -220,7 +186,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     // A portal-less graphical app: the session filter has only the
     // accessibility status rules.
     let session_proxy = Proxy::start(
-        &session.address,
+        session.address(),
         &dir.path().join("session-proxy"),
         &session_filter_args(false, true, None)
             .iter()
@@ -228,7 +194,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
             .collect::<Vec<_>>(),
     );
     let atspi_proxy = Proxy::start(
-        &atspi.address,
+        atspi.address(),
         &dir.path().join("atspi-proxy"),
         ATSPI_FILTER_ARGS,
     );
@@ -322,7 +288,7 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     // into the sandboxed app pass the proxy. The proxy cannot filter calls
     // into the app, so the app's own bridge decides which of them it answers:
     // reads only (`another_client_reads_an_apps_tree_but_cannot_act_on_it`).
-    let reader = connect(&atspi.address).build().unwrap();
+    let reader = connect(atspi.address()).build().unwrap();
     let app_name = app_atspi.unique_name().unwrap().to_string();
     let reply = call(
         &reader,
@@ -375,11 +341,11 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
 #[test]
 fn a_media_app_owns_its_own_player_name_and_no_other() {
     let dir = tempfile::tempdir().unwrap();
-    let session = Bus::start(dir.path(), "session");
+    let session = PrivateBus::start_at(&dir.path().join("session"));
     let player = launcher::dbus_proxy::media_player_name("so.tilo.music").unwrap();
     let filter = session_filter_args(false, true, Some(&player));
     let proxy = Proxy::start(
-        &session.address,
+        session.address(),
         &dir.path().join("session-proxy"),
         &filter.iter().map(String::as_str).collect::<Vec<_>>(),
     );
@@ -394,7 +360,7 @@ fn a_media_app_owns_its_own_player_name_and_no_other() {
         request(&app, &player).expect("the app may own its player name"),
         zbus::fdo::RequestNameReply::PrimaryOwner
     );
-    let desktop = connect(&session.address).build().unwrap();
+    let desktop = connect(session.address()).build().unwrap();
     let owner = zbus::blocking::fdo::DBusProxy::new(&desktop)
         .unwrap()
         .get_name_owner(player.as_str().try_into().unwrap())
@@ -616,8 +582,8 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
 
     // Session bus: the accessibility bus launcher, whose IsEnabled the
     // adapter follows.
-    let session = Bus::start(dir.path(), "session");
-    let _a11y_launcher = connect(&session.address)
+    let session = PrivateBus::start_at(&dir.path().join("session"));
+    let _a11y_launcher = connect(session.address())
         .name("org.a11y.Bus")
         .unwrap()
         .serve_at("/org/a11y/bus", A11yBus)
@@ -626,13 +592,13 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         .unwrap()
         .build()
         .unwrap();
-    let switch = connect(&session.address).build().unwrap();
+    let switch = connect(session.address()).build().unwrap();
 
     // AT-SPI bus: the registry, the launcher's proxy in front of it, and a
     // reader that is not the app.
-    let atspi = Bus::start(dir.path(), "atspi");
+    let atspi = PrivateBus::start_at(&dir.path().join("atspi"));
     let plugs = Arc::new(Mutex::new(Vec::new()));
-    let _registry = connect(&atspi.address)
+    let _registry = connect(atspi.address())
         .name("org.a11y.atspi.Registry")
         .unwrap()
         .serve_at(
@@ -645,11 +611,11 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         .build()
         .unwrap();
     let atspi_proxy = Proxy::start(
-        &atspi.address,
+        atspi.address(),
         &dir.path().join("atspi-proxy"),
         ATSPI_FILTER_ARGS,
     );
-    let reader = connect(&atspi.address).build().unwrap();
+    let reader = connect(atspi.address()).build().unwrap();
 
     // The app: the adapter finds the AT-SPI bus where the launcher points a
     // sandboxed app's (`AT_SPI_BUS_ADDRESS`, the proxy's socket).
@@ -658,7 +624,7 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         "AT_SPI_BUS_ADDRESS",
         format!("unix:path={}", atspi_proxy.guard.socket_path().display()),
     )
-    .set("DBUS_SESSION_BUS_ADDRESS", &session.address)
+    .set("DBUS_SESSION_BUS_ADDRESS", session.address())
     .remove(launcher::dbus_proxy::ATSPI_READ_ONLY_ENV);
     let requests = Arc::new(Mutex::new(Vec::new()));
     let app = || app_tree::App {

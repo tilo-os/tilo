@@ -76,6 +76,23 @@ pub fn sources_in(root: &Path, installation: Installation) -> Vec<AppstreamSourc
         .collect()
 }
 
+/// The directories whose entries change when Flatpak replaces the cached
+/// Flathub `AppStream` of an installation: the one holding the `active`
+/// link it swaps, for the person's installation and the system's. A reader
+/// of [`load_cached`] that must follow Flatpak's refreshes watches these.
+#[must_use]
+pub fn cache_directories() -> Vec<PathBuf> {
+    user_installation()
+        .into_iter()
+        .chain([PathBuf::from(SYSTEM_INSTALLATION)])
+        .map(|root| {
+            root.join("appstream")
+                .join(FLATHUB_REMOTE)
+                .join(std::env::consts::ARCH)
+        })
+        .collect()
+}
+
 /// A value that changes whenever Flatpak replaces a cached `AppStream` file,
 /// so a reader knows to read it again. Only `stat`s.
 #[must_use]

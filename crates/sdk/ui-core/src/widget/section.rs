@@ -1104,9 +1104,10 @@ impl Section {
         self.collapsible_with(false, None)
     }
 
-    /// Run `f` with the new state each time the section opens or closes.
+    /// Run `f` with the new state each time the section opens or closes:
+    /// what the window shows, never an edit.
     #[must_use]
-    pub fn on_toggle(self, f: impl FnMut(bool) + 'static) -> Self {
+    pub fn on_expand(self, f: impl FnMut(bool) + 'static) -> Self {
         let expanded = self.expanded.as_ref().is_none_or(|e| e.get());
         self.collapsible_with(expanded, Some(Box::new(f)))
     }

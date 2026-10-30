@@ -5,11 +5,11 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::shell::device_fabric::{DeviceKind, PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::network::ShellNetwork;
-use crate::shell::personal_tethering::{
+use tilo_device_fabric::tethering::{
     PersonalTethering, TetheringEvent, TetheringId, TetheringRoute, TetheringSignal,
 };
+use tilo_device_fabric::{DeviceKind, PersonalFabricAction, PersonalFabricActionEnvelope};
 use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,7 +220,7 @@ pub fn authorize_phone_tethering(request_id: TetheringId, approved: bool) -> Res
     Ok(())
 }
 
-type WifiCredential = crate::shell::device_fabric::WifiCredential;
+type WifiCredential = tilo_device_fabric::WifiCredential;
 
 /// One `NetworkManager` operation a tethering session needs.
 ///
@@ -702,7 +702,7 @@ impl PersonalTetheringRuntime {
             set_phase(
                 request_id,
                 TetheringPhase::Active,
-                now_unix_ms.saturating_add(crate::shell::personal_tethering::GRANT_TTL_MS),
+                now_unix_ms.saturating_add(tilo_device_fabric::tethering::GRANT_TTL_MS),
             );
         } else if approved {
             host.submit(TetheringJob::StopHotspot);
@@ -1110,7 +1110,7 @@ mod tests {
     }
 
     struct Host {
-        credential: crate::shell::device_fabric::WifiCredential,
+        credential: tilo_device_fabric::WifiCredential,
         sent: Vec<(DeviceId, TetheringSignal)>,
         hotspot_starts: usize,
         hotspot_stops: usize,
@@ -1200,7 +1200,7 @@ mod tests {
 
         fn open_credential(
             &mut self,
-            _credential: &crate::shell::device_fabric::WifiCredential,
+            _credential: &tilo_device_fabric::WifiCredential,
         ) -> Result<Zeroizing<String>, String> {
             Ok(Zeroizing::new("not-a-real-password".into()))
         }
@@ -1210,7 +1210,7 @@ mod tests {
             _requester: &DeviceId,
             _ssid: &str,
             _password: &str,
-        ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
+        ) -> Result<tilo_device_fabric::WifiCredential, String> {
             if let Some(error) = self.seal_error {
                 return Err(error.into());
             }
@@ -1228,7 +1228,7 @@ mod tests {
     }
 
     fn host(requester: &DeviceId, provider: &DeviceId) -> Host {
-        let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+        let credential = tilo_device_fabric::secrets::seal_wifi_credential(
             "Phone hotspot",
             os_actions::WifiSecurity::Wpa2,
             "not-a-real-password",
@@ -1270,7 +1270,7 @@ mod tests {
             let provider = device(4);
             let request_id = [7; 16];
             let request = TetheringSignal::Request {
-                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                protocol_version: tilo_device_fabric::tethering::TETHERING_PROTOCOL_VERSION,
                 request_id,
                 requester: requester.clone(),
                 provider: provider.clone(),
@@ -1308,7 +1308,7 @@ mod tests {
             let provider = device(6);
             let request_id = [8; 16];
             let request = TetheringSignal::Request {
-                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                protocol_version: tilo_device_fabric::tethering::TETHERING_PROTOCOL_VERSION,
                 request_id,
                 requester: requester.clone(),
                 provider: provider.clone(),
@@ -1337,7 +1337,7 @@ mod tests {
             let mut host = host(&requester, &provider);
 
             let request = |id, claimed: DeviceId, expires| TetheringSignal::Request {
-                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                protocol_version: tilo_device_fabric::tethering::TETHERING_PROTOCOL_VERSION,
                 request_id: id,
                 requester: claimed,
                 provider: provider.clone(),
@@ -1409,7 +1409,7 @@ mod tests {
             let provider = device(11);
             let request_id = [13; 16];
             let request = TetheringSignal::Request {
-                protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+                protocol_version: tilo_device_fabric::tethering::TETHERING_PROTOCOL_VERSION,
                 request_id,
                 requester: requester.clone(),
                 provider: provider.clone(),
@@ -1542,7 +1542,7 @@ mod tests {
         request_id: TetheringId,
     ) -> (PersonalTetheringRuntime, Host) {
         let request = TetheringSignal::Request {
-            protocol_version: crate::shell::personal_tethering::TETHERING_PROTOCOL_VERSION,
+            protocol_version: tilo_device_fabric::tethering::TETHERING_PROTOCOL_VERSION,
             request_id,
             requester: requester.clone(),
             provider: provider.clone(),

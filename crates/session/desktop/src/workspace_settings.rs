@@ -2384,7 +2384,9 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
         }
     }
     for grant in &ws.policy.grants {
-        if let tilo_action_policy::Subject::App(app) = &grant.subject {
+        if let tilo_action_policy::Subject::App(app) = &grant.subject
+            && !tilo_action_policy::roles::is_session_app(grant)
+        {
             apps.push(app.clone());
         }
     }
@@ -4019,7 +4021,8 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
                     && grant.id.as_str().starts_with("role:");
                 let admission = matches!(grant.subject, tilo_action_policy::Subject::Agent(_))
                     && grant.id.as_str().starts_with("agent-member:");
-                !preset && !admission
+                let session = tilo_action_policy::roles::is_session_app(grant);
+                !preset && !admission && !session
             })
             .map(|grant| (classify_grant(grant), Listed::Grant(grant))),
     );

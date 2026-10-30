@@ -10,21 +10,21 @@ use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Instant;
 
 use crate::portal::CaptureBroker;
-use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
-use crate::shell::realtime_session::VerifiedAppRegistration;
 use crate::shell::remote_capture::adapter::{
     ProductionRemoteCaptureAdapter, RemoteCaptureAdapter, RemoteCaptureAdapterError,
     RemoteCaptureAvailability, RemoteCaptureEndpoint, RemoteCaptureTargetBridge,
     RemoteSessionBinding,
 };
-use crate::shell::remote_capture::device::{
+use crate::shell::remote_capture::source::{
+    CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
+};
+use tilo_device_fabric::realtime_session::VerifiedAppRegistration;
+use tilo_device_fabric::remote_capture::{
     MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteCaptureChunk,
     RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase, RemoteCaptureProfile,
     RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal, grant_expiry,
 };
-use crate::shell::remote_capture::source::{
-    CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
-};
+use tilo_device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
 use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -812,9 +812,9 @@ impl RemoteCaptureFabricRuntime {
             return;
         }
         match session.request.profile.kind() {
-            crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {}
-            crate::shell::remote_capture::device::RemoteCaptureKind::Camera
-            | crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => {
+            tilo_device_fabric::remote_capture::RemoteCaptureKind::DocumentScanner => {}
+            tilo_device_fabric::remote_capture::RemoteCaptureKind::Camera
+            | tilo_device_fabric::remote_capture::RemoteCaptureKind::Microphone => {
                 if let Ok(mut adapter) = self.adapter.try_lock() {
                     let _ = self.bridge.append_media_chunk(
                         &session.app,
@@ -1187,19 +1187,19 @@ fn stop_action(session_id: [u8; 16], grant: RemoteCaptureGrant) -> PersonalFabri
 fn standard_profile(kind: RemoteCaptureKind) -> RemoteCaptureProfile {
     match kind {
         RemoteCaptureKind::Camera => RemoteCaptureProfile::Camera {
-            format: crate::shell::remote_capture::device::RemoteVideoFormat::Nv12,
+            format: tilo_device_fabric::remote_capture::RemoteVideoFormat::Nv12,
             width: 160,
             height: 120,
             frames_per_second: 15,
         },
         RemoteCaptureKind::Microphone => RemoteCaptureProfile::Microphone {
-            format: crate::shell::remote_capture::device::RemoteAudioFormat::PcmS16Le,
+            format: tilo_device_fabric::remote_capture::RemoteAudioFormat::PcmS16Le,
             sample_rate: 48_000,
             channels: 2,
             frame_millis: 20,
         },
         RemoteCaptureKind::DocumentScanner => RemoteCaptureProfile::DocumentScanner {
-            format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+            format: tilo_device_fabric::remote_capture::RemoteDocumentFormat::Png,
             max_pages: 1,
             max_document_bytes: 16_777_216,
         },
@@ -1227,10 +1227,10 @@ fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
 mod tests {
     use super::*;
     use crate::shell::remote_capture::adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
-    use crate::shell::remote_capture::device::{
+    use crate::shell::remote_capture::source::RemoteCaptureSource;
+    use tilo_device_fabric::remote_capture::{
         REMOTE_CAPTURE_GRANT_TTL, RemoteCaptureKind, RemoteVideoFormat,
     };
-    use crate::shell::remote_capture::source::RemoteCaptureSource;
 
     #[derive(Default)]
     struct FakeAdapter {
@@ -1442,7 +1442,7 @@ mod tests {
             target_runtime.handle_action(&envelope(&phone, &laptop, action.clone()), now);
             assert_eq!(
                 target_runtime.registry.phase(session_id),
-                Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
+                Some(tilo_device_fabric::remote_capture::RemoteCapturePhase::Granted)
             );
             target_runtime.approve_target(session_id, now).unwrap();
             target_runtime.handle_action(
@@ -1451,12 +1451,12 @@ mod tests {
             );
             assert_eq!(
                 target_runtime.registry.phase(session_id),
-                Some(crate::shell::remote_capture::device::RemoteCapturePhase::Granted)
+                Some(tilo_device_fabric::remote_capture::RemoteCapturePhase::Granted)
             );
             target_runtime.handle_action(&envelope(&phone, &laptop, action), now);
             assert_eq!(
                 target_runtime.registry.phase(session_id),
-                Some(crate::shell::remote_capture::device::RemoteCapturePhase::Streaming)
+                Some(tilo_device_fabric::remote_capture::RemoteCapturePhase::Streaming)
             );
         }
 

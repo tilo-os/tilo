@@ -253,11 +253,12 @@ on the console, as on a machine without Plymouth. Plymouth's own agent would tak
 an empty answer as no answer, so "Can't sign in" could not be chosen through it.
 The screen is never left without a way in.
 
-**Tests.** The signin-e2e check runs the boot sign-in with the screen reader turned
-on by the comforts token. QEMU's audio goes to a WAV file, and the check fails if
-the prompt is silent. A virtio multitouch device enters the PIN through the
-on-screen keyboard, with no keyboard attached. Screenshots of the boot screen and
-of the greeter after switch-root must show the same card.
+**Tests.** The sign-in end-to-end run (`tools/ci/signin-e2e-builder.sh`) builds the
+development image and its installer medium, installs the medium, and drives the boot
+sign-in with the screen reader turned on by the comforts token. QEMU's audio goes to a WAV
+file, and the run fails if the prompt is silent. A virtio multitouch device enters the PIN
+through the on-screen keyboard, with no keyboard attached. Screenshots of the boot screen
+and of the greeter after switch-root must show the same card.
 
 ## 4. The user key and its wrappers
 

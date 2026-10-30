@@ -8,7 +8,6 @@
 //! rasterizes it on its warm device into dma-bufs and hands those back; the app
 //! attaches them to its own `wl_surface`, so the compositor imports them like
 //! any client buffer (zero copies, direct scanout kept).
-//! `docs/architecture/app-rendering.md` has the whole design.
 //!
 //! This crate is the contract both sides compile:
 //!

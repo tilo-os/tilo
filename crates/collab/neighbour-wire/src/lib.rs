@@ -1,7 +1,7 @@
 //! Peer-sync wire protocol: a single tagged enum ([`NeighbourMsg`]) carrying
 //! every cross-host payload (CRDT sync, presence, surface frames, remote
-//! input, capability negotiation). Transport bindings (gossip, a durable
-//! host, an in-process hub) operate on it without inspecting the payload.
+//! input, capability negotiation). Transport bindings (a direct device
+//! connection, a durable host, an in-process hub) operate on it without inspecting the payload.
 //!
 //! The encoding is postcard over serde's default externally tagged enum
 //! representation, so the variant order is the wire discriminant: new
@@ -142,10 +142,10 @@ pub enum NeighbourMsg {
         /// the authenticated transport identity to that invite's role.
         #[serde(default)]
         invite_id: Option<[u8; 32]>,
-        /// Fresh per request. Gossip transports deduplicate by content, so
-        /// without it a repeated anti-entropy request for unchanged heads
-        /// is discarded as already seen and a room that missed its first
-        /// answer never catches up.
+        /// Fresh per request. Transports that deduplicate by content would
+        /// otherwise discard a repeated anti-entropy request for unchanged
+        /// heads as already seen, and a room that missed its first
+        /// answer would never catch up.
         #[serde(default)]
         nonce: u64,
     },
@@ -250,7 +250,7 @@ pub enum NeighbourMsg {
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
     /// waiting out the 15s heartbeat-eviction path that implicit end-of-stream
-    /// (owner vanishes from gossip) still relies on.
+    /// (owner vanishes from the room) still relies on.
     SurfaceStreamEnd {
         surface: SurfaceId,
         source_peer: PeerId,
@@ -293,7 +293,7 @@ pub enum NeighbourMsg {
     /// Boxed so this variant does not bloat `NeighbourMsg`'s stack size.
     AppDocument {
         /// Hashed Iroh `PeerId` of the publisher; used to filter self-published
-        /// gossip echoes.
+        /// echoes.
         peer: PeerId,
         /// App-id of the originating app, first routing-key component.
         app_id: String,
@@ -321,7 +321,7 @@ pub enum NeighbourMsg {
         #[serde(default)]
         colour: PresenceColour,
     },
-    /// Cooperative scrollback request, broadcast over gossip when a peer's
+    /// Cooperative scrollback request, published on the room when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
     /// Any peer holding the range replies with
     /// [`NeighbourMsg::ScrollbackResponse`].

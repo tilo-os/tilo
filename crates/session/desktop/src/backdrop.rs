@@ -226,6 +226,20 @@ impl DesktopBackdrop {
         self
     }
 
+    /// Take the pictures to show, as [`Self::with_wallpaper_provider`], after
+    /// the backdrop was made.
+    pub fn set_wallpaper_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<ImageData> + 'static,
+    ) {
+        self.wallpaper = Some(Box::new(provider));
+    }
+
+    /// Show the picture of `workspace_id`, the workspace now in front.
+    pub fn set_workspace(&mut self, workspace_id: impl Into<String>) {
+        self.workspace_id = Some(workspace_id.into());
+    }
+
     #[must_use]
     pub fn with_child(mut self, child: Box<dyn Widget>) -> Self {
         self.child = Some(child);
@@ -569,6 +583,41 @@ impl ui::permissions::capability::PermissionGated for DesktopBackdrop {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn picture(shade: u8) -> ImageData {
+        ui::raster::rgba8(vec![shade, shade, shade, 255], 2, 2)
+    }
+
+    fn paint(backdrop: &mut DesktopBackdrop) {
+        backdrop.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+    }
+
+    /// The desk shows the picture of the workspace in front, and moving to
+    /// a workspace with another picture asks for a frame.
+    #[test]
+    fn the_workspace_in_front_shows_its_own_picture() {
+        let seven = picture(7);
+        let mut backdrop = DesktopBackdrop::for_workspace("7").with_wallpaper_provider({
+            let seven = seven.clone();
+            move |workspace| (workspace == "7").then(|| seven.clone())
+        });
+        paint(&mut backdrop);
+        assert_eq!(backdrop.drawn_wallpaper, Some(seven.data.id()));
+
+        backdrop.set_workspace("8");
+        assert!(
+            backdrop.needs_redraw(),
+            "another workspace's picture is not the one drawn"
+        );
+        paint(&mut backdrop);
+        assert_eq!(backdrop.drawn_wallpaper, None, "and it has none");
+    }
 
     /// The backdrop's baked noise texture must exist and have the right
     /// byte-size (64×64 RGBA8 = 16384 bytes). Guards against someone

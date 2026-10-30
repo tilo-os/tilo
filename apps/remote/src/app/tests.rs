@@ -342,14 +342,9 @@ fn editing_preserves_favourite_and_history() {
 }
 
 #[test]
-fn favourites_and_deletion_go_through_the_document_actions() {
+fn deletion_goes_through_the_document_actions() {
     let mut app = demo();
     let id = app.state().first_of_kind(ConnectionKind::Vnc).unwrap();
-    assert!(!app.state().workspace.get(id).unwrap().favorite);
-    app.apply(Action::ToggleFavorite(id));
-    assert!(app.state().workspace.get(id).unwrap().favorite);
-    assert_eq!(sent(&app).last(), Some(&as_sent(&pin(id, true))));
-
     app.apply(Action::RequestDelete(id));
     assert!(pending_confirmation_is(&app, id));
     assert!(app.dialog.as_ref().is_some_and(ModalDialog::is_open));

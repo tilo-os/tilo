@@ -363,17 +363,26 @@ fn an_app_ended_for_memory_is_named_and_reopens_where_it_was() {
     });
     let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
     let chrome = ChromeState::new_with_handle(handle);
-    let lost = crate::shell::closed_tabs::capture_surface(&chrome.borrow().tree(), 77)
-        .expect("the window's tab, before it goes");
-    assert!(crate::shell::closed_tabs::capture_surface(&chrome.borrow().tree(), 78).is_none());
-    {
-        // The window goes away with the app.
+    let lost = {
+        // The window goes away with the app: its place stays, as the app's
+        // card, and nothing opens the app again on its own.
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
         assert!(
-            crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, 77)
+            crate::shell::tab_binding::keep_tab_of_vanished_surface(&mut tree, 78, None).is_none(),
+            "no tab showed another window"
         );
-    }
+        crate::shell::tab_binding::keep_tab_of_vanished_surface(&mut tree, 77, Some("so.tilo.mail"))
+            .expect("the window's tab stays")
+    };
+    assert_eq!(lost, tab_id);
+    assert!(
+        matches!(
+            &chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile,
+            TileContent::LocalApp { note, .. } if note == crate::shell::peer_windows::STOPPED
+        ),
+        "the card says the app stopped"
+    );
     let notice = crate::shell::launcher::memory_notice(
         "Mail",
         &crate::shell::launcher::MemoryEnd {
@@ -392,8 +401,8 @@ fn an_app_ended_for_memory_is_named_and_reopens_where_it_was() {
     assert_eq!(group.id, group_id, "in its own group, where it was");
     assert_eq!(group.tabs[0].id, tab_id, "the same tab, with its document");
     assert!(
-        matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.mail"),
-        "relaunched as the same app: {:?}",
+        matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, note, .. } if app_id == "so.tilo.mail" && note.is_empty()),
+        "opened again as the same app: {:?}",
         group.tabs[0].tile
     );
     drop(tree);

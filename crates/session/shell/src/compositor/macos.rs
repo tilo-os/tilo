@@ -57,7 +57,6 @@ pub fn prepare(options: &Options) -> Result<Session, Error> {
         Err(e) => return Err(format!("cannot open {}: {e}", path.display()).into()),
     };
     tree.persist_path = Some(path.clone());
-    inputs.restore_documents(&mut tree);
     persist::save_tree_to(&tree, &path)?;
     let tree = tree.shared();
     let records = ui::record::RecordOwners::new(state_dir.join("records"))

@@ -224,20 +224,10 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Write `content` next to `path` and rename it over, durably.
+/// Replace `path` with `content` at exactly `mode`, atomically and durably.
 fn write_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::Builder::new()
-        .prefix(&format!(".{}.", file_name(path)))
-        .tempfile_in(directory)
-        .at(directory)?;
-    temporary.write_all(content).at(temporary.path())?;
-    temporary.as_file().sync_all().at(temporary.path())?;
-    chmod(temporary.path(), mode)?;
-    temporary
-        .persist(path)
-        .map_err(|error| Error::os(&error.error, Some(path)))?;
-    Ok(())
+    tilo_files::native::atomic::write_with_mode(path, content, mode)
+        .map_err(|error| Error::os(&error, Some(path)))
 }
 
 pub(crate) fn write_json(path: &Path, value: &Value, mode: u32) -> Result<()> {
@@ -274,29 +264,6 @@ fn write_text_creating(path: &Path, text: &str, mode: u32) -> Result<()> {
         fs::create_dir_all(parent).at(parent)?;
     }
     write_text(path, text, mode)
-}
-
-/// `int(value)` of a status field.
-fn py_int(value: &Value) -> Result<i64> {
-    match value {
-        Value::Bool(flag) => Ok(i64::from(*flag)),
-        Value::Number(number) => number
-            .as_i64()
-            .ok_or_else(|| Error::Value(format!("cannot convert {number} to an integer"))),
-        Value::String(text) => py::strip(text)
-            .replace('_', "")
-            .parse::<i64>()
-            .map_err(|_| {
-                Error::Value(format!(
-                    "invalid literal for int() with base 10: {}",
-                    py::repr_str(text)
-                ))
-            }),
-        other => Err(Error::Value(format!(
-            "int() argument must be a string or a real number, not {}",
-            py::repr(other)
-        ))),
-    }
 }
 
 fn changes<const N: usize>(pairs: [(&str, Value); N]) -> Map<String, Value> {
@@ -1575,14 +1542,14 @@ fn report_activation(
             ("message", json!(result.messages.join(" "))),
         ]);
         if result.changed {
-            let generation = py_int(
-                &status
-                    .read()
-                    .get("generation")
-                    .cloned()
-                    .unwrap_or_else(|| json!(0)),
-            )?;
-            update.insert("generation".to_owned(), json!(generation.saturating_add(1)));
+            let generation = status
+                .read()
+                .get("generation")
+                .map_or(Ok(0), py::int_of)
+                .map_err(Error::Value)?;
+            let generation = i64::try_from(generation.saturating_add(1))
+                .map_err(|_| Error::Value("generation out of range".to_owned()))?;
+            update.insert("generation".to_owned(), json!(generation));
         }
         update.insert(
             "last_error".to_owned(),

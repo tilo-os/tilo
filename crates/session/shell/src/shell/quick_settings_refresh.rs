@@ -191,7 +191,7 @@ pub enum QsReading {
     Field(FieldReading),
     Firmware(Option<Vec<qs::FirmwareUpdate>>),
     WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
-    BtDevices(Option<Vec<qs::BtDeviceInfo>>),
+    BtDevices(Option<Vec<qs::bluez::DeviceInfo>>),
     WifiJoin(WifiJoinResult),
 }
 
@@ -294,7 +294,7 @@ fn os_volume() -> Option<VolumeState> {
 }
 
 fn os_bluetooth() -> Option<bool> {
-    qs::log_get("get_bluetooth", qs::get_bluetooth())
+    qs::log_get("get_bluetooth", qs::bluez::is_powered())
 }
 
 fn os_power() -> Option<qs::PowerProfile> {
@@ -566,7 +566,7 @@ impl QsRefresh {
 
     pub fn kick_bt_devices(&mut self) {
         self.spawn(Tier::Bt, || {
-            QsReading::BtDevices(qs::log_get("list_bt_devices", qs::list_bt_devices()))
+            QsReading::BtDevices(qs::log_get("list_bt_devices", qs::bluez::paired_devices()))
         });
     }
 

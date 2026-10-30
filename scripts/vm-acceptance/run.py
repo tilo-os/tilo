@@ -656,7 +656,7 @@ def main() -> int:
 
 
 PROVIDERS = {"two_windows": "W01", "workspaces": "W10"}
-# The parts of the suite t runs apart (t.toml's `shards` of vm-acceptance), each in a VM of its
+# The parts of the suite run apart (`--shard`), each in a VM of its
 # own, by the areas whose checks they run, or by check id where an area alone would make one
 # part far longer than the others: a check named by id runs in that part only, and its area's
 # part runs the rest. Every check is in exactly one; the checks that depend on another's order

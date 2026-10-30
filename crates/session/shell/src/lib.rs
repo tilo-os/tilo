@@ -17,7 +17,7 @@ pub mod crash_log;
 #[cfg(unix)]
 pub mod stderr_guard;
 pub use tilo_identity_host::device_fleet;
-pub mod firstboot;
+pub use tilo_onboarding_host::firstboot;
 pub mod identity_broker;
 #[cfg(target_os = "linux")]
 pub mod identity_clock_wait;
@@ -31,29 +31,17 @@ pub use tilo_identity_host::registry as identity_registry;
 pub mod network;
 pub mod network_secrets;
 pub mod notifications;
-pub mod onboarding;
+pub use tilo_onboarding_host::identity as onboarding;
+pub mod onboarding_host;
 #[cfg(target_os = "linux")]
-mod onboarding_browser;
+pub use tilo_onboarding_host::peer as onboarding_peer;
 #[cfg(target_os = "linux")]
-mod onboarding_continuation;
+use tilo_onboarding_host::prepared as onboarding_prepared;
 #[cfg(not(target_os = "linux"))]
-mod onboarding_elsewhere;
-#[cfg(target_os = "linux")]
-mod onboarding_migration;
-mod onboarding_nearby;
-#[cfg(target_os = "linux")]
-pub mod onboarding_peer;
-#[cfg(target_os = "linux")]
-mod onboarding_portable_applications;
-#[cfg(target_os = "linux")]
-mod onboarding_portable_home;
-#[cfg(target_os = "linux")]
-mod onboarding_prepared;
-#[cfg(not(target_os = "linux"))]
-use onboarding_elsewhere::{
+use tilo_onboarding_host::retained as retained_files;
+use tilo_onboarding_host::{
     browser as onboarding_browser, migration as onboarding_migration,
-    portable_applications as onboarding_portable_applications,
-    portable_home as onboarding_portable_home, retained_files,
+    portable_home as onboarding_portable_home,
 };
 pub mod onboarding_view;
 pub mod polkit_agent;

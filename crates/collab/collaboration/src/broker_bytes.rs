@@ -5,7 +5,6 @@
 
 use super::super::handoff::HandoffRequest;
 use super::DocumentMutation;
-use super::directory_client;
 use super::{
     BrokerActionSurface, CollabEvent, CollabRequest, Collaborator, ExportedAction, ExportedInput,
     PresencePayload, SdkCommand, SignedOp,
@@ -152,19 +151,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
-        | CollabRequest::RequestDocumentSnapshot
-        | CollabRequest::PublishedInvocationStatus { .. }
-        | CollabRequest::CancelPublishedInvocation { .. } => {}
-        CollabRequest::LaunchPublishedApplication {
-            app_id,
-            content_hash,
-            ..
-        } => {
-            meter.string_capacity(app_id);
-            if let Some(content_hash) = content_hash {
-                meter.string_capacity(content_hash);
-            }
-        }
+        | CollabRequest::RequestDocumentSnapshot => {}
         CollabRequest::LaunchInstalledApplication {
             app_id,
             package_root,
@@ -260,10 +247,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.bytes(message);
         }
         CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
-        CollabRequest::CompleteInvocation { code, message, .. } => {
-            meter.string_capacity(code);
-            meter.string_capacity(message);
-        }
         CollabRequest::UpdateInvocation { update, .. } => serialized_bytes(update, &mut meter),
         CollabRequest::ReportLocalDocumentAction { report, .. } => {
             meter.string_capacity(&report.revision);
@@ -287,47 +270,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(&address.resource);
             meter.string_capacity(&address.action);
             serialized_bytes(update, &mut meter);
-        }
-        #[cfg(unix)]
-        CollabRequest::ManagedInvocationAttempt { attempt } => meter.add(attempt.meter_bytes()),
-        CollabRequest::QueryActionDirectory { query, .. } => {
-            directory_client::query_bytes(query, &mut meter)
-        }
-        CollabRequest::ResolvePublishedAction {
-            revision,
-            resource,
-            action,
-            ..
-        } => {
-            meter.string_capacity(revision);
-            meter.string_capacity(resource);
-            meter.string_capacity(action);
-        }
-        CollabRequest::InvokeResolvedPublishedAction {
-            revision,
-            resource,
-            action,
-            arguments,
-            confirmation,
-            ..
-        } => {
-            meter.string_capacity(revision);
-            meter.string_capacity(resource);
-            meter.string_capacity(action);
-            json_map_bytes(arguments, &mut meter);
-            json_bytes(confirmation, &mut meter);
-        }
-        CollabRequest::InvokePublishedAction {
-            resource,
-            action,
-            arguments,
-            confirmation,
-            ..
-        } => {
-            meter.string_capacity(resource);
-            meter.string_capacity(action);
-            json_map_bytes(arguments, &mut meter);
-            json_bytes(confirmation, &mut meter);
         }
         CollabRequest::ReportTaskRun { lease, update, .. } => {
             meter.string_capacity(lease);
@@ -789,25 +731,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             action_catalogue_bytes(surfaces, surfaces.capacity(), &mut meter);
             "ActionCatalogue"
         }
-        CollabEvent::ActionDirectoryPage { result, .. } => {
-            match result {
-                Ok(page) => directory_client::page_bytes(page, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "ActionDirectoryPage"
-        }
-        CollabEvent::PublishedActionResolution { result, .. } => {
-            match result {
-                Ok(resolution) => directory_client::resolution_bytes(resolution, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "PublishedActionResolution"
-        }
-        #[cfg(unix)]
-        CollabEvent::ManagedInvocationObservation { result } => {
-            meter.add(result.meter_bytes());
-            "ManagedInvocationObservation"
-        }
         CollabEvent::LocalDocumentActionReported { result, .. } => {
             match result {
                 Ok(observation) => {
@@ -827,13 +750,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 ) => meter.string_capacity(error),
             }
             "LocalDocumentActionReported"
-        }
-        CollabEvent::PublishedInvocationResult { result, .. } => {
-            match result {
-                Ok((_, update)) => serialized_bytes(update, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "PublishedInvocationResult"
         }
         CollabEvent::InstalledApplicationLaunchResult { result, .. } => {
             match result {

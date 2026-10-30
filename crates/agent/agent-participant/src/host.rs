@@ -666,7 +666,7 @@ mod tests {
     /// directory but its credentials and the room's content: no notes, no
     /// facts, nothing read off a record. What it learned, it wrote where a
     /// person would, in the room's records, which the state directory does
-    /// not hold (docs/architecture/agent-memory.md).
+    /// not hold.
     #[test]
     fn the_host_keeps_credentials_and_content_and_nothing_learned() {
         let state = tempfile::tempdir().unwrap();

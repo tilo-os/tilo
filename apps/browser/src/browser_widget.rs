@@ -445,6 +445,9 @@ pub struct BrowserWidget {
     /// field edits submitted through it. `None` until a host attaches
     /// one; a bare widget changes no document.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Browser>>,
+    /// The resource's published actions, which the settings' preference
+    /// controls bind their field edits to.
+    actions: Option<ui::framework::Actions<crate::resource::Browser>>,
     /// Where a picture of the page is kept: content the agent's answer names
     /// by hash. `None` until a host attaches one, so a bare widget pictures
     /// nothing and says so.
@@ -1442,6 +1445,7 @@ impl BrowserWidget {
             service_forget: None,
             headless,
             dispatch: None,
+            actions: None,
             content: None,
             site_exceptions: std::collections::BTreeSet::new(),
             address: ui::LocalState::new(initial_url.clone()),
@@ -1593,6 +1597,12 @@ impl BrowserWidget {
             engine_failed: false,
             sign_in_entered: false,
         }
+    }
+
+    /// Bind the preference controls to the resource's `actions`.
+    pub(crate) fn attach_actions(&mut self, actions: ui::framework::Actions<Browser>) {
+        self.actions = Some(actions);
+        self.structure_dirty = true;
     }
 
     /// Submit bookmark and preference edits through `dispatcher`.
@@ -1871,6 +1881,14 @@ impl BrowserWidget {
             }
             BrowserOperation::ClearLibraryFilter => {
                 self.library_filter.set(String::new());
+                self.structure_dirty = true;
+            }
+            BrowserOperation::EditAddress { profile } => {
+                self.credentials.edit_address(profile);
+                self.structure_dirty = true;
+            }
+            BrowserOperation::DeleteAddress { profile } => {
+                self.credentials.delete_address(profile);
                 self.structure_dirty = true;
             }
             BrowserOperation::ShowSettings => {
@@ -2342,8 +2360,24 @@ impl BrowserWidget {
     }
 
     fn settings_action_bindings(&self) -> SettingsActionBindings {
+        let preferences = Browser::paths().preferences;
+        let actions = self.actions.as_ref();
         SettingsActionBindings {
-            edits: self.dispatch.clone(),
+            homepage: actions.and_then(|actions| {
+                actions.edit_binding_with(preferences.homepage, |path, typed: String| {
+                    crate::settings::homepage_of(&typed)
+                        .map(|homepage| path.replace(homepage))
+                        .ok_or_else(|| "not an address yet".to_owned())
+                })
+            }),
+            search_engine: actions.and_then(|actions| {
+                actions.edit_binding(preferences.search_engine, |path, template| {
+                    path.replace(template)
+                })
+            }),
+            adblock: actions.and_then(|actions| actions.field_binding(preferences.adblock_enabled)),
+            clear_on_exit: actions
+                .and_then(|actions| actions.field_binding(preferences.clear_on_exit)),
             clear_history: self.unit_binding("browser.history", "clear-history"),
             clear_site_data: self.unit_binding("browser.settings", "request-site-data-clear"),
             close: self.unit_binding(crate::resource::Browser::KIND, "show-page"),
@@ -3765,7 +3799,8 @@ impl BrowserWidget {
             };
             return Some((
                 PanelKind::Credentials,
-                self.credentials.panel(width, max_height),
+                self.credentials
+                    .panel(width, max_height, self.actions.as_ref()),
                 anchor_ids(&[opener, toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }

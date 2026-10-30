@@ -9,9 +9,9 @@
 //! PUK, registered at home, roaming, and a modem with two SIM slots.
 
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::sync::{Arc, Mutex};
 
+use tilo_test_env::PrivateBus;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use zeroize::Zeroizing;
 
@@ -21,44 +21,6 @@ const MODEM: &str = "/org/freedesktop/ModemManager1/Modem/0";
 const SIM_1: &str = "/org/freedesktop/ModemManager1/SIM/0";
 const SIM_2: &str = "/org/freedesktop/ModemManager1/SIM/1";
 const BEARER: &str = "/org/freedesktop/ModemManager1/Bearer/0";
-
-/// A private `dbus-daemon`, never the person's buses.
-struct Bus {
-    child: std::process::Child,
-    address: String,
-    _root: tempfile::TempDir,
-}
-
-impl Bus {
-    fn start() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let mut child = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                root.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the test image provides dbus-daemon");
-        let mut address = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        Self {
-            child,
-            address: address.trim().into(),
-            _root: root,
-        }
-    }
-}
-
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 /// What the scripted modem reports and what it was asked.
 #[derive(Clone)]
@@ -359,7 +321,7 @@ impl FakeBearer {
 
 /// A scripted `ModemManager` on a private bus, and a client of it.
 struct Fixture {
-    _bus: Bus,
+    _bus: PrivateBus,
     _server: zbus::Connection,
     manager: ModemManager,
     script: Shared,
@@ -368,11 +330,11 @@ struct Fixture {
 impl Fixture {
     /// `ModemManager` with `script`'s modem, or (`None`) with no modem.
     fn new(script: Option<Script>) -> Self {
-        let bus = Bus::start();
+        let bus = PrivateBus::start();
         let modem = script.is_some();
         let script = Arc::new(Mutex::new(script.unwrap_or_else(Script::registered)));
         let shared = Arc::clone(&script);
-        let address = bus.address.clone();
+        let address = bus.address().to_owned();
         let (server, client) = block(async move {
             let mut builder = zbus::connection::Builder::address(address.as_str())
                 .unwrap()

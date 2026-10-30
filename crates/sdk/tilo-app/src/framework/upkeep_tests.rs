@@ -29,11 +29,11 @@ fn the_view_takes_in_its_work_and_says_what_it_owes_the_window() {
     );
     let mut view = kept(
         Upkeep::new()
-            .on_sync(move || counted.set(counted.get() + 1))
+            .syncing(move || counted.set(counted.get() + 1))
             .busy(move || working.get())
             .next_wake(move || Some(due))
             .pending_visual_work(move || waiting.get())
-            .on_presented(move || drawn.set(drawn.get() + 1))
+            .presenting(move || drawn.set(drawn.get() + 1))
             .appearance(|| None),
     );
     let doc = AutoCommit::new();

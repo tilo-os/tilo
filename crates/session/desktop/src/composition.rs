@@ -6,7 +6,6 @@ use tilo_desktop_model::{
     DesktopTree, OutputPartition, RoomId, Strip, StripId, WindowGroup, WindowWidth,
 };
 use tilo_desktop_surface::tile_app_kind;
-use tilo_sort::CompactSort as _;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Column, Container, GroupRow, Stack, StripDeck, StripView, TabDescriptor, Widget,
@@ -130,23 +129,12 @@ fn strips_shown_per_display(tree: &DesktopTree) -> Vec<(u32, usize)> {
         .collect()
 }
 
-/// A strip's groups in the order its row lays them out: display by display
-/// in reading order, each display's in strip order. The strip's own order
-/// when it isn't partitioned.
+/// A strip's groups in the order its row lays them out
+/// ([`OutputPartition::lane_order`]).
 pub fn display_ordered<'a>(partition: &OutputPartition, strip: &'a Strip) -> Vec<&'a WindowGroup> {
-    let mut groups: Vec<&WindowGroup> = strip.window_groups.iter().collect();
-    if partition.displays.len() < 2 {
-        return groups;
-    }
-    let order = partition.reading_order();
-    groups.compact_sort_by_key(|g| {
-        partition
-            .display_of(g.id)
-            .and_then(|d| order.iter().position(|id| *id == d))
-            .unwrap_or(0)
-    });
-    groups
+    partition.lane_order(strip)
 }
+
 pub fn build_group(
     group: &WindowGroup,
     room: RoomId,
@@ -280,7 +268,9 @@ impl DesktopSurface {
         let mut deck_rows = Vec::new();
         if let Some(workspace) = tree.active_workspace() {
             for strip in &workspace.strips {
-                let groups = display_ordered(&tree.outputs, strip)
+                let groups = tree
+                    .outputs
+                    .lane_order(strip)
                     .into_iter()
                     .map(|g| build_group(g, workspace.room(), resolver, &mut failures, &wake_sink))
                     .collect();
@@ -913,10 +903,7 @@ impl DesktopSurface {
             let mut opened = Vec::new();
             // The row lays groups out display by display; on one display
             // that is the strip's own order.
-            for (index, group) in display_ordered(&tree.outputs, strip)
-                .into_iter()
-                .enumerate()
-            {
+            for (index, group) in tree.outputs.lane_order(strip).into_iter().enumerate() {
                 let mut revived = false;
                 if let Some(dying) = row
                     .groups
@@ -1073,7 +1060,9 @@ impl DesktopSurface {
             // Closing visuals retain their strip slots while the live groups follow
             // canonical order. Reordering only live groups would move a closing
             // neighbour behind them and animate across its occupied footprint.
-            let mut live_order = display_ordered(&tree.outputs, strip)
+            let mut live_order = tree
+                .outputs
+                .lane_order(strip)
                 .into_iter()
                 .map(|group| group.id);
             let mut closing_order = closing_slots.iter().copied().peekable();

@@ -27,8 +27,8 @@ export async function createRoom(api, {signal} = {}) {
   return response.json();
 }
 
-/** A one-use guest link for `room` (the `createRoom` answer), in the web link grammar
- * (docs/architecture/web-routing.md): the Writer full tab, on `record` when
+/** A one-use guest link for `room` (the `createRoom` answer), in the web link grammar:
+ * the Writer full tab, on `record` when
  * given, with the guest ticket as the fragment's secret. */
 export async function createInvitation(room, {record, signal} = {}) {
   const response = await fetch(room.invitations, {

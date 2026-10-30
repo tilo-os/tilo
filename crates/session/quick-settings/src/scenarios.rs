@@ -30,6 +30,7 @@ pub const NAMES: &[&str] = &[
     "accessory",
     "edit",
     "short",
+    "now-playing",
 ];
 
 /// The actions that bring the panel to `name`.
@@ -269,6 +270,7 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
             state.do_not_disturb = true;
             state.notifications.quiet = Some("Do Not Disturb is on".into());
         }
+        Some("now-playing") => state.now_playing = Some(crate::NowPlaying::fixture()),
         Some("short") => {
             state.displays = vec![
                 crate::DisplayBrightness {

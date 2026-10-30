@@ -138,12 +138,15 @@ pub struct Managers {
 }
 
 impl Managers {
-    /// The programs of the image: the compositor hosts the portal, and it
+    /// The programs of the image: the session hosts the portal, and it
     /// and this binary's command line serve Settings.
     #[must_use]
     pub fn system() -> Self {
         let settings = trusted_managers();
-        let portal = AppId::parse("binary:/usr/bin/shell").into_iter().collect();
+        let portal = ["binary:/usr/bin/shell", "binary:/usr/bin/tilo-session"]
+            .into_iter()
+            .filter_map(AppId::parse)
+            .collect();
         Self { settings, portal }
     }
 }

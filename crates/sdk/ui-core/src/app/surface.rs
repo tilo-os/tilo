@@ -142,18 +142,7 @@ impl App {
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
-        if matches!(
-            &event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | WindowEvent::MouseWheel { .. }
-                | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
-                | WindowEvent::CursorLeft { .. }
-                | WindowEvent::Focused(false)
-        ) && self.input.tooltip_host.dismiss()
-        {
+        if crate::widget::TooltipHost::dismissed_by(&event) && self.input.tooltip_host.dismiss() {
             window.request_redraw();
         }
         if matches!(
@@ -229,28 +218,10 @@ impl App {
             &app.framework_input,
             history_input,
         );
-        let detected_interaction = if synthesized_touch {
-            None
-        } else {
-            match &event {
-                // The window's touch emulation switches to touch once the
-                // gesture has landed, so a touch hits what the person saw.
-                WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => {
-                    Some(app.input.interaction.with_pointer_modality())
-                }
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => Some(app.input.interaction.with_keyboard_modality()),
-                _ => None,
-            }
-        };
+        let detected_interaction = app
+            .input
+            .interaction
+            .detected_from(&event, synthesized_touch);
         if let Some(environment) = detected_interaction {
             app.set_interaction_environment(environment);
         }
@@ -484,36 +455,8 @@ impl App {
             }
         }
 
-        if !handled && app.handle_tab_navigation(&event, modal_rect) {
+        if !handled && app.handle_tab_navigation(&event, app.keyboard_nav_allowed(modal_rect)) {
             handled = true;
-        }
-
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let (Some(d), true, true) = (
-                dir,
-                app.input.modifiers.state().alt_key(),
-                app.keyboard_nav_allowed(modal_rect),
-            ) {
-                app.navigate_focus(d);
-                handled = true;
-            }
         }
 
         // Two-finger swipe, edge pull or mouse side button; delivered via
@@ -662,84 +605,15 @@ impl App {
             window.request_redraw();
         }
 
-        // Alt+Arrow remains host directional navigation when the focused
-        // widget leaves it unhandled. Running this after widget dispatch lets
-        // editors consume platform word/selection shortcuts first, while
-        // keeping Alt navigation ahead of the plain range-control fallback.
-        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
-
-        // If no widget consumed Enter/Space (text inputs do), activate
-        // the focused control the same way a mouse click would.
-        app.handle_unconsumed_activation_key(&event, &mut handled);
-
-        if !handled && app.handle_unconsumed_search_key(&event) {
-            handled = true;
-        }
-
-        // Select and type: a key nothing took, over a selection, asks about it.
-        if !handled && app.handle_unconsumed_typed_key(&event) {
-            handled = true;
-        }
-
-        // Ctrl+T / Ctrl+W / Ctrl+Shift+T / Ctrl+Tab / Ctrl+Shift+Tab nobody
-        // consumed are the desktop's tab chords.
-        if !window.hosts_tab_chords() {
-            app.handle_unconsumed_tab_chord(&event, &mut handled);
-        }
-
-        // A focused range control consumes Left/Right; Up/Down and Tab
-        // still move focus. Modifiers scale the step:
-        //   plain  → one step       Shift → four steps (coarse)
-        //   Ctrl   → jump to min/max (Left = min, Right = max)
-        // Other widgets ignore the action, falling through to
-        // directional navigation below.
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(named),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            use crate::a11y::Action;
-            let ctrl = app
-                .input
-                .platform
-                .command_modifier_down(app.input.modifiers.state());
-            let shift = app.input.modifiers.state().shift_key();
-            // (action to repeat, how many times)
-            let (action, times) = match named {
-                winit::keyboard::NamedKey::ArrowLeft if ctrl => {
-                    (Some(Action::SetValue("0".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowRight if ctrl => {
-                    (Some(Action::SetValue("100".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowLeft => {
-                    (Some(Action::Decrement), if shift { 4 } else { 1 })
-                }
-                winit::keyboard::NamedKey::ArrowRight => {
-                    (Some(Action::Increment), if shift { 4 } else { 1 })
-                }
-                _ => (None, 0),
-            };
-            if let (Some(act), Some(fid)) = (action, app.focused_node) {
-                let mut any = false;
-                for _ in 0..times {
-                    any |= app.perform_node_action(fid, &act).unwrap_or(false);
-                }
-                if any {
-                    handled = true;
-                    app.needs_sync = true;
-                    app.layout.layout_dirty = true;
-                }
-            }
-        }
-
-        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
+        // Arrows, Enter and Space, search and typed keys, the desktop's tab
+        // chords (unless the window answers them) and range steps nobody
+        // consumed.
+        app.handle_unconsumed_key(
+            &event,
+            app.keyboard_nav_allowed(modal_rect),
+            !window.hosts_tab_chords(),
+            &mut handled,
+        );
 
         if app.dispatch_control_invocations() != 0 {
             handled = true;
@@ -830,7 +704,9 @@ impl App {
             let logical = Point::new(position.x / scale, position.y / scale);
             let hit_test = phases.start();
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            let target = app.tooltip_target_at(logical);
+            let target = app
+                .tooltip_placed_at(logical)
+                .map(|(rect, label, _)| (rect, label));
             phases.finish(InputPhase::HitTest, hit_test);
             if app.input.current_cursor != desired {
                 app.input.current_cursor = desired;

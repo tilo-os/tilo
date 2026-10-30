@@ -15,15 +15,12 @@ name = "tilo-board-successor"
 path = "src/main.rs"
 
 [dependencies]
-# Strict base64 of attestation payloads, as base64.b64decode(validate=True).
-hex.workspace = true
+# Verifiers run with bounded output and a deadline, killed with their tree.
+bounded-command = { path = "../bounded-command" }
 # sigaction for SIGTERM/SIGINT, so a stopped service kills its verifier.
 libc.workspace = true
 regex.workspace = true
-# poll over the verifier's two pipes, without FFI.
-rustix = { workspace = true, features = ["event", "std"] }
 serde_json.workspace = true
-sha2.workspace = true
 # The private 0700 directory holding the copied pull credentials.
 tempfile.workspace = true
 tilo-pycompat = { path = "../tilo-pycompat" }

@@ -20,6 +20,8 @@ getrandom.workspace = true
 # Every edge relative to a directory descriptor (openat, renameat2, fchownat,
 # symlinkat), umask and getuid, without FFI.
 rustix = { workspace = true, features = ["fs", "process", "std"] }
+# The ids read as Python's int() read them.
+tilo-pycompat = { path = "../tilo-pycompat" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

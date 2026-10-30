@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The OS release (the os-release family in tools/ci/products.toml): the release image
+# The OS release: the release image
 # os-release-image-ARCH composed (os/image/build-layer.sh, TILO_OS_FLAVOUR=release), sealed and
 # checked, its boot artifacts signed with the EFI and PCR keys in KMS, signed with the release key,
 # attested and published as registry.tilo.so/tilo/tilo:gen<N>, <version> and latest. A board of

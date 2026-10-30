@@ -133,17 +133,38 @@ impl HistoryEdit {
                     || Scope::invoking(doc),
                     |author| Scope::Invoker(author.clone()),
                 );
-                let taken = steps::undo_preview(doc, &scope, 1);
                 // A gesture's changes share one description; the newest
                 // names the step.
-                taken
+                steps::undo_preview(doc, &scope, 1)
                     .first()
                     .and_then(|version| version.context.as_ref())
-                    .and_then(tilo_actions::ActionContext::described)
+                    .and_then(named_step)
+            }
+            Self::Redo { .. } if steps == 1 => {
+                let scope = Scope::invoking(doc);
+                steps::undos_in_effect(doc, &|version| scope.owns(version), 1)
+                    .first()
+                    .and_then(|version| version.context.as_ref())
+                    .and_then(named_step)
             }
             _ => None,
         };
         tilo_actions::Described::new(tilo_actions::Did::history(op, steps, of))
+    }
+}
+
+/// What a step is called: an undo or redo is called by the step it moved.
+fn named_step(context: &tilo_actions::ActionContext) -> Option<tilo_actions::Described> {
+    match &context.what {
+        Some(tilo_actions::Did::History(step))
+            if matches!(
+                step.op,
+                tilo_actions::HistoryOp::Undo | tilo_actions::HistoryOp::Redo
+            ) =>
+        {
+            step.of.as_deref().cloned()
+        }
+        _ => context.described(),
     }
 }
 
@@ -936,12 +957,34 @@ impl HistoryEdit {
 }
 
 /// A step's verified inverse, when it recorded one: replaying its action at
-/// its own state reproduces it, so the inverse is the canonical one.
+/// its own state reproduces it, so the inverse is the canonical one. A redo
+/// that brought back one such step is taken back by the inverse of that
+/// step's action as the redo ran it, at the redo's own state.
 fn inverse(
     original: &mut tilo_actions::Doc,
     registry: &tilo_actions::ActionRegistry,
     version: &Version,
 ) -> Result<Option<steps::Inverse>, String> {
+    if let Some(redone) = redone_step(original, version) {
+        let Some(action) = restoration(original, registry, &redone)? else {
+            return Ok(None);
+        };
+        let meta = original
+            .get_change_meta_by_hash(&version.hash)
+            .ok_or("history change is unavailable")?;
+        let (deps, actor) = (meta.deps.clone(), meta.actor.clone().into_owned());
+        let mut at = original.fork_at(&deps).map_err(|error| error.to_string())?;
+        let Some(inverse) = tilo_actions::executor::inverse_as(&mut at, action.as_ref(), actor)
+        else {
+            return Ok(None);
+        };
+        return local(
+            registry
+                .decode(&inverse)
+                .map_err(|error| error.to_string())?,
+        )
+        .map(Some);
+    }
     let Some(action) =
         tilo_actions::executor::verified_compensation(original, version.hash, registry)
             .map_err(|error| error.to_string())?
@@ -951,12 +994,25 @@ fn inverse(
     local(action).map(Some)
 }
 
+/// The one step a redo brought back, when `version` is such a redo.
+fn redone_step(doc: &AutoCommit, version: &Version) -> Option<Version> {
+    let [hash] = steps::brought_back(doc, version).try_into().ok()?;
+    let hash = steps::recorded_hash(&hash)?;
+    let document = doc.committed_document();
+    let meta = document.get_change_meta_by_hash(&hash)?;
+    Some(tilo_resource::history::version_of(document, &meta))
+}
+
 /// How a redo brings back an outside step: its verified action, run again.
+/// A redo taken back stands for the step it brought back.
 fn restoration(
     original: &mut tilo_actions::Doc,
     registry: &tilo_actions::ActionRegistry,
     version: &Version,
 ) -> Result<Option<steps::Inverse>, String> {
+    if let Some(redone) = redone_step(original, version) {
+        return restoration(original, registry, &redone);
+    }
     if inverse(original, registry, version)?.is_none() {
         return Ok(None);
     }

@@ -216,7 +216,7 @@ class PageClipboard(unittest.TestCase):
 
     def test_a_read_chromium_refuses_asks_nothing_of_the_browser(self):
         # On this node Chromium refuses a site's read without asking, as it
-        # refuses notifications and location (see t.toml): the page is told
+        # refuses notifications and location: the page is told
         # so, and the system clipboard is never read for it.
         host = self.start()
         mark = len(host.seen)

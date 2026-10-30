@@ -7,12 +7,10 @@ production services or desktop applications.
 
 Complete apps, each teaching one idea of the app framework: a model whose
 fields views bind by path, verbs for everything else, forms for a verb's
-parameters ([docs/action-model-recipe.md](../docs/action-model-recipe.md)).
+parameters ([docs/app-development.md](../docs/app-development.md)).
 Read one, run it
 with `tilo-app run examples/apps/NAME`, or start your own app from it with
-`tilo-app new my-app --from-example NAME`. `tilo-app examples` lists them, and
-[docs/examples.md](../docs/examples.md) explains how they differ from the
-templates `tilo-app new --template` offers.
+`tilo-app new my-app --from-example NAME`. `tilo-app examples` lists them.
 
 - [`counter`](apps/counter/): a model, its verbs and a field edited at its path: validation, undo, a reset Undo takes back, a viewer role.
 - [`bound-controls`](apps/bound-controls/): text, checkbox, number, slider and dropdown, each bound to a field by its path.

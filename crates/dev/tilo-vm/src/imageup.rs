@@ -118,7 +118,7 @@ pub fn parse_from(
 /// them: the dev images published for it (built on the unsigned integration
 /// image, then on a signed release), which the VM pulls itself; then the
 /// production images a dev image can be built FROM here: the integration image
-/// of a main build (t's `publish-os-dev-<arch>`), then the signed release.
+/// of a main build, then the signed release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiCandidates {
     pub dev_images: Vec<String>,
@@ -159,51 +159,34 @@ pub fn ci_commit(tag: &str) -> Option<&str> {
         .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// A branch's own build is tagged `ref-<branch>-<sha7>-<target>` in the
-/// branches' repository `tilo-vm-ref` (t's `publish-os-ref-<target>`, which
-/// `vm upgrade --ref` dispatches), so a commit that is not on main is found by
-/// listing the repositories' tags: `tilo-vm-ref:ref-<branch>-<sha7>-<arch or
-/// board>` is the published, signed dev image, `tilo-ci:<ref>-<sha7>-<arch>` an
-/// image a dev image can be built FROM.
-/// `skopeo list-tags` output in, candidates out; several refs sort by name so
-/// the choice is stable.
-pub fn ci_ref_candidates(
-    sha: &str,
-    arch: &str,
-    board: Option<&str>,
-    vm_tags: &str,
-    ci_tags: &str,
-) -> CiCandidates {
-    fn tags(listing: &str) -> Vec<String> {
-        serde_json::from_str::<serde_json::Value>(listing)
-            .ok()
-            .and_then(|value| value.get("Tags").cloned())
-            .and_then(|tags| serde_json::from_value::<Vec<String>>(tags).ok())
-            .unwrap_or_default()
+/// A commit that is not on main is found by listing the integration repository's tags:
+/// `tilo-ci:<ref>-<sha7>-<arch>` is an image a dev image can be built FROM. A board has none
+/// (its dev image is sealed with the board's device tree). `skopeo list-tags` output in,
+/// bases out; several refs sort by name so the choice is stable.
+pub fn ci_ref_bases(sha: &str, arch: &str, board: Option<&str>, ci_tags: &str) -> Vec<String> {
+    if board.is_some() {
+        return Vec::new();
     }
-    fn named_ref(tag: &str, suffix: &str) -> bool {
-        tag.strip_suffix(suffix).is_some_and(|name| {
-            !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    let tags = serde_json::from_str::<serde_json::Value>(ci_tags)
+        .ok()
+        .and_then(|value| value.get("Tags").cloned())
+        .and_then(|tags| serde_json::from_value::<Vec<String>>(tags).ok())
+        .unwrap_or_default();
+    let suffix = format!("-{sha}-{arch}");
+    let mut bases: Vec<String> = tags
+        .into_iter()
+        .filter(|tag| {
+            tag.strip_suffix(&suffix).is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+            })
         })
-    }
-    // A board's dev image is the only one that boots it, and has no base here.
-    let dev_suffix = format!("-{sha}-{}", board.unwrap_or(arch));
-    let mut dev_images: Vec<String> = tags(vm_tags)
-        .into_iter()
-        .filter(|tag| tag.starts_with("ref-") && named_ref(tag, &dev_suffix))
-        .map(|tag| format!("{}:{tag}", crate::ci::REF_IMAGE))
-        .collect();
-    let mut bases: Vec<String> = tags(ci_tags)
-        .into_iter()
-        .filter(|tag| board.is_none() && named_ref(tag, &format!("-{sha}-{arch}")))
         .map(|tag| format!("registry.tilo.so/tilo/tilo-ci:{tag}"))
         .collect();
-    dev_images.sort();
     bases.sort();
-    CiCandidates { dev_images, bases }
+    bases
 }
 
 pub fn list_tags_command(repository: &str) -> CommandLine {
@@ -226,17 +209,13 @@ pub fn exists_command(reference: &str) -> CommandLine {
 /// `registry.tilo.so/tilo/tilo-vm`, with a tag or digest: the same rule
 /// `os/dev/build-dev-image.sh` enforces when it tags one.
 pub fn is_dev_name(reference: &str) -> bool {
-    [
-        "localhost/tilo-vm",
-        "registry.tilo.so/tilo/tilo-vm",
-        crate::ci::REF_IMAGE,
-    ]
-    .iter()
-    .any(|repo| {
-        reference.strip_prefix(repo).is_some_and(|rest| {
-            rest.len() > 1 && (rest.starts_with(':') || rest.starts_with("@sha256:"))
+    ["localhost/tilo-vm", "registry.tilo.so/tilo/tilo-vm"]
+        .iter()
+        .any(|repo| {
+            reference.strip_prefix(repo).is_some_and(|rest| {
+                rest.len() > 1 && (rest.starts_with(':') || rest.starts_with("@sha256:"))
+            })
         })
-    })
 }
 
 /// What `podman image inspect` and a look inside say about a local image.
@@ -1254,37 +1233,21 @@ mod tests {
         );
     }
 
-    /// A commit off main is found by its branch's `ref-<branch>-<sha7>-<target>` tags.
+    /// A commit off main is found by its integration image's `<ref>-<sha7>-<arch>` tags.
     #[test]
     fn a_pull_request_commit_resolves_through_its_ref_tags() {
         assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
         assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
         assert_eq!(ci_commit("v1.2.3"), None);
-        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","ref-pr-12-1a2b3c4-x86_64","ref-fix-x-1a2b3c4-x86_64","ref-fix-x-1a2b3c4-aarch64","1a2b3c4-x86_64"]}"#;
         let ci =
             r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
-        let found = ci_ref_candidates("1a2b3c4", "x86_64", None, vm, ci);
         assert_eq!(
-            found.dev_images,
-            vec![
-                "registry.tilo.so/tilo/tilo-vm-ref:ref-fix-x-1a2b3c4-x86_64".to_owned(),
-                "registry.tilo.so/tilo/tilo-vm-ref:ref-pr-12-1a2b3c4-x86_64".to_owned(),
-            ]
-        );
-        assert_eq!(
-            found.bases,
+            ci_ref_bases("1a2b3c4", "x86_64", None, ci),
             vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
         );
-        let none = ci_ref_candidates("1a2b3c4", "aarch64", None, "not json", "{}");
-        assert!(none.dev_images.is_empty() && none.bases.is_empty());
-        // A board takes only its own board image, and never a base to build from.
-        let boards = r#"{"Tags":["ref-pr-7-1a2b3c4-aarch64","ref-pr-7-1a2b3c4-lenovo-83ed","ref-pr-7-1a2b3c4-orangepi-3b-v2-1"]}"#;
-        let board = ci_ref_candidates("1a2b3c4", "aarch64", Some("lenovo-83ed"), boards, ci);
-        assert_eq!(
-            board.dev_images,
-            vec!["registry.tilo.so/tilo/tilo-vm-ref:ref-pr-7-1a2b3c4-lenovo-83ed".to_owned()]
-        );
-        assert!(board.bases.is_empty());
+        assert!(ci_ref_bases("1a2b3c4", "aarch64", None, "not json").is_empty());
+        // A board never takes a base to build from.
+        assert!(ci_ref_bases("1a2b3c4", "aarch64", Some("lenovo-83ed"), ci).is_empty());
         assert_eq!(
             list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
             "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"

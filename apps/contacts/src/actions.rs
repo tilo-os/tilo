@@ -28,6 +28,12 @@ pub enum ContactsEffect {
     /// Open favorites.
     #[effect(view, row, idempotent)]
     OpenFavorites,
+    /// Sort contacts.
+    #[effect(view, idempotent)]
+    SortContacts {
+        #[param("What the list is sorted by", choices = ["name", "organization"])]
+        order: String,
+    },
     /// Review possible duplicate.
     #[effect(view, row, idempotent)]
     OpenReview {
@@ -35,6 +41,24 @@ pub enum ContactsEffect {
         survivor: uuid::Uuid,
         #[param("The contact merged into it")]
         source: uuid::Uuid,
+    },
+    /// Edit field.
+    ///
+    /// Opens the contact's form on one of their details.
+    #[effect(view, idempotent)]
+    EditField {
+        #[param("The contact's id")]
+        contact: uuid::Uuid,
+        #[param("The detail: phone:N, email:N, address:N, birthday or notes")]
+        field: String,
+    },
+    /// Open website.
+    ///
+    /// Opens the contact's website in this device's browser.
+    #[effect(own_device, idempotent)]
+    OpenWebsite {
+        #[param("The contact's id")]
+        contact: uuid::Uuid,
     },
     /// Read possible duplicate.
     ///

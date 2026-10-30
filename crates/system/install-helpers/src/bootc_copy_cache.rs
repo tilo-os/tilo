@@ -13,7 +13,6 @@
 
 use std::ffi::OsString;
 use std::fs::{self, DirBuilder};
-use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -263,17 +262,9 @@ pub fn record(host: &dyn Host) -> Result<()> {
         !path.exists() || host.owned_private_file(&path),
         "existing receipt is not a private regular root-owned file",
     )?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".vm-bootc-copy-")
-        .tempfile_in(&directory)?;
-    temporary.write_all(Dumps::SORTED.dumps(&receipt).as_bytes())?;
-    temporary.write_all(b"\n")?;
-    temporary.flush()?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(&path)
-        .map_err(|error| Error::from(error.error))?;
-    fs::File::open(&directory)?.sync_all()?;
+    let mut bytes = Dumps::SORTED.dumps(&receipt).into_bytes();
+    bytes.push(b'\n');
+    tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)?;
     Ok(())
 }
 

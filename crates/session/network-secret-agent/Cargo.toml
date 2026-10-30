@@ -17,7 +17,10 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 futures-util.workspace = true
 # The Wi-Fi security a remembered passphrase roams under.
 os-actions = { path = "../../system/os-actions" }
+serde.workspace = true
 serde_json.workspace = true
+# Asks each request as one of the session's questions.
+tilo-service = { path = "../service" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
 # The sealed vault remembered secrets are kept in.

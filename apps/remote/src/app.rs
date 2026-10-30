@@ -291,8 +291,6 @@ pub(crate) enum Action {
     /// Ask before opening a live session. Resource actions receive the same
     /// confirmation from the shell, so every path is equally explicit.
     RequestConnect(ConnectionId),
-    /// Pin the connection to the top of the list, or unpin it.
-    ToggleFavorite(ConnectionId),
     /// Ask before removing a shared saved profile.
     RequestDelete(ConnectionId),
     /// Ask before adding the freshly observed SSH host key to device-private trust.
@@ -713,6 +711,9 @@ pub(crate) struct Store {
     /// added, edited, renamed, pinned, or deleted, shared with the palette,
     /// agents and scripts. `None` until the framework attaches the surface.
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Remote>>,
+    /// What the resource and its effects publish, for the rows' controls.
+    /// `None` until the framework attaches the surface.
+    actions: Option<ui::framework::Actions<crate::resource::Remote>>,
     /// This device's store for the connections' passwords and passphrases.
     secrets: Option<ui::secrets::SecretStore>,
     /// This device's SSH host-key trust, in the app's device-local settings.
@@ -887,7 +888,13 @@ impl RemoteApp {
                 destination,
                 rows,
                 has_connections,
-            } => view::connection_list(&store.requests, destination, &rows, has_connections),
+            } => view::connection_list(
+                &store.requests,
+                store.actions.as_ref(),
+                destination,
+                &rows,
+                has_connections,
+            ),
             Content::Form(model) => view::connection_form(&store.requests, &store.fields, &model),
             Content::Surface(_) => Box::new(SessionPane::new(Rc::clone(&self.session))),
             Content::Status { id, .. } => {
@@ -971,6 +978,7 @@ impl Store {
             tilo_devices,
             next_tilo_session_id: 1,
             dispatch: None,
+            actions: None,
             known_hosts: crate::ssh::KnownHostStore::of_session(),
             secrets: None,
             capture: false,
@@ -1172,7 +1180,6 @@ impl Store {
                 }
             }
             Action::RequestConnect(id) => self.request_connect(id),
-            Action::ToggleFavorite(id) => self.toggle_favorite(id),
             Action::RequestDelete(id) => self.request_delete(id),
             Action::RequestTrustSshHostKey(id) => self.request_trust_ssh_host_key(id),
             Action::RequestForgetSshHostKey(id) => self.request_forget_ssh_host_key(id),
@@ -1246,25 +1253,6 @@ impl Store {
             self.screen = Screen::List;
             self.dirty = true;
         }
-    }
-
-    fn toggle_favorite(&mut self, id: ConnectionId) {
-        // Compute the absolute target before the in-memory flip so replay does
-        // not depend on the connection's current state.
-        let Some(target) = self
-            .workspace
-            .get(id)
-            .map(|connection| !connection.favorite)
-        else {
-            return;
-        };
-        self.workspace.toggle_favorite(id);
-        let item = crate::model::Remote::item(id);
-        let pinned = crate::model::Remote::paths()
-            .connections
-            .item(&item)
-            .favorite;
-        self.submit(Invoke::edit(&pinned.set(target)));
     }
 
     fn delete_connection(&mut self, id: ConnectionId) {
@@ -1484,6 +1472,7 @@ impl Store {
     /// view; a capture shows its sample's reachability and nearby devices.
     fn attach_framework(&mut self, cx: &ViewCx<Remote>) {
         self.dispatch = Some(cx.dispatcher());
+        self.actions = Some(cx.actions());
         self.secrets = Some(cx.storage().secrets());
         self.known_hosts = crate::ssh::KnownHostStore::in_settings(
             cx.storage().settings::<crate::ssh::KnownHostsSetting>(),

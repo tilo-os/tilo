@@ -2,8 +2,7 @@
 """Select and run the hermetic test suites that live outside Cargo.
 
 tools/ci/suites.toml declares each suite with the repository paths it reads.
-t.toml has one `suite-<group>` check per group, which runs it with `run` when
-the group's inputs change (tools/ci/t_toml.py writes them). The same manifest declares
+CI runs each group's suites when the group's inputs change. The same manifest declares
 the Cargo packages whose code reads repository files outside the package, so
 a change to those files selects the package's checks and tests. `check` is the
 repository policy that keeps every test-shaped file and every cross-package
@@ -68,10 +67,6 @@ class CargoReader:
     inputs: tuple[str, ...]
     readers: tuple[str, ...]
     scope: ReaderScope | None = None
-    # Directories whose workspace packages' local dependencies the package also reads (their
-    # sources, as a test of every app reads the crates the apps use); tools/ci/t_toml.py adds
-    # those packages' directories to the inputs from the workspace's metadata.
-    dependencies_of: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -152,9 +147,8 @@ def parse(text: str) -> Manifest:
         where = f"cargo entry {index + 1}"
         if (not isinstance(entry, dict)
                 or not {"package", "inputs", "readers"} <= set(entry)
-                <= {"package", "inputs", "readers", "scope", "dependencies_of"}):
-            raise ValueError(f"{where} must have package, inputs and readers, and may have a scope "
-                             "and dependencies_of")
+                <= {"package", "inputs", "readers", "scope"}):
+            raise ValueError(f"{where} must have package, inputs and readers, and may have a scope")
         package = entry["package"]
         if not isinstance(package, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", package) or package in packages:
             raise ValueError(f"{where} has an invalid or duplicate package: {package!r}")
@@ -179,13 +173,7 @@ def parse(text: str) -> Manifest:
             if not isinstance(test_filter, str) or not test_filter.strip() or "\n" in test_filter:
                 raise ValueError(f"{where} scope filter must be a one-line nextest filterset")
             scope = ReaderScope(scoped, test, test_filter)
-        dependencies_of = ()
-        if "dependencies_of" in entry:
-            dependencies_of = tuple(_path(item, f"{where} dependencies_of")
-                                    for item in _strings(entry["dependencies_of"], f"{where} dependencies_of"))
-            if not all(item.endswith("/") for item in dependencies_of):
-                raise ValueError(f"{where} dependencies_of must name directories (ending in /)")
-        cargo.append(CargoReader(package, inputs, readers, scope, dependencies_of))
+        cargo.append(CargoReader(package, inputs, readers, scope))
     cargo_exempt: dict[str, str] = {}
     for entry in data.get("cargo-exempt", []):
         if not isinstance(entry, dict) or set(entry) != {"file", "reason"}:
@@ -676,10 +664,6 @@ def audit_cargo(root: Path, tracked: list[str], manifest: Manifest) -> list[str]
             if read.target is not None:
                 problems.extend(f"{path}:{read.line}: {problem}, which no input of cargo {package} matches"
                                 for problem in uncovered(read, entry.inputs, files))
-    for entry in manifest.cargo:
-        for directory in entry.dependencies_of:
-            if not any(package.startswith(directory) for package in packages):
-                problems.append(f"{MANIFEST}: cargo {entry.package}: dependencies_of {directory} holds no tracked package")
     return problems
 
 
@@ -783,7 +767,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "check":
         problems = audit(ROOT, tracked_files(ROOT))
-        # Findings on stdout, everything else on stderr (tools/policy/findings.py).
+        # Findings on stdout, everything else on stderr.
         for problem in problems:
             print(problem)
         if not problems:

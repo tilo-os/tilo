@@ -587,8 +587,7 @@ impl TypstApp {
             page_count: self.preview.page_count(),
         })
         .into_iter()
-        .chain(self.outline.resources())
-        .map(ui::framework::LiveRow::from_resource)
+        .chain(self.outline.rows())
         .collect()
     }
 

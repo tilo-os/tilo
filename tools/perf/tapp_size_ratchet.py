@@ -18,7 +18,7 @@ max <= 6 MB, ratcheted per app. Two gates hold it:
   until the next one publishes, and a later commit's budgets describe apps
   that are not published yet (its `app-sizes-<arch>` checks measure those).
 
-`check-budget --base REV` runs in t.toml's diff-based gates without building
+`check-budget --base REV` runs in diff-based gates without building
 anything. It fails when a budget is larger than at REV beyond what the raise
 files new in the change add. It also fails when the budgeted apps are not
 exactly the default collection, so a new app brings its budget in the same

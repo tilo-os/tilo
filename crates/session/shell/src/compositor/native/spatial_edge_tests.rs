@@ -1,5 +1,5 @@
 use super::{nearby_drop_candidate, spatial_departure_edge};
-use crate::shell::device_fabric::DisplayEdge;
+use tilo_device_fabric::DisplayEdge;
 
 #[test]
 fn mapped_pointer_return_precedes_discrete_input_and_preserves_new_motion() {

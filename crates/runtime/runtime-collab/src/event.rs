@@ -3,12 +3,12 @@
 //! session-local control the broker routes to one connection.
 //!
 //! The vocabulary is shared by the toolkit's endpoint and by the session's
-//! brokers, which fan these events out without the toolkit. Two payloads
-//! exist only at an SDK endpoint, which mints them itself and lets no
-//! application construct one: a committed-history capture and a managed
-//! invocation result. [`EndpointCustody`] names what stands in their place,
-//! so a broker uses [`NoCustody`], where those variants cannot occur, and the
-//! toolkit fills in its own custody types.
+//! brokers, which fan these events out without the toolkit. One payload
+//! exists only at an SDK endpoint, which mints it itself and lets no
+//! application construct one: a committed-history capture.
+//! [`EndpointCustody`] names what stands in its place, so a broker uses
+//! [`NoCustody`], where that variant cannot occur, and the toolkit fills in
+//! its own custody type.
 
 use crate::BrokerActionSurface;
 use crate::route::{ChannelAccessState, RouteSpec};
@@ -21,10 +21,6 @@ pub trait EndpointCustody: Clone + std::fmt::Debug {
     /// A disposable capture of a route's committed history, from the
     /// admitted SDK channel itself.
     type CommittedRead: Clone + std::fmt::Debug;
-    /// The custody of a managed invocation attempt's result, which only the
-    /// sender's own barrier can acknowledge.
-    #[cfg(unix)]
-    type ManagedResult: Clone + std::fmt::Debug;
 }
 
 /// The custody of a party that holds no SDK payloads, such as a broker:
@@ -34,8 +30,6 @@ pub enum NoCustody {}
 
 impl EndpointCustody for NoCustody {
     type CommittedRead = std::convert::Infallible;
-    #[cfg(unix)]
-    type ManagedResult = std::convert::Infallible;
 }
 
 /// One event a collaboration endpoint receives.
@@ -207,28 +201,10 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
     ActionCatalogue {
         surfaces: Vec<BrokerActionSurface>,
     },
-    ActionDirectoryPage {
-        request_id: u64,
-        result: Result<crate::ActionDirectoryPage, String>,
-    },
-    PublishedActionResolution {
-        request_id: u64,
-        result: Result<crate::ActionDirectoryResolution, String>,
-    },
-    /// Original attempt custody remains with this result through final clone
-    /// destruction. Only the sender's physical barrier can acknowledge it.
-    #[cfg(unix)]
-    ManagedInvocationObservation {
-        result: C::ManagedResult,
-    },
     /// Private admission/status or refusal, never a document publication permit.
     LocalDocumentActionReported {
         request_id: u64,
         result: Result<crate::PublishedInvocationObservation, crate::LocalDocumentActionError>,
-    },
-    PublishedInvocationResult {
-        request_id: u64,
-        result: Result<(u64, tilo_actions::InvocationUpdate), String>,
     },
     InstalledApplicationLaunchResult {
         request_id: u64,

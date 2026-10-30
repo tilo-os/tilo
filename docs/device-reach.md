@@ -1,6 +1,6 @@
 # Reaching, waking and updating your devices
 
-A person's devices are certified peers of one identity (`docs/device-mesh.md`).
+A person's devices are certified peers of one identity.
 An admin, whether the person on another of their devices or a developer
 driving a board or laptop, needs three things from such a device: reach it by
 name wherever it is, wake it when it sleeps, and update what it runs without

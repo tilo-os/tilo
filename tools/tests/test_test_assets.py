@@ -3,9 +3,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-import re
 import tempfile
-import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,24 +128,6 @@ class TestAssets(unittest.TestCase):
         self.assertEqual(resolved[0].read_bytes(), self.payload)
         self.assertTrue(resolved[0].is_relative_to(self.cache.resolve()))
         self.assertEqual(list(seed.iterdir()), [])
-
-    def test_the_seed_check_holds_every_manifest_a_build_script_names(self):
-        # Builds that ship read fixtures from the `test-assets` check's seed, so a
-        # manifest a build script names but the seed leaves out would send them
-        # back to the network.
-        named = set()
-        for script in [*ROOT.glob("apps/*/build.rs"), *ROOT.glob("crates/*/*/build.rs")]:
-            text = script.read_text(encoding="utf-8")
-            if "prepare_fixture_assets" not in text:
-                continue
-            for relative in re.findall(r'"([^"]*artifacts\.json)"', text):
-                named.add((script.parent / relative).resolve().relative_to(ROOT).as_posix())
-        self.assertIn("crates/doc/fixtures/artifacts.json", named)
-        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
-        seed = checks["test-assets"]
-        for manifest_path in named:
-            self.assertIn(manifest_path, seed["run"])
-        self.assertIn("/target/test-assets/**", seed["outputs"])
 
 
     def test_all_six_real_cases_remain_pinned(self):

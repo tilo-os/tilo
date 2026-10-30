@@ -44,7 +44,19 @@ pub(super) struct BoolControl {
     /// Observes user intent without owning model synchronization.
     pub on_change: Option<BoolChangeCallback>,
     pub action: Option<ActionEmitter<bool>>,
+    /// The control's own published view action (`on_view`): what its
+    /// action is bound to, and `on_change` answers.
+    pub view_resource: Option<tilo_actions::ResourceSpec>,
     pub interaction: crate::interaction::InteractionEnvironment,
+}
+
+/// The operation type of a control's own published value (`on_view`).
+const VIEW_SET: &str = "tilo.ui.bool.set";
+
+#[derive(serde::Deserialize)]
+struct ViewSet {
+    control: String,
+    value: bool,
 }
 
 impl BoolControl {
@@ -64,8 +76,82 @@ impl BoolControl {
             binding: Some(crate::doc_source::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
+            view_resource: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
         }
+    }
+
+    /// Publish setting the value as control `id`'s view action `set`, run by
+    /// `handler`: a person's flip, a screen reader, a script and an agent set
+    /// it through the same action.
+    #[expect(
+        clippy::expect_used,
+        reason = "the generated boolean action binds the value it is handed"
+    )]
+    pub(super) fn publish_view(&mut self, id: &str, handler: BoolChangeCallback) {
+        use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
+        let control = id.to_owned();
+        let spec = ActionSpec::typed_operation(
+            "set",
+            "Set",
+            "Turn it on or off",
+            OperationKind::View,
+            VIEW_SET,
+            vec![ActionParam::required("value", ParamType::Boolean, "On or off")],
+            move |args| {
+                EncodedAction::encode_operation(
+                    VIEW_SET,
+                    &serde_json::json!({
+                        "control": control,
+                        "value": args.boolean("value").unwrap_or_default(),
+                    }),
+                )
+                .expect("generated value payload is serializable")
+            },
+        );
+        let resource = tilo_actions::ResourceSpec::new(
+            format!("tilo.control:{id}"),
+            "tilo.control.value",
+            id,
+        )
+        .with_action(spec.clone());
+        let binding = tilo_actions::ActionBinding::new(&resource, &spec, |value: bool| {
+            serde_json::Map::from_iter([("value".into(), serde_json::Value::Bool(value))])
+        })
+        .expect("the set action is the resource's own");
+        self.id_override = Some(id.to_owned());
+        self.action = Some(ActionEmitter::new(binding));
+        self.view_resource = Some(resource);
+        self.on_change = Some(handler);
+    }
+
+    /// Answer a `set` addressed to this control's own view action: show the
+    /// value and hand it to the app, whoever set it.
+    pub(super) fn start_view(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        if self.view_resource.is_none()
+            || request.kind != tilo_actions::OperationKind::View
+            || request.type_id != VIEW_SET
+        {
+            return Ok(None);
+        }
+        let set: ViewSet =
+            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
+        if Some(set.control.as_str()) != self.id_override.as_deref() {
+            return Ok(None);
+        }
+        self.is_checked = set.value;
+        if let Some(handler) = self.on_change.as_mut() {
+            handler(set.value);
+        }
+        Ok(Some(super::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 
     /// A control two-way bound to process-local `state`.
@@ -233,11 +319,22 @@ macro_rules! bool_control_api {
             self
         }
 
+        /// Called with the value a flip sets: the control, as `id`,
+        /// publishes setting it as its view action `set`, so a person, a
+        /// screen reader, a script and an agent set it through the same
+        /// action. For a value of the window's own, never an edit.
+        #[must_use]
+        pub fn on_view(mut self, id: &str, callback: impl FnMut(bool) + 'static) -> Self {
+            self.control.publish_view(id, Box::new(callback));
+            self
+        }
+
         /// Route pointer, keyboard, and accessibility flips through an
         /// exported resource action.
         #[must_use]
         pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
             self.control.action = Some(crate::widget::ActionEmitter::new(binding));
+            self.control.view_resource = None;
             self.control.on_change = None;
             self
         }
@@ -308,11 +405,40 @@ pub(super) use bool_control_api;
 /// [`BoolControl::handle_event`], a switch also lets its knob be dragged.
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
-        crate::provides!(
-            dyn crate::widget::controls::ActionControls,
-            dyn crate::permissions::capability::PermissionGated,
-            dyn crate::presence::capability::PublishesPresence
-        );
+        // What it publishes and answers only while it has a view action of
+        // its own, so a walk of the tree passes every other control by.
+        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+            if request.wants::<dyn crate::widget::controls::ActionControls>() {
+                request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
+                request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
+            } else if self.control.view_resource.is_none() {
+            } else if request.wants::<dyn crate::resources::PublishesResources>() {
+                request.provide::<dyn crate::resources::PublishesResources>(self);
+            } else if request.wants::<dyn crate::widget::ResourceOperations>() {
+                request.provide::<dyn crate::widget::ResourceOperations>(self);
+            }
+        }
+
+        fn provide_mut<'a>(
+            &'a mut self,
+            request: &mut crate::widget::capability::RequestMut<'a, '_>,
+        ) {
+            if request.wants::<dyn crate::widget::controls::ActionControls>() {
+                request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
+                request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
+            } else if self.control.view_resource.is_none() {
+            } else if request.wants::<dyn crate::resources::PublishesResources>() {
+                request.provide::<dyn crate::resources::PublishesResources>(self);
+            } else if request.wants::<dyn crate::widget::ResourceOperations>() {
+                request.provide::<dyn crate::widget::ResourceOperations>(self);
+            }
+        }
 
         fn set_interaction_environment(
             &mut self,
@@ -373,6 +499,31 @@ macro_rules! bool_control_capabilities {
         impl crate::permissions::capability::PermissionGated for $ty {
             fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
                 self.control.permission_scope.clone()
+            }
+        }
+
+        impl crate::resources::PublishesResources for $ty {
+            fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+                self.control.view_resource.iter().cloned().collect()
+            }
+        }
+
+        impl crate::widget::ResourceOperations for $ty {
+            fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+                if self.control.view_resource.is_some() {
+                    &["tilo.ui.bool.set"]
+                } else {
+                    &[]
+                }
+            }
+
+            fn start_operation(
+                &mut self,
+                op: &crate::widget::ResourceOperation<'_>,
+                _doc: &mut crate::widget::Edits<'_>,
+                _path: &automerge::ObjId,
+            ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+                self.control.start_view(op)
             }
         }
 

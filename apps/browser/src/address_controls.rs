@@ -3,6 +3,8 @@
 use crate::{
     autofill::{AddressBook, AddressProfile, AutofillStore},
     browsing_mode::BrowsingMode,
+    effects::BrowserEffect,
+    resource::Browser,
 };
 use ui::framework::PersonRecord;
 use ui::{
@@ -277,6 +279,14 @@ impl AddressControls {
             false
         }
     }
+    /// Open the saved address `profile` in the editor.
+    pub fn edit_profile(&mut self, profile: String) {
+        self.act(Action::Edit(profile));
+    }
+    /// Ask whether to delete the saved address `profile`.
+    pub fn ask_delete(&mut self, profile: String) {
+        self.act(Action::Delete(profile));
+    }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
         Button::new(id, label).on_effect(self.command(action))
     }
@@ -284,7 +294,8 @@ impl AddressControls {
         let pending = self.action.clone();
         move || pending.set(Some(action.clone()))
     }
-    pub fn panel(&self) -> Box<dyn Widget> {
+    /// The editor, its rows' Edit and Delete running Browser's `actions`.
+    pub fn panel(&self, actions: Option<&ui::framework::Actions<Browser>>) -> Box<dyn Widget> {
         let mut column = Column::new().with_no_padding().with_intrinsic_height();
         if self.private {
             return Box::new(column.push(line(
@@ -312,7 +323,7 @@ impl AddressControls {
                 }),
             ));
         }
-        column = self.profile_controls(column);
+        column = self.profile_controls(column, actions);
         if let Some(id) = &self.delete {
             let label = self
                 .profiles
@@ -339,7 +350,11 @@ impl AddressControls {
         }
         Box::new(column)
     }
-    fn profile_controls(&self, mut column: Column) -> Column {
+    fn profile_controls(
+        &self,
+        mut column: Column,
+        actions: Option<&ui::framework::Actions<Browser>>,
+    ) -> Column {
         if self.editing.is_some() {
             let mut section = FormSection::new("Address");
             for (i, (label, field)) in [
@@ -384,20 +399,21 @@ impl AddressControls {
                     let mut row =
                         ListRow::new(format!("browser.address.select.{i}"), &profile.label)
                             .selected(self.selected.as_ref() == Some(&profile.id));
+                    let effect =
+                        |effect: BrowserEffect| actions.and_then(|actions| actions.effect(&effect));
                     if self.enabled {
-                        row = row
-                            .on_activate(self.command(Action::Select(profile.id.clone())))
-                            .action(
-                                Icon::Pencil,
-                                "Edit address",
-                                self.command(Action::Edit(profile.id.clone())),
-                            );
+                        row = row.on_view(self.command(Action::Select(profile.id.clone())));
+                        if let Some(edit) = effect(BrowserEffect::EditAddress {
+                            profile: profile.id.clone(),
+                        }) {
+                            row = row.action_binding(Icon::Pencil, "Edit address", edit);
+                        }
                     }
-                    row = row.action(
-                        Icon::Trash2,
-                        "Delete address",
-                        self.command(Action::Delete(profile.id.clone())),
-                    );
+                    if let Some(delete) = effect(BrowserEffect::DeleteAddress {
+                        profile: profile.id.clone(),
+                    }) {
+                        row = row.action_binding(Icon::Trash2, "Delete address", delete);
+                    }
                     Box::new(row) as Box<dyn Widget>
                 })
                 .collect();

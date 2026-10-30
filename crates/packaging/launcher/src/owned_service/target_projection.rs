@@ -2,6 +2,7 @@
 //! This module does not admit caller paths, source credentials, or mount names.
 //! The canonical signed runner must supply NativeTrust/NamespaceOwner hooks;
 //! merely constructing this bootstrap does not launch a trusted service.
+use super::delayed_filter;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -17,14 +18,13 @@ use std::{
     },
     sync::Arc,
 };
-mod delayed_filter;
 mod endpoint;
 pub(crate) mod exposure;
 mod observation;
 mod selected_lookup;
 mod selected_read;
 mod shim;
-mod workspace;
+use super::workspace;
 pub use endpoint::{
     LookedUpSelected, ObservedTargetObject, SelectedParentIssue, TargetProjectionEndpoint,
 };
@@ -44,6 +44,16 @@ const NAMESPACES: [&str; 6] = ["mnt", "pid", "net", "ipc", "uts", "user"];
 fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
+const WORKSPACE: workspace::Layout = workspace::Layout {
+    label: "Target projection",
+    person: workspace::Person::Empty,
+    root,
+};
+const BASELINE: delayed_filter::Custody = delayed_filter::Custody {
+    label: "Target projection",
+    memfd: c"tilo-target-baseline",
+    root,
+};
 fn root() -> io::Result<()> {
     let mut r = 0;
     let mut e = 0;
@@ -285,7 +295,7 @@ impl Record {
         validate_ids(self.uid, self.gid)?;
         validate_name(&self.name)?;
         if mounted {
-            self.baseline.validate()?;
+            self.baseline.validate(BASELINE)?;
         }
         match (&self.mode, &self.selected_parent) {
             (TargetProjectionMode::SelectedParent, Some(scope)) => scope.validate(self)?,
@@ -564,7 +574,17 @@ impl TargetProjectionAdmission {
         if slot.is_some() {
             return Err(refused("Target workspace already prepared"));
         }
-        *slot = Some(workspace::prepare(path, &self.record)?);
+        *slot = Some({
+            self.record.validate(false)?;
+            workspace::prepare(
+                WORKSPACE,
+                path,
+                workspace::Owner {
+                    uid: self.record.uid,
+                    gid: self.record.gid,
+                },
+            )?
+        });
         drop(slot);
         Ok(())
     }
@@ -589,10 +609,10 @@ impl TargetProjectionAdmission {
         if slot.is_some() {
             return Err(refused("Target baseline already prepared"));
         }
-        let filter = delayed_filter::Filter::capture(baseline)?;
+        let filter = delayed_filter::Filter::capture(BASELINE, baseline)?;
         let mut record = self.record.clone();
         record.baseline = filter.binding();
-        record.baseline.validate()?;
+        record.baseline.validate(BASELINE)?;
         let token = seal(&record)?;
         *slot = Some(LaunchState {
             token,

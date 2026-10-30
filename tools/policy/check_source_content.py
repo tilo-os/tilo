@@ -23,12 +23,7 @@ def git(root, *args):
 
 
 def committed_tree(root):
-    """HEAD's tree, or the index's in a repository without commits.
-
-    t checks run on a copy of the tree without .git, under
-    tools/ci/t-git-index.sh, whose throwaway repository indexes exactly the
-    files present and commits nothing: its index is the tree to inspect.
-    """
+    """HEAD's tree, or the index's in a repository without commits."""
     try:
         return git(root, "rev-parse", "--verify", "--quiet", "HEAD^{tree}").decode().strip()
     except subprocess.CalledProcessError as tree_error:

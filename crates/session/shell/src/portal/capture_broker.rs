@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::shell::realtime_session::VerifiedAppRegistration;
+use tilo_device_fabric::realtime_session::VerifiedAppRegistration;
 
 const MAX_SOURCES: usize = 128;
 const MAX_AUTHORIZATIONS: usize = 256;

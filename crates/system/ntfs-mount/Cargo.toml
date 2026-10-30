@@ -19,9 +19,11 @@ required-features = ["service"]
 default = ["service"]
 # The root service. The shell and Settings only speak the protocol and
 # depend on this crate without it.
-service = ["dep:tilo-sandbox-core", "dep:tilo-seat-peer"]
+service = ["dep:bounded-command", "dep:tilo-sandbox-core", "dep:tilo-seat-peer"]
 
 [dependencies]
+# Waits on the driver and checker with a deadline, without polling.
+bounded-command = { path = "../bounded-command", optional = true }
 libc.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

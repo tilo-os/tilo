@@ -576,6 +576,10 @@ pub fn classify_snapshot(
         .collect())
 }
 
+/// The directory under the store's configuration that keeps each registry's
+/// checkpoint and the catalogue last accepted from it.
+pub const CHECKPOINT_DIR: &str = "registry-checkpoints";
+
 fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
     let mut hasher = blake3::Hasher::new();
     // The owner key is the registry identity. Transport aliases may change,
@@ -583,7 +587,7 @@ fn checkpoint_path(reg: &RegistryConfig) -> Option<std::path::PathBuf> {
     hasher.update(reg.owner_pubkey_hex.as_bytes());
     Some(
         config_dir()?
-            .join("registry-checkpoints")
+            .join(CHECKPOINT_DIR)
             .join(format!("{}.json", hasher.finalize().to_hex())),
     )
 }

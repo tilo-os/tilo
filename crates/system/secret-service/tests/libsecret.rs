@@ -17,7 +17,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -30,8 +30,7 @@ const NAME: &str = "org.freedesktop.secrets";
 /// A private session bus and the directories every client of it uses.
 struct Session {
     root: tempfile::TempDir,
-    bus: Child,
-    address: String,
+    bus: tilo_test_env::PrivateBus,
     service: Option<Child>,
 }
 
@@ -46,26 +45,10 @@ impl Session {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
             }
         }
-        let mut bus = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                root.path().join("run/bus").display()
-            ))
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect(
-                "this test needs dbus-daemon (tools/ci/ensure-session-bus-tools.sh installs it)",
-            );
-        let mut address = String::new();
-        std::io::BufReader::new(bus.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
+        let bus = tilo_test_env::PrivateBus::start_at(&root.path().join("run/bus"));
         let mut session = Self {
             root,
             bus,
-            address: address.trim().to_owned(),
             service: None,
         };
         session.start_service();
@@ -83,7 +66,7 @@ impl Session {
         command
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("DBUS_SESSION_BUS_ADDRESS", &self.address)
+            .env("DBUS_SESSION_BUS_ADDRESS", self.bus.address())
             .env("XDG_RUNTIME_DIR", self.path("run"))
             .env("XDG_DATA_HOME", self.path("data"))
             .env("HOME", self.path("home"))
@@ -168,8 +151,6 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.stop_service();
-        let _ = self.bus.kill();
-        let _ = self.bus.wait();
     }
 }
 

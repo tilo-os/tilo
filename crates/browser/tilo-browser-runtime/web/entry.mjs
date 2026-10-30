@@ -16,7 +16,6 @@
  * 4. mounts the desktop or the one app, and shows the target through the
  *    view door (`open-target.mjs`);
  * 5. hands `location` and `history` to the router.
- * See docs/architecture/web-routing.md.
  */
 import {admit} from './admission.mjs';
 import {wireFetchProxy} from './fetch-proxy.mjs';

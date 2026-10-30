@@ -120,6 +120,60 @@ pub trait NotificationHost {
     fn changed(&self) {}
 }
 
+/// Why fresh banners are being held: what the bar's silenced bell and the
+/// notification centre's header say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum QuietReason {
+    /// The person turned Do Not Disturb on.
+    DoNotDisturb,
+    /// The person is presenting: their screen is on a projector.
+    Presenting,
+    /// Their screen, or an app of theirs, is shared with others.
+    Sharing,
+    /// Their focus schedule holds until this local time, as `H:MM`.
+    FocusUntil(String),
+}
+
+/// [`QuietReason`] in the desktop's language.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn quiet_label(reason: &QuietReason) -> String {
+    match reason {
+        QuietReason::DoNotDisturb => crate::i18n::t("notification-quiet-do-not-disturb"),
+        QuietReason::Presenting => crate::i18n::t("notification-quiet-presenting"),
+        QuietReason::Sharing => crate::i18n::t("notification-quiet-sharing"),
+        QuietReason::FocusUntil(time) => crate::i18n::t_args(
+            "notification-quiet-focus-until",
+            &[("time", time.clone().into())],
+        ),
+    }
+}
+
+/// What a sender that nobody vouched for says it is, shown as its claim:
+/// one short line, never as an app's verified name. `None` when it claims
+/// nothing.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn sender_claim(app_name: &str) -> Option<String> {
+    let claim = app_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect::<String>();
+    let claim = claim.trim();
+    (!claim.is_empty()).then(|| {
+        crate::i18n::t_args(
+            "notification-sender-claims",
+            &[("name", claim.to_owned().into())],
+        )
+    })
+}
+
+/// What a notification's default action is labelled, in the desktop's
+/// language.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn open_action_label() -> String {
+    crate::i18n::t("notification-open")
+}
+
 /// Host calendar-alarm actions, in the desktop's language.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn alarm_action_labels() -> Vec<(String, String)> {

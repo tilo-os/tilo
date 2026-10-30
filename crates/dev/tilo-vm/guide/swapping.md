@@ -153,22 +153,6 @@ virtualization when the builder is itself a guest, and the supported VM adapter.
 Without that hardware, keep the KVM guest local and stream targeted component
 layers from the remote builder; a build cache cannot supply virtualization.
 
-The repository ships one backed by t (`docs/t.md`): `dist/dev/t-builder.sh`
-hands the `layer-pack` command to t.toml's `tilo-vm-pack-<arch>` check, which
-runs it on a t node of that architecture against this worktree (uncommitted
-changes included) on the server's warm builds, and writes the framed layer it
-downloads to stdout. Nothing compiles on this host:
-
-```toml
-[remote_builders]
-aarch64 = ["dist/dev/t-builder.sh", "aarch64"]   # relative to the worktree
-x86_64 = ["dist/dev/t-builder.sh", "x86_64"]
-```
-
-The framed layer waits in `~/.cache/tilo-vm/` while it streams to the
-device and is deleted afterwards; nothing lands in `target/`. One t-backed build per worktree at a time: the request sits in
-the worktree's `.tilo-vm-pack/` while it runs.
-
 For a device whose architecture is listed there, `--builder remote` is the
 default. For one that is not, `--builder remote` fails and names the line to
 add.
@@ -367,11 +351,10 @@ use the paired component above for an unpublished worktree toolkit rather than
 relabeling it as the VM's existing ABI.
 
 Without a remote builder (CI, or a host whose architecture has none) the same
-cohort comes from CI: `t dispatch vm-acceptance-cohort --ref <branch>`. CI
-builds the branch's launcher, install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
+cohort comes from CI: the vm-acceptance cohort run builds the branch's launcher, install, shell and apps+runtime as signed layers, and `tilo-vm swap-artifact`
 installs them in that order through the daemon's normal signed-cohort checks,
 from a checkout at exactly the producing commit
-(`scripts/vm-acceptance/README.md`, `docs/layer-artifacts.md`). `--builder host`
+(`scripts/vm-acceptance/README.md`). `--builder host`
 stays refused for apps+runtime: it cannot assemble the paired, signed cohort.
 
 ### Shell startup companions

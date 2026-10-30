@@ -2066,11 +2066,9 @@ pub fn native_services(
         shortcut_library,
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         continuations: Some(Arc::new(NativeContinuations)),
-        search_index: Some(Arc::new(
-            crate::shell::search::app_content_index::SearchIndexService(
-                crate::shell::search::app_content_index::session(),
-            ),
-        )),
+        search_index: Some(Arc::new(SearchIndexService(
+            tilo_desktop_search::content_index::session(),
+        ))),
         content_store: Some(Arc::new(SessionContentPuts)),
         speakers: network.clone().map(|network| {
             Arc::new(NativeSpeakers(network))
@@ -2206,14 +2204,14 @@ use std::rc::Rc;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 /// Speaker groups over the certified personal-device network.
-pub struct NativeSpeakers(pub Arc<super::network::ShellNetwork>);
+pub struct NativeSpeakers(pub tilo_device_fabric::link::SharedLink);
 impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
-        crate::shell::speaker_settings::handle(&self.0, command)
+        tilo_speaker_service::settings::handle(&self.0, command)
     }
 
     fn changed(&self, after: u64) -> Option<tilo_action_broker::services::SpeakerChange> {
-        Some(Box::pin(crate::shell::speaker_settings::changed(
+        Some(Box::pin(tilo_speaker_service::settings::changed(
             &self.0, after,
         )))
     }
@@ -2573,6 +2571,22 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
             session.lock().await.disconnect();
             Ok(())
         })
+    }
+}
+
+/// The host service the broker hands apps' search publications to: the
+/// session's content index.
+struct SearchIndexService(Arc<tilo_desktop_search::content_index::AppContentIndex>);
+
+impl tilo_action_broker::services::SearchIndexServices for SearchIndexService {
+    fn publish(
+        &self,
+        room: tilo_desktop_model::RoomId,
+        app: &str,
+        record: &str,
+        delta: &[u8],
+    ) -> Result<(), String> {
+        self.0.publish(&room.to_string(), app, record, delta)
     }
 }
 

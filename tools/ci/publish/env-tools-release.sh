@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The env tool catalog's release (docs/publishing-on-t.md): on stable, the tools env-tools.sh
+# The env tool catalog's release: on stable, the tools env-tools.sh
 # built, sealed for the publisher without its key, are signed with TAPP_PUBLISHER_IDENTITY by a
 # step that builds nothing, put in one image for both platforms, signed with the release key and
 # published once as registry.tilo.so/tilo/env-tools:<runtime tag>-<catalog fingerprint>, which

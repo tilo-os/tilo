@@ -455,8 +455,8 @@ impl HereState {
             .filter(|user| !user.is_empty())
     }
 
-    /// The person the device `publisher` is a device of, as the host's lines
-    /// say; `None` before its page posted to the host.
+    /// The person the device `publisher` is a device of: as the host's lines
+    /// say, else as the device's own certificate says; `None` before either.
     pub fn user_of(&self, publisher: &str) -> Option<&str> {
         if Some(publisher) == self.own_id()
             && let Some(own) = self.own_user()
@@ -467,6 +467,17 @@ impl HereState {
             .iter()
             .find(|line| line.device == publisher && !line.user.is_empty())
             .map(|line| line.user.as_str())
+            .or_else(|| {
+                // The live layer carries what each member was certified as
+                // before any host has spoken: enough to count two of their
+                // devices as one person, and never ours as someone else.
+                self.members
+                    .iter()
+                    .flatten()
+                    .find(|member| member.publisher == publisher)
+                    .and_then(|member| member.user.as_deref())
+                    .filter(|user| !user.is_empty())
+            })
     }
 
     /// Who `publisher` counts as: its person where known, else the device
@@ -563,11 +574,11 @@ impl HereState {
     /// for itself is not consulted: a page picking alone cannot know who
     /// else is here, which is how two visitors came to wear the same one.
     ///
-    /// A person's device is in the live layer before the host's lines pair
-    /// it with its person. Until they do it has no entry here, and takes no
-    /// part in the settlement, so they are drawn neutral
-    /// ([`ui::presence::UNSETTLED_RGB`]) rather than in a colour keyed by
-    /// their device that changes once their person is known.
+    /// A person's device is in the live layer before either the host's lines
+    /// or its own certificate pairs it with its person. Until they do it has
+    /// no entry here, and takes no part in the settlement, so they are drawn
+    /// neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a colour
+    /// keyed by their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
         let present: Vec<(&str, &str)> = match &self.members {
             Some(members) => members
@@ -1542,6 +1553,33 @@ mod tests {
             "an agent's line is its own activity"
         );
         assert_eq!(here.own_status().map(|l| l.text), Some("Mine".into()));
+    }
+
+    /// A member's own certificate names the person it is a device of, before
+    /// any host line says so: their devices count as one person then too.
+    #[test]
+    fn a_members_certificate_pairs_their_devices_before_the_host_says() {
+        let mut here = HereState::default();
+        let certified = |publisher: &str, label: &str| LiveMember {
+            user: Some("ann-root".into()),
+            ..member(publisher, "person", label)
+        };
+        here.set_members(
+            Some(member("me", "person", "Me")),
+            Some(vec![
+                certified("laptop", "Framework 16"),
+                certified("phone", "Phone"),
+            ]),
+        );
+        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        assert_eq!(people.len(), 1, "two devices of one person are one face");
+        assert_eq!(people[0].user.as_deref(), Some("ann-root"));
+        assert_eq!(people[0].label, "Framework 16");
+        let colors = here.colors();
+        assert_eq!(
+            colors["laptop"], colors["phone"],
+            "a person's devices share their person's colour"
+        );
     }
 
     /// In a room whose layout is personal nobody's window is on this

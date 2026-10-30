@@ -1,0 +1,20 @@
+[package]
+name = "tilo-connectivity-service"
+description = "The session's connectivity service: Wi-Fi, wired, mobile data, airplane mode, the hotspot, VPN profiles and Bluetooth, published as resources whose actions change them through NetworkManager and BlueZ."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+os-actions = { path = "../../system/os-actions" }
+serde.workspace = true
+serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true
