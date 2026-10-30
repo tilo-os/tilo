@@ -3201,6 +3201,8 @@ mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
 mod text;
 pub use text::{Text, TextProps};
+mod relative_time;
+pub use relative_time::{RelativeTime, TimeProps, next_change, relative_text};
 mod spacer;
 pub use spacer::Spacer;
 mod when;

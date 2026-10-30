@@ -51,6 +51,48 @@
       }
     },
     {
+      "name": "Time",
+      "doc": "A moment shown as how long ago it was, or how far ahead: `2 min ago`, `Yesterday`, `in 3 min`, in the person's language and time zone. It changes when what it says does, and wakes the window for nothing else.",
+      "props": [
+        {
+          "name": "at",
+          "doc": "The moment.",
+          "type": "time",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "role",
+          "doc": "What the text is, which sets its size and weight: `body` unless said.",
+          "type": {
+            "choice": {
+              "name": "TextRole",
+              "cases": [
+                "display",
+                "large_title",
+                "title",
+                "heading",
+                "subheading",
+                "body",
+                "label",
+                "caption",
+                "reading",
+                "code"
+              ]
+            }
+          }
+        },
+        {
+          "name": "secondary",
+          "doc": "It stands beside the content it is about, in secondary ink: when a change was made.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Label"
+      }
+    },
+    {
       "name": "Button",
       "doc": "A button: pressing it does one thing. Its role says what kind of thing, which decides its whole look: the window's one primary action, a destructive one, or an ordinary one.",
       "props": [
