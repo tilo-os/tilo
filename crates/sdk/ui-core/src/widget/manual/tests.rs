@@ -76,7 +76,8 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
                     && wide.width == 600.0)
         );
         let snapshot = harness.inspection();
-        assert_eq!(snapshot.root.children[0].rect[0], 0.25);
+        // Placed at 0.25, on the nearest whole pixel.
+        assert_eq!(snapshot.root.children[0].rect[0], 0.0);
         assert!(find(&snapshot.root, "name").rect[1] > find(&snapshot.root, "email").rect[1]);
     }
 
@@ -165,10 +166,12 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         .child(Box::new(Button::new("float", "Float")));
         let harness = FrameHarness::new(crate::State::new(), Box::new(region), (500, 300));
         let snapshot = harness.inspection();
-        assert_eq!(snapshot.root.rect[2], 200.5);
+        // Drawn on the nearest whole pixel at 1x; allocated as asked.
+        assert_eq!(snapshot.root.rect[2], 201.0);
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
             panic!("manual info")
         };
+        assert_eq!(info.allocation[0], 200.5);
         assert!(
             info.first_conflict.is_none(),
             "representable f32 rounding is not a constraint failure"
