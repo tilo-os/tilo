@@ -158,7 +158,7 @@ fn a_card_activates_and_its_hover_action_is_its_own() {
     let card = MediaCard::new("album", MediaSource::Placeholder)
         .title("Kind of Blue")
         .meta("Miles Davis")
-        .hover_action(Icon::Play, "Play", move || p.set(p.get() + 1))
+        .hover_action_view(Icon::Play, "Play", move || p.set(p.get() + 1))
         .on_activate(move || o.set(o.get() + 1));
     let mut harness = FrameHarness::new_with_theme(
         crate::State::new(),

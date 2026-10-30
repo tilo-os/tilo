@@ -62,7 +62,7 @@ impl Upkeep {
     /// sync: take in what work finished, move the view's state, so the
     /// parts keyed by it are built again in the same frame.
     #[must_use]
-    pub fn on_sync(mut self, sync: impl FnMut() + 'static) -> Self {
+    pub fn syncing(mut self, sync: impl FnMut() + 'static) -> Self {
         self.sync = Some(Box::new(sync));
         self
     }
@@ -94,7 +94,7 @@ impl Upkeep {
 
     /// Run `presented` after each frame the view draws.
     #[must_use]
-    pub fn on_presented(mut self, presented: impl FnMut() + 'static) -> Self {
+    pub fn presenting(mut self, presented: impl FnMut() + 'static) -> Self {
         self.presented = Some(Box::new(presented));
         self
     }

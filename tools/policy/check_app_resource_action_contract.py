@@ -147,6 +147,7 @@ NOT_CONTROL_CALLBACKS = {
     "on_effect": "activates a published native effect action",
     "on_own_device_effect": "activates a published native effect action",
     "on_view": "activates a published native view action",
+    "on_activate_view": "activates the list's published view action for the entry it opened",
     "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
     "a banner's follows its published dismiss button",
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
@@ -198,6 +199,8 @@ NOT_ACTION_BUTTONS = {
     "icon_action": "a menu entry, published as the open menu's own control",
     "destructive_action": "a menu entry, published as the open menu's own control",
     "actions_group": "binds each hit to its published action",
+    "hover_action_view": "publishes the card's hover action as its own view action",
+    "hover_action_effect": "publishes the card's hover action as its own effect",
     "primary_action": "a dialog's footer button, published as the dialog's own control",
     "secondary_action": "a dialog's footer button, published as the dialog's own control",
     "tertiary_action": "a dialog's footer button, published as the dialog's own control",

@@ -3393,7 +3393,7 @@ pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod program_step;
-pub use program_step::ProgramStepView;
+pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
 pub use date_field::DateField;

@@ -860,6 +860,9 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     /// Choosing a node, published as the tree's view action
     /// ([`TreeImpl::on_view`]).
     view: Option<choice::TreeChoice>,
+    /// Opening a node, published as the tree's view action
+    /// ([`TreeImpl::on_activate_view`]).
+    opens: Option<choice::TreeChoice>,
     on_expand: Option<Box<dyn FnMut(NodeId, bool)>>,
     on_load_request: Option<Box<dyn FnMut(TreeLoadRequest)>>,
     on_activate: Option<Box<dyn FnMut(NodeId)>>,
@@ -1145,6 +1148,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             affordance_focus_valid: false,
             on_select: None,
             view: None,
+            opens: None,
             on_expand: None,
             on_load_request: None,
             on_activate: None,
@@ -1269,6 +1273,25 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     #[must_use]
     pub fn on_activate<F: FnMut(NodeId) + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
+        self
+    }
+
+    /// Called with the node opened: the tree, as control `id`, publishes
+    /// opening a node as its view action `open`, each node addressed by its
+    /// semantic key, so a person's double click or `Enter`, a screen reader,
+    /// a script and an agent open through the same action. What it shows is
+    /// the window's own state, never an edit.
+    #[must_use]
+    pub fn on_activate_view(
+        mut self,
+        id: impl Into<String>,
+        f: impl FnMut(NodeId) + 'static,
+    ) -> Self {
+        let id = id.into();
+        self.opens = Some(choice::TreeChoice {
+            choice: crate::widget::view_choice::ViewChoice::new(format!("{id}/open"), "Open"),
+            handler: Box::new(f),
+        });
         self
     }
 
@@ -2494,7 +2517,9 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         if !self.model.is_selectable(id) {
             return;
         }
-        if let Some(callback) = &mut self.on_activate {
+        if let Some(opens) = &mut self.opens {
+            (opens.handler)(id);
+        } else if let Some(callback) = &mut self.on_activate {
             callback(id);
         }
     }

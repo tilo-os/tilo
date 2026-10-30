@@ -66,19 +66,27 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
 }
 
 impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
-    /// Answer a `select` addressed to this tree: show the node chosen and
-    /// report it, whoever chose it.
+    /// Answer a `select` or an `open` addressed to this tree: show the node
+    /// addressed and report it, whoever chose it.
     fn start_view(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(key) = self
+        let chosen = self
             .view
             .as_ref()
             .map(|view| view.choice.start(op))
             .transpose()?
             .flatten()
-        else {
+            .map(|key| (key, false));
+        let opened = self
+            .opens
+            .as_ref()
+            .map(|opens| opens.choice.start(op))
+            .transpose()?
+            .flatten()
+            .map(|key| (key, true));
+        let Some((key, opens)) = chosen.or(opened) else {
             return Ok(None);
         };
         let mut stack = vec![self.model.root_id()];
@@ -94,8 +102,13 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         let id = found.ok_or_else(|| format!("no entry `{key}`"))?;
         self.selection.select_only(id);
         self.reveal(id);
-        if let Some(view) = self.view.as_mut() {
-            (view.handler)(id);
+        let opened = if opens {
+            self.opens.as_mut()
+        } else {
+            self.view.as_mut()
+        };
+        if let Some(choice) = opened {
+            (choice.handler)(id);
         }
         Ok(Some(crate::widget::view_choice::chosen()))
     }
@@ -104,7 +117,10 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
 impl<T: 'static, M: TreeModel + 'static> crate::widget::ResourceOperations for TreeImpl<T, M> {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         let history = crate::widget::resource_operation::local_history_handlers(self);
-        match (self.view.is_some(), history.is_empty()) {
+        match (
+            self.view.is_some() || self.opens.is_some(),
+            history.is_empty(),
+        ) {
             (false, _) => history,
             (true, true) => &[crate::widget::view_choice::CHOICE_SELECT],
             (true, false) => &[
@@ -130,9 +146,9 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::ResourceOperations for T
 impl<T: 'static, M: TreeModel + 'static> crate::resources::PublishesResources for TreeImpl<T, M> {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         self.view
-            .as_ref()
+            .iter()
+            .chain(self.opens.iter())
             .map(|view| view.choice.resource_of_keys(self.entries()))
-            .into_iter()
             .collect()
     }
 }
@@ -145,7 +161,7 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
         domain: &crate::ControlDomain,
         attachment: crate::control_custody::CustodyAttachment,
     ) {
-        if let Some(view) = self.view.as_mut() {
+        for view in self.view.iter_mut().chain(self.opens.iter_mut()) {
             view.choice.install_custody(domain, attachment);
         }
         for child in Widget::children_mut(self) {
@@ -154,7 +170,12 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.view.as_mut().and_then(|view| view.choice.take()) {
+        if let Some(invocation) = self
+            .view
+            .iter_mut()
+            .chain(self.opens.iter_mut())
+            .find_map(|view| view.choice.take())
+        {
             return Some(invocation);
         }
         Widget::children_mut(self)
@@ -165,7 +186,7 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
     /// The rows the tree shows, bound to its published choice.
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = crate::widget::controls::default_bindings(self);
-        if let Some(view) = &self.view {
+        if let Some(view) = self.view.as_ref().or(self.opens.as_ref()) {
             for binding in &mut bindings {
                 if binding.control_id.starts_with("node:")
                     && matches!(
@@ -184,7 +205,7 @@ impl<T: 'static, M: TreeModel + 'static> crate::widget::controls::ActionControls
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        if let Some(view) = self.view.as_mut() {
+        for view in self.view.iter_mut().chain(self.opens.iter_mut()) {
             view.choice.refresh_availability(allowed);
         }
         for child in Widget::children_mut(self) {

@@ -79,7 +79,7 @@ impl QueryView {
     /// Run `opened` as the search opens on the view, before anything is
     /// typed (the view notes what it answers for, or warms its sources).
     #[must_use]
-    pub fn on_open(mut self, opened: impl FnMut() + 'static) -> Self {
+    pub fn opening(mut self, opened: impl FnMut() + 'static) -> Self {
         self.opened = Some(Box::new(opened));
         self
     }
@@ -88,7 +88,7 @@ impl QueryView {
     /// query is empty: the view goes back to what it showed before it
     /// opened.
     #[must_use]
-    pub fn on_close(mut self, closed: impl FnMut() + 'static) -> Self {
+    pub fn closing(mut self, closed: impl FnMut() + 'static) -> Self {
         self.closed = Some(Box::new(closed));
         self
     }

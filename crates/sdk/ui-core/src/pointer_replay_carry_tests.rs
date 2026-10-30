@@ -353,7 +353,7 @@ fn a_media_card_and_its_hover_action_carry_their_press_across_a_rebuild() {
     assert_press_carries(
         |clicks, generation| {
             Box::new(
-                MediaCard::new("album", MediaSource::Kind(Icon::Music)).hover_action(
+                MediaCard::new("album", MediaSource::Kind(Icon::Music)).hover_action_view(
                     Icon::Play,
                     "Play",
                     log(clicks, generation),

@@ -152,7 +152,7 @@ fn tree(
         .fill()
         .with_expanded(expanded)
         .click_activation(TreeClickActivation::SingleClick)
-        .on_activate(move |key| {
+        .on_activate_view("tasks-list", move |key| {
             if let Some(issue) = open_issue(key) {
                 opener.open(&issue);
             }

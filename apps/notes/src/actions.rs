@@ -556,16 +556,19 @@ pub fn page_markdown(workspace: &crate::Workspace, page: PageId) -> String {
 
 #[cfg(test)]
 mod tests {
-    use automerge::transaction::Transactable as _;
-
     #[test]
     fn a_notebook_that_does_not_read_is_not_searched_as_an_empty_one() {
         let mut doc = automerge::AutoCommit::new();
         crate::read::initialize(&mut doc);
         assert!(super::find_text(&doc, "anything", None).is_ok());
 
-        doc.put(automerge::ROOT, "pages", "not a collection of notes")
-            .expect("the field is written");
+        ui::tilo_resource::write_key(
+            &mut doc,
+            &automerge::ROOT,
+            "pages",
+            &ui::tilo_resource::Atom("not a collection of notes".into()),
+        )
+        .expect("the field is written");
         assert!(crate::read::validate(&doc).is_err());
         assert!(
             super::find_text(&doc, "anything", None).is_err(),

@@ -396,6 +396,9 @@ pub struct VirtualList<M: ListModel> {
     /// Choosing a row, published as the list's view action
     /// ([`VirtualList::on_view`]).
     view: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
+    /// Opening a row, published as the list's view action
+    /// ([`VirtualList::on_activate_view`]).
+    opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
     on_activate: Option<KeyCallback<M::Key>>,
     on_context: Option<ContextCallback<M::Key>>,
     /// The last row a click landed on and when, for a double click.
@@ -539,6 +542,7 @@ impl<M: ListModel> VirtualList<M> {
             typing: crate::type_ahead::TypeAhead::default(),
             on_select: None,
             view: None,
+            opens: None,
             on_activate: None,
             on_context: None,
             clicks: super::rows::Clicks::default(),
@@ -1497,9 +1501,17 @@ impl<M: ListModel> VirtualList<M> {
         self.focused_key = Some(key.clone());
         if toggle || extend {
             self.clicks.record(key);
-        } else if self.clicks.register(key.clone())
-            && let Some(callback) = &mut self.on_activate
-        {
+        } else if self.clicks.register(key.clone()) {
+            self.activate_key(key);
+        }
+    }
+
+    /// Open `key` as Enter or a second click does: through the published view
+    /// action when the host bound one, else the activation callback.
+    fn activate_key(&mut self, key: M::Key) {
+        if let Some((_, handler)) = &mut self.opens {
+            handler(key);
+        } else if let Some(callback) = &mut self.on_activate {
             callback(key);
         }
     }
@@ -1595,8 +1607,8 @@ impl<M: ListModel> VirtualList<M> {
                     .model
                     .index_of(&key)
                     .is_some_and(|index| matches!(self.model.row_state(index), Arrival::Ready(())));
-                if ready && let Some(callback) = &mut self.on_activate {
-                    callback(key);
+                if ready {
+                    self.activate_key(key);
                 }
                 ready
             }),
@@ -2695,9 +2707,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 }
                 self.focused_key = Some(key.clone());
                 self.apply_selection(key.clone(), false, false);
-                if let Some(callback) = &mut self.on_activate {
-                    callback(key);
-                }
+                self.activate_key(key);
                 true
             }
             Action::ScrollIntoView => {

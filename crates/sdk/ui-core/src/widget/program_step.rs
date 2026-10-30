@@ -5,9 +5,10 @@
 //! undo; and what it proposes, as cards the person confirms or declines.
 //!
 //! The view holds no authority. Opening, undoing, confirming and declining are the host's
-//! callbacks, which go through the ordinary paths as the person; without a callback the view
-//! offers no control for it.
+//! answers, each offered as the control's own effect or view action; without an answer the
+//! view offers no control for it.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_reference::{ProgramStep, ResourceAt, StepChange, StepOutcome, StepPreview};
@@ -28,20 +29,29 @@ const FOLD_AFTER: usize = 6;
 /// How many lines a folded answer shows.
 const SHOWN_LINES: usize = 4;
 
-type OnResource = Rc<dyn Fn(&ResourceAt)>;
-type OnChange = Rc<dyn Fn(&StepChange)>;
-type OnPreview = Rc<dyn Fn(&StepPreview)>;
+type OnAnswer = Rc<RefCell<dyn FnMut(StepAnswer)>>;
 
-/// One program step of an agent's task, with the host's callbacks for what the person does
-/// with it. Build it with [`ProgramStepView::new`] and turn it into a widget with
+/// What the person does with a step's controls: open what its answer names, undo what it
+/// changed in one resource, or answer what it proposes.
+#[derive(Clone, Debug)]
+pub enum StepAnswer {
+    /// Show the resource an answer names where it lives.
+    Open(ResourceAt),
+    /// Take back the step's change in one resource.
+    Undo(StepChange),
+    /// Accept what the step proposes.
+    Confirm(StepPreview),
+    /// Refuse what the step proposes.
+    Decline(StepPreview),
+}
+
+/// One program step of an agent's task, with the host's answer to what the person does with
+/// it. Build it with [`ProgramStepView::new`] and turn it into a widget with
 /// [`ProgramStepView::into_widget`].
 pub struct ProgramStepView {
     id: String,
     step: ProgramStep,
-    on_open: Option<OnResource>,
-    on_undo: Option<OnChange>,
-    on_confirm: Option<OnPreview>,
-    on_decline: Option<OnPreview>,
+    answer: Option<OnAnswer>,
     disclosure: Option<DisclosureGroup>,
 }
 
@@ -52,39 +62,16 @@ impl ProgramStepView {
         Self {
             id: id.into(),
             step,
-            on_open: None,
-            on_undo: None,
-            on_confirm: None,
-            on_decline: None,
+            answer: None,
             disclosure: None,
         }
     }
 
-    /// Open a resource the answer names, where it lives.
+    /// Answer what the person does with the step's controls: its references open, its
+    /// changes undo, its proposals are confirmed or declined.
     #[must_use]
-    pub fn on_open(mut self, open: impl Fn(&ResourceAt) + 'static) -> Self {
-        self.on_open = Some(Rc::new(open));
-        self
-    }
-
-    /// Undo what the step changed in one resource.
-    #[must_use]
-    pub fn on_undo(mut self, undo: impl Fn(&StepChange) + 'static) -> Self {
-        self.on_undo = Some(Rc::new(undo));
-        self
-    }
-
-    /// Confirm what the step proposes.
-    #[must_use]
-    pub fn on_confirm(mut self, confirm: impl Fn(&StepPreview) + 'static) -> Self {
-        self.on_confirm = Some(Rc::new(confirm));
-        self
-    }
-
-    /// Decline what the step proposes.
-    #[must_use]
-    pub fn on_decline(mut self, decline: impl Fn(&StepPreview) + 'static) -> Self {
-        self.on_decline = Some(Rc::new(decline));
+    pub fn answering(mut self, answer: impl FnMut(StepAnswer) + 'static) -> Self {
+        self.answer = Some(Rc::new(RefCell::new(answer)));
         self
     }
 
@@ -189,9 +176,11 @@ impl ProgramStepView {
             return code_line(line);
         };
         let mut chip = Chip::reference(resource.reference.label.clone(), &resource.reference.id);
-        if let Some(open) = &self.on_open {
-            let (open, resource) = (Rc::clone(open), resource.clone());
-            chip = chip.on_click(move || open(&resource));
+        if let Some(answer) = &self.answer {
+            let (answer, resource) = (Rc::clone(answer), resource.clone());
+            chip = chip.on_view(move || {
+                (answer.borrow_mut())(StepAnswer::Open(resource.clone()));
+            });
         }
         let mut row = Row::new().with_rhythm(Rhythm::Related).push(Box::new(chip));
         if !rest.is_empty() {
@@ -206,8 +195,8 @@ impl ProgramStepView {
         let mut row = ListRow::new(id.clone(), change.action.clone())
             .secondary(change.resource.reference.label.clone())
             .icon(Icon::Pencil);
-        if let Some(undo) = &self.on_undo {
-            let (undo, change) = (Rc::clone(undo), change.clone());
+        if let Some(answer) = &self.answer {
+            let (answer, change) = (Rc::clone(answer), change.clone());
             row = row.trailing(Box::new(
                 Button::new(
                     &format!("{id}-undo"),
@@ -215,7 +204,9 @@ impl ProgramStepView {
                 )
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
-                .on_click(move || undo(&change)),
+                .on_effect(move || {
+                    (answer.borrow_mut())(StepAnswer::Undo(change.clone()));
+                }),
             ));
         }
         Box::new(row)
@@ -247,8 +238,8 @@ impl ProgramStepView {
                 .with_wrap_mode(TextWrapMode::WordOrGlyph),
         ))
         .with_title(preview.action.clone());
-        if let (Some(confirm), Some(decline)) = (&self.on_confirm, &self.on_decline) {
-            let (confirm, decline) = (Rc::clone(confirm), Rc::clone(decline));
+        if let Some(answer) = &self.answer {
+            let (confirm, decline) = (Rc::clone(answer), Rc::clone(answer));
             let (confirmed, declined) = (preview.clone(), preview.clone());
             card = card.with_footer(
                 Actions::new(
@@ -257,7 +248,9 @@ impl ProgramStepView {
                         &widget_format("program-step-approve", &[]),
                     )
                     .role(ButtonRole::Primary)
-                    .on_click(move || confirm(&confirmed)),
+                    .on_effect(move || {
+                        (confirm.borrow_mut())(StepAnswer::Confirm(confirmed.clone()));
+                    }),
                 )
                 .secondary(
                     Button::new(
@@ -265,7 +258,9 @@ impl ProgramStepView {
                         &widget_format("program-step-decline", &[]),
                     )
                     .role(ButtonRole::Secondary)
-                    .on_click(move || decline(&declined)),
+                    .on_effect(move || {
+                        (decline.borrow_mut())(StepAnswer::Decline(declined.clone()));
+                    }),
                 ),
             );
         }
@@ -433,9 +428,7 @@ mod tests {
         let mut full = Vec::new();
         ids(
             ProgramStepView::new("s1", step)
-                .on_undo(|_| {})
-                .on_confirm(|_| {})
-                .on_decline(|_| {})
+                .answering(|_| {})
                 .into_widget()
                 .as_ref(),
             &mut full,
