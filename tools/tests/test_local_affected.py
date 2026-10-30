@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -94,12 +95,26 @@ class JobTests(unittest.TestCase):
             self.assertFalse(job.ran_to_end)
             self.assertIn("could not compile", job.tail())
 
-    def test_a_builder_runs_its_command_through_rcargo_exec(self):
-        builder = module.Builder("x86", Path("/config/x86.toml"))
-        command, env = builder.command(["bash", "tools/ci/lint-affected.sh"])
-        self.assertEqual(command, ["rcargo", "exec", "--", "bash", "tools/ci/lint-affected.sh"])
-        self.assertEqual(env["RCARGO_CONFIG"], "/config/x86.toml")
+    def test_a_builder_runs_its_command_through_its_exec_prefix(self):
+        builder = module.Builder("x86", ["env", "BUILDER=x86", "remote-exec", "--"])
+        command, _ = builder.command(["bash", "tools/ci/lint-affected.sh"])
+        self.assertEqual(command, ["env", "BUILDER=x86", "remote-exec", "--", "bash", "tools/ci/lint-affected.sh"])
         self.assertEqual(module.Builder("local", None).command(["true"])[0], ["true"])
+
+    def test_builders_come_from_the_environment(self):
+        x86 = "env BUILDER='x 86' remote-exec --"
+        with mock.patch.dict(os.environ, {"TILO_BUILDER_EXEC_X86_64": x86, "TILO_BUILDER_EXEC_AARCH64": ""}):
+            first, second = module.builders(local=False)
+            self.assertEqual((first.name, first.prefix), ("x86", ["env", "BUILDER=x 86", "remote-exec", "--"]))
+            self.assertIsNone(second)
+            self.assertIsNone(module.builders(local=True)[0].prefix)
+        with mock.patch.dict(os.environ, {"TILO_BUILDER_EXEC_X86_64": x86,
+                                          "TILO_BUILDER_EXEC_AARCH64": "remote-exec --arm --"}):
+            self.assertEqual(module.builders(local=False)[1].prefix, ["remote-exec", "--arm", "--"])
+        with mock.patch.dict(os.environ, {"TILO_BUILDER_EXEC_X86_64": "",
+                                          "TILO_BUILDER_EXEC_AARCH64": "remote-exec --"}):
+            first, second = module.builders(local=False)
+            self.assertEqual((first.name, first.prefix, second), ("local", None, None))
 
 
 class HelpTests(unittest.TestCase):

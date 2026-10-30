@@ -17,13 +17,14 @@ the changed packages and their direct dependants and the tests of the packages
 whose behavior can change, with the filters, features and test environment CI
 uses. A dependant further away is linted by the batch check (below), or here
 with `--closure`. Clippy and the tests run at
-the same time on the builders the `cargo` shim forwards to (rcargo; tests and
-lints go to the x86 builder): each job runs inside the builder's container, so
-the binaries the tests need are built there and nothing is fetched to your
-machine. Tests that failed in your last run against the same base run as a job
+the same time, here or on builders: with `TILO_BUILDER_EXEC_X86_64` set to a
+command prefix that runs a command in a builder's copy of your worktree (any
+remote-exec tool; `TILO_BUILDER_EXEC_AARCH64` for a second, aarch64 builder),
+each job runs there, so the binaries the tests need are built there and nothing
+is fetched to your machine. Tests that failed in your last run against the same base run as a job
 of their own beside the rest, so a fix is confirmed within the time of its own
 tests. A big test set
-is shared between the x86 and arm builders.
+is shared between the x86_64 and aarch64 builders when both are set.
 
 Narrow it while you iterate:
 
