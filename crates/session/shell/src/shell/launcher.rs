@@ -2125,6 +2125,24 @@ pub fn installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     installed_apps_snapshot().map(|(_, apps)| apps)
 }
 
+/// The installed app that declares (`[providers].resources`) it opens
+/// resources of `kind`, such as `mail.message`: the one that does, or the
+/// one that is not a secondary tool for them when several do. `None` when
+/// none does, or the claim is ambiguous.
+pub(crate) fn app_opening_resource_kind(kind: &str) -> Option<String> {
+    let claims: Vec<InstalledApp> = installed_apps()
+        .ok()?
+        .into_iter()
+        .filter(|app| app.has_gui && app.opens_resource_kinds.iter().any(|of| of == kind))
+        .collect();
+    let primary: Vec<&InstalledApp> = claims.iter().filter(|app| !app.opens_secondary).collect();
+    match (primary.as_slice(), claims.as_slice()) {
+        ([app], _) => Some(app.package_id.clone()),
+        ([], [app]) => Some(app.package_id.clone()),
+        _ => None,
+    }
+}
+
 /// Resolve one canonical installed package without parsing every app's
 /// manifest on the compositor loop. Keep the registry watch armed so a real
 /// update invalidates the input-method service before its TTL fallback.

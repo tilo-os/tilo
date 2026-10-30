@@ -1361,6 +1361,7 @@ fn launch_command_carries_exactly_the_resolved_payload() {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         };
         let cmd = build_launch_command(
@@ -1412,6 +1413,7 @@ fn launch_command_carries_exactly_the_resolved_payload() {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         };
         let cmd = build_launch_command(
@@ -1517,6 +1519,7 @@ fn launch_command_carries_exactly_the_resolved_payload() {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         };
         let room = RoomId::new();
@@ -1583,6 +1586,7 @@ fn launch_command_carries_exactly_the_resolved_payload() {
             opens_mime_types: Vec::new(),
             opens_uri_schemes: Vec::new(),
             opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
             offers: Vec::new(),
         };
         assert!(AGENT_COMPANION_PACKAGE_IDS.contains(&app.package_id.as_str()));
@@ -1868,6 +1872,7 @@ fn launched_apps_are_matched_back_by_app_id() {
         opens_mime_types: Vec::new(),
         opens_uri_schemes: Vec::new(),
         opens_secondary: false,
+        opens_resource_kinds: Vec::new(),
         offers: Vec::new(),
     });
     // full package id, trailing component, case-insensitivity
@@ -1904,6 +1909,7 @@ fn test_app(package_id: &str) -> InstalledApp {
         opens_mime_types: Vec::new(),
         opens_uri_schemes: Vec::new(),
         opens_secondary: false,
+        opens_resource_kinds: Vec::new(),
         offers: Vec::new(),
     }
 }

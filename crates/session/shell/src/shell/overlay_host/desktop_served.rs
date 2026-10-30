@@ -78,6 +78,7 @@ impl ShellOverlayHost {
         for Parked {
             tab,
             mut value,
+            mut startup,
             answer,
         } in parked
         {
@@ -85,6 +86,18 @@ impl ShellOverlayHost {
                 answer.complete(Err(refused("this session shows no desktop")));
                 continue;
             };
+            // The launch failed: the open failed, whatever came up since.
+            if let Some(Err(error)) = startup.try_settled()
+                && !error.is_uncertain()
+            {
+                let why = desktop_layout::launch_failed(
+                    &mut chrome.borrow_mut(),
+                    tab,
+                    &error.to_string(),
+                );
+                answer.complete(Err(refused(why)));
+                continue;
+            }
             let (present, failed, instance, opening) = {
                 let state = chrome.borrow();
                 let opening = state
@@ -128,7 +141,12 @@ impl ShellOverlayHost {
                 (None, Some(why)) => {
                     answer.complete(Err(refused(format!("the window did not open: {why}"))));
                 }
-                _ => crate::shell::desktop_door::park(Parked { tab, value, answer }),
+                _ => crate::shell::desktop_door::park(Parked {
+                    tab,
+                    value,
+                    startup,
+                    answer,
+                }),
             }
         }
     }
@@ -174,6 +192,7 @@ impl ShellOverlayHost {
                         "strip": id(opened.strip.raw()),
                         "app": opened.app,
                     }),
+                    startup: opened.startup,
                 },
                 Err(error) => Served::Now(Err(refused(error))),
             };

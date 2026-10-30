@@ -178,7 +178,7 @@ fn eight_applications_are_found_read_drafted_and_handed_to_the_pdf_viewer() {
         let message = listed["id"].as_str().unwrap();
         each_opens_in_a_window_of_its_own(profile.path(), message, draft);
     }
-    draft_copies_fetched_back_are_kept_as_nothing(profile.path(), &imap);
+    drafts_reach_the_server_and_come_back_as_nothing(profile.path(), &imap);
     drop(imap);
 
     // The PDF viewer reads each CV from the content Mail handed over, as
@@ -358,10 +358,13 @@ fn each_draft_is_published_as_the_item_its_verbs_name() {
     );
 }
 
-/// The copies of the drafts the server's Drafts folder keeps, fetched back
-/// with Drafts, are each the draft itself: they become no message, no
-/// entry in the record and nothing kept on the device.
-fn draft_copies_fetched_back_are_kept_as_nothing(
+/// The drafts made in a window that reached no server are kept in the
+/// server's Drafts folder by the first window that reaches it, marked as
+/// drafts and without their notes. Fetched back with Drafts, each copy is
+/// the draft itself: it becomes no message, no entry in the record and
+/// nothing kept on the device. And the window fetches when asked once its
+/// first sync is over.
+fn drafts_reach_the_server_and_come_back_as_nothing(
     profile: &std::path::Path,
     imap: &crate::fake_servers::FakeImap,
 ) {
@@ -369,29 +372,34 @@ fn draft_copies_fetched_back_are_kept_as_nothing(
     let mut app = TestApp::<MailShell>::open_data_dir(profile).unwrap();
     app.with_surface(super::MailApp::reach_test_servers)
         .unwrap();
-    app.settle();
-    // The server keeps each draft as Mail sends it there: under the
-    // Message-ID its draft names, marked a draft.
-    let copies: Vec<(String, String)> = app
-        .state()
-        .drafts_listed()
-        .into_iter()
-        .filter_map(|(id, draft)| {
-            let (_, locator, _) = draft.wanted_copy(&id)?;
-            Some((locator, draft.subject.clone()))
-        })
-        .collect();
-    assert_eq!(copies.len(), CANDIDATES.len());
-    for (locator, subject) in &copies {
-        imap.append(
-            DRAFTS,
-            &format!(
-                "From: Studio hiring <{ME}>\r\nTo: candidate@example.com\r\n\
-                 Subject: {subject}\r\nMessage-ID: <{locator}>\r\n\
-                 Date: Thu, 29 Oct 2026 09:00:00 +0000\r\n\r\nThank you.\r\n"
-            ),
-            &["\\Draft", "\\Seen"],
+    let deadline = tilo_test_env::hang_deadline();
+    while imap.messages(DRAFTS).len() < CANDIDATES.len() {
+        assert!(ui::time::now() < deadline, "the drafts reach the server");
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let copies = imap.messages(DRAFTS);
+    assert_eq!(copies.len(), CANDIDATES.len(), "one copy of each draft");
+    for copy in &copies {
+        let raw = String::from_utf8_lossy(&copy.raw).to_string();
+        assert!(
+            copy.flags.iter().any(|flag| flag == "\\Draft"),
+            "{:?}",
+            copy.flags
         );
+        assert!(raw.contains("Re: Application"), "{raw}");
+        assert!(
+            !raw.contains("Review of"),
+            "the notes are never in the copy: {raw}"
+        );
+    }
+    while app
+        .with_surface(|mail: &mut super::MailApp| mail.awaiting_server())
+        .unwrap()
+    {
+        assert!(ui::time::now() < deadline, "the window's first sync ends");
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let counts = |app: &mut TestApp<MailShell>| {
         app.with_surface(|mail: &mut super::MailApp| (mail.held(), mail.kept_on_device(ME)))
@@ -403,45 +411,37 @@ fn draft_copies_fetched_back_are_kept_as_nothing(
         serde_json::json!({ "anchor": crate::resource::folder_resource("drafts") }),
     )
     .expect("Drafts opens");
-    // Opening Drafts fetches it; the copies come back with it.
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    app.settle();
+    while app
+        .with_surface(|mail: &mut super::MailApp| mail.awaiting_server())
+        .unwrap()
+    {
+        assert!(ui::time::now() < deadline, "opening Drafts ends");
         app.settle();
-        let (fetched, pending) = app
-            .with_surface(|mail: &mut super::MailApp| {
-                let fetched = mail
-                    .shared
-                    .borrow()
-                    .passed_over
-                    .contains_key(&(ME.to_owned(), crate::model::Folder::Drafts));
-                let pending = format!(
-                    "{:?}",
-                    mail.state()
-                        .pending_engine_requests
-                        .values()
-                        .map(|request| request.kind)
-                        .collect::<Vec<_>>()
-                );
-                (fetched, pending)
-            })
-            .unwrap();
-        if fetched {
-            break;
-        }
-        assert!(
-            ui::time::now() < deadline,
-            "Drafts is fetched; waiting on {pending}"
-        );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    app.effect(&MailEffect::Refresh)
+        .expect("a window that reaches its server fetches when asked");
+    app.settle();
+    assert!(
+        app.with_surface(|mail: &mut super::MailApp| {
+            mail.shared
+                .borrow()
+                .passed_over
+                .contains_key(&(ME.to_owned(), crate::model::Folder::Drafts))
+        })
+        .unwrap(),
+        "Drafts was fetched with the copies in it"
+    );
     assert_eq!(
         counts(&mut app),
         before,
         "the copies fetched back are no messages, and nothing is kept of them"
     );
     let mail = app.state();
-    for (locator, _) in copies {
-        let copy = crate::transport::stable_message_id(&locator).to_string();
+    let ids = mail.draft_copy_ids();
+    assert!(ids.len() >= CANDIDATES.len(), "{ids:?}");
+    for copy in ids {
         assert!(
             mail.messages
                 .get(&ui::tilo_resource::Id::from_raw(copy.as_str()))

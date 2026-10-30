@@ -211,6 +211,12 @@ ext  = ["md", "markdown"]
 schemes = ["web+notes"]
 ```
 
+`resources` names the resource kinds the app opens at an address, such as
+Mail's `["mail.message", "mail.draft"]`: the desktop's `open` of
+`mail.message:<id>` launches the app that declares `mail.message` and opens
+its window at that address, though the app shows such items only on demand
+and lists none of them.
+
 `secondary = true` marks an app someone picks for these resources rather than
 the one they open by default, such as an editor that imports video. It is
 offered under Open with, and without a personal or workspace choice another
