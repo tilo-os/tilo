@@ -586,6 +586,7 @@ impl ShellOverlayHost {
             agent_actions: HashMap::new(),
             tracker: None,
             agent_quick_composer: Box::default(),
+            task_agent_ends: std::cell::RefCell::default(),
             agent_quick_composer_node: None,
             topbar: Box::default(),
             selection_requests: crate::shell::selection_agent::SelectionRequests::default(),
