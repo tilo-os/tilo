@@ -9,6 +9,11 @@
 //! person's read of the record. The capture's revalidation decides the agent's read again
 //! before every chunk it hands out. What leaves the broker is the record's committed content,
 //! read-only: the record channel's keys stay here, and nothing in a read writes to the record.
+//!
+//! A task agent is no member: it works in its task's run. Its reads and changes ([`RunRecords`],
+//! the door's connection's and a launched task agent's programs alike) are steps of the run,
+//! admitted as its other steps are (the run's delegation, its issue's and its starter's live
+//! grants, only while it goes), then read and applied as the run's agent for its starter.
 
 use std::sync::{Arc, Weak};
 

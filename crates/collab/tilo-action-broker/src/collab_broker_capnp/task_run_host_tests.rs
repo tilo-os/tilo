@@ -404,3 +404,71 @@ async fn a_launched_task_agent_takes_its_task_steps_in_its_run() {
         })
         .await;
 }
+
+/// The origin of the room's records, as a test sees what reaches it.
+#[derive(Default)]
+struct Origin {
+    applied: Mutex<Vec<(String, String)>>,
+}
+
+impl crate::services::RecordChangeServices for Origin {
+    fn apply(
+        &self,
+        _room: &str,
+        change: &tilo_actions::remote::RecordChange,
+        invoker: &tilo_actions::ActionInvoker,
+    ) -> Result<serde_json::Value, String> {
+        self.applied
+            .lock()
+            .unwrap()
+            .push((invoker.actor.clone(), change.action.clone()));
+        Ok(serde_json::json!({"ok": {"value": null}, "differs": false}))
+    }
+}
+
+/// A run changes a record outside its app (a program's `tasks.add`, from
+/// the door's REPL or a launched task agent): the run admits it as it admits
+/// its other steps, the change goes to the record's origin as the run's task
+/// agent, and once the run stops it is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_run_changes_a_record_as_its_task_agent_while_it_goes() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let origin = Arc::new(Origin::default());
+            let f = Fixture::with_origin(None, Vec::new(), Some(origin.clone()));
+            let agent = admit(&f);
+            let host = f.state.task_run_host(&agent.presentation()).unwrap();
+            let caller = connection(&host);
+            let changes = host.record_changes().expect("a run changes records");
+            let change = tilo_actions::remote::RecordChange {
+                app: "so.tilo.notes".into(),
+                record: "main".into(),
+                resource: "notes:release".into(),
+                action: "append".into(),
+                arguments: serde_json::Map::new(),
+                preview: None,
+            };
+            changes
+                .apply(&caller, &change)
+                .expect("the run admits its change");
+            assert_eq!(
+                origin.applied.lock().unwrap().as_slice(),
+                [(
+                    format!("agent:{}", agent.delegation.agent_id),
+                    "append".to_owned()
+                )],
+                "applied as the run's task agent"
+            );
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.active = false;
+            }
+            f.state.refresh_native_task_delivery();
+            assert!(
+                changes.apply(&caller, &change).is_err(),
+                "a stopped run changes nothing"
+            );
+            assert_eq!(origin.applied.lock().unwrap().len(), 1);
+            drop(f);
+        })
+        .await;
+}

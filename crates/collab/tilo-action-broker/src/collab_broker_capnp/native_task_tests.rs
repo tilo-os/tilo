@@ -272,6 +272,19 @@ impl Fixture {
         launcher: Option<Arc<dyn crate::services::LauncherServices>>,
         host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
     ) -> Self {
+        Self::with_origin(launcher, host_steps, None)
+    }
+    /// As [`Self::with_services`], with `record_changes` the origin of the
+    /// room's records.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test"
+    )]
+    fn with_origin(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
+        record_changes: Option<Arc<dyn crate::services::RecordChangeServices>>,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut identity_env = tilo_test_env::ScopedEnv::new();
         identity_env
@@ -350,6 +363,7 @@ impl Fixture {
                 tracker_runs: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 host_steps,
+                record_changes,
                 ..Default::default()
             },
         );
