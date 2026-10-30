@@ -18689,13 +18689,17 @@ name = "tilo-device-vpn"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "hex",
  "iroh",
  "libc",
+ "os-actions",
  "postcard",
  "serde",
  "serde_json",
+ "settings-store",
  "tempfile",
  "tilo-files",
+ "tilo-nm",
  "tilo-seat-peer",
  "tilo-test-env",
  "tokio",
