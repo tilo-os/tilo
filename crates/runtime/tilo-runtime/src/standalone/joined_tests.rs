@@ -11,17 +11,10 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use std::sync::Arc;
-use tilo_action_broker::channel_encryption::{
-    ChannelAccess, ChannelDirectory, ChannelEncryption, ChannelEncryptionConfig, ChannelKeyAccess,
-    GovernanceTransport, InboundChannelGovernance,
-};
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
+use tilo_peer_state::join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole};
 use tilo_peer_state::owner::testing::governor::TestGovernor;
 use tilo_peer_state::owner_commit::CommitOperation;
-use tilo_peer_state::{
-    StatePeer,
-    join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole},
-};
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -821,16 +814,16 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
 }
 
 const SDK_TEST: &str =
-    "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor";
+    "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device";
 const SDK_HELPER: &str = "TILO_JOINED_SDK_HELPER";
 const SDK_APP: &str = "so.tilo.chat";
 const SDK_WRITTEN: &str = "sealed by a live SDK app in a joined room";
 
 #[test]
-fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor() {
+fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
     // Helper role: an ordinary SDK app in the joined room writes once. The
-    // SDK holds the write until the runtime's channel service is admitted by
-    // the room's governor, then seals and sends it.
+    // SDK holds the write until this device's channel service hands it the
+    // route's keys, then seals and sends it.
     if std::env::var_os(SDK_HELPER).is_some() {
         let mut manager = ui::collaboration::CollaborationManager::new();
         let started = std::time::Instant::now();
@@ -867,7 +860,6 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor() {
     let (publisher, publisher_endpoint) = tilo_rt::app()
         .block_on(governing.publish_history(device.device_public_key))
         .unwrap();
-    let governor_channels = Governor::open(&governor_root, &governing.governor_key, governing.room);
     // A member writes only into a record it holds, and joining brings the
     // room's governance alone: the chat record arrives through the room's
     // sync, once the host has kept the governor's history. The app opens
@@ -910,58 +902,48 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor() {
     )
     .unwrap();
 
-    // The governor answers the runtime's access request over the
-    // room's relay session; the app's write then arrives sealed.
-    let sealed = tilo_rt::app().block_on(tilo_test_env::within(
-        "the SDK app's sealed write at the governor",
-        async {
-            let mut inbound = Vec::new();
-            let mut tick = tokio::time::interval(Duration::from_millis(100));
-            loop {
-                tokio::select! {
-                    received = publisher.recv() => match received.expect("the governor's session") {
-                        Inbound::Presence { payload, .. } => inbound.extend(
-                            postcard::from_bytes(&payload)
-                                .ok()
-                                .and_then(InboundChannelGovernance::from_message),
-                        ),
-                        Inbound::Delta { author, data } if author == device.device_public_key => {
-                            if let Ok(NeighbourMsg::AppDocument { envelope, .. }) = postcard::from_bytes(&data)
-                                && envelope.encryption.is_some()
-                            {
-                                break *envelope;
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ = tick.tick() => {
-                        let authority = governing.authority.lock().unwrap();
-                        governor_channels.pump(
-                            authority.peer(),
-                            &RelayGovernance {
-                                session: &publisher,
-                                inbound: std::sync::Mutex::new(std::mem::take(&mut inbound)),
-                            },
-                        );
+    // This device's channel service hands the app its route's keys; the
+    // app's write then arrives sealed, kept by the host as ciphertext.
+    let sealed = tilo_rt::app()
+        .block_on(tilo_test_env::within(
+            "the SDK app's sealed write at the room",
+            async {
+                loop {
+                    if let Inbound::Delta { author, data } =
+                        publisher.recv().await.expect("the room's session")
+                        && author == device.device_public_key
+                        && let Ok(NeighbourMsg::AppDocument { envelope, .. }) =
+                            postcard::from_bytes(&data)
+                        && envelope.encryption.is_some()
+                    {
+                        break *envelope;
                     }
                 }
-            }
-        },
-    ))
-    .unwrap();
+            },
+        ))
+        .unwrap();
     let _ = app.kill();
     let _ = app.wait();
 
-    // A key holder reads it: the governor opens what the app sealed.
-    let metadata = sealed.encryption.unwrap();
-    let (ChannelAccess::Ready(keys), _) = governor_channels
-        .keys
-        .access(governing.room, metadata.channel)
-    else {
-        panic!("the governor holds the channel's keys")
-    };
-    let plaintext = keys
-        .open_content(sealed.artifact, &metadata, &sealed.payload)
+    // The keys the app sealed with are this device's own: the joined room's
+    // channel service reads what the app wrote.
+    let keys = session
+        .joined
+        .channel_keys()
+        .get()
+        .expect("the joined device runs its channel service");
+    let plaintext = tilo_rt::app()
+        .block_on(tilo_test_env::within(
+            "the device's keys over the SDK app's sealed write",
+            async {
+                loop {
+                    if let Ok(plaintext) = keys.open_history_write(governing.room, &sealed) {
+                        break plaintext;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            },
+        ))
         .unwrap();
     let collab_types::DocumentMutation::Snapshot(bytes) =
         collab_types::DocumentMutation::decode(&plaintext).unwrap()
@@ -991,97 +973,6 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor() {
                 file.display()
             );
         }
-    }
-}
-
-/// The governor's part in the room's encrypted channels: it creates them and
-/// admits every certified, unrevoked device the room's governance lets read.
-struct Governor {
-    keys: ChannelKeyAccess,
-    readers: Arc<std::sync::Mutex<BTreeSet<collab_types::Ed25519PublicKey>>>,
-}
-
-impl Governor {
-    fn open(dir: &std::path::Path, device_key: &SigningKey, room: RoomId) -> Self {
-        let readers = Arc::default();
-        let service = ChannelEncryption::open(
-            ChannelEncryptionConfig {
-                root: dir.join("channels"),
-                vault: channel_crypto::VaultKey::new(blake3::derive_key(
-                    "tilo joined test governor v1",
-                    &device_key.to_bytes(),
-                )),
-                device_key: device_key.clone(),
-            },
-            Box::new(GovernorDirectory {
-                room,
-                governor: collab_types::Ed25519PublicKey::from_bytes(
-                    device_key.verifying_key().to_bytes(),
-                ),
-                readers: Arc::clone(&readers),
-            }),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-        )
-        .unwrap();
-        Self {
-            keys: ChannelKeyAccess::new(service),
-            readers,
-        }
-    }
-
-    fn pump(&self, peer: &StatePeer, transport: &dyn GovernanceTransport) {
-        let now = SystemTime::now();
-        *self.readers.lock().unwrap() = peer
-            .certificates()
-            .into_iter()
-            .filter(|cert| !cert.capabilities.can_act_as_host)
-            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
-            .map(|cert| collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key))
-            .collect();
-        self.keys.pump(transport);
-    }
-}
-
-struct GovernorDirectory {
-    room: RoomId,
-    governor: collab_types::Ed25519PublicKey,
-    readers: Arc<std::sync::Mutex<BTreeSet<collab_types::Ed25519PublicKey>>>,
-}
-
-impl ChannelDirectory for GovernorDirectory {
-    fn governor_of(&self, _room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
-        Some(self.governor)
-    }
-
-    fn allowed_devices(
-        &self,
-        room: RoomId,
-        _channel: collab_types::ChannelId,
-        _route: Option<&collab_types::ChannelRoute>,
-        _now: u64,
-    ) -> Option<BTreeSet<collab_types::Ed25519PublicKey>> {
-        if room != self.room {
-            return Some(BTreeSet::new());
-        }
-        Some(self.readers.lock().unwrap().clone())
-    }
-}
-
-/// The governor's relay session as its channels' transport: governance goes
-/// to every member as room presence.
-struct RelayGovernance<'a> {
-    session: &'a RelayCoeditSession,
-    inbound: std::sync::Mutex<Vec<InboundChannelGovernance>>,
-}
-
-impl GovernanceTransport for RelayGovernance<'_> {
-    fn publish(&self, message: NeighbourMsg) -> bool {
-        postcard::to_allocvec(&message)
-            .is_ok_and(|bytes| self.session.publish_presence(bytes).is_ok())
-    }
-
-    fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
-        std::mem::take(&mut *self.inbound.lock().unwrap())
     }
 }
 
