@@ -59,6 +59,10 @@ pub(super) struct TopBarHost {
     /// The pointer was over the bar at its last move: the move that takes it
     /// off reaches the bar too, so no control stays lifted.
     hovered: bool,
+    /// The shell's own Tab moved keyboard focus onto the bar: reading it
+    /// with the keyboard holds it shown, as a Tab inside it does. Focus the
+    /// shell merely placed on it (a fresh desktop's first focus) does not.
+    reached_by_keyboard: bool,
 }
 
 /// What of the chrome the feed is built from: a change of any of it
@@ -838,7 +842,20 @@ impl ShellOverlayHost {
     /// Whether something the bar opened, or its own keyboard focus, holds it
     /// shown.
     pub(super) fn topbar_holds_shown(&self) -> bool {
-        self.topbar.shown.holds_shown || self.topbar.natively_focused()
+        self.topbar.shown.holds_shown
+            || (self.topbar.reached_by_keyboard && self.topbar.natively_focused())
+    }
+
+    /// The shell moved keyboard focus to `widget`, by the person's Tab with
+    /// `by_keyboard`: whether that is the bar, reached by reading it.
+    pub fn native_focus_moved(&mut self, widget: Option<*const ()>, by_keyboard: bool) {
+        let onto_bar = widget.is_some_and(|widget| {
+            self.topbar
+                .app
+                .as_deref()
+                .is_some_and(|app| std::ptr::addr_eq(std::ptr::from_ref(app), widget))
+        });
+        self.topbar.reached_by_keyboard = onto_bar && by_keyboard;
     }
 
     /// The bar's surface in its app, for a test or a capture driving it.

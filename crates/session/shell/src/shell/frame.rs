@@ -1456,6 +1456,19 @@ impl FrameBuilder {
         target: Option<NodeId>,
         reveal: bool,
     ) {
+        self.move_native_focus(focus, target, reveal, false);
+    }
+
+    /// Move keyboard focus to `target`, revealing it with `reveal`;
+    /// `by_keyboard` when the person's Tab moved it there, which reads
+    /// what it lands on (the top bar then stays shown while it hides).
+    fn move_native_focus(
+        &mut self,
+        focus: &mut Option<NodeId>,
+        target: Option<NodeId>,
+        reveal: bool,
+        by_keyboard: bool,
+    ) {
         if *focus == target
             && self.node_map.iter().all(|(&node, &widget)| {
                 // SAFETY: every pointer belongs to the current live tree.
@@ -1489,6 +1502,10 @@ impl FrameBuilder {
                     .reveal_descendant(std::ptr::from_ref(unsafe { &*widget }));
             }
         }
+        self.host.native_focus_moved(
+            gaining.map(|widget| widget.cast::<()>().cast_const()),
+            by_keyboard,
+        );
         *focus = target;
         self.native_focus_ordinal = target.and_then(|id| {
             self.focusable_order()
@@ -1935,7 +1952,7 @@ impl FrameBuilder {
             }
             None => 0,
         };
-        self.set_native_focus(focus, order.get(next).copied());
+        self.move_native_focus(focus, order.get(next).copied(), true, true);
         true
     }
 
