@@ -250,7 +250,10 @@ fn publish_fixture(live: &LiveTree, scope: Scope) -> (WorkspaceTree, Arc<Authori
         .unwrap()
     };
     let sandbox = capture();
-    assert_eq!(sandbox.authorization_status(&published), Ok(()));
+    assert_eq!(
+        sandbox.authorization_status(&published),
+        Ok(Standing::Current)
+    );
     published.sandboxes.insert(live.root.0.id(), sandbox);
     drop(published);
     (tree, authority, capture())

@@ -52,6 +52,12 @@ pub(crate) enum AuthorityRejection {
     RoomOwnerNotCurrent,
 }
 impl AuthorityRejection {
+    /// Whether the authority is definitely gone. A stale snapshot is not:
+    /// the owner accepted a record after it, and the export of that record
+    /// is what tells whether anything was taken away.
+    pub(crate) const fn withdraws(self) -> bool {
+        !matches!(self, Self::StaleAcceptedSnapshot)
+    }
     pub(crate) fn reason(self) -> &'static str {
         match self {
             Self::WriterRetired => "writer_retired",
@@ -88,7 +94,9 @@ impl NativeStateWitness {
     /// the owner published since is not stale while `exporting` says the
     /// policy its publication exported (its revision) is still on its way
     /// to the observer: that export judges again when it lands, so the gap
-    /// between the two withdraws nothing by itself.
+    /// between the two withdraws nothing by itself. Every other rejection
+    /// is reported ahead of staleness, which withdraws nothing on its own
+    /// ([`AuthorityRejection::withdraws`]).
     pub(crate) fn authority_status_awaiting(
         &self,
         storage: &super::NativeAuthorityStorage,
@@ -106,13 +114,16 @@ impl NativeStateWitness {
             .health()
             .map_err(|_| AuthorityRejection::OwnerFenced)?;
         let current = owner.revision();
-        if current != storage.revision() && !exporting(current) {
-            return Err(AuthorityRejection::StaleAcceptedSnapshot);
-        }
+        let stale = current != storage.revision() && !exporting(current);
+        // Judged against the owner as it is now, so a room it no longer
+        // holds is a withdrawal whether or not the record is stale.
         if storage.requires(room) {
-            return owner
+            owner
                 .with_current(room, |_| Ok(()))
-                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent);
+                .map_err(|_| AuthorityRejection::RoomOwnerNotCurrent)?;
+        }
+        if stale {
+            return Err(AuthorityRejection::StaleAcceptedSnapshot);
         }
         Ok(())
     }
