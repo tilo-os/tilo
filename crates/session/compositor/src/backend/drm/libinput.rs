@@ -366,9 +366,10 @@ pub(super) fn dispatch(
 }
 
 /// Flash the outputs if the assists dropped a press as contact bounce.
-pub(super) fn show_alert(input: &Rc<RefCell<Input>>, state: &State, now: Instant) {
+pub(super) fn show_alert(input: &Rc<RefCell<Input>>, state: &mut State, now: Instant) {
     if input.borrow_mut().access.take_alert() {
         crate::a11y::flash_all(state, now);
+        state.mark_redraw_all();
     }
 }
 
@@ -443,6 +444,7 @@ pub(super) fn arm_ticker(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static
         }
         if this.access.take_alert() {
             crate::a11y::flash_all(&data.state, now);
+            data.state.mark_redraw_all();
         }
         if let Some(next) = this.access.next_deadline() {
             TimeoutAction::ToInstant(next)

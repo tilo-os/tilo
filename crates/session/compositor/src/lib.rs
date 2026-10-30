@@ -417,6 +417,11 @@ impl Compositor {
         if self.keys.take_alert() {
             self.flash();
         }
+        // The visual alert fades frame by frame, so every frame it covers
+        // is a new one to draw.
+        if a11y::flashing(&self.data.state, Instant::now()) {
+            self.data.state.mark_redraw_all();
+        }
         self.display.dispatch_clients(&mut self.data.state)?;
         self.sync_text_input();
         self.data.state.refresh();
@@ -476,6 +481,7 @@ impl Compositor {
         }
         self.a11y = a11y;
         self.seed_visuals();
+        self.data.state.mark_redraw_all();
         self.display.flush_clients()?;
         Ok(())
     }
@@ -505,6 +511,7 @@ impl Compositor {
     /// the alert sound would otherwise miss.
     pub fn flash(&mut self) {
         a11y::flash_all(&self.data.state, Instant::now());
+        self.data.state.mark_redraw_all();
     }
 
     /// How held keys repeat, for clients (the seat's repeat info) and
@@ -1155,6 +1162,11 @@ impl Compositor {
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
         self.seed_visuals();
+        // The visual alert fades frame by frame, so each frame it covers is
+        // a new one to draw.
+        if a11y::flashing(&self.data.state, Instant::now()) {
+            self.data.state.mark_redraw_all();
+        }
         let mut drew = false;
         for host in &mut self.data.state.hosts {
             drew |= host.prepare_frame();
