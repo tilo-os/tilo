@@ -27,7 +27,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(t("imager-setup-action-next"), "Continue setup");
+        // Setup's own copy reads in the host's language, from the German
+        // catalogue the crate ships beside its source.
+        assert_eq!(t("imager-setup-action-next"), "Einrichtung fortsetzen");
         assert_eq!(I18nManager::current_locale(), "de-DE");
         assert_eq!(I18nManager::lookup_plain("host-probe"), "Rechner");
     }

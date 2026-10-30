@@ -438,6 +438,7 @@ imager-install-profile-filesystem = Das Dateisystem auf { $new ->
     [btrfs] Btrfs
     [ext4] Ext4
    *[xfs] XFS
+}
 imager-install-profile-wifi-ssid = Das WLAN geändert
 imager-install-profile-device-label = Den Namen des neuen Geräts geändert
 imager-install-profile-enroll-local-identity = { $new ->
