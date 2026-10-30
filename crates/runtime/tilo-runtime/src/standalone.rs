@@ -305,7 +305,7 @@ impl RuntimeServices for Standalone {
             app_id,
             &self.room,
             &unix::ServiceSockets {
-                collab: self.broker.capnp_socket(),
+                collab: self.broker.app_socket(),
                 identity: &self.identity_socket,
                 blobs: &self.blob_socket,
             },

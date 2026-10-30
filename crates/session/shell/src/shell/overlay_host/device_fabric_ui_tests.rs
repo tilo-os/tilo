@@ -1,6 +1,6 @@
 use super::*;
 use crate::shell::chrome_state::ChromeState;
-use crate::shell::collab_broker_capnp::{
+use crate::shell::collab_app_broker::{
     RealtimeConsentUiView, RealtimeContinuityUiView, RealtimeSourceUiView,
 };
 use crate::shell::state::WorkspaceTree;
@@ -947,7 +947,7 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
     ];
     let rows = device_fabric_pane_rows(
         &view,
-        &crate::shell::collab_broker_capnp::RealtimeContinuityUiView::default(),
+        &crate::shell::collab_app_broker::RealtimeContinuityUiView::default(),
     );
     assert_eq!(
         rows.iter()

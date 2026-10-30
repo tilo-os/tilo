@@ -47,13 +47,13 @@ mod owner_commit_tests {
                 journal_root: directory.path().join("journal"),
                 certificate_authority: Arc::new(ExplicitAuthority),
             };
-            let (state, bridge_rx) = CapnpBrokerState::new_configured(&fanout,
+            let (state, bridge_rx) = AppBrokerState::new_configured(&fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())), publisher,
                 Some(membership.authority()), None, Some(&config), HostServices::default());
-            fanout.attach_capnp(state.clone());
+            fanout.attach_app_broker(state.clone());
             state.ensure_channel(&route.channel_key());
             let mut subscriber = state.subscribe_ops(&route.channel_key(), 2);
-            let client = wire_channel(CapnpChannelHandle {
+            let client = wire_channel(JoinedChannel {
                 as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -142,7 +142,7 @@ mod owner_commit_tests {
                         }),
                         ..Default::default()
                     };
-                    let (state, bridge_rx) = CapnpBrokerState::new_configured(
+                    let (state, bridge_rx) = AppBrokerState::new_configured(
                         &fanout,
                         Arc::new(Mutex::new(BrokerChannels::default())),
                         PeerPublisher::disabled(),
@@ -155,7 +155,7 @@ mod owner_commit_tests {
                         state.durable_owner_required,
                         "exercise actual configured durable worker mode"
                     );
-                    let client = wire_channel(CapnpChannelHandle {
+                    let client = wire_channel(JoinedChannel {
                         as_app: None,
                         person_chat_views: RefCell::default(),
                         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -418,8 +418,8 @@ mod owner_commit_tests {
         membership: WorkspaceTreeHandle,
         owner: crate::test_owner::SessionOwner,
         mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
-        state: Arc<CapnpBrokerState>,
-        channel: Rc<CapnpChannelHandle>,
+        state: Arc<AppBrokerState>,
+        channel: Rc<JoinedChannel>,
         route: CrdtRoute,
         _fanout: Arc<FanoutState>,
     }
@@ -544,7 +544,7 @@ mod owner_commit_tests {
         .unwrap();
         let fanout = Arc::new(FanoutState::new());
         let config = (!native).then(|| owner_config(root, &owner));
-        let (state, bridge_rx) = CapnpBrokerState::new_configured(
+        let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::with_owner_commit(
@@ -566,9 +566,9 @@ mod owner_commit_tests {
             config.as_ref(),
             HostServices::default(),
         );
-        fanout.attach_capnp(state.clone());
+        fanout.attach_app_broker(state.clone());
         state.ensure_channel(&route.channel_key());
-        let channel = Rc::new(CapnpChannelHandle {
+        let channel = Rc::new(JoinedChannel {
             as_app: None,
             person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -1062,7 +1062,7 @@ mod owner_commit_tests {
         .unwrap();
         let endpoint = || CertifiedEndpointIdentity::new(presentation.clone(), key.clone());
         // A raw same-user socket cannot choose a trusted application route.
-        let raw = std::os::unix::net::UnixStream::connect(broker.capnp_socket()).unwrap();
+        let raw = std::os::unix::net::UnixStream::connect(broker.app_socket()).unwrap();
         assert!(
             CollaborationManager::for_route_fd_with_identity(
                 raw.into_raw_fd(),
@@ -1353,7 +1353,7 @@ mod owner_commit_tests {
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,

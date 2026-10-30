@@ -2,7 +2,7 @@
 async fn installed_launch_requires_signed_admission_and_durable_terminal() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::invocation_journal::{
+            use crate::collab_app_broker::invocation_journal::{
                 BarrierFailure, InvocationKey, InvocationOwner,
             };
             for scenario in [

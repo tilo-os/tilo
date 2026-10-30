@@ -547,7 +547,7 @@ refuses a replayed duplicate. The old `register_channel_state` observation descr
 bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
-`crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_broker_capnp.rs,collab_inbound.rs}`
+`crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
 and `crates/session/shell/src/shell/collab_broker.rs`, plus
 `crates/collab/collab-types/tests/validator.rs`.
 

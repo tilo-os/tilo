@@ -36,7 +36,7 @@ impl CrdtRoute {
         }
     }
 
-    /// Cluster-scoped route — chrome traffic and the capnp transport.
+    /// Cluster-scoped route — chrome traffic and unbound connections.
     pub fn cluster(cluster_id: impl Into<String>) -> Self {
         Self {
             app_id: String::new(),
@@ -74,15 +74,15 @@ impl CrdtRoute {
         Self::cluster(self.cluster_id.clone())
     }
 
-    /// The channel this route names, as one string — the capnp
-    /// transport subscribes by channel id. Encoding lives in
+    /// The channel this route names, as one string — the wire
+    /// joins by channel id. Encoding lives in
     /// [`runtime_collab::route::channel_key`] (shared with the SDK) so both
     /// ends can't drift.
     pub fn channel_key(&self) -> String {
         runtime_collab::route::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
     }
 
-    /// Split a capnp `channelId` back into its route — the inverse of
+    /// Split a wire channel id back into its route — the inverse of
     /// [`Self::channel_key`].
     pub fn from_channel_key(key: &str) -> Self {
         let (app_id, cluster_id, record_id) = runtime_collab::route::channel_key::parse(key);

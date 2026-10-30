@@ -532,7 +532,7 @@ mod https_completion {
                 }));
                 target
                     .handle
-                    .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                    .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                         StoreDirectory,
                     )))
                     .await

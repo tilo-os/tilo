@@ -320,7 +320,7 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
 fn wait_for_membership_surface(
     actions: &tilo_action_broker::collab_broker::AppActionBroker,
     room: crate::shell::state::RoomId,
-) -> tilo_action_broker::collab_broker_capnp::PublishedSurface {
+) -> tilo_action_broker::collab_app_broker::PublishedSurface {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(surface) = actions
@@ -353,7 +353,7 @@ fn desktop_action_session_retains_the_selected_certified_person_and_original_cus
     let actions = fixture.broker.app_action_broker().unwrap();
     let surface = wait_for_membership_surface(&actions, fixture.room);
     let sessions = ActionSessionSource::new(actions.clone());
-    let expected = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+    let expected = tilo_action_broker::collab_app_broker::principal_id_for_root(
         fixture.certificate.user_public_key,
     );
     assert!(

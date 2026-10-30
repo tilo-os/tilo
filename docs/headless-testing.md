@@ -12,7 +12,7 @@ Native application publication also has compositor-free integration fixtures:
 
 ```bash
 cargo test --locked -p shell --lib shell::in_process::tests::authorized_
-cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
+cargo test --locked -p tilo-action-broker --lib collab_app_broker::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
 ```
 
 The Browser and Store fixtures provision a disposable identity and run the actual

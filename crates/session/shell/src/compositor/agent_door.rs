@@ -572,22 +572,21 @@ mod tests {
             crate::shell::hosted_inputs::HostedTileInputs::default(),
         );
         chrome.borrow_mut().test_only_owner_override = Some(true);
-        let broker =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
-                Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
-                    handle.clone(),
-                )),
-                tilo_action_broker::services::HostServices::default(),
-            );
+        let broker = crate::shell::collab_app_broker::AppBrokerState::test_broker_with_authority(
+            Arc::new(crate::shell::broker_services::NativeWorkspaceAuthority(
+                handle.clone(),
+            )),
+            tilo_action_broker::services::HostServices::default(),
+        );
         broker.replace_published_surfaces_for_test(vec![
-            crate::shell::collab_broker_capnp::PublishedSurface {
+            crate::shell::collab_app_broker::PublishedSurface {
                 peer_id: 7,
                 app_id: "so.tilo.settings".into(),
                 route: crate::shell::collab_broker::CrdtRoute::app(
                     "so.tilo.settings",
                     room.to_string(),
                 ),
-                actions: vec![crate::shell::collab_broker_capnp::PublishedAction {
+                actions: vec![crate::shell::collab_app_broker::PublishedAction {
                     state: tilo_actions::ActionState::default(),
                     resource: "settings.display".into(),
                     semantic_identity: None,
@@ -601,7 +600,7 @@ mod tests {
                     operation_kind: tilo_actions::OperationKind::View,
                     params: vec![],
                     contract: tilo_actions::ActionContract::view(),
-                    input: crate::shell::collab_broker_capnp::PublishedInput::None,
+                    input: crate::shell::collab_app_broker::PublishedInput::None,
                     view: None,
                 }],
                 live: true,
@@ -609,7 +608,7 @@ mod tests {
         ]);
 
         broker.replace_action_directory_roots_for_test(vec![
-            crate::shell::collab_broker_capnp::ActionDirectoryRoot {
+            crate::shell::collab_app_broker::ActionDirectoryRoot {
                 peer_id: 7,
                 app_id: "so.tilo.settings".into(),
                 cluster_id: room.to_string(),

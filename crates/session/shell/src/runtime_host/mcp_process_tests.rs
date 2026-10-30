@@ -156,7 +156,7 @@ fn mcp_process_owns_and_reaps_its_children() {
         }
         .encode()
         .unwrap();
-        let endpoint = session.broker.capnp_socket().to_path_buf();
+        let endpoint = session.broker.app_socket().to_path_buf();
         let workspace_id = session.room.clone();
         let (ready, admitted) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();

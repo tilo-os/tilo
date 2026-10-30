@@ -1577,7 +1577,7 @@ SHARED_WORKSPACE = "Acceptance shared"
 # holds a wait for.
 SHARED_APPS = ("so.tilo.notes", "so.tilo.file-explorer")
 # The kernel truncates thread names to 15 bytes: the compositor's collaboration broker
-# (`tilo-collab-broker-capnp`) and each app's collaboration shovel (`ui-collab-shovel`).
+# (`tilo-collab-broker`) and each app's collaboration shovel (`ui-collab-shovel`).
 BROKER_THREAD = "tilo-collab-bro"
 SHOVEL_THREAD = "ui-collab-shove"
 

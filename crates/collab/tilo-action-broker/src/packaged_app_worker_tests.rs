@@ -45,7 +45,7 @@ impl crate::services::LauncherServices for LaunchedHere {
 /// Connect as the launcher connects the app it starts: its marker and
 /// handoff first, then the app's own wire session.
 fn launched_app_connection(
-    state: &Arc<CapnpBrokerState>,
+    state: &Arc<AppBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,
     peer: u64,
     app: &str,
@@ -158,7 +158,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
             assert_eq!(registration.route, env.route);
             assert_eq!(registration.certificate, env.cert);
 
-            own.publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+            own.publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                 LocalDocumentDirectory {
                     kind: tilo_actions::OperationKind::Document,
                     read: false,
@@ -301,7 +301,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                     );
                 }
                 channels[RECORDS - 1]
-                    .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                    .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                         LocalDocumentDirectory {
                             kind: tilo_actions::OperationKind::Document,
                             read: false,
@@ -407,7 +407,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
                 let stream = channel.subscribe_stable_invocations().await.unwrap();
                 pages.push((id, channel, stream));
             }
-            let roots = |state: &CapnpBrokerState| {
+            let roots = |state: &AppBrokerState| {
                 state
                     .action_directory_roots()
                     .into_iter()

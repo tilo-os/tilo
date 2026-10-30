@@ -2082,7 +2082,7 @@ impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
         let Some(person) = caller.user_public_key() else {
             return Err(tilo_actions::remote::ActionHostError::NotPermitted);
         };
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(*person);
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(*person);
         if caller.principal() != &tilo_actions::remote::CallerPrincipal::Person(person) {
             return Err(tilo_actions::remote::ActionHostError::NotPermitted);
         }
@@ -2131,7 +2131,7 @@ pub(crate) fn test_broker_with_membership(
         applications: Some(Arc::new(NativeApplications)),
         ..Default::default()
     };
-    tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
+    tilo_action_broker::collab_app_broker::AppBrokerState::test_broker_with_authority(
         authority, services,
     )
 }

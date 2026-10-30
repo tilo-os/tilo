@@ -1846,7 +1846,7 @@ mod tests {
         let root = dir.path().join("journal");
         let _journal = InvocationJournal::open(&root).unwrap();
         let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact").arg("collab_broker_capnp::invocation_journal::tests::invocation_journal_excludes_a_second_process")
+            .arg("--exact").arg("collab_app_broker::invocation_journal::tests::invocation_journal_excludes_a_second_process")
             .env(PROBE, &root).output().unwrap();
         assert!(
             child.status.success(),

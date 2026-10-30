@@ -42,7 +42,7 @@ async fn progress_native_connection(
     probe: Arc<dyn ApprovedCheckServices>,
 ) -> Result<
     (
-        Arc<CapnpBrokerState>,
+        Arc<AppBrokerState>,
         signed_worker::Connection,
         Rc<LocalActionDirectoryRegistry>,
     ),
@@ -50,7 +50,7 @@ async fn progress_native_connection(
 > {
     // The replacement broker reuses the room's journal, which has one writer.
     drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
-    let (state, bridge) = CapnpBrokerState::new_configured(
+    let (state, bridge) = AppBrokerState::new_configured(
         &Arc::new(FanoutState::new()),
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
@@ -133,7 +133,7 @@ fn person(room: &signed_worker::OriginalRoom) -> (tilo_actions::remote::Caller, 
     reason = "test code included into the broker module: clippy does not see the cfg(test) on its include!, so it reads the test's checks as production code"
 )]
 async fn on_broker_turn<T>(
-    (state, directories): (&Arc<CapnpBrokerState>, &Rc<LocalActionDirectoryRegistry>),
+    (state, directories): (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
     mut pending: tilo_actions::remote::Pending<T>,
 ) -> T {
     tilo_test_env::within("the broker answers the person", async {
@@ -157,7 +157,7 @@ struct PersonSession {
 }
 
 impl PersonSession {
-    fn open(state: &Arc<CapnpBrokerState>, room: &signed_worker::OriginalRoom) -> Self {
+    fn open(state: &Arc<AppBrokerState>, room: &signed_worker::OriginalRoom) -> Self {
         let (caller, evidence) = person(room);
         let host = state
             .certified_local_action_host(&caller, &evidence)
@@ -168,7 +168,7 @@ impl PersonSession {
     /// Ask `peer`'s approved check on `resource`.
     async fn runs_check(
         &self,
-        broker: (&Arc<CapnpBrokerState>, &Rc<LocalActionDirectoryRegistry>),
+        broker: (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
         peer: u64,
         resource: &str,
     ) -> tilo_actions::remote::InvocationReceipt {
@@ -194,7 +194,7 @@ impl PersonSession {
     /// Cancel the check `invocation` they asked.
     async fn cancels(
         &self,
-        broker: (&Arc<CapnpBrokerState>, &Rc<LocalActionDirectoryRegistry>),
+        broker: (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
         invocation: tilo_actions::InvocationId,
     ) {
         on_broker_turn(broker, self.host.cancel(&self.caller, &invocation))
@@ -204,7 +204,7 @@ impl PersonSession {
 }
 
 async fn progress_parent(
-    (state, directories): (&Arc<CapnpBrokerState>, &Rc<LocalActionDirectoryRegistry>),
+    (state, directories): (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
     room: &signed_worker::OriginalRoom,
     connection: &signed_worker::Connection,
     descriptors: &[runtime_collab::ExportedAction],
@@ -778,7 +778,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         let room = signed_worker::OriginalRoom::new(tilo_user_identity::DeviceCapabilities::primary(), None, None);
         drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
         let fanout = Arc::new(FanoutState::new());
-        let (state, bridge) = CapnpBrokerState::new_configured(
+        let (state, bridge) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),

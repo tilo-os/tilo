@@ -1744,7 +1744,7 @@ mod tests {
         let mut actions = AgentActions::default();
         assert!(actions.open(
             ActionSessionSource::with_mock(
-                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(),
                 room.clone(),
             ),
             owner.clone(),
@@ -2092,7 +2092,7 @@ mod tests {
             let mut actions = AgentActions::default();
             assert!(actions.open_and_ask(
                 ActionSessionSource::with_mock(
-                    crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                    crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(),
                     room.clone(),
                 ),
                 &owner,

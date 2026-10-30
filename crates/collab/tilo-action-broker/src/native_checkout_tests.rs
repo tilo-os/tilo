@@ -34,7 +34,7 @@ async fn checkout_channel(
         )
         .unwrap()
     });
-    let channel = wire_channel(CapnpChannelHandle {
+    let channel = wire_channel(JoinedChannel {
         as_app: None,
         person_chat_views: RefCell::default(),
         committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -222,7 +222,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 .only(peer)
                 .unwrap()
                 .clone();
-            let channel = wire_channel(CapnpChannelHandle {
+            let channel = wire_channel(JoinedChannel {
                 as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),

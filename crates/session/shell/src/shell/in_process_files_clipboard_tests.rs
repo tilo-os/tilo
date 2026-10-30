@@ -11,7 +11,7 @@ mod files_clipboard_tests {
     struct RetiredOwner {
         tree: crate::shell::state::WeakWorkspaceTreeHandle,
         runtime: crate::shell::native_workspace_owner::NativeStateWitness,
-        broker: std::sync::Weak<tilo_action_broker::collab_broker_capnp::CapnpBrokerState>,
+        broker: std::sync::Weak<tilo_action_broker::collab_app_broker::AppBrokerState>,
     }
 
     thread_local! {
@@ -117,7 +117,7 @@ mod files_clipboard_tests {
             }
             .encode()
             .unwrap();
-            let endpoint = session.broker.capnp_socket().to_path_buf();
+            let endpoint = session.broker.app_socket().to_path_buf();
             let room = session.room.clone();
             let agent = agent.to_owned();
             let (send, mut receive) =
@@ -271,7 +271,7 @@ mod files_clipboard_tests {
                 grant_files_folder(&tree, &folders[1]);
                 source_grants
             };
-            let collab = session.broker.capnp_socket().to_path_buf();
+            let collab = session.broker.app_socket().to_path_buf();
             let identity = session.identity_socket().to_path_buf();
             let mut apps =
                 mounted_apps(profile, &session.actor).reaching_broker(Rc::new(move |app, room| {

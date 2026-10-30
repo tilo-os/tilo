@@ -21,7 +21,7 @@ mod workspace_record_custody {
         identity: &AdmittedJoinIdentity,
         route: &CrdtRoute,
         socket: &tokio::net::UnixStream,
-    ) -> CapnpChannelHandle {
+    ) -> JoinedChannel {
         let local = native_media::LocalAppConnection::attested(
             LAUNCHED.into(),
             room.route.cluster_id.clone(),
@@ -36,7 +36,7 @@ mod workspace_record_custody {
             },
         )
         .unwrap();
-        CapnpChannelHandle {
+        JoinedChannel {
             as_app: None,
             person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),

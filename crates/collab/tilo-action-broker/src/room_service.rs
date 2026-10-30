@@ -2,7 +2,7 @@
 //! surface, answered invocation by invocation from the durable stream.
 use std::future::Future;
 
-use super::{Arc, CapnpBrokerState, InvocationEnvelope, PublishedSurface};
+use super::{AppBrokerState, Arc, InvocationEnvelope, PublishedSurface};
 
 /// How one invocation of a broker room service ended.
 pub(super) enum ServiceOutcome {
@@ -20,7 +20,7 @@ pub(super) fn refused(code: &str, message: String) -> ServiceOutcome {
     })
 }
 
-impl CapnpBrokerState {
+impl AppBrokerState {
     /// Publish `surface` for its service peer and answer every invocation
     /// addressed to it with `serve`. An update that cannot be recorded stops
     /// the service; it then unpublishes the surface, answers what was still

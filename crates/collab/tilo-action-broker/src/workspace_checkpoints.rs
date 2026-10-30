@@ -128,7 +128,7 @@ pub(super) fn actions() -> Vec<PublishedAction> {
     .collect()
 }
 
-impl super::CapnpBrokerState {
+impl super::AppBrokerState {
     fn authorize_checkpoint_request(
         &self,
         room: &str,

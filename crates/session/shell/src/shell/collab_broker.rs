@@ -2,7 +2,7 @@
 //!
 //! Apps connect through the Cap'n Proto service. This module owns durable
 //! policy state, peer-network draining, routing, and in-process subscribers;
-//! the RPC implementation lives in `collab_broker_capnp`.
+//! the RPC implementation lives in `collab_app_broker`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -50,11 +50,11 @@ pub use tilo_action_broker::collab_broker::{
 
 pub struct BrokerHandle {
     inner: tilo_action_broker::collab_broker::BrokerHandle,
-    local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
+    local_session: crate::shell::collab_app_broker::LocalSessionAuthority,
     _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
     tracker: Option<Arc<super::broker_services::NativeTrackerRuns>>,
-    realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
+    realtime_fabric: Option<crate::shell::collab_app_broker::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
     drain_quit: Arc<AtomicBool>,
@@ -123,7 +123,7 @@ impl BrokerHandle {
 
     pub(crate) fn local_session_lifecycle(
         &self,
-    ) -> crate::shell::collab_broker_capnp::LocalSessionLifecycle {
+    ) -> crate::shell::collab_app_broker::LocalSessionLifecycle {
         self.local_session.lifecycle()
     }
 
@@ -139,7 +139,7 @@ impl BrokerHandle {
     #[must_use]
     pub fn realtime_fabric_bridge(
         &self,
-    ) -> Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge> {
+    ) -> Option<crate::shell::collab_app_broker::RealtimeFabricAppBridge> {
         self.realtime_fabric.clone()
     }
 
@@ -169,16 +169,16 @@ impl Drop for BrokerHandle {
 ///
 /// # Errors
 ///
-/// Returns an error if the Cap'n Proto socket at `capnp_socket_path`
+/// Returns an error if the Cap'n Proto socket at `app_socket_path`
 /// cannot be bound. The parent must already be an owner-only real directory
 /// (normally mode 0700); live sockets and non-private parents are rejected,
 /// while proven stale socket inodes are reclaimed.
 pub fn spawn_native(
-    capnp_socket_path: PathBuf,
+    app_socket_path: PathBuf,
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
 ) -> std::io::Result<BrokerHandle> {
-    spawn_native_offloading(capnp_socket_path, peer_sync, membership, None)
+    spawn_native_offloading(app_socket_path, peer_sync, membership, None)
 }
 
 /// [`spawn_native`] whose action door asks `action_offload` where an
@@ -189,7 +189,7 @@ pub fn spawn_native(
 ///
 /// As [`spawn_native`].
 pub fn spawn_native_offloading(
-    capnp_socket_path: PathBuf,
+    app_socket_path: PathBuf,
     peer_sync: &Option<Arc<ShellNetwork>>,
     membership: crate::shell::state::WorkspaceTreeHandle,
     action_offload: Option<Arc<dyn tilo_actions::offload::ActionOffload>>,
@@ -211,7 +211,7 @@ pub fn spawn_native_offloading(
         )),
     );
     spawn_inner(
-        capnp_socket_path,
+        app_socket_path,
         peer_sync.as_ref(),
         &publisher,
         Some(membership),
@@ -229,13 +229,13 @@ pub fn spawn_native_offloading(
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub fn spawn_native_harness(
-    capnp_socket_path: PathBuf,
+    app_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     trusted_devices: Vec<[u8; 32]>,
 ) -> std::io::Result<BrokerHandle> {
     let publisher = PeerPublisher::disabled();
     spawn_inner(
-        capnp_socket_path,
+        app_socket_path,
         None,
         &publisher,
         Some(membership),
@@ -307,9 +307,9 @@ pub(crate) fn spawn_device_harness(
 /// # Errors
 ///
 /// Returns an error if `publisher` has no attached signed-document sink, or if
-/// the Cap'n Proto socket at `capnp_socket_path` cannot be bound.
+/// the Cap'n Proto socket at `app_socket_path` cannot be bound.
 pub fn spawn_native_peer(
-    capnp_socket_path: PathBuf,
+    app_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,
     publisher: &Arc<PeerPublisher>,
     config: &tilo_action_broker::peer_actions::NativePeerBrokerConfig,
@@ -320,7 +320,7 @@ pub fn spawn_native_peer(
         ));
     }
     spawn_inner(
-        capnp_socket_path,
+        app_socket_path,
         None,
         publisher,
         Some(membership),
@@ -559,7 +559,7 @@ impl DrainQueues {
             return true;
         }
         let host = self.action_host.get().or_else(|| {
-            let state = self.table.capnp_state()?;
+            let state = self.table.app_broker()?;
             Some(self.action_host.get_or_init(|| {
                 crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker::from_state(
                     state,
@@ -717,7 +717,7 @@ impl DrainQueues {
     /// container's child) that no window here holds: tell the app's windows
     /// in that room, which then hold it like their own and sync it on its
     /// route, receiving what was admitted for it before
-    /// (`CapnpBrokerState::subscribe_ops`). A window that opens after this
+    /// (`AppBrokerState::subscribe_ops`). A window that opens after this
     /// learns the record from what the broker holds
     /// (`BrokerChannels::tree_records_held`).
     fn announce_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
@@ -891,7 +891,7 @@ fn install_native_media_factory(
     reason = "the test-support provisioning variant moves its device set into the broker"
 )]
 fn spawn_inner(
-    capnp_socket_path: PathBuf,
+    app_socket_path: PathBuf,
     peer_sync: Option<&Arc<ShellNetwork>>,
     publisher: &Arc<PeerPublisher>,
     membership: Option<crate::shell::state::WorkspaceTreeHandle>,
@@ -993,7 +993,7 @@ fn spawn_inner(
             .ok()
     });
 
-    let local_session = crate::shell::collab_broker_capnp::LocalSessionAuthority::new();
+    let local_session = crate::shell::collab_app_broker::LocalSessionAuthority::new();
     let channel_keys = if config.is_none() {
         Some(session_channel_keys(channel_encryption.clone()))
     } else {
@@ -1039,7 +1039,7 @@ fn spawn_inner(
         services.local_person = None;
     }
     let realtime_fabric = if config.is_none() {
-        peer_sync.and_then(crate::shell::collab_broker_capnp::NativeRealtimeServices::from_network)
+        peer_sync.and_then(crate::shell::collab_app_broker::NativeRealtimeServices::from_network)
     } else {
         None
     };
@@ -1066,11 +1066,11 @@ fn spawn_inner(
             tree.clone(),
         )) as tilo_action_broker::services::WorkspaceAuthorityHandle
     });
-    let personal_socket = capnp_socket_path.clone();
+    let personal_socket = app_socket_path.clone();
     let inner = match certificate_provisioning {
         CertificateProvisioning::Production => {
             tilo_action_broker::collab_broker::spawn_with_services(
-                capnp_socket_path,
+                app_socket_path,
                 authority,
                 publisher.clone(),
                 config,
@@ -1088,7 +1088,7 @@ fn spawn_inner(
         #[cfg(any(test, feature = "test-support"))]
         CertificateProvisioning::HarnessDevices(trusted_devices, _) => {
             tilo_action_broker::collab_broker::spawn_with_harness_authority(
-                capnp_socket_path,
+                app_socket_path,
                 authority,
                 publisher.clone(),
                 services,

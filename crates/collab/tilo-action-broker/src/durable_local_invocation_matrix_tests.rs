@@ -126,7 +126,7 @@ mod durable_local_matrix {
         }
     }
     struct Rig {
-        state: Arc<CapnpBrokerState>,
+        state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         worker: Connection,
         stream: Option<runtime_collab::InvocationStream>,
@@ -139,7 +139,7 @@ mod durable_local_matrix {
         }
         async fn with_services(env: &Environment, services: HostServices) -> Self {
             let fanout = Arc::new(FanoutState::new());
-            let (state, bridge_rx) = CapnpBrokerState::new_configured(
+            let (state, bridge_rx) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -291,7 +291,7 @@ mod durable_local_matrix {
     ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
-            .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+            .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                 DurableDirectory {
                     state: state.clone(),
                 },

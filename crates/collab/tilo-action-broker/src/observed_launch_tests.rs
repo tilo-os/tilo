@@ -88,7 +88,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
             assert_eq!(custody.certificate().unwrap(),
                 *env.authority.additional_certificates.lock().unwrap().last().unwrap());
             let certificate = custody.certificate().unwrap();
-            let statuses = rig.state.invocation_statuses_for_owner(&crate::collab_broker_capnp::invocation_journal::InvocationOwner::Certified {
+            let statuses = rig.state.invocation_statuses_for_owner(&crate::collab_app_broker::invocation_journal::InvocationOwner::Certified {
                 root: certificate.user_public_key,
                 device: certificate.device_public_key,
             });
@@ -96,10 +96,10 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 .expect("the original person owns the launch child, not the worker");
             let guard = rig.state.journal.lock().unwrap();
             let journal = guard.as_ref().unwrap().as_ref().unwrap();
-            let record = journal.lookup(&crate::collab_broker_capnp::invocation_journal::InvocationKey {
+            let record = journal.lookup(&crate::collab_app_broker::invocation_journal::InvocationKey {
                 room: env.route.cluster_id.clone(),
                 host: journal.host(),
-                owner: crate::collab_broker_capnp::invocation_journal::InvocationOwner::Certified {
+                owner: crate::collab_app_broker::invocation_journal::InvocationOwner::Certified {
                     root: certificate.user_public_key,
                     device: certificate.device_public_key,
                 },
@@ -447,7 +447,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     scenario == "ready",
                     "{update:?}"
                 );
-                let owner = crate::collab_broker_capnp::invocation_journal::InvocationOwner::AuthenticatedLocal {
+                let owner = crate::collab_app_broker::invocation_journal::InvocationOwner::AuthenticatedLocal {
                     root: env.cert.user_public_key,
                     device: env.cert.device_public_key,
                     agent: Some("scribe".into()),
@@ -563,7 +563,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
 async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::invocation_journal::{InvocationKey, InvocationOwner};
+            use crate::collab_app_broker::invocation_journal::{InvocationKey, InvocationOwner};
             use crate::test_support::{Grants as _, KindSet, Subject};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
@@ -605,7 +605,7 @@ async fn an_apps_open_for_an_agents_invocation_is_admitted_as_its_child() {
             );
             assert_eq!(
                 opened,
-                Ok(crate::collab_broker_capnp::AppOpen::Admitted),
+                Ok(crate::collab_app_broker::AppOpen::Admitted),
                 "the agent's own invocation opens what it may"
             );
             let owner = InvocationOwner::AuthenticatedLocal {
@@ -661,7 +661,7 @@ async fn an_apps_open_for_its_own_invocation_is_not_admitted() {
                 rig.state
                     .admit_app_open(&env.route.app_id, &room, own, "so.tilo.contacts");
 
-            assert_eq!(opened, Ok(crate::collab_broker_capnp::AppOpen::NeedsPress));
+            assert_eq!(opened, Ok(crate::collab_app_broker::AppOpen::NeedsPress));
             rig.stop().await;
         })
         .await;

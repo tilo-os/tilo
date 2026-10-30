@@ -149,7 +149,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
 async fn keyless_certified_host_steps_require_a_verified_native_projection() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::{
+            use crate::collab_app_broker::{
                 host_steps::is_local_host_caller, published_invocation::InvocationCaller,
             };
             use tilo_actions::remote::Caller;

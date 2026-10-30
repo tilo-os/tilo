@@ -1,7 +1,7 @@
 //! `LocalSet` half of the certified peer facade. Kept beside broker admission so
 //! no application capability or actor constructor crosses the network queue.
 use super::{
-    Arc, CallerInvocation, CapnpBrokerState, CrdtRoute, DirectoryActionConfirmation,
+    AppBrokerState, Arc, CallerInvocation, CrdtRoute, DirectoryActionConfirmation,
     InvocationInputs, LocalActionDirectoryRegistry, Rc, VerifiedActionCaller, VerifiedJoinIdentity,
     admit_verified_join_at,
 };
@@ -83,7 +83,7 @@ pub(crate) fn signed_as_required(evidence: &CertifiedAction) -> Result<(), PeerR
     }
 }
 
-impl CapnpBrokerState {
+impl AppBrokerState {
     pub(crate) fn peer_action_queue(&self) -> crate::peer_actions::PeerActionQueue {
         self.peer_action_queue.clone()
     }
@@ -149,7 +149,7 @@ impl CapnpBrokerState {
         /// Hands the queue back when the bridge task is dropped with its
         /// broker thread's runtime, so a restarted thread bridges again.
         struct Lent {
-            state: Arc<CapnpBrokerState>,
+            state: Arc<AppBrokerState>,
             receiver: Option<tokio::sync::mpsc::Receiver<crate::peer_actions::Request>>,
         }
         impl Drop for Lent {

@@ -32,7 +32,7 @@ pub trait LocalPersonServices: Send + Sync {
 /// The normal desktop opening deadline, shared with placement retirement.
 pub const APPLICATION_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-pub use crate::collab_broker_capnp::{
+pub use crate::collab_app_broker::{
     AudioOutputFuture, AudioOutputServices, AwaitingHistory, CertifiedPersonContext, DocumentBytes,
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere,
@@ -555,7 +555,7 @@ pub struct ObservedApplicationLaunch {
     grant: Arc<ObservedAuthorshipGrant>,
 }
 
-type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_broker_capnp::InvocationJob, String>
+type ObservedAuthorshipGrant = dyn Fn(&tilo_user_identity::DeviceCert) -> Result<crate::collab_app_broker::InvocationJob, String>
     + Send
     + Sync;
 
@@ -592,7 +592,7 @@ impl ObservedApplicationLaunch {
     /// Submit this bound app's authorship through the normal published door.
     /// # Errors
     /// Refuses missing custody or unavailable/ambiguous membership publication.
-    pub fn delegate_authorship(&self) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+    pub fn delegate_authorship(&self) -> Result<crate::collab_app_broker::InvocationJob, String> {
         (self.grant)(&self.certificate()?)
     }
 }
@@ -827,7 +827,7 @@ pub struct WorkspaceGovernanceRequest<'a> {
     /// The original run's live custody, when the caller belongs to a run.
     pub execution_lease: Option<tilo_actions::remote::ExecutionLease>,
     pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub actor: &'a crate::collab_app_broker::BrokerActor,
     pub resource: &'a str,
     pub action: &'a str,
     pub argument: Option<&'a str>,
@@ -963,7 +963,7 @@ pub trait KeyboardShortcutServices: Send + Sync {
 /// for `actor` in `room`, with `argument` in its slot form.
 pub struct HostStepRequest<'a> {
     pub room: &'a str,
-    pub actor: &'a crate::collab_broker_capnp::BrokerActor,
+    pub actor: &'a crate::collab_app_broker::BrokerActor,
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: Option<&'a str>,
 }
@@ -1400,13 +1400,13 @@ pub trait NearbyTransferServices: Send + Sync {
 pub struct BrowserServiceSessionRequestContext {
     peer_id: u64,
     person: String,
-    read: crate::collab_broker_capnp::NativeDocumentReadContext,
+    read: crate::collab_app_broker::NativeDocumentReadContext,
 }
 impl BrowserServiceSessionRequestContext {
     pub(crate) fn authenticated(
         peer_id: u64,
         person: String,
-        read: crate::collab_broker_capnp::NativeDocumentReadContext,
+        read: crate::collab_app_broker::NativeDocumentReadContext,
     ) -> Self {
         Self {
             peer_id,
@@ -1432,7 +1432,7 @@ impl BrowserServiceSessionRequestContext {
     pub fn identity_public_key(&self) -> [u8; 32] {
         self.read.certificate().user_public_key
     }
-    pub fn read_context(&self) -> &crate::collab_broker_capnp::NativeDocumentReadContext {
+    pub fn read_context(&self) -> &crate::collab_app_broker::NativeDocumentReadContext {
         &self.read
     }
     /// # Errors
@@ -1754,7 +1754,7 @@ pub trait DisplayControlServices: Send + Sync {
 #[derive(Clone, Default)]
 pub struct HostServices {
     /// Fixed project-host registrations, unavailable unless actual enforcement is configured.
-    pub approved_checks: Option<Arc<dyn crate::collab_broker_capnp::ApprovedCheckServices>>,
+    pub approved_checks: Option<Arc<dyn crate::collab_app_broker::ApprovedCheckServices>>,
     /// Read-only existing-resource discovery, absent unless the native host
     /// can carry it over its current authenticated room connection.
     pub resource_views: Option<Arc<dyn NativeResourceViews>>,

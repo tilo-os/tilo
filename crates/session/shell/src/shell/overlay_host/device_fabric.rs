@@ -297,7 +297,7 @@ pub enum RealtimeContinuityUiAction {
 pub type RealtimeContinuityBridge = std::rc::Rc<
     dyn Fn(
         RealtimeContinuityUiAction,
-    ) -> Result<crate::shell::collab_broker_capnp::RealtimeContinuityUiView, String>,
+    ) -> Result<crate::shell::collab_app_broker::RealtimeContinuityUiView, String>,
 >;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,8 +316,8 @@ pub(super) enum DeviceFabricPaneRow {
     RemoteCaptureSource(tilo_device_fabric::remote_capture::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture::runtime::RemoteCaptureDegradedView),
-    RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
-    RealtimeSource(crate::shell::collab_broker_capnp::RealtimeSourceUiView),
+    RealtimeConsent(crate::shell::collab_app_broker::RealtimeConsentUiView),
+    RealtimeSource(crate::shell::collab_app_broker::RealtimeSourceUiView),
     BluetoothAuthorization(BluetoothHandoffAuthorizationView),
     BluetoothHandoff(crate::shell::device_fabric_runtime::BluetoothHandoffStatusView),
     GamepadAuthorization(GamepadAuthorizationView),
@@ -392,7 +392,7 @@ impl DeviceFabricPaneRow {
 )]
 pub(super) fn device_fabric_pane_rows(
     view: &DeviceFabricView,
-    realtime: &crate::shell::collab_broker_capnp::RealtimeContinuityUiView,
+    realtime: &crate::shell::collab_app_broker::RealtimeContinuityUiView,
 ) -> Vec<DeviceFabricPaneRow> {
     view.calibration_proposals
         .iter()

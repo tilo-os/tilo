@@ -3839,7 +3839,7 @@ impl ShellNetwork {
         let user = self
             .local_person
             .ok_or_else(|| "this device holds no identity".to_string())?;
-        if person != tilo_action_broker::collab_broker_capnp::principal_id_for_root(user) {
+        if person != tilo_action_broker::collab_app_broker::principal_id_for_root(user) {
             return Err("only the person this device belongs to reaches their devices".into());
         }
         if !self
@@ -8272,7 +8272,7 @@ mod tests {
             .insert((topic, device));
         while commands.try_recv().is_ok() {}
 
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(user);
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(user);
         let checked = tilo_actions::remote::own_device::Invocation {
             device: hex::encode(device.as_bytes()),
             app: "so.tilo.settings".into(),
@@ -8605,9 +8605,8 @@ mod tests {
     fn remote_action_from_an_authenticated_peer_is_confined_to_its_room() {
         let root = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
         let device = iroh::SecretKey::from_bytes(&[0xA2; 32]);
-        let person = crate::shell::collab_broker_capnp::principal_id_for_root(
-            root.verifying_key().to_bytes(),
-        );
+        let person =
+            crate::shell::collab_app_broker::principal_id_for_root(root.verifying_key().to_bytes());
         let (workspace, enrolled) = remote_action_room(&person, &person);
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace);
@@ -8665,10 +8664,10 @@ mod tests {
             reason = "two peers, their identities, the serving broker and both round trips form one scenario"
         )]
         fn a_peer_invokes_an_app_action_on_another_peer_and_gets_the_receipt() {
-            use crate::shell::collab_broker::CrdtRoute;
-            use crate::shell::collab_broker_capnp::{
+            use crate::shell::collab_app_broker::{
                 PublishedAction, PublishedInput, PublishedSurface,
             };
+            use crate::shell::collab_broker::CrdtRoute;
             use crate::shell::remote_action_link::RemoteActionLink as _;
             use tilo_actions::remote::{
                 InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
@@ -8679,10 +8678,10 @@ mod tests {
             let root_b = ed25519_dalek::SigningKey::from_bytes(&[0xB1; 32]);
             let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
             let device_b = iroh::SecretKey::from_bytes(&[0xB2; 32]);
-            let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_a = crate::shell::collab_app_broker::principal_id_for_root(
                 root_a.verifying_key().to_bytes(),
             );
-            let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_b = crate::shell::collab_app_broker::principal_id_for_root(
                 root_b.verifying_key().to_bytes(),
             );
             let (room_workspace, room) = remote_action_room(&person_a, &person_b);
@@ -8826,10 +8825,10 @@ mod tests {
             let device_a = iroh::SecretKey::from_bytes(&[0xA2; 32]);
             let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
             let stranger = iroh::SecretKey::from_bytes(&[0xD2; 32]);
-            let person_a = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_a = crate::shell::collab_app_broker::principal_id_for_root(
                 root_a.verifying_key().to_bytes(),
             );
-            let person_b = crate::shell::collab_broker_capnp::principal_id_for_root(
+            let person_b = crate::shell::collab_app_broker::principal_id_for_root(
                 root_b.verifying_key().to_bytes(),
             );
             let (room_workspace, room) = remote_action_room(&person_a, &person_b);

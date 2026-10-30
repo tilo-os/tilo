@@ -216,7 +216,7 @@ pub fn presentation(room: &str, cert: &DeviceCert, key: &SigningKey) -> Vec<u8> 
 
 /// Drive the broker side of `server` and bootstrap a real RPC client over `client`.
 pub fn rpc_pair(
-    state: Arc<CapnpBrokerState>,
+    state: Arc<AppBrokerState>,
     peer: u64,
     server: std::os::unix::net::UnixStream,
     client: std::os::unix::net::UnixStream,
@@ -261,7 +261,7 @@ impl Drop for Connection {
 /// Register a private host worker for `route`, connect it as `peer` and join
 /// with the signed presentation. Returns the connection and its lease authorizer.
 pub async fn join_worker(
-    state: &Arc<CapnpBrokerState>,
+    state: &Arc<AppBrokerState>,
     directories: &Rc<LocalActionDirectoryRegistry>,
     route: &CrdtRoute,
     cert: &DeviceCert,
@@ -329,7 +329,7 @@ pub struct OriginalRoom {
     pub time_control: crate::peer_actions::PolicyClockTestControl,
     pub route: CrdtRoute,
     pub membership: WorkspaceTreeHandle,
-    pub state: Arc<CapnpBrokerState>,
+    pub state: Arc<AppBrokerState>,
     pub authority: Arc<CurrentHost>,
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::peer_actions::OwnerPolicyClock,
@@ -454,7 +454,7 @@ impl OriginalRoom {
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
         let mut services = membership.services();
         services.record_content = record_content;
-        let (state, bridge_rx) = CapnpBrokerState::new_configured(
+        let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             publisher,

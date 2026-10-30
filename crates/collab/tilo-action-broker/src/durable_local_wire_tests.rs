@@ -169,7 +169,7 @@ async fn a_callers_invocation_id_admits_once_and_keeps_its_retained_outcome() {
 async fn durable_admission_survives_restart_and_journal_barrier_failures() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::invocation_journal::BarrierFailure;
+            use crate::collab_app_broker::invocation_journal::BarrierFailure;
             use tilo_actions::remote::Confirmation;
             for barrier in [
                 None,
@@ -230,10 +230,10 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                     );
                 } else {
                     // The journal keeps the outcome across the restart.
-                    let key = crate::collab_broker_capnp::invocation_journal::InvocationKey {
+                    let key = crate::collab_app_broker::invocation_journal::InvocationKey {
                         room: env.route.cluster_id.clone(),
                         host: restarted.state.invocation_host().unwrap(),
-                        owner: crate::collab_broker_capnp::invocation_journal::InvocationOwner::AuthenticatedLocal {
+                        owner: crate::collab_app_broker::invocation_journal::InvocationOwner::AuthenticatedLocal {
                             root: env.cert.user_public_key,
                             device: env.cert.device_public_key,
                             agent: None,
@@ -505,7 +505,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
                 .state
                 .verify_action_caller(&room, &presentation(&room, &env.cert, &env.key))
                 .unwrap();
-            let certified = crate::collab_broker_capnp::ContinuingCaller::Certified {
+            let certified = crate::collab_app_broker::ContinuingCaller::Certified {
                 caller: Box::new(certified),
                 foreign_restriction: false,
                 direct: None,
@@ -640,7 +640,7 @@ async fn durable_admission_rechecks_original_custody_after_the_directory_answers
                 let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
                 rig.worker
                     .handle
-                    .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                    .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                         GatedDirectory {
                             block: block.clone(),
                             entered,
@@ -809,12 +809,11 @@ async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
                 .unwrap()
                 .clone();
             let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
-            let origin =
-                crate::collab_broker_capnp::published_invocation::InvocationCaller::Local {
-                    route: env.route.clone(),
-                    admitted: Box::new(admitted),
-                    time: rig.state.registered_policy_time().unwrap(),
-                };
+            let origin = crate::collab_app_broker::published_invocation::InvocationCaller::Local {
+                route: env.route.clone(),
+                admitted: Box::new(admitted),
+                time: rig.state.registered_policy_time().unwrap(),
+            };
             let invocation = tilo_actions::InvocationId::new();
             let mut request = durable_request(invocation);
             request.revision = None;

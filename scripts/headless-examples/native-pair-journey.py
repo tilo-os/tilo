@@ -76,7 +76,7 @@ class Fixture:
                "TILO_STATE_PATH": str(profile / "config/tilo/state.json"),
                "TILO_HEADLESS_SIZE": "1280x800",
                "TILO_LAUNCHER_BIN": str(self.binaries / "tilo-launcher"),
-               "RUST_LOG": "warn,tilo_peer_state::owner::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,tilo_action_broker::collab_broker_capnp::native_media=debug",
+               "RUST_LOG": "warn,tilo_peer_state::owner::voice=debug,tilo_media::voice::gst=debug,shell::network::native_media=debug,shell::shell::native_media=debug,tilo_action_broker::collab_app_broker::native_media=debug",
                "GST_DEBUG": "pipewiresrc:6,pipewirecore:5,appsink:5,opusenc:5,basesink:5,basesrc:6"}
         if self.routing_diagnostics:
             env["TILO_RELAY_PHASE_DIAGNOSTICS"] = "1"

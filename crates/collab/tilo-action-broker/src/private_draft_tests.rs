@@ -78,9 +78,7 @@ async fn named_action_request(
     );
     rig.worker
         .handle
-        .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
-            directory,
-        )))
+        .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(directory)))
         .await
         .unwrap();
     request
@@ -411,7 +409,7 @@ async fn private_draft_belongs_to_the_record_its_adoption_targets() {
                 .stage_private_draft(&caller, &proof, draft.clone())
                 .expect("a person with Chat open across several records may stage a draft");
             second
-                .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                     NamedActionDirectory {
                         revision: "draft-r1",
                         action: "adopt-private-draft",

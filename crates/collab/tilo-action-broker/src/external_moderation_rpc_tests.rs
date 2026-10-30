@@ -32,7 +32,7 @@ mod external_moderation_rpc_tests {
     struct Room {
         original: signed_worker::OriginalRoom,
         route: CrdtRoute,
-        state: Arc<CapnpBrokerState>,
+        state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         _owner_mailbox: crate::test_owner::owner_commit::OwnerCommitMailbox,
     }
@@ -86,7 +86,7 @@ mod external_moderation_rpc_tests {
                 crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
             let publisher =
                 PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-            let (state, bridge) = CapnpBrokerState::new_configured(
+            let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,

@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
-use tilo_action_broker::collab_broker_capnp::{ApprovedCheckContext, ApprovedCheckServices};
+use tilo_action_broker::collab_app_broker::{ApprovedCheckContext, ApprovedCheckServices};
 use ush::approved_checks::{ApprovedCheck, ApprovedChecks, CheckOutcome, ProjectBinding};
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;

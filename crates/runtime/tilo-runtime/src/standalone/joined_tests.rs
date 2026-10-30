@@ -295,7 +295,7 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
     let default_root = SigningKey::from_bytes(&[95; 32]);
     custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
     sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
-    let default_actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+    let default_actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         custody.device_cert.user_public_key,
     );
     custody
@@ -366,10 +366,8 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
 fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &str) {
     use crate::standalone::RuntimeActionHost;
     use tilo_action_broker::{
+        collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
-        collab_broker_capnp::{
-            CapnpBrokerState, PublishedAction, PublishedInput, PublishedSurface,
-        },
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
     use tilo_actions::remote::{
@@ -397,7 +395,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         cert: admission.certificate().clone(),
         time: origin.capture().unwrap(),
     }));
-    let (broker, turn) = CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+    let (broker, turn) = AppBrokerState::test_broker_with_authority_and_invoke_turn(
         membership.authority(),
         services,
     );
@@ -549,7 +547,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     )
     .unwrap();
     let actor =
-        tilo_action_broker::collab_broker_capnp::principal_id_for_root(device.user_public_key);
+        tilo_action_broker::collab_app_broker::principal_id_for_root(device.user_public_key);
     assert!(
         joined.action_room(&actor, &room.to_string()).is_err(),
         "an invitation is not current admission"
@@ -896,7 +894,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_its_keys_from_the_device() {
         SDK_APP,
         &room,
         &crate::unix::ServiceSockets {
-            collab: session.broker.capnp_socket(),
+            collab: session.broker.app_socket(),
             identity: &session.identity_socket,
             blobs: &session.blob_socket,
         },
@@ -1399,7 +1397,7 @@ async fn the_profile_room_is_placed_once_on_its_own_host_and_held() {
     assert!(joined.workspace(room).is_some());
     joined.place(room, "Home").await.unwrap();
     assert_eq!(joined.owner.rooms(), vec![room]);
-    let actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+    let actor = tilo_action_broker::collab_app_broker::principal_id_for_root(
         joined.test_certificate().user_public_key,
     );
     assert_eq!(

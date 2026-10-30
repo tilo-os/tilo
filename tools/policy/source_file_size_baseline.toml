@@ -48,8 +48,8 @@
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/collaboration/src/broker.rs" = 13000
 "crates/collab/tilo-action-broker/src/channel_encryption.rs" = 3500
-"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 17500
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
+"crates/collab/tilo-action-broker/src/collab_app_broker.rs" = 17500
+"crates/collab/tilo-action-broker/src/collab_app_broker/action_host.rs" = 4000
 "crates/collab/tilo-peer-state/src/state.rs" = 4000
 "crates/dev/tilo-app-cli/src/lib.rs" = 10500
 "crates/dev/tilo-app-cli/src/main.rs" = 4500

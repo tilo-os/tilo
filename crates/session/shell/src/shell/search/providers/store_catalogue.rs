@@ -1616,7 +1616,9 @@ mod tests {
         env.set("TILO_APP_BIN", &fake);
 
         let host = Arc::new(RecordingHost::default());
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let broker =
+            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
+            );
         let provider = StoreCatalogueProvider {
             action_sessions: Some(ActionSessionSource::with_mock(broker, host.clone())),
             ..StoreCatalogueProvider::with_test_source(StoreCatalogueTestSource::new(state(
@@ -1682,7 +1684,9 @@ mod tests {
     )]
     fn the_documents_and_closed_actions_of_installed_apps_are_found_and_run_at_once() {
         let host = Arc::new(RecordingHost::default());
-        let broker = crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let broker =
+            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue(
+            );
         let provider = StoreCatalogueProvider {
             action_sessions: Some(ActionSessionSource::with_mock(broker, host.clone())),
             ..StoreCatalogueProvider::installed_with_test_source(StoreCatalogueTestSource::new(

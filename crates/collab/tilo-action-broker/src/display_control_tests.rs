@@ -34,7 +34,7 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
             )));
             services.display_control = Some(delegate.clone());
             let fanout = Arc::new(FanoutState::new());
-            let (state, bridge) = CapnpBrokerState::new_configured(
+            let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),

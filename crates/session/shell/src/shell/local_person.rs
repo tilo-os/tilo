@@ -18,7 +18,7 @@ fn current_certificate(room: &str, person: &str) -> Result<DeviceCert, String> {
     // admission").
     let (_, certificate) = tilo_identity_host::broker::trusted_current_device(room)
         .map_err(|error| error.to_string())?;
-    if tilo_action_broker::collab_broker_capnp::principal_id_for_root(certificate.user_public_key)
+    if tilo_action_broker::collab_app_broker::principal_id_for_root(certificate.user_public_key)
         != person
     {
         return Err("native caller does not match the device person".into());
@@ -68,13 +68,13 @@ mod tests {
         super::super::remote_actions::BrokerActionHost,
         impl Fn(),
         tokio::sync::mpsc::UnboundedReceiver<
-            tilo_action_broker::collab_broker_capnp::InvocationEnvelope,
+            tilo_action_broker::collab_app_broker::InvocationEnvelope,
         >,
     ) {
         // Signed admission is queued to the broker's turn, as on the live
         // broker; the returned turn services it.
         let (broker, turn) =
-            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority_and_invoke_turn(
+            crate::shell::collab_app_broker::AppBrokerState::test_broker_with_authority_and_invoke_turn(
                 std::sync::Arc::new(super::super::broker_services::NativeWorkspaceAuthority(
                     tree.clone(),
                 )),
@@ -89,7 +89,7 @@ mod tests {
                 },
             );
         broker.replace_published_surfaces_for_test(vec![
-            crate::shell::collab_broker_capnp::PublishedSurface {
+            crate::shell::collab_app_broker::PublishedSurface {
                 peer_id: 7,
                 app_id: "so.tilo.settings".into(),
                 route: crate::shell::collab_broker::CrdtRoute::app(
@@ -103,7 +103,7 @@ mod tests {
                 ]
                 .into_iter()
                 .map(
-                    |(id, kind)| crate::shell::collab_broker_capnp::PublishedAction {
+                    |(id, kind)| crate::shell::collab_app_broker::PublishedAction {
                         state: tilo_actions::ActionState::default(),
                         resource: "settings.display".into(),
                         semantic_identity: None,
@@ -120,7 +120,7 @@ mod tests {
                             kind,
                             ..tilo_actions::ActionContract::view()
                         },
-                        input: crate::shell::collab_broker_capnp::PublishedInput::None,
+                        input: crate::shell::collab_app_broker::PublishedInput::None,
                         view: None,
                     },
                 )
@@ -204,7 +204,7 @@ mod tests {
             &paths.device_cert_for_user(&system.user_public_key),
         )
         .unwrap();
-        let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        let person = tilo_action_broker::collab_app_broker::principal_id_for_root(
             certificate.user_public_key,
         );
         // The workspace is a room this device's host holds and its native

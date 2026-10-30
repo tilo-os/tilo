@@ -125,7 +125,7 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
 /// The row the host's journal keeps for `key`.
 fn retained(
     rig: &Rig,
-    key: &crate::collab_broker_capnp::invocation_journal::InvocationKey,
+    key: &crate::collab_app_broker::invocation_journal::InvocationKey,
 ) -> DurableInvocation {
     rig.state
         .journal

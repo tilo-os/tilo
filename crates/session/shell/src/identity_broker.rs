@@ -65,7 +65,7 @@ impl WorkspaceMembership for Membership {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::collab_broker_capnp::run_isolated_native_consent_test;
+    use crate::shell::collab_app_broker::run_isolated_native_consent_test;
 
     fn provision_native_consent_identity() -> (
         PathBuf,

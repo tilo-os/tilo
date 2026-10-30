@@ -4,7 +4,7 @@ mod retained_launch;
 #[cfg(target_os = "linux")]
 pub(crate) use retained_launch::RetainedProofRecipient;
 
-use crate::shell::collab_broker_capnp::{LocalSessionLifecycle, LocalSessionPermit};
+use crate::shell::collab_app_broker::{LocalSessionLifecycle, LocalSessionPermit};
 use std::sync::Arc;
 use tilo_action_broker::{collab_broker::AppActionBroker, services::CertifiedPersonContext};
 use tilo_actions::remote::Caller;

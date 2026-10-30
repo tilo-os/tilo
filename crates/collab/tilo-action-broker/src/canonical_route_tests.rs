@@ -55,7 +55,7 @@ async fn canonical_route_rechecks_registration_certificate_and_stream_after_reso
                 let release = Rc::new(tokio::sync::Notify::new());
                 worker
                     .handle
-                    .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                    .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
                         signed_worker::HeldHostDirectory {
                             entered,
                             release: release.clone(),

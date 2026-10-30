@@ -368,7 +368,7 @@ async fn certified_local_host_requires_a_registered_policy_origin() {
             env.authority = CurrentHost::new(&env.route, &env.cert, None);
             let (caller, evidence) = local_host_evidence(&env);
             let fanout = Arc::new(FanoutState::new());
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -503,7 +503,7 @@ async fn certified_local_host_retains_stricter_foreign_restriction_in_actual_wor
 async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            use crate::collab_broker_capnp::{
+            use crate::collab_app_broker::{
                 ContinuingCaller, published_invocation::InvocationCaller,
             };
             let env = Environment::new();
@@ -607,7 +607,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
             let fanout = Arc::new(FanoutState::new());
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -673,7 +673,7 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
 
             let fanout = Arc::new(FanoutState::new());
-            let (ordinary, _) = CapnpBrokerState::new(
+            let (ordinary, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -709,7 +709,7 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
             }
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
-            let (state, _) = CapnpBrokerState::new(
+            let (state, _) = AppBrokerState::new(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -738,7 +738,7 @@ async fn certified_person_context_refuses_other_rooms_and_expired_original_polic
 /// revoked device still fails the very next call.
 #[tokio::test(flavor = "current_thread")]
 async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
-    use crate::collab_broker_capnp::admission_memo::verifications_on_this_thread as verifications;
+    use crate::collab_app_broker::admission_memo::verifications_on_this_thread as verifications;
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();

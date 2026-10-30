@@ -93,7 +93,7 @@ async fn person_rpc_uses_bound_owner_and_refuses_lost_custody() {
             let mut services = env.membership.services();
             services.person_chat = Some(Arc::new(PrivatePersonOwner(owner.clone())));
             let fanout = Arc::new(FanoutState::new());
-            let (state, bridge) = CapnpBrokerState::new_configured(
+            let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
@@ -307,7 +307,7 @@ async fn person_chat_open_send_read_stays_in_the_private_owner() {
             let mut services = env.membership.services();
             services.person_chat = Some(Arc::new(PrivatePersonOwner(owner.clone())));
             let fanout = Arc::new(FanoutState::new());
-            let (state, bridge) = CapnpBrokerState::new_configured(
+            let (state, bridge) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
