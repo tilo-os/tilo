@@ -66,7 +66,17 @@ fn a_notice_without_an_action_leaves_on_its_own_and_wakes_its_widget() {
     );
     with_monotonic_time(after, || {
         assert!(!notice.is_shown(), "a notice past its time reads as gone");
+        assert_eq!(
+            notice.deadline(),
+            Some(start + NOTICE_LIFETIME),
+            "while the bar still shows it, its time stays due, so the frame that takes it down runs"
+        );
         notice.publish();
+        assert_eq!(
+            notice.deadline(),
+            None,
+            "once the bar has let it go, nothing wakes for it again"
+        );
         assert_eq!(bar_notice(), None, "and leaves the bar");
         assert!(notice.expire(), "waking at its deadline takes it down");
     });
