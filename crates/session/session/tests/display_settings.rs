@@ -131,9 +131,8 @@ fn a_scale_chosen_in_settings_reaches_the_displays_and_is_kept() {
         Some(DisplayTransactionState::Confirmed),
         "a scale cannot darken a screen, so it stays at once"
     );
-    assert_eq!(
-        DisplayConfig::load_for(&set).outputs[&connector].scale,
-        1.5,
+    assert!(
+        (DisplayConfig::load_for(&set).outputs[&connector].scale - 1.5).abs() < f64::EPSILON,
         "the choice outlasts this session"
     );
 }
@@ -162,7 +161,7 @@ fn a_change_that_could_dark_a_screen_waits_and_is_put_back() {
             ..OutputConfig::default()
         },
     );
-    DisplayTransaction::request(set.clone(), candidate).expect("a change staged");
+    DisplayTransaction::request(set, candidate).expect("a change staged");
 
     until(&mut session, |session| !lit(session, &right));
     let mut transaction = DisplayTransaction::load().expect("the change is staged");

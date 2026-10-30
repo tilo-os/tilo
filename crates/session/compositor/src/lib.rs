@@ -482,6 +482,21 @@ impl Compositor {
         self.data.state.idle.suspend_held = held;
     }
 
+    /// Something outside the compositor says the person is there without
+    /// touching anything (an app's `Inhibit IDLE`, a presentation): nothing
+    /// dims, blanks, locks or suspends while it holds, and the idle period
+    /// restarts when it lets go.
+    pub fn hold_idle(&mut self, held: bool) {
+        self.data.state.idle.held = held;
+    }
+
+    /// The suspend the idle timers decided on will not happen after all (a
+    /// hold appeared between the tick that decided it and now): the idle
+    /// period restarts rather than a sleep that never came.
+    pub fn cancel_suspend(&mut self) {
+        self.data.state.idle.session.cancel_suspend();
+    }
+
     /// Lock now (a key or a command): reported as
     /// [`SessionTransition::Locked`] for the session to start its lock
     /// client.

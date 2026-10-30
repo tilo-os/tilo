@@ -182,6 +182,11 @@ pub struct Options {
     /// The surface apps the session runs as its own processes, each a client
     /// of its compositor.
     pub surfaces: Vec<surfaces::Surface>,
+    /// The machine's power: the policy the person's settings resolved, the
+    /// service over logind that acts on it and what holds it awake. Without
+    /// one, this session runs no idle, lid, key or battery policy — it is a
+    /// session in a window of another desktop, or a test's.
+    pub power: Option<tilo_session_power::PowerLink>,
     /// Where this device keeps what outlives a session: the desk as it was
     /// left, and the pictures on it. Without one, the session starts on a
     /// fresh desk and keeps nothing (tests and screenshots).
@@ -272,6 +277,7 @@ impl Default for Options {
             questions: None,
             portal: None,
             surfaces: Vec::new(),
+            power: None,
             state: None,
             collab: true,
             fabric: None,
@@ -898,14 +904,32 @@ impl Shared {
 
     /// Run the published actions keys and gestures asked for, through the
     /// door every caller uses.
-    fn run_invocations(&self) -> bool {
+    ///
+    /// The lock screen withholds the hosted surfaces' actions while it is
+    /// up; the keys that work there are the device's own (a level, the
+    /// power key), and the services publishing those still run.
+    fn run_invocations(&self, locked: bool) -> bool {
         let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
         let ran = !invocations.is_empty();
         for invocation in invocations {
-            match self
+            let outcome = self
                 .doors
                 .invoke(&invocation.address, &invocation.arguments)
-            {
+                .or_else(|error| {
+                    if !locked {
+                        return Err(error);
+                    }
+                    self.services
+                        .borrow_mut()
+                        .invoke(
+                            invocation.address.resource.as_str(),
+                            invocation.address.action.as_str(),
+                            &invocation.arguments,
+                        )
+                        .map(|result| result.map(answered))
+                        .unwrap_or(Err(error))
+                });
+            match outcome {
                 Ok(_) => {
                     if let Some(kind) = invocation.readout {
                         self.show_readout(self.reading(kind));
@@ -1043,6 +1067,9 @@ pub struct Session {
     displays: display_settings::Displays,
     /// The keyboard input sources, and the one that types.
     sources: config::Sources,
+    /// The machine's power: the idle policy, the service over logind and
+    /// what holds it awake.
+    machine: mount::power::PowerRun,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1143,6 +1170,7 @@ impl Session {
         compositor.set_idle_config(options.config.idle);
         compositor.set_cursor_size(options.config.cursor_size);
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
+        let machine = mount::power::install(&mut compositor, &options);
         compositor.add_host(Box::new(desktop.clone()));
         doors.add(Rc::new(RefCell::new(desktop.clone())));
 
@@ -1295,6 +1323,7 @@ impl Session {
                 settings_store::magnifier::OFF,
                 settings_store::magnifier::DEFAULT_ZOOM,
             ),
+            machine,
         })
     }
 
@@ -1569,6 +1598,7 @@ impl Session {
     /// asked in turn.
     fn settle(&mut self) -> Result<(), Error> {
         self.follow_collaboration();
+        self.follow_power()?;
         self.follow_lock()?;
         if let Some(captures) = &self.captures {
             captures.serve(&mut self.compositor);
@@ -1585,7 +1615,7 @@ impl Session {
         for _ in 0..4 {
             self.shared.follow_asks();
             self.shared.follow_gestures();
-            let ran = self.shared.run_invocations();
+            let ran = self.shared.run_invocations(self.compositor.locked());
             let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
             let commanded = !commands.is_empty();
             for command in commands {
@@ -1674,9 +1704,9 @@ impl Session {
                     }
                 }
                 SessionTransition::Suspend => {
-                    if let Err(error) = (self.shared.session_actions)(SessionAction::Suspend) {
-                        tracing::warn!(%error, "suspend");
-                    }
+                    // The idle timers ran out: the machine sleeps, unless
+                    // something holds it awake.
+                    self.suspend_for_idle();
                 }
                 _ => {}
             }
@@ -1919,6 +1949,14 @@ fn mount_quick_settings(
             tracing::warn!(%error, "quick settings not mounted");
             None
         }
+    }
+}
+
+/// What a service answered, as a caller of the action protocol reads it.
+fn answered(started: Started) -> ResourceOperationStart {
+    match started {
+        Started::Done(output) => ResourceOperationStart::Completed(output),
+        Started::Accepted => ResourceOperationStart::Accepted,
     }
 }
 

@@ -25,7 +25,7 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 # the machine's own, the person's search choices.
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The pictures the desk shows: the image's own, and the person's.
 tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
 # The assists the compositor carries out: bounce keys, mouse keys, the
@@ -58,6 +58,10 @@ postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
 os-actions = { path = "../../system/os-actions" }
 tilo-service = { path = "../service" }
+# The machine's power: the idle, lid, key and battery policy and the service
+# over logind that acts on it.
+tilo-session-power = { path = "../power-service" }
+tilo-power-mgmt = { path = "../../system/power" }
 tilo-connectivity-service = { path = "../connectivity-service" }
 tilo-system-service = { path = "../system-service" }
 tilo-settings-service = { path = "../settings-service" }
@@ -92,6 +96,15 @@ zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# The stand-in logind and UPower a power test serves over a socket pair.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+zbus = { workspace = true, features = ["tokio", "p2p"] }
+# The example implements the compositor's window policy, whose rectangles are
+# smithay's.
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "desktop",
+] }
 tilo-test-env = { path = "../../dev/test-env" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true

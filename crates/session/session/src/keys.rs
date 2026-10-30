@@ -82,6 +82,8 @@ const TOUCHPAD: &str = crate::controls::INPUT_RESOURCE;
 pub const KEYBOARD_BACKLIGHT: &str = tilo_system_service::KEYBOARD_BACKLIGHT;
 /// The display modes (mirror, extend, …), the session's own.
 const DISPLAYS: &str = crate::controls::DISPLAYS_RESOURCE;
+/// The machine's power policy, the power service's: what the power key does.
+pub const SLEEP: &str = tilo_session_power::SLEEP;
 
 /// `XF86XK_RFKill`, which the keysym tables predate: laptops send it for
 /// the airplane-mode key; `XF86WLAN` is the older spelling.
@@ -165,6 +167,9 @@ fn classify(keysym: u32) -> Option<Hardware> {
             hardware(KEYBOARD_BACKLIGHT, "toggle", false, true).reads(OsdKind::KeyboardBacklight)
         }
         keysyms::XF86_Display => hardware(DISPLAYS, "next-mode", false, false),
+        // The power key works on the lock screen too: a press there that the
+        // policy resolves to lock turns the display off instead.
+        keysyms::XF86_PowerOff => hardware(SLEEP, "power-key", false, true),
         _ => return None,
     })
 }

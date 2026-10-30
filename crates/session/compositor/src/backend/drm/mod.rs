@@ -86,6 +86,10 @@ type Renderers = GpuManager<Api>;
 type Renderer<'a> = MultiRenderer<'a, 'a, Api, Api>;
 
 /// One lit output.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a display fact of its own — queued, dark, built in, HDR-capable — not one state"
+)]
 struct Lit {
     output: Output,
     connector: connector::Handle,
@@ -1591,7 +1595,7 @@ fn edid_wants_hdr(card: &DrmNode, connector: &str) -> bool {
     // The base block is 128 bytes and says how many extension blocks follow.
     let extensions = edid.get(126).copied().unwrap_or(0);
     for index in 0..extensions {
-        let start = 128 * (usize::from(index) + 1);
+        let start = usize::from(index.saturating_add(1)).saturating_mul(128);
         let Some(block) = edid.get(start..start.saturating_add(128)) else {
             break;
         };
@@ -1606,7 +1610,9 @@ fn edid_wants_hdr(card: &DrmNode, connector: &str) -> bool {
             .clamp(4, block.len());
         let mut at = 4;
         while at < end {
-            let header = block[at];
+            let Some(&header) = block.get(at) else {
+                break;
+            };
             let length = usize::from(header & 0x1f);
             let body = block.get(at.saturating_add(1)..at.saturating_add(1).saturating_add(length));
             // An extended data block whose extended tag is the HDR static

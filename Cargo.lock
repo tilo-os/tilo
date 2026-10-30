@@ -21502,6 +21502,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings-store",
+ "smithay",
  "tempfile",
  "tilo-accessibility-settings",
  "tilo-action-policy",
@@ -21532,8 +21533,10 @@ dependencies = [
  "tilo-paths",
  "tilo-polkit-agent",
  "tilo-portal",
+ "tilo-power-mgmt",
  "tilo-quick-settings",
  "tilo-service",
+ "tilo-session-power",
  "tilo-settings-service",
  "tilo-sheets",
  "tilo-surface-host",
@@ -21552,6 +21555,23 @@ dependencies = [
  "xkeysym",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-session-power"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-lock",
+ "tilo-power-mgmt",
+ "tilo-resource",
+ "tilo-service",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -21868,9 +21888,14 @@ dependencies = [
 name = "tilo-topbar"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "libc",
+ "tempfile",
  "tilo-app",
+ "tilo-compositor",
  "tilo-desktop",
  "tilo-desktop-model",
+ "tilo-session",
  "tilo-vello",
  "tilo-winit",
  "workspace-hack",

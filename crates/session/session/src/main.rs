@@ -44,7 +44,13 @@ fn main() -> std::process::ExitCode {
         system: bus("--system-bus"),
     };
     let wake = tilo_service::LoopWake::default();
-    let (mut services, _following) = services(&wake);
+    // The person's settings, read once here: the power policy they resolve is
+    // part of them.
+    let config = tilo_session::SessionConfig::load();
+    // The machine's power: that policy, applied by the session's loop and
+    // acted on over logind by the service started beside the others.
+    let power = Some(tilo_session_power::PowerLink::new(config.power.clone()));
+    let (mut services, _following) = services(&wake, power.clone());
     let (capture, captures) =
         tilo_session::capture::channel_to(tilo_session::capture::directory(), wake.handle());
     // The portal's side of the desktop, which the session answers.
@@ -55,6 +61,7 @@ fn main() -> std::process::ExitCode {
         Arc::new(capture),
         &portal_side,
         &mut services,
+        power.as_ref().map(|link| link.registry().clone()),
     );
     // Where input captures and the shared screens are is the portal's: its
     // capture broker tells them what the session's seat and outputs are.
@@ -69,6 +76,7 @@ fn main() -> std::process::ExitCode {
         captures: Some(captures),
         desktop,
         portal,
+        power,
         ..device_options()
     };
     let started = match backend {
@@ -145,12 +153,14 @@ fn desktop_services(
     capture: std::sync::Arc<dyn tilo_portal::Capture>,
     side: &tilo_session::portal_link::PortalSide,
     services: &mut Vec<Box<dyn tilo_session::Service>>,
+    inhibitors: Option<tilo_power_mgmt::InhibitRegistry>,
 ) -> Option<std::rc::Rc<tilo_session::desktop_services::DesktopServices>> {
     match tilo_session::desktop_services::DesktopServices::start(
         buses,
         &wake.handle(),
         capture,
         side,
+        inhibitors,
     ) {
         Ok(desktop) => {
             services.extend(desktop.services());
@@ -234,7 +244,10 @@ type Following = Vec<Box<dyn std::any::Any>>;
 /// The system services the session hosts, on this device's own daemons,
 /// and what keeps their readings following the device.
 #[cfg(target_os = "linux")]
-fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
+fn services(
+    wake: &tilo_service::LoopWake,
+    power: Option<tilo_session_power::PowerLink>,
+) -> (Vec<Box<dyn tilo_session::Service>>, Following) {
     use std::sync::Arc;
     use tilo_connectivity_service::{Connectivity, device::OsDevice};
 
@@ -243,6 +256,12 @@ fn services(wake: &tilo_service::LoopWake) -> (Vec<Box<dyn tilo_session::Service
     services.push(Box::new(tilo_settings_service::SettingsService::new(
         &tilo_session::Options::default().person,
     )));
+    if let Some(link) = power {
+        match tilo_session_power::SessionPower::start(link) {
+            Ok(power) => services.push(Box::new(power)),
+            Err(error) => tracing::warn!(%error, "the power service did not start"),
+        }
+    }
     match Connectivity::new(Arc::new(OsDevice), Some(wake.handle())) {
         Ok(connectivity) => {
             match connectivity.follow() {

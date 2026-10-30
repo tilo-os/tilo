@@ -358,6 +358,15 @@ impl Portal {
         self
     }
 
+    /// The same, taking the holds apps ask for in `registry`: the session's
+    /// own, so its idle, lock and sleep decisions honour them like any other
+    /// hold, and the person sees who keeps the machine awake.
+    #[must_use]
+    pub fn with_inhibitions(mut self, registry: tilo_power_mgmt::InhibitRegistry) -> Self {
+        self.inhibitions = Inhibitions::in_registry(registry);
+        self
+    }
+
     /// The questions it asks through.
     #[must_use]
     pub const fn questions(&self) -> &Questions {

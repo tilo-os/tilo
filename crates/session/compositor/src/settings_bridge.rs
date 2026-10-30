@@ -350,7 +350,10 @@ mod tests {
             (300, 400),
             "800x600 at 2x turned on its side is 300x400"
         );
-        assert_eq!(snapshot.outputs[0].scale, 2.0);
+        assert!(
+            (snapshot.outputs[0].scale - 2.0).abs() < f64::EPSILON,
+            "the scale the person chose"
+        );
         assert_eq!(
             (
                 snapshot.outputs[0].current_mode.width,

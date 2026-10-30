@@ -1,0 +1,26 @@
+[package]
+name = "tilo-session-power"
+description = "The session's power policy: the idle timeouts, the lid, the power key, the battery and suspend, over logind and UPower, published as resources whose actions hold the machine awake."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_session_power"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-power-mgmt = { path = "../../system/power" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+zbus = { workspace = true, features = ["tokio"] }
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

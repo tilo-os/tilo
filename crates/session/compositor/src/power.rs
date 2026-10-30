@@ -24,6 +24,9 @@ pub(crate) struct Idle {
     pub(crate) events: Vec<SessionTransition>,
     /// Something outside the compositor holds the machine awake.
     pub(crate) suspend_held: bool,
+    /// Something outside the compositor says the person is there without
+    /// touching anything: an app's `Inhibit IDLE`, a presentation.
+    pub(crate) held: bool,
 }
 
 impl Idle {
@@ -33,6 +36,7 @@ impl Idle {
             dimmer: ScreenDimmer::default(),
             events: Vec::new(),
             suspend_held: false,
+            held: false,
         }
     }
 }
@@ -44,11 +48,11 @@ impl State {
         self.apply_idle(transitions);
     }
 
-    /// Advance the idle timers; an idle-inhibit surface or a suspend hold
-    /// keeps them from firing.
+    /// Advance the idle timers; an idle-inhibit surface, a hold from outside
+    /// or a suspend hold keeps them from firing.
     pub(crate) fn tick_idle(&mut self) {
         let holds = Holds {
-            idle: self.idle_inhibited(),
+            idle: self.idle_inhibited() || self.idle.held,
             suspend: self.idle.suspend_held,
         };
         let transitions = self.idle.session.tick_inhibited(Instant::now(), holds);

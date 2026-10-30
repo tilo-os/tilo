@@ -1,8 +1,9 @@
 //! What the session reads of the person's settings when it starts: their
 //! shortcut table, their input devices' preferences (pointer, touchpad,
 //! key repeat), how touchpad gestures read, the layout they type with, the
-//! accessibility assists the compositor carries out, when the screen blanks
-//! and locks, and the pointer's size.
+//! accessibility assists the compositor carries out, when the screen blanks,
+//! locks and the machine sleeps, what the lid, the power key and a failing
+//! battery do, and the pointer's size.
 
 use std::time::Duration;
 
@@ -32,8 +33,13 @@ pub struct SessionConfig {
     pub keyboard_layouts: Vec<String>,
     /// The source of [`Self::keyboard_layouts`] that types now.
     pub keyboard_active: String,
-    /// When the displays dim, blank, and the session locks with no input.
+    /// When the displays dim, blank, and the session locks and the machine
+    /// sleeps with no input: [`Self::power`]'s timeouts, as the compositor
+    /// runs them.
     pub idle: IdleConfig,
+    /// The machine's power policy, resolved for this machine: what the lid,
+    /// the power key and a failing battery do, and whether a sleep locks.
+    pub power: tilo_power_mgmt::PowerPolicy,
     /// The pointer's size in logical pixels.
     pub cursor_size: u32,
     /// Whether the night light warms the displays.
@@ -55,13 +61,28 @@ impl SessionConfig {
     pub fn load() -> Self {
         let input = RichInputConfig::load();
         let accessibility = tilo_accessibility_settings::AccessibilitySettings::load();
+        let power = loaded_power();
         Self {
             night_light: settings_store::hardware::NIGHT_LIGHT.get(),
             kept: true,
-            idle: idle_config(),
+            idle: idle_config(&power),
+            power,
             cursor_size: accessibility.effective_cursor_size(),
             ..Self::from_settings(&input, ShortcutConfig::load())
         }
+    }
+
+    /// Load the person's settings now and again whenever they change,
+    /// handing each reading to `apply`: the loader's one watch, so whoever
+    /// follows a section follows every change through it. The returned
+    /// watch keeps the notifications coming; dropping it stops them.
+    ///
+    /// # Errors
+    /// Fails when there are no settings to follow.
+    pub fn follow(
+        apply: impl Fn(Self) + Send + Sync + 'static,
+    ) -> std::io::Result<settings_store::watch::SettingsWatch> {
+        settings_store::watch::watch_settings(move || apply(Self::load()))
     }
 
     /// The settings `input` and `shortcuts` hold, as the session applies
@@ -74,6 +95,7 @@ impl SessionConfig {
         });
         let assists = tilo_accessibility_settings::AccessibilitySettings::load();
         let sources = Sources::from_settings(input);
+        let power = tilo_power_mgmt::PowerPolicy::default();
         Self {
             shortcuts,
             input: input_config(input, &assists),
@@ -81,7 +103,8 @@ impl SessionConfig {
             keyboard: sources.compiled(),
             keyboard_layouts: sources.ids.clone(),
             keyboard_active: sources.active,
-            idle: idle_config(),
+            idle: idle_config(&power),
+            power,
             cursor_size: assists.effective_cursor_size(),
             night_light: false,
             kept: false,
@@ -89,17 +112,19 @@ impl SessionConfig {
     }
 }
 
-/// When the displays dim, blank and the session locks with no input, as the
-/// person chose it: `0` minutes is their "Never".
-fn idle_config() -> IdleConfig {
-    IdleConfig::from_env()
-        .with_blank(timer(settings_store::power::BLANK_MINUTES.get()))
-        .with_lock(timer(settings_store::power::LOCK_MINUTES.get()))
+/// The power policy this machine runs, as the person's settings resolve for
+/// its duty and its power source.
+fn loaded_power() -> tilo_power_mgmt::PowerPolicy {
+    tilo_power_mgmt::load_policy_for_profile(None, tilo_power_mgmt::sysfs_on_battery())
 }
 
-/// `minutes` with no input, `None` for the person's "Never".
-fn timer(minutes: u32) -> Option<Duration> {
-    (minutes > 0).then(|| Duration::from_secs(u64::from(minutes).saturating_mul(60)))
+/// When the displays dim, blank and the session locks and sleeps with no
+/// input, as the person chose it: `None` is their "Never".
+fn idle_config(power: &tilo_power_mgmt::PowerPolicy) -> IdleConfig {
+    IdleConfig::from_env()
+        .with_blank(power.idle_blank)
+        .with_lock(power.idle_lock)
+        .with_suspend(power.idle_suspend)
 }
 
 /// The person's keyboard input sources, in their order, and the one they
@@ -184,7 +209,7 @@ impl Sources {
             .iter()
             .position(|id| *id == self.active)
             .unwrap_or(0);
-        let next = (current + 1).checked_rem(self.ids.len())?;
+        let next = current.checked_add(1)?.checked_rem(self.ids.len())?;
         self.active.clone_from(self.ids.get(next)?);
         Some(self.active.clone())
     }
@@ -287,6 +312,44 @@ mod tests {
     }
 
     #[test]
+    fn the_power_settings_are_the_policy_and_the_idle_timers_the_session_runs() {
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        settings_store::update_section(
+            settings_store::power::SECTION,
+            serde_json::Map::from_iter([
+                ("auto_suspend".to_owned(), serde_json::Value::Bool(true)),
+                ("blank_minutes".to_owned(), serde_json::json!(2)),
+                ("lock_minutes".to_owned(), serde_json::json!(1)),
+                ("suspend_minutes".to_owned(), serde_json::json!(30)),
+                ("lock_on_sleep".to_owned(), serde_json::Value::Bool(false)),
+                ("lid_close_action".to_owned(), serde_json::json!("lock")),
+                ("power_key_action".to_owned(), serde_json::json!("ignore")),
+                ("critical_battery_percent".to_owned(), serde_json::json!(7)),
+            ]),
+        )
+        .expect("the power settings are kept");
+        let config = SessionConfig::load();
+        assert_eq!(
+            config.idle,
+            IdleConfig::never()
+                .with_blank(Some(Duration::from_secs(120)))
+                .with_lock(Some(Duration::from_secs(60)))
+                .with_suspend(Some(Duration::from_secs(1800))),
+            "the idle timers are the person's minutes"
+        );
+        assert!(!config.power.lock_on_sleep);
+        assert_eq!(
+            config.power.lid_close_action,
+            tilo_power_mgmt::PowerAction::Lock
+        );
+        assert_eq!(
+            config.power.power_key_action,
+            tilo_power_mgmt::PowerAction::Ignore
+        );
+        assert_eq!(config.power.critical_battery_percent, 7);
+    }
+
+    #[test]
     fn the_assists_the_person_turned_on_reach_the_compositors_filters() {
         let _home = tilo_test_env::TestHome::new().expect("a home");
         settings_store::update_section(
@@ -309,12 +372,5 @@ mod tests {
         );
         assert!(config.input.mouse_keys, "the keypad moves the pointer");
         assert_eq!(config.cursor_size, 48, "the pointer is the size they chose");
-    }
-
-    #[test]
-    fn a_timeout_of_zero_minutes_is_never_and_the_rest_are_their_minutes() {
-        assert_eq!(timer(0), None);
-        assert_eq!(timer(5), Some(Duration::from_secs(300)));
-        assert_eq!(timer(30), Some(Duration::from_secs(1800)));
     }
 }

@@ -63,11 +63,12 @@ pub struct DesktopServices {
 
 impl DesktopServices {
     /// Start every desktop service `buses` reach, the portal taking its
-    /// screenshots with `capture` and sharing the screens, driving the
-    /// seat and passing the selection through `side` (the session's own
-    /// side of it). One that cannot start (no bus, the name taken, no
-    /// daemon behind it) is logged and the rest carry on; the session bus
-    /// services are serving when this returns.
+    /// screenshots with `capture`, sharing the screens, driving the seat and
+    /// passing the selection through `side` (the session's own side of it),
+    /// and taking the holds apps ask it for in `inhibitors` (the session's
+    /// own, so they keep the machine awake). One that cannot start (no bus,
+    /// the name taken, no daemon behind it) is logged and the rest carry on;
+    /// the session bus services are serving when this returns.
     ///
     /// # Errors
     /// The runtime they run on could not be made.
@@ -76,6 +77,7 @@ impl DesktopServices {
         wake: &tilo_service::Wake,
         capture: Arc<dyn tilo_portal::Capture>,
         side: &PortalSide,
+        inhibitors: Option<tilo_power_mgmt::InhibitRegistry>,
     ) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -94,6 +96,7 @@ impl DesktopServices {
             Arc::clone(wake),
             capture,
             side,
+            inhibitors,
         ));
         let tray = runtime.block_on(tray_on(&buses.session));
         if buses.system != Bus::None {
@@ -289,6 +292,7 @@ async fn on_session_bus(
     wake: tilo_service::Wake,
     capture: Arc<dyn tilo_portal::Capture>,
     side: &PortalSide,
+    inhibitors: Option<tilo_power_mgmt::InhibitRegistry>,
 ) -> (
     Option<Portal>,
     Option<(zbus::Connection, tilo_notifications_service::Server)>,
@@ -320,6 +324,10 @@ async fn on_session_bus(
     // A workspace already granting an app what it asks for answers for the
     // person.
     .with_consent_grants(side.grants());
+    let portal = match inhibitors {
+        Some(registry) => portal.with_inhibitions(registry),
+        None => portal,
+    };
     // The appearance is also written to dconf, the environment's own: only
     // a portal on the environment's bus speaks for it.
     if *bus == Bus::Default {
