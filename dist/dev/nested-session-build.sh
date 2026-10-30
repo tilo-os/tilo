@@ -120,10 +120,15 @@ build_host() {
     cargo build --locked --timings "${args[@]}" \
         -p tilo-app-package-cli --bin tilo-app-package \
         -p runtime-bundle --bin tilo-runtime-bundle \
-        -p tilo-model-gateway --bin tilo-model-gateway \
         -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
-        -p nested-session-bus --bin nested-session-bus
+        -p nested-session-bus --bin nested-session-bus || return 1
+    # The gateway, on a build of its own: its binary needs `server`, which no
+    # longer comes from building beside the shell, and the session's gateway
+    # runs with the features the workspace builds it with.
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-model-gateway --bin tilo-model-gateway \
+        --features server,host-backend,local-models,runtime-client
 }
 # The tilolang host, in a build of its own: built with the shell, the features the shell
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
