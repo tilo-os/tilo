@@ -20,6 +20,12 @@ fn entry_for(package_id: &str) -> Option<&'static FleetApp> {
     app_fleet::metadata(package_id)
 }
 
+/// The app's name, as the registry knows it.
+#[must_use]
+pub fn name_for(package_id: &str) -> Option<&'static str> {
+    entry_for(package_id).map(|app| app.name)
+}
+
 /// The keywords the registry knows for the app `package_id` — empty for an
 /// app it does not list.
 #[must_use]

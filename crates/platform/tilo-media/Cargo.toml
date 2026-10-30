@@ -114,9 +114,6 @@ objc2-media-player = { version = "0.3", default-features = false, features = ["s
 wasm-bindgen = "=0.2.108"
 
 [dev-dependencies]
-# The decode probe example prints pipeline diagnostics; the same subscriber the
-# rest of the workspace uses, so log filtering behaves identically.
-tracing-subscriber.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 tempfile.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }

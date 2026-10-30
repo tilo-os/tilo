@@ -7,7 +7,7 @@
 //! readback. Its schema is printed on stdout.
 
 use std::fs;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -559,12 +559,9 @@ pub fn write(destination: &Path, result: &Value) -> Result<()> {
         }) && !destination.is_symlink(),
         "proof output directory is missing or unsafe",
     )?;
-    let temporary = destination.with_extension("tmp");
     let mut text = Dumps::CANONICAL.dumps(result);
     text.push('\n');
-    fs::write(&temporary, text)?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&temporary, destination)?;
+    tilo_files::native::atomic::write_with_mode(destination, text.as_bytes(), 0o600)?;
     Ok(())
 }
 

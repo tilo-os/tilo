@@ -175,6 +175,7 @@ impl Broker {
             .await
             .expect("the window joins its record");
         let action = runtime_collab::ExportedAction {
+            state: tilo_actions::ActionState::default(),
             resource: format!("note:{record}"),
             semantic_identity: None,
             action: "rename".into(),

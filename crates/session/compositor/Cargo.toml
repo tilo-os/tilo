@@ -1,0 +1,59 @@
+[package]
+name = "tilo-compositor"
+description = "Tilo's Wayland compositor: outputs, input, the composited scene of client and hosted surfaces, and the Wayland protocols. Window policy and surface apps plug in through traits; no shell surface code lives here."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The protocol server, the desktop element model and the renderers: pixman
+# composites headless outputs on the CPU, GLES real ones; the TTY backend's
+# session, udev, libinput and KMS (DrmCompositor) come from smithay too, as
+# does the X11 window of the nested development backend. renderer_multi
+# lets the primary GPU render for displays on other GPUs.
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "desktop",
+    "renderer_pixman",
+    "renderer_gl",
+    "renderer_multi",
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "backend_x11",
+    "xwayland",
+] }
+# Turns an output's ICC profile into the lookup table its colour pass reads.
+qcms.workspace = true
+tracing.workspace = true
+# Percentiles of the frame pacing it logs.
+tilo-frame-metrics = { path = "../frame-metrics" }
+# Monitors are known by their EDID identity, which a layout follows
+# between ports.
+settings-store = { path = "../../system/settings-store" }
+tilo-wayland-ext = { path = "../wayland-ext" }
+# Xwayland's drag-and-drop (XDND) on a connection of the compositor's own;
+# smithay's window manager speaks selections but not XDND.
+x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
+# Named pointer shapes from the XCursor theme.
+xcursor = "0.3"
+# A kept copy is known by its bytes.
+blake3.workspace = true
+# Reading a selection takes its pipe non-blocking, so an app that is slow to
+# answer holds up no frame.
+rustix = { workspace = true, features = ["fs"] }
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tempfile.workspace = true
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
+wayland-client.workspace = true
+wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+
+[lints]
+workspace = true

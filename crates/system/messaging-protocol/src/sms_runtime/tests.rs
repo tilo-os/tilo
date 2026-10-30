@@ -5,11 +5,11 @@
 )]
 
 use std::collections::HashMap;
-use std::io::BufRead;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tilo_test_env::PrivateBus;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::*;
@@ -20,42 +20,6 @@ const MODEM_PATH: &str = "/org/freedesktop/ModemManager1/Modem/7";
 const SIM_PATH: &str = "/org/freedesktop/ModemManager1/SIM/7";
 const MESSAGE_PATH: &str = "/org/freedesktop/ModemManager1/SMS/9";
 const ICCID: &str = "8901000000000000001";
-
-struct Bus {
-    child: std::process::Child,
-    address: String,
-    _root: tempfile::TempDir,
-}
-impl Bus {
-    fn start() -> Self {
-        let root = tempfile::tempdir().unwrap();
-        let mut child = std::process::Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                root.path().join("bus").display()
-            ))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("builder provides private dbus-daemon fixture");
-        let mut address = String::new();
-        std::io::BufReader::new(child.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty());
-        Self {
-            child,
-            address: address.trim().into(),
-            _root: root,
-        }
-    }
-}
-impl Drop for Bus {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 enum Fault {
@@ -255,19 +219,19 @@ impl Sms {
 }
 
 struct Fixture {
-    bus: Bus,
+    bus: PrivateBus,
     server: zbus::Connection,
     client: zbus::Connection,
     state: Arc<Mutex<Evidence>>,
 }
 impl Fixture {
     async fn new() -> Self {
-        let bus = Bus::start();
+        let bus = PrivateBus::start();
         let state = Arc::new(Mutex::new(Evidence {
             iccid: ICCID.into(),
             ..Evidence::default()
         }));
-        let server = zbus::connection::Builder::address(bus.address.as_str())
+        let server = zbus::connection::Builder::address(bus.address())
             .unwrap()
             .name("org.freedesktop.ModemManager1")
             .unwrap()
@@ -282,7 +246,7 @@ impl Fixture {
             .build()
             .await
             .unwrap();
-        let client = zbus::connection::Builder::address(bus.address.as_str())
+        let client = zbus::connection::Builder::address(bus.address())
             .unwrap()
             .build()
             .await
@@ -1175,7 +1139,7 @@ async fn subscribed_sms_daemon_replacement_never_rebinds_and_fails_owned_receive
         .release_name("org.freedesktop.ModemManager1")
         .await
         .unwrap();
-    let replacement = zbus::connection::Builder::address(fixture.bus.address.as_str())
+    let replacement = zbus::connection::Builder::address(fixture.bus.address())
         .unwrap()
         .name("org.freedesktop.ModemManager1")
         .unwrap()

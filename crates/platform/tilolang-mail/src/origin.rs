@@ -153,6 +153,77 @@ impl ImapOrigin {
         true
     }
 
+    /// What the connector reported since the last frame: what changed, what
+    /// became unreachable and how what was asked of it ended.
+    fn take_events(&mut self, host: &Host, now: &str) -> Polled {
+        let mut polled = Polled::default();
+        for event in self.connector.events() {
+            match event {
+                Event::Changes(changes) => {
+                    self.trouble.remove(&changes.account);
+                    polled.wrote |= self.take_in(host, now, &changes);
+                }
+                Event::Found { account, messages } => {
+                    let changes = Changes {
+                        account,
+                        mailbox: String::new(),
+                        messages,
+                        flags: Vec::new(),
+                    };
+                    polled.wrote |= self.take_in(host, now, &changes);
+                }
+                Event::Arrived { account } => {
+                    if self.connector.changes(&account, "inbox").is_none() {
+                        tracing::warn!(account, "new mail arrived and was not asked for");
+                    }
+                }
+                Event::Unreachable { account, reason } => {
+                    self.trouble.insert(account, reason);
+                }
+                Event::Accepted(request) => match self.pending.remove(&request) {
+                    Some(Pending::Send(payload)) => {
+                        self.sends.insert(payload, Sending::Gone);
+                        polled.settle = true;
+                    }
+                    Some(Pending::Write { .. }) | None => {}
+                },
+                Event::Refused { request, reason } => match self.pending.remove(&request) {
+                    Some(Pending::Send(payload)) => {
+                        self.sends.insert(payload, Sending::Refused(reason));
+                        polled.settle = true;
+                    }
+                    Some(Pending::Write {
+                        account,
+                        key,
+                        before,
+                    }) => {
+                        self.trouble.insert(account.clone(), reason);
+                        self.put_back(host, now, &account, &key, &before);
+                        polled.wrote = true;
+                    }
+                    None => {}
+                },
+                Event::Unsent { request, reason } => match self.pending.remove(&request) {
+                    Some(Pending::Send(payload)) => {
+                        self.sends.insert(payload, Sending::Unsent(reason));
+                        polled.settle = true;
+                    }
+                    Some(Pending::Write {
+                        account,
+                        key,
+                        before,
+                    }) => {
+                        self.trouble.insert(account.clone(), reason);
+                        self.put_back(host, now, &account, &key, &before);
+                        polled.wrote = true;
+                    }
+                    None => {}
+                },
+            }
+        }
+        polled
+    }
+
     /// This origin, trying again what could not reach its server whenever `reconnected` is set
     /// (the device came online again) and it is woken.
     #[must_use]
@@ -818,36 +889,6 @@ fn seconds_of(iso: &str) -> u64 {
     }
 }
 
-impl ImapOrigin {
-    /// The connector did not do `request`, for `reason`: a send ends as `outcome` says; a
-    /// write is put back, and its account shows why.
-    fn not_done(
-        &mut self,
-        cx: &OriginCx<'_>,
-        request: &Request,
-        reason: String,
-        outcome: fn(String) -> Sending,
-        polled: &mut Polled,
-    ) {
-        match self.pending.remove(request) {
-            Some(Pending::Send(payload)) => {
-                self.sends.insert(payload, outcome(reason));
-                polled.settle = true;
-            }
-            Some(Pending::Write {
-                account,
-                key,
-                before,
-            }) => {
-                self.trouble.insert(account.clone(), reason);
-                self.put_back(cx.host, &cx.now, &account, &key, &before);
-                polled.wrote = true;
-            }
-            None => {}
-        }
-    }
-}
-
 impl Origin for ImapOrigin {
     fn name(&self) -> &'static str {
         "imap"
@@ -887,44 +928,9 @@ impl Origin for ImapOrigin {
             self.state = Some(state);
             polled.wrote = true;
         }
-        for event in self.connector.events() {
-            match event {
-                Event::Changes(changes) => {
-                    self.trouble.remove(&changes.account);
-                    polled.wrote |= self.take_in(cx.host, &cx.now, &changes);
-                }
-                Event::Found { account, messages } => {
-                    let changes = Changes {
-                        account,
-                        mailbox: String::new(),
-                        messages,
-                        flags: Vec::new(),
-                    };
-                    polled.wrote |= self.take_in(cx.host, &cx.now, &changes);
-                }
-                Event::Arrived { account } => {
-                    if self.connector.changes(&account, "inbox").is_none() {
-                        tracing::warn!(account, "new mail arrived and was not asked for");
-                    }
-                }
-                Event::Unreachable { account, reason } => {
-                    self.trouble.insert(account, reason);
-                }
-                Event::Accepted(request) => match self.pending.remove(&request) {
-                    Some(Pending::Send(payload)) => {
-                        self.sends.insert(payload, Sending::Gone);
-                        polled.settle = true;
-                    }
-                    Some(Pending::Write { .. }) | None => {}
-                },
-                Event::Refused { request, reason } => {
-                    self.not_done(cx, &request, reason, Sending::Refused, &mut polled);
-                }
-                Event::Unsent { request, reason } => {
-                    self.not_done(cx, &request, reason, Sending::Unsent, &mut polled);
-                }
-            }
-        }
+        let events = self.take_events(cx.host, &cx.now);
+        polled.wrote |= events.wrote;
+        polled.settle |= events.settle;
         // The accounts as the connector says them now (one in another process says them
         // with its first answers), then what to ask of each.
         polled.wrote |= self.add_accounts(cx.host, &cx.now);

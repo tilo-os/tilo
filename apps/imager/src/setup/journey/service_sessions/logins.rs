@@ -233,7 +233,7 @@ impl Selection {
                     .with_rhythm(Rhythm::Related)
                     .push(selection)
                     .push(Box::new(
-                        section.on_toggle(move |expanded| toggle(id.clone(), expanded)),
+                        section.on_expand(move |expanded| toggle(id.clone(), expanded)),
                     )),
             ));
         }

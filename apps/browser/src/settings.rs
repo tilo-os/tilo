@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — the durable preferences (ad-blocking, clear-on-exit,
-//!    search engine, homepage) as the [`Browser`]
+//!    search engine, homepage) as the [`Browser`](crate::resource::Browser)
 //!    resource reads them from its document.
 //!
 //!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local
@@ -25,19 +25,20 @@ use ui::widget::{
     Toggle, Widget,
 };
 
-use crate::resource::Browser;
-use ui::tilo_resource::{self, Model, Path, Refusal};
+use ui::tilo_resource::{self, Model, Refusal};
 
 /// The doors the pane's controls use, injected by Browser. Preferences are
-/// field edits submitted through the resource's dispatcher; the
-/// one-shot effects and closing the pane are the published operations, so
-/// pointer, keyboard and assistive-tech changes take the same path as Ctrl+K
-/// and agents.
+/// the resource's field edits; the one-shot effects and closing the pane are
+/// the published operations, so pointer, keyboard and assistive-tech changes
+/// take the same path as Ctrl+K and agents. A missing binding leaves its
+/// control inert (a pane nobody can edit through).
 #[derive(Clone, Default)]
 pub struct SettingsActionBindings {
-    /// The resource's dispatcher; `None` leaves the preference controls
-    /// inert (a pane nobody can edit through).
-    pub edits: Option<ui::framework::Dispatcher<Browser>>,
+    /// Sets the homepage to the address typed, once it is one.
+    pub homepage: Option<ui::tilo_actions::ActionBinding<String>>,
+    pub search_engine: Option<ui::tilo_actions::ActionBinding<String>>,
+    pub adblock: Option<ui::tilo_actions::ActionBinding<bool>>,
+    pub clear_on_exit: Option<ui::tilo_actions::ActionBinding<bool>>,
     pub clear_history: Option<ui::tilo_actions::ActionBinding<()>>,
     pub clear_site_data: Option<ui::tilo_actions::ActionBinding<()>>,
     /// Close is presentation-only, but it is still a canonical Browser view
@@ -276,10 +277,12 @@ impl SettingsPane {
                     &self.presentation.homepage,
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
-                    self.actions.edits.clone(),
-                    Browser::paths().preferences.homepage,
+                    self.actions.homepage.clone(),
                 ),
-                search_engine_row(&self.presentation.search_engine, self.actions.edits.clone()),
+                search_engine_row(
+                    &self.presentation.search_engine,
+                    self.actions.search_engine.clone(),
+                ),
             ]),
         );
 
@@ -292,8 +295,7 @@ impl SettingsPane {
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
-                    self.actions.edits.clone(),
-                    Browser::paths().preferences.adblock_enabled,
+                    self.actions.adblock.clone(),
                 )),
             ),
             setting_row_described(
@@ -303,8 +305,7 @@ impl SettingsPane {
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
-                    self.actions.edits.clone(),
-                    Browser::paths().preferences.clear_on_exit,
+                    self.actions.clear_on_exit.clone(),
                 )),
             ),
             setting_row_described(
@@ -416,17 +417,14 @@ fn setting_row_described(label: &str, description: &str, control: El) -> El {
 /// The search engine, chosen by name.
 fn search_engine_row(
     state: &ui::LocalState<String>,
-    edits: Option<ui::framework::Dispatcher<Browser>>,
+    choose: Option<ui::tilo_actions::ActionBinding<String>>,
 ) -> El {
     let mut chooser = ui::widget::Dropdown::from_state(Vec::new(), state)
         .with_id("settings.search_engine")
         .with_accessible_name("Search engine");
     chooser.set_value_options(search_engine_choices(&state.with(Clone::clone)));
-    let path = Browser::paths().preferences.search_engine;
-    let chooser = match edits {
-        Some(edits) => {
-            chooser.on_change(move |template| edits.submit(path.replace(template.to_owned())))
-        }
+    let chooser = match choose {
+        Some(choose) => chooser.on_action(choose),
         None => chooser,
     };
     setting_row_described(
@@ -475,24 +473,19 @@ pub(crate) fn homepage_of(value: &str) -> Option<String> {
 }
 
 /// A labelled full-width text field: a caption above a [`TextInput`] whose
-/// edits set the homepage at `path` to the address typed, once it is one.
+/// edits run `edit`.
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
-    edits: Option<ui::framework::Dispatcher<Browser>>,
-    path: Path<Browser, String>,
+    edit: Option<ui::tilo_actions::ActionBinding<String>>,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
-    let input = match edits {
-        Some(edits) => input.on_change(move |value| {
-            if let Some(homepage) = homepage_of(value) {
-                edits.submit(path.replace(homepage));
-            }
-        }),
+    let input = match edit {
+        Some(edit) => input.on_action(edit),
         None => input,
     };
     Box::new(
@@ -504,13 +497,9 @@ fn field_block(
     )
 }
 
-fn preference_toggle(
-    toggle: Toggle,
-    edits: Option<ui::framework::Dispatcher<Browser>>,
-    path: Path<Browser, bool>,
-) -> Toggle {
-    match edits {
-        Some(edits) => toggle.on_change(move |enabled| edits.submit(path.set(enabled))),
+fn preference_toggle(toggle: Toggle, set: Option<ui::tilo_actions::ActionBinding<bool>>) -> Toggle {
+    match set {
+        Some(set) => toggle.on_action(set),
         None => toggle,
     }
 }

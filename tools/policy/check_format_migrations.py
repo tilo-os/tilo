@@ -10,7 +10,7 @@ updates still holds a file of an older version, so the chain only grows:
 ``check`` (the repository policy suite) fails when a declaration's
 ``oldest`` is not a plain number, which the comparison below needs.
 
-``against BASE`` (t's ``changes`` check, against main) fails when a format
+``against BASE`` (run against main before landing) fails when a format
 declared at BASE now brings up fewer versions: its ``oldest`` rose, or the
 declaration is gone while its file may still be on disk.
 

@@ -1,11 +1,9 @@
 //! Terminal controller withdrawal uses the existing revoke wire action. It can
 //! remove only the exact prior lease on its certified route, never admit input.
 use super::{InputLease, PersonalFabricAction, SpatialInputState, spatial_input_state};
-use crate::shell::{
-    device_fabric::MAX_DEVICES,
-    network::{AuthenticatedPersonalRoute, ShellNetwork},
-};
+use crate::shell::network::{AuthenticatedPersonalRoute, ShellNetwork};
 use std::collections::BTreeMap;
+use tilo_device_fabric::MAX_DEVICES;
 use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Default)]

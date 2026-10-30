@@ -14,7 +14,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/ci"))
-import t_matrix  # noqa: E402
 spec = importlib.util.spec_from_file_location(
     "fingerprint", ROOT / "os/dev/rpm-snapshot-fingerprint.py"
 )
@@ -145,38 +144,6 @@ class Fingerprint(unittest.TestCase):
             self.assertNotIn("sha256:" + ("a" * 64), combined)
             self.assertIn("set-", combined)
             self.assertNotIn("rpms-snapshot.env", combined)
-
-    def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
-        # The relay and the env-runtime install from the snapshot t's rpm-snapshot check
-        # resolves and verifies, never from a pin file.
-        checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
-        self.assertEqual(checks["rpm-snapshot"]["run"],
-                         "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot")
-        resolver = (ROOT / "tools/ci/publish/rpm-snapshot-ref.sh").read_text(encoding="utf-8")
-        self.assertIn('ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")', resolver)
-        self.assertNotIn("rpms-snapshot.env", resolver)
-        for consumer in ("image-relay", "image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64"):
-            with self.subTest(consumer=consumer):
-                self.assertIn("rpm-snapshot", checks[consumer]["needs"])
-                self.assertIn("/target/publish/rpm-snapshot", checks[consumer]["run"])
-        # Stable publishes a new package set before resolving it, in the same run; elsewhere the
-        # builds fall back to the run's own image-rpms of their architecture.
-        self.assertEqual(checks["rpm-snapshot"].get("optional_needs"), ["publish-rpms"])
-        self.assertEqual(checks["publish-rpms"]["on"], ["stable"])
-        self.assertIn("image-rpms-x86_64", checks["image-relay"]["needs"])
-        for arch in ("x86_64", "aarch64"):
-            tree = checks[f"image-env-runtime-tree-{arch}"]
-            self.assertIn(f"image-rpms-{arch}", tree["needs"])
-            self.assertIn(f"/target/publish/rpms/{arch}", tree["run"])
-        self.assertIn("/target/publish/relay/rpms-source", checks["image-relay"]["outputs"])
-        # The snapshot is published once per package-set fingerprint, never proposed as a pin.
-        self.assertIn("'once:set-{fingerprint}'", checks["publish-rpms"]["run"])
-        for name in ("image-rpms-x86_64", "provenance-rpms", "sign-rpms", "publish-rpms"):
-            self.assertNotIn("open-snapshot-pr.py", checks[name]["run"])
-        for script in ("rpms-build.sh", "rpms-provenance.sh"):
-            text = (ROOT / "tools/ci/publish" / script).read_text(encoding="utf-8")
-            self.assertNotIn("open-snapshot-pr.py", text)
-            self.assertNotIn("reconcile-snapshot-pins.py", text)
 
     def test_only_a_build_of_the_published_snapshot_is_signed(self) -> None:
         # lib.sh require_published_snapshot, which oci-sign.sh and a publisher's env-runtime

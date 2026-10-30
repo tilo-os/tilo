@@ -124,7 +124,7 @@ impl PathBar {
                 self.home.as_deref(),
                 &self.workspace_roots,
             ))
-            .on_navigate(move |index| {
+            .on_view("path_bar", move |index| {
                 if let Some(target) = goto.get(index) {
                     push(&sink, FileCommand::Navigate(target.clone()));
                 }
@@ -204,6 +204,15 @@ impl Widget for PathBar {
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
         visitor(&self.crumbs);
         true
+    }
+
+    /// The trail, for what it publishes: going to a segment.
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.crumbs]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.crumbs]
     }
 
     fn build_layout(

@@ -356,29 +356,21 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        self.undo_as(None, current_focused_idx, current_metadata, None)
+        self.undo_as(None, current_focused_idx, current_metadata)
     }
 
     /// Undo on behalf of `author`: the entry point every interactive Ctrl+Z
     /// takes. With an author, undo skips past other people's actions, so one
     /// collaborator never reverts another's work; `None` — an app running
-    /// with no identity at all — keeps the plain LIFO behaviour. With
-    /// `registry`, a step that queued an outside consequence is taken back
-    /// through its verified inverse action.
+    /// with no identity at all — keeps the plain LIFO behaviour.
     pub fn undo_as(
         &mut self,
         author: Option<&UserId>,
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        self.undo.undo_as(
-            &mut self.doc,
-            author,
-            current_focused_idx,
-            current_metadata,
-            registry,
-        )
+        self.undo
+            .undo_as(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
     /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a
@@ -388,15 +380,9 @@ impl State {
         author: Option<&UserId>,
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
-        registry: Option<&tilo_actions::ActionRegistry>,
     ) -> Option<UndoEntry> {
-        self.undo.redo_as(
-            &mut self.doc,
-            author,
-            current_focused_idx,
-            current_metadata,
-            registry,
-        )
+        self.undo
+            .redo_as(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
     /// Redo the most recently undone action by inverting the inverse change
@@ -409,7 +395,7 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        self.redo_as(None, current_focused_idx, current_metadata, None)
+        self.redo_as(None, current_focused_idx, current_metadata)
     }
 
     /// Serializes the entire application CRDT state into a byte vector.
@@ -1168,7 +1154,7 @@ mod tests {
 
             // Alice undoes — only "a" is reverted; Bob's "b" stays in the doc.
             let popped = state
-                .undo_as(Some(&UserId("alice".into())), None, None, None)
+                .undo_as(Some(&UserId("alice".into())), None, None)
                 .expect("alice's entry");
             assert_eq!(popped.author, Some(UserId("alice".into())));
             assert!(
@@ -1196,7 +1182,7 @@ mod tests {
             state.commit_action_authored(None, None, Some(bob));
 
             let popped = state
-                .undo_as(Some(&alice), None, None, None)
+                .undo_as(Some(&alice), None, None)
                 .expect("alice has an action to undo");
             assert_eq!(
                 popped.author,
@@ -1223,7 +1209,7 @@ mod tests {
             state.commit_action(None, None);
 
             state
-                .undo_as(None, None, None, None)
+                .undo_as(None, None, None)
                 .expect("undo pops the newest");
             assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
             assert!(state.doc.get(&ROOT, "a").unwrap().is_some());
@@ -1241,13 +1227,13 @@ mod tests {
             state.doc.put(&ROOT, "b", 1).unwrap();
             state.commit_action_authored(None, None, Some(bob.clone()));
 
-            state.undo_as(Some(&bob), None, None, None).unwrap();
+            state.undo_as(Some(&bob), None, None).unwrap();
             assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
 
             // Alice hits Ctrl+Y. There is nothing of hers to redo, and Bob's
             // undone action must stay undone.
             assert!(
-                state.redo_as(Some(&alice), None, None, None).is_none(),
+                state.redo_as(Some(&alice), None, None).is_none(),
                 "alice has nothing to redo"
             );
             assert!(
@@ -1256,7 +1242,7 @@ mod tests {
             );
 
             state
-                .redo_as(Some(&bob), None, None, None)
+                .redo_as(Some(&bob), None, None)
                 .expect("bob redoes his own");
             assert!(state.doc.get(&ROOT, "b").unwrap().is_some());
         }
@@ -1275,7 +1261,7 @@ mod tests {
             );
             assert!(!state.can_redo_as(Some(&a)));
             assert!(
-                state.undo_as(Some(&a), None, None, None).is_none(),
+                state.undo_as(Some(&a), None, None).is_none(),
                 "and undo agrees"
             );
 
@@ -1284,13 +1270,13 @@ mod tests {
             assert!(!state.can_redo_as(Some(&a)));
 
             assert!(
-                state.undo_as(Some(&a), None, None, None).is_some(),
+                state.undo_as(Some(&a), None, None).is_some(),
                 "can_undo promised an undo; it has to be there"
             );
             assert!(!state.can_undo_as(Some(&a)), "the stack is empty again");
             assert!(state.can_redo_as(Some(&a)), "and the action is redoable");
 
-            assert!(state.redo_as(Some(&a), None, None, None).is_some());
+            assert!(state.redo_as(Some(&a), None, None).is_some());
             assert!(state.can_undo_as(Some(&a)));
             assert!(!state.can_redo_as(Some(&a)));
         }
@@ -1308,7 +1294,7 @@ mod tests {
                 "Bob has performed no action here"
             );
             assert!(
-                state.undo_as(Some(&bob()), None, None, None).is_none(),
+                state.undo_as(Some(&bob()), None, None).is_none(),
                 "and undo declines for Bob — the query must match"
             );
             // With no identity at all the history is plain LIFO, and the query
@@ -1393,7 +1379,7 @@ mod tests {
             let mut state = State::new();
             let a = alice();
             type_action(&mut state, "body", "hello", &a);
-            state.undo_as(Some(&a), None, None, None).unwrap();
+            state.undo_as(Some(&a), None, None).unwrap();
 
             let s = state.undo_status(Some(&a));
             assert!(!s.can_undo && s.can_redo);
@@ -1416,11 +1402,11 @@ mod tests {
             let after_commit = state.history_revision();
             assert_ne!(after_commit, start, "committing an action moves it");
 
-            state.undo_as(Some(&a), None, None, None).unwrap();
+            state.undo_as(Some(&a), None, None).unwrap();
             let after_undo = state.history_revision();
             assert_ne!(after_undo, after_commit, "undo moves it");
 
-            state.redo_as(Some(&a), None, None, None).unwrap();
+            state.redo_as(Some(&a), None, None).unwrap();
             let after_redo = state.history_revision();
             assert_ne!(after_redo, after_undo, "redo moves it");
 
@@ -1474,7 +1460,7 @@ mod tests {
             state.undo.set_revision(u64::MAX);
 
             assert!(
-                state.undo_as(Some(&author), None, None, None).is_none(),
+                state.undo_as(Some(&author), None, None).is_none(),
                 "undo must fail rather than reuse an old revision"
             );
             assert_eq!(state.doc.get_heads(), heads_before_undo);
@@ -1500,14 +1486,12 @@ mod tests {
             let before = doc.get_heads();
             doc.put(ROOT, "value", 1).unwrap();
             history.record_committed_action_in(&mut doc, before.clone(), None, None, alice(), 11);
-            history
-                .undo_in(&mut doc, &alice(), 11, None, None, None)
-                .unwrap();
+            history.undo_in(&mut doc, &alice(), 11, None, None).unwrap();
             history.set_revision(u64::MAX);
             let heads = doc.get_heads();
             assert!(
                 history
-                    .redo_in(&mut doc, &alice(), 11, None, None, None)
+                    .redo_in(&mut doc, &alice(), 11, None, None)
                     .is_none()
             );
             assert!(!history.restore_to_heads_in(&mut doc, &before, None, None, alice(), 11));

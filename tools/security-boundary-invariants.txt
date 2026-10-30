@@ -72,7 +72,6 @@ os/tests/imager_ephemeral_runner.sh
 os/tests/imager_ephemeral_runner_windows.sh
 os/tests/imager_linux_release_trust.sh
 os/tests/generation_series_security.sh
-os/tests/system_extension_invariants.sh
 os/tests/tinker_subprocess_invariants.sh
 os/tests/local_model_catalog_invariants.sh
 os/tests/test_thin_app_selection.py

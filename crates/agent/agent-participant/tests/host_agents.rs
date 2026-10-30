@@ -78,11 +78,11 @@ const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
 
 struct Hosted {
-    /// The host's device: what it writes itself is its own.
-    host: [u8; 32],
     relay: Relay,
     web: WebHandle,
     agents: AgentHost,
+    /// The host's device, whose own documents the room holds too.
+    device: [u8; 32],
 }
 
 async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
@@ -130,10 +130,10 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
         .await
         .unwrap();
     Hosted {
-        host: host.cert.device_public_key,
         relay,
         web,
         agents,
+        device: host.cert.device_public_key,
     }
 }
 
@@ -146,11 +146,11 @@ impl Hosted {
             .retained(workspace())
             .await
             .unwrap();
-        let (readable, _) = common::retained_documents(
-            &self.host,
+        let (readable, _) = common::member_documents(
             retained
                 .into_iter()
                 .map(|retained| (retained.author, retained.body)),
+            &self.device,
         );
         assert_eq!(readable, 0, "nothing reaches the host in the clear");
         drop(self.web);

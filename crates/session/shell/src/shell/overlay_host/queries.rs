@@ -1120,18 +1120,6 @@ impl ShellOverlayHost {
         );
     }
 
-    /// The rows the palette shows now, as (title, kind, provider), for
-    /// tests.
-    #[cfg(test)]
-    pub(crate) fn search_rows_for_tests(
-        &self,
-    ) -> Vec<(String, crate::shell::search::ResourceKind, String)> {
-        self.search_results
-            .iter()
-            .map(|row| (row.title.clone(), row.kind.clone(), row.provider_id.clone()))
-            .collect()
-    }
-
     /// Hand `invocation` to the app of tab `tab`'s window, as a row chosen
     /// in its search does: how a scene makes what the app holds through
     /// the app's own actions. `false` when no window here shows the tab.

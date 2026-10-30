@@ -229,7 +229,7 @@ pub fn parse_peer_sync_disabled(args: &[&str]) -> bool {
 const REMOVED_RUN_MODES: &[(&str, &str)] = &[(
     "--portal-server-only",
     "--portal-server-only was removed; the compositor serves the xdg-desktop-portal \
-     backend in-process (docs/architecture/security.md). Disable any unit that still passes it.",
+     backend in-process. Disable any unit that still passes it.",
 )];
 
 /// Why `--mode hosted` is refused. The hosted loop kept its own copy of the
@@ -611,7 +611,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{args:?} must be refused"));
             assert!(
                 refusal.contains("--portal-server-only was removed")
-                    && refusal.contains("docs/architecture/security.md"),
+                    && refusal.contains("backend in-process"),
                 "the refusal names the flag and where the portal lives now: {refusal}"
             );
         }

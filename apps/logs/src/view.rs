@@ -20,10 +20,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use ui::framework::Actions;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::tilo_actions::ActionBinding;
+use ui::tilo_resource::{Atom, Path};
 use ui::tokens::Spacing;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
@@ -34,6 +36,7 @@ use ui::{LocalState, TextRole};
 
 use crate::journal::JournalLoadError;
 use crate::model::{Filter, LogEntry, Priority};
+use crate::resource::Logs;
 
 /// The dropdown value that means "no constraint" on a facet.
 const ALL: &str = "all";
@@ -73,9 +76,6 @@ fn stable_key(entry_id: &str) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Request {
     Search(String),
-    Unit(String),
-    Boot(String),
-    Priority(i64),
     Select(String),
     ClearFilters,
 }
@@ -211,19 +211,23 @@ pub(crate) struct JournalPane {
 }
 
 impl JournalPane {
-    pub(crate) fn new(shared: Shared) -> Self {
-        let unit = Self::facet(&shared, "logs.unit", "Unit", Request::Unit);
-        let boot = Self::facet(&shared, "logs.boot", "Boot", Request::Boot);
-        let mut severity = {
-            let requests = Rc::clone(&shared);
-            Dropdown::from_state(Vec::new(), &LocalState::new(String::new()))
-                .with_id("logs.severity")
-                .caption("Severity")
-                .on_change(move |value| {
-                    if let Ok(level) = value.parse::<i64>() {
-                        requests.borrow_mut().push(Request::Priority(level));
-                    }
-                })
+    /// The pane over `shared`, its filters bound to the journal's field
+    /// edits through `actions`.
+    pub(crate) fn new(shared: Shared, actions: &Actions<Logs>) -> Self {
+        let paths = Logs::paths();
+        let unit = Self::facet(actions, "logs.unit", "Unit", paths.unit);
+        let boot = Self::facet(actions, "logs.boot", "Boot", paths.boot);
+        let severity = Dropdown::from_state(Vec::new(), &LocalState::new(String::new()))
+            .with_id("logs.severity")
+            .caption("Severity");
+        let mut severity = match actions.set_binding(paths.severity, |value: String| {
+            value
+                .parse::<i64>()
+                .map(Priority::from_level)
+                .map_err(|_| format!("`{value}` is not a severity"))
+        }) {
+            Some(binding) => severity.on_action(binding),
+            None => severity.with_enabled(false),
         };
         severity.set_value_options(severity_options());
         Self {
@@ -246,15 +250,18 @@ impl JournalPane {
         }
     }
 
-    fn facet(shared: &Shared, id: &str, caption: &str, request: fn(String) -> Request) -> Dropdown {
-        let requests = Rc::clone(shared);
-        Dropdown::from_state(Vec::new(), &LocalState::new(ALL.to_owned()))
+    /// A facet's picker, setting the field at `path`; "all" clears it.
+    fn facet(actions: &Actions<Logs>, id: &str, caption: &str, path: Path<Logs, Atom>) -> Dropdown {
+        let picker = Dropdown::from_state(Vec::new(), &LocalState::new(ALL.to_owned()))
             .with_id(id)
-            .caption(caption)
-            .on_change(move |value| {
-                let value = if value == ALL { "" } else { value };
-                requests.borrow_mut().push(request(value.to_owned()));
-            })
+            .caption(caption);
+        let set = actions.set_binding(path, |value: String| {
+            Ok(Atom(if value == ALL { String::new() } else { value }))
+        });
+        match set {
+            Some(set) => picker.on_action(set),
+            None => picker.with_enabled(false),
+        }
     }
 
     /// Adopt what the app published since the last look.

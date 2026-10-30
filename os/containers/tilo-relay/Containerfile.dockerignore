@@ -38,7 +38,6 @@ experiments
 # Prose does not participate in either relay binary.
 docs
 AGENTS.md
-DEVELOPMENT.md
 
 # Operator documentation and fixtures are validated before the image build;
 # only the entrypoint and systemd unit are copied into the image.

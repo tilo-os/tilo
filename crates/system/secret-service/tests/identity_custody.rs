@@ -27,7 +27,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::BufRead;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -46,8 +45,7 @@ const NAME: &str = "org.freedesktop.secrets";
 /// directories the service run on it uses.
 struct Bus {
     root: tempfile::TempDir,
-    daemon: Child,
-    address: String,
+    daemon: tilo_test_env::PrivateBus,
     service: Option<Child>,
 }
 
@@ -67,44 +65,10 @@ impl Bus {
             std::fs::create_dir(&path).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let config = root.path().join("bus.conf");
-        std::fs::write(
-            &config,
-            format!(
-                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:path={}</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-"#,
-                root.path().join("run/bus").display()
-            ),
-        )
-        .unwrap();
-        let mut daemon = Command::new("dbus-daemon")
-            .arg(format!("--config-file={}", config.display()))
-            .args(["--nofork", "--print-address=1"])
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect(
-                "this test needs dbus-daemon (tools/ci/ensure-session-bus-tools.sh installs it)",
-            );
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().unwrap())
-            .read_line(&mut address)
-            .unwrap();
-        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
+        let daemon = tilo_test_env::PrivateBus::start_at(&root.path().join("run/bus"));
         Self {
             root,
             daemon,
-            address: address.trim().to_owned(),
             service: None,
         }
     }
@@ -113,12 +77,17 @@ impl Bus {
         self.root.path().join(name)
     }
 
+    /// What every client of this session passes as `DBUS_SESSION_BUS_ADDRESS`.
+    fn address(&self) -> &str {
+        self.daemon.address()
+    }
+
     fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut command = Command::new(program);
         command
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("DBUS_SESSION_BUS_ADDRESS", &self.address)
+            .env("DBUS_SESSION_BUS_ADDRESS", self.address())
             .env("XDG_RUNTIME_DIR", self.path("run"))
             .env("XDG_DATA_HOME", self.path("data"))
             .env("HOME", self.path("home"))
@@ -209,8 +178,6 @@ impl Drop for Bus {
             let _ = service.kill();
             let _ = service.wait();
         }
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
     }
 }
 
@@ -301,7 +268,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     // This process is the client: the production `tilo-secrets` backend
     // reads the session bus address from the environment.
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("DBUS_SESSION_BUS_ADDRESS", &bus.address);
+    env.set("DBUS_SESSION_BUS_ADDRESS", bus.address());
 
     // 1. No Secret Service answers: the key goes to the private file, and
     //    the record and Settings say so.

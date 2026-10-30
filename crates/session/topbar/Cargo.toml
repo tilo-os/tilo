@@ -7,7 +7,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-durable-store = { path = "../../system/durable-store" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
 # A framework app: the bar's resource, effects and surface.

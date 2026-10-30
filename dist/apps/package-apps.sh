@@ -11,8 +11,7 @@ CARGO_ENCODED_RUSTFLAGS=$(python3 "$repo_root/tools/apps/app_package_isa.py" fla
     --root "$repo_root" --arch "$native_arch")
 export CARGO_ENCODED_RUSTFLAGS
 # TILO_APP_RUNTIME_ONLY=1 (with TILO_APP_COMPILE_ONLY=1) compiles what every selection shares, the
-# runtime and its engines in the default collection's graph, and the packing tools, but no app
-# (tools/apps/t-release.sh thin-runtime).
+# runtime and its engines in the default collection's graph, and the packing tools, but no app.
 runtime_only=${TILO_APP_RUNTIME_ONLY:-}
 case $runtime_only in
     '') apps=${TILO_RELEASE_APPS:?space-separated app directory names are required} ;;
@@ -53,7 +52,7 @@ if [[ -n $prebuilt ]]; then
     target_dir=$(realpath -e "$prebuilt")
 fi
 # The profile the packing tools (tilo-app-package, tilo-runtime-bundle) are built with. A release
-# builds them optimised; the size checks (tools/apps/t-release.sh sizes, app-size) take `dev`, which
+# builds them optimised; the size checks take `dev`, which
 # packs the same bytes and builds in seconds where an optimised link takes minutes.
 tools_profile=${TILO_APP_TOOLS_PROFILE:-release}
 case $tools_profile in
@@ -63,8 +62,8 @@ case $tools_profile in
 esac
 release_dir=$target_dir/$tools_dir
 thin_app_dir=$target_dir/thin-app
-# TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run
-# (tools/apps/t-release.sh thin-runtime, whose outputs the size checks receive), so none is built.
+# TILO_APP_TOOLS_BUILT=1: the packing tools are already in $release_dir, built by an earlier run,
+# so none is built.
 tools_built=${TILO_APP_TOOLS_BUILT:-}
 case $tools_built in
     '') ;;

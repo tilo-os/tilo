@@ -2,7 +2,7 @@
 //! previous epoch's snapshot, producing one ordered changeset.
 //!
 //! Writers are never paused. The snapshot is the crash image of the room at
-//! one instant (V2 in `docs/architecture/storage.md` §10), and every byte
+//! one instant, and every byte
 //! that is hashed is read from it, never from the live file. Only records the
 //! journal names are examined, and within a changed file only the extents
 //! that differ from the previous snapshot are re-chunked.

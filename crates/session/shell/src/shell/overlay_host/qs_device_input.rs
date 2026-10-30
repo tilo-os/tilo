@@ -342,7 +342,7 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device)
                 if !device.is_local
                     && device.online
-                    && device.kind == crate::shell::device_fabric::DeviceKind::Phone
+                    && device.kind == tilo_device_fabric::DeviceKind::Phone
                     && self.qs_selected_source.is_none() =>
             {
                 Some((

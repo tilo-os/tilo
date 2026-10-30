@@ -432,6 +432,8 @@ fn assert_sidebar_and_list_assistive_activation() {
         );
     d.perform_a11y_action(row, &ui::a11y::Action::Activate)
         .unwrap();
+    // The row's choice runs as the table's published action, on the frame.
+    d.frame();
     assert_eq!(
         app(&mut d).selected(),
         Some(postgres.id),

@@ -6,32 +6,6 @@ use tilo_relay_session::client::{CertifiedAction, CertifiedActionEvent};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
-#[cfg(feature = "test-support")]
-#[derive(Clone)]
-pub struct ActionRegistrationBarrier {
-    reached: Arc<std::sync::atomic::AtomicBool>,
-    release: tokio::sync::watch::Receiver<bool>,
-}
-
-#[cfg(feature = "test-support")]
-impl ActionRegistrationBarrier {
-    pub fn new(
-        reached: Arc<std::sync::atomic::AtomicBool>,
-        release: tokio::sync::watch::Receiver<bool>,
-    ) -> Self {
-        Self { reached, release }
-    }
-
-    async fn wait(mut self) -> Result<(), ()> {
-        self.reached
-            .store(true, std::sync::atomic::Ordering::Release);
-        while !*self.release.borrow() {
-            self.release.changed().await.map_err(|_| ())?;
-        }
-        Ok(())
-    }
-}
-
 /// Host-owned current certificate/revocation authority. Implementations read
 /// the owner's explicit identity store on every check; this is never supplied
 /// by a wire request. Signature, expiry, device role, room membership and action
@@ -157,8 +131,6 @@ pub struct PeerActionQueue {
     permits: Arc<Semaphore>,
     transitions:
         tokio::sync::broadcast::Sender<(CertifiedAction, Option<tilo_actions::InvocationUpdate>)>,
-    /// Owner time retained by relay-served requests; see [`Self::with_policy_time`].
-    policy_time: Option<PolicyTime>,
     /// Signed actions this broker admitted while still fresh, across every
     /// attachment and reconnect, so a relay cannot deliver one twice.
     replay: Arc<std::sync::Mutex<tilo_delivery_protocol::peer_actions::ActionReplayWindow>>,
@@ -169,13 +141,11 @@ impl std::fmt::Debug for PeerActionQueue {
             .field("sender", &self.sender)
             .field("permits", &self.permits)
             .field("transitions", &self.transitions)
-            .field("policy_time", &self.policy_time.is_some())
             .field("replay", &self.replay)
             .finish()
     }
 }
 pub struct Request {
-    policy_time: Option<PolicyTime>,
     pub deadline: tokio::time::Instant,
     pub evidence: Option<CertifiedAction>,
     pub poll: Option<tilo_actions::InvocationId>,
@@ -188,19 +158,6 @@ pub struct Request {
     pub _permit: Arc<OwnedSemaphorePermit>,
 }
 
-impl Request {
-    /// Required owner time on qualified private paths; None is legacy custody.
-    pub fn policy_time(&self) -> Option<&PolicyTime> {
-        self.policy_time.as_ref()
-    }
-}
-
-struct ReadinessReset(tokio::sync::watch::Sender<bool>);
-impl Drop for ReadinessReset {
-    fn drop(&mut self) {
-        self.0.send_replace(false);
-    }
-}
 impl PeerActionQueue {
     pub fn channel() -> (Self, mpsc::Receiver<Request>) {
         let (sender, receiver) = mpsc::channel(CAPACITY);
@@ -209,20 +166,10 @@ impl PeerActionQueue {
                 sender,
                 permits: Arc::new(Semaphore::new(CAPACITY)),
                 transitions: tokio::sync::broadcast::channel(CAPACITY).0,
-                policy_time: None,
                 replay: Arc::default(),
             },
             receiver,
         )
-    }
-    /// Serve relay-delivered requests under the owner's registered policy
-    /// time. A broker whose runtime registered an owner clock refuses requests
-    /// without the same time origin, so an attachment served for such an owner
-    /// must carry it; each request still samples the clock at admission.
-    #[must_use]
-    pub fn with_policy_time(mut self, time: PolicyTime) -> Self {
-        self.policy_time = Some(time);
-        self
     }
     async fn request(
         &self,
@@ -247,7 +194,6 @@ impl PeerActionQueue {
             let (reply, rx) = oneshot::channel();
             self.sender
                 .try_send(Request {
-                    policy_time: self.policy_time.clone(),
                     deadline,
                     evidence,
                     poll,
@@ -329,48 +275,17 @@ impl PeerActionQueue {
         room: Uuid,
         host: Uuid,
     ) -> Result<(), ()> {
-        let (acknowledged, _) = tokio::sync::watch::channel(false);
-        let result = self
-            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, None)
-            .await;
+        let result = self.serve_attached(session.clone(), room, host).await;
         session.close().await;
         result.map_err(|_| ())
     }
 
-    /// Serve and report when this exact relay attachment acknowledges the
-    /// expected durable broker capability. The acknowledgement returns to
-    /// false when this serving future exits.
-    ///
-    /// # Errors
-    ///
-    /// Returns why serving stopped; a closed transport also closes the session.
-    pub async fn serve_with_readiness(
+    async fn serve_attached(
         &self,
         session: Arc<tilo_relay_session::RelayCoeditSession>,
         room: Uuid,
         host: Uuid,
-        acknowledged: tokio::sync::watch::Sender<bool>,
     ) -> Result<(), PeerActionAttachmentError> {
-        let result = self
-            .serve_with_readiness_inner(session.clone(), room, host, acknowledged, None)
-            .await;
-        if result == Err(PeerActionAttachmentError::TransportClosed) {
-            session.close().await;
-        }
-        result
-    }
-
-    async fn serve_with_readiness_inner(
-        &self,
-        session: Arc<tilo_relay_session::RelayCoeditSession>,
-        room: Uuid,
-        host: Uuid,
-        acknowledged: tokio::sync::watch::Sender<bool>,
-        #[cfg(feature = "test-support")] barrier: Option<ActionRegistrationBarrier>,
-        #[cfg(not(feature = "test-support"))] _barrier: Option<()>,
-    ) -> Result<(), PeerActionAttachmentError> {
-        acknowledged.send_replace(false);
-        let readiness = ReadinessReset(acknowledged);
         let ActionMessage::BrokerCatalogue { host: current, .. } = self
             .request("initial_catalogue", None, None, None)
             .await
@@ -380,13 +295,6 @@ impl PeerActionQueue {
         };
         if current != host {
             return Err(PeerActionAttachmentError::Failed);
-        }
-        #[cfg(feature = "test-support")]
-        if let Some(barrier) = barrier {
-            barrier
-                .wait()
-                .await
-                .map_err(|()| PeerActionAttachmentError::Failed)?;
         }
         session
             .enable_actions(room)
@@ -420,11 +328,7 @@ impl PeerActionQueue {
                         watches.retain(|(evidence, _, _)| evidence.action().request_id != request_id);
                         if reason == tilo_delivery_protocol::peer_actions::UnavailableReason::Backpressure { return Err(PeerActionAttachmentError::Failed); }
                     },
-                    Some(CertifiedActionEvent::Control(control)) => {
-                        if registration_acknowledged(&control, room, host) {
-                            readiness.0.send_replace(true);
-                        }
-                    },
+                    Some(CertifiedActionEvent::Control(_)) => {},
                     None => return Err(PeerActionAttachmentError::TransportClosed),
                 },
                 transition = transitions.recv() => {
@@ -499,21 +403,6 @@ impl PeerActionQueue {
             .map(drop)
             .map_err(effect_free_failure)
     }
-}
-fn registration_acknowledged(
-    control: &tilo_delivery_protocol::transport_v2::EnvelopeV2,
-    room: Uuid,
-    host: Uuid,
-) -> bool {
-    matches!(
-        control,
-        tilo_delivery_protocol::transport_v2::EnvelopeV2::ActionsReady {
-            room: acknowledged_room,
-            capability: tilo_delivery_protocol::transport_v2::ActionCapability::DurableBroker {
-                host: acknowledged_host,
-            },
-        } if *acknowledged_room == room && *acknowledged_host == host
-    )
 }
 fn sequence(update: &tilo_actions::InvocationUpdate) -> Option<u64> {
     match update {
@@ -736,64 +625,6 @@ mod tests {
         assert_eq!(diagnostics.surface_count, Some(1));
         assert_eq!(diagnostics.action_count, Some(2));
         assert!(!diagnostics.envelope_encoded);
-    }
-
-    #[test]
-    fn only_exact_durable_registration_acknowledges_readiness() {
-        use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2};
-
-        let room = Uuid::from_u128(1);
-        let host = Uuid::from_u128(2);
-        for (control, expected) in [
-            (
-                EnvelopeV2::ActionsReady {
-                    room,
-                    capability: ActionCapability::TransportOnly,
-                },
-                false,
-            ),
-            (
-                EnvelopeV2::ActionsReady {
-                    room: Uuid::from_u128(3),
-                    capability: ActionCapability::DurableBroker { host },
-                },
-                false,
-            ),
-            (
-                EnvelopeV2::ActionsReady {
-                    room,
-                    capability: ActionCapability::DurableBroker {
-                        host: Uuid::from_u128(4),
-                    },
-                },
-                false,
-            ),
-            (
-                EnvelopeV2::ActionsReady {
-                    room,
-                    capability: ActionCapability::DurableBroker { host },
-                },
-                true,
-            ),
-        ] {
-            assert_eq!(registration_acknowledged(&control, room, host), expected);
-        }
-    }
-
-    #[test]
-    fn attachment_exit_clears_only_its_own_readiness() {
-        let (old, old_ready) = tokio::sync::watch::channel(false);
-        let (replacement, replacement_ready) = tokio::sync::watch::channel(false);
-        let old = ReadinessReset(old);
-        let replacement = ReadinessReset(replacement);
-        old.0.send_replace(true);
-        assert!(*old_ready.borrow());
-        assert!(!*replacement_ready.borrow());
-        drop(old);
-        assert!(!*old_ready.borrow());
-        assert!(!*replacement_ready.borrow());
-        replacement.0.send_replace(true);
-        assert!(*replacement_ready.borrow());
     }
 
     /// A heartbeat the broker never answers ends the attachment as

@@ -140,7 +140,7 @@ fn notification_list(
             section.collapsed()
         };
         let (folded, group) = (folded.clone(), key.to_owned());
-        let section = section.on_toggle(move |expanded| {
+        let section = section.on_expand(move |expanded| {
             folded.update(|groups| {
                 groups.retain(|kept| *kept != group);
                 if !expanded {

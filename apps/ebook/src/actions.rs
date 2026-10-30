@@ -1,15 +1,13 @@
-//! What the reader publishes about where it is in the open book, and the
-//! library's verbs bound to that place.
+//! The library's verbs bound to where the reader is in the open book.
 //!
 //! The library's own tree (its books, their annotations, the fonts and
-//! schemes, every verb and field edit) is published by
-//! [`Ebook`]. The reader adds the page it shows:
-//! turning pages, the contents and notes panels, selecting a passage
-//! (all view effects), and the library's verbs with the page or the
-//! selection filled in — bookmark this page, note this page, highlight or
-//! note the selection.
+//! schemes, every verb and field edit) is published by [`Ebook`], and the
+//! reader's view effects (turning pages, the contents and notes panels,
+//! selecting a passage) by [`BooksEffect`]. The reader adds the library's
+//! verbs with the page or the selection filled in — bookmark this page,
+//! note this page, highlight or note the selection.
 
-use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_actions::ActionSpec;
 use ui::tilo_resource::{ActionDecl, Effect};
 
 use crate::model::HighlightColor;
@@ -23,34 +21,6 @@ pub(crate) fn effect_payload(effect: &BooksEffect) -> Vec<u8> {
         .build_json(&serde_json::Map::new())
         .map(|encoded| encoded.payload)
         .unwrap_or_default()
-}
-
-/// Going to and selecting a passage of `book`, asking for the place; a
-/// chapter left out is `chapter`.
-pub(crate) fn passage_effects(book: &str, chapter: usize) -> [ActionSpec; 2] {
-    [
-        BooksEffect::SelectPassage {
-            book: book.to_owned(),
-            chapter: Some(chapter),
-            start_block: 0,
-            start_char: None,
-            end_block: None,
-            end_char: None,
-        }
-        .bound_asking(&[
-            "chapter",
-            "start_block",
-            "start_char",
-            "end_block",
-            "end_char",
-        ]),
-        BooksEffect::GoTo {
-            book: book.to_owned(),
-            chapter: Some(chapter),
-            block: None,
-        }
-        .bound_asking(&["chapter", "block"]),
-    ]
 }
 
 /// `effect` bound to the row it acts on, under that row's own `label`.
@@ -86,31 +56,6 @@ pub struct BookResourceCtx {
     pub selection_highlight: Option<books::Highlight>,
     /// A note on the selection, its text left to write.
     pub selection_note: Option<books::AddNote>,
-}
-
-/// Where the reader is in the open book, published beside the library: page
-/// chrome and passage selection, which change only this reader's view and
-/// never the library. The library's verbs bound to the same place are
-/// [`reading_declarations`].
-pub(crate) fn reading_resource(ctx: &BookResourceCtx) -> ResourceSpec {
-    let mut resource = ResourceSpec::new(
-        format!("ebook.selection:{}", ctx.book_id),
-        "ebook.selection",
-        "Current reading",
-    );
-    for spec in passage_effects(&ctx.book_id, ctx.chapter) {
-        resource = resource.with_action(spec);
-    }
-    for (effect, label) in [
-        (BooksEffect::PreviousPage, "Previous page"),
-        (BooksEffect::NextPage, "Next page"),
-        (BooksEffect::Contents, "Toggle table of contents"),
-        (BooksEffect::Notes, "Toggle notes"),
-        (BooksEffect::Settings, "Open reading settings"),
-    ] {
-        resource = resource.with_action(bound(&effect, label));
-    }
-    resource
 }
 
 /// The library's verbs bound to where the reader is in the open book: the

@@ -5,8 +5,7 @@
 This is the product specification for installing Tilo OS on the current computer,
 preparing it for another computer, and adding Tilo Desktop to an existing Linux
 installation. It specifies the intended experience, not delivered capabilities.
-[Delivery gaps](installer-delivery-gaps.md) records implementation and evidence
-still needed. Where older walkthroughs differ on screen order, terminology or
+Where older walkthroughs differ on screen order, terminology or
 Desktop migration, this document takes precedence for the intended experience.
 Existing security and installation safety contracts still apply.
 [Installer and migration model](installer-migration-model.md) describes how the
@@ -331,6 +330,3 @@ source has verified destination content, an explicit user exclusion, or a
 specific unresolved limitation. Validate opening files, reading local mail,
 using accounts, browser behavior and loading saved games after cold boot.
 Counts or a successful export alone do not establish a complete migration.
-
-See [delivery gaps](installer-delivery-gaps.md) for the work and evidence still
-required before this experience can be described as ready to ship.

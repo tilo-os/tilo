@@ -70,7 +70,7 @@ pub struct AccessApp {
     /// What its answers are asked for by.
     pub scope: String,
     pub label: String,
-    /// Whether any of its answers was set here, and what that means.
+    /// Whether any of its answers was set here, and what that means open.
     pub customised: bool,
     pub detail: String,
     pub kinds: Vec<KindLine>,

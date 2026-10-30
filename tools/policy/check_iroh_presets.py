@@ -3,8 +3,7 @@
 
 ``presets::N0`` is iroh's "everything at number 0's": its public relays and a
 DNS directory that signs this device's key in on the spot and republishes it
-every five minutes, whatever the endpoint is doing. docs/architecture/security.md
-("What leaves the device by default") states what Tilo decided instead: keep
+every five minutes, whatever the endpoint is doing. What Tilo decided instead: keep
 the relays and the directory, and gate what is published — by the same
 condition that holds the relays back — in
 ``crates/system/endpoint-reachability/src/directory.rs``.

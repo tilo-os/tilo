@@ -17,8 +17,11 @@ use ui::widget::{
     ToggleGroup,
 };
 
+use crate::actions::RemoteEffect;
 use crate::app::Action;
-use crate::model::{AuthMethod, ConnectionId, ConnectionKind};
+use crate::model::{AuthMethod, ConnectionId, ConnectionKind, Remote};
+use ui::framework::Actions as ResourceActions;
+use ui::tilo_resource::Invoke;
 
 /// The queue every control reports to.
 pub(crate) type Requests = Rc<RefCell<Vec<Action>>>;
@@ -116,28 +119,42 @@ pub(crate) fn kind_icon(kind: ConnectionKind) -> Icon {
     }
 }
 
-fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
-    let list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
+fn connection_row(
+    requests: &Requests,
+    actions: Option<&ResourceActions<Remote>>,
+    row: &RowModel,
+) -> ListRow {
+    let mut list_row = ListRow::new(format!("remote.connection:{}", row.id), &row.name)
         .icon(kind_icon(row.kind))
         .leading_tooltip(row.kind.label())
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
-        .on_effect(queue(requests, Action::RequestConnect(row.id)))
-        .action(
-            Icon::Pencil,
-            "Edit connection",
-            queue(requests, Action::EditConnection(row.id)),
-        )
-        .action(
-            Icon::Pin,
-            if row.favourite {
-                "Unpin connection"
-            } else {
-                "Pin connection"
-            },
-            queue(requests, Action::ToggleFavorite(row.id)),
-        );
+        .on_effect(queue(requests, Action::RequestConnect(row.id)));
+    if let Some(actions) = actions {
+        if let Some(edit) = actions.effect(&RemoteEffect::EditConnection { connection: row.id }) {
+            list_row = list_row.action_binding(Icon::Pencil, "Edit connection", edit);
+        }
+        let pinned = Remote::paths()
+            .connections
+            .item(&Remote::item(row.id))
+            .favorite
+            .set(!row.favourite);
+        if let Some(pin) = Invoke::edit(&pinned)
+            .ok()
+            .and_then(|pin| actions.invocation(pin))
+        {
+            list_row = list_row.action_binding(
+                Icon::Pin,
+                if row.favourite {
+                    "Unpin connection"
+                } else {
+                    "Pin connection"
+                },
+                pin,
+            );
+        }
+    }
     // Every row carries a dot, so the meta column keeps one trailing edge:
     // answered last time, or not (yet) seen answering.
     match row.presence {
@@ -159,6 +176,7 @@ fn page(children: Vec<Element>) -> Element {
 /// their own group, then the rest.
 pub(crate) fn connection_list(
     requests: &Requests,
+    actions: Option<&ResourceActions<Remote>>,
     destination: Destination,
     rows: &[RowModel],
     has_connections: bool,
@@ -183,7 +201,7 @@ pub(crate) fn connection_list(
     }
     let list = |rows: Vec<&RowModel>| -> Vec<Element> {
         rows.into_iter()
-            .map(|row| Box::new(connection_row(requests, row)) as Element)
+            .map(|row| Box::new(connection_row(requests, actions, row)) as Element)
             .collect()
     };
     let (pinned, others): (Vec<&RowModel>, Vec<&RowModel>) =

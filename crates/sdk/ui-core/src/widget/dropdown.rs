@@ -37,8 +37,7 @@
 //! list becomes hit-testable and click-outside dismissal works.
 
 use crate::num::f32_of_f64;
-use crate::num::f64_of_usize;
-use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
+use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -65,15 +64,8 @@ use crate::widget::{ActionEmitter, ControlBindingMetadata};
 
 /// Height of the closed control before the first layout: a Regular control.
 const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
-/// One row of the open list: a menu row.
-const ITEM_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
 /// Tallest the rows of the open list get before it scrolls.
 const MAX_LIST_HEIGHT: f64 = 240.0;
-const LIST_GAP: f64 = 4.0;
-/// The open list's inset round its rows: the menu inset every menu shares
-/// (`floating_surface::menu_inset`), so the armed row runs concentric with
-/// the panel.
-const LIST_PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
 const LINE_PX: f32 = 60.0;
@@ -113,18 +105,15 @@ pub struct Dropdown {
     open: bool,
     /// An accepted interaction opened this popup, rather than a shot seed.
     interactive_open: bool,
-    /// Position (0-based) into the *filtered* list of the highlighted row.
-    highlight: usize,
     /// Incremental substring filter; empty shows every option.
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
     /// What has been typed into an open short list.
     typing: crate::type_ahead::TypeAhead,
-    scroll: f32,
-    scrollbar: Scrollbar,
-    scrollbar_gutter: f64,
-    scrollbar_track: Rect,
+    /// The open list: the options the filter shows, the highlighted one
+    /// armed, scrolled to keep it in view.
+    list: SuggestionList,
     query_rect: Rect,
 
     /// One-shot: align `highlight` to the selected option on the next
@@ -181,13 +170,6 @@ pub struct Dropdown {
     /// The widest a shared chooser grows: the theme's chooser width, grown
     /// with the text.
     chooser_cap: f64,
-    /// The open list's width for its options, from the latest paint.
-    list_width: f64,
-    /// The widest option label and what it was measured with, so an open
-    /// list repaints without reshaping every option.
-    list_measure: Option<ListMeasure>,
-    /// One row of the open list: a menu row, grown with its text.
-    item_h: f64,
     /// Host-owned pointer precision controls direct-touch target geometry.
     interaction: crate::interaction::InteractionEnvironment,
     /// An option, the placeholder, the caption or the icon changed since the
@@ -198,19 +180,6 @@ pub struct Dropdown {
     /// The pose the list was last drawn in: rows are hit where they are
     /// drawn while it moves.
     list_pose: crate::motion::Pose,
-    /// The filter and scroll the list showed when it closed, so a leaving
-    /// list fades as it was rather than jumping to every option.
-    leaving: Option<(String, f32)>,
-}
-
-/// The widest label of the open list, valid while the options, the body
-/// style, the empty-list hint and the renderer's fonts and text scale stay.
-struct ListMeasure {
-    style: TextStyle,
-    hint: String,
-    epoch: std::sync::Arc<()>,
-    text_scale: f32,
-    widest: f64,
 }
 
 /// Lists shorter than this never show a filter: a typed letter jumps to the
@@ -295,15 +264,17 @@ impl Dropdown {
             selected: String::new(),
             open: false,
             interactive_open: false,
-            highlight: 0,
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
             typing: crate::type_ahead::TypeAhead::default(),
-            scroll: 0.0,
-            scrollbar: Scrollbar::vertical(),
-            scrollbar_gutter: 0.0,
-            scrollbar_track: Rect::ZERO,
+            list: {
+                let mut list = SuggestionList::new()
+                    .with_scrollbar()
+                    .with_max_visible(usize::MAX);
+                list.set_max_height(Some(MAX_LIST_HEIGHT));
+                list
+            },
             query_rect: Rect::ZERO,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
@@ -327,15 +298,11 @@ impl Dropdown {
             measured: 0.0,
             column: None,
             chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
-            list_width: 0.0,
-            list_measure: None,
-            item_h: ITEM_HEIGHT,
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_dirty: true,
             drawn: None,
             appear: crate::motion::Appearing::closed(),
             list_pose: crate::motion::Pose::REST,
-            leaving: None,
         }
     }
 
@@ -348,9 +315,9 @@ impl Dropdown {
             &self.options,
             &self.placeholder,
             self.open,
-            self.highlight,
+            self.list.highlight(),
             &self.filter,
-            self.scroll.to_bits(),
+            self.list.scroll_offset().to_bits(),
             self.is_focused,
             self.is_hovered,
             self.effectively_enabled(),
@@ -359,8 +326,7 @@ impl Dropdown {
         [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
             .map(f64::to_bits)
             .hash(&mut hasher);
-        self.item_h.to_bits().hash(&mut hasher);
-        self.scrollbar.is_active().hash(&mut hasher);
+        self.list.is_scrollbar_active().hash(&mut hasher);
         (self.filter_selection.anchor, self.filter_selection.cursor).hash(&mut hasher);
         crate::i18n::I18nManager::revision().hash(&mut hasher);
         hasher.finish()
@@ -535,11 +501,9 @@ impl Dropdown {
     pub fn set_options(&mut self, options: Vec<String>) {
         if self.options != options || self.values != options {
             self.layout_dirty = true;
-            self.list_measure = None;
         }
         self.values.clone_from(&options);
         self.options = options;
-        self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
     }
 
     /// Set stable values with separate presentation labels. This keeps a
@@ -548,11 +512,9 @@ impl Dropdown {
         let (values, labels): (Vec<_>, Vec<_>) = options.into_iter().unzip();
         if self.options != labels {
             self.layout_dirty = true;
-            self.list_measure = None;
         }
         self.values = values;
         self.options = labels;
-        self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
     }
 
     /// The keys that do what each option does, by value: shown at the
@@ -675,14 +637,8 @@ impl Dropdown {
         self.theme_caption_height =
             caption_height_in(&self.caption_style, f64::from(theme.tokens.spacing.s1));
         self.chooser_cap = f64::from(theme.tokens.metrics.chooser_width * theme.text_growth());
-        self.item_h = f64::from(theme.tokens.metrics.menu_row_height)
-            .max(
-                (f64::from(theme.text(TextRole::Body).line_height_px())
-                    + 2.0 * f64::from(theme.tokens.spacing.s1))
-                .ceil(),
-            )
-            .max(touch_minimum);
-        self.scroll = self.scroll.min(self.max_scroll(self.visible_count()));
+        self.list.set_min_row_height(touch_minimum);
+        self.list.set_theme(theme);
     }
 
     /// The narrowest field that shows every option, the placeholder and the
@@ -724,7 +680,7 @@ impl Dropdown {
     }
     /// Position (0-based) of the highlighted row in the filtered list.
     pub fn highlight_index(&self) -> usize {
-        self.highlight
+        self.list.highlight().unwrap_or(0)
     }
     /// Current filter query (empty when not filtering).
     pub fn filter_query(&self) -> &str {
@@ -749,21 +705,6 @@ impl Dropdown {
     /// Number of options currently visible (after filtering).
     pub fn visible_count(&self) -> usize {
         self.filtered().len()
-    }
-
-    /// Height occupied by the closed control and its open options overlay.
-    ///
-    /// External-layout hosts can use this to make a surrounding popover hug
-    /// the visible rows without duplicating the dropdown's sizing constants.
-    pub fn open_overlay_height(&self) -> f64 {
-        // The laid-out control height (a `ui_scale`d `metrics.bar_height`)
-        // when there is one; the reference height before the first layout.
-        let control = if self.rect.height() > 0.0 {
-            self.rect.height()
-        } else {
-            CONTROL_HEIGHT
-        };
-        control + LIST_GAP + self.list_box_height(self.visible_count())
     }
 
     /// Position of the selected option within `filtered`, or 0.
@@ -791,140 +732,48 @@ impl Dropdown {
             .map_or(self.selected.as_str(), String::as_str)
     }
 
-    /// Height of the open list box for `n` filtered rows (>=1 so the
-    /// "no matches" row has a box to live in).
-    fn list_box_height(&self, n: usize) -> f64 {
-        let inset = self.viewport.map_or(2.0 * LIST_PAD, |viewport| {
-            [
-                crate::widget::PopoverSide::Above,
-                crate::widget::PopoverSide::Below,
-            ]
+    /// Hand the open list its rows (the options the filter shows, the
+    /// applied one checked, each with its keys), its anchor and its bounds.
+    fn refresh_list(&mut self) {
+        let rows: Vec<Suggestion> = self
+            .filtered()
             .into_iter()
-            .map(|side| {
-                crate::widget::floating_surface::anchored_room(self.rect, side, LIST_GAP, viewport)
+            .filter_map(|index| {
+                let label = self.options.get(index)?;
+                let value = self.values.get(index)?;
+                let mut row = Suggestion::labelled(value.clone(), label.clone())
+                    .with_checked(self.menu.is_none() && *value == self.selected);
+                if let Some((_, keys)) = self.shortcuts.iter().find(|(of, _)| of == value) {
+                    row = row.with_shortcut(keys.clone());
+                }
+                Some(row)
             })
-            .fold(0.0, f64::max)
-            .min(2.0 * LIST_PAD)
-        });
-        self.rows_height(n) + inset
-    }
-
-    /// Height of the visible rows of the open list, inside its inset.
-    fn rows_height(&self, n: usize) -> f64 {
-        let authored = (f64_of_usize(n.max(1)) * self.item_h).min(MAX_LIST_HEIGHT.max(self.item_h));
-        let Some(viewport) = self.viewport else {
-            return authored;
-        };
-        let room = [
-            crate::widget::PopoverSide::Above,
-            crate::widget::PopoverSide::Below,
-        ]
-        .into_iter()
-        .map(|side| {
-            crate::widget::floating_surface::anchored_room(self.rect, side, LIST_GAP, viewport)
-        })
-        .fold(0.0, f64::max);
-        authored.min((room - 2.0 * LIST_PAD).max(0.0))
-    }
-
-    /// The rows' box inside the open `list`.
-    fn rows_rect(list: Rect) -> Rect {
-        Rect::new(
-            list.x0 + LIST_PAD,
-            list.y0 + LIST_PAD.min(list.height() / 2.0),
-            list.x1 - LIST_PAD,
-            list.y1 - LIST_PAD.min(list.height() / 2.0),
-        )
-    }
-
-    /// Absolute rect of the open list: below the control, or above it when
-    /// opening below would leave the host viewport and there is more room
-    /// above, placed by `floating_surface::place_anchored` like every
-    /// anchored Panel.
-    /// Hit-testing and paint share this, so a flipped list is clickable
-    /// where it is drawn.
-    fn list_rect(&self, n: usize) -> Rect {
-        let h = self.list_box_height(n);
-        let viewport = self
-            .viewport
-            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
-        // At least as wide as the field, and as its widest option with the
-        // check beside it; a menu at least a menu's width.
-        let mut width = self.rect.width().max(self.list_width);
-        if self.menu.is_some() {
-            width = width.max(menu_min_width());
+            .collect();
+        // A list that filters keeps room for its empty-result line, so it
+        // keeps its width while a query narrows it.
+        let hint = (rows.is_empty() || self.supports_filter())
+            .then(|| crate::i18n!("dropdown-no-matches"));
+        self.list.set_suggestions(rows);
+        self.list.set_status(hint);
+        self.list.set_anchor(self.rect);
+        if let Some(viewport) = self.viewport {
+            self.list.set_viewport(viewport);
         }
-        let width = width.min(viewport.width().max(1.0));
-        let placed = crate::widget::floating_surface::place_anchored(
-            self.rect,
-            (width, h),
-            crate::widget::PopoverSide::Below,
-            LIST_GAP,
-            viewport,
-        )
-        .0;
-        if self.menu.is_some() {
-            // Hangs from the trigger's trailing edge, kept inside the window.
-            let x0 = (self.rect.x1 - width)
-                .min(viewport.x1 - width)
-                .max(viewport.x0);
-            return Rect::new(x0, placed.y0, x0 + width, placed.y1);
-        }
-        placed
-    }
-
-    /// The open list's width for its options: each row's label, the check,
-    /// the row insets and the menu inset either side.
-    fn measure_list(&mut self, text: &mut TextRenderer, theme: &Theme) {
-        let style = theme.text(TextRole::Body);
-        let hint = crate::i18n!("dropdown-no-matches");
-        let current = self.list_measure.as_ref().filter(|m| {
-            m.style == style
-                && m.hint == hint
-                && m.text_scale.to_bits() == text.text_scale().to_bits()
-                && std::sync::Arc::ptr_eq(&m.epoch, text.layout_epoch())
-        });
-        let widest = if let Some(measure) = current {
-            measure.widest
+        // A menu opens at least a menu's width, hanging from the trigger's
+        // trailing edge.
+        let menu = self.menu.is_some();
+        self.list
+            .set_min_width(if menu { menu_min_width() } else { 0.0 });
+        self.list.set_align(if menu {
+            crate::widget::PanelAlign::Trailing
         } else {
-            let widest = self
-                .options
-                .iter()
-                .chain(std::iter::once(&hint))
-                .map(|label| f64::from(text.measure_style(label, None, &style).0))
-                .fold(0.0, f64::max);
-            self.list_measure = Some(ListMeasure {
-                style,
-                hint,
-                epoch: std::sync::Arc::clone(text.layout_epoch()),
-                text_scale: text.text_scale(),
-                widest,
-            });
-            widest
-        };
-        let check = f64::from(theme.tokens.metrics.icon_sm);
-        self.list_width = (widest + 3.0 * LIST_PAD + check + 2.0 * LIST_PAD).ceil();
+            crate::widget::PanelAlign::Leading
+        });
     }
 
-    fn max_scroll(&self, n: usize) -> f32 {
-        let content = f64_of_usize(n) * self.item_h;
-        f32_of_f64((content - self.rows_height(n)).max(0.0))
-    }
-
-    fn scroll_metrics(&self, n: usize) -> ScrollMetrics {
-        ScrollMetrics::new(
-            f64_of_usize(n) * self.item_h,
-            self.rows_height(n),
-            f64::from(self.scroll),
-        )
-    }
-
-    fn option_rows(&self, list: Rect, n: usize) -> Rect {
-        let mut rows = Self::rows_rect(list);
-        if self.scroll_metrics(n).overflows() {
-            rows.x1 = (rows.x1 - self.scrollbar_gutter).max(rows.x0);
-        }
-        rows
+    /// The open list's panel.
+    fn list_rect(&self) -> Rect {
+        self.list.rect().unwrap_or(Rect::ZERO)
     }
 
     /// The stable key of the option whose value is `value`.
@@ -940,8 +789,6 @@ impl Dropdown {
     fn options_access(&self) -> crate::a11y::AccessNode {
         use crate::a11y::{AccessNode, AccessState, Role};
         let filtered = self.filtered();
-        let list = self.list_rect(filtered.len());
-        let rows = self.option_rows(list, filtered.len());
         let total = filtered.len();
         let options = filtered
             .iter()
@@ -949,8 +796,6 @@ impl Dropdown {
             .filter_map(|(row, &index)| {
                 let label = self.options.get(index)?;
                 let value = self.values.get(index)?;
-                let top = rows.y0 + f64_of_usize(row) * self.item_h - f64::from(self.scroll);
-                let drawn = Rect::new(rows.x0, top, rows.x1, top + self.item_h).intersect(rows);
                 let mut option = AccessNode::new(Role::ListBoxOption)
                     .with_name(label.clone())
                     .with_key(Self::option_key(value))
@@ -961,48 +806,19 @@ impl Dropdown {
                     .with_state(
                         AccessState::new()
                             .selected(self.menu.is_none() && *value == self.selected)
-                            .active_descendant(self.is_focused() && row == self.highlight),
+                            .active_descendant(
+                                self.is_focused() && Some(row) == self.list.highlight(),
+                            ),
                     );
-                if drawn.height() > 0.0 {
+                if let Some(drawn) = self.list.row_rect(row) {
                     option = option.with_bounds(drawn);
                 }
                 Some(option)
             })
             .collect();
         AccessNode::new(Role::ListBox)
-            .with_bounds(list)
+            .with_bounds(self.list_rect())
             .with_children(options)
-    }
-
-    /// Filtered-list row index under `pos`, or `None` outside `list`/`n` rows.
-    fn row_at(&self, pos: Point, list: Rect, n: usize) -> Option<usize> {
-        let rows = self.option_rows(list, n);
-        if !rows.contains(pos) {
-            return None;
-        }
-        let rel = pos.y - rows.y0 + f64::from(self.scroll);
-        if rel < 0.0 {
-            return None;
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "rel >= 0.0 is checked above; this cast is the intended \
-                      floor-to-row-index conversion"
-        )]
-        let vi = (rel / self.item_h) as usize;
-        (vi < n).then_some(vi)
-    }
-
-    /// Scroll so the row at filtered-position `vi` is fully visible.
-    fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let top = f64_of_usize(vi) * self.item_h;
-        self.scroll = f32_of_f64(crate::widget::scroll_region::reveal_offset(
-            f64::from(self.scroll),
-            self.rows_height(n),
-            top..top + self.item_h,
-            f64::from(self.max_scroll(n)),
-        ));
     }
 
     /// Arm the option whose label begins with what has been typed: letters
@@ -1015,14 +831,12 @@ impl Dropdown {
             return;
         }
         self.typing.type_text(typed, now);
-        let n = self.options.len();
         let next = self.typing.target(
             self.options.iter().map(String::as_str),
-            Some(self.highlight),
+            self.list.highlight(),
         );
         if let Some(index) = next {
-            self.highlight = index;
-            self.ensure_visible(index, n);
+            self.list.set_highlight(Some(index));
         }
     }
 
@@ -1035,10 +849,10 @@ impl Dropdown {
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
         self.typing.reset();
+        self.list.clear();
+        self.refresh_list();
         let filtered = self.filtered();
-        self.highlight = self.selected_pos(&filtered);
-        self.scroll = 0.0;
-        self.ensure_visible(self.highlight, filtered.len());
+        self.list.set_highlight(Some(self.selected_pos(&filtered)));
     }
 
     /// A menu button's face: a Plain icon-only button, its hover, open and
@@ -1063,19 +877,15 @@ impl Dropdown {
     }
 
     /// Close the options overlay without changing its selected value.
+    /// A leaving list fades with the rows it showed.
     pub fn close(&mut self) {
-        if self.open {
-            self.leaving = Some((self.filter.clone(), self.scroll));
-        }
         self.open = false;
         self.appear.show(false);
         self.interactive_open = false;
-        self.scrollbar.release();
-        self.scrollbar_track = Rect::ZERO;
+        self.list.release_scrollbar();
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
-        self.scroll = 0.0;
     }
 
     /// Store `value` through the binding and mirror it locally.
@@ -1116,10 +926,7 @@ impl Dropdown {
 
     /// Select the highlighted option (if any) and close.
     fn select_highlighted(&mut self, state: &AppModel, root: &ModelPath) {
-        let filtered = self.filtered();
-        if let Some(&opt_idx) = filtered.get(self.highlight)
-            && let Some(value) = self.values.get(opt_idx).cloned()
-        {
+        if let Some(value) = self.list.highlighted().map(|row| row.value.clone()) {
             self.commit_value(&value, state, root);
         }
         self.close();
@@ -1138,20 +945,7 @@ impl Dropdown {
         if self.open {
             // The list is hit where it is drawn while it arrives.
             let pos = self.list_pose.to_local(pos);
-            let filtered = self.filtered();
-            let list = self.list_rect(filtered.len());
-            let metrics = self.scroll_metrics(filtered.len());
-            if let Some(offset) = self.scrollbar.drag_to(self.scrollbar_track, metrics, pos) {
-                self.scroll = f32_of_f64(offset);
-                *handled = true;
-                return;
-            }
-            self.scrollbar
-                .update_hover(self.scrollbar_track, metrics, pos);
-            if let Some(vi) = self.row_at(pos, list, filtered.len())
-                && vi != self.highlight
-            {
-                self.highlight = vi;
+            if self.list.drag_scrollbar(pos) || self.list.arm_at(pos) {
                 *handled = true;
             }
         }
@@ -1169,29 +963,15 @@ impl Dropdown {
     ) {
         let pos = self.last_cursor;
         if self.open {
-            let filtered = self.filtered();
-            let list = self.list_rect(filtered.len());
             // The list is hit where it is drawn while it arrives.
             let at = self.list_pose.to_local(pos);
-            if list.contains(at) {
-                match self.scrollbar.press(
-                    self.scrollbar_track,
-                    self.scroll_metrics(filtered.len()),
-                    at,
-                ) {
-                    PressOutcome::Thumb => {
-                        *handled = true;
-                        return;
-                    }
-                    PressOutcome::Page(offset) => {
-                        self.scroll = f32_of_f64(offset);
-                        *handled = true;
-                        return;
-                    }
-                    PressOutcome::Miss => {}
+            if self.list_rect().contains(at) {
+                if self.list.press_scrollbar(at) {
+                    *handled = true;
+                    return;
                 }
-                if let Some(vi) = self.row_at(at, list, filtered.len()) {
-                    self.highlight = vi;
+                if self.list.row_at(at).is_some() {
+                    self.list.arm_at(at);
                     self.select_highlighted(state, root);
                 }
             } else if self.rect.contains(pos) {
@@ -1223,8 +1003,7 @@ impl Dropdown {
             MouseScrollDelta::LineDelta(_, y) => *y * -LINE_PX,
             MouseScrollDelta::PixelDelta(p) => f32_of_f64(-p.y),
         };
-        let n = self.filtered().len();
-        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll(n));
+        self.list.scroll_px(f64::from(dy));
         *handled = true;
     }
 
@@ -1246,18 +1025,8 @@ impl Dropdown {
             let shift = mods.shift_key();
             let ctrl = mods.control_key() || mods.super_key();
             match logical_key {
-                Key::Named(NamedKey::ArrowDown) => {
-                    let n = self.filtered().len();
-                    if n > 0 {
-                        self.highlight = self.highlight.saturating_add(1).min(n.saturating_sub(1));
-                        self.ensure_visible(self.highlight, n);
-                    }
-                    *handled = true;
-                }
-                Key::Named(NamedKey::ArrowUp) => {
-                    let n = self.filtered().len();
-                    self.highlight = self.highlight.saturating_sub(1);
-                    self.ensure_visible(self.highlight, n);
+                Key::Named(key @ (NamedKey::ArrowDown | NamedKey::ArrowUp)) => {
+                    self.list.step_highlight(*key == NamedKey::ArrowDown, false);
                     *handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
@@ -1289,8 +1058,7 @@ impl Dropdown {
                         ctrl,
                     );
                     if change == QueryEventChange::Edited {
-                        self.highlight = 0;
-                        self.scroll = 0.0;
+                        self.filter_edited();
                     }
                     if change != QueryEventChange::Ignored {
                         *handled = true;
@@ -1311,159 +1079,11 @@ impl Dropdown {
 }
 
 impl Dropdown {
-    /// The open list: its panel and rows, in the pose's transform.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass paints the panel, the rows and the scroll bar in order"
-    )]
-    fn paint_list(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let filtered = self.filtered();
-        let list = self.list_rect(filtered.len());
-        // The open list is a floating Panel (HIG §9.1 / §9.5): the panel
-        // radius, the floating shadow, and the floating material with its
-        // derived edge, so it separates from the field it drops from.
-        let radius = f64::from(theme.tokens.radii.panel);
-        crate::surface::shadow(
-            scene,
-            transform,
-            list,
-            radius,
-            &theme.tokens.elevation.floating,
-        );
-        crate::surface::panel(scene, transform, list, radius, theme);
-
-        // Rows sit inside the menu inset and scroll inside it.
-        self.scrollbar_gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
-        let inset = Self::rows_rect(list);
-        let rows = self.option_rows(list, filtered.len());
-        self.scrollbar_track = if self.scroll_metrics(filtered.len()).overflows() {
-            self.scrollbar
-                .track_in(Rect::new(rows.x1, inset.y0, inset.x1, inset.y1), theme)
-        } else {
-            Rect::ZERO
-        };
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &rows);
-
-        if filtered.is_empty() {
-            // Centre on the measured line, not the font size (the face's
-            // ascent/descent otherwise sits the label low in the row).
-            let hint = crate::i18n!("dropdown-no-matches");
-            let (_, hint_h) = text_renderer.measure_style(&hint, None, &theme.text(TextRole::Body));
-            let ty = rows.y0 + (self.item_h - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_style(
-                scene,
-                &hint,
-                theme.text_dim,
-                transform.pre_translate((rows.x0 + LIST_PAD, ty).into()),
-                None,
-                &theme.text(TextRole::Body),
-            );
-        } else {
-            for (vi, &opt_idx) in filtered.iter().enumerate() {
-                let row_top = rows.y0 + (f64_of_usize(vi) * self.item_h) - f64::from(self.scroll);
-                let row_bottom = row_top + self.item_h;
-                // Cull rows scrolled out of the box (hundreds of zones).
-                if row_bottom < rows.y0 || row_top > rows.y1 {
-                    continue;
-                }
-                let Some(opt) = self.options.get(opt_idx) else {
-                    continue;
-                };
-                let row = Rect::new(rows.x0, row_top, rows.x1, row_bottom);
-                let is_selected = self.menu.is_none()
-                    && self
-                        .values
-                        .get(opt_idx)
-                        .is_some_and(|value| *value == self.selected);
-                // The armed row is the panel's strong lift, as in every
-                // menu (HIG §9.3);
-                // the applied value carries a trailing check.
-                let color = if vi == self.highlight {
-                    crate::widget::floating_surface::paint_armed_row(
-                        scene, transform, row, LIST_PAD, theme,
-                    )
-                } else {
-                    theme.text_primary
-                };
-                let check = f64::from(theme.tokens.metrics.icon_sm);
-                if is_selected {
-                    crate::icons::draw_icon(
-                        scene,
-                        transform,
-                        Rect::from_center_size(
-                            Point::new(row.x1 - LIST_PAD - check / 2.0, row.center().y),
-                            (check, check),
-                        ),
-                        crate::icons::Icon::Check,
-                        color,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                // The keys that do the same at the row's end, quieter than
-                // the label unless the row is highlighted.
-                let mut label_end = row.x1 - LIST_PAD * 2.0 - check;
-                let keys = self.values.get(opt_idx).and_then(|value| {
-                    self.shortcuts
-                        .iter()
-                        .find(|(of, _)| of == value)
-                        .map(|(_, keys)| keys.as_str())
-                });
-                if let Some(keys) = keys {
-                    let (keys_w, keys_h) =
-                        text_renderer.measure_style(keys, None, &theme.text(TextRole::Body));
-                    let keys_x = label_end - f64::from(keys_w);
-                    let keys_color = if vi == self.highlight {
-                        color
-                    } else {
-                        theme.text_dim
-                    };
-                    text_renderer.draw_style(
-                        scene,
-                        keys,
-                        keys_color,
-                        transform.pre_translate(
-                            (keys_x, row_top + (self.item_h - f64::from(keys_h)) / 2.0).into(),
-                        ),
-                        None,
-                        &theme.text(TextRole::Body),
-                    );
-                    label_end = keys_x - LIST_PAD;
-                }
-                // Rows are one `ITEM_HEIGHT` tall, so a long option elides
-                // rather than wrapping into the row beneath it.
-                let shown = text_renderer.elide_to_width_style(
-                    opt,
-                    f32_of_f64((label_end - row.x0 - LIST_PAD).max(0.0)),
-                    &theme.text(TextRole::Body),
-                );
-                let (_, opt_h) =
-                    text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
-                let ty = row_top + (self.item_h - f64::from(opt_h)) / 2.0;
-                text_renderer.draw_style(
-                    scene,
-                    &shown,
-                    color,
-                    transform.pre_translate((row.x0 + LIST_PAD, ty).into()),
-                    None,
-                    &theme.text(TextRole::Body),
-                );
-            }
-        }
-        scene.pop_layer();
-        self.scrollbar.draw(
-            scene,
-            transform,
-            self.scrollbar_track,
-            self.scroll_metrics(filtered.len()),
-            theme,
-            false,
-        );
+    /// The filter changed: the list shows what it matches, from the top.
+    fn filter_edited(&mut self) {
+        self.refresh_list();
+        self.list.set_highlight(Some(0));
+        self.list.scroll_px(f64::NEG_INFINITY);
     }
 }
 
@@ -1505,9 +1125,9 @@ impl Widget for Dropdown {
         }
         if self.align_highlight_on_sync {
             self.align_highlight_on_sync = false;
+            self.refresh_list();
             let filtered = self.filtered();
-            self.highlight = self.selected_pos(&filtered);
-            self.ensure_visible(self.highlight, filtered.len());
+            self.list.set_highlight(Some(self.selected_pos(&filtered)));
         }
     }
 
@@ -1716,34 +1336,22 @@ impl Widget for Dropdown {
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
             self.list_pose = crate::motion::Pose::REST;
-            self.leaving = None;
             return;
         }
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
         }
+        // A leaving list is drawn with the rows it closed with.
         if self.open {
-            self.leaving = None;
+            self.refresh_list();
         }
-        // A leaving list shows the filter and scroll it closed with.
-        let shown = self.leaving.clone().map(|(filter, scroll)| {
-            (
-                std::mem::replace(&mut self.filter, filter),
-                std::mem::replace(&mut self.scroll, scroll),
-            )
-        });
-        self.measure_list(text_renderer, theme);
-        let list = self.list_rect(self.filtered().len());
+        let list = self.list_rect();
         let pose = self.appear.pose(list, self.rect.center());
         self.list_pose = pose;
         let bounds = crate::widget::floating_surface::painted_bounds(list, theme);
         pose.paint(scene, transform, bounds, |scene, transform| {
-            self.paint_list(scene, transform, text_renderer, theme);
+            self.list.paint(scene, transform, text_renderer, theme);
         });
-        if let Some((filter, scroll)) = shown {
-            self.filter = filter;
-            self.scroll = scroll;
-        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1754,6 +1362,9 @@ impl Widget for Dropdown {
         // Disabled: reject all input — won't open, no selection, no hover.
         if !self.effectively_enabled() {
             return;
+        }
+        if self.open {
+            self.refresh_list();
         }
         if self.open
             && self.is_focused
@@ -1768,8 +1379,7 @@ impl Widget for Dropdown {
                 false,
             );
             if change == QueryEventChange::Edited {
-                self.highlight = 0;
-                self.scroll = 0.0;
+                self.filter_edited();
             }
             *ctx.handled = true;
             return;
@@ -1783,8 +1393,7 @@ impl Widget for Dropdown {
             // resting hover veneer would otherwise stay painted.
             WindowEvent::CursorLeft { .. } => {
                 self.is_hovered = false;
-                self.scrollbar
-                    .update_hover(Rect::ZERO, self.scroll_metrics(0), self.last_cursor);
+                self.list.leave_scrollbar();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1804,7 +1413,7 @@ impl Widget for Dropdown {
                 button: MouseButton::Left,
                 ..
             } if self.open => {
-                *ctx.handled |= self.scrollbar.release();
+                *ctx.handled |= self.list.release_scrollbar();
             }
             WindowEvent::MouseWheel { delta, .. } if self.open => {
                 self.on_wheel(delta, ctx.handled);
@@ -1952,6 +1561,9 @@ impl Widget for Dropdown {
         if !self.effectively_enabled() {
             return false;
         }
+        if self.open {
+            self.refresh_list();
+        }
         // One of the open list's options, by its key: chosen as a click on
         // its row chooses it.
         if let Some(&key) = key_path.last()
@@ -1964,7 +1576,7 @@ impl Widget for Dropdown {
             if !self.open || !matches!(action, Action::Activate) {
                 return false;
             }
-            self.highlight = row;
+            self.list.set_highlight(Some(row));
             self.select_highlighted(state.doc(), root);
             return true;
         }
@@ -2008,8 +1620,7 @@ impl Widget for Dropdown {
     // An open selector is a foreground query/list, so navigation containers
     // defer Escape and other global shortcuts to it before going back.
     fn modal_capture(&self) -> Option<Rect> {
-        self.open
-            .then(|| self.rect.union(self.list_rect(self.visible_count())))
+        self.open.then(|| self.rect.union(self.list_rect()))
     }
 
     /// While open, grabs every event — see module docs.
@@ -2443,7 +2054,13 @@ mod tests {
             theme,
             &PresenceCtx::empty(),
         );
-        dd.list_width
+        dd.list_rect().width()
+    }
+
+    /// The open list's panel for the dropdown as it stands.
+    fn list_of(dd: &mut Dropdown) -> Rect {
+        dd.refresh_list();
+        dd.list_rect()
     }
 
     #[test]
@@ -2456,7 +2073,7 @@ mod tests {
         let theme = Theme::dark();
         paint_list(&mut dd, &mut renderer, &theme);
         let (hits, misses) = renderer.cache_stats();
-        dd.highlight = 1;
+        dd.list.set_highlight(Some(1));
         paint_list(&mut dd, &mut renderer, &theme);
         let (hits_after, misses_after) = renderer.cache_stats();
         assert_eq!(misses_after, misses, "a repaint shapes nothing new");
@@ -2533,7 +2150,7 @@ mod tests {
                 );
                 let pointer_geometry = frame
                     .with_widget_mut::<Dropdown, _>(|dropdown| {
-                        (dropdown.rect.height(), dropdown.item_h)
+                        (dropdown.rect.height(), dropdown.list.row_height())
                     })
                     .unwrap();
                 frame.tap_named("language-picker").unwrap();
@@ -2543,10 +2160,11 @@ mod tests {
                         let minimum = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
                         assert!(dropdown.rect.height() >= minimum,
                             "the actual touch field must use the host minimum target");
-                        assert!(dropdown.item_h >= minimum,
+                        assert!(dropdown.list.row_height() >= minimum,
                             "each actual painted and hit-tested choice must use the host touch target");
-                        let rows = dropdown.option_rows(dropdown.list_rect(dropdown.visible_count()), dropdown.visible_count());
-                        Point::new(rows.center().x, rows.y0 + dropdown.item_h * 1.5)
+                        let row = dropdown.list.row_rect(1).expect("the second choice is in view");
+                        assert!(row.height() >= minimum);
+                        row.center()
                     })
                     .unwrap();
                 frame.tap_at(point.x, point.y);
@@ -2561,7 +2179,7 @@ mod tests {
                 frame
                     .with_widget_mut::<Dropdown, _>(|dropdown| {
                         assert_eq!(
-                            (dropdown.rect.height(), dropdown.item_h),
+                            (dropdown.rect.height(), dropdown.list.row_height()),
                             pointer_geometry,
                             "returning to a fine pointer restores the theme's compact geometry"
                         );
@@ -2600,7 +2218,7 @@ mod tests {
         let popup = frame
             .with_widget_mut::<Dropdown, _>(|dropdown| {
                 assert!(dropdown.is_open());
-                dropdown.list_rect(dropdown.visible_count())
+                dropdown.list_rect()
             })
             .unwrap();
         assert!(
@@ -2625,14 +2243,8 @@ mod tests {
         frame.click_named("language-picker").unwrap();
         let (thumb, track) = frame
             .with_widget_mut::<Dropdown, _>(|dropdown| {
-                let metrics = dropdown.scroll_metrics(dropdown.visible_count());
-                (
-                    dropdown
-                        .scrollbar
-                        .thumb_rect(dropdown.scrollbar_track, metrics)
-                        .unwrap(),
-                    dropdown.scrollbar_track,
-                )
+                let (bar, track, metrics) = dropdown.list.scrollbar_parts().unwrap();
+                (bar.thumb_rect(track, metrics).unwrap(), track)
             })
             .unwrap();
         frame.drag_at(
@@ -2642,10 +2254,10 @@ mod tests {
         frame
             .with_widget_mut::<Dropdown, _>(|dropdown| {
                 assert!(
-                    dropdown.scroll > 0.0,
+                    dropdown.list.scroll_offset() > 0.0,
                     "the actual shared scrollbar must scroll the list"
                 );
-                assert!(!dropdown.scrollbar.is_dragging());
+                assert!(!dropdown.list.scrollbar_parts().unwrap().0.is_dragging());
                 assert!(dropdown.is_open(), "dragging must not select an option");
             })
             .unwrap();
@@ -2656,6 +2268,8 @@ mod tests {
         frame.click_at(query.x0 + 1.0, query.center().y);
         frame.type_text("X");
         let mut text = TextRenderer::new();
+        let tokens = &frame.theme().tokens;
+        let insets = 2.0 * f64::from(tokens.spacing.s2 + tokens.spacing.s3);
         let hint_width = f64::from(
             text.measure_style(
                 &crate::i18n!("dropdown-no-matches"),
@@ -2675,9 +2289,8 @@ mod tests {
                     "pointer caret uses the shaped query layout"
                 );
                 assert_eq!(dropdown.visible_count(), 0);
-                let rows = dropdown.option_rows(dropdown.list_rect(0), 0);
                 assert!(
-                    rows.width() - LIST_PAD >= hint_width,
+                    dropdown.list_rect().width() - insets >= hint_width,
                     "the localized empty-result text must fit its actual painted clip"
                 );
             })
@@ -2785,21 +2398,18 @@ mod tests {
         let mut dd = Dropdown::new(opts(), "tz");
         dd.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
         let n = dd.options.len();
-        let list = dd.list_rect(n);
-        let theme = Theme::dark();
-        assert!(
-            (LIST_PAD - crate::widget::floating_surface::menu_inset(&theme)).abs() < 1e-9,
-            "the dropdown's inset is the shared menu inset"
-        );
+        let list = list_of(&mut dd);
+        let inset = crate::widget::floating_surface::menu_inset(&Theme::dark());
+        let row = f64::from(crate::tokens::Metrics::BASE.menu_row_height);
         let x = list.center().x;
-        assert_eq!(dd.row_at(Point::new(x, list.y0 + 2.0), list, n), None);
-        assert_eq!(dd.row_at(Point::new(4.0, list.y0 + 20.0), list, n), None);
+        assert_eq!(dd.list.row_at(Point::new(x, list.y0 + 2.0)), None);
+        assert_eq!(dd.list.row_at(Point::new(4.0, list.y0 + 20.0)), None);
         assert_eq!(
-            dd.row_at(Point::new(x, list.y0 + LIST_PAD + 1.0), list, n),
+            dd.list.row_at(Point::new(x, list.y0 + inset + 1.0)),
             Some(0)
         );
         assert!(
-            (list.height() - (f64_of_usize(n) * ITEM_HEIGHT + 2.0 * LIST_PAD)).abs() < 1e-9,
+            (list.height() - (crate::num::f64_of_usize(n) * row + 2.0 * inset)).abs() < 1e-9,
             "the list hugs its rows plus the inset: {list:?}"
         );
     }
@@ -3236,8 +2846,7 @@ mod tests {
         fn open_list_flips_above_when_it_would_leave_the_viewport() {
             let mut dd = Dropdown::new(opts(), "tz");
             dd.rect = Rect::new(0.0, 700.0, 200.0, 740.0);
-            let n = opts().len();
-            let below = dd.list_rect(n);
+            let below = list_of(&mut dd);
             assert!(
                 below.y0 >= dd.rect.y1,
                 "without a viewport the list opens below"
@@ -3260,8 +2869,8 @@ mod tests {
             let mut hosted =
                 Dropdown::new(opts(), "tz").with_viewport(Rect::new(0.0, 0.0, 800.0, 760.0));
             hosted.rect = dd.rect;
-            assert_eq!(hosted.list_rect(n), dd.list_rect(n));
-            let flipped = dd.list_rect(n);
+            assert_eq!(list_of(&mut hosted), list_of(&mut dd));
+            let flipped = list_of(&mut dd);
             assert!(
                 flipped.y1 <= dd.rect.y0,
                 "the list opens above the control: {flipped:?} vs {:?}",
@@ -3269,14 +2878,15 @@ mod tests {
             );
             assert!(flipped.y0 >= 0.0, "and stays inside the viewport");
             assert!((flipped.height() - below.height()).abs() < 1e-6);
+            let row = f64::from(crate::tokens::Metrics::BASE.menu_row_height);
             assert_eq!(
-                dd.row_at(Point::new(10.0, flipped.y0 + ITEM_HEIGHT / 2.0), flipped, n),
+                dd.list.row_at(Point::new(10.0, flipped.y0 + row / 2.0)),
                 Some(0),
                 "the first row is hit where it is painted"
             );
             // No room above either: stay below rather than run off the top.
             dd.set_viewport(Rect::new(0.0, 690.0, 800.0, 760.0));
-            assert!((dd.list_rect(n).y0 - below.y0).abs() < 1e-6);
+            assert!((list_of(&mut dd).y0 - below.y0).abs() < 1e-6);
         }
 
         /// The dropdown is the fluid item in a row (F2-16): laid beside fixed
@@ -3353,20 +2963,6 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("Level"));
         }
 
-        fn external_overlay_height_hugs_short_lists_and_caps_long_ones() {
-            let short = Dropdown::new(opts(), "tz");
-            assert_eq!(
-                short.open_overlay_height(),
-                CONTROL_HEIGHT + LIST_GAP + 4.0 * ITEM_HEIGHT + 2.0 * LIST_PAD
-            );
-
-            let long = Dropdown::new((0..100).map(|index| index.to_string()).collect(), "value");
-            assert_eq!(
-                long.open_overlay_height(),
-                CONTROL_HEIGHT + LIST_GAP + MAX_LIST_HEIGHT + 2.0 * LIST_PAD
-            );
-        }
-
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         losing_focus_closes_the_list();
@@ -3375,7 +2971,6 @@ mod tests {
         open_list_flips_above_when_it_would_leave_the_viewport();
         dropdown_in_a_row_yields_width_to_fixed_siblings();
         a_caption_stacks_above_the_field_and_names_it();
-        external_overlay_height_hugs_short_lists_and_caps_long_ones();
     }
 
     #[test]
@@ -3434,11 +3029,11 @@ mod tests {
         let mut document = AutoCommit::new();
         let root = automerge::ROOT;
 
-        let list = menu.list_rect(opts().len());
+        let list = list_of(&mut menu);
         assert!((list.x1 - menu.rect.x1).abs() < 1e-6, "{list:?}");
         assert!(list.width() >= menu_min_width());
         menu.set_viewport(Rect::new(0.0, 0.0, 400.0, 800.0));
-        let kept = menu.list_rect(opts().len());
+        let kept = list_of(&mut menu);
         assert!(
             kept.x1 <= 400.0 && kept.x0 >= 0.0,
             "kept in the window: {kept:?}"

@@ -1,22 +1,17 @@
 #!/usr/bin/env bash
-# Render the visual goldens anew on the project's builder image (t.toml's
-# `image`) and bundle the candidates for review, with that image recorded in
-# .config/visual-goldens-image and t.toml regenerated to match.
+# Render the visual goldens anew on the project's builder image and bundle the
+# candidates for review, with that image recorded in .config/visual-goldens-image.
 #
-#   t outputs visual-baselines   # renders, then downloads target/visual-baseline-review
-#   git apply target/visual-baseline-review/candidates.patch
+#   bash tools/ci/visual-baselines.sh   # in the builder image, in a Git checkout
+#   git apply "$CARGO_TARGET_DIR/visual-baseline-review/candidates.patch"
 #
-# Runs as t's `visual-baselines` check, which gives it a private writable copy
-# of the sources and a Git checkout of the commit, so `git diff` shows exactly
-# what the render changed.
+# `git diff` against the checkout shows exactly what the render changed.
 set -euo pipefail
 review=${CARGO_TARGET_DIR:?}/visual-baseline-review
 rm -rf "$review"
 mkdir -p "$review/files"
 
-image=$(sed -n 's/^image = "\(.*\)"$/\1/p' t.toml)
-image=${image%%$'\n'*}
-[[ $image == *@sha256:* ]] || { echo "t.toml names no pinned project image" >&2; exit 2; }
+image=$(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import resolve_builder; print(resolve_builder.resolve(""))')
 filter=$(python3 tools/ci/nextest_filters.py | sed -n 's/^GOLDEN_FILTER=//p')
 packages=()
 for name in $(grep -o 'package([A-Za-z0-9_-]*)' <<<"$filter" | sed 's/^package(\(.*\))$/\1/' | sort -u); do
@@ -27,7 +22,7 @@ done
 # holds only what the render changed.
 paths=(crates/sdk/ui-core/tests/fixtures/typography apps/ebook/tests/fixtures/typography
        crates/session/shell/tests/snapshots/e2e
-       .config/visual-goldens-image t.toml)
+       .config/visual-goldens-image)
 export GIT_INDEX_FILE=$TMPDIR/visual-baselines.index
 git read-tree HEAD
 for path in "${paths[@]}"; do
@@ -41,7 +36,6 @@ UPDATE_TYPOGRAPHY_BASELINES=1 TILO_REQUIRE_GPU=1 \
     --no-tests=pass -E "$filter" || status=$?
 
 bash tools/ci/golden-image.sh record "$image"
-python3 tools/ci/t_toml.py write
 for directory in e2e; do
     python3 tools/test-assets.py crates/session/shell/tests/snapshots/artifacts.json \
         --prune-identical-candidates "crates/session/shell/tests/snapshots/$directory"

@@ -270,6 +270,20 @@ pub enum BrowserEffect {
     /// Clear library filter
     #[effect(view, row)]
     ClearLibraryFilter,
+    /// Edit a saved address
+    #[effect(view)]
+    EditAddress {
+        #[param("Id of the saved address")]
+        profile: String,
+    },
+    /// Delete a saved address
+    ///
+    /// Asks before the address is deleted.
+    #[effect(view)]
+    DeleteAddress {
+        #[param("Id of the saved address")]
+        profile: String,
+    },
     /// Forget one visited page
     ///
     /// Removes this one page from your browsing history. Bookmarks are kept.
@@ -936,6 +950,8 @@ impl BrowserEffect {
             Self::ShowSettings => BrowserOperation::ShowSettings,
             Self::SetLibraryFilter { query } => BrowserOperation::SetLibraryFilter { query },
             Self::ClearLibraryFilter => BrowserOperation::ClearLibraryFilter,
+            Self::EditAddress { profile } => BrowserOperation::EditAddress { profile },
+            Self::DeleteAddress { profile } => BrowserOperation::DeleteAddress { profile },
             Self::ForgetVisit { url } => BrowserOperation::ForgetVisit { url },
             Self::ClearHistory => BrowserOperation::ClearHistory,
             Self::RequestSiteDataClear => BrowserOperation::RequestWebsiteDataClear,
@@ -1208,6 +1224,14 @@ pub enum BrowserOperation {
         query: String,
     },
     ClearLibraryFilter,
+    /// Open a saved address in the address editor.
+    EditAddress {
+        profile: String,
+    },
+    /// Ask whether to delete a saved address.
+    DeleteAddress {
+        profile: String,
+    },
     ShowSettings,
     ShowPage,
     /// Forget one visited page (`forget_visit`).

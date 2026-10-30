@@ -1670,9 +1670,10 @@ impl TextInput {
             let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
                 action.emit(self.text.clone())
             });
-        } else {
-            self.publish_local_state();
         }
+        // The field's own state stays the one a bound local edit reads: an
+        // action publishing the text does not stand in for it.
+        self.publish_local_state();
         if let Some(callback) = self.on_change.as_mut() {
             callback(&self.text);
         }

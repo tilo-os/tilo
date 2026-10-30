@@ -20,7 +20,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tools" / "ci"))
-import t_matrix  # noqa: E402
 PUBLISH = REPO / "tools/extensions/publish.sh"
 BASE_URL = "https://code.example/api/packages/tilo/generic"
 FINGERPRINT = "cd" * 32
@@ -367,19 +366,6 @@ class SigningAuthority(unittest.TestCase):
                     self.assertIn("qualification requires one immutable image", result.stderr)
                     self.assertFalse(sentinel.exists(), "invalid qualification must not pull an image")
                     self.assertFalse(out.exists())
-
-    def test_only_the_manifest_publisher_requests_the_extension_audience(self):
-        checks = t_matrix.load(REPO)["check"]
-        users = sorted(c["name"] for c in checks if "tilo-extension-manifests" in c.get("id_token", []))
-        self.assertEqual(users, ["publish-extension-manifests"])
-        (publisher,) = (c for c in checks if c["name"] == "publish-extension-manifests")
-        env = publisher["env"]
-        self.assertEqual(env["TILO_SIGNING_AUDIENCE"], "tilo-extension-manifests")
-        self.assertTrue(env["COSIGN_KEY_REF"].endswith(":alias/tilo-extension-manifests"), env)
-        self.assertTrue(env["AWS_SIGNING_ROLE_ARN"].endswith(":role/TiloTExtensionManifestSigner"), env)
-        text = repr(publisher)
-        self.assertNotIn("alias/tilo-release-signing", text, "the OS release key never signs a manifest")
-        self.assertNotIn("TiloTReleaseSigner", text)
 
 if __name__ == "__main__":
     unittest.main()

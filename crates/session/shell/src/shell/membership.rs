@@ -58,7 +58,7 @@ impl From<MembershipError> for ActionError {
 }
 
 fn authorize(st: &ChromeState, action: &'static str) -> Result<(), MembershipError> {
-    if crate::shell::search::providers::actions::current_shell_action_authorized(st, action) {
+    if crate::shell::actions::current_shell_action_authorized(st, action) {
         Ok(())
     } else {
         Err(MembershipError::Unauthorized(action))

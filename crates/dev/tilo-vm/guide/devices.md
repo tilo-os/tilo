@@ -197,7 +197,7 @@ work on a device too, beside the device's session.
 
   ```toml
   [remote_builders]
-  aarch64 = ["dist/dev/t-builder.sh", "aarch64"]   # t's aarch64 nodes build it
+  aarch64 = ["my-arm-cargo"]   # any cargo drop-in that runs on an aarch64 machine
   ```
 
   ```sh
@@ -228,18 +228,16 @@ device's `/var/lib/tilo-vm/layers/<hash>/provenance.json` show.
 tilo-vm vm status opi                    # tilo-vmd, protocol, architecture
 tilo-vm vm ssh opi -- bootc status       # the image it runs and follows
 tilo-vm vm upgrade opi                   # back to its channel's newest image, then a reboot
-tilo-vm vm upgrade opi --ref my-branch   # t builds and publishes the branch for this board
 tilo-vm vm upgrade opi --from sha:1a2b3c4   # that commit's build of this board's image
 tilo-vm vm rollback-image opi
 tilo-vm vm restart opi                   # reboot over SSH; wait for the new boot and tilo-vmd
 ```
 
 A board's image is sealed, so an upgrade takes a published image through the
-device's own update path (docs/development/devices.md) and reboots, never a
-local build. `--ref` and `--from sha:<commit>` read the board the device's
+device's own update path and reboots, never a
+local build. `--from sha:<commit>` reads the board the device's
 image was built for (`/usr/lib/tilo/hardware-profile.json`) and take that
-board's image of the build, `tilo-vm:main-<sha7>-<board>` or a branch's
-`tilo-vm-ref:ref-<branch>-<sha7>-<board>`: the generic dev image has no board
+board's image of the build, `tilo-vm:main-<sha7>-<board>`: the generic dev image has no board
 firmware or device tree and would not boot it. The board follows
 `tilo-vm:<board>-ci`, its dev channel, otherwise.
 Board dev images are public today; when the registry refuses the device's

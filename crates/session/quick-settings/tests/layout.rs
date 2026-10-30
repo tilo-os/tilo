@@ -170,6 +170,30 @@ fn each_control_invokes_its_effect_on_the_device() {
 }
 
 #[test]
+fn what_plays_is_steered_from_the_panel_through_its_effects() {
+    let (mut app, _) = hosted("controls");
+    assert!(!has(&mut app, "qs-now-playing"), "nothing plays, no card");
+
+    let (mut app, host) = hosted("now-playing");
+    assert!(
+        has(&mut app, "qs-now-playing-player"),
+        "two players to choose from"
+    );
+    assert!(has(&mut app, "qs-now-playing-output"));
+    for name in ["transport.play", "transport.next", "transport.previous"] {
+        click(&mut app, name);
+    }
+    assert_eq!(
+        host.ran(),
+        [
+            QsEffect::PlayPause,
+            QsEffect::NextTrack,
+            QsEffect::PreviousTrack,
+        ]
+    );
+}
+
+#[test]
 fn the_effects_are_published_for_the_palette_scripts_and_agents() {
     let (mut app, host) = hosted("controls");
     app.effect(&QsEffect::SetVolume { level: 0.25 }).unwrap();

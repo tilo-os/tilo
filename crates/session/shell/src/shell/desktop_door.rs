@@ -532,6 +532,7 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         keywords: Vec::new(),
         icon: None,
         description: Some(t(&format!("{label}-description"))),
+        state: tilo_actions::ActionState::default(),
         locus: ExecutionLocus::default(),
         kind,
         contract,

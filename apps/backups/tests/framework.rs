@@ -129,6 +129,11 @@ fn backups_run_and_follow_the_policy_at_once() {
         })
         .is_err()
     );
+    // The order picker's effect lists the timeline oldest first.
+    app.effect(&BackupsEffect::OrderSnapshots {
+        order: "Oldest first".into(),
+    })
+    .unwrap();
 
     // A second backup within the same hour replaces the first: the policy
     // keeps the newest snapshot of each hour.

@@ -48,7 +48,7 @@ impl NativeWorkspaceOwner {
             return Err("membership mutation is not signed by this device".into());
         }
         let governs = candidate.device() == candidate.governor();
-        if !governs && !a_member_commits(&command) {
+        if !governs && !any_member_commits(&command) {
             return Err("only the room's governor commits this change".into());
         }
         let id = serde_json::to_string(&(caller.device_public_key, invocation))
@@ -126,9 +126,9 @@ impl NativeWorkspaceOwner {
     }
 }
 
-/// Whether a member's own device commits `command`, as the room's host admits every member's
-/// changes; the rest only the room's governor commits.
-fn a_member_commits(
+/// Whether a member's own device may commit `command` by its grants; the
+/// rest only the room's governor commits.
+fn any_member_commits(
     command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
 ) -> bool {
     use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;

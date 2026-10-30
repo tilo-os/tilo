@@ -39,7 +39,7 @@ NATIVE_TEST_FEATURES = {
     "tilo-moq": ("relay",),
     # The listener browsers and the fetch proxy reach a host through, and their
     # tests, are behind `web`, which every deployed relay enables. (`agents`
-    # links every web app, so its tests run in the agent checks of t.toml.)
+    # links every web app, so its tests run with the agent packages.)
     "tilo-relay": ("web",),
     "tilo-relay-shell": ("web",),
     # The rest compile their tests only with a feature their default build
@@ -81,7 +81,7 @@ NATIVE_TEST_FEATURES = {
 
 # Packages whose tested features above are not their default build. The
 # default build is what ships (the Imager's Tilo app), so clippy also checks it
-# on its own, and the `default-builds` check in t.toml builds its tests as it
+# on its own, and `--default-builds --all` lists them so CI builds their tests as it
 # ships, each alone: otherwise code and tests the default leaves out rot
 # unseen, as the Imager's did when the installation became a feature. Not in
 # the test family's shared jobs, whose memory t budgets for one build each.
@@ -115,7 +115,7 @@ def default_builds(packages: list[str]) -> list[str]:
 
 def main(argv: list[str]) -> None:
     if argv == ["--default-builds", "--all"]:
-        # Every such package, for the `default-builds` check in t.toml.
+        # Every such package, to build their tests as they ship.
         print(" ".join(sorted(DEFAULT_BUILDS_ALSO_CHECKED)))
         return
     defaults = bool(argv) and argv[0] == "--default-builds"

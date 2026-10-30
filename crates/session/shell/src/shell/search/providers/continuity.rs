@@ -12,7 +12,6 @@ use ui::search::{FieldWeight, ListIndex};
 
 use super::actions::ACTION_ID_WEIGHT;
 
-use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
 use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
 use crate::shell::i18n::{t, t_args};
 use crate::shell::overlay_host::{
@@ -20,15 +19,16 @@ use crate::shell::overlay_host::{
     RealtimeContinuityUiAction,
 };
 use crate::shell::personal_tethering_runtime::TetheringPhase;
-use crate::shell::remote_capture::device::RemoteCaptureKind;
 use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use crate::shell::speaker_group_runtime::SpeakerConsentKind;
+use tilo_device_fabric::remote_capture::RemoteCaptureKind;
+use tilo_device_fabric::{DeviceKind, DisplayEdge};
 use tilo_network_actor::fabric::DeviceId;
+use tilo_speaker_service::groups::SpeakerConsentKind;
 
 pub const DEVICE_PROVIDER_ID: &str = "continuity.devices";
 pub const CALL_PROVIDER_ID: &str = "continuity.calls";
@@ -111,7 +111,7 @@ fn opaque(domain: &'static str, bytes: &[u8]) -> String {
 /// names the destination without disclosing the session or group identity.
 pub(crate) fn speaker_group_media_action_id(
     session_id: &str,
-    group: crate::shell::speaker_group::SpeakerGroupId,
+    group: tilo_device_fabric::speaker_group::SpeakerGroupId,
 ) -> String {
     format!(
         "speakers.media.{}.{}",
@@ -560,7 +560,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         });
     }
 
-    let speaker_id = |group: crate::shell::speaker_group::SpeakerGroupId| {
+    let speaker_id = |group: tilo_device_fabric::speaker_group::SpeakerGroupId| {
         opaque("so.tilo.continuity.speaker-group.v1", &group.0)
     };
     for consent in &view.speaker_groups.consents {
@@ -831,7 +831,7 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 // The code is the one the waiting boot shows.
                 id: format!(
                     "{}.{verb}.{}",
-                    crate::shell::device_unlock::DEVICE_UNLOCK_ACTION,
+                    tilo_device_fabric::unlock::DEVICE_UNLOCK_ACTION,
                     unlock.approval_code
                 ),
                 title: t_args(
@@ -1742,11 +1742,11 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn speaker_groups_project_consent_play_and_leave_without_disclosing_ids() {
-        use crate::shell::speaker_group::{
+        use tilo_device_fabric::speaker_group::{
             EndpointSelector, SpeakerGroupId, SpeakerMemberStatus, SpeakerRole, SpeakerTrim,
             StereoSide,
         };
-        use crate::shell::speaker_group_runtime::{
+        use tilo_speaker_service::groups::{
             SpeakerConsentKind, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupView,
             SpeakerMemberView, SpeakerMembershipView,
         };
@@ -1755,7 +1755,7 @@ mod tests {
         let right = SpeakerRole::Stereo(StereoSide::Right);
         view.remote_audio
             .sources
-            .push(crate::shell::remote_audio::RemoteAudioSourceView {
+            .push(tilo_speaker_service::remote_audio::RemoteAudioSourceView {
                 token: 77,
                 label: "All system audio".into(),
                 application: false,

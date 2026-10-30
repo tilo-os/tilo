@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The session's audio policy as its own process: persistent audio transforms, hotplug follow and pause, and the device arrival and departure events the compositor sounds."
+description = "The session's audio and media helper as its own process: the sound resource (outputs, inputs, volume) and its actions, persistent audio transforms, hotplug follow and pause, the device events the compositor sounds, and the one MPRIS client that follows and drives media players."
 
 [lib]
 name = "tilo_audio_service"
@@ -16,13 +16,14 @@ path = "src/main.rs"
 required-features = ["service"]
 
 [features]
-# The helper itself. The compositor depends on the library without it, for
-# the line format alone.
+# The helper itself. The session depends on the library without it, for the
+# line formats, the handoff rules and the sound resource's specs alone.
 default = ["service"]
 service = [
-    "dep:media",
+    "dep:futures-util",
+    "dep:image",
     "dep:settings-store",
-    "dep:serde_json",
+    "dep:tokio",
     "dep:tracing",
     "dep:tracing-subscriber",
     "dep:zbus",
@@ -30,16 +31,29 @@ service = [
 ]
 
 [dependencies]
-media = { package = "tilo-media", path = "../../platform/tilo-media", optional = true }
+base64.workspace = true
+blake3.workspace = true
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+futures-util = { workspace = true, optional = true }
+image = { workspace = true, features = ["jpeg", "png", "webp"], optional = true }
 settings-store = { path = "../../system/settings-store", features = ["watch"], optional = true }
-serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"], optional = true }
 tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
 zbus = { workspace = true, features = ["tokio", "blocking-api"], optional = true }
 libc = { workspace = true, optional = true }
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+# The sound resource, served to the session over lines (`--serve`).
+tilo-service = { path = "../service" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tempfile.workspace = true
 # The idle-thread check that proves the worker sleeps with no timer.
 tilo-test-env = { path = "../../dev/test-env" }
 

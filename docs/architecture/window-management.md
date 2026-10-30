@@ -2,8 +2,7 @@
 
 Status: design note, 2026-09-29. Where it says **today** it describes
 `origin/main`; **planned** rows are the work listed under "Delivery". It adopts
-the navigation grammar of the owner's proposal in PR #1320
-(`docs/design/navigation-and-multi-monitor.md`), which also carries the
+the navigation grammar of the proposal in PR #1320, which also carries the
 comparison with niri, PaperWM, GNOME, macOS and Windows and the multi-monitor
 defect list. This page is the contract the window manager implements: one
 mental model, one binding for each operation on each input device, the action
@@ -26,8 +25,7 @@ A workspace is a **desk**: its strips stack top to bottom as full-height
 screens (the strip deck, `ui::widget::StripDeck`; one fills the work area at
 a time and each keeps its own horizontal pan), a strip's window
 groups run left to right, and each display is a window onto part of that desk
-(every display shows the same workspace and holds its own groups; see
-[displays-and-infinite-workspaces.md](displays-and-infinite-workspaces.md)).
+(every display shows the same workspace and holds its own groups).
 Workspaces are separate desks, stacked in order. Nothing overlaps and nothing floats.
 
 Every input device says the same three things:

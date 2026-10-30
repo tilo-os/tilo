@@ -290,9 +290,9 @@ mod tests {
         // Phase `personal_fabric_motion_goes_to_the_event_loop_but_yields_to_kill_switch`.
         {
             use crate::compositor::state::State;
-            use crate::shell::device_fabric::FabricInputEvent;
             use smithay::reexports::calloop::EventLoop;
             use smithay::reexports::wayland_server::Display;
+            use tilo_device_fabric::FabricInputEvent;
 
             let event_loop: EventLoop<'static, State> =
                 EventLoop::try_new().expect("calloop event loop");

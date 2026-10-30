@@ -22,6 +22,8 @@ mount = ["dep:fuser"]
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The grant records, replaced atomically in an owner-only folder.
+tilo-files = { path = "../../platform/tilo-files" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process", "std"] }

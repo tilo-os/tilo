@@ -478,6 +478,7 @@ mod tests {
 
     fn action(name: &str, confirmation: tilo_actions::ConfirmationPolicy) -> PublishedAction {
         PublishedAction {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             resource: "files.app".into(),
             action: name.into(),
@@ -2482,6 +2483,7 @@ mod tests {
         let (state, room) = broker(&workspace());
         let mut published = surface(7, &room);
         published.actions.push(PublishedAction {
+            state: tilo_actions::ActionState::default(),
             operation_kind: tilo_actions::OperationKind::Document,
             contract: tilo_actions::ActionContract::default(),
             ..action("rename", tilo_actions::ConfirmationPolicy::None)

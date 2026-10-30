@@ -336,7 +336,7 @@ enum SandboxViewCmd {
 
 #[derive(Debug, clap::Args)]
 struct RunHostArgs {
-    /// Desktop-file id, as printed by `tilo-desktop-scan`
+    /// Desktop-file id: the entry's file name without `.desktop`
     /// (`com.spotify.Client`, `org.gnome.TextEditor`).
     #[arg(long)]
     desktop_id: String,

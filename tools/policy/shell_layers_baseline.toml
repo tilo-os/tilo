@@ -61,14 +61,12 @@ grandfathered = [
     "base64",
     "blake3",
     "bounded-command",
-    "browser",
     "bytes",
     "capnp",
     "capnp-rpc",
     "channel-crypto",
     "chat",
     "chrono",
-    "code-editor",
     "collab-types",
     "compat-service",
     "console-control",
@@ -89,14 +87,11 @@ grandfathered = [
     "launcher",
     "legacy-agent-protocol",
     "libc",
-    "messages",
     "mime_guess",
     "neighbour-wire",
-    "notes",
     "os-actions",
     "package-store",
     "parking_lot",
-    "passwords",
     "percent-encoding",
     "pipewire",
     "pollster",
@@ -124,7 +119,6 @@ grandfathered = [
     "taffy",
     "tar",
     "tempfile",
-    "terminal",
     "thiserror",
     "threshold-identity",
     "tilo-accessibility-settings",
@@ -205,7 +199,6 @@ grandfathered = [
     "wayland-scanner",
     "windows-vm",
     "wire-frame",
-    "word-processor",
     "x11rb",
     "xattr",
     "xkeysym",
@@ -214,9 +207,15 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
-"launcher-app" = "Search as the launcher app the session mounts in its own process, as it mounts the power menu's sheets: the desktop lends it what it can find; it brings only tilo-app, which the shell already depends on"
+"tilo-onboarding-host" = "Setup's view and the session host it lends an onboarding app, moved out of the shell into a crate of its own: the shell re-exports them so its overlay and screens read one implementation, and it brings only tilo-app, tilo-onboarding, tilo-desktop-model and tilo-ui, which the shell already depends on"
+"tilo-onboarding" = "The onboarding app's own record and effect types, which the shell reads beside the view it now hosts from tilo-onboarding-host: the crate brings only tilo-app, tilo-desktop-model and tilo-ui, which the shell already depends on"
+"launcher-app" = "Search as the launcher app the session mounts in its own process, as it mounts the power menu's sheets: the desktop lends it what it can find; it brings only tilo-app and zeroize, which the shell already depends on"
+"tilo-device-fabric" = "The state one person's devices share (presence, media, clipboard, roaming settings, unlock, realtime calls), carved out of the shell as a model the session drives; it brings tilo-desktop-surface, which the shell links through tilo-desktop, and otherwise only crates the shell already depends on"
+"tilo-nearby-service" = "The private spool a nearby transfer between one person's devices is staged in, carved out of the shell; it brings only crates the shell already depends on"
+"tilo-speaker-service" = "Speaker groups and remote audio across one person's devices, carved out of the shell as a service it drives; it brings only crates the shell already depends on"
 "tilo-overview" = "The workspace overview as an ordinary framework app the shell mounts in its own process and lends the desktop to; it brings tilo-desktop, tilo-desktop-model, tilo-sheets, tilo-action-policy and tilo-app, which the shell already depends on"
 "tilo-sheets" = "The sheets the shell shows over the desktop (the power menu) as ordinary framework apps it mounts in its own process; it brings only tilo-app, which the shell already depends on"
+"tilo-durable-writer" = "The off-frame-thread writer the workspace tree, drives and layout records go through, moved out of the shell into a crate of its own: the session's own app mounts it too, so it cannot live inside the shell; it brings nothing but what the shell already depends on"
 "tilo-device-vpn" = "Routing a device's traffic through another device of the same person: the shell owns the iroh endpoint, so it accepts the tunnel ALPN and drives the client and exit; built with only the tunnel feature (wire format, packet loop, typed helper protocol), which brings iroh, tokio and serde that the shell already depends on, and none of the privileged helper"
 "settings-sections" = "The person's settings sections as resource models, carved out of the Settings app: the session keeps them as records and serves their field edits and verbs to the palette, agents and scripts whether or not Settings is open; it brings settings-store, tilo-wallpapers, tilo-accessibility-settings and tilo-app, which the shell already depends on, and tilo-locale, which itself brings only tilo-app and serde"
 "tasks" = "Runs of issues assigned to an agent (broker_services::tracker_runs) come from the tracker record, read with the Tasks app's own model as the shell already reads Notes, Code and Word records; it brings only tilo-document, tilo-rich-text and tilo-app, which the shell already depends on"
@@ -238,14 +237,13 @@ grandfathered = [
 "tilo-browser-peer" = "The member's side of pairing a new device through a shared host: the shell's network bridge answers the pending pairing requests with the crate's types, built without its default browser features"
 "tilo-handoff" = "First boot receives the prepared setup from the installer or a peer computer (onboarding_peer) through the crate's authenticated hand-off receiver, the same code the installer sends with"
 "tilo-messaging-service" = "The session door of the messaging service the compositor starts (shell::in_process::messaging) and the client Messages shown in the compositor uses; built without default features, so the compositor links no account, provider or vault code"
-"tilo-audio-service" = "The line format of the session audio helper the compositor starts (shell::audio_service); only the event type, built without default features, so the compositor links none of the audio policy"
+"tilo-audio-service" = "The line format of the session audio and media helper the compositor starts (shell::audio_service, shell::mpris) and the rules for which players may be handed off; built without default features, so the compositor links none of the audio policy and no MPRIS client"
 "tilo-net-answers" = "The wire format of the confined network-answers helper search runs for currency rates; only the protocol types, built without default features, so the shell gains no network code"
 "tilo-ntfs-mount" = "The consent-gated NTFS mount service's protocol for shell::drives, built without default features: the shell asks the service and never mounts itself"
 "tilo-render-protocol" = "The messages between the compositor's render broker and the per-room render service it starts (compositor::render_broker)"
 "tilo-render-service" = "The per-room render service runs as a mode of the session binary (linux_main dispatches it) and the compositor's broker starts it, so the binary links the service"
 "tilo-system-stats" = "The typed system information service the session serves to apps, and the readings its own System monitor desk widget shows"
 "host-fs" = "Uninstalling an app (shell::app_list) moves its program file and a Flatpak's data to the Trash, never deleting them; host-fs is the one Trash implementation, which Files and Backups already use, and brings only the trash crate and tilo-paths with it"
-"osk" = "The on-screen keyboard's own widget, which an offscreen capture draws in place of the keyboard client's surface it has no client for (shell::shots_keyboard): the layouts, key geometry and paint stay the keyboard app's, and the shell adds no code but the panel it docks it in, so a shot and a touch screen place the keyboard by one rule; it brings ui, taffy and vello, which the shell already depends on"
 "tilo-winit-x11" = "The hosted backend's winit with X11 turned on, split out so hakari keeps X11 out of the shared app runtime; it adds no code beyond winit, which the shell already depends on as tilo-winit"
 "tilo-wayland-ext" = "The color-management-v1 handlers and the EDID parsing, carved out of the shell so the compositor does not rebuild them; it brings neighbour-wire and smithay, which the shell already depends on"
 "tilo-quick-settings" = "The Quick Settings panel, its sections and state, and the status line the top bar shares, carved out of the shell so a chrome or compositor change does not rebuild them; it brings tilo-ui, tilo-desktop, os-actions, settings-store and tilo-power-mgmt, which the shell already depends on"
@@ -255,7 +253,6 @@ grandfathered = [
 "tilo-color-pipeline" = "The compositor's colour maths (HDR output encode, tone mapping, the HDR surface composite and its shaders, display capabilities, software dimming), carved out of the shell so a compositor change does not rebuild it; it brings neighbour-wire, settings-store, tilo-wayland-ext and vello, which the shell already depends on"
 "tilo-output-passes" = "The GPU passes that put a frame on an output (orientation, ICC calibration, HDR encode and composite, XRGB damage history, shader warm-up, software GPU memory return), carved out of the shell so a compositor change does not rebuild them; it brings qcms, ash, sysinfo, settings-store, tilo-advisory-lock, tilo-color-pipeline and vello, which the shell already depends on"
 "tilo-room-host" = "Every device hosts the rooms placed on it with the same host a relay embeds (docs/architecture/hosting.md): the room governance, member sessions and retained store live in tilo-room-host, built without its agents or web features, and the shell keeps only what ties it to this device, its router's deferred handlers (network::local_host) and placing its own workspaces on the host (shell::network::embedded_host), which reads the shell's workspace tree and network and so cannot move below it; a crate between the two would add a hop and leave the shell's graph the same"
-"activity" = "The Activity app's record, read for the runs and progress the shell shows in its own surfaces (as it already reads the Notes, Code, Word and Tasks records); the app crate brings the record's model, which the shell renders, and adds nothing the shell does not already link"
 "tilo-auth" = "The login screens' comforts go to tilo-authd over its own socket protocol, built with default features off; it is the one client of that protocol, and brings only the wire types the shell sends, not the daemon"
 "pprof-alloc" = "Optional, behind the hosted-test-control feature: the sampling heap profiler installed as the global allocator in shell::heap_profile, idle unless PPROF_ALLOC_SAMPLE_RATE is set, so the idle-memory test and an on-demand profile can attribute live heap to a call site"
 "prost" = "Optional, behind the hosted-test-control feature: decodes the gzipped pprof profile that pprof-alloc records, in shell::heap_profile only"

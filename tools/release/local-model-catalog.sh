@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# The local model catalog's steps, as t's checks run them (t.toml, "Local model catalog";
-# docs/publishing-on-t.md). Building, signing and publishing are separate checks: only `sign` and
+# The local model catalog's steps. Building, signing and publishing are separate steps: only `sign` and
 # `review` hold the catalog's signing seed, only `publish` and `publish-runtime` a package token.
 #
 #   compiler OUT        build tilo-model-catalog without credentials, into OUT/

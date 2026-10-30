@@ -234,9 +234,8 @@ touch. Expanded neighbouring targets must not overlap.
 
 ## Building
 
-All apps are workspace members; build from the repo root. Use the
-[platform setup](../docs/development/README.md#platform-setup) for your host and
-the apps you're changing:
+All apps are workspace members; build from the repo root. See
+[CONTRIBUTING.md](../CONTRIBUTING.md) for the toolchain and native dependencies:
 
 ```bash
 cargo build -p terminal -p file-explorer -p browser

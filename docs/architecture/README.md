@@ -1,123 +1,106 @@
-# What Tilo is
+# Architecture
 
-Collaborating with people and with AI agents is one problem: both need permissions you
-can reason about, visibility into who did what, and the ability to revert it.
+Tilo is a desktop, a set of apps and the system underneath them, built so that
+people and their devices work on the same things together. This page is the
+map: the model every part follows, and where each part lives in the code.
+[`workspace.md`](workspace.md) is the full specification of the model; the
+[code map](../codemap.md) lists every crate.
 
-That cannot live inside an application — it has to work in the ebook reader, the file
-manager and the terminal, not just the document editor. So it lives underneath them, on
-CRDT state the system owns.
+## The model
 
-## Resources, views and actions
+**A workspace is the one unit of collaboration.** It holds a layout (strips,
+window groups and the apps open in them), people (members, roles and grants)
+and state with its history. Every workspace a person has is on every one of
+their devices. There is nothing beside or under a workspace.
 
-**Applications own neither their pixels nor their persistent storage.**
+**A member is a person's identity; devices are separate.** A member is a
+certified identity root. Each of their devices has its own key, certified by
+that root, and that key is the device's iroh endpoint id. Membership, roles,
+grants and history name members, never devices. In each workspace a device is
+either a *participant* (holds the keys, reads, writes and can do work) or a
+*store* (keeps and forwards the encrypted data and can read none of it), and
+each device decides how much it offers: storage, sync, running actions,
+search, agents. A "host" is a device with a large appetite, not a different
+kind of node.
 
-There is one resource / action / view model for every app, written one way
-([resources.md](resources.md)):
+**Devices sync over iroh, end to end encrypted.** Devices reach the other
+devices of a workspace directly or through any device that stores it. Content
+is sealed under content keys whose group is an MLS group made of exactly the
+workspace's participant devices. Members added later receive the keys of every
+past epoch, so they read the whole history.
 
-- **Model.** State is a `#[derive(Model)]` struct in a CRDT document. Storage
-  types declare how concurrent edits merge; apps never call Automerge.
-- **Actions.** Every field has a typed path and editing it is a built-in
-  action; `#[action]` methods are the real verbs. An action's kind (Read,
-  Undoable, Outside) is derived from what its code can do, never declared.
-  Outside consequences go through an `Outbox` drained by the owning device.
-- **Views.** Views bind controls by path and submit typed actions; forms are
-  local; only controls whose paths a change touched re-run.
-- **Visible.** Invoking an action makes its view live and runs it there, on the
-  strip where the task runs, with the actor present and attributed. Nothing is
-  performed out of sight.
-- **History.** Entries are structured data (actor, on whose behalf, what, which
-  item); sentences are rendered from Fluent in the reader's language.
-- **Permissions.** Grants over the published tree, filtered by kind, answering
-  Allow, Ask or Deny; enforced at every door and on receipt by relays and
-  devices ([permissions.md](permissions.md)).
+**All shared state is CRDT.** Every resource is an Automerge document,
+including settings. Membership itself is a resource (`workspace.members`)
+whose ops are signed and checked against the membership as their author saw
+it, so every participant reaches the same answer without a coordinator.
 
-### Settings, files and secrets
+**Apps are typed resources, actions and bound views.** An app declares its
+state as a model (`#[derive(Model)]`), the changes it allows as actions
+(`#[resource]` with `#[action]` methods), and views whose controls bind to
+fields and actions. Because every change is a typed action on a CRDT resource,
+the framework gives every app the same things for free:
 
-Settings are resources like any other state: CRDT-backed, in a workspace,
-synced to the devices that hold it ([workspace.md](workspace.md), "State").
-Views and surfaces get settings, the app's files and its secrets from their
-context; a secret of one document item is keyed by the item's id, so the
-document names it and the secret stays on the device.
+- **collaboration and sync**: actions become CRDT changes that merge across
+  people and devices;
+- **history and undo**: every action is a history entry with an author, and
+  undo is per author;
+- **permissions**: roles and grants decide who may invoke which action, and a
+  refused action changes nothing;
+- **search**: resources are indexed by the system, so system search finds
+  them;
+- **scripts, agents and the command palette**: they enumerate and invoke the
+  same actions the buttons do.
 
-### Views, versions and captures
+[Build an app](../app-development.md) shows this in code.
 
-A resource can name more than one view (editor, reader) with a stable id.
-UI is a suggestion for presenting resources and actions, not the interface
-itself. An app can open a resource it never defined and it opens in the right
-application: URLs or intents for everything, above and below file granularity.
-Opening something is a record and actions, not a second launcher.
+**The shell runs on the same stack.** The launcher, top bar, overview, quick
+settings, notifications and onboarding are apps on the same toolkit and the
+same resource/action/view model. The compositor stays thin: windows, input,
+outputs and scanout. Rendering capabilities the shell needs belong in the
+toolkit, so every app has them.
 
-A view is built for a live window, a past version (History builds the same view
-again for every version it previews) or a screenshot. Only a live view starts
-work that reaches outside the process. A screenshot scenario is the same view,
-never a second widget tree: what the resource does not hold is the scenario's
-fixture, prepared before the view is built; the resource is staged with its
-actions; and the capture waits until views report nothing left to draw.
+## Where the code is
 
-Code: `crates/sdk/tilo-resource` (`Model`, `Resource`, `publish`),
-`crates/sdk/tilo-resource-macros`, `crates/collab/actions` (protocol),
-`crates/sdk/tilo-app` (`ResourceApp`, `ViewCx`), `crates/collab/action-policy`
-(grants). Apps register; `shell` serves the published tree into search, the
-palette and the control socket.
+Tilo is one Rust workspace. The root `Cargo.toml` lists every member; package
+names are stable even when directories move.
 
-## What follows
+| Part | Where |
+| --- | --- |
+| App SDK: the public facade apps depend on (as `ui`) | `crates/sdk/tilo-app` |
+| Resources, actions and their macros | `crates/sdk/tilo-resource`, `crates/sdk/tilo-resource-macros` |
+| UI toolkit: widgets, layout, text, rendering, headless testing | `crates/sdk/ui-core` |
+| History, search | `crates/sdk/tilo-history`, `crates/sdk/search` |
+| Example apps, one idea each | `examples/apps` |
+| First-party apps | `apps/` ([list](../../apps/README.md)) |
+| Identity, MLS channels, action policy, collaboration state | `crates/collab/` (`tilo-user-identity`, `channel-crypto`, `action-policy`, `tilo-peer-state`) |
+| Automerge (vendored fork) | `vendor/automerge`, used through `crates/doc/tilo-automerge` |
+| Files and storage | `crates/system/fs`, `crates/system/fs-native` |
+| Compositor and shell | `crates/session/shell` |
+| Web runtime and web desktop | `crates/browser/tilo-browser-runtime`, `crates/browser/tilo-web-desktop` |
+| Platform services with one API on Linux, macOS and the web | `crates/platform/` |
+| Packages, sandboxed launch, the registry | `crates/packaging/` |
+| The `tilo-app` command | `crates/dev/tilo-app-cli` |
+| The OS image | `os/` |
 
-- **Accessibility and automation are the same door.** Screen readers, scripts and agents
-  browse resources and invoke actions; none see or click. A capability reachable only
-  through a click handler does not exist for them.
-- **Search is a system service.** An app's resource and its surfaces publish search
-  entries, each invoking the action that opens the app at that position. See
-  `search.md`.
-- **Undo, history, device sync and theming are system services.** One implementation, not
-  forty. Per-author undo reverts through the inverse document action when the action
-  recorded an outside consequence, otherwise through Automerge inverse patches, so one
-  person's undo keeps everyone else's concurrent edits.
-- **Collaboration reduces to transport.** One workspace model over iroh: members, their
-  devices, and each device's role per workspace. See `workspace.md`.
-- **Anything reusable belongs in `ui`.** Tabs, presence, text handling. The toolkit sets
-  presentation defaults and the user overrides them; the app does not.
+Apps and the portable SDK crates hold no platform code: anything that differs
+per target goes through a crate in `crates/platform/`. The policy suite
+(`tools/policy/run.sh`) enforces this and the other repository rules listed in
+[policies](../policies.md).
 
-## Shape of the desktop
+## Where the code still differs
 
-Horizontally scrolling strips of non-overlapping windows, inside workspaces that carry
-their own members and permissions. `Workspace → Strip → WindowGroup → Tab`.
+The code still carries models this page does not have: rooms beside
+workspaces, governance by one device, per-person spaces, settings outside the
+resource model, and a second platform inside the shell. Each is being replaced
+by the model above, not kept beside it. [`workspace.md`](workspace.md), "Where
+the code differs", lists them.
 
-Strips are borrowed from Niri, not the identity. Do not reason from "spatial OS" — an
-early mockup's phrase that leads to Exposé-style surfaces. See `compositor.md`.
+## More
 
-A workspace is a unit of collaboration, not screen space. Rendering and state are
-decoupled, so one can be hosted elsewhere and render locally. See `workspace.md`.
-
-## Files here
-
-| | |
-|---|---|
-| `overview.md` | component overview and system stack |
-| `resources.md` | the one app model: models, field edits, verbs, kinds, views, visible actions, history, evolution |
-| `permissions.md` | grants over the published tree: kinds, answers, delegation, enforcement at doors and on receipt |
-| `compositor.md` | strips, window model, input |
-| `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
-| `surfaces.md` | everything painted over the desktop: kind, placement, modality, focus, dismissal, ownership, accessibility, stacking |
-| `collaboration.md` | CRDT sync, presence, peers |
-| `workspace.md` | the one unit of collaboration: members and devices, device roles and appetite, state, people, layout, history |
-| `hosting.md` | the target for hosting: one governor and many record hosts, many workspaces per host, devices and identity, the shared browser |
-| `hosting-capacity.md` | one zone's declared capacity and service level, the control-plane limits its hosts share, and the bounds on what a released room keeps |
-| `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
-| `storage.md` | unified storage, sync, records, history and caching (design for review) |
-| `security.md` | sandbox and capability grants for app code |
-| `theming.md` | the theme token contract, validation, layers and precedence, app boundaries |
-| `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
-| `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
-| `search.md` | providers and per-resource-type rendering |
-| `tasks.md` | the workspace's issues: nested issues, the board, threads, agent runs as issue actions |
-| `agents.md` | agent identity, access, tasks, providers, local models and MCP |
-| `external-services.md` | services outside Tilo (mail, code hosts, banks, MCP servers) as typed resources: connectors, the typed/untyped boundary, credentials, sync versus live calls, attribution |
-| `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
-| `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
-| `discord-bridge.md` | the Discord connector and bridge bot, layout and role ownership, moderation mapping, and the persistent public room it bridges |
-| `slack-bridge.md` | the Slack connector and bridge bot: record, verbs and events, threads and emoji, layout and import, links, moderation |
-| `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
-| `distribution.md` | how software, settings and content reach a machine |
-| `language-checking.md` | spelling, grammar, text actions |
-| `os-layer.md` | image, boot, system services |
-| `product.md` | who it is for |
+- [Workspaces](workspace.md): the specification.
+- [Resources](resources.md): resource kinds, ids and documents.
+- [Compatibility](compatibility.md): how versions of formats and interfaces
+  stay readable.
+- [Security model](../security/README.md): threat model, sign-in, boot chain.
+- [Surfaces](surfaces.md), [window management](window-management.md),
+  [theming](theming.md): the shell and the toolkit.

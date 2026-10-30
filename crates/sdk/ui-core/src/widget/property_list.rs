@@ -659,6 +659,34 @@ enum PropertyAction {
         label: String,
         on_activate: Box<dyn FnMut()>,
     },
+    Bound {
+        icon: Icon,
+        label: String,
+        action: crate::widget::ActionEmitter<()>,
+    },
+}
+
+impl PropertyAction {
+    fn label(&self) -> &str {
+        match self {
+            Self::Copy => "Copy",
+            Self::Custom { label, .. } | Self::Bound { label, .. } => label,
+        }
+    }
+
+    fn emitter(&self) -> Option<&crate::widget::ActionEmitter<()>> {
+        match self {
+            Self::Bound { action, .. } => Some(action),
+            _ => None,
+        }
+    }
+
+    fn emitter_mut(&mut self) -> Option<&mut crate::widget::ActionEmitter<()>> {
+        match self {
+            Self::Bound { action, .. } => Some(action),
+            _ => None,
+        }
+    }
 }
 
 impl Property {
@@ -729,6 +757,26 @@ impl Property {
         self
     }
 
+    /// [`Self::action`] through one of the app's published actions: a
+    /// press, a key, assistive technology and an agent all run it, and it
+    /// shows disabled while the person may not.
+    #[must_use]
+    pub fn action_binding(
+        mut self,
+        icon: Icon,
+        label: impl Into<String>,
+        binding: tilo_actions::ActionBinding<()>,
+    ) -> Self {
+        if self.actions.len() < MAX_PROPERTY_ACTIONS {
+            self.actions.push(PropertyAction::Bound {
+                icon,
+                label: label.into(),
+                action: crate::widget::ActionEmitter::new(binding),
+            });
+        }
+        self
+    }
+
     fn row(&self) -> PropertyRow<'_> {
         let mut row = PropertyRow::new(&self.label, &self.value)
             .with_kind(self.kind)
@@ -736,7 +784,8 @@ impl Property {
         for action in &self.actions {
             row = match action {
                 PropertyAction::Copy => row.action(Icon::Copy, "Copy"),
-                PropertyAction::Custom { icon, label, .. } => row.action(*icon, label),
+                PropertyAction::Custom { icon, label, .. }
+                | PropertyAction::Bound { icon, label, .. } => row.action(*icon, label),
             };
         }
         row
@@ -871,7 +920,7 @@ impl PropertyList {
         };
         let action = match property.actions.get(action) {
             Some(PropertyAction::Copy) => "copy",
-            Some(PropertyAction::Custom { label, .. }) => label.as_str(),
+            Some(action) => action.label(),
             None => return String::new(),
         };
         format!(
@@ -914,6 +963,8 @@ impl PropertyList {
 }
 
 impl Widget for PropertyList {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1060,11 +1111,7 @@ impl Widget for PropertyList {
             .into_iter()
             .find(|(_, r)| r.contains(point))?;
         let property = self.properties().nth(row)?;
-        let label = match property.actions.get(action)? {
-            PropertyAction::Copy => "Copy".to_owned(),
-            PropertyAction::Custom { label, .. } => label.clone(),
-        };
-        Some((rect, label))
+        Some((rect, property.actions.get(action)?.label().to_owned()))
     }
 
     crate::redraw_flag!();
@@ -1103,6 +1150,11 @@ impl Widget for PropertyList {
                 node.key = Some(index as u64);
                 for (action, child) in node.children.iter_mut().enumerate() {
                     child.key = Some(action as u64);
+                    child.state.disabled |= property
+                        .actions
+                        .get(action)
+                        .and_then(PropertyAction::emitter)
+                        .is_some_and(|emitter| !emitter.is_available());
                 }
                 if let Some(layout) = self.layout.rows.get(index) {
                     node = node.with_bounds(layout.rect);
@@ -1167,8 +1219,84 @@ impl PropertyList {
                 on_activate();
                 true
             }
+            Some(PropertyAction::Bound { action, .. }) => {
+                if !action.is_available() {
+                    return false;
+                }
+                if let Err(error) = action.emit(()) {
+                    tracing::warn!(%error, "property action refused");
+                }
+                true
+            }
             None => false,
         }
+    }
+
+    /// The control id assistive technology knows row `row`'s action
+    /// `action` by ([`AccessNode::with_keyed_action_routes`]).
+    fn action_control_id(&self, row: usize, action: usize) -> String {
+        format!(
+            "tilo.key-action:{}:{row}/{action}",
+            self.id.as_deref().unwrap_or("property-list")
+        )
+    }
+
+    fn emitters_mut(&mut self) -> impl Iterator<Item = &mut crate::widget::ActionEmitter<()>> {
+        self.groups
+            .iter_mut()
+            .flat_map(|(_, rows)| rows.iter_mut())
+            .flat_map(|property| property.actions.iter_mut())
+            .filter_map(PropertyAction::emitter_mut)
+    }
+}
+
+impl crate::widget::controls::ActionControls for PropertyList {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for emitter in self.emitters_mut() {
+            let _ = emitter.install_custody(domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.emitters_mut()
+            .find_map(crate::widget::ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = crate::widget::controls::default_bindings(self);
+        for (row, property) in self.properties().enumerate() {
+            for (index, action) in property.actions.iter().enumerate() {
+                if let Some(emitter) = action.emitter() {
+                    let bound = emitter.metadata(self.action_control_id(row, index));
+                    bindings.retain(|binding| binding.control_id != bound.control_id);
+                    bindings.push(bound);
+                }
+            }
+        }
+        bindings
+    }
+
+    fn has_action_control_bindings(&self) -> bool {
+        self.properties()
+            .flat_map(|property| property.actions.iter())
+            .any(|action| action.emitter().is_some())
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        let mut changed = false;
+        for emitter in self.emitters_mut() {
+            let was = emitter.is_available();
+            emitter.refresh_availability(allowed);
+            changed |= was != emitter.is_available();
+        }
+        self.dirty |= changed;
     }
 }
 

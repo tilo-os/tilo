@@ -31,7 +31,6 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::Atom;
 use ui::tokens::Spacing;
 use ui::widget::{Element, InspectorPlacement, NavShell, TaffyTreeExt, Widget};
 
@@ -736,7 +735,7 @@ impl LogsWindow {
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::List)
             .with_id("logs.shell")
-            .content(Box::new(JournalPane::new(Rc::clone(&shared))))
+            .content(Box::new(JournalPane::new(Rc::clone(&shared), &actions)))
             .with_window_toolbar()
             .inspector(crate::view::entry_detail(None, &Spacing::default()));
         let mut window = Self {
@@ -833,11 +832,6 @@ impl LogsWindow {
         for request in requests {
             match request {
                 Request::Search(value) => self.edit(Logs::paths().search.replace(value)),
-                Request::Unit(value) => self.edit(Logs::paths().unit.set(Atom(value))),
-                Request::Boot(value) => self.edit(Logs::paths().boot.set(Atom(value))),
-                Request::Priority(value) => {
-                    self.edit(Logs::paths().severity.set(Priority::from_level(value)));
-                }
                 Request::ClearFilters => self.edit(Logs::CLEAR_FILTERS.with(())),
                 Request::Select(entry_id) => self.request(&JournalEffect::SelectEntry { entry_id }),
             }
@@ -1092,6 +1086,7 @@ mod tests {
     use crate::journal::sample_entries;
     use crate::resource::LogsShell;
     use ui::prelude::{Invoke, TestApp};
+    use ui::tilo_resource::Atom;
 
     fn captured(viewport: (u32, u32)) -> TestApp<LogsShell> {
         let mut app = TestApp::new().unwrap();
@@ -1121,6 +1116,13 @@ mod tests {
         app.with_widget(visit)
             .expect("the journal window is mounted")
     }
+    /// Make the filter edit a picker makes, through the window's door.
+    fn edit(app: &mut TestApp<LogsShell>, edit: &ui::tilo_resource::Edit<Logs>) {
+        app.invoke(ui::tilo_resource::Invoke::edit(edit).unwrap())
+            .unwrap();
+        app.settle();
+    }
+
     fn request(app: &mut TestApp<LogsShell>, request: Request) {
         window(app, |window| {
             window.shared.borrow_mut().push(request);
@@ -1360,9 +1362,9 @@ mod tests {
         });
         assert_eq!(app.state().filter().search, "iroh");
         app.invoke(Logs::CLEAR_FILTERS.with(())).unwrap();
-        request(&mut app, Request::Unit("kernel".to_string()));
+        edit(&mut app, &Logs::paths().unit.set(Atom("kernel".to_owned())));
         let boot = surface(&mut app, |viewer| viewer.boots[0].0.clone());
-        request(&mut app, Request::Boot(boot.clone()));
+        edit(&mut app, &Logs::paths().boot.set(Atom(boot.clone())));
         surface(&mut app, |viewer| {
             assert!(
                 viewer
@@ -1385,8 +1387,8 @@ mod tests {
     #[test]
     fn history_says_how_the_filter_changed() {
         let mut app = captured((1280, 800));
-        request(&mut app, Request::Priority(Priority::Err.level()));
-        request(&mut app, Request::Unit("kernel".to_owned()));
+        edit(&mut app, &Logs::paths().severity.set(Priority::Err));
+        edit(&mut app, &Logs::paths().unit.set(Atom("kernel".to_owned())));
         request(&mut app, Request::Search("iroh".to_owned()));
         app.invoke(Logs::CLEAR_FILTERS.with(())).unwrap();
         let catalogue =

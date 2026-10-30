@@ -129,6 +129,7 @@ fn followed_runs(tracker: &Tracker) -> Vec<FollowedRun> {
                 },
                 programs: {
                     let ran: Vec<tilo_reference::ProgramStep> = of_run(MessageKind::Step)
+                        // optional-decode: a step another version recorded in a shape this one does not know is left out of the shown steps; the run's log keeps it
                         .filter_map(|message| serde_json::from_str(&message.step).ok())
                         .collect();
                     let skip = ran.len().saturating_sub(SHOWN_PROGRAMS);
@@ -136,6 +137,7 @@ fn followed_runs(tracker: &Tracker) -> Vec<FollowedRun> {
                 },
                 answer: of_run(MessageKind::Answer)
                     .next_back()
+                    // optional-decode: an answer in a shape this version does not know shows as none yet; the run's log keeps it
                     .and_then(|message| serde_json::from_str(&message.lookup).ok()),
             })
         })
@@ -412,6 +414,7 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         subject: issue
             .subject
             .as_ref()
+            // optional-decode: a subject in a shape this version does not know runs the issue without one; the issue keeps it
             .and_then(|subject| serde_json::from_value(subject.clone()).ok()),
         model: inherited_model(tracker, issue).map(|model| runtime_collab::TaskRunModel {
             profile: model.profile.clone(),

@@ -260,7 +260,7 @@ fn continue_is_where_the_windows_were_as_their_bars_said() {
     let (mut host, chrome) = host();
     host.search_registry.register(Rc::new(
         crate::shell::search::providers::ContinueProvider::without_broker(std::sync::Arc::new(
-            crate::shell::search::app_content_index::AppContentIndex::in_memory(),
+            tilo_desktop_search::content_index::AppContentIndex::in_memory(),
         )),
     ));
     let tabs: Vec<u64> = {

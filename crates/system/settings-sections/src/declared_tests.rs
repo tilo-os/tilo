@@ -21,6 +21,9 @@ const FREE_TEXT: &[(&str, &str)] = &[
     ("settings.appearance", "wallpaper"),
     // A sound theme installed on the device.
     ("settings.audio", "system_sounds.theme"),
+    // What search keeps of the person's choices, in its own encoding.
+    ("settings.search_history", "chosen"),
+    ("settings.search_history", "chosen_for_text"),
 ];
 
 fn number_kind(ty: &str) -> Option<bool> {

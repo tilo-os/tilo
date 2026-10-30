@@ -993,9 +993,9 @@ pub struct FilesState {
     entry_ids: RefCell<EntryIds>,
     /// The entry rows last published, kept while what each shows holds.
     entry_rows: RefCell<entry_rows::EntryRows>,
-    /// The shared searchable picker behind "Other application…"; its rows are
+    /// Opens the host's search behind "Other application…"; its rows are
     /// the published open-with actions of [`Self::app_chooser_target`].
-    app_chooser: ui::widget::command_palette::CommandPalette,
+    app_chooser: ui::search::SearchOpener,
     app_chooser_target: Option<PathBuf>,
     thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
@@ -1397,7 +1397,7 @@ impl FileExplorerWidget {
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
             // window-bar: picker, the Open with chooser
-            app_chooser: ui::widget::command_palette::CommandPalette::commands(),
+            app_chooser: ui::search::SearchOpener::new(),
             app_chooser_target: None,
             thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
         };
@@ -9692,7 +9692,6 @@ impl FilesState {
         self.draw_drop_highlight(chrome, scene, transform, theme);
         self.draw_marquee(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
-        self.draw_app_chooser(scene, transform, text_renderer, theme, presence);
     }
 
     // Primary widget event dispatcher; pointer, keyboard, drag, menu, and
@@ -9708,22 +9707,8 @@ impl FilesState {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
-        let state = &mut ctx.state;
-        let path = ctx.path;
         self.poll_share_result();
         self.poll_history_result();
-        if self.app_chooser_open() {
-            self.route_app_chooser_event(
-                event,
-                ctx.scale_factor,
-                *ctx.modifiers,
-                state,
-                path,
-                ctx.focus_target,
-            );
-            *ctx.handled = true;
-            return;
-        }
         let panel_was_open = self.collab_panel.is_some();
         if matches!(
             event,
@@ -9884,13 +9869,10 @@ impl FilesState {
         }
     }
 
-    fn window_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn window_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
-        if self.app_chooser_open() {
-            return self.app_chooser.accessibility();
-        }
         if let Some(sheet) = self.sheet_accessibility() {
-            return Some(sheet);
+            return sheet;
         }
         if let Some(panel) = &self.collab_panel {
             let mut children = Vec::with_capacity(panel.lines.len() + 2);
@@ -9913,26 +9895,24 @@ impl FilesState {
                         ),
                 );
             }
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name(panel.title.clone())
-                    .with_description(t_args(
-                        "files-a11y-dialog-close",
-                        &[arg("summary", panel.summary.clone())],
-                    ))
-                    .with_value(panel.lines.join(". "))
-                    .with_live(Politeness::Polite)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.collab_panel_focused)
-                            .modal(true),
-                    )
-                    .with_children(children),
-            );
+            return AccessNode::new(Role::Dialog)
+                .with_name(panel.title.clone())
+                .with_description(t_args(
+                    "files-a11y-dialog-close",
+                    &[arg("summary", panel.summary.clone())],
+                ))
+                .with_value(panel.lines.join(". "))
+                .with_live(Politeness::Polite)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.collab_panel_focused)
+                        .modal(true),
+                )
+                .with_children(children);
         }
 
-        let root = AccessNode::new(Role::Group)
+        AccessNode::new(Role::Group)
             .with_name(t("files-a11y-activity"))
             .with_description(t_args(
                 "files-a11y-current-folder",
@@ -9944,8 +9924,7 @@ impl FilesState {
             } else {
                 Politeness::Polite
             })
-            .with_state(AccessState::new().busy(self.is_loading));
-        Some(root)
+            .with_state(AccessState::new().busy(self.is_loading))
     }
 
     fn perform_window_action(&mut self, target: &str, action: &ui::a11y::Action) -> bool {

@@ -10,8 +10,7 @@ esac
 # awskms URI form. Derive it from the already trusted key ARN so workflows do
 # not need a second, independently configurable region secret.
 # AWS credentials come from an OpenID Connect identity token, never a stored
-# key: t (`id_token = ["sts.amazonaws.com"]`, docs/publishing-on-t.md) and
-# Forgejo Actions (`enable-openid-connect`) both hand the job
+# key: Forgejo Actions (`enable-openid-connect`) hands the job
 # ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN. The token
 # names the repository, reference and commit and is valid for minutes; STS
 # exchanges it for AWS_SIGNING_ROLE_ARN, whose trust policy decides which

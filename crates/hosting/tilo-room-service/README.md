@@ -45,8 +45,7 @@ such room`, and a guest link grants exactly its one guest's admission.
 `admit` takes no key: it spends a single-use ticket on the pairing code a
 browser shows, and accepts the room's id or its uuid.
 
-`joinUrl` is a link in the web link grammar
-(docs/architecture/web-routing.md):
+`joinUrl` is a link in the web link grammar:
 `<api>/open/app/#/@<relay host>/w/<room>/so.tilo.word-processor[/<record>]?ticket=…`.
 The entry page reads the room's root key from the relay, shows the pairing
 code and posts `{ticket, pairingCode}` to `<tickets><room>/admit`, then opens
@@ -307,7 +306,7 @@ accepts them, and they may frame the service's pages.
 | `TILO_ROOMS_LIVE_TLS_CERT`, `TILO_ROOMS_LIVE_TLS_KEY` | `/run/live-tls/tls.crt`, `/run/live-tls/tls.key` | its PEM certificate and key for the live origin's name; re-read within 30 s of a renewal, no restart |
 | `TILO_ROOMS_ROOT_FILE` | `/run/secrets/room-root` | 64 hex characters: the owner root |
 | `TILO_ROOMS_TRUSTED_PROXIES` | none | CIDRs whose `X-Forwarded-For` is believed |
-| `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000; one room admitted 100 with join p99 under 10 s and stopped admitting past about 250 in the last capacity sweep, `docs/benchmarks/room-host-capacity-2026-10.md`) |
+| `TILO_ROOMS_MAX_GUESTS` | `300` | people online at once (up to 10000; one room admitted 100 with join p99 under 10 s and stopped admitting past about 250 in the last capacity sweep) |
 | `TILO_ROOMS_MAX_SPECTATORS` | `1000` | watching sessions at once |
 | `TILO_ROOMS_ADMISSION` | `open` | who the door lets in: `open`, anyone as a guest; `invite`, only the room's members and people with an invitation, the rest are refused with `403 {code: "invitation-only"}` and, while the room keeps a wait list, `waitList: true` and `contact` |
 | `TILO_ROOMS_WAIT_LIST_MAX` | `10000` | addresses (0–1000000) the wait list of an `invite` room keeps; past it `POST /wait-list` answers `503 wait-list-full`. `0`: no wait list |
@@ -367,8 +366,7 @@ directories, Feeds, API Tester, calendar subscriptions) through the room's relay
 The relay advertises it in the session grant, the page sends its session to
 `/peer/v1/fetch`, and only members' and guests' devices are served, never a
 watching page. It reaches public addresses only and holds each device, each
-destination and everyone to a budget; docs/architecture/network.md lists the
-rules. The child relay inherits these variables:
+destination and everyone to a budget. The child relay inherits these variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -389,23 +387,19 @@ the default `warn` shows a request for the host's own network).
 
 ## Build and run
 
-The image is built by t's `image-room-service-context` and `image-room-service`
-checks (`tools/ci/products.toml`, docs/publishing-on-t.md): the context step lays out the
-programs `room-service-binaries` builds (`tilo-relay` with feature `agents`, whose agent
+The image is built by `.forgejo/workflows/publish-site.yml`:
+`tools/ci/publish/room-service-context.sh` lays out the
+programs `room-service-binaries.sh` builds (`tilo-relay` with feature `agents`, whose agent
 participant links every web app because the host mounts the apps' own components, and
-`tilo-room-service`, in one cargo build) and the desktop bundle `web-desktop-bundle` builds
+`tilo-room-service`, in one cargo build) and the desktop bundle `web-desktop-bundle.sh` builds
 beside them for the web entry's image too; buildah
 assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
-`container/test-image.sh` smoke-tests the archive. A dispatch on main (`t
-dispatch publish-room-service --ref main`) publishes
-`registry.tilo.so/tilo/room-service:dev-<commit>`, stable the signed
-`sha-<commit>` with a digest receipt (repository, digest, tags, source revision) that sets the
-`room-service` pointer; deployments pin the digest. Build and test it from your tree with
-`t test image-room-service`.
+`container/test-image.sh` smoke-tests the archive. A dispatch on main publishes
+`registry.tilo.so/tilo/room-service:dev-<commit>` with a digest receipt
+(repository, digest, tags, source revision); deployments pin the digest.
 
 Deployments pin this image and the web entry together, from one stable
-commit, in a GitOps repository. t's `cloud-deploy` check does that whenever
-stable moves (`tools/release/cloud_deploy.py`): the deploy target in that
+commit, in a GitOps repository, with `tools/release/cloud_deploy.py`: the deploy target in that
 repository lists the services, their manifests and the URL each reports its
 build at (this service's `/mode`), and `rollout`, which keeps it a dry run
 until it is true. It commits the new digests, waits until each moved service
@@ -428,8 +422,8 @@ issued for someone else), and a host set up again: its stale link refused,
 the offer to join it again declined and then accepted (one join, the same
 person, the old host's state left untouched beside the new host's). It
 starts `run.py` from prebuilt binaries and a bundle and writes
-`summary.json` and `summary.md`; t's `browser-auth-e2e/auth` check runs it
-on release candidates and on demand (`t test browser-auth-e2e/auth`).
+`summary.json` and `summary.md`; CI runs it
+on release candidates.
 
 `dev/limits-e2e.py` checks the persistent room's enabled limits and what
 it keeps, over plain HTTP with no browser or bundle: on scratch state with
@@ -440,7 +434,7 @@ gets in once an unused seat's hold ends, the caps and refusal counters on
 `/metrics`; then it restarts the service and checks the room, its spectator
 person, the guest ledger and each address's join window survive, and
 that SIGTERM stops the service and its relay within 20 seconds (eu1's
-grace period). t runs it as `browser-auth-e2e/limits`.
+grace period).
 
 `dev/owner-key-e2e.py` checks a throwaway room's owner routes the same way:
 it creates a room as a page does, then checks that nothing a guest link
@@ -448,8 +442,7 @@ shows (the room's host, its uuid, the link without its ticket), a wrong key
 or the uuid with the right key mints an invitation or opens the member
 stream, each refused as no such room and spending no guest slot; that the
 answer's `invitations` and `events` URLs work as given; and that an invitee
-still redeems their ticket at the room's uuid. t runs it as
-`browser-auth-e2e/owner-key`; `browser-auth-e2e` runs all three.
+still redeems their ticket at the room's uuid.
 
 ```sh
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \

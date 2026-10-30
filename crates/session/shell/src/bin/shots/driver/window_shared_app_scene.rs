@@ -16,13 +16,6 @@ const SALT: u16 = 0x0B52;
 const SURFACE: u64 = 0x5a7f;
 const NOTES: &str = "so.tilo.notes";
 
-/// What the sharer's note says.
-#[cfg(feature = "test-support")]
-const AGENDA: &str = "Agenda for Thursday\n\n\
-    Lunch at noon in the Lounge, then the quarterly review.\n\n\
-    Open questions: who owns the capture budget, and when do we review it?\n\n\
-    Next steps: draft the review, then share it with the team.";
-
 impl ShellDriver {
     /// The Lounge on this device, with Ana's shared Notes window open in it
     /// at her note, drawn by Notes running here: the room, and the tab.
@@ -117,53 +110,12 @@ impl ShellDriver {
             found = Some((room, tab));
         });
         let (room, tab) = found?;
-        #[cfg(feature = "test-support")]
-        self.run_shared_notes(room, tab);
-        #[cfg(not(feature = "test-support"))]
-        Self::notes_need_test_support();
         // The tab wears Ana's face, as the frame marks shared windows.
         let _ = self.fb.pump_peer_presence();
         let _ = self.paint_settled();
         std::thread::sleep(std::time::Duration::from_millis(600));
         let _ = self.paint_settled();
         Some((room, tab))
-    }
-
-    /// Run Notes as the window of the shared tab, on the sharer's note.
-    #[cfg(feature = "test-support")]
-    fn run_shared_notes(&mut self, room: RoomId, tab: u64) {
-        let inputs = self.chrome().hosted_inputs().clone();
-        let component = match inputs.mount_note(&room.to_string(), tab, "Agenda.md", AGENDA) {
-            Some(Ok(component)) => component,
-            Some(Err(error)) => {
-                eprintln!("window-shared-app scene: Notes did not mount: {error}");
-                return;
-            }
-            None => {
-                eprintln!("window-shared-app scene: this host mounts no apps");
-                return;
-            }
-        };
-        match ui::App::from_component(
-            component,
-            ui::application::ComponentRunnerInputs::from_native_process(),
-        ) {
-            Ok(runtime) => {
-                if let Err(error) = self.add_own_process_app(runtime, NOTES, SURFACE) {
-                    eprintln!("window-shared-app scene: Notes did not run: {error}");
-                }
-            }
-            Err(error) => eprintln!("window-shared-app scene: Notes did not start: {error}"),
-        }
-    }
-
-    /// Without `test-support` no app runs behind its own connection: the
-    /// window shows a plain frame.
-    #[cfg(not(feature = "test-support"))]
-    fn notes_need_test_support() {
-        eprintln!(
-            "window-shared-app scene: a window of its own needs `--features test-support`; it shows a plain frame"
-        );
     }
 
     /// Ana's shared Notes window as this device shows it: Notes running
@@ -201,23 +153,6 @@ impl ShellDriver {
     pub(super) fn scene_window_held_write(&mut self) {
         if self.shared_app_in_lounge().is_none() {
             return;
-        }
-        let told = ui::floating_surface::FloatingSurfaceHostMessage::Appearance {
-            theme: None,
-            network_status: None,
-            workspace_hue: None,
-            your_colour: None,
-            room_sync: Some(ui::room_sync::RoomSync {
-                state: ui::room_sync::RoomSyncState::Synced,
-                workspace: "Lounge".into(),
-                writable: Some(true),
-                unsynced_writes: 1,
-                cannot_keep_writes: false,
-            }),
-            corner_radius: None,
-        };
-        for app in &mut self.own_process {
-            app.tell(&told);
         }
         // The window says how its changes stand in its History bar: open
         // it from the window's History button.

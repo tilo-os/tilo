@@ -566,15 +566,15 @@ impl tilo_desktop::workspace_settings::AppDirectory for SettingsDirectory {
     }
 
     fn resource_label(&self, address: &str) -> Option<String> {
-        crate::shell::search::app_content_index::session().title(&self.room, address)
+        tilo_desktop_search::content_index::session().title(&self.room, address)
     }
 
     fn resources(&self) -> Vec<(String, String)> {
-        crate::shell::search::app_content_index::session().resources(&self.room)
+        tilo_desktop_search::content_index::session().resources(&self.room)
     }
 
     fn titled_resources(&self) -> Vec<tilo_desktop::workspace_settings::TitledResource> {
-        crate::shell::search::app_content_index::session()
+        tilo_desktop_search::content_index::session()
             .titled(&self.room)
             .into_iter()
             .map(

@@ -2,10 +2,12 @@
 //! anywhere is refused (the effective rule would be ambiguous), and values
 //! appear in messages as Python's `repr()` shows them.
 
-use std::fmt::{self, Write as _};
+use std::fmt;
 
 use serde::Deserialize;
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use tilo_pycompat::number_repr;
+pub use tilo_pycompat::repr_str;
 
 /// A parsed JSON value; objects are ordered key-value lists.
 #[derive(Debug, Clone, PartialEq)]
@@ -138,52 +140,6 @@ pub fn parse(text: &str) -> Result<Json, String> {
     })
 }
 
-/// `repr()` of a string: single-quoted unless it holds a `'` and no `"`.
-#[must_use]
-pub fn repr_str(text: &str) -> String {
-    let quote = if text.contains('\'') && !text.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(text.len().saturating_add(2));
-    out.push(quote);
-    for c in text.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if u32::from(c) < 0x20 || c == '\u{7f}' => {
-                let _ = write!(out, "\\x{:02x}", u32::from(c));
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
-
-fn repr_number(number: &serde_json::Number) -> String {
-    if number.is_f64() {
-        let float = number.as_f64().unwrap_or_default();
-        let text = format!("{float:?}");
-        // Python writes the exponent with its sign: 1e+16, 1e-07.
-        match text.split_once('e') {
-            Some((mantissa, exponent)) if !exponent.starts_with('-') => {
-                format!("{mantissa}e+{exponent}")
-            }
-            _ => text,
-        }
-    } else {
-        number.to_string()
-    }
-}
-
 /// `repr()` of an optional JSON value, `None` for a missing one.
 #[must_use]
 pub fn repr(value: Option<&Json>) -> String {
@@ -191,7 +147,7 @@ pub fn repr(value: Option<&Json>) -> String {
         None | Some(Json::Null) => "None".to_owned(),
         Some(Json::Bool(true)) => "True".to_owned(),
         Some(Json::Bool(false)) => "False".to_owned(),
-        Some(Json::Number(number)) => repr_number(number),
+        Some(Json::Number(number)) => number_repr(number),
         Some(Json::String(text)) => repr_str(text),
         Some(Json::Array(items)) => {
             let shown: Vec<String> = items.iter().map(|item| repr(Some(item))).collect();

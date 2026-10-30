@@ -28,11 +28,11 @@ use tilo_unlock_protocol::{
 use tilo_user_identity::{CertifiedFleet, DeviceStanding};
 use tokio::sync::oneshot;
 
-use crate::shell::device_unlock::{
+use crate::shell::network::ShellNetwork;
+use tilo_device_fabric::unlock::{
     AutoApproval, PendingUnlock, UnlockDecision, UnlockEnrolment, UnlockEvent, UnlockOutcome,
     UnlockSibling, UnlockView, merged_unlock_state,
 };
-use crate::shell::network::ShellNetwork;
 use tilo_network_actor::fabric::DeviceId;
 
 /// How long a boot may take to answer its challenge.
@@ -103,7 +103,7 @@ impl Service {
     /// Returns the removed devices whose snapshots still carry halves.
     fn merge_fabric(
         &mut self,
-        fabric: &crate::shell::device_fabric::DeviceFabric,
+        fabric: &tilo_device_fabric::DeviceFabric,
         now: u64,
     ) -> Vec<DeviceId> {
         let Some(custody) = self.custody.as_ref() else {

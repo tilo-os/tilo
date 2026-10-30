@@ -499,17 +499,17 @@ pub fn shareable_clipboard_history(store: &SharedSelection) -> Vec<ShareableClip
 /// them as the active Wayland clipboard until the person chooses one.
 pub fn merge_shared_clipboard_history(
     store: &SharedSelection,
-    entries: &[crate::shell::device_fabric::ClipboardEntry],
+    entries: &[tilo_device_fabric::ClipboardEntry],
 ) {
     let Ok(mut store) = store.lock() else {
         return;
     };
     for entry in entries.iter().rev() {
         let (mime, bytes) = match &entry.payload {
-            crate::shell::device_fabric::ClipboardPayload::Text(text) => {
+            tilo_device_fabric::ClipboardPayload::Text(text) => {
                 (TEXT_MIME.to_string(), text.as_bytes().to_vec())
             }
-            crate::shell::device_fabric::ClipboardPayload::Binary { mime, bytes } => {
+            tilo_device_fabric::ClipboardPayload::Binary { mime, bytes } => {
                 (mime.clone(), bytes.clone())
             }
         };
@@ -2712,7 +2712,7 @@ mod tests {
             assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
         }
         {
-            use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload};
+            use tilo_device_fabric::{ClipboardEntry, ClipboardPayload};
             use tilo_network_actor::fabric::DeviceId;
             use tilo_network_actor::fabric::FabricStamp;
 

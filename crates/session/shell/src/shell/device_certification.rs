@@ -23,8 +23,8 @@ use tilo_identity_host::certification_ceremony::{
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
-use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
 use crate::shell::network::ShellNetwork;
+use tilo_device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
 use tilo_network_actor::fabric::DeviceId;
 
 /// How long the person has to approve on a device that holds the key. The

@@ -1,8 +1,8 @@
 //! Where remembered network secrets are kept: sealed, never in settings.
 //!
 //! A WPA passphrase goes to the person's roaming Wi-Fi credentials when
-//! their devices share them — sealed to each of their certified devices
-//! (docs/device-mesh.md, "Roaming settings"). Everything else, and a
+//! their devices share them — sealed to each of their certified devices.
+//! Everything else, and a
 //! passphrase no roaming store took, goes to the network secrets vault: one
 //! `secret-vault` file whose key the Secret Service holds.
 

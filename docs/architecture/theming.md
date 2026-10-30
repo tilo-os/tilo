@@ -22,9 +22,7 @@ Four rules generate the rest of this document:
    a role and a version. It never grows CSS-like access to widget internals.
 
 It builds on the HIG (`crates/sdk/ui-core/HIG.md`, §7 and §9: "roles, not
-pixels"), on `docs/settings-and-studios.md` (who owns which theme state), and
-on `docs/architecture/distribution.md` §6 (Profile layers), which the layer
-model below reuses rather than reinvents.
+pixels").
 
 ## What other platforms teach
 
@@ -383,8 +381,7 @@ Verified against the code at the time of writing:
   make the tab strip solid and drop the rim.
 - **Theme Studio** (`apps/themes`) edits the document role by role with
   live findings and applies or exports only legible themes. Settings does
-  not yet expose the appearance controls; `docs/ui-migration.md`
-  ("Theming") lists what it must offer.
+  not yet expose the appearance controls.
 - **Hard-coded colours in apps.** The HIG §9.13 `theme` and `app-paint`
   ratchets count literal colours, `Color::WHITE`/`BLACK`, ramp slots and
   app-painted grounds per app, and the counts may only fall; see the
@@ -403,8 +400,7 @@ Verified against the code at the time of writing:
 1. **Hard-coded chrome colours onto tokens**, one app per change, following
    the appendix and the ratchet shards under
    `crates/sdk/ui-core/tests/baselines/`.
-2. **Settings > Appearance** exposes the controls listed in
-   `docs/ui-migration.md` ("Theming").
+2. **Settings > Appearance** exposes the appearance controls.
 3. **A compositor-drawn trusted-UI marker** no theme or app can reproduce,
    and wallpaper / greeter / boot artwork on the distribution layer.
 

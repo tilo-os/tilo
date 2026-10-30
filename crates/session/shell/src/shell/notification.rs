@@ -96,6 +96,22 @@ pub(crate) fn is_snoozed_alarm_action(id: &str) -> bool {
         })
 }
 
+/// What an alarm's snooze or dismiss promises: undone while the undo
+/// lasts, and safe to repeat.
+pub(crate) fn alarm_action_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Undoable,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        tags: vec!["desktop".into(), "notification".into(), "alarm".into()],
+        ..tilo_actions::ActionContract::default()
+    }
+}
+
+/// Whether `id` addresses an alarm's snooze or dismiss.
+pub(crate) fn is_alarm_action(id: &str) -> bool {
+    alarm_action_address(id).is_some() || is_snoozed_alarm_action(id)
+}
+
 fn pending_snoozes_for_active_room(state: &ChromeState) -> Vec<crate::notifications::SnoozedAlarm> {
     // Do not hold a tree guard while reading the scheduler: delivery reads
     // its room mapping while holding the scheduler's own lock.
@@ -120,9 +136,7 @@ fn snoozed_alarm_rows(
         .filter_map(|source| {
             let id = snoozed_alarm_dismiss_id(&source.target);
             if source.target.room != workspace.room().to_string()
-                || !crate::shell::search::providers::actions::shell_action_authorized_for(
-                    workspace, &actor, &id,
-                )
+                || !crate::shell::actions::shell_action_authorized_for(workspace, &actor, &id)
             {
                 return None;
             }
@@ -156,15 +170,13 @@ fn snoozed_alarm_rows(
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "actions".into(),
-                id: id.clone(),
+                id,
                 title: tilo_desktop::notifications::alarm_action_title(&label, &source.title),
                 subtitle: Some(tilo_desktop::notifications::alarm_snoozed_label()),
                 badge: None,
                 score: 0,
                 params: Vec::new(),
-                contract: Some(
-                    crate::shell::search::providers::actions::shell_action_contract(&id),
-                ),
+                contract: Some(crate::shell::notification::alarm_action_contract()),
                 on_open: std::rc::Rc::new(|_, _, _, _| {
                     Err(ActionError::Refused(
                         "alarm actions require lifecycle dispatch".into(),
@@ -214,9 +226,7 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
                 continue;
             }
             let id = format!("notification.{}.{key}", notice.id);
-            if !crate::shell::search::providers::actions::shell_action_authorized_for(
-                workspace, &actor, &id,
-            ) {
+            if !crate::shell::actions::shell_action_authorized_for(workspace, &actor, &id) {
                 continue;
             }
             let expected_room = request.target.room.clone();
@@ -227,15 +237,13 @@ pub(crate) fn alarm_action_rows(state: &ChromeState) -> Vec<crate::shell::search
                 kind: ResourceKind::Action,
                 operation_kind: tilo_actions::OperationKind::Effect,
                 provider_id: "actions".into(),
-                id: id.clone(),
+                id,
                 title: tilo_desktop::notifications::alarm_action_title(&label, &notice.title),
                 subtitle: Some(tilo_desktop::notifications::alarm_action_subtitle()),
                 badge: None,
                 score: 0,
                 params: Vec::new(),
-                contract: Some(
-                    crate::shell::search::providers::actions::shell_action_contract(&id),
-                ),
+                contract: Some(crate::shell::notification::alarm_action_contract()),
                 on_open: std::rc::Rc::new(|_, _, _, _| {
                     Err(ActionError::Refused(
                         "alarm actions require lifecycle dispatch".into(),
@@ -275,7 +283,7 @@ fn begin_alarm_action(
                 let actor =
                     workspace.actor_for_person(&state.local_user_for_room(&workspace.room()));
                 workspace.room().to_string() == expected_room
-                    && crate::shell::search::providers::actions::shell_action_authorized_for(
+                    && crate::shell::actions::shell_action_authorized_for(
                         workspace, &actor, address,
                     )
             })

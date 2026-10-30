@@ -430,7 +430,7 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
                 sorts.borrow_mut().push(Request::Sort(*key));
             }
         })
-        .on_activate(move |index| {
+        .on_activate_view("monitor.processes", move |index| {
             let pid = activations.borrow().rows.get(index).map(|row| row.pid);
             if let Some(pid) = pid {
                 activations.borrow_mut().push(Request::Activate(pid));

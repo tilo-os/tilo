@@ -390,7 +390,7 @@ These rules are the ones that keep generated filler out.
   broken ("Access not granted") is a defect.
 - No developer notes in the UI.
 - Search belongs to the platform. Apps do not draw search fields; they expose
-  search scopes (see `docs/ui-migration.md`). Only genuine in-content filtering
+  search scopes. Only genuine in-content filtering
   and find-in-page remain, through the framework's controls.
 
 ## Secret fields and capture

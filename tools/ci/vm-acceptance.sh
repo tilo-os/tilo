@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The OS image's acceptance scenarios in tilo-vm, as t's vm-acceptance checks
-# run them in a micro-VM on an x86-64 node with KVM (t.toml). The disk is this
+# The OS image's acceptance scenarios in tilo-vm, run in a micro-VM on an
+# x86-64 node with KVM. The disk is this
 # tree's own dev image as os-dev-disk-x86_64 installed it (os/dev/build-image.sh,
 # the disk the dev channel publishes); each run boots a throwaway overlay of it.
 # tilo-vm is tilo-vm-binary-x86_64's. scripts/vm-acceptance/run.py then drives
@@ -31,7 +31,7 @@
 #            about the worker than the commit: budgets gate again once the
 #            suite runs on dedicated or GPU runners.
 #
-# vm-acceptance runs the suite in t's shards (a matrix over run.py SHARDS in t.toml), and
+# vm-acceptance runs the suite in shards (run.py SHARDS), and
 # writes the selection it ran beside them, in /target/vm-acceptance/only, for
 # vm-acceptance-perf. Each shard t gives this job in T_SHARDS (all of them when it gives none) in a
 # VM of its own, with its report and performance records in

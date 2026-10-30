@@ -1,8 +1,8 @@
 //! What is playing on this machine, and what a person may do about it.
 //!
 //! The model behind the now-playing card in Quick Settings and on the lock
-//! screen. Players are observed over MPRIS ([`crate::shell::mpris`]) off the
-//! compositor thread; this module only holds the last snapshot, decides which
+//! screen. Players are observed over MPRIS by the session audio helper
+//! ([`crate::shell::mpris`]); this module only holds the last snapshot, decides which
 //! player the card shows and which outputs it offers, and turns a button into
 //! a [`PlayerCommand`]. Everything here is pure so the card can be exercised
 //! against a fake [`NowPlayingSource`].
@@ -12,25 +12,9 @@ use std::time::{Duration, Instant};
 
 use crate::shell::overlay_host::{DeviceFabricUiAction, DeviceFabricView};
 
-/// A player's transport state as MPRIS reports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlaybackStatus {
-    Playing,
-    Paused,
-    Stopped,
-}
-
-impl PlaybackStatus {
-    #[must_use]
-    pub fn from_mpris(status: &str) -> Option<Self> {
-        match status {
-            "Playing" => Some(Self::Playing),
-            "Paused" => Some(Self::Paused),
-            "Stopped" => Some(Self::Stopped),
-            _ => None,
-        }
-    }
-}
+/// A player's transport state as MPRIS reports it, and what a button asks
+/// a player to do: the session audio helper's own terms.
+pub use tilo_audio_service::{PlayerCommand, Status as PlaybackStatus};
 
 /// Decoded cover art, already scaled down on a worker. Only artwork a player
 /// names as a local file is ever decoded: the shell never fetches a remote
@@ -174,16 +158,6 @@ impl PlayerSnapshot {
     }
 }
 
-/// What a button asks a player to do.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PlayerCommand {
-    PlayPause,
-    Pause,
-    Next,
-    Previous,
-    SetPosition { track_id: String, position_us: i64 },
-}
-
 /// Where players come from and where commands go. Production reads the
 /// shell's MPRIS projection; tests supply a fake.
 pub trait NowPlayingSource {
@@ -206,7 +180,7 @@ impl NowPlayingSource for MprisSource {
     }
 
     fn send(&self, bus_name: &str, command: PlayerCommand) -> bool {
-        crate::shell::mpris::control(bus_name, command)
+        crate::shell::mpris::control(bus_name, &command)
     }
 
     fn refresh(&self) {
@@ -442,7 +416,7 @@ pub fn resolve_output(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpeakerPlayback {
     pub group: String,
-    pub status: crate::shell::speaker_group_runtime::SpeakerSessionStatus,
+    pub status: tilo_speaker_service::groups::SpeakerSessionStatus,
 }
 
 impl SpeakerPlayback {
@@ -450,7 +424,7 @@ impl SpeakerPlayback {
     /// member that cannot play in time outranks one still syncing.
     #[must_use]
     pub fn from_view(view: &DeviceFabricView) -> Option<Self> {
-        use crate::shell::speaker_group_runtime::SpeakerSessionStatus;
+        use tilo_speaker_service::groups::SpeakerSessionStatus;
         let urgency = |status: SpeakerSessionStatus| match status {
             SpeakerSessionStatus::ClockFailed(_) => 0,
             SpeakerSessionStatus::SyncingClocks => 1,
@@ -473,7 +447,7 @@ impl SpeakerPlayback {
     pub const fn failed(&self) -> bool {
         matches!(
             self.status,
-            crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(_)
+            tilo_speaker_service::groups::SpeakerSessionStatus::ClockFailed(_)
         )
     }
 
@@ -481,7 +455,7 @@ impl SpeakerPlayback {
     #[must_use]
     pub fn text(&self) -> String {
         use crate::shell::i18n::{t, t_args};
-        use crate::shell::speaker_group_runtime::SpeakerSessionStatus;
+        use tilo_speaker_service::groups::SpeakerSessionStatus;
         let group = || ("group", self.group.as_str().into());
         match self.status {
             SpeakerSessionStatus::Playing => t_args("now-playing-speakers-playing", &[group()]),
@@ -739,18 +713,18 @@ pub(crate) mod tests {
     fn speaker_group(
         seed: u8,
         name: &str,
-        state: crate::shell::speaker_group::SpeakerMemberStatus,
-    ) -> crate::shell::speaker_group_runtime::SpeakerGroupView {
-        use crate::shell::speaker_group::{
+        state: tilo_device_fabric::speaker_group::SpeakerMemberStatus,
+    ) -> tilo_speaker_service::groups::SpeakerGroupView {
+        use tilo_device_fabric::speaker_group::{
             EndpointSelector, SpeakerGroupId, SpeakerRole, SpeakerTrim, StereoSide,
         };
-        crate::shell::speaker_group_runtime::SpeakerGroupView {
+        tilo_speaker_service::groups::SpeakerGroupView {
             id: SpeakerGroupId([seed; 16]),
             name: name.into(),
             leader: DeviceId::new("desk").expect("device id"),
             leader_label: "Desk speakers".into(),
             led_locally: true,
-            members: vec![crate::shell::speaker_group_runtime::SpeakerMemberView {
+            members: vec![tilo_speaker_service::groups::SpeakerMemberView {
                 device: DeviceId::new("desk").expect("device id"),
                 device_label: "Desk speakers".into(),
                 output: EndpointSelector([seed.wrapping_add(1); 16]),
@@ -764,7 +738,7 @@ pub(crate) mod tests {
 
     #[test]
     fn speaker_groups_are_output_targets_named_like_the_palette_and_revalidated() {
-        use crate::shell::speaker_group::{SpeakerGroupId, SpeakerMemberStatus};
+        use tilo_device_fabric::speaker_group::{SpeakerGroupId, SpeakerMemberStatus};
         let mut view = fabric();
         view.speaker_groups.groups = vec![
             speaker_group(0x51, "Living room", SpeakerMemberStatus::Ready),
@@ -877,7 +851,7 @@ pub(crate) mod tests {
         FabricDeviceView {
             id: DeviceId::new(id).expect("device id"),
             label: label.into(),
-            kind: crate::shell::device_fabric::DeviceKind::Laptop,
+            kind: tilo_device_fabric::DeviceKind::Laptop,
             is_local: false,
             online: true,
             audio_output: true,

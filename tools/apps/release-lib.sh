@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What the app and engine release steps share (tools/apps/t-release.sh, t-engine-release.sh).
+# What the app and engine release steps share.
 # Sourced after tools/ci/publish/lib.sh, not run.
 
 release_only() {

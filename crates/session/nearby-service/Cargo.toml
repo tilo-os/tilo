@@ -1,0 +1,35 @@
+[package]
+name = "tilo-nearby-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Nearby transfers between one person's devices: the private, bounded spool a send is staged in, resumed from and delivered out of."
+
+[lib]
+name = "tilo_nearby_service"
+path = "src/lib.rs"
+
+[dependencies]
+blake3.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+walkdir.workspace = true
+tilo-files = { path = "../../platform/tilo-files" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+iroh.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+tempfile.workspace = true
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

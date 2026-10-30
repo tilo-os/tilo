@@ -68,7 +68,7 @@ Transfer `home-peer.toml` to the host as `/etc/tilo/home-peer.toml` and restart
 complete set: it runs a durable worker for every entry using the enrolled
 device identity, keeps each namespace plus all manifests, chunks, and
 thumbnails under its configured cache, and serves them through the bundled
-capability policy. `tilo-relay status` reports `full_content_replication: true`
+capability policy. `tilo-relay-admin status` reports `full_content_replication: true`
 only after the atomic aggregate status confirms every configured workspace is
 complete.
 

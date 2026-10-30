@@ -54,6 +54,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     (APP_DEVICE_LOCAL_SECTION, Holder::Device),
     ("appearance_device", Holder::Device),
     ("audio_device", Holder::Device),
+    ("clipboard", Holder::Device),
     ("clock", Holder::Device),
     ("collaboration", Holder::Device),
     ("continuity", Holder::Device),
@@ -68,6 +69,7 @@ pub const SECTIONS: &[(&str, Holder)] = &[
     ("input_device", Holder::Device),
     ("mobile_data_usage", Holder::Device),
     ("power", Holder::Device),
+    (crate::search_history::SECTION, Holder::Device),
     ("updates", Holder::Device),
 ];
 

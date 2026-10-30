@@ -102,7 +102,7 @@ impl RootTargetBootstrap {
         }
         let ready: OwnedFd = duplicate(READY_FD)?.into();
         let ready = UnixStream::from(ready);
-        let filter = delayed_filter::Filter::receive(&record.baseline)?;
+        let filter = delayed_filter::Filter::receive(super::BASELINE, &record.baseline)?;
         Ok(Self {
             record,
             fuse,

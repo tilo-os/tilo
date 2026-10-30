@@ -2,8 +2,8 @@
 //!
 //! The helper was a Python script, and `tilo-firstboot-user` and existing
 //! installs pass it paths and ids the way that script read them: the path split
-//! by `os.path.dirname`/`basename`, the parent resolved by `os.path.realpath`
-//! and the ids read by `int()`.
+//! by `os.path.dirname`/`basename` and the parent resolved by
+//! `os.path.realpath`.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -131,67 +131,6 @@ pub fn realpath(path: &OsStr) -> std::io::Result<OsString> {
     Ok(OsString::from_vec(resolved))
 }
 
-/// Why `int()` refused its argument.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntError(pub String);
-
-/// `str.isspace()`: Unicode whitespace plus the four ASCII separators
-/// (U+001C..U+001F) that Rust does not count.
-fn is_space(c: char) -> bool {
-    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
-}
-
-/// `int(text)` for a decimal command-line argument: surrounding whitespace,
-/// a sign, and `_` between digits. A value beyond `i128` saturates; every
-/// value that large is refused as an id later, as Python refused it.
-///
-/// Python also reads non-ASCII decimal digits; the caller passes ids it has
-/// matched against `^[0-9]+$`, so those are refused here.
-///
-/// # Errors
-/// Anything else.
-pub fn int(text: &OsStr) -> Result<i128, IntError> {
-    let invalid = || {
-        IntError(format!(
-            "invalid literal for int() with base 10: {:?}",
-            text.to_string_lossy()
-        ))
-    };
-    let text_str = text.to_str().ok_or_else(invalid)?;
-    let trimmed = text_str.trim_matches(is_space);
-    let (negative, digits) = match trimmed.as_bytes().first() {
-        Some(b'-') => (true, trimmed.get(1..).unwrap_or_default()),
-        Some(b'+') => (false, trimmed.get(1..).unwrap_or_default()),
-        _ => (false, trimmed),
-    };
-    let bytes = digits.as_bytes();
-    if bytes.is_empty() || bytes.first() == Some(&b'_') || bytes.last() == Some(&b'_') {
-        return Err(invalid());
-    }
-    let mut value: i128 = 0;
-    let mut previous_underscore = false;
-    for byte in bytes {
-        if *byte == b'_' {
-            if previous_underscore {
-                return Err(invalid());
-            }
-            previous_underscore = true;
-            continue;
-        }
-        previous_underscore = false;
-        if !byte.is_ascii_digit() {
-            return Err(invalid());
-        }
-        let digit = i128::from(byte.saturating_sub(b'0'));
-        value = value.saturating_mul(10).saturating_add(digit);
-    }
-    Ok(if negative {
-        value.saturating_neg()
-    } else {
-        value
-    })
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a failed fixture call fails the test")]
@@ -241,23 +180,5 @@ mod tests {
         assert_eq!(realpath(&at("loop")).unwrap(), at("loop"));
         assert_eq!(realpath(os("/")).unwrap(), os("/"));
         assert_eq!(realpath(os("/..")).unwrap(), os("/"));
-    }
-
-    #[test]
-    fn int_reads_like_python() {
-        for (text, value) in [
-            ("1000", 1000),
-            (" 1000\n", 1000),
-            ("+7", 7),
-            ("-1", -1),
-            ("0_0_1", 1),
-            ("007", 7),
-            ("99999999999999999999999999999999999999999999", i128::MAX),
-        ] {
-            assert_eq!(int(os(text)), Ok(value), "{text}");
-        }
-        for text in ["", " ", "-", "1_", "_1", "1__0", "0x10", "1.0", "1 0", "١"] {
-            assert!(int(os(text)).is_err(), "{text}");
-        }
     }
 }

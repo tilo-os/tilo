@@ -596,8 +596,6 @@ fn a_swatch_paints_the_content_colour_in_the_icon_slot() {
 
 #[test]
 fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
-    let toggled = Rc::new(Cell2::new(Vec::<(String, bool)>::new()));
-    let seen = Rc::clone(&toggled);
     let list = NavList::new(vec![NavSection::new(
         "calendars",
         "Calendars",
@@ -606,22 +604,22 @@ fn a_checked_row_toggles_as_a_whole_and_is_never_chosen() {
             NavItem::new("work", "Work").checked(false),
         ],
     )])
-    .on_check(move |id, on| seen.borrow_mut().push((id.to_owned(), on)));
-    let mut h = harness(list, Theme::dark());
-    let work = h.root::<NavList>().row_rect("work").expect("work");
+    .on_check_action(bound());
+    let mut h = uncustodied(list);
+    let work = list_of(&h).row_rect("work").expect("work");
     // The label, not only the box, is the target.
     click_at(&mut h, work.center().x, work.center().y);
-    assert_eq!(toggled.borrow().as_slice(), [("work".to_owned(), true)]);
-    assert_eq!(h.root::<NavList>().selected_id(), None);
+    assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
+    assert_eq!(list_of(&h).selected_id(), None);
     // Space on the focused row toggles it back.
-    focus(&mut h);
+    crate::widget::Widget::set_focus(
+        &mut *h.root_mut::<crate::widget::Uncustodied<NavList>>().0.tree,
+        true,
+    );
+    h.relayout_at((280, 360)).expect("layout");
     key(&mut h, Key::Character(" ".into()));
-    assert_eq!(toggled.borrow().last(), Some(&("work".to_owned(), false)));
-    let node = h
-        .root::<NavList>()
-        .tree()
-        .accessibility()
-        .expect("semantics");
+    assert_eq!(take(&mut h), Some(serde_json::json!(["work", false])));
+    let node = list_of(&h).tree().accessibility().expect("semantics");
     let home = node
         .children
         .iter()
@@ -2095,5 +2093,139 @@ fn a_described_list_holds_places_and_sections_under_their_headings_in_order() {
             ("Team", true, vec!["design", "release"]),
             ("", false, vec!["random"]),
         ]
+    );
+}
+
+/// A test action taking the gesture's input as its one `value`.
+fn bound<I: serde::Serialize + 'static>() -> tilo_actions::ActionBinding<I> {
+    crate::widget::test_value_action_binding(tilo_actions::ParamType::Array)
+}
+
+/// `list` laid out in a harness that leaves its control intents to the
+/// test ([`take`]).
+fn uncustodied(list: NavList) -> FrameHarness {
+    let mut h = FrameHarness::for_root(
+        State::new(),
+        crate::widget::Uncustodied(list),
+        (280, 360),
+        Theme::dark(),
+    );
+    h.relayout_at((280, 360)).expect("layout");
+    h
+}
+
+fn list_of(h: &FrameHarness) -> &NavList {
+    &h.root::<crate::widget::Uncustodied<NavList>>().0
+}
+
+fn take(h: &mut FrameHarness) -> Option<serde_json::Value> {
+    use crate::widget::controls::ActionControls;
+    h.root_mut::<crate::widget::Uncustodied<NavList>>()
+        .0
+        .take_control_invocation()
+        .and_then(|invocation| invocation.arguments.get("value").cloned())
+}
+
+#[test]
+fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
+    let list = NavList::new(mailboxes())
+        .item_action(
+            NavAction::new("archive", Icon::Archive, "Archive"),
+            crate::widget::test_string_action_binding(),
+        )
+        .section_action("new-folder", crate::widget::test_string_action_binding());
+    let mut h = uncustodied(list);
+    let work = list_of(&h).row_rect("work").expect("work");
+    let s2 = f64::from(Theme::dark().tokens.spacing.s2);
+    click_at(&mut h, work.x1 - s2 - 10.0, work.center().y);
+    assert_eq!(take(&mut h), Some(serde_json::json!("work")));
+    let bindings = crate::widget::controls::control_action_bindings(list_of(&h));
+    let bound: Vec<&str> = bindings
+        .iter()
+        .filter(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
+        .map(|binding| binding.control_id.as_str())
+        .collect();
+    assert!(
+        bound.iter().any(|id| id.starts_with("section-action:")),
+        "{bound:?}"
+    );
+    assert!(
+        bound.iter().any(|id| id.starts_with("row-action:0:")),
+        "{bound:?}"
+    );
+    assert!(crate::widget::controls::has_action_control_bindings(
+        list_of(&h)
+    ));
+    let header_y = work.y0 - crate::chrome::nav_row_height(&Theme::dark()) / 2.0;
+    click_at(&mut h, work.x1 - s2 - 10.0, header_y);
+    assert_eq!(take(&mut h), Some(serde_json::json!("folders")));
+    assert_eq!(take(&mut h), None);
+
+    // An action the person may not run shows disabled and runs nothing.
+    crate::widget::controls::refresh_control_action_availability(
+        &mut h.root_mut::<crate::widget::Uncustodied<NavList>>().0,
+        &HashSet::new(),
+    );
+    let node = Widget::accessibility(list_of(&h)).expect("semantics");
+    fn find<'a>(node: &'a crate::a11y::AccessNode, prefix: &str) -> Option<&'a crate::a11y::AccessNode> {
+        if node
+            .action_target
+            .as_deref()
+            .is_some_and(|target| target.starts_with(prefix))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, prefix))
+    }
+    assert!(find(&node, "section-action:").expect("header button").state.disabled);
+    click_at(&mut h, work.x1 - s2 - 10.0, header_y);
+    assert_eq!(take(&mut h), None);
+}
+
+#[test]
+fn a_row_menu_button_opens_the_menu_and_runs_no_action() {
+    let asked = Rc::new(Cell2::new(Vec::<String>::new()));
+    let seen = Rc::clone(&asked);
+    let list = NavList::new(mailboxes())
+        .item_menu(NavAction::new("more", Icon::MoreHorizontal, "More"))
+        .on_context_menu(move |id, _, _| seen.borrow_mut().push(id.to_owned()));
+    let mut h = uncustodied(list);
+    let work = list_of(&h).row_rect("work").expect("work");
+    let s2 = f64::from(Theme::dark().tokens.spacing.s2);
+    click_at(&mut h, work.x1 - s2 - 10.0, work.center().y);
+    assert_eq!(asked.borrow().as_slice(), ["work"]);
+    assert_eq!(take(&mut h), None);
+}
+
+#[test]
+fn bound_check_rename_and_delete_run_their_actions() {
+    let list = NavList::new(vec![NavSection::new(
+        "calendars",
+        "Calendars",
+        vec![
+            NavItem::new("home", "Home").editable_label(),
+            NavItem::new("work", "Work").checked(false),
+        ],
+    )])
+    .on_check_action(bound())
+    .on_rename_action(bound())
+    .on_delete_action(crate::widget::test_string_action_binding());
+    let mut h = uncustodied(list);
+    let work = list_of(&h).row_rect("work").expect("work");
+    click_at(&mut h, work.center().x, work.center().y);
+    assert_eq!(take(&mut h), Some(serde_json::json!(["work", true])));
+    crate::widget::Widget::set_focus(
+        &mut *h.root_mut::<crate::widget::Uncustodied<NavList>>().0.tree,
+        true,
+    );
+    h.relayout_at((280, 360)).expect("layout");
+    // Delete reports the focused row: the one just toggled.
+    assert!(key(&mut h, Key::Named(NamedKey::Delete)));
+    assert_eq!(take(&mut h), Some(serde_json::json!("work")));
+    let bindings = crate::widget::controls::control_action_bindings(list_of(&h));
+    assert!(
+        bindings.iter().any(|binding| binding.control_id.starts_with("node:")
+            && matches!(binding.kind, crate::widget::ControlBindingKind::Action(_))),
+        "a bound check is the checkable row's control: {bindings:?}"
     );
 }

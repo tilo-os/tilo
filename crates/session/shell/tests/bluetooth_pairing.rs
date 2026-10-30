@@ -14,6 +14,7 @@
     clippy::panic,
     clippy::arithmetic_side_effects,
     clippy::needless_pass_by_value,
+    clippy::significant_drop_tightening,
     reason = "in a test these are the assertion, not a hazard; deadlines are seconds from \
               now, and the stand-in daemon's methods take D-Bus arguments by value"
 )]

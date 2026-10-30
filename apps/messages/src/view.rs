@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::PersonAccounts;
 use ui::LocalState;
-use ui::framework::{Actions, Effected, Fixture, Jobs, Live, PersonRecord, ViewCx};
+use ui::framework::{Actions, Effected, Fixture, Live, PersonRecord, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
@@ -402,7 +402,6 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let projected_setup = setup.clone();
     let scheduled_setup = setup.clone();
     let projected_groups = groups.clone();
-    let cx_jobs = cx.jobs();
     let link = Rc::new(std::cell::RefCell::new(None));
     let bar = crate::window_bar::Bar {
         sources: sources.clone(),
@@ -442,7 +441,7 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                     });
                 }
                 let detail = shown(
-                    &sources, &actions, &selection, &history, &sending, &setup, &groups, &cx_jobs,
+                    &sources, &actions, &selection, &history, &sending, &setup, &groups,
                 );
                 let shell = navigation(
                     detail,
@@ -508,7 +507,6 @@ fn shown(
     sending: &crate::sending::Sending,
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
-    jobs: &Jobs<Messages>,
 ) -> Element {
     let detail = if groups.visible() {
         groups.panel(sources, actions)
@@ -519,18 +517,8 @@ fn shown(
         let actions = actions.clone();
         let history = history.clone();
         let sending = sending.clone();
-        let selection_state = selection.clone();
-        let jobs = jobs.clone();
         Box::new(ModelView::from_state(selection, move |selected| {
-            detail(
-                &sources,
-                &actions,
-                selected,
-                &selection_state,
-                &history,
-                &sending,
-                &jobs,
-            )
+            detail(&sources, &actions, selected, &history, &sending)
         }))
     };
     Box::new(
@@ -952,10 +940,8 @@ fn detail(
     sources: &Sources,
     actions: &Actions<Messages>,
     selected: &Selection,
-    selection: &LocalState<Selection>,
     history_view: &crate::history::HistoryView,
     sending: &crate::sending::Sending,
-    jobs: &Jobs<Messages>,
 ) -> Element {
     let record = sources.record();
     if !selected.conversation.is_empty() {
@@ -1026,16 +1012,7 @@ fn detail(
     if chosen.is_some_and(|choice| choice.recipient.is_empty()) {
         body = body.push(Box::new(Text::new("messages-identity-unavailable")));
     }
-    Box::new(body.push(composer(
-        sources,
-        actions,
-        sending,
-        selected,
-        selection,
-        history_view,
-        jobs,
-        chosen,
-    )))
+    Box::new(body.push(composer(sources, actions, sending, selected, chosen)))
 }
 
 /// The composer: the words, the button, and the keyboard.
@@ -1049,9 +1026,6 @@ fn composer(
     actions: &Actions<Messages>,
     sending: &crate::sending::Sending,
     selection: &Selection,
-    selection_state: &LocalState<Selection>,
-    history: &crate::history::HistoryView,
-    jobs: &Jobs<Messages>,
     choice: Option<&Choice>,
 ) -> Element {
     let enabled = choice
@@ -1080,22 +1054,14 @@ fn composer(
         .disabled(!enabled)
         .on_change(move |text| kept.keep_draft(text));
     if enabled {
-        let submitted = sending.clone();
-        let submit_sources = sources.clone();
-        let submit_selection = selection_state.clone();
-        let submit_history = history.clone();
-        let submit_jobs = jobs.clone();
-        let route = selection.choice.clone();
-        input = input.on_submit(move |text: &str| {
-            submitted.submit(
-                &submit_sources,
-                &submit_selection,
-                &submit_history,
-                &route,
-                text,
-                &submit_jobs,
-            );
+        let chosen = selection.choice.clone();
+        let operation = sending.operation.clone();
+        let send = MessagesEffect::SEND.try_map(move |text: String| {
+            (!text.trim().is_empty()).then(|| (chosen.clone(), operation.get(), text))
         });
+        if let Some(binding) = actions.effect_binding(send) {
+            input = input.on_submit_action(binding);
+        }
     }
     Box::new(
         Row::new()

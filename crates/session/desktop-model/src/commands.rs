@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tilo_sort::CompactSort as _;
 
 use crate::apps::canonical_app_id;
-use crate::ids::{MintIds, StripId};
+use crate::ids::{MintIds, StripId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::topology::DropTarget;
 use crate::tree::DesktopTree;
@@ -1025,6 +1025,72 @@ pub fn apply_to_workspace(
         tree.active_group.remove(&removed);
     }
     Ok(made)
+}
+
+/// Move the window `tab` out of the workspace that holds it and into
+/// `to`, as a group of its own at the end of that workspace's last strip
+/// (its first, made when it has none). The window keeps its identity: the
+/// same tab, the same app, the same record. The workspace shown does not
+/// change — the window leaves, the person stays where they are — and the
+/// strip and group it lands on are the ones `to` shows next time it is
+/// entered.
+pub fn move_tab_to_workspace(
+    tree: &mut DesktopTree,
+    tab: u64,
+    to: WorkspaceId,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+) -> Result<(), String> {
+    let (from, source) = tree
+        .workspaces
+        .iter()
+        .find_map(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .find(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|group| group.tabs.iter().any(|held| held.id == tab))
+                })
+                .map(|strip| (workspace.id, strip.id))
+        })
+        .ok_or("the window is not on this desktop")?;
+    // A window sent where it already is would only change strips behind the
+    // person's back.
+    if from == to {
+        return Err("the window is already in that workspace".into());
+    }
+    let destination = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == to)
+        .ok_or("there is no such workspace")?;
+    let strip = if let Some(strip) = destination.strips.last() {
+        strip.id
+    } else {
+        let strip = StripId(mint()?);
+        destination.strips.push(Strip::new(strip, "Main"));
+        strip
+    };
+    let gap_index = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .find(|held| held.id == strip)
+        .map_or(0, |held| held.window_groups.len());
+    let group = mint()?;
+    tree.move_tab_across_strips(
+        source,
+        strip,
+        tab,
+        group,
+        DropTarget::GroupGap { gap_index },
+    )
+    .ok_or("the window could not be moved")?;
+    tree.active_strip.insert(to, strip);
+    tree.set_active_group(strip, group);
+    Ok(())
 }
 
 /// Name `strip`.

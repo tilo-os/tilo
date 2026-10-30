@@ -124,7 +124,6 @@ on:
       - "vendor/cosmic-text/**"
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/iroh/**"
-      - "vendor/iroh-gossip/**"
       - "vendor/netwatch/**"
       - "vendor/vello/**"
       - "vendor/vello_encoding/**"

@@ -31,6 +31,7 @@ impl std::fmt::Debug for ApiTesterEffect {
             Self::SetCredential { .. } => "SetCredential",
             Self::PickEnvironment { .. } => "PickEnvironment",
             Self::SetSecretValue { .. } => "SetSecretValue",
+            Self::RenameCollection { .. } => "RenameCollection",
             Self::RequestMenu { .. } => "RequestMenu",
             Self::EnvironmentMenu { .. } => "EnvironmentMenu",
         };
@@ -90,6 +91,14 @@ pub enum ApiTesterEffect {
         variable: String,
         #[param("The value, kept on this device")]
         value: String,
+    },
+    /// Rename collection…
+    ///
+    /// Opens the form that renames the collection.
+    #[effect(view, idempotent)]
+    RenameCollection {
+        #[param("Id of the collection")]
+        collection: String,
     },
     /// Request actions
     #[effect(view, idempotent)]

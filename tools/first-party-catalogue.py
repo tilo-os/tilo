@@ -10,8 +10,7 @@ first-party packages from there.
   first-party-catalogue.py           write the catalogue
   first-party-catalogue.py --check   fail when the written one differs
 
-`--check` prints its finding as `path: message` on stdout, for
-tools/policy/findings.py.
+`--check` prints its finding as `path: message` on stdout.
 """
 
 from __future__ import annotations

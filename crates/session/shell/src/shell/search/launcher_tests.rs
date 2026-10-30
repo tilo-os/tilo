@@ -85,7 +85,7 @@ fn desk() -> Desk {
     registry.register(Rc::new(PeopleProvider::new()));
     registry.register(Rc::new(WaitingOnYouProvider::new()));
     registry.register(Rc::new(ContinueProvider::without_broker(
-        std::sync::Arc::new(crate::shell::search::app_content_index::AppContentIndex::in_memory()),
+        std::sync::Arc::new(tilo_desktop_search::content_index::AppContentIndex::in_memory()),
     )));
     registry.register(Rc::new(ApplicationsProvider::new()));
     let desk = Desk {

@@ -332,7 +332,7 @@ impl Catalogue {
             }
         }
         let size_of = |key: &str| size.get(key).and_then(Value::as_u64).unwrap_or(0);
-        if !py::equals_one(field(map, "schema")) || field(map, "id").as_str() != Some(ident) {
+        if !py::equals_number(field(map, "schema"), 1) || field(map, "id").as_str() != Some(ident) {
             return Err(Error::Pack(format!(
                 "catalogue entry {ident} has the wrong schema or id"
             )));
@@ -542,7 +542,9 @@ pub fn parse_manifest(
         &[],
         "",
     )?;
-    if field(map, "type").as_str() != Some(MANIFEST_TYPE) || !py::equals_one(field(map, "schema")) {
+    if field(map, "type").as_str() != Some(MANIFEST_TYPE)
+        || !py::equals_number(field(map, "schema"), 1)
+    {
         return Err(Error::pack(
             "the signed manifest has an unsupported type or schema",
         ));

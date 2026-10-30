@@ -206,7 +206,11 @@ mod tests {
         // signed in, and its reader re-applies the directory's private mode.
         // Neither changes a file, so neither may wake the watch's thread: on
         // an idle desktop each read did, through the opens `notify` watches.
+        // The directory is private before the watch starts, and the reader
+        // only chmods one that is not: a chmod that changes nothing still
+        // tells every watcher of the directory that its attributes changed.
         let root = crate::tests::tmpdir();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let record = root.join("work.json");
         std::fs::write(&record, "{}").unwrap();
         let before = watch_threads();
@@ -224,7 +228,9 @@ mod tests {
         for _ in 0..20 {
             std::fs::read(&record).unwrap();
             let _ = std::fs::read_dir(&root).unwrap().count();
-            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            if std::fs::metadata(&root).unwrap().permissions().mode() & 0o7777 != 0o700 {
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
         }
         assert_eq!(
             crate::tests::blocked_count(&tid),

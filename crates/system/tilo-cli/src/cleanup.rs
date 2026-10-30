@@ -41,7 +41,6 @@
 //! while the disk has less free space than the policy's floor.
 
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -748,23 +747,12 @@ pub fn free_space(path: &Path) -> Option<u64> {
 /// # Errors
 /// When the directory cannot be created or the file written.
 pub fn write_record(path: &Path, record: &Record) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let staging = parent.join(format!(
-        ".{}.{}",
-        path.file_name()
-            .map_or_else(|| "record".into(), |name| name.to_string_lossy()),
-        std::process::id()
-    ));
-    let mut file = std::fs::File::create(&staging)
-        .with_context(|| format!("writing {}", staging.display()))?;
-    file.write_all(&serde_json::to_vec_pretty(record)?)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o644))?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&staging, path).with_context(|| format!("writing {}", path.display()))?;
-    Ok(())
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        path,
+        &serde_json::to_vec_pretty(record)?,
+        0o644,
+    )
+    .with_context(|| format!("writing {}", path.display()))
 }
 
 /// The record at `path`, if a run has written one.

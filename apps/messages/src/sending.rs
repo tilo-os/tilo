@@ -122,33 +122,6 @@ impl Sending {
         }
     }
 
-    /// Run the conversation's send, from whatever asked for it: the Send
-    /// button's effect, or Enter in the composer.
-    pub(crate) fn submit(
-        &self,
-        sources: &Sources,
-        selection: &LocalState<Selection>,
-        history: &crate::history::HistoryView,
-        choice: &str,
-        text: &str,
-        jobs: &ui::framework::Jobs<Messages>,
-    ) {
-        if text.trim().is_empty() {
-            return;
-        }
-        let effect = MessagesEffect::Send {
-            choice: choice.to_owned(),
-            operation: self.operation.get(),
-            text: text.to_owned(),
-        };
-        let sending = self.clone();
-        let sources = sources.clone();
-        let selection = selection.clone();
-        let history = history.clone();
-        jobs.start::<()>("messages.send", move |cx| {
-            sending.send(&sources, &selection, &history, effect, cx)
-        });
-    }
     pub(crate) fn client(&self) -> Option<MessagingClient> {
         self.client.clone()
     }

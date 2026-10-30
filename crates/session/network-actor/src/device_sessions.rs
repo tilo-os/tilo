@@ -209,6 +209,7 @@ impl ActorState {
                 .iter()
                 .chain(&own.revocations)
                 .any(|entry| {
+                    // The person's key revoked this very device.
                     (entry.user_public_key, entry.revoked_device_public_key)
                         == (cert.user_public_key, cert.device_public_key)
                         && entry.revoked_at_ns <= now

@@ -64,7 +64,7 @@ def _names_check(ctx, res, names):
     """What a person sees: the search's first row for each name is the app.
 
     `actions list` is not that view: it leads with live app actions and orders
-    the rest by kind for agents (docs/agent-action-api.md), so it reads only the
+    the rest by kind for agents, so it reads only the
     app's title here."""
     ctx.reset()
     wrong = []

@@ -13,10 +13,8 @@
 )]
 
 use std::collections::HashMap;
-use std::io::BufRead as _;
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +27,7 @@ use tilo_projector::control::{ConnectStage, ProjectorEvent};
 use tilo_projector::{
     DisplayStreamPolicy, ProjectionDevice, ProjectionMode, ProjectionOptions, ProjectionProtocol,
 };
+use tilo_test_env::PrivateBus;
 use zbus::connection::Builder;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
@@ -40,44 +39,6 @@ use crate::session::paths::SessionPaths;
 
 const SINK_MAC: &str = "02:00:00:00:00:09";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
-
-/// A private session bus.
-struct SessionBus {
-    daemon: Child,
-    address: String,
-    _directory: tempfile::TempDir,
-}
-
-impl SessionBus {
-    fn start() -> Self {
-        let directory = tempfile::tempdir().expect("bus directory");
-        let mut daemon = Command::new("dbus-daemon")
-            .args(["--session", "--nofork", "--print-address=1"])
-            .arg(format!(
-                "--address=unix:path={}",
-                directory.path().join("bus").display()
-            ))
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("the session bus needs dbus-daemon, which the builder image installs");
-        let mut address = String::new();
-        std::io::BufReader::new(daemon.stdout.take().expect("dbus-daemon output"))
-            .read_line(&mut address)
-            .expect("dbus-daemon address");
-        Self {
-            daemon,
-            address: address.trim().to_owned(),
-            _directory: directory,
-        }
-    }
-}
-
-impl Drop for SessionBus {
-    fn drop(&mut self) {
-        let _ = self.daemon.kill();
-        let _ = self.daemon.wait();
-    }
-}
 
 #[derive(Default)]
 struct PortalRecord {
@@ -433,7 +394,7 @@ fn connected(events: &Receiver<ProjectorEvent>) -> Vec<ProjectorEvent> {
 /// The simulated `NetworkManager` (server and client ends) and portal, and a
 /// session-bus connection for the session to call the portal on.
 fn simulations(
-    bus: &SessionBus,
+    bus: &PrivateBus,
     screen: &Arc<HeadlessScreen>,
     portal_record: &Arc<Mutex<PortalRecord>>,
     nm_record: &Arc<Mutex<NmRecord>>,
@@ -446,7 +407,7 @@ fn simulations(
     tilo_rt::app()
         .block_on(async {
             let (nm_server, system) = network_manager(Arc::clone(nm_record)).await;
-            let portal = Builder::address(bus.address.as_str())
+            let portal = Builder::address(bus.address())
                 .expect("bus address")
                 .name("org.freedesktop.portal.Desktop")
                 .expect("portal name")
@@ -461,7 +422,7 @@ fn simulations(
                 .build()
                 .await
                 .expect("portal connection");
-            let session = Builder::address(bus.address.as_str())
+            let session = Builder::address(bus.address())
                 .expect("bus address")
                 .build()
                 .await
@@ -507,7 +468,7 @@ fn a_miracast_session_casts_the_portal_screen_with_audio_to_a_receiver() {
         "the headless screen needs PipeWire, WirePlumber and pw-dump"
     );
     let screen = Arc::new(HeadlessScreen::start(1280, 720, 30).expect("headless screen"));
-    let bus = SessionBus::start();
+    let bus = PrivateBus::start();
     let portal_record = Arc::new(Mutex::new(PortalRecord::default()));
     let nm_record = Arc::new(Mutex::new(NmRecord::default()));
     let (_nm_server, system, _portal, session) =

@@ -2525,7 +2525,7 @@ impl QuickFS {
                 &namespace_path,
                 move |delta| {
                     if let Some(sync) = &sync {
-                        sync.broadcast_delta(delta);
+                        sync.announce_delta(&delta);
                     }
                     Ok(())
                 },
@@ -3840,7 +3840,7 @@ impl QuickFS {
                 &runtime.namespace_path,
                 move |delta| {
                     if let Some(sync) = &sync {
-                        sync.broadcast_delta(delta);
+                        sync.announce_delta(&delta);
                     }
                     Ok(())
                 },
@@ -4094,7 +4094,7 @@ impl QuickFS {
                 &transaction_runtime.namespace_path,
                 move |delta| {
                     if let Some(sync) = &sync {
-                        sync.broadcast_delta(delta);
+                        sync.announce_delta(&delta);
                     }
                     Ok(())
                 },
@@ -4862,7 +4862,7 @@ impl QuickFS {
             self.refresh_acl_visible_record_index();
         }
         if let Some(sync) = &self.sync {
-            sync.broadcast_delta(delta);
+            sync.announce_delta(&delta);
         }
         self.wake_pinned_hydration();
     }
@@ -5558,7 +5558,7 @@ impl QuickFS {
                 &runtime.namespace_path,
                 move |delta| {
                     if let Some(sync) = &sync {
-                        sync.broadcast_delta(delta);
+                        sync.announce_delta(&delta);
                     }
                     Ok(())
                 },

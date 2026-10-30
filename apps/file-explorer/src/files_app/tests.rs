@@ -597,35 +597,38 @@ mod open_with_tests {
         let (route, _clear) = pdf_route();
         let mut w = pdf_widget();
         w.state().apply_command(FileCommand::OpenWithOther);
-        assert!(w.state().app_chooser_open(), "the shared palette opens");
-        assert!(Widget::traps_focus(&w), "and owns the keyboard");
-        let rows: Vec<(String, Option<String>)> = w
-            .state()
-            .app_chooser
-            .visible_entries()
+        let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
+        let invocation =
+            ui::widget::controls::take_control_invocation(&mut w).expect("the host's search opens");
+        let request = ui::search::SearchRequest::from_arguments(&invocation.arguments);
+        assert_eq!(
+            request.resource_scope().map(|scope| scope.anchor.as_str()),
+            Some(entry_id.as_str()),
+            "on the file"
+        );
+        let doc = automerge::AutoCommit::new();
+        let resources = crate::files_app::published::tree(&w, &doc);
+        let rows: Vec<String> = ui::tilo_actions::flatten(&resources)
             .into_iter()
-            .map(|row| (row.label.clone(), row.group.clone()))
+            .filter(|row| {
+                row.resource_id.0 == entry_id
+                    && (row.action.id.starts_with("open-with-app:")
+                        || row.action.id.starts_with("always-open-with:"))
+            })
+            .map(|row| row.action.label.clone())
             .collect();
         assert_eq!(
             rows,
             vec![
-                ("Evince".to_string(), Some("Open once".to_string())),
-                ("PDF Viewer".to_string(), Some("Open once".to_string())),
-                (
-                    "Evince".to_string(),
-                    Some("Always use for .pdf files".to_string())
-                ),
-                (
-                    "PDF Viewer".to_string(),
-                    Some("Always use for .pdf files".to_string())
-                ),
+                "Open with Evince (default)".to_string(),
+                "Always open .pdf files with Evince (default)".to_string(),
+                "Open with PDF Viewer".to_string(),
+                "Always open .pdf files with PDF Viewer".to_string(),
             ]
         );
         // Picking a row resolves through the published resource, exactly as
         // the application host dispatches a palette selection.
-        let mut doc = automerge::AutoCommit::new();
-        let resources = crate::files_app::published::tree(&w, &doc);
-        let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
+        let mut doc = doc;
         let spec = ui::tilo_actions::door::spec_of(
             &resources,
             &entry_id,
@@ -649,7 +652,6 @@ mod open_with_tests {
                 "open /docs/slides.pdf org.gnome.Evince.desktop",
             ]
         );
-        assert!(!w.state().app_chooser_open(), "a pick closes the chooser");
     }
 
     #[test]

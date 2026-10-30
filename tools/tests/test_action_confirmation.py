@@ -155,6 +155,40 @@ class ActionConfirmationTests(unittest.TestCase):
         self.assertIn("`erase`, a deletion", errors[0])
         self.assertIn("undoable-deletions.toml", errors[0])
 
+    def test_a_deletion_in_a_list_of_actions_reads_its_own_element(self):
+        source = """
+        pub(crate) const ALL: &'static [Action] = &[
+            chrome("tab.new", "label", "subtitle", "keywords", |_, _| Ok(())),
+            Action {
+                id: "app.uninstall",
+                label: "search-action-app-uninstall",
+                ..Action::NEW
+            }
+            .destructive(),
+            chrome("tab.close", "label", "subtitle", "keywords", |_, _| Ok(())),
+        ];
+        """
+        errors = check.check_source("crates/session/shell/src/shell/actions/all.rs", source)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`app.uninstall`, a deletion", errors[0])
+
+    def test_an_action_id_named_by_a_constant_reads_the_constant(self):
+        # An `Action` names its id with the constant the module that owns the
+        # action declares, which is not the file that lists it.
+        self.assertEqual(check.string_constant("APP_UNINSTALL_ID"), "app.uninstall")
+        source = """
+        pub(crate) const ALL: &'static [Action] = &[
+            Action {
+                id: APP_UNINSTALL_ID,
+                ..Action::NEW
+            }
+            .destructive(),
+        ];
+        """
+        errors = check.check_source("crates/session/shell/src/shell/actions/all.rs", source)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("`app.uninstall`, a deletion", errors[0])
+
     def test_allows_a_deletion_marked_irreversible(self):
         source = """
         fn forget() -> ActionSpec {

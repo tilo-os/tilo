@@ -201,20 +201,6 @@ enum OutOfBand {
         /// other devices over their device-admin route); repeatable.
         #[arg(long = "capability", value_name = "CAPABILITY")]
         capabilities: Vec<String>,
-        /// Also record the certified host as one of the person's home peers
-        /// in the identity root's home-peer registry, so this device shares
-        /// workspaces on it: the endpoint id of the relay it runs, hex, as
-        /// `device-key` prints it. Needs the `host` capability.
-        #[arg(long, value_name = "HEX")]
-        home_peer_service: Option<String>,
-        /// A direct address that relay listens on, kept as its dial hint;
-        /// repeatable. Without one the relay is found by its endpoint id.
-        #[arg(
-            long = "home-peer-addr",
-            value_name = "ADDR",
-            requires = "home_peer_service"
-        )]
-        home_peer_addrs: Vec<std::net::SocketAddr>,
         #[arg(long)]
         out: PathBuf,
     },
@@ -2774,36 +2760,6 @@ fn out_of_band_payload(
     })
 }
 
-/// A host certified out of band that this device records as one of its
-/// person's home peers: the relay it runs, and where that relay listens.
-struct OutOfBandHomePeer {
-    relay_service_node_id: [u8; 32],
-    relay_endpoint: Option<iroh_base::EndpointAddr>,
-}
-
-impl OutOfBandHomePeer {
-    /// `service` is the relay's endpoint id in hex, as `device-key` prints it.
-    fn parse(service: &str, addrs: &[std::net::SocketAddr]) -> anyhow::Result<Self> {
-        let relay_service_node_id: [u8; 32] = hex::decode(service.trim())
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .context("--home-peer-service must be a 32-byte hex endpoint id")?;
-        let id = iroh_base::EndpointId::from_bytes(&relay_service_node_id)
-            .context("--home-peer-service is not an endpoint id")?;
-        let relay_endpoint = (!addrs.is_empty()).then(|| {
-            addrs
-                .iter()
-                .fold(iroh_base::EndpointAddr::new(id), |endpoint, addr| {
-                    endpoint.with_ip_addr(*addr)
-                })
-        });
-        Ok(Self {
-            relay_service_node_id,
-            relay_endpoint,
-        })
-    }
-}
-
 struct CertifyOptions<'a> {
     root_key: Option<&'a std::path::Path>,
     identity_root: &'a std::path::Path,
@@ -2811,7 +2767,6 @@ struct CertifyOptions<'a> {
     device: &'a str,
     label: &'a str,
     capabilities: &'a [String],
-    home_peer: Option<&'a OutOfBandHomePeer>,
     out: &'a std::path::Path,
 }
 
@@ -2823,7 +2778,6 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         device,
         label,
         capabilities,
-        home_peer,
         out,
     } = *options;
     let root: Box<dyn RootSigner> = match root_key {
@@ -2857,9 +2811,6 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
             }
         }
     }
-    if home_peer.is_some() && !granted.can_act_as_host {
-        bail!("only a device certified with the host capability can be a home peer");
-    }
     let mut cert = DeviceCert {
         user_public_key: root.public_key(),
         device_public_key,
@@ -2873,17 +2824,6 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
     if let Some(identity_dir) = identity_dir {
         let fleet = project_personal_device(identity_dir, &cert)?;
         commit_personal_device(identity_dir, cert.user_public_key, &fleet)?;
-    }
-    if let Some(home_peer) = home_peer {
-        // A home peer serves its person whichever workspaces it holds;
-        // it holds none yet.
-        register_home_peer(
-            identity_root,
-            &cert,
-            home_peer.relay_service_node_id,
-            &[],
-            home_peer.relay_endpoint.clone(),
-        )?;
     }
     tilo_user_identity::persist::write_device_cert(out, &cert)?;
     Ok(())
@@ -2927,24 +2867,16 @@ fn out_of_band(command: OutOfBand) -> anyhow::Result<()> {
             device,
             label,
             capabilities,
-            home_peer_service,
-            home_peer_addrs,
             out,
-        } => {
-            let home_peer = home_peer_service
-                .map(|service| OutOfBandHomePeer::parse(&service, &home_peer_addrs))
-                .transpose()?;
-            certify(&CertifyOptions {
-                root_key: root_key.as_deref(),
-                identity_root: &identity_root,
-                identity_dir: identity_dir.as_deref(),
-                device: &device,
-                label: &label,
-                capabilities: &capabilities,
-                home_peer: home_peer.as_ref(),
-                out: &out,
-            })
-        }
+        } => certify(&CertifyOptions {
+            root_key: root_key.as_deref(),
+            identity_root: &identity_root,
+            identity_dir: identity_dir.as_deref(),
+            device: &device,
+            label: &label,
+            capabilities: &capabilities,
+            out: &out,
+        }),
         OutOfBand::InstallCert {
             identity_root,
             identity_dir,

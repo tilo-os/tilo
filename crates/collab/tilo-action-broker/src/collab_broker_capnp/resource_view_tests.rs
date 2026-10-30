@@ -2,6 +2,7 @@ use super::*;
 
 fn test_published_view(action: &str, view_id: &str, primary: bool) -> PublishedAction {
     PublishedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: "note:one".into(),
         action: action.into(),
