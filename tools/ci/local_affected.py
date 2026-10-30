@@ -475,7 +475,7 @@ def main() -> int:
     # container has and this machine may not, and no Git checkout, which the builder's copy of
     # the worktree lacks: without Node.js here they run there, the rest here.
     if want("policy"):
-        if shutil.which("node") or primary.config is None:
+        if shutil.which("node") or primary.prefix is None:
             spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
                                                 ["bash", "tools/policy/run.sh"]))
         else:
