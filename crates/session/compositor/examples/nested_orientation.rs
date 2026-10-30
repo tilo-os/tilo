@@ -127,13 +127,17 @@ mod nested {
             .env("WAYLAND_DISPLAY", &socket)
             .env("XDG_RUNTIME_DIR", directory.path())
             .env_remove("DISPLAY")
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .expect("window process");
 
-        // The window's frames arrive only while this compositor runs.
+        // The window's frames arrive only while this compositor runs, and the
+        // window leaves the output once its client does: what the compositor
+        // shows is read while the window is on it. The window waits for its
+        // input to close before it goes.
         let deadline = Instant::now() + OPENING;
-        while window.try_wait().expect("wait").is_none() {
+        while outer.windows().into_iter().next().is_none() {
             outer.dispatch(Duration::from_millis(16)).expect("wait");
             outer.render().expect("render");
             assert!(
@@ -141,12 +145,19 @@ mod nested {
                 "the window showed nothing here (no GPU to draw one)"
             );
         }
-        // The last frame the window committed, and the compositor's answer to
-        // it, are still on their way.
-        for _ in 0..5 {
+        // The compositor has the window's first frames; the layer fills all
+        // of it either way.
+        for _ in 0..10 {
             outer.dispatch(Duration::from_millis(16)).expect("wait");
             outer.render().expect("render");
         }
+        let (_, (x, y, width, height)) = outer
+            .windows()
+            .into_iter()
+            .next()
+            .expect("the window is on the output");
+        let shown = outer.screenshot("HEADLESS-1").expect("screenshot");
+        drop(window.stdin.take());
 
         let printed = window.wait_with_output().expect("report").stdout;
         let printed = String::from_utf8(printed).expect("report is text");
@@ -154,17 +165,8 @@ mod nested {
         let (above, below) = reported(&printed);
 
         let headless = headless_picture();
-        let shown = outer.screenshot("HEADLESS-1").expect("screenshot");
         let top = (WIDTH / 2, HEIGHT / 4);
         let bottom = (WIDTH / 2, HEIGHT * 3 / 4);
-        // Where the compositor put the window: the same two points of the
-        // layer inside the window's rectangle, in the picture of the output.
-        let (x, y, width, height) = outer
-            .windows()
-            .into_iter()
-            .next()
-            .map(|(_, rect)| rect)
-            .expect("the window is on the output");
         let shown_top = (x + width / 2, y + height / 4);
         let shown_bottom = (x + width / 2, y + height * 3 / 4);
         for (what, above, below) in [
@@ -220,6 +222,9 @@ mod nested {
             )
             .expect("report");
         }
+        // The window stays on the output until this side has read it there.
+        let mut released = String::new();
+        let _ = std::io::stdin().read_line(&mut released);
     }
 
     /// The first two pixels the window's report names: above the middle of
