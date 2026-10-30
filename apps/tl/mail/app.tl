@@ -424,6 +424,16 @@ scenario "a busy inbox" -> Thread {
     launch
 }
 
+/// An answer being written to a long conversation: its window, with whom it goes to and what it
+/// says so far.
+scenario "a reply being written" -> Draft {
+    let m = root Mail
+    let a = m.accounts.insert(Account(key: "sam@rivera.example", address: "sam@rivera.example", name: "Sam Rivera", online: true))
+    a.mailboxes.insert(Mailbox(key: "inbox", name: "Inbox", role: "inbox", total: 1))
+    a.mailboxes.insert(Mailbox(key: "drafts", name: "Drafts", role: "drafts"))
+    m.drafts.insert(Draft(from: a.key, to: "grace@hopper.example, ada@analytical.example", cc: "support@rivera.example", subject: "Re: Launch plan for the autumn release", body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam", in_reply_to: "launch@rivera.example", references: "launch@rivera.example"))
+}
+
 /// No account yet: what a first start shows.
 scenario "no account yet" {
     root Mail

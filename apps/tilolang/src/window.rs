@@ -583,6 +583,18 @@ impl Widget for Window {
         changed || received || child
     }
 
+    /// The body's deadlines, and when the time a view read (`today`) next reads differently:
+    /// the window sleeps until then, and the frame then runs again the views that read it.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let views = self.instance.wakes_in().and_then(|wait| {
+            ui::time::now().checked_add(ui::time::Duration::from_secs(wait.as_secs()))
+        });
+        match (views, self.view.next_wake_deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,

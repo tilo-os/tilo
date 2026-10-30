@@ -244,6 +244,8 @@ pub(crate) struct HostRemount<'a> {
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
     pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
     pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
+    /// How the person reaches the window: what the remount mounts hears it.
+    pub(crate) interaction: crate::interaction::InteractionEnvironment,
 }
 
 pub(crate) trait HostCore {
@@ -376,6 +378,10 @@ pub(crate) trait HostCore {
             .extend(crate::component_lifecycle::take_component_close_reports(
                 parts.root,
             ));
+        // What a widget made since the input last changed (a view a press
+        // opened) hears how the person reaches the window before it is laid
+        // out; a widget that already has it keeps it.
+        parts.root.set_interaction_environment(parts.interaction);
         let mapped = parts.node_map.len();
         let mut remount = crate::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
         let applied = parts.root.remount_children(&mut remount);

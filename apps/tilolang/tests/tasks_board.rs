@@ -1,6 +1,8 @@
 //! The Tasks package as the UI host runs it, on a project shown as a board: a card dragged
 //! within its lane or into another lands where it was dropped, through the lane's drop, the
-//! window and the app's `place` action.
+//! window and the app's `place` action. And the Today list, which reads the person's day, takes
+//! in the next day's tasks when their midnight passes: the window sleeps until then and wakes
+//! for it.
 //!
 //! With `TILO_TASKS_SHOTS=<dir>` the test `shots` writes the board at desktop and phone sizes,
 //! light and dark, before and after a drag.
@@ -146,6 +148,125 @@ fn a_card_dragged_within_its_lane_and_into_another_lands_where_it_was_dropped() 
         ]
     );
     assert_eq!(names(&lane(&mut app, packing_x)), ["Pack the kitchen"]);
+}
+
+/// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
+/// the person's.
+fn local(month: u32, day: u32, (hour, minute, second): (u32, u32, u32)) -> ui::time::SystemTime {
+    use chrono::TimeZone as _;
+    let at = chrono::Local
+        .with_ymd_and_hms(2026, month, day, hour, minute, second)
+        .earliest()
+        .expect("the time exists where the person is");
+    let ms = u64::try_from(at.timestamp_millis()).expect("after 1970");
+    ui::time::UNIX_EPOCH
+        .checked_add(ui::time::Duration::from_millis(ms))
+        .expect("the clock reaches it")
+}
+
+/// Whether some accessible node of the window is named with `text`.
+fn shows(app: &mut TestApp<TlApp>, text: &str) -> bool {
+    accessible(app)
+        .iter()
+        .any(|node| node.name.as_deref().is_some_and(|name| name.contains(text)))
+}
+
+fn access_walk<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
+    out.push(node);
+    for child in &node.children {
+        access_walk(child, out);
+    }
+}
+
+/// Every accessible node of the window.
+fn accessible(app: &mut TestApp<TlApp>) -> Vec<ui::a11y::AccessNode> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let mut out = Vec::new();
+    for node in all {
+        if let Some(access) = &node.semantics {
+            let mut nodes = Vec::new();
+            access_walk(access, &mut nodes);
+            out.extend(nodes.into_iter().cloned());
+        }
+    }
+    out
+}
+
+/// Click the node whose accessible name begins with `label` (a sidebar item, its count after).
+fn click_item(app: &mut TestApp<TlApp>, label: &str) {
+    let all = accessible(app);
+    let found = all.iter().find_map(|node| {
+        node.name
+            .as_deref()
+            .filter(|name| name.starts_with(label))
+            .and(node.bounds)
+    });
+    let Some(b) = found else {
+        let names: Vec<&str> = all.iter().filter_map(|node| node.name.as_deref()).collect();
+        panic!("nothing named `{label}`: {names:?}");
+    };
+    app.harness()
+        .click_at(f64::midpoint(b.x0, b.x1), f64::midpoint(b.y0, b.y1));
+}
+
+#[test]
+fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
+    use ui::time::testing::with_wall;
+    let _settled = ui::motion::testing::settled();
+    let before = local(6, 30, (23, 59, 0));
+    let after = local(7, 1, (0, 0, 30));
+    // 23:59 on the scenario's day: "Reply to Mia" is due tomorrow, so Today leaves it out.
+    let mut app = with_wall(before, || {
+        support::installed("tasks");
+        let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
+            .expect("the scenario stages");
+        settle(&mut app);
+        click_item(&mut app, "Today");
+        settle(&mut app);
+        assert!(shows(&mut app, "Buy oat milk"), "today's task is listed");
+        assert!(
+            !shows(&mut app, "Reply to Mia"),
+            "tomorrow's task is not listed today"
+        );
+        // The window sleeps until the person's midnight, and not before.
+        let deadline = app
+            .harness()
+            .frame_schedule()
+            .next_wake_deadline
+            .expect("a window showing today waits for midnight");
+        let wait = deadline.saturating_duration_since(ui::time::now());
+        assert!(
+            wait > ui::time::Duration::from_secs(50) && wait <= ui::time::Duration::from_secs(60),
+            "the window wakes at midnight, a minute away: {wait:?}"
+        );
+        app
+    });
+    // Past midnight the deadline is due; the frame it wakes for shows the new day's list.
+    with_wall(after, || {
+        let due = app
+            .harness()
+            .frame_schedule()
+            .next_wake_deadline
+            .is_some_and(|deadline| deadline <= ui::time::now());
+        assert!(due, "the window's deadline is due past midnight");
+        app.frame();
+        assert!(
+            shows(&mut app, "Reply to Mia"),
+            "the task due on the new day is listed once midnight passed"
+        );
+        // And the window waits for the next midnight.
+        let wait = app
+            .harness()
+            .frame_schedule()
+            .next_wake_deadline
+            .map(|deadline| deadline.saturating_duration_since(ui::time::now()));
+        assert!(
+            wait.is_some_and(|wait| wait > ui::time::Duration::from_secs(23 * 3600)),
+            "the window waits for the next midnight: {wait:?}"
+        );
+    });
 }
 
 #[test]

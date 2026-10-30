@@ -21,6 +21,8 @@
 //! (`+7d`); `none` and `any` for a filter that may hold no value; `a,b` for several cases of
 //! an enum.
 
+use std::cell::Cell;
+
 use tilolang::calendar::{DAY, calendar_span, day_text, instant, time_text};
 use tilolang::identifier;
 use tilolang::meta::{EnumMeta, FilterKind, FilterMeta, TypeMeta};
@@ -186,7 +188,13 @@ pub fn store_pred(pred: &Pred<String>, ty: &TypeMeta, app: &str) -> Option<crate
     })
 }
 
-/// The time a query is answered at, which `today`, `now` and `-7d` are read against.
+/// How finely a query reads the running clock where nothing it compares says when its answer
+/// changes (`now`, `-7d`): to the minute. A view's query reads its clock to the minute, so it
+/// reads the same throughout one; a view that read the instant runs again at the next minute.
+pub const INSTANT_GRAIN: i64 = 60;
+
+/// The time a query is answered at, which `today`, `now` and `-7d` are read against, and when
+/// what was read of it next reads differently ([`Self::changes_at`]).
 #[derive(Clone, Debug)]
 pub struct Clock {
     /// Seconds since 1970-01-01T00:00:00Z.
@@ -194,6 +202,8 @@ pub struct Clock {
     /// How many seconds the person's clock is ahead of UTC: the zone `today` and a day such as
     /// `2026-10-24` are days in.
     zone: i64,
+    /// The first instant after `now` at which what was read of the clock reads differently.
+    changes: Cell<Option<i64>>,
 }
 
 impl Clock {
@@ -205,7 +215,44 @@ impl Clock {
         Ok(Self {
             now: instant(now).ok_or_else(|| format!("`{now}` is not a time"))?,
             zone: 0,
+            changes: Cell::new(None),
         })
+    }
+
+    /// The first instant after its time at which what was read of it reads differently, in
+    /// seconds since 1970 (UTC): the person's next midnight for `today`, the next minute for
+    /// `now` ([`INSTANT_GRAIN`]). `None` while nothing read it: an answer that read no time
+    /// holds whenever it is asked.
+    #[must_use]
+    pub fn changes_at(&self) -> Option<i64> {
+        self.changes.get()
+    }
+
+    fn changes_by(&self, at: i64) {
+        let at = at.max(self.now.saturating_add(1));
+        self.changes
+            .set(Some(self.changes.get().map_or(at, |seen| seen.min(at))));
+    }
+
+    /// Read the person's day of the instant `offset` seconds from now: it reads differently once
+    /// that instant reaches their next midnight.
+    fn read_day(&self, offset: i64) {
+        let next_midnight = self
+            .day_of(self.now.saturating_add(offset))
+            .saturating_add(1)
+            .saturating_mul(DAY)
+            .saturating_sub(self.zone);
+        self.changes_by(next_midnight.saturating_sub(offset));
+    }
+
+    /// Read the instant itself (`now`, `now - 7d`): it reads differently at the next minute.
+    fn read_instant(&self) {
+        let next = self
+            .now
+            .div_euclid(INSTANT_GRAIN)
+            .saturating_add(1)
+            .saturating_mul(INSTANT_GRAIN);
+        self.changes_by(next);
     }
 
     /// The same clock read by someone whose clock is `zone` seconds ahead of UTC: where their
@@ -359,12 +406,18 @@ fn filter_pred(
     clock: &Clock,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
-        // A filter on the time it is asked at ("Today": `due <= today`) reads it now.
-        let pred = f
-            .pred
-            .as_ref()
-            .ok_or("the filter has no predicate")?
-            .at(clock.now, clock.zone);
+        // A filter on the time it is asked at ("Today": `due <= today`) reads it now, and
+        // reads differently once the day (or the instant) it read moves on.
+        let declared = f.pred.as_ref().ok_or("the filter has no predicate")?;
+        let reads = declared.clock_reads();
+        if reads.day {
+            // A day operand counts whole days from the person's day: it moves at midnight.
+            clock.read_day(0);
+        }
+        if reads.instant {
+            clock.read_instant();
+        }
+        let pred = declared.at(clock.now, clock.zone);
         return match value {
             "true" => Ok(pred),
             "false" => Ok(Pred::Not(Box::new(pred))),
@@ -528,6 +581,12 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         let secs = tilolang::duration::seconds(n, unit).ok_or("the duration is too long")?;
         let then = clock.now.saturating_add(secs);
         let (a, b) = (then.min(clock.now), then.max(clock.now));
+        if day {
+            clock.read_day(0);
+            clock.read_day(secs);
+        } else {
+            clock.read_instant();
+        }
         return Ok(if day {
             (
                 Lit::Date(day_text(clock.day_of(a))),
@@ -554,6 +613,14 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
         };
         let at = base.saturating_add(offset);
         let whole_day = word == "today" && offset.rem_euclid(DAY) == 0;
+        if word == "today" {
+            // Counted from the person's midnight: it moves when their day does.
+            clock.read_day(0);
+        } else if day {
+            clock.read_day(offset);
+        } else {
+            clock.read_instant();
+        }
         return Ok(match (day, whole_day) {
             (true, _) => {
                 let d = Lit::Date(day_text(clock.day_of(at)));

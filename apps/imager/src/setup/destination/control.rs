@@ -47,6 +47,97 @@ impl Presses {
     }
 }
 
+/// A toolkit control whose uses fire wizard [`Control`]s: a disk's row, a
+/// choice's segments. The toolkit widget draws and handles it; the
+/// inventory names the published action each use runs, so a control is
+/// listed as the effect it is, never as an anonymous callback.
+pub struct Bound {
+    inner: ui::widget::Element,
+    bindings: Vec<ui::widget::ControlBindingMetadata>,
+    /// The control Enter and Space use while the widget has focus.
+    keys: Option<Control>,
+}
+
+/// Whether `event` presses Enter or Space: what uses a focused control.
+pub fn is_activation_key(event: &winit::event::WindowEvent) -> bool {
+    use winit::event::{ElementState, KeyEvent, WindowEvent};
+    use winit::keyboard::{Key, NamedKey};
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: KeyEvent {
+                logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                state: ElementState::Pressed,
+                ..
+            },
+            ..
+        }
+    )
+}
+
+impl Bound {
+    /// `inner`, whose uses fire `controls`, each listed under its control id.
+    pub fn new<'a>(
+        inner: ui::widget::Element,
+        controls: impl IntoIterator<Item = (String, &'a Control)>,
+    ) -> Self {
+        Self {
+            inner,
+            bindings: controls
+                .into_iter()
+                .map(|(id, control)| control.metadata(&id))
+                .collect(),
+            keys: None,
+        }
+    }
+
+    /// Enter and Space on the focused widget use `control` and are consumed,
+    /// so the wizard's own Enter (advance the step) never acts past a
+    /// focused control.
+    #[must_use]
+    pub fn activated_by_keys(mut self, control: &Control) -> Self {
+        self.keys = Some(control.clone());
+        self
+    }
+}
+
+impl ui::widget::Decorator for Bound {
+    type Inner = dyn ui::widget::Widget;
+
+    fn inner(&self) -> &(dyn ui::widget::Widget + 'static) {
+        &*self.inner
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn ui::widget::Widget + 'static) {
+        &mut *self.inner
+    }
+
+    ui::provides!(dyn ui::widget::controls::ActionControls; inner = inner);
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        if let Some(control) = &self.keys
+            && self.inner.is_focused()
+            && self.inner.is_enabled()
+            && is_activation_key(event)
+        {
+            control.fire();
+            *ctx.handled = true;
+            return;
+        }
+        self.inner.handle_event(event, ctx);
+    }
+}
+
+impl ui::widget::controls::ActionControls for Bound {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.bindings.clone()
+    }
+}
+
 /// What one control does when used: queue its press.
 #[derive(Clone)]
 pub struct Control {
