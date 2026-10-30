@@ -437,6 +437,7 @@ fn upgrade(
     children = Workbook::annotations,
     search = Workbook::search,
     read_content = Workbook::read_cells,
+    document_child = Workbook::document_child,
     answer = crate::cell_actions::answer,
     params = verbs,
     version = 2,
@@ -1229,6 +1230,9 @@ impl Workbook {
         let Some(item) = item else {
             return Ok(self.sheet_listing());
         };
+        if let Some(place) = annotation_place(item.as_str()) {
+            return self.read_annotation(place);
+        }
         let (sheet_part, range) = item
             .as_str()
             .rsplit_once('!')
@@ -1315,6 +1319,128 @@ impl Workbook {
             );
         }
         Ok(answer)
+    }
+}
+
+/// A chart, comment thread or reply, by a resource it is published as.
+#[derive(Clone, Copy)]
+enum Annotation<'a> {
+    Chart(&'a str),
+    Comment(&'a str),
+    Reply(&'a str, &'a str),
+}
+
+/// The chart, comment thread or reply the published id `id` names: a
+/// sheet's chart item (`sheets.workbook/sheets/<sheet>/charts/<id>`), a
+/// comment or a reply item (`.../comments/<id>/replies/<id>`), or the place
+/// a chart or thread is derived as (`.../derived/chart:<id>`).
+fn annotation_place(id: &str) -> Option<Annotation<'_>> {
+    let rest = id
+        .strip_prefix(<Workbook as tilo_resource::Resource>::KIND)?
+        .strip_prefix('/')?;
+    if let Some(place) = rest.strip_prefix("derived/") {
+        return place
+            .strip_prefix("chart:")
+            .map(Annotation::Chart)
+            .or_else(|| place.strip_prefix("comment:").map(Annotation::Comment));
+    }
+    match rest.split('/').collect::<Vec<_>>()[..] {
+        ["sheets", sheet, "charts", chart] if !sheet.is_empty() && !chart.is_empty() => {
+            Some(Annotation::Chart(chart))
+        }
+        ["comments", comment] if !comment.is_empty() => Some(Annotation::Comment(comment)),
+        ["comments", comment, "replies", reply] if !comment.is_empty() && !reply.is_empty() => {
+            Some(Annotation::Reply(comment, reply))
+        }
+        _ => None,
+    }
+}
+
+/// Whether the published id `id` names a sheet (`sheets.workbook/sheets/<id>`).
+fn is_sheet_item(id: &str) -> bool {
+    id.strip_prefix(<Workbook as tilo_resource::Resource>::KIND)
+        .and_then(|rest| rest.strip_prefix("/sheets/"))
+        .is_some_and(|sheet| !sheet.is_empty() && !sheet.contains('/'))
+}
+
+impl Workbook {
+    /// Whether `id` is a part of the workbook its read answers: a sheet, a
+    /// chart, a comment thread or a reply. Its read is what discloses it, so
+    /// writing a sheet's cells, editing a chart or replying to a comment
+    /// are offered to whoever may read it, an agent too, where its Open view
+    /// is this window's own.
+    fn document_child(_: &Self, id: &str) -> bool {
+        is_sheet_item(id) || annotation_place(id).is_some()
+    }
+
+    /// What a chart, comment thread or reply is: its sheet and cells, and
+    /// the chart's title and kind, the thread's comment and replies, or the
+    /// reply's text.
+    fn read_annotation(&self, place: Annotation<'_>) -> Result<serde_json::Value, String> {
+        for (sheet_id, sheet) in self.sheets.iter() {
+            let layout = sheet.layout();
+            if let Annotation::Chart(id) = place {
+                if let Some(chart) = sheet
+                    .chart_snapshots(&layout)
+                    .into_iter()
+                    .find(|chart| chart.id == id)
+                {
+                    return Ok(serde_json::json!({
+                        "kind": "chart",
+                        "chart": chart.id,
+                        "title": chart.title,
+                        "type": chart.kind.code(),
+                        "sheet": sheet.name.0,
+                        "range": range_label(chart.start, chart.end),
+                        "how": "read the sheet with this range for the values it charts",
+                    }));
+                }
+                continue;
+            }
+            let (Annotation::Comment(comment) | Annotation::Reply(comment, _)) = place else {
+                continue;
+            };
+            let Some(thread) = Sheet::comment_snapshots(sheet_id, &self.comments, &layout)
+                .into_iter()
+                .find(|thread| thread.id == comment)
+            else {
+                continue;
+            };
+            if let Annotation::Reply(_, reply) = place {
+                let reply = thread
+                    .replies
+                    .iter()
+                    .find(|candidate| candidate.id == reply)
+                    .ok_or_else(|| {
+                        format!("no reply `{reply}`; read the comment for its replies")
+                    })?;
+                return Ok(serde_json::json!({
+                    "kind": "reply",
+                    "comment": thread.id,
+                    "author": reply.author,
+                    "body": reply.body,
+                }));
+            }
+            return Ok(serde_json::json!({
+                "kind": "comment",
+                "comment": thread.id,
+                "sheet": sheet.name.0,
+                "range": range_label(thread.start, thread.end),
+                "author": thread.author,
+                "body": thread.body,
+                "resolved": thread.resolved,
+                "replies": thread.replies.iter().map(|reply| serde_json::json!({
+                    "author": reply.author,
+                    "body": reply.body,
+                })).collect::<Vec<_>>(),
+            }));
+        }
+        Err(match place {
+            Annotation::Chart(id) => format!("no chart `{id}`; read with no item for the sheets"),
+            Annotation::Comment(id) | Annotation::Reply(id, _) => {
+                format!("no comment `{id}`; read with no item for the sheets")
+            }
+        })
     }
 }
 
@@ -1473,3 +1599,66 @@ mod tests;
 mod agent_tests;
 
 ui::reach_tests!(SheetsShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    use ui::framework::ResourceApp;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_actions::ResourceSpec;
+
+    /// The document read of the first resource of `kind` any scenario
+    /// publishes, invoked as `tilo_read` on it does.
+    fn read_first(kind: &str) -> ui::serde_json::Value {
+        for scenario in <super::SheetsShell as ResourceApp>::scenarios() {
+            let mut app = TestApp::<super::SheetsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            app.settle();
+            let resources = app.harness().resources();
+            if let Some((resource, read)) = document_read(&resources, kind) {
+                return app
+                    .call_on(&resource, &read, ui::serde_json::json!({}))
+                    .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
+                    .unwrap_or_else(|| panic!("the read of {kind} answers"));
+            }
+        }
+        panic!("no scenario publishes a {kind} with a document read");
+    }
+
+    fn document_read(resources: &[ResourceSpec], kind: &str) -> Option<(String, String)> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|action| resource.kind == kind && action.contract.reads_document())
+                .map(|read| (resource.id.as_str().to_owned(), read.id.clone()))
+                .or_else(|| document_read(&resource.children, kind))
+        })
+    }
+
+    #[test]
+    fn a_chart_and_a_comment_are_read_through_the_workbook_read() {
+        let answer = read_first("sheets.workbook.chart");
+        assert_eq!(answer["kind"], "chart", "{answer}");
+        assert!(answer["range"].is_string(), "{answer}");
+        let answer = read_first("sheets.workbook.comment");
+        assert_eq!(answer["kind"], "comment", "{answer}");
+        assert!(answer["body"].is_string(), "{answer}");
+    }
+
+    #[test]
+    fn a_sheet_and_a_comment_item_are_read_through_the_workbook_read() {
+        let answer = read_first("sheets.workbook.sheets");
+        assert!(answer["sheet"].is_string(), "{answer}");
+        let answer = read_first("sheets.workbook.comments");
+        assert_eq!(answer["kind"], "comment", "{answer}");
+    }
+
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::SheetsShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

@@ -26,7 +26,8 @@ pub(crate) const VIEWS: [(&str, &str); 4] = [
 ];
 
 /// What can be done with the selected page: the bar entry's icon and name,
-/// and the effect it runs on the document scanner's row.
+/// and the effect it runs on the document scanner's row (Crop on Camera
+/// itself).
 const PAGE_ACTIONS: [(&str, &str, CameraEffect); 8] = [
     ("download", "Save as PDF", CameraEffect::ExportPdf),
     ("file-text", "Recognize text", CameraEffect::RecognizeText),
@@ -50,7 +51,7 @@ const PAGE_ACTIONS: [(&str, &str, CameraEffect); 8] = [
 #[derive(Clone, PartialEq)]
 enum Command {
     OpenPhotos,
-    /// Run the effect on the document scanner's row.
+    /// Run the page's effect.
     Page(CameraEffect),
 }
 
@@ -179,7 +180,13 @@ impl CameraApp {
                     continue;
                 }
                 Some(Command::Page(effect)) => {
-                    self.invoke_on(DOCUMENT_ROW, &effect);
+                    // Cropping opens the crop frame, Camera's own view; the
+                    // rest act on the document scanner's row.
+                    if effect == CameraEffect::CropPage {
+                        self.invoke(&effect);
+                    } else {
+                        self.invoke_on(DOCUMENT_ROW, &effect);
+                    }
                     continue;
                 }
                 None => {}

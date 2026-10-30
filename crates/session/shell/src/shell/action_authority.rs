@@ -1443,28 +1443,25 @@ mod tests {
             children.iter().all(running),
             "a policy behind the owner's record withdraws nothing by itself"
         );
-        {
-            let published = lock(&authority.published);
-            let status = sandbox_revocation::Sandbox::capture(
-                children[0].id(),
-                (ordinary, kept.id.clone(), "person".into()),
-                std::slice::from_ref(&kept),
-            )
-            .unwrap()
-            .authorization_status(&published);
-            assert_eq!(status, Ok(sandbox_revocation::Standing::Awaiting));
-        }
+        let witness = sandbox_revocation::Sandbox::capture(
+            children[0].id(),
+            (ordinary, kept.id.clone(), "person".into()),
+            std::slice::from_ref(&kept),
+        )
+        .unwrap();
+        let status = witness.authorization_status(&lock(&authority.published));
+        assert_eq!(status, Ok(sandbox_revocation::Standing::Awaiting));
         let (mut late, admitted) = launch(
             authority.clone(),
             (ordinary, kept.id.clone(), "person".into()),
-            vec![kept.clone()],
+            vec![kept],
             revision,
         );
         let admitted = admitted.expect("a launch is admitted while the export is on its way");
         assert!(running(&late));
 
         // The lagging policy withdraws a grant: interrupted at once.
-        let mut revoked = behind.clone();
+        let mut revoked = behind;
         revoked
             .desktop
             .workspaces

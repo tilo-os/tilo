@@ -144,9 +144,36 @@ impl Snippets {
         }
     }
 
-    /// The places derived from the snippets: each folder reveals its
-    /// snippets, files a new one under itself and renames; each tag reveals
-    /// its snippets, renames or comes off.
+    /// The snippets `matches` selects, as a read of a folder or tag answers
+    /// them: each by its item, title, language and star.
+    pub fn read_place(
+        &self,
+        kind: &str,
+        name: &str,
+        matches: impl Fn(&Snippet) -> bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "kind": kind,
+            "name": name,
+            "snippets": self
+                .snippets
+                .iter()
+                .filter(|(_, snippet)| matches(snippet))
+                .map(|(id, snippet)| serde_json::json!({
+                    "item": tilo_resource::items::item_resource_id::<Self>("snippets", id),
+                    "title": snippet.title,
+                    "language": snippet.language.name(),
+                    "favorite": snippet.favorite,
+                }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// The places derived from the snippets: each folder reads and reveals
+    /// its snippets, files a new one under itself and renames; each tag
+    /// reads and reveals its snippets, renames or comes off. A place's read
+    /// is what discloses it, so its verbs are offered to whoever may read
+    /// it, an agent too, where revealing it is this window's own view.
     fn places(&self) -> Vec<Derived<Self>> {
         let folders = self.folders().into_iter().map(Self::folder_place);
         let tags = self.tags().into_iter().map(|(tag, _)| Self::tag_place(tag));
@@ -158,6 +185,9 @@ impl Snippets {
         Derived::new(folder.clone())
             .of_kind("folder")
             .identified(format!("folder:{folder}"))
+            .with_effect(&SnippetsView::ReadFolder {
+                folder: folder.clone(),
+            })
             .with_effect(&SnippetsView::RevealFolder {
                 folder: folder.clone(),
             })
@@ -172,14 +202,16 @@ impl Snippets {
         Derived::new(tag.clone())
             .of_kind("tag")
             .identified(format!("tag:{tag}"))
+            .with_effect(&SnippetsView::ReadTag { tag: tag.clone() })
             .with_effect(&SnippetsView::Reveal { tag: tag.clone() })
             .with(Self::RENAME_TAG.bind(snippets::RenameTag::paths().tag, tag.clone()))
             .with(Self::REMOVE_TAG.bind(snippets::RemoveTag::paths().tag, tag))
     }
 }
 
-/// What the library shows, which changes no document. Revealing is
-/// offered on the tag or folder it shows, never with a name to type.
+/// What the library shows and answers, which changes no document. Reading
+/// and revealing are offered on the tag or folder they name, never with a
+/// name to type.
 #[derive(Debug, Clone, PartialEq, Eq, Effect)]
 #[effect(operation = "snippets.view")]
 pub enum SnippetsView {
@@ -192,6 +224,18 @@ pub enum SnippetsView {
     /// Search snippets
     #[effect(view)]
     Search,
+    /// Read a tag
+    ///
+    /// The snippets that carry the tag, each by its item, title, language
+    /// and star.
+    #[effect(view, row, returns, tag = ui::tilo_actions::DOCUMENT_READ_TAG)]
+    ReadTag { tag: String },
+    /// Read a folder
+    ///
+    /// The snippets filed under the folder, each by its item, title,
+    /// language and star.
+    #[effect(view, row, returns, tag = ui::tilo_actions::DOCUMENT_READ_TAG)]
+    ReadFolder { folder: String },
 }
 
 /// Framework app: the snippets widget over [`Snippets`].
@@ -246,3 +290,56 @@ impl ResourceApp for SnippetsShell {
 mod tests;
 
 ui::reach_tests!(SnippetsShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    use ui::framework::ResourceApp;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_actions::ResourceSpec;
+
+    /// The document read of the first resource of `kind` any scenario
+    /// publishes, invoked as `tilo_read` on it does.
+    fn read_first(kind: &str) -> ui::serde_json::Value {
+        for scenario in <super::SnippetsShell as ResourceApp>::scenarios() {
+            let mut app = TestApp::<super::SnippetsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            app.settle();
+            let resources = app.harness().resources();
+            if let Some((resource, read)) = document_read(&resources, kind) {
+                return app
+                    .call_on(&resource, &read, ui::serde_json::json!({}))
+                    .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
+                    .unwrap_or_else(|| panic!("the read of {kind} answers"));
+            }
+        }
+        panic!("no scenario publishes a {kind} with a document read");
+    }
+
+    fn document_read(resources: &[ResourceSpec], kind: &str) -> Option<(String, String)> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|action| resource.kind == kind && action.contract.reads_document())
+                .map(|read| (resource.id.as_str().to_owned(), read.id.clone()))
+                .or_else(|| document_read(&resource.children, kind))
+        })
+    }
+
+    #[test]
+    fn a_tag_and_a_folder_are_read_through_their_document_reads() {
+        let answer = read_first("snippets.library.tag");
+        assert!(answer["snippets"][0]["title"].is_string(), "{answer}");
+        let answer = read_first("snippets.library.folder");
+        assert!(answer["snippets"][0]["item"].is_string(), "{answer}");
+    }
+
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::SnippetsShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}
