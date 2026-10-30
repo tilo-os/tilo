@@ -5,7 +5,8 @@
 //! cheap and idempotent; the unit guards re-runs with a marker file.
 //!
 //! It never creates a personal identity: that is an acknowledged ceremony in
-//! setup, in front of the person.
+//! setup, in front of the person. [`setup_due`] is the other half of that
+//! ceremony: whether a starting session opens it.
 
 use std::error::Error;
 
@@ -55,6 +56,18 @@ pub fn run_setup(host_desktop: bool) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Whether this device has setup to do before its desktop is used: it has no
+/// identity yet, the last startup found its identity unusable, or the person
+/// began setting it up and has not finished — the ceremony's journal, or a
+/// prepared setup neither consumed nor declined. A finished setup leaves none
+/// of these behind, so a restart goes straight to the person's desk.
+pub fn setup_due(identity_missing: bool, recovery: bool, identity_dir: &std::path::Path) -> bool {
+    recovery
+        || identity_missing
+        || tilo_onboarding_host::view::has_pending_progress(identity_dir)
+        || tilo_onboarding_host::prepared::session_pending(identity_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +91,81 @@ mod tests {
             one_shot(&args(&["--firstboot", "--firstboot-only"])).is_err(),
             "two first-boot flags at once are refused"
         );
+    }
+
+    /// This machine's home for one test, so the prepared setup the device
+    /// may hold there is this test's own.
+    #[cfg(target_os = "linux")]
+    fn home() -> (tilo_test_env::ScopedEnv, tempfile::TempDir) {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let home = tempfile::tempdir().expect("home");
+        env.set("HOME", home.path());
+        (env, home)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn identity_dir(home: &std::path::Path) -> std::path::PathBuf {
+        let dir = home.join(".config/tilo/identity");
+        std::fs::create_dir_all(&dir).expect("identity directory");
+        dir
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_device_that_finished_its_setup_starts_at_its_desk() {
+        let (_env, home) = home();
+        let dir = identity_dir(home.path());
+        assert!(!setup_due(false, false, &dir), "nothing is left to set up");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_device_with_no_identity_sets_up_before_its_desk() {
+        let (_env, home) = home();
+        let dir = identity_dir(home.path());
+        assert!(setup_due(true, false, &dir));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_identity_the_last_startup_found_unusable_sets_up_again() {
+        let (_env, home) = home();
+        let dir = identity_dir(home.path());
+        assert!(setup_due(false, true, &dir));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_restart_mid_setup_opens_it_again() {
+        let (_env, home) = home();
+        let dir = identity_dir(home.path());
+        // The ceremony's journal, written ahead of the step it guards: any
+        // entry at its path is setup the person had not finished.
+        std::fs::write(
+            dir.join(".onboarding-progress.json"),
+            br#"{"version":1,"stage":"identity-ready"}"#,
+        )
+        .expect("journal");
+        assert!(
+            tilo_onboarding_host::view::has_pending_progress(&dir),
+            "the journal is the one the ceremony leaves"
+        );
+        assert!(
+            setup_due(false, false, &dir),
+            "setup under way is opened again"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_prepared_setup_waits_for_its_owner() {
+        let (home, dir, _) = tilo_onboarding_host::browser::fixtures::fixture();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path());
+        assert!(
+            tilo_onboarding_host::prepared::session_pending(&dir),
+            "the fixture leaves a prepared setup"
+        );
+        assert!(setup_due(false, false, &dir));
     }
 }

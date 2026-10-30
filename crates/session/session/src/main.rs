@@ -379,14 +379,16 @@ fn search_options() -> tilo_session::SearchOptions {
 }
 
 /// The setup this device needs before its desktop is used: the first use
-/// when it has no identity yet, the recovery of its identity when startup
-/// found it unusable; `None` when the identity is ready.
+/// when it has no identity yet, setup it started and did not finish, the
+/// recovery of its identity when startup found it unusable; `None` when
+/// there is nothing left to set up.
 #[cfg(target_os = "linux")]
 fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
     use tilo_onboarding_host::identity_provisioning::{
         DiskIdentityStore, IDENTITY_RECOVERY_ENV, needs_first_run_flow,
     };
     use tilo_session::OnboardingView;
+    use tilo_session::mount::firstboot::setup_due;
     let store = match DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => {
@@ -395,10 +397,10 @@ fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
         }
     };
     let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
-    if !recovery && !needs_first_run_flow(&store) {
+    let identity_dir = store.path().parent()?.to_path_buf();
+    if !setup_due(needs_first_run_flow(&store), recovery, &identity_dir) {
         return None;
     }
-    let identity_dir = store.path().parent()?.to_path_buf();
     Some(match (host_desktop, recovery) {
         (false, false) => OnboardingView::new(identity_dir),
         (false, true) => OnboardingView::new_for_recovery(identity_dir),
