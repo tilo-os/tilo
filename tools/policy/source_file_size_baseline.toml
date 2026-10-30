@@ -3,7 +3,6 @@
 # raise one. Regenerate with check_source_file_size.py --write-baseline.
 
 [ceilings]
-"apps/agent/src/model.rs" = 3500
 "apps/browser/src/browser_widget.rs" = 6500
 "apps/calendar/src/app.rs" = 5000
 "apps/calendar/src/app/tests.rs" = 3500

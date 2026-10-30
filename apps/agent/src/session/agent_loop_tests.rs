@@ -45,8 +45,11 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
             TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
         ]],
     );
-    f.session.chooser =
-        Chooser::scripted_neutral(Duration::from_secs(5), Arc::new(Scripted(f.script.clone())));
+    f.session.chooser = Chooser::scripted(
+        Duration::from_secs(5),
+        agent_provider_config::ProviderProtocol::OpenAiCompatible,
+        Arc::new(Scripted(f.script.clone())),
+    );
     f.session.run_task(&f.run).unwrap();
     assert!(f.world.borrow().steps.is_empty());
     assert!(matches!(terminal(&f.sent.borrow()),
@@ -265,14 +268,19 @@ impl TurnTransport for Scripted {
     }
 }
 
-/// One OpenAI-dialect turn calling `calls` (`(name, arguments)`), streamed
-/// as argument deltas of `piece` bytes and completed-call frames, then the
-/// assembled body.
+/// One gateway turn calling `calls` (`(name, arguments)`), streamed as
+/// argument deltas of `piece` bytes and completed-call frames, then the
+/// assembled provider-neutral response. Call ids are never reused, as a
+/// provider's are not: the neutral conversation refuses a consumed id.
 fn turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
+    static NEXT_CALL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let mut events = Vec::new();
-    let mut tool_calls = Vec::new();
+    let mut content = Vec::new();
     for (index, (name, arguments)) in calls.iter().enumerate() {
-        let id = format!("call_{index}");
+        let id = format!(
+            "call_{}",
+            NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let text = arguments.to_string();
         let mut start = 0;
         while start < text.len() {
@@ -283,7 +291,7 @@ fn turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
             events.push(TurnEvent::Frame {
                 event: tilo_model_client::EVENT_TOOL_CALL_DELTA.into(),
                 output: serde_json::json!({
-                    "index": index, "id": id, "name": name, "delta": &text[start..end]
+                    "index": index, "id": &id, "name": name, "delta": &text[start..end]
                 })
                 .to_string(),
             });
@@ -291,59 +299,15 @@ fn turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
         }
         events.push(TurnEvent::Frame {
             event: tilo_model_client::EVENT_TOOL_CALL.into(),
-            output: serde_json::json!({"id": id, "name": name, "arguments": text}).to_string(),
-        });
-        tool_calls.push(serde_json::json!({
-            "id": id, "type": "function",
-            "function": {"name": name, "arguments": text}
-        }));
-    }
-    events.push(TurnEvent::Finished(Ok(serde_json::json!({
-        "choices": [{"finish_reason": "tool_calls", "message": {
-            "role": "assistant", "content": null, "tool_calls": tool_calls
-        }}]
-    })
-    .to_string())));
-    events
-}
-
-/// One Anthropic-dialect turn calling `calls`, as the gateway streams it:
-/// a call's argument deltas (indexed among the turn's tool calls), its
-/// completed-call frame at its `content_block_stop`, then the assembled
-/// Messages body, whose text blocks the frames never carried.
-fn anthropic_turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
-    let mut events = Vec::new();
-    let mut content = vec![serde_json::json!({"type": "text", "text": "On it."})];
-    for (index, (name, arguments)) in calls.iter().enumerate() {
-        let id = format!("toolu_0{index}");
-        let text = arguments.to_string();
-        let mut start = 0;
-        while start < text.len() {
-            let mut end = (start + piece).min(text.len());
-            while !text.is_char_boundary(end) {
-                end += 1;
-            }
-            events.push(TurnEvent::Frame {
-                event: tilo_model_client::EVENT_TOOL_CALL_DELTA.into(),
-                output: serde_json::json!({
-                    "index": index, "id": id, "name": name, "delta": &text[start..end]
-                })
-                .to_string(),
-            });
-            start = end;
-        }
-        events.push(TurnEvent::Frame {
-            event: tilo_model_client::EVENT_TOOL_CALL.into(),
-            output: serde_json::json!({"id": id, "name": name, "arguments": text}).to_string(),
+            output: serde_json::json!({"id": &id, "name": name, "arguments": text}).to_string(),
         });
         content.push(serde_json::json!({
-            "type": "tool_use", "id": id, "name": name, "input": arguments
+            "type": "tool_call", "id": id, "name": name, "input": arguments
         }));
     }
     events.push(TurnEvent::Finished(Ok(serde_json::json!({
-        "id": "msg_1", "type": "message", "role": "assistant", "model": "scripted",
-        "content": content, "stop_reason": "tool_use", "stop_sequence": null,
-        "usage": {"input_tokens": 10, "output_tokens": 20}
+        "message": {"role": "assistant", "content": content},
+        "stop_reason": "tool_calls"
     })
     .to_string())));
     events
@@ -1705,7 +1669,7 @@ fn tool_names(body: &Value) -> Vec<String> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|tool| tool["function"]["name"].as_str().unwrap().to_owned())
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect()
 }
 
@@ -1786,7 +1750,12 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
             "only generic tools, never an application-specific one"
         );
     }
-    let first = bodies[0]["messages"][1]["content"].as_str().unwrap();
+    let first: String = bodies[0]["messages"][1]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|block| block["text"].as_str().unwrap())
+        .collect();
     assert!(first.contains("make the second paragraph bold"), "{first}");
     assert!(first.contains(&op("toggle-mark")), "{first}");
     assert!(
@@ -1797,9 +1766,7 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
     // toggle-mark becoming available — is observed, not assumed.
     let second = bodies[1]["messages"].to_string();
     assert!(second.contains("Details"), "{second}");
-    let third = bodies[2]["messages"].as_array().unwrap();
-    let observation = third.last().unwrap()["content"].as_str().unwrap();
-    let observation: Value = serde_json::from_str(observation).unwrap();
+    let observation = last_observation(&bodies[2]);
     assert_eq!(observation["result"], "succeeded");
     assert_eq!(observation["changed_view"]["selection"]["block"], "p2");
     assert!(
@@ -1814,7 +1781,7 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
 
 /// The last tool result the model was shown in `body`.
 fn last_observation(body: &Value) -> Value {
-    let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
+    let content = body["messages"].as_array().unwrap().last().unwrap()["content"][0]["content"]
         .as_str()
         .unwrap();
     serde_json::from_str(content).unwrap()
@@ -2355,11 +2322,11 @@ fn a_loop_that_never_finishes_stops_at_its_turn_bound() {
     ));
 }
 
-/// Both dialects wait for the validated final batch, execute each call
-/// exactly once and return each result under the original call id.
+/// The loop waits for the validated final batch, executes each call
+/// exactly once and returns each result under the original call id.
 #[test]
-fn anthropic_calls_wait_for_the_complete_turn_and_run_only_once() {
-    let first = anthropic_turn(
+fn calls_wait_for_the_complete_turn_and_run_only_once() {
+    let first = turn(
         &[
             invoke("append-paragraph", &serde_json::json!({"text": "Hello"})),
             invoke("read-text", &serde_json::json!({})),
@@ -2373,13 +2340,8 @@ fn anthropic_calls_wait_for_the_complete_turn_and_run_only_once() {
     let mut f = paced_fixture(
         "write hello",
         World::default(),
-        vec![first, anthropic_turn(&[finish("Wrote it.", true)], 8)],
+        vec![first, turn(&[finish("Wrote it.", true)], 8)],
         Some(Duration::from_millis(4)),
-    );
-    f.session.chooser = Chooser::scripted(
-        Duration::from_secs(5),
-        agent_provider_config::ProviderProtocol::Anthropic,
-        Arc::new(Scripted(f.script.clone())),
     );
     f.session.run_task(&f.run).unwrap();
 
@@ -2409,7 +2371,7 @@ fn anthropic_calls_wait_for_the_complete_turn_and_run_only_once() {
         .last()
         .unwrap()
         .clone();
-    assert_eq!(results["role"], "user");
+    assert_eq!(results["role"], "tool");
     let ids = results["content"]
         .as_array()
         .unwrap()
@@ -2417,10 +2379,10 @@ fn anthropic_calls_wait_for_the_complete_turn_and_run_only_once() {
         .map(|block| {
             assert_eq!(block["type"], "tool_result");
             assert_ne!(block["content"], "Not handled.");
-            block["tool_use_id"].as_str().unwrap().to_owned()
+            block["call_id"].as_str().unwrap().to_owned()
         })
         .collect::<Vec<_>>();
-    assert_eq!(ids, ["toolu_00", "toolu_01"]);
+    assert_eq!(ids, asked_ids(&bodies[1]), "each result under its call id");
     assert_eq!(
         terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Succeeded {
@@ -2434,91 +2396,6 @@ fn invoke_replying(action: &str, arguments: &Value, reply: &str) -> (&'static st
         tools::INVOKE,
         serde_json::json!({"operation": op(action), "parameters": arguments, "reply": reply}),
     )
-}
-
-/// Anthropic caches only up to a breakpoint, so the catalogue closes a
-/// text block of its own with one: the first request of two different
-/// tasks is byte-identical through that block (system, tools,
-/// catalogue), and the next task reads it back from the cache instead of
-/// prefilling it. The request follows in its own block.
-#[test]
-fn anthropic_tasks_share_the_cached_catalogue_block() {
-    let mut f = fixture(
-        "ignored",
-        World::default(),
-        vec![
-            anthropic_turn(
-                &[invoke_replying(
-                    "type-text",
-                    &serde_json::json!({"text": "Hello chat."}),
-                    "Posted hello.",
-                )],
-                64,
-            ),
-            anthropic_turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64),
-            anthropic_turn(
-                &[finish("I typed \"Hello chat.\" into the document.", true)],
-                64,
-            ),
-        ],
-    );
-    f.session.chooser = Chooser::scripted(
-        Duration::from_secs(5),
-        agent_provider_config::ProviderProtocol::Anthropic,
-        Arc::new(Scripted(f.script.clone())),
-    );
-    for title in ["post hello", "what did you just do?"] {
-        let mut run = f.run.clone();
-        run.title = title.into();
-        bind_context(&mut run);
-        f.session.run_task(&run).unwrap();
-    }
-    let bodies = f.script.bodies.lock().unwrap().clone();
-    assert_eq!(bodies.len(), 3);
-    // What Anthropic caches at the catalogue's breakpoint, in its render
-    // order: tools, system, then the first user message through it.
-    let prefix = |body: &Value| {
-        serde_json::to_string(&(
-            &body["tools"],
-            &body["system"],
-            &body["messages"][0]["content"][0],
-        ))
-        .unwrap()
-    };
-    for body in &bodies {
-        assert_eq!(prefix(body), prefix(&bodies[0]));
-        // The agent's one breakpoint; the gateway adds the rest.
-        assert_eq!(body.to_string().matches("cache_control").count(), 1);
-    }
-    let first_turn = |body: &Value| body["messages"][0]["content"].as_array().unwrap().clone();
-    let (first, second) = (first_turn(&bodies[0]), first_turn(&bodies[1]));
-    assert_eq!(first.len(), 2);
-    assert_eq!(second.len(), 2);
-    let catalogue = &first[0];
-    assert_eq!(catalogue["type"], "text");
-    assert_eq!(
-        catalogue["cache_control"],
-        serde_json::json!({"type": "ephemeral"})
-    );
-    let catalogue = catalogue["text"].as_str().unwrap();
-    assert!(
-        catalogue.starts_with("Operations published right now:")
-            && catalogue.contains(&op("type-text")),
-        "{catalogue}"
-    );
-    assert!(!catalogue.contains("The request:"), "{catalogue}");
-    assert!(first[1].get("cache_control").is_none());
-    // What the task is and where it is come after the catalogue, in the block that changes.
-    let task = first[1]["text"].as_str().unwrap();
-    assert!(task.starts_with("Limits: at most"), "{task}");
-    assert!(task.ends_with("The request:\n\npost hello"), "{task}");
-    let task = second[1]["text"].as_str().unwrap();
-    assert!(
-        task.ends_with("The request:\n\nwhat did you just do?"),
-        "{task}"
-    );
-    // Within a task, the first turn is replayed unchanged.
-    assert_eq!(bodies[2]["messages"][0], bodies[1]["messages"][0]);
 }
 
 fn post(message: &str) -> (&'static str, Value) {
@@ -2720,12 +2597,26 @@ fn tool_results(body: &Value) -> Vec<(String, Value)> {
         .unwrap()
         .iter()
         .filter(|message| message["role"] == "tool")
-        .map(|message| {
+        .flat_map(|message| message["content"].as_array().cloned().unwrap_or_default())
+        .map(|block| {
+            assert_eq!(block["type"], "tool_result", "{block}");
             (
-                message["tool_call_id"].as_str().unwrap().to_owned(),
-                serde_json::from_str(message["content"].as_str().unwrap()).unwrap(),
+                block["call_id"].as_str().unwrap().to_owned(),
+                serde_json::from_str(block["content"].as_str().unwrap()).unwrap(),
             )
         })
+        .collect()
+}
+
+/// The ids of the calls the model asked for in `body`, in call order.
+fn asked_ids(body: &Value) -> Vec<String> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().cloned().unwrap_or_default())
+        .filter(|block| block["type"] == "tool_call")
+        .map(|block| block["id"].as_str().unwrap().to_owned())
         .collect()
 }
 /// A run's issue lists what it looked up, and only that: a read of a

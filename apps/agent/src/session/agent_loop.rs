@@ -962,12 +962,9 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         state: &mut LoopState,
     ) -> Result<LoopEnd> {
-        let (protocol, model) = match self.chooser.loop_model() {
-            Ok(model) => model,
-            Err(route) => {
-                return Ok(LoopEnd::Failed(super::planning::no_model(&route)));
-            }
-        };
+        if let Err(route) = self.chooser.loop_model() {
+            return Ok(LoopEnd::Failed(super::planning::no_model(&route)));
+        }
         let (total_budget, turn_budget) = if let Some(budget) = run.execution_budget {
             if let Err(error) = budget.validate() {
                 return Ok(LoopEnd::Failed(error.into()));
@@ -1025,12 +1022,10 @@ impl Session {
             tools::catalogue_summary(&catalogue, &mut state.revealed, tools::MOST_SUMMARISED);
         // Stable first, volatile last. System and tools are the same bytes on
         // every turn of every task; this catalogue changes only when the
-        // applications republish, so it opens the first turn and the earlier
-        // conversation and the request follow it. For Anthropic the
-        // `FirstTurn` closes the catalogue with its own cache breakpoint,
-        // so the next task reads system, tools and catalogue back from the
-        // cache rather than prefilling them; an OpenAI-compatible provider
-        // caches the same repeated prefix by itself.
+        // applications republish, so it opens the first turn in a block of
+        // its own and the earlier conversation and the request follow it.
+        // The gateway's own cache breakpoints make a provider read the
+        // prefix back instead of prefilling it.
         let request = super::selection_prompt::task_request(run, &catalogue);
         // The request as the model reads it, the selection it is about and
         // the operations named for it included, so a run that acted at the
@@ -1047,11 +1042,7 @@ impl Session {
             operations: format!("Operations published right now:\n\n{summary}\n"),
             task: format!("{place}\nThe request:\n\n{request}{resumed}"),
         };
-        let mut conversation = if self.chooser.uses_neutral_protocol() {
-            Conversation::neutral_first(LOOP_SYSTEM, &first)
-        } else {
-            Conversation::new(protocol, &model, LOOP_SYSTEM, &first)
-        };
+        let mut conversation = Conversation::neutral_first(LOOP_SYSTEM, &first);
         for turn in 0..MAX_LOOP_TURNS {
             let left = total_budget.saturating_sub(began.elapsed());
             if left.is_zero() {
@@ -1471,7 +1462,7 @@ impl Session {
                 ))));
             }
         };
-        // Calls the stream did not report as they completed (a dialect that
+        // Calls the turn did not report as they completed (a transport that
         // does not stream, or a gateway past its event bound) run now, in
         // order.
         for (index, call) in calls.iter().enumerate() {
