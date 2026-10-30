@@ -204,7 +204,7 @@ pub mod tests {
     }
     #[allow(
         clippy::future_not_send,
-        reason = "the directory bridge is deliberately driven on the LocalSet because its Cap'n Proto state contains Rc values"
+        reason = "the directory bridge is deliberately driven on the LocalSet because its state contains Rc values"
     )]
     pub async fn drain_directory_bridge(fixture: &LocalDirectoryFixture) {
         tilo_action_broker::collab_app_broker::tests::drain_directory_bridge(&fixture.inner).await;
@@ -238,7 +238,7 @@ pub mod tests {
 
     #[allow(
         clippy::future_not_send,
-        reason = "the test helper awaits only LocalSet-bound directory work holding Rc-backed Cap'n Proto state"
+        reason = "the test helper awaits only LocalSet-bound directory work holding Rc-backed state"
     )]
     async fn load_directory_result(
         fixture: &LocalDirectoryFixture,

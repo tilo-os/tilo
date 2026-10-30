@@ -181,7 +181,7 @@ fn task_action_from_offer(
 pub struct Config {
     /// Stable workspace-admitted identity, independent of the display name.
     pub agent_id: String,
-    /// Explicit typed Cap'n Proto endpoint for headless diagnostics outside
+    /// Explicit typed collaboration endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
     /// Certified device credentials for an explicit endpoint. Launcher-bound

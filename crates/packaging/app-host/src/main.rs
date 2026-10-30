@@ -1,6 +1,6 @@
 //! tilo-app-host daemon entry point.
 //!
-//! Loads the on-disk registry, binds the Cap'n Proto control socket,
+//! Loads the on-disk registry, binds the control socket,
 //! and runs the accept loop. Best-effort systemd `READY=1` notify so a
 //! `Type=notify` user unit can serialise dependent units behind us.
 
@@ -15,10 +15,10 @@ use package_store::{Catalog, PackageStore, SystemStore};
 #[derive(Debug, Parser)]
 #[command(
     name = "tilo-app-host",
-    about = "Tilo app host: the package store's privileged door, over a Cap'n Proto control socket."
+    about = "Tilo app host: the package store's privileged door, over a control socket."
 )]
 struct Cli {
-    /// Cap'n Proto control socket path. Default:
+    /// Control socket path. Default:
     /// `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`.
     #[arg(long)]
     socket: Option<PathBuf>,

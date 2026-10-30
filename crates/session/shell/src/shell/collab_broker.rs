@@ -1,6 +1,6 @@
 //! Typed collaboration broker and transport-neutral routing core.
 //!
-//! Apps connect through the Cap'n Proto service. This module owns durable
+//! Apps connect through the collaboration service. This module owns durable
 //! policy state, peer-network draining, routing, and in-process subscribers;
 //! the RPC implementation lives in `collab_app_broker`.
 
@@ -165,11 +165,11 @@ impl Drop for BrokerHandle {
     }
 }
 
-/// Bind the typed Cap'n Proto service.
+/// Bind the typed collaboration service.
 ///
 /// # Errors
 ///
-/// Returns an error if the Cap'n Proto socket at `app_socket_path`
+/// Returns an error if the collaboration socket at `app_socket_path`
 /// cannot be bound. The parent must already be an owner-only real directory
 /// (normally mode 0700); live sockets and non-private parents are rejected,
 /// while proven stale socket inodes are reclaimed.
@@ -307,7 +307,7 @@ pub(crate) fn spawn_device_harness(
 /// # Errors
 ///
 /// Returns an error if `publisher` has no attached signed-document sink, or if
-/// the Cap'n Proto socket at `app_socket_path` cannot be bound.
+/// the collaboration socket at `app_socket_path` cannot be bound.
 pub fn spawn_native_peer(
     app_socket_path: PathBuf,
     membership: crate::shell::state::WorkspaceTreeHandle,

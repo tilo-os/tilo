@@ -179,7 +179,7 @@ impl Refresh {
     }
 
     /// Drain the old bounded requests before starting a replacement generation.
-    /// Cap'n Proto response cancellation does not promise server cancellation.
+    /// A cancelled response does not promise the service stopped serving it.
     pub(super) fn retire(&mut self) {
         self.retired = true;
         self.queued.clear();
