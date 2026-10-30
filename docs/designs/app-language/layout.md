@@ -65,16 +65,16 @@ view player_bar(p: Player) {
 
 ## 5. Every screen
 
-Logical units with edges snapped to device pixels; layouts reflow at 200 % text; sensible on
-portrait, phone and ultrawide; hit targets never shrink; leading and trailing instead of left
-and right.
+Logical units with edges snapped to device pixels (layout rounds every edge to the display's
+pixel grid, at fractional scales too); layouts reflow at 200 % text; sensible on portrait, phone
+and ultrawide; hit targets never shrink; leading and trailing instead of left and right.
 
 ## 6. Checking
 
 `tilolang layout-check` renders every view headlessly across sizes from 320×568 to 3440×1440,
-display scales 1 to 2 and text scales 1 and 1.5. It reports overflow, clipped text, overlaps, hit
-targets that are too small and pages that scroll sideways, each at a view path. Agents run it like
-the type checker.
+display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clipped text, overlaps,
+hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
+a view path. Agents run it like the type checker.
 
 ## 7. On the platform
 

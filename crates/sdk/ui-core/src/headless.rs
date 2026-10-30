@@ -494,6 +494,8 @@ pub struct FrameHarness {
     dispatching_touch_pointer: bool,
     viewport: (u32, u32),
     last_layout_viewport: Option<(u32, u32)>,
+    /// The display scale the last complete layout rounded its edges for.
+    last_layout_scale: Option<f64>,
     input_scale: f64,
     /// As the live host: where the pointer last moved, replayed before a
     /// press or release that follows a rebuild under a still pointer.
@@ -1592,6 +1594,7 @@ impl FrameHarness {
             dispatching_touch_pointer: false,
             viewport,
             last_layout_viewport: None,
+            last_layout_scale: None,
             input_scale: 1.0,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
@@ -3251,6 +3254,9 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        // Every edge laid out lands on one of the display's pixels, as in the
+        // live host's pass.
+        let _grid = crate::widget::layout::enter_device_scale(self.input_scale);
         // A pointer at rest sees no event when a relayout moves a control
         // under it; compare the geometry to replay it, as the live host does.
         let resting_geometry = (self.pointer_replay.is_resting() && self.layout_built)
@@ -3463,8 +3469,13 @@ impl FrameHarness {
                     None,
                 )
             };
-        let must_compute =
-            structure || viewport_changed || self.remount || self.root.layout_needs_measure();
+        // Another display scale is another pixel grid to round the edges onto.
+        let grid_changed = self.last_layout_scale != Some(self.input_scale);
+        let must_compute = structure
+            || viewport_changed
+            || grid_changed
+            || self.remount
+            || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
@@ -3686,6 +3697,7 @@ impl FrameHarness {
             Ok((Some(geometry), dirty || remount_next))
         })?;
         self.last_layout_viewport = Some(self.viewport);
+        self.last_layout_scale = Some(self.input_scale);
         self.last_relayout = stats;
         if stats.rebuilt
             || stats.remounted
@@ -7718,7 +7730,10 @@ impl FrameHarness {
         self.send(&WindowEvent::Ime(winit::event::Ime::Commit(text.into())));
     }
 
-    /// Set the physical-to-logical input scale; layout and capture remain logical pixels.
+    /// Set the display's scale: device pixels per logical pixel, by which input
+    /// is scaled. Layout and capture remain in logical pixels, with every edge
+    /// on a device pixel: the next frame solves the layout again on the new
+    /// grid.
     /// # Errors
     /// Rejects a non-finite or non-positive scale.
     pub fn set_input_scale(&mut self, scale: f64) -> Result<(), String> {

@@ -101,13 +101,44 @@ impl Replica {
     /// Commit one planned action through the executor, as the host does for a window: it is
     /// the change's recorded action, attributed to this replica's person.
     pub fn apply(&mut self, action: &DynAction) {
-        let context = ActionContext::for_resource(
+        let invoker = ActionInvoker::actor(self.name.clone());
+        self.apply_as(action, invoker, None);
+    }
+
+    /// Commit what the runtime committed on its own as the agent `agent`'s steps in the task
+    /// run `group` (`runtime_collab::task_run_group`), titled `title`: what the broker stamps
+    /// each change of an agent's run with.
+    pub fn commit_in_run(&mut self, agent: &str, group: &str, title: &str) {
+        for committed in self.host.take_committed() {
+            let ambient = ActionContext::default().with_group(
+                group,
+                title,
+                tilo_actions::context::TASK_RUN_GROUP,
+            );
+            self.apply_as(
+                &committed.action,
+                ActionInvoker::actor(agent.to_owned()),
+                Some(&ambient),
+            );
+        }
+    }
+
+    fn apply_as(
+        &mut self,
+        action: &DynAction,
+        invoker: ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) {
+        let mut context = ActionContext::for_resource(
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
         )
         .with_app("so.tilo.lang", "tilolang")
-        .with_invoker(ActionInvoker::actor(self.name.clone()));
+        .with_invoker(invoker);
+        if let Some(ambient) = ambient {
+            context = context.enriched_by(ambient);
+        }
         let envelope = tilo_actions::apply_local_with_context(
             &mut self.doc,
             action,

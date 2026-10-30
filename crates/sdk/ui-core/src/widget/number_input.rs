@@ -1265,7 +1265,7 @@ mod tests {
             );
             assert_eq!(
                 harness.inspection().root.children[0].rect,
-                [10.25, 20.75, 120.5, 40.25]
+                [10.0, 21.0, 121.0, 40.0]
             );
         }
 

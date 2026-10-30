@@ -60,9 +60,9 @@ pub const SIZES: [Size; 6] = [
     },
 ];
 
-/// Display scales: layout is in logical pixels, so these change only what is snapped to device
-/// pixels and how input is scaled.
-pub const DISPLAY_SCALES: [f64; 2] = [1.0, 2.0];
+/// Display scales, a fractional one among them: layout is in logical pixels, so these change only
+/// where edges snap to device pixels and how input is scaled.
+pub const DISPLAY_SCALES: [f64; 3] = [1.0, 1.5, 2.0];
 
 /// The person's text size: as shipped, and enlarged.
 pub const TEXT_SCALES: [f32; 2] = [1.0, 1.5];
@@ -358,6 +358,7 @@ impl AppCheck<'_> {
                 &inspection.root,
                 viewport,
                 layout.size.touch.then(|| f64::from(input.minimum_target())),
+                layout.display_scale,
             );
             problems.extend(audit::clipped_text(
                 staged.harness_mut().root_widget_mut(),

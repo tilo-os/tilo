@@ -1984,6 +1984,8 @@ mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
 pub(crate) mod run_question;
+mod task_run_host;
+pub use task_run_host::{TASK_AGENT_APP, TaskRunHost};
 mod windowless_instances;
 mod witness;
 use witness::requires_store_witness;

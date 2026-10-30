@@ -32,10 +32,6 @@ use crate::shell::topbar_chrome::{self as bar_data, ClockPoll};
 /// The instance the bar is mounted as: no tab of any workspace.
 const TOPBAR_INSTANCE: u64 = u64::MAX - 8;
 
-/// How far below a bar its own drawing reaches: the focus ring, the
-/// hairline and the shadow of what floats on it.
-const BAR_REACH: f64 = 28.0;
-
 /// What the shell keeps of the bar it hosts.
 #[derive(Default)]
 pub(super) struct TopBarHost {
@@ -146,18 +142,23 @@ impl TopBarHost {
         self.app.as_ref().is_some_and(|app| app.is_focused())
     }
 
-    /// What the bar paints, shadows and focus rings included, in the
-    /// desktop's coordinates.
-    fn painted_bounds(&self) -> Vec<Rect> {
+    /// What the bar paints, in the desktop's coordinates: each bar with the
+    /// focus ring and hairline around its controls, and what floats on it
+    /// (its menu, the clock) with their shadows.
+    fn painted_bounds(&self, theme: &Theme) -> Vec<Rect> {
+        let ring = ui::widget::focus_ring_reach(theme);
         let mut bounds: Vec<Rect> = self
             .shown
             .bars
             .iter()
-            .map(|(_, rect, _)| Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + BAR_REACH))
+            .map(|(_, rect, _)| rect.inflate(ring, ring))
             .collect();
         for rect in [self.shown.clock, self.shown.popover] {
             if !rect.is_zero_area() {
-                bounds.push(rect.inflate(BAR_REACH, BAR_REACH));
+                bounds.push(
+                    ui::surface::floating_shadow_bounds(rect, theme)
+                        .union(rect.inflate(ring, ring)),
+                );
             }
         }
         bounds
@@ -439,7 +440,7 @@ impl ShellOverlayHost {
                     app.draw(&mut drawn, transform, text_renderer, theme, presence);
                 }
                 self.topbar.refresh_shown();
-                painted = self.topbar.painted_bounds();
+                painted = self.topbar.painted_bounds(theme);
                 if !painted.is_empty() {
                     scene.append(&drawn, None);
                 }

@@ -257,6 +257,59 @@ fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
 }
 
 #[test]
+fn a_button_for_an_action_reads_its_label_icon_and_state_with_what_it_applies() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text\n    pinned: Bool = false\n}\naction pin(n: Note, pinned: Bool = not n.pinned) (label: if pinned { \"Pin\" } else { \"Unpin\" }, icon: if n.pinned { .star } else { .pin }, on: n.pinned) {\n    n.pinned = pinned\n}\nview note(n: Note) {\n    stack {\n        button(pin(n), icon_only: true)\n    }\n}",
+    );
+    let f = func(&m, "note");
+    let calls = ui_calls(f);
+    assert!(has(&calls, "prop toggled"), "{calls:#?}");
+    let s = strings(f);
+    for want in ["Pin", "Unpin", "pin", "star"] {
+        assert!(s.contains(&want.to_string()), "{want} in {s:?}");
+    }
+}
+
+#[test]
+fn a_primitive_a_component_draws_takes_the_components_events() {
+    let (m, _) = lower(
+        "type Chat {\n    topic: Text\n}\naction say(c: Chat, body: RichText) {\n    c.topic = body.excerpt\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft) {\n            on submit: say(c, draft).then(set(draft, RichText(\"\")))\n        }\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "chat"));
+    assert!(has(&calls, "on submit"), "{calls:#?}");
+    let wrong = diagnostics(
+        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft) {\n        on sent: set(draft, RichText(\"\"))\n    }\n}",
+    );
+    assert!(wrong.iter().any(|d| d.code == "E063"), "{wrong:#?}");
+}
+
+#[test]
+fn a_version_and_an_offered_action_are_asked_for_by_the_action_itself() {
+    let (m, lock) = lower(
+        "type Note {\n    title: Text\n}\n/// Renames it.\naction rename(n: Note, title: Text = n.title) (label: \"Edit\") {\n    n.title = title\n}\nview note(n: Note) {\n    stack {\n        if history(n).any(v -> v.is(rename)) {\n            text(\"edited\")\n        }\n        if actions(n).any(a -> a.is(rename)) {\n            text(\"editable\")\n        }\n    }\n}",
+    );
+    let f = func(&m, "note");
+    let id = lock.get("rename").expect("rename's id").to_owned();
+    assert!(
+        strings(f).contains(&id),
+        "compared by the action's id, {id}"
+    );
+    assert!(
+        !strings(f).iter().any(|s| s == "Edit"),
+        "never by its label"
+    );
+    for wrong in ["v.is(renamed)", "v.is(\"Edit\")", "v.is(n)"] {
+        let found = diagnostics(&format!(
+            "type Note {{\n    title: Text\n}}\naction rename(n: Note) {{\n    n.title = n.title\n}}\nview note(n: Note) {{\n    if history(n).any(v -> {wrong}) {{\n        text(\"edited\")\n    }}\n}}"
+        ));
+        assert!(
+            found.iter().any(|d| d.code == "E022"),
+            "{wrong}: {found:#?}"
+        );
+    }
+}
+
+#[test]
 fn a_scenario_is_a_hidden_action_that_reaches_its_root() {
     let (m, ids) = lower(
         "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot Notebook\ndefault view nb for Notebook\nview nb(n: Notebook) {\n    page {\n        text(\"x\")\n    }\n}\nscenario \"a week of notes\" {\n    let nb = root Notebook\n    nb.notes.insert(Note(title: \"Q3 plan\"))\n}",

@@ -665,6 +665,12 @@ impl RichTextLine {
         }
     }
 
+    /// Set the line's text flush with its rect's edge: a read-only body that lines up with
+    /// what stands beside it. Given before the line is laid out.
+    pub(crate) fn set_flush(&mut self) {
+        self.inner.drop_document_inset();
+    }
+
     /// How far the line's text starts inside its rect: the text field's
     /// own horizontal inset (none for the editor's plain lines).
     pub fn text_inset(&self, theme: &Theme) -> f64 {

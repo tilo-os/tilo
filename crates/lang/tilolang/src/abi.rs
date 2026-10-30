@@ -176,6 +176,8 @@ imports! {
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
+    RunChanges = "run_changes" ([H] -> [H]);
+    Unseen = "unseen" ([H] -> [H]);
     CollOrdered = "coll_ordered" ([H, H] -> [H]);
     CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);
     CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);

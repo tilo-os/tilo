@@ -88,7 +88,7 @@ use directory::bridge_error;
 /// The longest a waiter on a running invocation sleeps without a signalled
 /// change, so a change nothing signals (an idle expiry) costs latency, never
 /// a stalled shortcut run.
-const CHANGE_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+pub(super) const CHANGE_SAFETY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Why an action's arguments are too large to pass, in words a caller can
 /// act on: how large they are, the most one action takes, and to split.

@@ -3081,8 +3081,9 @@ pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
-    AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
-    insets_all, insets_xy, layout_clip, placing_again, text_control_height, with_layout_clip,
+    AuthoredExtent, DeviceScaleGuard, ExtentSizing, SkippedFrames, WidgetLayoutError,
+    compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,
+    layout_clip, placing_again, text_control_height, with_layout_clip,
 };
 
 mod cached_paint;
