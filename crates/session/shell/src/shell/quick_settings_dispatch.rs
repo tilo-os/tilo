@@ -185,6 +185,28 @@ impl QsActions for ValidatedQsActions<'_> {
         self.inner.connect_wifi(ssid, password)
     }
 
+    fn forget_network(&self, profile: &str) -> Result<(), String> {
+        name(profile, "saved network", 255)?;
+        self.inner.forget_network(profile)
+    }
+
+    fn set_network_autoconnect(&self, profile: &str, on: bool) -> Result<(), String> {
+        name(profile, "saved network", 255)?;
+        self.inner.set_network_autoconnect(profile, on)
+    }
+
+    fn scan_bluetooth(&self, on: bool) -> Result<(), String> {
+        self.inner.scan_bluetooth(on)
+    }
+
+    fn pair_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.pair_bluetooth(address)
+    }
+
+    fn forget_bluetooth(&self, address: &str) -> Result<(), String> {
+        self.inner.forget_bluetooth(address)
+    }
+
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
         self.inner.set_bluetooth(enabled)
     }

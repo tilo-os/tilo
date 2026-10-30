@@ -590,6 +590,20 @@ impl QsRefresh {
         });
     }
 
+    /// Join a network that broadcasts no name, the same way and off the
+    /// compositor/input thread.
+    pub fn kick_hidden_wifi_join(&mut self, ssid: String, password: Option<String>) {
+        self.spawn(Tier::WifiJoin, move || {
+            let result = qs::network_settings::connect_hidden_wifi(&ssid, password.as_deref());
+            QsReading::WifiJoin(WifiJoinResult {
+                ssid,
+                password,
+                shared_credential: false,
+                result,
+            })
+        });
+    }
+
     /// Every reading arrived since the last call. Never blocks.
     pub fn drain(&mut self) -> Vec<QsReading> {
         let mut out = Vec::new();

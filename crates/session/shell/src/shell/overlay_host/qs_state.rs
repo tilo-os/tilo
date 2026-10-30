@@ -285,6 +285,7 @@ impl ShellOverlayHost {
         match result {
             Ok(()) => {
                 st.quick_settings.wifi_password = None;
+                st.quick_settings.wifi_hidden = None;
                 for network in &mut st.quick_settings.wifi_networks {
                     network.connected = network.ssid == ssid;
                 }
@@ -341,6 +342,15 @@ impl ShellOverlayHost {
                     };
                     // Said in the prompt, under its field.
                     prompt.error = Some(error);
+                } else if let Some(prompt) = st
+                    .quick_settings
+                    .wifi_hidden
+                    .as_mut()
+                    .filter(|prompt| prompt.ssid == ssid)
+                {
+                    prompt.connecting = false;
+                    // Said in the form, under its fields.
+                    prompt.error = Some(t("host-wifi-join-check-password"));
                 } else if st
                     .quick_settings
                     .wifi_networks

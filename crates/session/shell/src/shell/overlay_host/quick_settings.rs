@@ -659,6 +659,81 @@ impl ShellOverlayHost {
             QsEffect::CancelWifiPassword => {
                 chrome.borrow_mut().quick_settings.wifi_password = None;
             }
+            QsEffect::AskHiddenNetwork => {
+                chrome.borrow_mut().quick_settings.wifi_hidden =
+                    Some(tilo_quick_settings::HiddenNetworkPrompt::new());
+            }
+            QsEffect::CancelHiddenNetwork => {
+                chrome.borrow_mut().quick_settings.wifi_hidden = None;
+            }
+            QsEffect::ConnectHiddenWifi { network, password } => {
+                if network.is_empty() {
+                    return;
+                }
+                {
+                    let mut state = chrome.borrow_mut();
+                    let prompt = state
+                        .quick_settings
+                        .wifi_hidden
+                        .get_or_insert_with(tilo_quick_settings::HiddenNetworkPrompt::new);
+                    prompt.ssid.clone_from(&network);
+                    prompt.connecting = true;
+                    prompt.error = None;
+                    state.quick_settings.wifi_joining = Some(network.clone());
+                }
+                self.qs_refresh
+                    .kick_hidden_wifi_join(network, (!password.is_empty()).then_some(password));
+            }
+            QsEffect::SetNetworkAutoconnect { profile, on } => {
+                let result = self
+                    .validated_qs_actions()
+                    .set_network_autoconnect(&profile, on);
+                self.finish_quick_settings_action(
+                    QsField::Wifi,
+                    "set_network_autoconnect",
+                    t("host-qs-change-failed-wifi"),
+                    result,
+                );
+                self.qs_refresh.kick_wifi_networks();
+            }
+            QsEffect::ForgetNetwork { profile } => {
+                let result = self.validated_qs_actions().forget_network(&profile);
+                self.finish_quick_settings_action(
+                    QsField::Wifi,
+                    "forget_network",
+                    t("host-qs-change-failed-wifi"),
+                    result,
+                );
+                self.qs_refresh.kick_wifi_networks();
+            }
+            QsEffect::ScanBluetooth { on } => {
+                chrome.borrow_mut().quick_settings.bt_scanning = on;
+                let result = self.validated_qs_actions().scan_bluetooth(on);
+                self.finish_quick_settings_action(
+                    QsField::Bluetooth,
+                    "scan_bluetooth",
+                    t("host-qs-change-failed-bluetooth"),
+                    result,
+                );
+            }
+            QsEffect::PairBluetooth { address } => {
+                let result = self.validated_qs_actions().pair_bluetooth(&address);
+                self.finish_quick_settings_action(
+                    QsField::Bluetooth,
+                    "pair_bluetooth",
+                    t("host-qs-change-failed-bluetooth"),
+                    result,
+                );
+            }
+            QsEffect::ForgetBluetooth { address } => {
+                let result = self.validated_qs_actions().forget_bluetooth(&address);
+                self.finish_quick_settings_action(
+                    QsField::Bluetooth,
+                    "forget_bluetooth",
+                    t("host-qs-change-failed-bluetooth"),
+                    result,
+                );
+            }
             QsEffect::ConnectBluetooth { address } => {
                 self.apply_qs_bluetooth_intent(&chrome, &address, true);
             }
