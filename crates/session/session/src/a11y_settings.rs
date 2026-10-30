@@ -57,8 +57,8 @@ pub fn a11y(settings: &AccessibilitySettings) -> A11y {
 /// # Errors
 ///
 /// When the compositor cannot flush the answers to clients.
-pub fn apply(compositor: &mut Compositor, settings: &AccessibilitySettings) -> Result<(), Error> {
-    compositor.set_a11y(a11y(settings))
+pub fn apply(compositor: &mut Compositor, a11y: &A11y) -> Result<(), Error> {
+    compositor.set_a11y(a11y.clone())
 }
 
 /// Whether the on-screen keyboard belongs on screen: the person's choice of
@@ -128,11 +128,11 @@ mod tests {
             Compositor::headless(Box::new(tilo_compositor::StackPolicy)).expect("compositor");
         apply(
             &mut compositor,
-            &settings(&[
+            &a11y(&settings(&[
                 ("sticky_keys", true.into()),
                 ("color_filter", "inverted".into()),
                 ("cursor_crosshair", true.into()),
-            ]),
+            ])),
         )
         .expect("apply");
         assert!(compositor.a11y().assists.sticky_keys);
@@ -140,7 +140,7 @@ mod tests {
         assert!(compositor.a11y().cursor.crosshair);
 
         // And back off again, as the person turning them off would.
-        apply(&mut compositor, &settings(&[])).expect("apply");
+        apply(&mut compositor, &a11y(&settings(&[]))).expect("apply");
         assert!(compositor.a11y().assists.is_off());
         assert_eq!(compositor.a11y().color_filter, ColorFilter::Off);
         assert!(!compositor.a11y().cursor.crosshair);

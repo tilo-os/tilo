@@ -38,9 +38,6 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The pictures the desk shows: the image's own, and the person's.
 tilo-wallpapers = { path = "../../platform/tilo-wallpapers" }
-# The assists the compositor carries out: bounce keys, mouse keys, the
-# pointer's size.
-tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 # The registries' listing as this device last accepted it, for the apps a
 # person can get.
 app-cli = { path = "../../packaging/app-cli" }
@@ -122,12 +119,6 @@ workspace-hack = { version = "0.1" }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
-# The example implements the compositor's window policy, whose rectangles are
-# smithay's.
-smithay = { version = "0.7", default-features = false, features = [
-    "wayland_frontend",
-    "desktop",
-] }
 tilo-test-env = { path = "../../dev/test-env" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
 futures-util.workspace = true

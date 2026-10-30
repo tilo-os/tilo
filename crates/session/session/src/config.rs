@@ -14,6 +14,7 @@ use settings_store::hardware::{
 use settings_store::sign_in_comforts::SignInComforts;
 use tilo_accessibility_settings::AccessibilitySettings;
 use tilo_compositor::InputConfig;
+use tilo_compositor::a11y::A11y;
 use tilo_compositor::backend::drm::input_config::{TouchpadClickMethod, TouchpadScrollMethod};
 use tilo_compositor::gestures::GestureConfig;
 use tilo_compositor::{IdleConfig, KeyboardLayout};
@@ -43,8 +44,9 @@ pub struct SessionConfig {
     /// The machine's power policy, resolved for this machine: what the lid,
     /// the power key and a failing battery do, and whether a sleep locks.
     pub power: tilo_power_mgmt::PowerPolicy,
-    /// The pointer's size in logical pixels.
-    pub cursor_size: u32,
+    /// The person's accessibility settings: the assists, the pointer's size
+    /// and shape, the colour filter, the magnifier and visual alerts.
+    pub a11y: A11y,
     /// The comforts the login screens start with: the device's copy, which
     /// the session keeps equal to these (`docs/security/sign-in.md` §3.4).
     pub comforts: SignInComforts,
@@ -76,7 +78,7 @@ impl SessionConfig {
             kept: true,
             idle: idle_config(&power),
             power,
-            cursor_size: accessibility.effective_cursor_size(),
+            a11y: crate::a11y_settings::a11y(&accessibility),
             comforts: sign_in_comforts(&accessibility, &input, true),
             apply_comforts_to_sign_in: settings_store::sign_in_comforts::APPLY_TO_SIGN_IN.get(),
             ..Self::from_settings(&input, ShortcutConfig::load())
@@ -109,14 +111,14 @@ impl SessionConfig {
         let power = tilo_power_mgmt::PowerPolicy::default();
         Self {
             shortcuts,
-            input: input_config(input, &assists),
+            input: input_config(input),
             gestures,
             keyboard: sources.compiled(),
             keyboard_layouts: sources.ids.clone(),
             keyboard_active: sources.active,
             idle: idle_config(&power),
             power,
-            cursor_size: assists.effective_cursor_size(),
+            a11y: crate::a11y_settings::a11y(&assists),
             comforts: sign_in_comforts(&assists, input, false),
             apply_comforts_to_sign_in: true,
             night_light: false,
@@ -259,10 +261,7 @@ impl Sources {
 }
 
 /// The compositor's input preferences from the stored ones.
-fn input_config(
-    input: &RichInputConfig,
-    assists: &tilo_accessibility_settings::AccessibilitySettings,
-) -> InputConfig {
+fn input_config(input: &RichInputConfig) -> InputConfig {
     use settings_store::hardware::{TouchpadClickMethod as Click, TouchpadScrollMethod as Scroll};
     InputConfig {
         touchpad_natural_scroll: input.touchpad_natural_scroll,
@@ -291,13 +290,6 @@ fn input_config(
             Scroll::TwoFinger => TouchpadScrollMethod::TwoFinger,
         },
         scroll_speed: input.scroll_speed,
-        // The assists the compositor itself carries out: a key pressed again
-        // soon after its release is a bounce, and the keypad moves the
-        // pointer.
-        bounce_keys: assists
-            .bounce_keys
-            .then(|| Duration::from_millis(u64::from(assists.bounce_keys_delay_ms))),
-        mouse_keys: assists.mouse_keys,
         ..InputConfig::default()
     }
 }
@@ -409,11 +401,17 @@ mod tests {
         let config =
             SessionConfig::from_settings(&RichInputConfig::default(), ShortcutConfig::default());
         assert_eq!(
-            config.input.bounce_keys,
+            config.a11y.assists.bounce_keys,
             Some(Duration::from_millis(700)),
             "a repeated key is dropped for as long as the person asked"
         );
-        assert!(config.input.mouse_keys, "the keypad moves the pointer");
-        assert_eq!(config.cursor_size, 48, "the pointer is the size they chose");
+        assert!(
+            config.a11y.assists.mouse_keys,
+            "the keypad moves the pointer"
+        );
+        assert_eq!(
+            config.a11y.cursor.size, 48,
+            "the pointer is the size they chose"
+        );
     }
 }

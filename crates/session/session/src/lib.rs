@@ -1209,7 +1209,7 @@ impl Session {
         compositor.set_input_config(options.config.input.clone());
         compositor.set_keyboard_layout(&options.config.keyboard);
         compositor.set_idle_config(options.config.idle);
-        compositor.set_cursor_size(options.config.cursor_size);
+        a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
         let machine = mount::power::install(&mut compositor, &options);
         compositor.add_host(Box::new(desktop.clone()));

@@ -20,7 +20,7 @@ use tilo_compositor::{Compositor, IdleConfig};
 use tilo_power_mgmt::{PowerPolicy, PowerSignal};
 use tilo_session_power::PowerLink;
 
-use crate::{Error, Options, Session, SessionConfig};
+use crate::{Error, Options, Session, SessionConfig, a11y_settings};
 
 /// What the session keeps of its power between frames.
 pub(crate) struct PowerRun {
@@ -29,11 +29,12 @@ pub(crate) struct PowerRun {
     link: Option<PowerLink>,
     /// Whether the person's settings changed since the last pass.
     reload: Arc<AtomicBool>,
-    /// The policy the settings last resolved, waiting for the next pass.
-    next: Arc<Mutex<Option<PowerPolicy>>>,
+    /// The settings the loader last resolved, waiting for the next pass.
+    next: Arc<Mutex<Option<SessionConfig>>>,
     /// What the sleep in flight installed, so a failed one undoes only that.
     sleep: SleepLock,
-    /// Keeps the settings watch alive; the policy follows it.
+    /// Keeps the settings watch alive: the loader's one watch, which the
+    /// compositor's assists and the power policy both follow.
     _watch: Option<settings_store::watch::SettingsWatch>,
 }
 
@@ -52,6 +53,22 @@ impl PowerRun {
             _watch: None,
         }
     }
+
+    /// Follow the person's settings, whether or not this session owns the
+    /// machine's power: the compositor's assists and the idle timers both
+    /// come from the one reading.
+    fn follow_settings(
+        &mut self,
+        waker: std::task::Waker,
+    ) -> settings_store::watch::SettingsWatch {
+        let reload = Arc::clone(&self.reload);
+        let next = Arc::clone(&self.next);
+        SessionConfig::follow(move |config| {
+            *next.lock().unwrap_or_else(PoisonError::into_inner) = Some(config);
+            reload.store(true, Ordering::Release);
+            waker.wake_by_ref();
+        })
+    }
 }
 
 /// A sleep in flight.
@@ -68,35 +85,23 @@ struct SleepLock {
 /// with — the one the settings loader resolved — applied to the idle timers
 /// now and again whenever the person changes their settings.
 pub(crate) fn install(compositor: &mut Compositor, options: &Options) -> PowerRun {
-    let Some(link) = options.power.clone() else {
-        return PowerRun::none();
-    };
     let waker = compositor.waker();
+    let mut run = PowerRun::none();
+    let watch = run
+        .follow_settings(waker)
+        .inspect_err(|error| tracing::info!(%error, "the settings are not followed"))
+        .ok();
+    run._watch = watch;
+    let Some(link) = options.power.clone() else {
+        return run;
+    };
     link.bridge().set_signal_wake(Arc::new({
-        let waker = waker.clone();
+        let waker = compositor.waker();
         move || waker.wake_by_ref()
     }));
     apply(compositor, &link);
-    let reload = Arc::new(AtomicBool::new(false));
-    let next = Arc::new(Mutex::new(None));
-    let watch = SessionConfig::follow({
-        let changed = Arc::clone(&reload);
-        let next = Arc::clone(&next);
-        move |config| {
-            *next.lock().unwrap_or_else(PoisonError::into_inner) = Some(config.power);
-            changed.store(true, Ordering::Release);
-            waker.wake_by_ref();
-        }
-    })
-    .inspect_err(|error| tracing::info!(%error, "the power settings are not followed"))
-    .ok();
-    PowerRun {
-        link: Some(link),
-        reload,
-        next,
-        sleep: SleepLock::default(),
-        _watch: watch,
-    }
+    run.link = Some(link);
+    run
 }
 
 /// Run `link`'s policy from now on: the idle timers the compositor keeps.
@@ -111,9 +116,26 @@ fn apply(compositor: &mut Compositor, link: &PowerLink) {
 }
 
 impl Session {
-    /// Follow the machine's power: what holds it awake, what the person
-    /// changed in their settings, and what the service over logind asked.
+    /// Follow the machine's power and the person's settings: what holds it
+    /// awake, what they changed, and what the service over logind asked.
     pub(crate) fn follow_power(&mut self) -> Result<(), Error> {
+        // The loader's one reading: the compositor's assists apply in every
+        // session, the machine's policy only where this session owns it.
+        if self.machine.reload.swap(false, Ordering::AcqRel) {
+            let next = self
+                .machine
+                .next
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(config) = next {
+                a11y_settings::apply(&mut self.compositor, &config.a11y)?;
+                if let Some(link) = &self.machine.link {
+                    link.set_policy(config.power);
+                    apply(&mut self.compositor, link);
+                }
+            }
+        }
         let Some(link) = self.machine.link.clone() else {
             return Ok(());
         };
@@ -122,18 +144,6 @@ impl Session {
         // video, a download, a remote session.
         self.compositor.hold_awake(link.suspend_held());
         self.compositor.hold_idle(link.idle_held());
-        if self.machine.reload.swap(false, Ordering::AcqRel) {
-            let next = self
-                .machine
-                .next
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if let Some(policy) = next {
-                link.set_policy(policy);
-                apply(&mut self.compositor, &link);
-            }
-        }
         for signal in link.bridge().drain_signals() {
             self.follow_power_signal(&link, signal)?;
         }
