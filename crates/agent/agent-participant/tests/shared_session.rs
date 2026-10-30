@@ -402,7 +402,10 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         now + 3_600_000_000_000,
     )
     .unwrap();
-    host.relay.register_agent(delegation.clone()).unwrap();
+    host.relay
+        .register_agent(&agent_cert, delegation.clone())
+        .await
+        .unwrap();
     supervisor.add_grant(AgentIdentity {
         key: agent_key,
         cert: agent_cert.clone(),
