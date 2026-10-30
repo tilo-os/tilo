@@ -108,9 +108,15 @@ fn parse_mode_flag(v: &str) -> Result<Mode, String> {
     }
 }
 
+/// Scenes the offscreen path renders that are not a `scene_setup` row: states
+/// of the session itself rather than of the demo tree, so a capture can be put
+/// beside the same state of another session. `empty-desk` is the desk before
+/// any window opens (the tree a real boot reaches); `lock` is the lock screen.
+const SESSION_STATE_SCENES: &[&str] = &["empty-desk", "lock"];
+
 /// Parse `--scenes`' comma-separated value into `args.scenes`, rejecting any
-/// name outside [`ShellDriver::ALL_SCENES`]. Split out of `Args::apply_flag`
-/// to keep it short.
+/// name outside [`ShellDriver::ALL_SCENES`] or [`SESSION_STATE_SCENES`]. Split
+/// out of `Args::apply_flag` to keep it short.
 fn apply_scenes_flag(
     args: &mut Args,
     rest: &mut Vec<String>,
@@ -119,7 +125,8 @@ fn apply_scenes_flag(
     let v = take_value(rest, "--scenes")?;
     args.scenes = v.split(',').map(|s| s.trim().to_string()).collect();
     for s in &args.scenes {
-        if !ShellDriver::ALL_SCENES.contains(&s.as_str()) {
+        if !ShellDriver::ALL_SCENES.contains(&s.as_str()) && !SESSION_STATE_SCENES.contains(&s.as_str())
+        {
             return Err(format!(
                 "unknown scene '{s}'. Valid: {}",
                 ShellDriver::ALL_SCENES.join(", ")
