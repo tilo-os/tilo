@@ -237,8 +237,8 @@ mod nested {
     }
 
     /// Run `compositor` for `for_`, sending each pass what `event` makes of
-    /// it, and answer how much CPU the session used meanwhile, and how many
-    /// passes there were.
+    /// it at one display's refresh, and answer how much CPU the session used
+    /// meanwhile, and how many frames it was asked for.
     fn during(
         compositor: &mut Compositor,
         session: &Session,
@@ -247,16 +247,22 @@ mod nested {
     ) -> (Duration, usize) {
         let before = cpu_time(&session.0);
         let started = Instant::now();
-        let mut passes = 0;
+        let mut frames = 0;
         while started.elapsed() < for_ {
-            if let Some(event) = event(passes) {
+            let tick = Instant::now();
+            if let Some(event) = event(frames) {
                 compositor.input(event).expect("input");
             }
             compositor.dispatch(REFRESH).expect("dispatch");
             let _ = compositor.render();
-            passes = passes.saturating_add(1);
+            frames = frames.saturating_add(1);
+            // A desktop asks for the next frame at its refresh, not whenever
+            // the last one's events were handled.
+            if let Some(rest) = REFRESH.checked_sub(tick.elapsed()) {
+                std::thread::sleep(rest);
+            }
         }
-        (cpu_time(&session.0).saturating_sub(before), passes)
+        (cpu_time(&session.0).saturating_sub(before), frames)
     }
 
     /// The CPU time the process has used, from `/proc/<pid>/stat`.
