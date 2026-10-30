@@ -120,9 +120,12 @@ mod nested {
         let mut session = Session(
             Command::new(binary())
                 .args(["--backend", "nested", "--size", "800x600"])
-                // Nothing of this desktop: no bus, and a runtime directory of
-                // its own.
+                // Nothing of this desktop: no bus, no Xwayland of its own, and
+                // a runtime directory of its own. The window opens on the
+                // compositor here and nowhere else, so the run shows nothing
+                // on the display this process was started from.
                 .args(["--session-bus", "none", "--system-bus", "none"])
+                .arg("--no-x11")
                 .env("WAYLAND_DISPLAY", &socket)
                 .env("XDG_RUNTIME_DIR", directory.path())
                 .env_remove("DISPLAY")
