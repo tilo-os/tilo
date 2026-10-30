@@ -7,7 +7,7 @@
 
 use serde_json::json;
 
-use super::{answered, control_of, paused_step};
+use super::{answered, control_of, paused_step, reports_on_own_issue};
 use crate::services::{TrackerAnswer, TrackerDirection, TrackerQuestion, TrackerRun};
 
 fn direction(id: &str, incorporated: bool) -> TrackerDirection {
@@ -29,6 +29,7 @@ fn run() -> TrackerRun {
         epoch: 2,
         starter: "ada".into(),
         active: true,
+        finished_by_agent: false,
         paused_through: None,
         budget: None,
         subject: None,
@@ -138,4 +139,28 @@ fn a_confirmation_admits_only_the_arguments_and_draft_the_person_saw() {
     );
     let error = answered(&declined, target, &arguments(), &draft("Send")).unwrap_err();
     assert!(error.contains(tilo_actions::draft::DECLINED) && error.contains("not today"));
+}
+
+#[test]
+fn only_a_tracker_verb_naming_the_runs_own_issue_is_its_report() {
+    let task = "tasks.tracker/issues/i1";
+    let own = json!({ "issue": "i1", "through": 1 }).to_string();
+    let prefixed = format!("{}{own}", tilo_actions::ARGUMENTS_JSON_PREFIX);
+    let other = json!({ "issue": "i2" }).to_string();
+    let tracker = ("so.tilo.tasks", "tasks.tracker");
+    assert!(reports_on_own_issue(task, tracker, Some(&own)));
+    assert!(reports_on_own_issue(task, tracker, Some(&prefixed)));
+    assert!(!reports_on_own_issue(task, tracker, Some(&other)));
+    assert!(!reports_on_own_issue(task, tracker, None));
+    assert!(!reports_on_own_issue(
+        task,
+        ("so.tilo.mail", "tasks.tracker"),
+        Some(&own)
+    ));
+    assert!(!reports_on_own_issue(
+        task,
+        ("so.tilo.tasks", "mail.inbox"),
+        Some(&own)
+    ));
+    assert!(!reports_on_own_issue("room-task", tracker, Some(&own)));
 }

@@ -672,11 +672,9 @@ pub struct ChromeState {
     /// Notices of an app that ran out of memory, by toast id: the closed-tab
     /// serials of its windows, which Reopen puts back where they were.
     memory_reopen_toasts: BTreeMap<u64, Vec<u64>>,
-    /// Agents whose admission a room's governor refused, as (room, agent,
-    /// the governor's reason): the agent door answers the client waiting on
-    /// that admission with it ([`crate::shell::agent_admission`]), and takes
-    /// them every turn.
-    pub(crate) refused_agent_admissions: Vec<(String, String, String)>,
+    /// Agent door connections the person admitted, whose task run Tasks
+    /// is to make ([`crate::shell::agent_admission::DoorRunAsk`]).
+    door_runs: Vec<crate::shell::agent_admission::DoorRunAsk>,
     /// Notifications of new devices asking to be the person, with the
     /// request each answers and the code it shows.
     device_asking_toasts: BTreeMap<u64, ([u8; 32], String, bool)>,
@@ -873,7 +871,7 @@ impl ChromeState {
             desk_undo_toasts: BTreeMap::new(),
             desk_restores: Vec::new(),
             memory_reopen_toasts: BTreeMap::new(),
-            refused_agent_admissions: Vec::new(),
+            door_runs: Vec::new(),
             device_asking_toasts: BTreeMap::new(),
             consent_notices: BTreeMap::new(),
             device_asking_seen: std::collections::BTreeSet::new(),
@@ -3650,6 +3648,17 @@ impl ChromeState {
     /// The work handed to agents since last taken.
     pub(crate) fn take_agent_asks(&mut self) -> Vec<AgentAsk> {
         std::mem::take(&mut self.agent_asks)
+    }
+
+    /// Ask Tasks for the run of an agent door connection the person
+    /// admitted.
+    pub(crate) fn ask_door_run(&mut self, ask: crate::shell::agent_admission::DoorRunAsk) {
+        self.door_runs.push(ask);
+    }
+
+    /// The door connections whose runs to ask for since last taken.
+    pub(crate) fn take_door_runs(&mut self) -> Vec<crate::shell::agent_admission::DoorRunAsk> {
+        std::mem::take(&mut self.door_runs)
     }
 
     /// Ask the workspace's agent `query` about what is focused (the

@@ -16,7 +16,7 @@ use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
 use crate::settle::{AgentBlock, InvocationRecord};
-use crate::store::{ChangeNote, OutboxEntry, Store};
+use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view_instance::ViewInstance;
 use tilolang::{BlockKind, Compiled, CompiledBlock};
@@ -612,6 +612,79 @@ impl Runtime {
         if states.get(&key) != Some(&value) {
             states.set(key, value);
         }
+    }
+
+    /// `person`'s seen mark of the resource `resource` (its id), as their own record keeps it
+    /// ([`crate::seen`]): what `unseen(r)` and the marks the host draws read. A view that read
+    /// it runs again when it moves.
+    pub fn set_seen(&self, person: &str, resource: &str, mark: Option<crate::seen::SeenMark>) {
+        let key = crate::seen::seen_key(person, resource);
+        let value = mark.map_or_else(Value::none, |mark| {
+            Value::some(Value::Tuple(vec![
+                Value::Text(mark.change),
+                Value::Text(mark.at),
+            ]))
+        });
+        let mut states = self.core.view_states.borrow_mut();
+        if states.get(&key) != Some(&value) {
+            states.set(key, value);
+        }
+    }
+
+    /// `person`'s seen mark of `resource`, as this runtime holds it.
+    #[must_use]
+    pub fn seen(&self, person: &str, resource: &str) -> Option<crate::seen::SeenMark> {
+        self.core.seen_mark(person, resource)
+    }
+
+    /// The versions of `at` that `person` has not seen, oldest first: what `unseen(r)` reads
+    /// for them.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn unseen(&self, person: &str, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+        self.core.unseen_of(person, at)
+    }
+
+    /// `person` has seen every version of `at` there is now: the mark moves to its newest,
+    /// and the host is handed it to keep ([`Self::take_seen`]). Nothing happens while there is
+    /// nothing unseen.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn mark_seen(&self, person: &str, at: &ResourceRef) -> Result<bool, StoreError> {
+        self.core.mark_seen(person, at)
+    }
+
+    /// `person` reviewed the task run `run` (its group): every resource it changed is seen
+    /// up to its newest version (*Mark all seen*). How many marks moved.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the run's changes.
+    pub fn mark_run_seen(&self, person: &str, run: &str) -> Result<usize, StoreError> {
+        let changes = self.core.store.borrow().run_changes(run)?;
+        let mut resources: Vec<String> = changes.into_iter().map(|v| v.resource).collect();
+        resources.sort();
+        resources.dedup();
+        let mut moved: usize = 0;
+        for resource in resources {
+            let Some(at) = ResourceRef::parse_id(&resource, String::new()) else {
+                continue;
+            };
+            if self.core.mark_seen(person, &at)? {
+                moved = moved.saturating_add(1);
+            }
+        }
+        Ok(moved)
+    }
+
+    /// The seen marks set here since last asked, for the host to keep in the person's own
+    /// record.
+    pub fn take_seen(&self) -> Vec<crate::seen::SeenWrite> {
+        std::mem::take(&mut *self.core.seen_writes.borrow_mut())
     }
 
     /// The workspace's members now, from its membership, and how its grants decide who of

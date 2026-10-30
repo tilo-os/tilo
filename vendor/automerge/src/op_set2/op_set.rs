@@ -250,6 +250,25 @@ impl OpSet {
         added
     }
 
+    /// TILO(batched-rollback): take out `ops`, which sit side by side from
+    /// `pos` in position order and whose undoing touches no other op (no
+    /// successor to restore, no register to reset, none a delete): what
+    /// [`Self::undo_op`] does for each, last first, with one splice per
+    /// column for all of them.
+    pub(crate) fn undo_run(&mut self, pos: usize, ops: &[&TxOp]) {
+        debug_assert!(ops.iter().all(|op| op.undo.is_empty()
+            && op.reset_range.is_none()
+            && op.bld.action != Action::Delete));
+        self.cols.remove_ops(pos, ops);
+        for op in ops.iter().rev() {
+            // TILO(op-id-index): each op `Columns::remove_ops` took out.
+            self.id_index.removed(op.id());
+            if op.obj_info().is_some() {
+                self.obj_info.remove(op.id());
+            }
+        }
+    }
+
     pub(crate) fn undo_op(&mut self, op: &TxOp) {
         if !op.undo.is_empty() {
             self.undo_succ(&op.undo);

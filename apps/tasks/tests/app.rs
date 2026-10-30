@@ -1249,6 +1249,11 @@ fn an_issue_opens_as_a_chat_of_its_own_where_the_agent_is_told_more() {
     )
     .expect("the run finishes");
     chat.settle();
+    assert!(
+        !chat.harness().targets().contains_key("stop-run"),
+        "a run that ended offers no Stop: {:?}",
+        chat.harness().targets().keys().collect::<Vec<_>>()
+    );
     chat.harness()
         .click_named("tasks-chat-draft")
         .expect("focus the field");

@@ -77,6 +77,7 @@ impl Fixture {
             epoch: 1,
             starter: hex::encode(minted.device.user_public_key),
             active: true,
+            finished_by_agent: false,
             paused_through: None,
             budget: None,
             subject: None,
@@ -176,7 +177,7 @@ impl Fixture {
 
     /// The person's second device, certified by their root and admitted to
     /// the room's device list.
-    fn second_device(&self) -> (SigningKey, tilo_user_identity::DeviceCert) {
+    pub(super) fn second_device(&self) -> (SigningKey, tilo_user_identity::DeviceCert) {
         let key = SigningKey::from_bytes(&[93; 32]);
         let cert = tilo_joined_room::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
@@ -319,6 +320,40 @@ async fn a_finished_or_cancelled_task_ends_its_agent() {
             assert!(refused.contains("has ended"), "{refused}");
             let rejoined = f.task_join(&minted).unwrap_err();
             assert!(rejoined.contains("has ended"), "{rejoined}");
+            drop(f);
+        })
+        .await;
+}
+
+/// A task agent's own finish ends its task, and the agent still hears how
+/// its last steps ended and tells its host; it never joins again, and a run
+/// its person stopped cuts it off as before.
+#[tokio::test(flavor = "current_thread")]
+async fn a_task_agent_hears_its_own_finish() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            let now = now_ns();
+            let minted = mint(&f.native.key, &f.native.certificate, now - 1, now + HOUR_NS);
+            f.ask(&minted);
+            let agent = f.task_channel(300, &minted);
+            let run = delivered(&agent).await;
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.active = false;
+                run.finished_by_agent = true;
+            }
+            f.state.refresh_native_task_delivery();
+            report_progress(&agent, &run)
+                .await
+                .expect("its own finish is still heard");
+            let rejoined = f.task_join(&minted).unwrap_err();
+            assert!(rejoined.contains("has ended"), "{rejoined}");
+            for run in f.native.runs.lock().unwrap().iter_mut() {
+                run.finished_by_agent = false;
+            }
+            f.state.refresh_native_task_delivery();
+            let refused = report_progress(&agent, &run).await.unwrap_err().to_string();
+            assert!(refused.contains("has ended"), "{refused}");
             drop(f);
         })
         .await;

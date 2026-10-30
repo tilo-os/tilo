@@ -466,3 +466,152 @@ fn rollback_combined_operations() {
     assert!(doc1.get(ROOT, "temp").unwrap().is_none());
     assert!(doc1.get_all(ROOT, "contested").unwrap().len() >= 2);
 }
+
+/// TILO(batched-rollback): xorshift64*, a reproducible stream per seed.
+#[derive(Clone)]
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) % n as u64) as usize
+    }
+
+    fn key(&mut self) -> String {
+        format!("k{}", self.below(12))
+    }
+}
+
+/// The objects random writes write into.
+#[derive(Clone)]
+struct Objects {
+    maps: Vec<crate::ObjId>,
+    texts: Vec<crate::ObjId>,
+    lists: Vec<crate::ObjId>,
+}
+
+/// One random write of a transaction: new objects with their fields written
+/// in any key order, letters typed at any place, list items, fields written
+/// twice, deletes and marks.
+fn random_write(tx: &mut crate::transaction::Transaction<'_>, rng: &mut Rng, objs: &mut Objects) {
+    let map = objs.maps[rng.below(objs.maps.len())].clone();
+    match rng.below(9) {
+        0 => {
+            let made = tx.put_object(&map, rng.key(), ObjType::Map).unwrap();
+            for _ in 0..rng.below(6) {
+                tx.put(&made, rng.key(), rng.below(100) as i64).unwrap();
+            }
+            objs.maps.push(made);
+        }
+        1 => {
+            let made = tx.put_object(&map, rng.key(), ObjType::Text).unwrap();
+            tx.splice_text(&made, 0, 0, "hello there").unwrap();
+            objs.texts.push(made);
+        }
+        2 => {
+            let made = tx.put_object(&map, rng.key(), ObjType::List).unwrap();
+            objs.lists.push(made);
+        }
+        3 | 4 => {
+            let text = objs.texts[rng.below(objs.texts.len())].clone();
+            let len = tx.length(&text);
+            let at = rng.below(len + 1);
+            let del = rng.below(len - at + 1).min(3);
+            let word = ["a", "bc", "def", "ghij"][rng.below(4)];
+            tx.splice_text(&text, at, del as isize, word).unwrap();
+        }
+        5 => {
+            let list = objs.lists[rng.below(objs.lists.len())].clone();
+            let len = tx.length(&list);
+            if len > 0 && rng.below(3) == 0 {
+                tx.delete(&list, rng.below(len)).unwrap();
+            } else {
+                tx.insert(&list, rng.below(len + 1), rng.below(100) as i64)
+                    .unwrap();
+            }
+        }
+        6 => {
+            tx.put(&map, rng.key(), "value").unwrap();
+        }
+        7 => {
+            let key = rng.key();
+            if tx.get(&map, &key).unwrap().is_some() {
+                tx.delete(&map, key).unwrap();
+            }
+        }
+        _ => {
+            let text = objs.texts[rng.below(objs.texts.len())].clone();
+            let len = tx.length(&text);
+            if len > 1 {
+                let start = rng.below(len - 1);
+                let end = start + 1 + rng.below(len - start - 1);
+                tx.mark(
+                    &text,
+                    crate::marks::Mark::new("bold".into(), true, start, end),
+                    crate::marks::ExpandMark::After,
+                )
+                .unwrap();
+            }
+        }
+    }
+}
+
+/// Rolling back takes out the ops that sit side by side together; whatever
+/// a transaction wrote, the document is exactly as before it, column for
+/// column, and takes the next writes as a copy that never saw it does.
+#[test]
+fn rollback_random_transactions_restores_every_column() {
+    for seed in 1..=60u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+        let mut doc = Automerge::new();
+        doc.set_actor(ActorId::from(b"aaaa"));
+        let mut objs = Objects {
+            maps: vec![ROOT.into()],
+            texts: Vec::new(),
+            lists: Vec::new(),
+        };
+        {
+            let mut tx = doc.transaction();
+            let text = tx.put_object(ROOT, "text", ObjType::Text).unwrap();
+            tx.splice_text(&text, 0, 0, "the quick brown fox").unwrap();
+            objs.texts.push(text);
+            objs.lists
+                .push(tx.put_object(ROOT, "list", ObjType::List).unwrap());
+            tx.commit();
+        }
+        // A history to write into, of the same writes.
+        for _ in 0..8 {
+            let mut tx = doc.transaction();
+            for _ in 0..1 + rng.below(6) {
+                random_write(&mut tx, &mut rng, &mut objs);
+            }
+            tx.commit();
+        }
+        let before = doc.save_checkpoint();
+        let saved = doc.save();
+        {
+            let mut written = objs.clone();
+            let mut tx = doc.transaction();
+            for _ in 0..1 + rng.below(30) {
+                random_write(&mut tx, &mut rng, &mut written);
+            }
+            tx.rollback();
+        }
+        assert_checkpoint_eq(&before, &doc.save_checkpoint());
+        assert_eq!(saved, doc.save(), "seed {seed}");
+        let mut copy = Automerge::load(&saved).unwrap();
+        copy.set_actor(ActorId::from(b"aaaa"));
+        for target in [&mut doc, &mut copy] {
+            let (mut rng, mut objs) = (rng.clone(), objs.clone());
+            let mut tx = target.transaction();
+            for _ in 0..10 {
+                random_write(&mut tx, &mut rng, &mut objs);
+            }
+            tx.commit_with(crate::transaction::CommitOptions::default().with_time(0));
+        }
+        assert_eq!(doc.get_heads(), copy.get_heads(), "seed {seed}");
+        assert_eq!(doc.save(), copy.save(), "seed {seed}");
+    }
+}

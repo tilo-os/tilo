@@ -514,14 +514,15 @@ impl ShellOverlayHost {
     }
 
     /// Whether a banner on screen is arriving, leaving or moving, or the
-    /// banners have something new to show.
+    /// banners' app moves. Something new to show is not motion:
+    /// [`Self::update_banners`] answers it with one frame.
     pub(super) fn banners_need_frame(&self) -> bool {
         self.banners.shown.animating
             || self
                 .banners
                 .app
                 .as_ref()
-                .is_some_and(|app| app.needs_redraw())
+                .is_some_and(|app| app.needs_animation_frame())
     }
 
     /// When the banners next need to run with nothing waking them.

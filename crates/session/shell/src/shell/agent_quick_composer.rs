@@ -686,15 +686,17 @@ impl Default for AgentQuickComposer {
     }
 }
 
-/// How wide the composer is beside its subject: one width whatever it
-/// shows, so an answer arriving grows it downwards only.
-const COMPOSER_WIDTH: f32 = 360.0;
-/// Below this viewport width the composer is a sheet along the bottom.
-const SHEET_BELOW: f64 = 600.0;
+/// How wide the composer is beside its subject: a list panel's width
+/// whatever it shows, so an answer arriving grows it downwards only.
+const COMPOSER_WIDTH: f32 = ui::tokens::Metrics::BASE.panel_width_list;
+/// Below a sheet's width the viewport has no room beside the subject, and
+/// the composer is a sheet along the bottom.
+const SHEET_BELOW: f64 = ui::tokens::Metrics::BASE.panel_width_sheet as f64;
 /// The test id of the area showing the work: the steps, the answer view and the reply.
 const WORK_AREA: &str = "agent-quick-work";
-/// The tallest the work area starts, before the viewport it stands in is known.
-const WORK_MAX: f32 = 360.0;
+/// The tallest the work area starts, before the viewport it stands in is
+/// known: as tall as the composer is wide.
+const WORK_MAX: f32 = COMPOSER_WIDTH;
 /// The share of the viewport's height the work area may take; past it the work scrolls,
 /// following its end, so the field and its controls stay in view.
 const WORK_SHARE: f64 = 0.5;
@@ -1748,9 +1750,11 @@ impl AgentQuickComposer {
         );
         self.view.running.set(running && !starting && !busy);
         let typed = !self.draft.get().trim().is_empty();
+        // The chat opened is the run shown: the one followed, else the one
+        // whose work stays shown after it ended; with none, what was typed.
         let can_chat = match run {
             Some(run) => run.phase != RunPhase::Starting,
-            None => typed && !busy,
+            None => (typed || worked.is_some()) && !busy,
         };
         self.view.can_chat.set(can_chat);
         self.view.enabled.set(
@@ -1798,12 +1802,21 @@ impl AgentQuickComposer {
             self.open_run = Some(run.task.task_id.clone());
         }
         if take(&self.presses.open_chat) {
-            match self.followed() {
-                Some(run) if run.phase != RunPhase::Starting => {
+            let typed = !self.draft.get().trim().is_empty();
+            // An ended run's work stays shown, and its chat is what opens,
+            // unless the person typed a new request to ask as a chat.
+            let shown = self
+                .owner
+                .as_ref()
+                .and_then(|owner| self.worked.get(owner))
+                .map(|(task, _)| task.clone());
+            match (self.followed(), shown) {
+                (Some(run), _) if run.phase != RunPhase::Starting => {
                     self.open_chat = Some(run.task.task_id.clone());
                 }
-                Some(_) => {}
-                None => self.chat_pending = !self.draft.get().trim().is_empty(),
+                (Some(_), _) => {}
+                (None, Some(task)) if !typed => self.open_chat = Some(task),
+                (None, _) => self.chat_pending = typed,
             }
         }
         if take(&self.presses.fix) {

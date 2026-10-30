@@ -94,6 +94,44 @@ pub(crate) enum AskOutcome {
     Unknown(String),
 }
 
+/// Where the run of a task asked for an agent door connection is handed:
+/// the connection, waiting for the person's admission to become its run.
+#[derive(Clone)]
+pub(crate) struct DoorReply(Arc<std::sync::Mutex<Option<DoorAnswer>>>);
+
+/// Where a door connection hears its run, or why it has none.
+type DoorAnswer =
+    tokio::sync::oneshot::Sender<Result<crate::shell::agent_admission::DoorRun, String>>;
+
+impl DoorReply {
+    pub(crate) fn new(reply: DoorAnswer) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(Some(reply))))
+    }
+
+    /// Hand the connection its run, or why it has none. Once.
+    pub(super) fn send(&self, answer: Result<crate::shell::agent_admission::DoorRun, String>) {
+        let reply = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(reply) = reply
+            && reply.send(answer).is_err()
+        {
+            tracing::debug!("the agent door connection left before its run was handed over");
+        }
+    }
+
+    /// Whether the connection stopped waiting.
+    fn abandoned(&self) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(tokio::sync::oneshot::Sender::is_closed)
+    }
+}
+
 #[derive(Clone)]
 enum Purpose {
     Respond(ComposerRequest),
@@ -110,6 +148,9 @@ enum Purpose {
         /// The ask [`AgentActions::open_and_ask`] handed out for it, whose
         /// outcome is told.
         ticket: Option<AskTicket>,
+        /// The agent door connection the task is for: its agent is not
+        /// launched, the connection joins the run instead.
+        door: Option<DoorReply>,
     },
     /// A message to, or Stop of, the followed run.
     Submit(ComposerRequest),
@@ -292,7 +333,17 @@ pub(super) struct AgentActions {
     /// join is admitted against that tracker, so launched before it shows
     /// the run they would be refused as made for a task that ended. The
     /// tracker's change wakes the pump that moves them on.
-    awaiting: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    awaiting: Vec<(
+        String,
+        Arc<crate::shell::task_agents::MintedTaskAgent>,
+        Option<DoorReply>,
+    )>,
+    /// The task agents launched for their issues, by issue, and the run of
+    /// it each was last launched for: a later run of the issue by the same
+    /// agent (a message after its last run ended, which carries its task's
+    /// delegation) launches it again, since a task agent leaves once its run
+    /// ends.
+    launched_tasks: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>, u64)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
     /// How asks handed out ended, until the host takes them.
@@ -627,34 +678,107 @@ impl AgentActions {
         Some(issued)
     }
 
+    /// Ask Tasks for the issue and run of an agent door connection the
+    /// person admitted: a task agent minted for it, whose run the person's
+    /// admission starts. Once the tracker shows the run going, `reply` gets
+    /// what the connection joins it with; a refused ask gets why.
+    pub(super) fn open_and_ask_for_door(
+        &mut self,
+        source: ActionSessionSource,
+        owner: &ComposerOwner,
+        (title, body): (&str, &str),
+        reply: DoorReply,
+    ) {
+        if let Err(error) = self.open(source, owner.clone()) {
+            reply.send(Err(error));
+            return;
+        }
+        match queue_operation(owner, None, (title, body), None, None, false) {
+            Ok(mut operation) => {
+                if let Purpose::Queue { door, .. } = &mut operation.purpose {
+                    *door = Some(reply);
+                }
+                self.begin(operation);
+            }
+            Err(error) => reply.send(Err(error)),
+        }
+    }
+
     /// Move the task agents whose run the tracker now shows going to
     /// [`Self::launches`]; one whose run shows ended is not launched.
     /// Whether any moved.
     fn launch_shown_runs(&mut self, room: &str, runs: Option<&dyn RunSource>) -> bool {
-        let Some(source) = runs.filter(|_| !self.awaiting.is_empty()) else {
+        let Some(source) =
+            runs.filter(|_| !self.awaiting.is_empty() || !self.launched_tasks.is_empty())
+        else {
             return false;
         };
         // Armed before the read, so a change after it wakes the next pump;
-        // still stale for `read_runs`, which reads its own way.
-        self.fresh.take();
-        self.fresh.mark();
+        // still stale for `read_runs`, which reads its own way. Agents waiting
+        // for their first run are looked for on every pump; a later run of
+        // a launched one only when the tracker changed.
+        let changed = self.fresh.take();
+        if changed {
+            self.fresh.mark();
+        }
+        if self.awaiting.is_empty() && !changed {
+            return false;
+        }
         let shown = source.runs(room);
         let mut moved = false;
-        for (issue, minted) in std::mem::take(&mut self.awaiting) {
+        for (issue, minted, door) in std::mem::take(&mut self.awaiting) {
+            if door.as_ref().is_some_and(DoorReply::abandoned) {
+                tracing::info!(%issue, "the agent door connection left before its run went");
+                moved = true;
+                continue;
+            }
             let agent = format!("agent:{}", minted.agent_id);
             match shown
                 .iter()
                 .find(|run| run.issue == issue && run.agent == agent)
             {
+                // An agent door connection joins its run itself; it is never
+                // launched, and leaves with its connection.
+                Some(run) if run.phase.active() && door.is_some() => {
+                    if let Some(door) = door {
+                        door.send(minted.presentation().map(|presentation| {
+                            crate::shell::agent_admission::DoorRun {
+                                agent: minted.agent_id.clone(),
+                                issue: issue.clone(),
+                                presentation,
+                            }
+                        }));
+                    }
+                    moved = true;
+                }
                 Some(run) if run.phase.active() => {
+                    self.launched_tasks
+                        .push((issue.clone(), Arc::clone(&minted), run.epoch));
                     self.launches.push((room.to_owned(), minted));
                     moved = true;
                 }
                 Some(run) => {
                     tracing::warn!(%issue, phase = ?run.phase, "the task ended before its agent was launched");
+                    if let Some(door) = door {
+                        door.send(Err(crate::shell::i18n::t("agent-door-run-ended")));
+                    }
                     moved = true;
                 }
-                None => self.awaiting.push((issue, minted)),
+                None => self.awaiting.push((issue, minted, door)),
+            }
+        }
+        // A later run of an issue whose agent was made here, going: its agent
+        // left when the run before ended, so it is launched again for this one.
+        for (issue, minted, launched) in &mut self.launched_tasks {
+            let agent = format!("agent:{}", minted.agent_id);
+            if let Some(run) = shown
+                .iter()
+                .find(|run| run.issue == *issue && run.agent == agent && run.epoch > *launched)
+                && run.phase.active()
+            {
+                *launched = run.epoch;
+                self.launches.push((room.to_owned(), Arc::clone(minted)));
+                moved = true;
             }
         }
         moved
@@ -778,6 +902,7 @@ impl AgentActions {
                 opens,
                 task_agent,
                 ticket,
+                door,
             } => {
                 let asked = asked_issue(operation);
                 // The task exists and its run carries the delegation: its
@@ -785,8 +910,16 @@ impl AgentActions {
                 if let Some(task_agent) = task_agent
                     && let Some(issue) = &asked
                 {
-                    self.awaiting.push((issue.clone(), Arc::clone(task_agent)));
+                    self.awaiting
+                        .push((issue.clone(), Arc::clone(task_agent), door.clone()));
                     self.fresh.mark();
+                } else if let Some(door) = door {
+                    door.send(Err(crate::shell::i18n::t("agent-door-run-unknown")));
+                }
+                // The composer follows what it was asked; a door
+                // connection's run is followed in Tasks.
+                if door.is_some() {
+                    return;
                 }
                 if let Some(ticket) = ticket {
                     let outcome = asked.clone().map_or_else(
@@ -868,6 +1001,12 @@ impl AgentActions {
             reason = %refusal.reason,
             "the composer's action did not go through"
         );
+        if let Purpose::Queue {
+            door: Some(door), ..
+        } = &operation.purpose
+        {
+            door.send(Err(refusal.reason.clone()));
+        }
         if let Purpose::Queue {
             ticket: Some(ticket),
             ..
@@ -1129,6 +1268,7 @@ fn queue_operation(
             opens: Opens::Nothing,
             task_agent,
             ticket: None,
+            door: None,
         },
         app: TRACKER_APP.into(),
         target: None,

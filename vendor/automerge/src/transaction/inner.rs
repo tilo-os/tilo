@@ -211,9 +211,26 @@ impl TransactionInner {
     pub(crate) fn rollback(self, doc: &mut Automerge) -> usize {
         let num = self.pending.len();
 
+        // TILO(batched-rollback): undone last first, as each was spliced in
+        // on top of those before it. Ops whose undoing touches no other op
+        // and that sit side by side (a new object's fields and letters) leave
+        // together, in one splice per column rather than one each.
+        let mut run = Run::default();
         for o in self.pending.iter().rev() {
-            doc.ops.undo_op(o);
+            let alone = !o.undo.is_empty()
+                || o.reset_range.is_some()
+                || o.bld.action == crate::op_set2::types::Action::Delete;
+            if !alone && run.join(o) {
+                continue;
+            }
+            run.take_back(doc);
+            if alone {
+                doc.ops.undo_op(o);
+            } else {
+                run.start(o);
+            }
         }
+        run.take_back(doc);
 
         //doc.ops_mut().load_checkpoint(self.checkpoint);
 
@@ -1622,6 +1639,52 @@ fn increment_replacement(
             ScalarValue::counter(i64::from(counter) + increment),
         )),
         _ => None,
+    }
+}
+
+/// TILO(batched-rollback): ops of a transaction being rolled back that sit
+/// side by side, to take out together.
+///
+/// Ops are collected last first. Every op of the transaction after the one
+/// collected next is either undone already or in the run, so the document
+/// is the one that op was spliced into plus the run's block: the block sits
+/// at `at` there, and the op, spliced in at `pos`, is now right before the
+/// block when `pos + 1 == at` and right after it when `pos == at`.
+#[derive(Default)]
+struct Run<'a> {
+    at: usize,
+    /// In the order they sit.
+    ops: VecDeque<&'a TxOp>,
+}
+
+impl<'a> Run<'a> {
+    fn start(&mut self, op: &'a TxOp) {
+        self.at = op.pos;
+        self.ops.push_back(op);
+    }
+
+    /// Whether `op` sits next to the run, which now holds it.
+    fn join(&mut self, op: &'a TxOp) -> bool {
+        if self.ops.is_empty() {
+            return false;
+        }
+        if op.pos + 1 == self.at {
+            self.at = op.pos;
+            self.ops.push_front(op);
+            true
+        } else if op.pos == self.at {
+            self.ops.push_back(op);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take_back(&mut self, doc: &mut Automerge) {
+        if !self.ops.is_empty() {
+            doc.ops.undo_run(self.at, self.ops.make_contiguous());
+            self.ops.clear();
+        }
     }
 }
 

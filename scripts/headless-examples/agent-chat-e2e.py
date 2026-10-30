@@ -48,6 +48,8 @@ REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 REPLY = "Reviewed Jane Doe's application: a strong CV, and a reply is drafted."
 ASK = "Review Jane Doe's application and draft a reply."
+FOLLOW_UP = "Now do the same for Ravi Patel."
+FOLLOW_UP_REPLY = "Reviewed Ravi Patel's application the same way: a reply is drafted."
 
 
 class Failed(Exception):
@@ -101,7 +103,11 @@ class ScriptedModel:
                     self.wfile.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
 
                 if "plan" in tools:
-                    arguments = json.dumps({"reply": REPLY, "done": True})
+                    # The follow-up is understood from the earlier
+                    # conversation the run is told.
+                    text = json.dumps(body)
+                    follow_up = FOLLOW_UP in text and "Earlier in this conversation" in text
+                    arguments = json.dumps({"reply": FOLLOW_UP_REPLY if follow_up else REPLY, "done": True})
                     event({"role": "assistant", "tool_calls": [{"index": 0, "id": f"call{n}", "type": "function",
                            "function": {"name": "plan", "arguments": arguments}}]})
                     event({}, "tool_calls")
@@ -120,6 +126,10 @@ class ScriptedModel:
 
     def loop_turns(self):
         return [body for body in self.requests if body.get("tools")]
+
+    def follow_up_turns(self):
+        return [body for body in self.loop_turns()
+                if FOLLOW_UP in json.dumps(body) and REPLY in json.dumps(body)]
 
 
 class Session:
@@ -286,7 +296,37 @@ def main() -> int:
         # The chat shows the issue's thread; Tasks' read of its tracker (from
         # a window of the app, which publishes the read) holds the same.
         held = until("the run's end and reply on the issue", lambda: _run_finished(session), deadline=60)
+        # follow-up: a message after the run ended starts the issue's next run
+        # with the agent made for the task, which reads the conversation
+        # before it (the first reply among it) and answers.
+        tell = until("the issue's tell-agent", lambda: (_issue_rows(session, "tell-agent") or [None])[0])
+        answer = json.loads(session.run("actions", "invoke", tell["provider"], tell["id"],
+                                        "--args-json", json.dumps({"text": FOLLOW_UP}), "--wait=20000"))
+        if answer.get("receipt", {}).get("update", {}).get("state") != "succeeded":
+            raise Failed(f"tell-agent did not succeed: {answer}")
+        try:
+            until("the follow-up's turn at the model, with the conversation before it",
+                  model.follow_up_turns, deadline=120)
+        except Failed:
+            refusals = [line for line in session.log().splitlines()
+                        if "has ended" in line or "could not be launched" in line
+                        or "join rejected" in line or "stopped" in line]
+            raise Failed("the follow-up reached no model turn; the session said: "
+                         + (" | ".join(refusals[-5:]) or "nothing"))
+        until("the follow-up run's end on the issue", lambda: _run_finished(session), deadline=60)
+        # Every report of both runs landed on the issue: the reply each
+        # posts with its finish among them.
+        refused = [line for line in session.log().splitlines()
+                   if "the issue did not take the run's report" in line]
+        if refused:
+            raise Failed("the issue refused a run's report: " + " | ".join(refused[-3:]))
+        # The composer closed, the chat window shows the whole thread.
+        if "agent-quick-close" in session.run("list-targets"):
+            session.run("click", "agent-quick-close")
+        time.sleep(1)
+        session.run("snapshot", str(out / "chat-follow-up.png"))
         print(json.dumps({"loop_turns": len(model.loop_turns()), "run_ended_on_issue": held,
+                          "follow_up_turns": len(model.follow_up_turns()),
                           "out": str(out)}, indent=1))
         return 0
     except Failed as failure:
@@ -294,6 +334,8 @@ def main() -> int:
         if proc is not None:
             try:
                 session.run("snapshot", str(out / "failure.png"))
+                (out / "failure-windows.txt").write_text(session.run("windows"))
+                (out / "failure-targets.txt").write_text(session.run("list-targets"))
             except (Failed, NameError):
                 pass
         return 1
