@@ -1393,7 +1393,7 @@ fn every_portal_question_kind_is_asked_on_the_sheet() {
         (
             "portal.wallpaper",
             serde_json::json!({
-                "uri": "file:///var/home/ada/beach.png",
+                "uri": "file:///var/home/you/beach.png",
                 "set_on": "both",
                 "preview": false,
             }),
