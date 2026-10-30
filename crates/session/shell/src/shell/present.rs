@@ -516,18 +516,12 @@ impl RetireBoard {
     }
 
     /// One handed-over frame finished rendering: return its capacity. The depth
-    /// and the flips still owed are stored first, so a loop that finds capacity
-    /// already sees what that capacity was granted under.
-    fn release(
-        &self,
-        queue_depth: usize,
-        overlapping: bool,
-        unretired: usize,
-        admission: Admission,
-    ) {
+    /// is stored first, and the flips still owed were stored as the frame was
+    /// published, so a loop that finds capacity already sees what that
+    /// capacity was granted under.
+    fn release(&self, queue_depth: usize, overlapping: bool, admission: Admission) {
         self.queue_depth.store(queue_depth, Ordering::Release);
         self.overlapping.store(overlapping, Ordering::Release);
-        self.unretired.store(unretired, Ordering::Release);
         // Give the capacity back *after* the present so the logic thread's capacity check reflects work actually finished, not work dequeued.
         drop(admission);
     }
@@ -718,12 +712,8 @@ impl RenderThread {
                     let retired = self.presenter.retire_owed(Duration::ZERO);
                     self.queue.settle(retired);
                     self.publish_ready();
-                    self.board.release(
-                        self.presenter.queue_depth(),
-                        overlapped,
-                        self.queue.owed(),
-                        admission,
-                    );
+                    self.board
+                        .release(self.presenter.queue_depth(), overlapped, admission);
                     // Then wake the loop — strictly after the decrement, so a loop that wakes on this signal is guaranteed to see the capacity.
                     (self.on_retire)();
                 }
@@ -750,13 +740,16 @@ impl RenderThread {
         }
         self.queue.settle(retired);
         self.publish_ready();
-        self.board
-            .unretired
-            .store(self.queue.owed(), Ordering::Release);
         (self.on_retire)();
     }
 
+    /// Publish the flips still owed, then each frame ahead of the first still
+    /// owing one. In that order: a reader that finds a frame presented also
+    /// finds the flips owed after it, never the count from before it retired.
     fn publish_ready(&mut self) {
+        self.board
+            .unretired
+            .store(self.queue.owed(), Ordering::Release);
         for (frame, outcome) in self.queue.take_ready() {
             let now = Instant::now();
             let at = if frame.owed { now } else { frame.rendered_at };
