@@ -111,107 +111,135 @@ fn action(
 /// The session's resources and their actions.
 fn resources() -> Vec<ResourceSpec> {
     vec![
-        ResourceSpec::new(INPUT_RESOURCE, "session", t("session-input"))
-            .with_action(action(
-                "toggle-touchpad",
-                t("session-toggle-touchpad"),
-                vec![ActionParam::optional_owned(
-                    "on",
-                    ParamType::Boolean,
-                    t("session-param-touchpad-on"),
-                )],
-                |args| SessionCommand::SetTouchpad {
-                    on: args.boolean("on"),
-                },
-            ))
-            .with_action(action(
-                "next-source",
-                t("session-next-input-source"),
-                Vec::new(),
-                |_| SessionCommand::NextInputSource,
-            )),
-        ResourceSpec::new(SESSION_RESOURCE, "session", t("session-screen"))
-            .with_action(action("lock", t("session-lock"), Vec::new(), |_| {
-                SessionCommand::Lock
-            }))
-            .with_action(action("log-out", t("session-log-out"), Vec::new(), |_| {
-                SessionCommand::LogOut
-            })),
-        ResourceSpec::new(NIGHT_LIGHT_RESOURCE, "session", t("session-night-light")).with_action(
-            action(
-                "toggle",
-                t("session-night-light-toggle"),
-                vec![ActionParam::optional_owned(
-                    "on",
-                    ParamType::Boolean,
-                    t("session-param-night-light-on"),
-                )],
-                |args| SessionCommand::NightLight {
-                    on: args.boolean("on"),
-                },
-            ),
-        ),
-        ResourceSpec::new(MAGNIFIER_RESOURCE, "session", t("session-magnifier"))
-            .with_action(action(
-                "toggle",
-                t("session-magnifier-toggle"),
-                Vec::new(),
-                |_| SessionCommand::Magnifier(Magnify::Toggle),
-            ))
-            .with_action(action(
-                "zoom-in",
-                t("session-magnifier-zoom-in"),
-                Vec::new(),
-                |_| SessionCommand::Magnifier(Magnify::ZoomIn),
-            ))
-            .with_action(action(
-                "zoom-out",
-                t("session-magnifier-zoom-out"),
-                Vec::new(),
-                |_| SessionCommand::Magnifier(Magnify::ZoomOut),
-            )),
-        ResourceSpec::new(DISPLAYS_RESOURCE, "session", t("session-displays"))
-            .with_action(action(
-                "next-mode",
-                t("session-displays-next"),
-                Vec::new(),
-                |_| SessionCommand::Displays {
-                    mode: DisplayMode::Next,
-                },
-            ))
-            .with_action(action(
-                "set-mode",
-                t("session-displays-set"),
-                vec![
-                    ActionParam::required_owned(
-                        "mode",
-                        ParamType::Text,
-                        t("session-param-displays-mode"),
-                    )
-                    .with_choices(displays::NAMES),
-                ],
-                |args| SessionCommand::Displays {
-                    mode: args
-                        .text("mode")
-                        .and_then(DisplayMode::named)
-                        .unwrap_or(DisplayMode::Extend),
-                },
-            )),
-        ResourceSpec::new(CLIPBOARD_RESOURCE, "session", t("session-clipboard")).with_action(
-            action(
-                "paste-files",
-                t("session-clipboard-paste-files"),
-                vec![ActionParam::required_owned(
-                    "destination",
-                    ParamType::Text,
-                    t("session-param-paste-destination"),
-                )],
-                |args| SessionCommand::PasteFiles {
-                    destination: args.text("destination").unwrap_or_default().to_owned(),
-                },
-            ),
-        ),
+        input_resource(),
+        screen_resource(),
+        night_light_resource(),
+        magnifier_resource(),
+        displays_resource(),
+        clipboard_resource(),
     ]
+}
+
+/// The pointer and keyboard the session acts on.
+fn input_resource() -> ResourceSpec {
+    ResourceSpec::new(INPUT_RESOURCE, "session", t("session-input"))
+        .with_action(action(
+            "toggle-touchpad",
+            t("session-toggle-touchpad"),
+            vec![ActionParam::optional_owned(
+                "on",
+                ParamType::Boolean,
+                t("session-param-touchpad-on"),
+            )],
+            |args| SessionCommand::SetTouchpad {
+                on: args.boolean("on"),
+            },
+        ))
+        .with_action(action(
+            "next-source",
+            t("session-next-input-source"),
+            Vec::new(),
+            |_| SessionCommand::NextInputSource,
+        ))
+}
+
+/// Locking and logging out of the session.
+fn screen_resource() -> ResourceSpec {
+    ResourceSpec::new(SESSION_RESOURCE, "session", t("session-screen"))
+        .with_action(action("lock", t("session-lock"), Vec::new(), |_| {
+            SessionCommand::Lock
+        }))
+        .with_action(action("log-out", t("session-log-out"), Vec::new(), |_| {
+            SessionCommand::LogOut
+        }))
+}
+
+/// The screen's night light.
+fn night_light_resource() -> ResourceSpec {
+    ResourceSpec::new(NIGHT_LIGHT_RESOURCE, "session", t("session-night-light")).with_action(
+        action(
+            "toggle",
+            t("session-night-light-toggle"),
+            vec![ActionParam::optional_owned(
+                "on",
+                ParamType::Boolean,
+                t("session-param-night-light-on"),
+            )],
+            |args| SessionCommand::NightLight {
+                on: args.boolean("on"),
+            },
+        ),
+    )
+}
+
+/// The screen magnifier.
+fn magnifier_resource() -> ResourceSpec {
+    ResourceSpec::new(MAGNIFIER_RESOURCE, "session", t("session-magnifier"))
+        .with_action(action(
+            "toggle",
+            t("session-magnifier-toggle"),
+            Vec::new(),
+            |_| SessionCommand::Magnifier(Magnify::Toggle),
+        ))
+        .with_action(action(
+            "zoom-in",
+            t("session-magnifier-zoom-in"),
+            Vec::new(),
+            |_| SessionCommand::Magnifier(Magnify::ZoomIn),
+        ))
+        .with_action(action(
+            "zoom-out",
+            t("session-magnifier-zoom-out"),
+            Vec::new(),
+            |_| SessionCommand::Magnifier(Magnify::ZoomOut),
+        ))
+}
+
+/// The displays' mode.
+fn displays_resource() -> ResourceSpec {
+    ResourceSpec::new(DISPLAYS_RESOURCE, "session", t("session-displays"))
+        .with_action(action(
+            "next-mode",
+            t("session-displays-next"),
+            Vec::new(),
+            |_| SessionCommand::Displays {
+                mode: DisplayMode::Next,
+            },
+        ))
+        .with_action(action(
+            "set-mode",
+            t("session-displays-set"),
+            vec![
+                ActionParam::required_owned(
+                    "mode",
+                    ParamType::Text,
+                    t("session-param-displays-mode"),
+                )
+                .with_choices(displays::NAMES),
+            ],
+            |args| SessionCommand::Displays {
+                mode: args
+                    .text("mode")
+                    .and_then(DisplayMode::named)
+                    .unwrap_or(DisplayMode::Extend),
+            },
+        ))
+}
+
+/// What the person copies, and pasting it into a folder.
+fn clipboard_resource() -> ResourceSpec {
+    ResourceSpec::new(CLIPBOARD_RESOURCE, "session", t("session-clipboard")).with_action(action(
+        "paste-files",
+        t("session-clipboard-paste-files"),
+        vec![ActionParam::required_owned(
+            "destination",
+            ParamType::Text,
+            t("session-param-paste-destination"),
+        )],
+        |args| SessionCommand::PasteFiles {
+            destination: args.text("destination").unwrap_or_default().to_owned(),
+        },
+    ))
 }
 
 /// The session's own door: its actions become [`SessionCommand`]s the
