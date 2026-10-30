@@ -118,15 +118,18 @@ mod tests {
         let chrome = chrome_with_room();
         let first = chrome.borrow().tree().desktop.active;
         chrome.borrow_mut().create_strip("Main").expect("a strip");
-        let notes = open_hosted(
+        // No packaged app claims this label, so the shell draws the window
+        // itself and it moves as it is; a client window's move waits for the
+        // person at the desktop (`crate::shell::window_transfer`).
+        let sketch = open_hosted(
             &mut chrome.borrow_mut(),
-            AppKind::Other("Notes".into()),
-            "Notes",
+            AppKind::Other("Sketch".into()),
+            "Sketch",
             Destination::Beside,
         );
         let second = chrome.borrow_mut().add_workspace("Second");
         assert!(chrome.borrow_mut().switch_to_workspace(first));
-        assert_eq!(workspace_of(&chrome, notes), Some(first));
+        assert_eq!(workspace_of(&chrome, sketch), Some(first));
 
         for (workspace, why) in [
             (9, "there is no ninth workspace"),
@@ -151,7 +154,7 @@ mod tests {
             .is_err(),
             "the tab is in that workspace already"
         );
-        assert_eq!(workspace_of(&chrome, notes), Some(first));
+        assert_eq!(workspace_of(&chrome, sketch), Some(first));
 
         invoke_shell_action(
             &chrome,
@@ -159,6 +162,6 @@ mod tests {
             &serde_json::json!({ "workspace": 2 }),
         )
         .expect("the focused tab moves to the second workspace");
-        assert_eq!(workspace_of(&chrome, notes), Some(second));
+        assert_eq!(workspace_of(&chrome, sketch), Some(second));
     }
 }
