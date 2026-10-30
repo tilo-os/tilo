@@ -15,6 +15,17 @@ const CATALOGUES: &[(&str, &str)] = &[
 
 ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
+/// Load the copy a notice or a query resolves on this thread.
+///
+/// A catalogue's first use lists the installed language packs and stats the
+/// files in them. The session's notices and search's rows are first read when
+/// a notice arrives or a query runs, long after startup, so they load here,
+/// where the loop is not yet running.
+pub(crate) fn ensure() {
+    CATALOG.ensure();
+    tilo_desktop_search::i18n::ensure();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1202,6 +1202,9 @@ impl Session {
         mut options: Options,
         start: impl FnOnce(Box<dyn WindowPolicy>) -> Result<Compositor, Error>,
     ) -> Result<Self, Error> {
+        // The words a notice or a query resolves later, in the person's
+        // language, are read now: the loop that shows them reads no file.
+        i18n::ensure();
         let sources = config::Sources::from_config(&options.config);
         let mut doors = Doors::default();
         // The VPN profiles' kill switch runs for the session's lifetime: a
