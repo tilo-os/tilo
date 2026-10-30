@@ -694,6 +694,31 @@ mod tests {
         assert_eq!(app.state().shared.name, "opened-by-action");
     }
 
+    /// A changed file's row is disclosed through its read, which answers
+    /// the change and its diff.
+    #[test]
+    fn a_changed_files_read_answers_the_change() {
+        use crate::actions::{GitClientEffect, change_resource_id};
+        use crate::model::ChangeArea;
+
+        let (_dir, path) = scratch_repository("read-change-repo");
+        let mut app = TestApp::<GitClientShell>::launched(&[path.to_str().unwrap()]).unwrap();
+        app.settle();
+        let read = app
+            .effect_on(
+                &change_resource_id(ChangeArea::Untracked, "new.txt"),
+                &GitClientEffect::ReadChange {
+                    area: "untracked".into(),
+                    path: "new.txt".into(),
+                },
+            )
+            .unwrap()
+            .value
+            .expect("the changed file's read answers it");
+        assert_eq!(read["path"], "new.txt", "{read:#}");
+        assert_eq!(read["area"], "untracked", "{read:#}");
+    }
+
     /// The client's effects are published on the repository and on the
     /// items they act on, and every one reaches the repository on disk:
     /// staging a changed file through its row, committing, creating and
@@ -727,7 +752,7 @@ mod tests {
             assert!(offered("git_client.repo", id), "{id}: {surface:#}");
         }
         let untracked = change_resource_id(ChangeArea::Untracked, "new.txt");
-        for id in ["open-change", "stage-file", "discard-file"] {
+        for id in ["read-change", "open-change", "stage-file", "discard-file"] {
             assert!(offered(&untracked, id), "{id}: {surface:#}");
             assert!(
                 !offered("git_client.repo", id),
@@ -1237,3 +1262,15 @@ mod tests {
 }
 
 ui::reach_tests!(GitClientShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::GitClientShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}
