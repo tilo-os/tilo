@@ -116,7 +116,7 @@ impl TileSource for Windows {
             .cloned()
             .unwrap_or_else(|| shown_name(&app));
         let launches = Rc::clone(&self.launches);
-        let reopened = app.clone();
+        let reopened = app;
         TileHost::new(ui::widget::TileContent::App(Box::new(
             tilo_desktop_surface::crashed_app::CrashedApp::new(&title, move || {
                 launches.borrow_mut().push(reopened.clone());
@@ -143,29 +143,26 @@ impl TileSource for Windows {
                 app_title: None,
             });
         }
-        match app.strip_prefix(LAUNCH_PREFIX) {
-            Some(window_id) => {
-                let window = self
-                    .arriving
-                    .borrow_mut()
-                    .remove(&window_id.parse().ok()?)?;
-                let app_id = window.app_id.unwrap_or_default();
-                Some(Tab {
-                    id,
-                    title: window.title.unwrap_or_else(|| app_id.clone()),
-                    tile: TileContent::Foreign {
-                        app_id,
-                        surface_id: window.id,
-                    },
-                    app_title: None,
-                })
-            }
+        if let Some(window_id) = app.strip_prefix(LAUNCH_PREFIX) {
+            let window = self
+                .arriving
+                .borrow_mut()
+                .remove(&window_id.parse().ok()?)?;
+            let app_id = window.app_id.unwrap_or_default();
+            Some(Tab {
+                id,
+                title: window.title.unwrap_or_else(|| app_id.clone()),
+                tile: TileContent::Foreign {
+                    app_id,
+                    surface_id: window.id,
+                },
+                app_title: None,
+            })
+        } else {
             // A Tilo package or one of the machine's apps: the session starts
             // it, and the window it opens takes its tab then.
-            None => {
-                self.launches.borrow_mut().push(app.to_owned());
-                None
-            }
+            self.launches.borrow_mut().push(app.to_owned());
+            None
         }
     }
 }
