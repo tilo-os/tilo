@@ -1224,14 +1224,12 @@ inputs = [
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
   "os/usr/libexec/", "os/scripts/",
-  "os/tests/oracles/tilo-installer-prepared-setup-extract.py",
   "crates/platform/imager-backend/capture_build.rs",
 ]
 readers = [
   "apps/imager/build.rs", "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
   "apps/imager/tests/profile_transport.rs",
-  "apps/imager/tests/prepared_extract_cli.rs",
 ]
 
 [[cargo]]
