@@ -225,7 +225,12 @@ fn start_collaboration(options: &Options) -> Option<Rc<sync::Client>> {
             .map(|identity| hex::encode(identity.device_cert.user_public_key)),
         ..sync::OwnPresence::default()
     };
-    match sync::Client::start(identity, own, options.wake.handle()) {
+    match sync::Client::start(
+        identity,
+        own,
+        sync::configured_hosts(),
+        options.wake.handle(),
+    ) {
         Ok(sync) => Some(Rc::new(sync)),
         Err(error) => {
             tracing::warn!(%error, "the collaboration plane");

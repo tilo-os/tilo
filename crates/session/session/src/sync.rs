@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use collab_types::presence::{Availability, PointerSpace, PresenceKey};
 use collab_types::{PeerPresence, PeerPresencePayload};
-use iroh::EndpointId;
+use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop::chrome::WaveNotice;
 use tilo_desktop::here::{Here, LiveMember, Wave};
@@ -353,6 +353,9 @@ enum Outgoing {
         ws: WorkspaceId,
         msg: Box<NeighbourMsg>,
     },
+    /// Dial a workspace host: an always-on peer that keeps what this
+    /// person's devices publish while the others are away.
+    Connect(EndpointAddr),
     /// The session is going: stop the peer actor.
     Stop,
 }
@@ -418,6 +421,7 @@ impl Client {
     pub fn start(
         identity: Option<HostIdentity>,
         own: OwnPresence,
+        hosts: Vec<EndpointAddr>,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
@@ -430,7 +434,7 @@ impl Client {
             .recv()
             .map_err(std::io::Error::other)?
             .map_err(std::io::Error::other)?;
-        Ok(Self {
+        let sync = Self {
             plane: RefCell::new(Plane {
                 publisher,
                 rooms: Vec::new(),
@@ -445,7 +449,13 @@ impl Client {
             outgoing,
             arrived,
             thread: Some(thread),
-        })
+        };
+        // The hosts first: a room joined before them is replayed to this
+        // device when its host session comes up, never lost.
+        for host in hosts {
+            let _ = sync.outgoing.send(Outgoing::Connect(host));
+        }
+        Ok(sync)
     }
 
     /// This device's publisher here: the endpoint id every room names it by.
@@ -805,8 +815,21 @@ impl Client {
         publisher: EndpointId,
         own: OwnPresence,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
+        Self::offline_at(publisher, own, Vec::new())
+    }
+
+    /// [`Self::offline`] with the hosts the real client would dial.
+    #[cfg(test)]
+    fn offline_at(
+        publisher: EndpointId,
+        own: OwnPresence,
+        hosts: Vec<EndpointAddr>,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Outgoing>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
+        for host in hosts {
+            let _ = outgoing.send(Outgoing::Connect(host));
+        }
         (
             Self {
                 plane: RefCell::new(Plane {
@@ -850,6 +873,41 @@ pub fn device_identity() -> Option<HostIdentity> {
         workspace_revocations: HashMap::new(),
         identity_paths: Some(paths),
     })
+}
+
+/// The workspace hosts this session was started to dial: an always-on
+/// peer that keeps what the person's devices publish while the others are
+/// away, named by `TILO_COLLAB_HOST` (one address or endpoint id) or
+/// `TILO_COLLAB_HOSTS` (a JSON array of addresses).
+#[must_use]
+pub fn configured_hosts() -> Vec<EndpointAddr> {
+    let mut hosts = Vec::new();
+    if let Some(value) = std::env::var_os("TILO_COLLAB_HOSTS") {
+        match serde_json::from_str::<Vec<EndpointAddr>>(&value.to_string_lossy()) {
+            Ok(parsed) => hosts.extend(parsed),
+            Err(error) => tracing::warn!(
+                %error,
+                "TILO_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses"
+            ),
+        }
+    }
+    if let Some(value) = std::env::var_os("TILO_COLLAB_HOST") {
+        if let Some(addr) = host_addr(&value.to_string_lossy()) {
+            hosts.push(addr);
+        } else {
+            tracing::warn!("TILO_COLLAB_HOST is not an Iroh endpoint address or id");
+        }
+    }
+    hosts.sort_by_key(|addr| addr.id.to_string());
+    hosts.dedup_by_key(|addr| addr.id);
+    hosts
+}
+
+/// A configured host, as its JSON address or as a bare endpoint id.
+fn host_addr(value: &str) -> Option<EndpointAddr> {
+    serde_json::from_str(value)
+        .ok()
+        .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
 }
 
 /// The thread: bind the endpoint, run the peer actor, and carry what it
@@ -935,6 +993,13 @@ fn run(
                 Outgoing::Publish { ws, msg } => {
                     actor.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok()
                 }
+                Outgoing::Connect(addr) => actor
+                    .send(NetCmd::ConnectHost {
+                        addr,
+                        expectation: None,
+                    })
+                    .await
+                    .is_ok(),
                 Outgoing::Stop => break,
             };
             if !taken {
@@ -1276,10 +1341,7 @@ mod tests {
         sync.hear(presence(
             1,
             ROOM,
-            PeerPresencePayload::Wave {
-                seq: 1,
-                target: me.clone(),
-            },
+            PeerPresencePayload::Wave { seq: 1, target: me },
         ));
         assert!(
             sync.here().borrow_mut().take_waves().is_empty(),
@@ -1334,6 +1396,36 @@ mod tests {
             payloads(&mut said).is_empty(),
             "a wave at this person goes nowhere"
         );
+    }
+
+    #[test]
+    fn a_configured_host_is_read_as_an_id_or_an_address() {
+        let host = device(7);
+        assert_eq!(host_addr(&host.to_string()).map(|addr| addr.id), Some(host));
+        let json = serde_json::to_string(&EndpointAddr::new(host)).unwrap();
+        assert_eq!(host_addr(&json).map(|addr| addr.id), Some(host));
+        assert!(host_addr("").is_none());
+        assert!(host_addr("not an address").is_none());
+    }
+
+    #[test]
+    fn a_host_is_dialled_before_the_rooms_it_carries() {
+        let host = device(7);
+        let (sync, mut said) = Client::offline_at(
+            device(0xf0),
+            OwnPresence::default(),
+            vec![EndpointAddr::new(host)],
+        );
+        sync.follow_desktop(&desk(ROOM));
+        let commands = sent(&mut said);
+        let connect = commands
+            .iter()
+            .position(|command| matches!(command, Outgoing::Connect(addr) if addr.id == host));
+        let join = commands
+            .iter()
+            .position(|command| matches!(command, Outgoing::Join(_)));
+        assert_eq!(connect, Some(0), "the host is dialled first");
+        assert_eq!(join, Some(1), "the room is joined after its host");
     }
 
     #[test]
