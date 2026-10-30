@@ -590,7 +590,7 @@ fn path_of(node: &Node, levels: &Levels) -> Option<String> {
 fn pick_action_anywhere<'a>(
     name: &str,
     resolved: &'a Resolved,
-    ranked: Vec<(u8, String, &'a ActionDescriptor)>,
+    ranked: &[(u8, String, &'a ActionDescriptor)],
 ) -> Result<(Option<String>, &'a ActionDescriptor), String> {
     let error = match pick_action(name, &resolved.actions, &resolved.path) {
         Ok(action) => return Ok((None, action)),
@@ -2388,7 +2388,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .iter()
             .filter_map(|(path, action)| Some((action_rank(name, action)?, path.clone(), action)))
             .collect();
-        let (path, action) = pick_action_anywhere(name, resolved, ranked)?;
+        let (path, action) = pick_action_anywhere(name, resolved, &ranked)?;
         // The path to the resource it is published on; the action follows
         // its `#`, as every path's does.
         let named_at = match path {
