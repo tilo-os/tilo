@@ -64,16 +64,17 @@ fn a_mounted_key_is_kept_in_the_store_and_never_shown() {
 
 #[test]
 fn an_answer_is_its_text_unless_refused_or_cut_off() {
-    let answer = serde_json::json!({
+    let ended = serde_json::json!({
         "stop_reason": "end_turn",
         "content": [
             {"type": "thinking", "thinking": ""},
             {"type": "text", "text": "{\"outcome\":\"no-action\"}"}
         ]
     });
-    assert_eq!(answer_text(&answer).unwrap(), "{\"outcome\":\"no-action\"}");
+    assert_eq!(answer(&ended).unwrap(), "{\"outcome\":\"no-action\"}");
     for stop in ["refusal", "max_tokens"] {
         let refused = serde_json::json!({"stop_reason": stop, "content": []});
-        assert!(answer_text(&refused).is_err());
+        assert!(answer(&refused).is_err());
     }
+    assert!(answer(&serde_json::json!({"content": [{"type": "text", "text": " "}]})).is_err());
 }

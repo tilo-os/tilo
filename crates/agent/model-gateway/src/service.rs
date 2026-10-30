@@ -20,10 +20,10 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "host-backend")]
 #[path = "host_backend.rs"]
 pub mod host_backend;
-#[path = "rig_adapter.rs"]
-mod rig_adapter;
 #[path = "profile_cache.rs"]
 mod profile_cache;
+#[path = "rig_adapter.rs"]
+mod rig_adapter;
 use profile_cache::{PLAN_PROFILES, PROFILE_REUSE, ProfileSources};
 
 use crate::{
@@ -2385,8 +2385,9 @@ fn transform_body(
             model: model_id,
             instructions: &ask.instructions,
             input: &ask.input,
-            max_tokens: ask.max_output_tokens,
+            max_tokens: Some(ask.max_output_tokens),
             sampling: provider_transform::Sampling::Deterministic,
+            output: provider_transform::Output::JsonObject,
         },
     )
 }
@@ -3815,7 +3816,6 @@ mod selection_tests;
 #[cfg(test)]
 #[path = "cancellation_tests.rs"]
 mod cancellation_tests;
-
 
 #[cfg(test)]
 #[path = "administration_tests.rs"]

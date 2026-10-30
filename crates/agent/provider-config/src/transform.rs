@@ -22,52 +22,99 @@ pub enum Sampling {
     /// model allows it. The gateway's transforms want this.
     #[default]
     Deterministic,
-    /// No `temperature` at all and, on Anthropic, extended thinking turned
-    /// off. Some current models (Claude Haiku 5.5 among them) refuse any
+    /// No `temperature` and no other setting: whatever the provider does by
+    /// default.
+    ProviderDefault,
+    /// No `temperature` and, on Anthropic, extended thinking turned off.
+    /// Some current models (Claude Haiku 5.5 among them) refuse any
     /// non-default temperature with a 400, and they think adaptively by
     /// default, which would spend a small `max_tokens` before any text is
     /// written. A short, bounded answer from such a model needs both.
     ProviderDefaultNoThinking,
 }
 
+/// What shape the answer must have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Output<'a> {
+    /// Free text.
+    #[default]
+    Text,
+    /// One JSON object. The OpenAI-compatible dialect says so with
+    /// `response_format`; Anthropic's Messages API has no such switch and is
+    /// only asked for one.
+    JsonObject,
+    /// A JSON document matching `schema`, which Anthropic enforces with
+    /// `output_config`, spending `effort` (`"low"` for a short, bounded
+    /// answer) on it. The OpenAI-compatible dialect constrains nothing.
+    Schema { schema: &'a Value, effort: &'a str },
+}
+
 /// One single-shot request: a system instruction and one user turn, no tools.
 #[derive(Clone, Copy, Debug)]
 pub struct Ask<'a> {
     pub model: &'a str,
+    /// The system instruction; empty for none, which adds no system message.
     pub instructions: &'a str,
     pub input: &'a str,
-    pub max_tokens: u32,
+    /// The most tokens the answer may use; `None` leaves it to the provider.
+    pub max_tokens: Option<u32>,
     pub sampling: Sampling,
+    pub output: Output<'a>,
 }
 
-/// The provider request body for `ask`. The OpenAI-compatible dialect asks
-/// for a JSON object, which every caller of a single-shot transform expects.
+/// The provider request body for `ask`.
 pub fn body(protocol: ProviderProtocol, ask: &Ask<'_>) -> Value {
+    let user = json!({ "role": "user", "content": ask.input });
     let mut body = match protocol {
-        ProviderProtocol::Anthropic => json!({
-            "model": ask.model,
-            "max_tokens": ask.max_tokens,
-            "system": ask.instructions,
-            "messages": [{ "role": "user", "content": ask.input }]
-        }),
-        ProviderProtocol::OpenAiCompatible => json!({
-            "model": ask.model,
-            "max_tokens": ask.max_tokens,
-            "response_format": { "type": "json_object" },
-            "messages": [
-                { "role": "system", "content": ask.instructions },
-                { "role": "user", "content": ask.input }
-            ]
-        }),
+        ProviderProtocol::Anthropic => {
+            let mut body = json!({ "model": ask.model, "messages": [user] });
+            if !ask.instructions.is_empty()
+                && let Some(object) = body.as_object_mut()
+            {
+                object.insert("system".into(), json!(ask.instructions));
+            }
+            body
+        }
+        ProviderProtocol::OpenAiCompatible => {
+            let mut messages = Vec::with_capacity(2);
+            if !ask.instructions.is_empty() {
+                messages.push(json!({ "role": "system", "content": ask.instructions }));
+            }
+            messages.push(user);
+            json!({ "model": ask.model, "messages": messages })
+        }
     };
     if let Some(object) = body.as_object_mut() {
+        if let Some(max_tokens) = ask.max_tokens {
+            object.insert("max_tokens".into(), Value::from(max_tokens));
+        }
         match ask.sampling {
             Sampling::Deterministic => {
                 object.insert("temperature".into(), Value::from(0));
             }
+            Sampling::ProviderDefault => {}
             Sampling::ProviderDefaultNoThinking => {
                 if protocol == ProviderProtocol::Anthropic {
                     object.insert("thinking".into(), json!({ "type": "disabled" }));
+                }
+            }
+        }
+        match ask.output {
+            Output::Text => {}
+            Output::JsonObject => {
+                if protocol == ProviderProtocol::OpenAiCompatible {
+                    object.insert("response_format".into(), json!({ "type": "json_object" }));
+                }
+            }
+            Output::Schema { schema, effort } => {
+                if protocol == ProviderProtocol::Anthropic {
+                    object.insert(
+                        "output_config".into(),
+                        json!({
+                            "effort": effort,
+                            "format": { "type": "json_schema", "schema": schema }
+                        }),
+                    );
                 }
             }
         }
@@ -81,6 +128,15 @@ pub fn body(protocol: ProviderProtocol, ask: &Ask<'_>) -> Value {
 pub fn answer(protocol: ProviderProtocol, body: &str, max_bytes: usize) -> Result<String, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
+    answer_value(protocol, &value, max_bytes)
+}
+
+/// The answer text out of a parsed provider response; see [`answer`].
+pub fn answer_value(
+    protocol: ProviderProtocol,
+    value: &Value,
+    max_bytes: usize,
+) -> Result<String, String> {
     let text = match protocol {
         ProviderProtocol::Anthropic => {
             match value.get("stop_reason").and_then(Value::as_str) {
@@ -504,8 +560,9 @@ mod tests {
             model: "model-x",
             instructions: "be brief",
             input: "the input",
-            max_tokens: 200,
+            max_tokens: Some(200),
             sampling,
+            output: Output::Text,
         }
     }
 
@@ -518,6 +575,7 @@ mod tests {
             assert_eq!(body["temperature"], 0);
             assert!(body.get("tools").is_none());
             assert!(body.get("thinking").is_none());
+            assert!(body.get("response_format").is_none());
             assert!(body.to_string().contains("the input"));
             assert!(body.to_string().contains("be brief"));
         }
@@ -534,7 +592,55 @@ mod tests {
         );
         assert!(openai.get("temperature").is_none());
         assert!(openai.get("thinking").is_none());
-        assert_eq!(openai["response_format"]["type"], "json_object");
+        let plain = body(ProviderProtocol::Anthropic, &ask(Sampling::ProviderDefault));
+        assert!(plain.get("temperature").is_none());
+        assert!(plain.get("thinking").is_none());
+    }
+
+    #[test]
+    fn a_body_names_the_shape_its_answer_must_have() {
+        let schema = json!({ "type": "object" });
+        let mut structured = ask(Sampling::ProviderDefault);
+        structured.output = Output::Schema {
+            schema: &schema,
+            effort: "low",
+        };
+        let anthropic = body(ProviderProtocol::Anthropic, &structured);
+        assert_eq!(anthropic["output_config"]["effort"], "low");
+        assert_eq!(anthropic["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(anthropic["output_config"]["format"]["schema"], schema);
+        let openai = body(ProviderProtocol::OpenAiCompatible, &structured);
+        assert!(openai.get("output_config").is_none());
+
+        let mut object = ask(Sampling::Deterministic);
+        object.output = Output::JsonObject;
+        assert_eq!(
+            body(ProviderProtocol::OpenAiCompatible, &object)["response_format"]["type"],
+            "json_object"
+        );
+        assert!(
+            body(ProviderProtocol::Anthropic, &object)
+                .get("response_format")
+                .is_none()
+        );
+
+        let mut unbounded = ask(Sampling::Deterministic);
+        unbounded.max_tokens = None;
+        assert!(
+            body(ProviderProtocol::OpenAiCompatible, &unbounded)
+                .get("max_tokens")
+                .is_none()
+        );
+
+        let mut silent = ask(Sampling::Deterministic);
+        silent.instructions = "";
+        assert!(
+            body(ProviderProtocol::Anthropic, &silent)
+                .get("system")
+                .is_none()
+        );
+        let messages = body(ProviderProtocol::OpenAiCompatible, &silent);
+        assert_eq!(messages["messages"].as_array().map(Vec::len), Some(1));
     }
 
     #[test]

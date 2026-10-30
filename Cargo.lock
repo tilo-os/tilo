@@ -17509,6 +17509,7 @@ dependencies = [
 name = "tilo-ai-bench"
 version = "0.1.0"
 dependencies = [
+ "agent-provider-config",
  "regex-lite",
  "reqwest 0.13.4",
  "serde",

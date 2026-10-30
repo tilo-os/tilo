@@ -272,10 +272,11 @@ impl SummaryProvider for HttpProvider {
                     model: &self.model,
                     instructions,
                     input,
-                    max_tokens,
+                    max_tokens: Some(max_tokens),
                     // Small current models refuse a set temperature and
                     // would spend `max_tokens` thinking; see `Sampling`.
                     sampling: transform::Sampling::ProviderDefaultNoThinking,
+                    output: transform::Output::JsonObject,
                 },
             );
             let body = serde_json::to_vec(&body).map_err(|_| "unencodable request".to_string())?;

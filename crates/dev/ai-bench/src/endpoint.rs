@@ -1,5 +1,6 @@
 //! Reaching one model, over the one protocol every provider Tilo offers
-//! speaks: OpenAI-compatible chat completions.
+//! speaks: OpenAI-compatible chat completions, whose request and answer
+//! shapes are [`transform`](agent_provider_config::transform)'s.
 //!
 //! A run names an endpoint — a local runtime on the loopback, a hosted
 //! provider, a stand-in in CI — and asks its cases that. Nothing here reads a
@@ -18,11 +19,16 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use agent_provider_config::ProviderProtocol;
+use agent_provider_config::transform::{self, Ask, Output, Sampling};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
 /// How long one case may take before the run counts it as no answer.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The longest answer read from one case.
+const MAX_ANSWER_BYTES: usize = 1024 * 1024;
 
 /// Where a run asks its questions.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,18 +157,22 @@ impl std::fmt::Display for Unreachable {
 
 /// The chat-completions body a case is asked with: the instructions as the
 /// system message, the input as the user message, and nothing sampled, so two
-/// runs of one case on one model differ only when the model does.
+/// runs of one case on one model differ only when the model does. The
+/// endpoint's own answer length applies: a benchmark asks the model, not a
+/// limit of the harness.
 #[must_use]
 pub fn request(endpoint: &Endpoint, instructions: &str, input: &str) -> Value {
-    json!({
-        "model": endpoint.model,
-        "messages": [
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": input},
-        ],
-        "temperature": 0,
-        "stream": false,
-    })
+    transform::body(
+        ProviderProtocol::OpenAiCompatible,
+        &Ask {
+            model: &endpoint.model,
+            instructions,
+            input,
+            max_tokens: None,
+            sampling: Sampling::Deterministic,
+            output: Output::Text,
+        },
+    )
 }
 
 /// The digest a report names the request by: sixteen hex digits, enough for
@@ -263,13 +273,8 @@ fn error_fields(body: &Value) -> String {
 }
 
 fn read_answer(body: &Value, reply: &Value) -> Result<Answer, Unreachable> {
-    let text = reply
-        .pointer("/choices/0/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Unreachable {
-            reason: "the answer had no assistant message".into(),
-        })?
-        .to_string();
+    let text = transform::answer_value(ProviderProtocol::OpenAiCompatible, reply, MAX_ANSWER_BYTES)
+        .map_err(|reason| Unreachable { reason })?;
     let served_model = reply
         .get("model")
         .and_then(Value::as_str)
@@ -396,7 +401,8 @@ mod tests {
         let body = request(&endpoint, "rewrite this", "the text");
         assert_eq!(body["model"], "small");
         assert_eq!(body["temperature"], 0);
-        assert_eq!(body["stream"], false);
+        assert!(body.get("max_tokens").is_none(), "{body}");
+        assert!(body.get("response_format").is_none(), "{body}");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][0]["content"], "rewrite this");
         assert_eq!(body["messages"][1]["content"], "the text");
@@ -409,6 +415,7 @@ mod tests {
 
     #[test]
     fn an_error_body_is_reported_by_its_identifiers_only() {
+        use serde_json::json;
         let spoken = json!({"error": {"message": "Incorrect API key sk-abc",
                                       "code": "invalid_api_key",
                                       "type": "invalid_request_error"}});
