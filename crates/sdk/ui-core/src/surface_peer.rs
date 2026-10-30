@@ -1,29 +1,28 @@
 //! A surface app's actions on the session that places its window.
 //!
 //! The desktop's own surfaces (the bar, the desk, the panels, a sheet) are
-//! apps run as processes of their own. Besides the Wayland socket their
-//! window becomes, the session hands each one end of a socket on which the
-//! two answer each other's actions: the session serves the actions the
-//! desktop publishes, as any host serves a caller
-//! ([`tilo_actions::remote::RemoteActionMessage`]),
-//! and asks the surface to run one of its own
-//! ([`SurfaceMessage::Invocation`]), hearing the outcome
-//! ([`SurfaceMessage::UpdateInvocation`]). There is no other channel: what a
-//! surface does, and what it is asked to do, is actions.
+//! ordinary apps run as processes of their own. Besides the Wayland socket
+//! their window becomes, the session hands each one end of a connection on
+//! which the two speak the action protocol every app and its host already
+//! speak ([`tilo_actions::remote::RemoteActionMessage`]): the session serves
+//! the actions the desktop publishes, and the surface lists, runs and
+//! reports its own. There is no other message and no surface-only kind: what
+//! a surface does, and what it is asked to do, is actions.
+//!
+//! One message is one frame of that protocol ([`RemoteActionFrame`]), framed
+//! the way the collaboration wire frames the same frames ([`FRAMING`]), so a
+//! surface's connection is its host connection in all but the descriptor it
+//! arrives on.
 //!
 //! A surface process finds the socket in [`ACTIONS_FD_ENV`]; without it the
 //! app is an ordinary app with no host in reach, as before.
 
-use std::collections::VecDeque;
-use std::io::{Read, Write};
+use std::collections::{HashMap, VecDeque};
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, mpsc};
 
-use serde::{Deserialize, Serialize};
-use tilo_actions::InvocationUpdate;
-use tilo_actions::outcome::InvocationId;
-use tilo_actions::remote::RemoteActionFrame;
+use tilo_actions::remote::{CataloguePage, CatalogueRow, RemoteActionFrame, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
 
 use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
@@ -32,90 +31,30 @@ use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport};
 /// talks to the session that places it.
 pub const ACTIONS_FD_ENV: &str = "TILO_SURFACE_ACTIONS_FD";
 
-/// Largest message either side sends: a catalogue page of actions, an
-/// invocation's outcome. Past it the connection closes rather than the two
-/// sides disagreeing about where a message ended.
-pub const MAX_SURFACE_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+/// Both directions' framing: one length-prefixed frame per message, as the
+/// collaboration wire frames the same protocol's frames.
+pub const FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(64 << 20);
 
-/// One message between a surface app and its session.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum SurfaceMessage {
-    /// One message of the action protocol, as the session's host or the
-    /// app's client speaks it.
-    Action(RemoteActionFrame),
-    /// The session asks the surface to run the action `resource`/`action`
-    /// its own catalogue offers, under `id`, and to answer with
-    /// [`Self::UpdateInvocation`].
-    Invocation {
-        id: u64,
-        invocation: InvocationId,
-        resource: String,
-        action: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        argument: Option<String>,
-        actor: String,
-    },
-    /// The surface says how the invocation `id` it was asked to run is
-    /// going, or how it ended.
-    UpdateInvocation { id: u64, update: InvocationUpdate },
-    /// The actions the surface offers the desktop, whole: the resources
-    /// it publishes, each with its actions.
-    Published {
-        app_id: String,
-        actions: Vec<crate::collaboration::ExportedAction>,
-    },
-}
-
-impl SurfaceMessage {
-    /// The message as the bytes one write of the socket carries: its length
-    /// first, little endian, then its JSON.
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorMessage::TooLarge`] past [`MAX_SURFACE_MESSAGE_BYTES`], or
-    /// [`ErrorMessage::Malformed`] if it does not encode.
-    pub fn encode(&self) -> Result<Vec<u8>, ErrorMessage> {
-        let body =
-            serde_json::to_vec(self).map_err(|error| ErrorMessage::Malformed(error.to_string()))?;
-        if body.len() > MAX_SURFACE_MESSAGE_BYTES {
-            return Err(ErrorMessage::TooLarge { len: body.len() });
-        }
-        let mut bytes = Vec::with_capacity(body.len() + 4);
-        bytes.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_le_bytes());
-        bytes.extend_from_slice(&body);
-        Ok(bytes)
-    }
-
-    /// The message `body` holds, its length having been read already.
-    ///
-    /// # Errors
-    ///
-    /// [`ErrorMessage::Malformed`] when it is not one.
-    pub fn decode(body: &[u8]) -> Result<Self, ErrorMessage> {
-        serde_json::from_slice(body).map_err(|error| ErrorMessage::Malformed(error.to_string()))
-    }
-}
-
-/// Why bytes are not a usable surface message.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum ErrorMessage {
-    #[error("surface message of {len} bytes exceeds the limit")]
-    TooLarge { len: usize },
-    #[error("malformed surface message: {0}")]
-    Malformed(String),
-}
-
-/// The app's end of the socket to its session.
+/// The app's end of the connection to its session.
 ///
 /// Cloneable pieces are not: the reader thread owns the receiving half.
 pub struct SurfacePeer {
-    outgoing: mpsc::Sender<SurfaceMessage>,
-    /// What this surface offers, as its publication moves it.
+    outgoing: mpsc::Sender<RemoteActionMessage>,
+    /// The app the session placed, as it joined: what its catalogue rows are
+    /// published under, and what the desktop calls it.
+    app_id: String,
+    /// What this surface offers, as its publication moves it: the actions
+    /// the session is answered with when it asks.
     published: crate::collaboration::SurfaceTable,
     /// The route the session has acknowledged, if the app asked to join
     /// one: a surface's is its own window's, which the session places.
     acknowledged: Option<crate::collaboration::RouteSpec>,
-    incoming: mpsc::Receiver<SurfaceMessage>,
+    /// The invocations the session asked this app to run, by the id the app
+    /// names them with while it runs them.
+    asked: HashMap<u64, tilo_actions::outcome::InvocationId>,
+    /// The id the next invocation the session asks is named by.
+    asking: u64,
+    incoming: mpsc::Receiver<RemoteActionMessage>,
     received: VecDeque<CollabEvent>,
     connected: bool,
     /// What wakes the app when the session speaks: its next frame, handed
@@ -155,27 +94,78 @@ impl SurfacePeer {
         }
         Self {
             outgoing,
+            app_id: String::new(),
             published: crate::collaboration::SurfaceTable::default(),
             acknowledged: None,
+            asked: HashMap::new(),
+            asking: 0,
             incoming,
             received: VecDeque::new(),
             connected: true,
-            wake,
+            wake: Arc::default(),
         }
     }
 
-    /// Whether the socket to the session is still open.
-    #[must_use]
-    pub const fn is_open(&self) -> bool {
-        self.connected
-    }
-}
-
-impl std::fmt::Debug for SurfacePeer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SurfacePeer")
-            .field("connected", &self.connected)
-            .finish_non_exhaustive()
+    /// Answer the session's request from what this app offers.
+    fn answer(&mut self, message: RemoteActionMessage) -> Option<RemoteActionMessage> {
+        match message {
+            RemoteActionMessage::CatalogueRequest { correlation, query } => {
+                let rows: Vec<CatalogueRow> = self
+                    .published
+                    .actions()
+                    .iter()
+                    .filter(|_| {
+                        query
+                            .provider
+                            .as_ref()
+                            .is_none_or(|provider| *provider == self.app_id)
+                    })
+                    .map(|action| {
+                        CatalogueRow::for_action(
+                            self.app_id.clone(),
+                            self.app_id.clone(),
+                            action.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
+                        )
+                    })
+                    .collect();
+                Some(RemoteActionMessage::CatalogueResponse {
+                    correlation,
+                    result: Ok(CataloguePage::from_rows(
+                        format!("v1:{}", self.app_id),
+                        rows,
+                        &query,
+                    )),
+                })
+            }
+            RemoteActionMessage::Invoke(request) => {
+                // The app runs what it publishes through its own actions, as
+                // it does an ask from a room's host; the id the app names the
+                // run with is what its outcome arrives under.
+                self.asking = self.asking.wrapping_add(1);
+                let id = self.asking;
+                let argument = request.argument.to_slot();
+                self.asked.insert(id, request.invocation);
+                self.received.push_back(CollabEvent::Invocation {
+                    id,
+                    invocation: request.invocation,
+                    resource: request.target.address.resource,
+                    action: request.target.address.action,
+                    argument,
+                    // Asked by the desktop itself, which is what the surface
+                    // is a surface of.
+                    actor: String::from("the desktop"),
+                    context: None,
+                });
+                None
+            }
+            other => {
+                // What answers this app's own requests: a receipt, an
+                // invocation's state, a catalogue page.
+                self.received
+                    .push_back(CollabEvent::RemoteAction { message: other });
+                None
+            }
+        }
     }
 }
 
@@ -185,53 +175,49 @@ impl PeerTransport for SurfacePeer {
     }
 
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        let message = match request {
-            // A surface's route is its own window, placed by the session:
-            // there is no room to join, and the app is told so.
+        match request {
             CollabRequest::Hello {
                 app_id,
                 cluster_id,
                 record,
                 ..
             } => {
+                self.app_id = app_id;
                 self.acknowledged = Some(crate::collaboration::RouteSpec {
-                    app_id,
+                    app_id: self.app_id.clone(),
                     cluster_id,
                     record,
                 });
-                return Ok(());
+                Ok(())
             }
-            CollabRequest::RemoteAction { message } => {
-                SurfaceMessage::Action(RemoteActionFrame::new(message))
-            }
+            CollabRequest::RemoteAction { message } => self
+                .outgoing
+                .send(message)
+                .map_err(|_| String::from("the session closed the actions socket")),
             CollabRequest::UpdateInvocation { id, update } => {
-                SurfaceMessage::UpdateInvocation { id, update }
-            }
-            // What the app publishes is kept here as the table the host
-            // would hold, and what it offers now is sent whole: a surface
-            // exports a handful of actions, and the session then holds the
-            // same list a broker's catalogue would show.
-            CollabRequest::PublishActions { app_id, actions } => {
-                SurfaceMessage::Published { app_id, actions }
+                let Some(invocation) = self.asked.remove(&id) else {
+                    return Ok(());
+                };
+                let state = tilo_actions::remote::InvocationState::new(invocation, update);
+                self.outgoing
+                    .send(RemoteActionMessage::Update {
+                        invocation,
+                        state: Some(state),
+                    })
+                    .map_err(|_| String::from("the session closed the actions socket"))
             }
             CollabRequest::PublishActionSurface { app_id, delta } => {
+                self.app_id = app_id;
                 if let Err(error) = self.published.apply(&delta) {
-                    return Err(format!("the published actions: {error}"));
+                    tracing::warn!(%error, "a surface's action surface did not apply");
                 }
-                SurfaceMessage::Published {
-                    app_id,
-                    actions: self.published.actions(),
-                }
+                Ok(())
             }
             // There is no room to sync, no document to publish and no
-            // device to reach: what a surface does is actions, and saying
-            // so to requests that are not is what keeps the ones that are
-            // working. A closed socket is reported where it is sent on.
-            _ => return Ok(()),
-        };
-        self.outgoing
-            .send(message)
-            .map_err(|_| "the session's socket to this surface is closed".to_owned())
+            // device to reach: a surface's desktop is the process it speaks
+            // to here, and everything it is told is an action.
+            _ => Ok(()),
+        }
     }
 
     fn take_primary_route_result(
@@ -246,60 +232,28 @@ impl PeerTransport for SurfacePeer {
 
     fn poll(&mut self) -> Vec<CollabEvent> {
         while let Ok(message) = self.incoming.try_recv() {
-            match message {
-                SurfaceMessage::Action(frame) => {
-                    self.received.push_back(CollabEvent::RemoteAction {
-                        message: frame.message,
-                    })
-                }
-                SurfaceMessage::Invocation {
-                    id,
-                    invocation,
-                    resource,
-                    action,
-                    argument,
-                    actor,
-                } => self.received.push_back(CollabEvent::Invocation {
-                    id,
-                    invocation,
-                    resource,
-                    action,
-                    argument,
-                    actor,
-                    context: None,
-                }),
-                // The app's own reports, arriving at the app: nothing to do.
-                SurfaceMessage::UpdateInvocation { .. } | SurfaceMessage::Published { .. } => {}
-            }
+            self.answer(message);
         }
         self.received.drain(..).collect()
     }
 }
 
-/// Read messages from the session off `stream` until it closes, handing
-/// each to `incoming`; on a broken message, stop, closing the connection.
+/// Read the session's messages off `stream` until it closes, waking the app
+/// for each.
 fn read_messages(
     mut stream: UnixStream,
-    incoming: &mpsc::Sender<SurfaceMessage>,
-    wake: &std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    incoming: &mpsc::Sender<RemoteActionMessage>,
+    wake: &Arc<std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
 ) {
     loop {
-        let mut length = [0_u8; 4];
-        if stream.read_exact(&mut length).is_err() {
-            return;
-        }
-        let length = u32::from_le_bytes(length) as usize;
-        if length > MAX_SURFACE_MESSAGE_BYTES {
-            return;
-        }
-        let mut body = vec![0_u8; length];
-        if stream.read_exact(&mut body).is_err() {
-            return;
-        }
-        let Ok(message) = SurfaceMessage::decode(&body) else {
+        let Some(body) = FRAMING.read(&mut stream).ok().flatten() else {
             return;
         };
-        if incoming.send(message).is_err() {
+        let Ok(frame) = RemoteActionFrame::decode(&body) else {
+            tracing::warn!("the session sent a message that is not one");
+            return;
+        };
+        if incoming.send(frame.message).is_err() {
             return;
         }
         // The app may be resting: what the session said waits for a frame
@@ -310,13 +264,14 @@ fn read_messages(
     }
 }
 
-/// Write messages for the session to `stream` until `outgoing` closes.
-fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<SurfaceMessage>) {
+/// Write the app's messages to the session on `stream` until it closes.
+fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<RemoteActionMessage>) {
     while let Ok(message) = outgoing.recv() {
-        let Ok(bytes) = message.encode() else {
+        let Ok(body) = RemoteActionFrame::new(message).encode() else {
+            tracing::warn!("a message to the session did not encode");
             return;
         };
-        if stream.write_all(&bytes).is_err() {
+        if FRAMING.write(&mut stream, &body).is_err() {
             return;
         }
     }
@@ -325,7 +280,9 @@ fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<SurfaceMessa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_actions::remote::{CatalogueQuery, RemoteActionMessage};
+    use tilo_actions::ActionAddress;
+    use tilo_actions::outcome::InvocationId;
+    use tilo_actions::remote::{CatalogueQuery, InvokeArgument, InvokeRequest, RemoteActionTarget};
 
     #[test]
     fn a_surface_answers_the_sessions_actions() {
@@ -339,14 +296,11 @@ mod tests {
             },
         })
         .expect("sent");
-        let mut length = [0_u8; 4];
-        session.read_exact(&mut length).expect("a message");
-        let len = usize::try_from(u32::from_le_bytes(length)).expect("a length");
-        let mut body = vec![0_u8; len];
-        session.read_exact(&mut body).expect("the message");
-        let SurfaceMessage::Action(frame) = SurfaceMessage::decode(&body).expect("decoded") else {
-            panic!("not an action");
-        };
+        let body = FRAMING
+            .read(&mut session)
+            .expect("a read")
+            .expect("a message");
+        let frame = RemoteActionFrame::decode(&body).expect("decoded");
         assert_eq!(
             frame.message,
             RemoteActionMessage::CatalogueRequest {
@@ -364,8 +318,11 @@ mod tests {
         let (session, incoming) = mpsc::channel();
         let mut peer = SurfacePeer {
             outgoing,
+            app_id: "so.tilo.topbar".into(),
             published: crate::collaboration::SurfaceTable::default(),
             acknowledged: None,
+            asked: HashMap::new(),
+            asking: 0,
             incoming,
             received: VecDeque::new(),
             connected: true,
@@ -373,14 +330,20 @@ mod tests {
         };
         let invocation = InvocationId::new();
         session
-            .send(SurfaceMessage::Invocation {
-                id: 3,
+            .send(RemoteActionMessage::Invoke(InvokeRequest {
                 invocation,
-                resource: "bar".into(),
-                action: "open-menu".into(),
-                argument: None,
-                actor: "person".into(),
-            })
+                target: RemoteActionTarget {
+                    provider: "so.tilo.topbar".into(),
+                    address: ActionAddress::new("bar", "open-menu"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            }))
             .expect("the session speaks");
         let event = peer.poll().into_iter().next().expect("an event");
         let CollabEvent::Invocation {
@@ -395,7 +358,7 @@ mod tests {
         };
         assert_eq!(
             (id, arrived, resource.as_str(), action.as_str()),
-            (3, invocation, "bar", "open-menu")
+            (1, invocation, "bar", "open-menu")
         );
     }
 

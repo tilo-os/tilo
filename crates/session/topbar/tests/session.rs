@@ -117,7 +117,7 @@ fn the_session_asks_the_bar_to_open_its_workspace_menu() {
     // The session runs it, as a person's palette or an agent would, and the
     // bar answers on its own actions socket.
     let id = session
-        .ask_surface("topbar", &resource, &action, None, "the person")
+        .ask_surface("topbar", &resource, &action, None)
         .expect("the bar is running");
     let mut ended = None;
     while ended.is_none() {

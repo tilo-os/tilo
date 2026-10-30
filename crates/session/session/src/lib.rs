@@ -1349,9 +1349,8 @@ impl Session {
         resource: &str,
         action: &str,
         argument: Option<&str>,
-        actor: &str,
     ) -> Option<u64> {
-        self.surfaces.ask(name, resource, action, argument, actor)
+        self.surfaces.ask(name, resource, action, argument)
     }
 
     /// The desktop under the windows and its policy.

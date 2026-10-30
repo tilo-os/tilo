@@ -10,14 +10,13 @@
 //! A surface is still an app that does things, so it is also handed one end
 //! of an actions socket: on it the session answers the actions it publishes
 //! ([`ActionDoor`]) and asks the surface to run one of its own, both as
-//! [`SurfaceMessage`]s of the action protocol. Those are the only messages:
-//! what a surface shows it reads from the resources it holds, and what was
-//! done is said in actions.
+//! [`RemoteActionMessage`]s of the protocol every app speaks to its host.
+//! Those are the only messages: what a surface shows it reads from the
+//! resources it holds, and what was done is said in actions.
 //!
 //! [`Compositor::connect_trusted_client`]: tilo_compositor::Compositor::connect_trusted_client
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{Read, Write};
 use std::os::fd::AsRawFd as _;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -30,12 +29,13 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHostError, CataloguePage, CatalogueRow, InvocationReceipt, InvocationState,
-    InvokeArgument, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    RemoteActionTarget,
 };
 use tilo_compositor::Compositor;
 use ui::collaboration::ExportedAction;
 use ui::host_operation::ResourceOperationStart;
-use ui::surface_peer::{ACTIONS_FD_ENV, MAX_SURFACE_MESSAGE_BYTES, SurfaceMessage};
+use ui::surface_peer::{ACTIONS_FD_ENV, FRAMING};
 
 /// Where on an output a surface app's window stands, lowest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -308,6 +308,9 @@ const ACTIONS_DESCRIPTOR: i32 = 4;
 /// an answer asked after it ended is still given.
 const ANSWERED_KEPT: usize = 256;
 
+/// How often a surface that has listed nothing yet is asked again.
+const LISTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// The provider surface apps address the desktop's actions under.
 pub const SESSION_PROVIDER: &str = "so.tilo.session";
 
@@ -413,11 +416,21 @@ struct Running {
 
 /// The session's end of a surface app's actions socket.
 struct Connection {
-    outgoing: mpsc::Sender<SurfaceMessage>,
-    incoming: mpsc::Receiver<SurfaceMessage>,
+    outgoing: mpsc::Sender<RemoteActionMessage>,
+    incoming: mpsc::Receiver<RemoteActionMessage>,
     /// How each invocation the session asked the surface to run stands.
     asked: HashMap<u64, InvocationState>,
-    /// What the surface publishes: the actions it offers the desktop.
+    /// The invocation id the app named each ask with, back to the session's
+    /// id for it: an answer names the invocation, never the ask.
+    by_invocation: HashMap<InvocationId, u64>,
+    /// The provider the surface answers its actions under.
+    provider: String,
+    /// The correlation the next catalogue request is sent under.
+    listing: u64,
+    /// When the last catalogue request went out, so a surface that has
+    /// published nothing yet is asked again rather than never.
+    listed_at: Option<Instant>,
+    /// What the surface offers: the actions its catalogue lists.
     published: Vec<ExportedAction>,
     /// How the last invocations its app run ended, newest last, so one the
     /// session answered as accepted can be asked after.
@@ -444,12 +457,54 @@ impl Connection {
             outgoing,
             incoming,
             asked: HashMap::new(),
+            by_invocation: HashMap::new(),
+            provider: String::new(),
+            listing: 0,
+            listed_at: None,
             published: Vec::new(),
             answered: VecDeque::new(),
         }
     }
 
-    fn send(&self, message: SurfaceMessage) {
+    /// Ask the surface what it offers now.
+    fn list(&mut self) {
+        let correlation = self.listing;
+        self.listing = self.listing.wrapping_add(1);
+        self.listed_at = Some(Instant::now());
+        self.send(RemoteActionMessage::CatalogueRequest {
+            correlation,
+            query: tilo_actions::remote::CatalogueQuery::default(),
+        });
+    }
+
+    /// Ask again when the surface has listed nothing yet and the last ask is
+    /// old enough: an app that mounts late is still heard.
+    fn list_if_silent(&mut self) {
+        if !self.published.is_empty() {
+            return;
+        }
+        let due = self
+            .listed_at
+            .is_none_or(|asked| asked.elapsed() >= LISTING_INTERVAL);
+        if due {
+            self.list();
+        }
+    }
+
+    /// Record that the invocation the app named has `update` as its state.
+    fn settle(&mut self, invocation: InvocationId, update: &InvocationUpdate) {
+        let Some(id) = self.by_invocation.get(&invocation).copied() else {
+            return;
+        };
+        if let Some(state) = self.asked.get_mut(&id) {
+            state.update = update.clone();
+        }
+        if update.is_terminal() {
+            self.by_invocation.remove(&invocation);
+        }
+    }
+
+    fn send(&self, message: RemoteActionMessage) {
         if self.outgoing.send(message).is_err() {
             // The app went away: its exit is reported by the process side.
             tracing::debug!("a surface app's actions socket is closed");
@@ -458,38 +513,29 @@ impl Connection {
 }
 
 /// Read messages from the surface off `stream` until it closes.
-fn read_messages(mut stream: UnixStream, incoming: &mpsc::Sender<SurfaceMessage>) {
+fn read_messages(mut stream: UnixStream, incoming: &mpsc::Sender<RemoteActionMessage>) {
     loop {
-        let mut length = [0_u8; 4];
-        if stream.read_exact(&mut length).is_err() {
+        let Some(body) = FRAMING.read(&mut stream).ok().flatten() else {
             return;
-        }
-        let length = u32::from_le_bytes(length) as usize;
-        if length > MAX_SURFACE_MESSAGE_BYTES {
-            return;
-        }
-        let mut body = vec![0_u8; length];
-        if stream.read_exact(&mut body).is_err() {
-            return;
-        }
-        let Ok(message) = SurfaceMessage::decode(&body) else {
+        };
+        let Ok(frame) = RemoteActionFrame::decode(&body) else {
             tracing::warn!("a surface app sent a message that is not one");
             return;
         };
-        if incoming.send(message).is_err() {
+        if incoming.send(frame.message).is_err() {
             return;
         }
     }
 }
 
 /// Write messages for the surface to `stream` until the session closes it.
-fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<SurfaceMessage>) {
+fn write_messages(mut stream: UnixStream, outgoing: &mpsc::Receiver<RemoteActionMessage>) {
     while let Ok(message) = outgoing.recv() {
-        let Ok(bytes) = message.encode() else {
+        let Ok(body) = RemoteActionFrame::new(message).encode() else {
             tracing::warn!("a message to a surface app did not encode");
             return;
         };
-        if stream.write_all(&bytes).is_err() {
+        if FRAMING.write(&mut stream, &body).is_err() {
             return;
         }
     }
@@ -569,11 +615,15 @@ impl Surfaces {
             program = %surface.program.display(),
             "started a surface app"
         );
+        let mut actions = Connection::of(ours);
+        // What the surface offers the desktop is what it lists when asked,
+        // as any host asks a directory it serves.
+        actions.list();
         self.running.push(Running {
             name: surface.name.clone(),
             child,
             started: Instant::now(),
-            actions: Connection::of(ours),
+            actions,
         });
         Ok(())
     }
@@ -633,30 +683,42 @@ impl Surfaces {
     /// how the invocations they were asked to run stand.
     pub fn serve(&mut self, door: &mut dyn ActionDoor) {
         for app in &mut self.running {
+            // A surface publishes its actions once it has mounted: until it
+            // has listed them, the session asks again.
+            app.actions.list_if_silent();
             while let Ok(message) = app.actions.incoming.try_recv() {
                 match message {
-                    SurfaceMessage::Action(frame) => {
-                        if let Some(answer) = answer(door, &mut app.actions.answered, frame.message)
-                        {
-                            app.actions
-                                .send(SurfaceMessage::Action(RemoteActionFrame::new(answer)));
+                    // What the surface offers: the session asked for it, and
+                    // asks again whenever it changed.
+                    RemoteActionMessage::CatalogueResponse { result, .. } => {
+                        let Ok(page) = result else {
+                            continue;
+                        };
+                        if let Some(row) = page.rows.first() {
+                            app.actions.provider.clone_from(&row.provider);
+                        }
+                        app.actions.published = page
+                            .rows
+                            .iter()
+                            .filter_map(|row| row.action.as_ref())
+                            .map(ExportedAction::from)
+                            .collect();
+                    }
+                    // How an invocation the session asked for stands.
+                    RemoteActionMessage::Receipt(receipt) => {
+                        if let Some(update) = outcome(receipt.invocation, &receipt.status) {
+                            app.actions.settle(receipt.invocation, &update);
                         }
                     }
-                    // Only the session asks a surface to run an action.
-                    SurfaceMessage::Invocation { .. } => {}
-                    SurfaceMessage::UpdateInvocation { id, update } => {
-                        if let Some(state) = app.actions.asked.get_mut(&id) {
-                            state.update = update;
+                    RemoteActionMessage::Update { invocation, state } => {
+                        if let Some(state) = state {
+                            app.actions.settle(invocation, &state.update);
                         }
                     }
-                    SurfaceMessage::Published { app_id, actions } => {
-                        tracing::debug!(
-                            surface = %app.name,
-                            %app_id,
-                            actions = actions.len(),
-                            "a surface app published what it offers"
-                        );
-                        app.actions.published = actions;
+                    request => {
+                        if let Some(answer) = answer(door, &mut app.actions.answered, request) {
+                            app.actions.send(answer);
+                        }
                     }
                 }
             }
@@ -672,7 +734,6 @@ impl Surfaces {
         resource: &str,
         action: &str,
         argument: Option<&str>,
-        actor: &str,
     ) -> Option<u64> {
         let id = self.asked;
         let invocation = InvocationId::new();
@@ -685,14 +746,23 @@ impl Surfaces {
             id,
             InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }),
         );
-        app.actions.send(SurfaceMessage::Invocation {
-            id,
+        app.actions.by_invocation.insert(invocation, id);
+        app.actions.send(RemoteActionMessage::Invoke(InvokeRequest {
             invocation,
-            resource: resource.to_owned(),
-            action: action.to_owned(),
-            argument: argument.map(str::to_owned),
-            actor: actor.to_owned(),
-        });
+            target: RemoteActionTarget {
+                provider: app.actions.provider.clone(),
+                address: tilo_actions::ActionAddress::new(resource, action),
+            },
+            argument: argument.map_or(InvokeArgument::None, |argument| {
+                InvokeArgument::Text(argument.to_owned())
+            }),
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        }));
         Some(id)
     }
 
