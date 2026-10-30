@@ -952,7 +952,7 @@ mod tests {
         let colors =
             Colors::as_authored(&doc.palette, doc.emphasis, doc.presence, PresenceHue::Blue);
         let spread = material_spread(&colors, colors.surfaces.content);
-        assert!(spread < MATERIAL_SPREAD && spread >= 1.0, "{spread}");
+        assert!((1.0..MATERIAL_SPREAD).contains(&spread), "{spread}");
         for ground in worst_grounds(&colors, &doc.material.roles(), SurfaceRole::Window) {
             for (ink, floor) in [(colors.text_dim, 4.5), (colors.text_tertiary, 3.0)] {
                 let ratio = crate::color::contrast_ratio(ink, ground);
