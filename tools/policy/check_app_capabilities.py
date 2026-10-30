@@ -25,11 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import check_app_portability as portability  # noqa: E402
+import rust_source as rust  # noqa: E402
 
-ROOT = portability.ROOT
+ROOT = Path(__file__).resolve().parents[2]
 TABLE = Path("tools/policy/app_capability_usage.toml")
-RULES = portability.RULES
+RULES = Path("tools/policy/app_portability_rules.toml")
 
 # The capability vocabulary (crates/sdk/tilo-caps/src/lib.rs, `capabilities!`).
 TILO_CAPS = Path("crates/sdk/tilo-caps/src/lib.rs")
@@ -68,7 +68,7 @@ def vocabulary(root: Path) -> set[str]:
 
 
 def group_members(code: str, open_index: int) -> list[str]:
-    close = portability.matching(code, open_index)
+    close = rust.matching(code, open_index)
     body = re.sub(r"\{[^{}]*\}", " ", code[open_index + 1 : close - 1])
     return [part.strip().split("::")[0].split(" as ")[0].strip() for part in body.split(",")]
 
@@ -76,27 +76,27 @@ def group_members(code: str, open_index: int) -> list[str]:
 def path_hits(code: str, pattern: str) -> list[int]:
     """Offsets where ``pattern`` (``a::b``) appears as a path, or as
     ``a::{.., b, ..}``."""
-    hits = [match.start() for match in portability.starts(code, portability.path_regex(pattern))]
+    hits = [match.start() for match in rust.starts(code, rust.path_regex(pattern))]
     segments = pattern.split("::")
     if len(segments) >= 2:
         head = r"\s*::\s*".join(re.escape(segment) for segment in segments[:-1])
-        for match in portability.starts(code, re.compile(head + r"\s*::\s*\{")):
+        for match in rust.starts(code, re.compile(head + r"\s*::\s*\{")):
             if segments[-1] in group_members(code, match.end() - 1):
                 hits.append(match.start())
     return hits
 
 
-def source_usage(table: dict, source: portability.Source, relative: str) -> list[Usage]:
+def source_usage(table: dict, source: rust.Source, relative: str) -> list[Usage]:
     found = []
     code = source.code
     for capability, spec in table["uses"].items():
         for pattern in spec.get("paths", []):
             for offset in path_hits(code, pattern):
-                line = portability.line_number(code, offset)
+                line = rust.line_number(code, offset)
                 found.append(Usage(capability, relative, line, f"`{pattern}`"))
         for method in spec.get("methods", []):
             for match in re.finditer(rf"\.\s*{re.escape(method)}\s*\(", code):
-                line = portability.line_number(code, match.start())
+                line = rust.line_number(code, match.start())
                 found.append(Usage(capability, relative, line, f"`.{method}(`"))
     return found
 
@@ -107,7 +107,7 @@ def manifest_usage(table: dict, root: Path, directory: Path) -> list[Usage]:
     manifest = tomllib.loads(text)
     workspace_manifest = root / "Cargo.toml"
     workspace = (
-        portability.load_manifest(workspace_manifest).get("workspace", {}).get("dependencies", {})
+        rust.load_manifest(workspace_manifest).get("workspace", {}).get("dependencies", {})
         if workspace_manifest.is_file()
         else {}
     )
@@ -115,21 +115,21 @@ def manifest_usage(table: dict, root: Path, directory: Path) -> list[Usage]:
     packages: dict[str, str] = {}
     selections: list[tuple[str, int]] = []
     found = []
-    for _, dependencies in portability.dependency_tables(manifest):
+    for _, dependencies in rust.dependency_tables(manifest):
         for alias, spec in dependencies.items():
             spec = spec if isinstance(spec, dict) else {"version": spec}
             inherited = workspace.get(alias) if spec.get("workspace") is True else None
             inherited = inherited if isinstance(inherited, dict) else {}
             name = spec.get("package") or inherited.get("package") or alias
             packages[alias] = name
-            line = portability.key_line(text, alias)
+            line = rust.key_line(text, alias)
             for capability, rule in table["uses"].items():
-                if portability.matches_any(name, rule.get("crates", [])):
+                if rust.matches_any(name, rule.get("crates", [])):
                     found.append(Usage(capability, relative, line, f"depends on `{name}`"))
             for feature in [*spec.get("features", []), *inherited.get("features", [])]:
                 selections += [(f"{alias}/{feature}", line), (f"{name}/{feature}", line)]
     for feature, selected in (manifest.get("features", {}) or {}).items():
-        line = portability.key_line(text, feature)
+        line = rust.key_line(text, feature)
         for selection in selected if isinstance(selected, list) else []:
             alias, _, chosen = selection.partition("/")
             alias = alias.removeprefix("dep:").rstrip("?")
@@ -152,16 +152,15 @@ def audit(root: Path = ROOT, table_path: Path | None = None) -> list[AppCapabili
         manifest_path = directory / "tilo-app.toml"
         if not (manifest_path.is_file() and (directory / "Cargo.toml").is_file()):
             continue
-        declared = portability.load_manifest(manifest_path).get("capabilities", {})
+        declared = rust.load_manifest(manifest_path).get("capabilities", {})
         app = AppCapabilities(
             directory.name,
             directory,
             list(declared.get("required", [])),
             list(declared.get("optional", [])),
         )
-        package = portability.Package("apps", directory.name, directory, set())
         usages = manifest_usage(table, root, directory)
-        for source in portability.production_sources(package, exempt_dirs, [], root):
+        for source in rust.production_sources(directory, exempt_dirs, root):
             usages += source_usage(table, source, source.path.relative_to(root).as_posix())
         for usage in sorted(usages, key=lambda u: (u.path, u.line)):
             app.uses.setdefault(usage.capability, []).append(usage)

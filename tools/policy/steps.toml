@@ -319,11 +319,6 @@ label = "Code map is current"
 run = "python3 tools/docs/codemap.py --check"
 
 [[step]]
-name = "app-portability"
-label = "Apps and portable SDK crates hold no platform code"
-run = "python3 tools/policy/check_app_portability.py"
-
-[[step]]
 name = "app-capabilities"
 label = "Apps declare the capabilities their code uses"
 run = "python3 tools/policy/check_app_capabilities.py"

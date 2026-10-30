@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-import check_app_portability as rust
+import rust_source as rust
 
 
 ROOT = Path(__file__).resolve().parents[2]

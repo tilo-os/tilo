@@ -6,7 +6,11 @@ from pathlib import Path
 
 
 TOOLS = Path(__file__).resolve().parents[1]
-for name in ("check_app_portability", "check_app_copy"):
+spec = importlib.util.spec_from_file_location("rust_source", TOOLS / "policy/rust_source.py")
+module = importlib.util.module_from_spec(spec)
+sys.modules["rust_source"] = module
+spec.loader.exec_module(module)
+for name in ("check_app_copy",):
     spec = importlib.util.spec_from_file_location(name, TOOLS / f"policy/{name}.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
