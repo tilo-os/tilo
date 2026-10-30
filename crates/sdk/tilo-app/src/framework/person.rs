@@ -233,8 +233,10 @@ type OpenKey = (&'static str, String);
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonRecord`] per resource kind.
 pub(crate) struct PersonState {
-    /// The person's shared records ([`tilo_resource::SharedRecord`]).
-    records: PersonRecords,
+    /// The person's shared records ([`tilo_resource::SharedRecord`]); none
+    /// for a host that keeps only the settings sections, whose history is
+    /// the settings document's.
+    records: Option<PersonRecords>,
     /// The app's own records of a kind, in the workspace it is open in;
     /// none for a host that keeps only the shared ones (the session's
     /// settings).
@@ -362,6 +364,27 @@ impl PersonState {
         app_title: &'static str,
     ) -> Self {
         let me = records.author().0.clone();
+        Self::named(Some(records), own, me, app_id, app_title)
+    }
+
+    /// The person `me`, whose shared records this host does not hold: their
+    /// undo and redo of the settings sections are published all the same,
+    /// and read the sections' history in the settings document.
+    pub(crate) fn without_records(
+        me: String,
+        app_id: &'static str,
+        app_title: &'static str,
+    ) -> Self {
+        Self::named(None, None, me, app_id, app_title)
+    }
+
+    fn named(
+        records: Option<PersonRecords>,
+        own: Option<PersonRecords>,
+        me: String,
+        app_id: &'static str,
+        app_title: &'static str,
+    ) -> Self {
         Self {
             records,
             own,
@@ -575,7 +598,7 @@ impl PersonState {
     /// opened once.
     fn records_of(&self, owner: &'static str) -> Option<PersonRecords> {
         if owner == self.app_id {
-            return Some(self.records.clone());
+            return self.records.clone();
         }
         let mut others = self.others.borrow_mut();
         if let Some(records) = others.get(owner) {
@@ -583,6 +606,7 @@ impl PersonState {
         }
         let records = self
             .records
+            .as_ref()?
             .of_package(owner)
             .map_err(|error| {
                 tracing::warn!(owner, %error, "the person's records of another app are unavailable");
@@ -781,7 +805,7 @@ impl<P: Resource> super::record::sealed::Hold<P> for PersonRecord<P> {
 impl Drop for PersonState {
     /// The window closes: what the person did is stored before it goes.
     fn drop(&mut self) {
-        for records in std::iter::once(&self.records).chain(&self.own) {
+        for records in self.records.iter().chain(&self.own) {
             if let Err(error) = records.flush() {
                 tracing::warn!(%error, "the records beside the app's own could not be stored");
             }
