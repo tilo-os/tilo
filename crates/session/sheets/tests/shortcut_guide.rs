@@ -157,3 +157,14 @@ fn every_scenario_renders() {
         );
     }
 }
+
+#[test]
+fn a_listening_key_says_what_to_press_with_escape_as_its_own_hint() {
+    let mut app = staged("listening");
+    assert!(says(&mut app, "Press a new shortcut for “Next window”"));
+    assert!(says(&mut app, "Cancel"), "Escape's hint is named");
+    assert!(
+        !says(&mut app, "·") && !says(&mut app, "Esc cancels"),
+        "the way out is a key hint, not a glyph-joined sentence"
+    );
+}

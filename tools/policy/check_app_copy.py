@@ -7,8 +7,10 @@ untranslatable identifier to the screen. Keys passed straight to a resolver
 `locales/en-US.ftl`; Settings also routes keys through conditionals and
 tables, so its key-shaped literals in a known namespace are checked too.
 Lookups fall back to the toolkit's catalogue, so its messages count for all.
-A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`) is
-checked in that crate's catalogue, the one it is looked up in.
+A key passed to another crate's resolver (`tilo_desktop::i18n::t_args`, or
+`tilo_onboarding::t` from a crate whose root declares
+`ui::embedded_catalog!(pub fn, ..)`) is checked in that crate's catalogue, the
+one it is looked up in.
 """
 
 from __future__ import annotations
@@ -30,9 +32,12 @@ KEY = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)+\Z")
 # next; one that starts with `\b` or an alternation is tried at every offset of some 100 MB of
 # source. A leading `\b` is checked by `starts_word` instead.
 RESOLVER = re.compile(r"t(?:_args|r|r_args)?\s*\(")
-# `<crate>::i18n::t(`: found by its literal part, then the crate name read backwards
-# (`\b([A-Za-z_]\w*)` before it), which a search from every position took seconds per tree for.
-QUALIFIED = re.compile(r"::i18n::(?:t|t_args|tr|tr_args)\s*\(")
+# `<path>::t(`: found by its literal part, then the path (`tilo_desktop::i18n`, `tilo_onboarding`)
+# read backwards, which a search from every position took seconds per tree for.
+QUALIFIED = re.compile(r"::(?:t|t_args|tr|tr_args)\s*\(")
+# A crate root that declares its own lookups (`ui::embedded_catalog!(pub fn, ..)`) resolves
+# `<crate>::t(` as well as `<crate>::i18n::t(`.
+ROOT_CATALOGUE = re.compile(r"\bembedded_catalog!\s*\(\s*pub\s+fn\b")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALLS = (re.compile(r"Button::new\s*\("), re.compile(r"device_read::thread\s*\("))
 MACHINE_METHOD = re.compile(r"\.(?:with_id|thread_name|name|start_job)\s*\(")
@@ -135,8 +140,8 @@ def contains(ranges: list[tuple[int, int]] | Spans, offset: int) -> bool:
 
 
 class Qualified:
-    """A resolver call qualified with a crate's `i18n` module: the crate's library name
-    (`group(1)`) and where the call's arguments start (`end()`)."""
+    """A resolver call qualified with a path: the path (`group(1)`, `tilo_desktop::i18n`) and
+    where the call's arguments start (`end()`)."""
 
     def __init__(self, crate: str, end: int):
         self.crate, self._end = crate, end
@@ -153,16 +158,23 @@ def qualified_calls(code: str) -> list[Qualified]:
     calls = []
     for call in QUALIFIED.finditer(code):
         start = call.start()
-        while start > 0 and (code[start - 1].isalnum() or code[start - 1] == "_"):
-            start -= 1
-        name = code[start:call.start()]
-        if IDENT.fullmatch(name):
-            calls.append(Qualified(name, call.end()))
+        while True:
+            segment = start
+            while segment > 0 and (code[segment - 1].isalnum() or code[segment - 1] == "_"):
+                segment -= 1
+            if not IDENT.fullmatch(code[segment:start]):
+                break
+            start = segment
+            if not code.endswith("::", 0, start):
+                break
+            start -= 2
+        if start < call.start() and IDENT.match(code, start):
+            calls.append(Qualified(code[start:call.start()], call.end()))
     return calls
 
 
 def foreign_calls(code: str, modules: dict[str, Path]) -> list[tuple[Qualified, Path]]:
-    """Resolver calls qualified with another crate's `i18n` module."""
+    """Resolver calls qualified with another crate's `i18n` module or catalogue root."""
     return [(call, modules[call.group(1)]) for call in qualified_calls(code)
             if call.group(1) in modules]
 
@@ -184,15 +196,9 @@ def used_keys(text: str, namespaces: set[str],
     resolved_spans = Spans(resolved)
     machine = [first_argument(pruned.code, call.end())
                for call in machine_calls(pruned.code)]
-    # Navigation slugs and control-ID pairs are passed separately from copy.
+    # Navigation slugs are passed separately from copy.
     for function in (f for f in SLUG.finditer(pruned.code) if starts_word(pruned.code, f.start())):
         machine.append((function.end(), rust.matching(pruned.code, function.end() - 1)))
-    for call in re.finditer(r"\.push_confirm\s*\(", pruned.code):
-        limit = rust.matching(pruned.code, call.end() - 1) - 1
-        start, end = first_argument(pruned.code, call.end(), limit)
-        start, end = first_argument(pruned.code, end + 1, limit)
-        start, end = first_argument(pruned.code, end + 1, limit)
-        machine.append((start, end))
     found = []
     elsewhere_spans, machine_spans = Spans(elsewhere), Spans(machine)
     for literal in literals:
@@ -237,7 +243,8 @@ def foreign_keys(text: str, modules: dict[str, Path]) -> list[tuple[Path, str, i
 
 
 def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
-    """Each crate whose `i18n` module resolves a catalogue, by library name.
+    """Each path whose resolvers look up a crate's catalogue: `<lib>::i18n`, and `<lib>`
+    when the crate's root declares its lookups (`embedded_catalog!(pub fn, ..)`).
 
     A crate that re-exports another's `i18n` (`pub use other::{i18n, ..}`)
     resolves through that crate's catalogue.
@@ -249,14 +256,19 @@ def i18n_modules(root: Path, crates: list[Path]) -> dict[str, Path]:
         found = re.search(r'^name\s*=\s*"([^"]+)"', manifest.read_text(), re.MULTILINE)
         return found.group(1).replace("-", "_") if found else None
 
-    modules = {name: crate for crate in crates if (name := library(crate))}
+    owners = {name: crate for crate in crates if (name := library(crate))}
+    modules = {f"{name}::i18n": crate for name, crate in owners.items()}
+    for name, crate in owners.items():
+        lib = crate / "src" / "lib.rs"
+        if lib.is_file() and ROOT_CATALOGUE.search(lib.read_text()):
+            modules[name] = crate
     for lib in sorted(root.glob("crates/*/*/src/lib.rs")) + sorted(root.glob("apps/*/src/lib.rs")):
         name = library(lib.parents[1])
-        if name is None or name in modules:
+        if name is None or name in owners:
             continue
         for use in re.finditer(r"\bpub use (\w+)::\{?([^;]*);", lib.read_text()):
-            if use.group(1) in modules and re.search(r"\bi18n\b", use.group(2)):
-                modules[name] = modules[use.group(1)]
+            if use.group(1) in owners and re.search(r"\bi18n\b", use.group(2)):
+                modules[f"{name}::i18n"] = owners[use.group(1)]
     return modules
 
 
