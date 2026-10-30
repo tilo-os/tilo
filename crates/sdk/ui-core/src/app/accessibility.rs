@@ -853,13 +853,14 @@ impl App {
     /// Give the keyboard to the control a widget asked for
     /// ([`Widget::take_focus_request`]), in the tree just built: as a press
     /// focuses it, so no other control keeps drawing or typing as focused.
-    /// A dialog holding the keyboard keeps it.
-    pub(super) fn apply_focus_request(&mut self) {
+    /// A dialog holding the keyboard keeps it. Whether the requested control
+    /// has the keyboard now.
+    pub(super) fn apply_focus_request(&mut self) -> bool {
         let Some(id) = self.root_widget.take_focus_request() else {
-            return;
+            return false;
         };
         if self.accessibility.focus_trap_active {
-            return;
+            return false;
         }
         let target = self.focusable_order.iter().copied().find(|&node| {
             self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
@@ -868,6 +869,7 @@ impl App {
         if target.is_some() {
             self.set_focused_node(target);
         }
+        target.is_some()
     }
 
     pub(super) fn set_focused_node(&mut self, new_id: Option<NodeId>) {
