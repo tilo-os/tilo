@@ -9,7 +9,7 @@ use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
 use ui::widget::Element;
 
-use crate::app::{ContainersApp, ContainersState};
+use crate::app::{Confirm, ConfirmTarget, ContainersApp, ContainersState, Prompt, PromptKind};
 use crate::draft::{CreateDraft, CreateField};
 use crate::model::{DetailTab, Engine, Section};
 
@@ -114,9 +114,34 @@ pub enum ContainersEffect {
         #[param("Image reference")]
         image: String,
     },
+    /// Pull image.
+    ///
+    /// Pulls the image's reference from its registry again.
+    #[effect(row, idempotent)]
+    PullImage {
+        #[param("Image reference")]
+        image: String,
+    },
+    /// Add a tag to image.
+    ///
+    /// Asks which tag to give the image.
+    #[effect(view, row)]
+    TagImage {
+        #[param("Image reference")]
+        image: String,
+    },
     /// Remove image.
     #[effect(row, destructive)]
     RemoveImage {
+        #[param("Image reference")]
+        image: String,
+    },
+    /// Remove image, asking first.
+    ///
+    /// The image rows' remove control: it opens the confirmation the person
+    /// answers before [`Self::RemoveImage`] runs.
+    #[effect(view, row)]
+    AskToRemoveImage {
         #[param("Image reference")]
         image: String,
     },
@@ -129,6 +154,15 @@ pub enum ContainersEffect {
     /// Remove volume.
     #[effect(row, destructive)]
     RemoveVolume {
+        #[param("Volume name")]
+        volume: String,
+    },
+    /// Remove volume, asking first.
+    ///
+    /// The volume rows' remove control: it opens the confirmation the person
+    /// answers before [`Self::RemoveVolume`] runs.
+    #[effect(view, row)]
+    AskToRemoveVolume {
         #[param("Volume name")]
         volume: String,
     },
@@ -274,6 +308,29 @@ impl ContainersState {
             ContainersEffect::ShowImage { .. } => self.show_section(Section::Images),
             ContainersEffect::ShowVolume { .. } => self.show_section(Section::Volumes),
             ContainersEffect::ShowDistrobox { .. } => self.show_section(Section::Distrobox),
+            ContainersEffect::PullImage { image } => self.start_pull(&image),
+            ContainersEffect::TagImage { image } => self.ask_prompt(Prompt {
+                kind: PromptKind::TagImage,
+                value: String::new(),
+                context: image,
+            }),
+            ContainersEffect::AskToRemoveImage { image } => self.ask_confirm(Confirm {
+                name: image.clone(),
+                target: ConfirmTarget::Image { reference: image },
+            }),
+            ContainersEffect::AskToRemoveVolume { volume } => self.ask_confirm(Confirm {
+                name: volume.clone(),
+                target: ConfirmTarget::Volume { name: volume },
+            }),
+            ContainersEffect::EnterDistrobox { distrobox } => {
+                if self.engine.live {
+                    self.run_engine_operation("containers.distrobox", "enter", &distrobox)?;
+                } else if self.live {
+                    return Err("Podman isn't running".into());
+                } else {
+                    self.show_toast(format!("Entered {distrobox}"), false);
+                }
+            }
             engine => {
                 if let Some((kind, verb, target)) = engine.engine_operation() {
                     self.run_engine_operation(kind, verb, target)?;

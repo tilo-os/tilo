@@ -12,6 +12,7 @@ use std::rc::Rc;
 use ui::num::u32_of_usize;
 
 use ui::fact::{Measure, Measured};
+use ui::framework::Actions;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
@@ -27,6 +28,7 @@ use crate::model::{
     Container, ContainerStatus, DetailTab, DistroBox, Engine, Image, Section as Place, Volume,
 };
 use crate::podman::Action;
+use crate::resource::{Containers, ContainersEffect};
 
 /// What a control in the window asks for. The app applies each one to the
 /// window, the draft and the engine, the same way for a click, a key or an
@@ -42,13 +44,9 @@ pub(crate) enum Intent {
     },
     OpenShell(String),
     NewContainer,
-    /// Pull this reference, or ask for one.
-    PullImage(Option<String>),
-    TagImage(String),
-    RemoveImage(String),
+    /// Ask for the reference to pull.
+    PullImage,
     NewVolume,
-    RemoveVolume(String),
-    EnterDistrobox(String),
     SubmitCreate,
     CloseCreate,
     ConfirmAccept,
@@ -236,15 +234,18 @@ fn with_status(row: ListRow, status: ContainerStatus) -> ListRow {
     }
 }
 
-/// A row action that becomes `intent`.
+/// A row action that runs `effect`, when the app publishes it.
 fn row_action(
     row: ListRow,
     icon: Icon,
     label: String,
-    intent: Intent,
-    intents: &Intents,
+    effect: &ContainersEffect,
+    actions: Option<&Actions<Containers>>,
 ) -> ListRow {
-    row.action(icon, label, intents.sender(intent))
+    match actions.and_then(|actions| actions.effect(effect)) {
+        Some(binding) => row.action_binding(icon, label, binding),
+        None => row,
+    }
 }
 
 /// One container as the list shows it.
@@ -906,7 +907,12 @@ fn page(summary: Option<String>, rows: Vec<Element>) -> Element {
     Box::new(Stack::new(SpacingStep::S3, children).inset(SpacingStep::S3, SpacingStep::S3))
 }
 
-pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
+pub(crate) fn images_page(
+    engine: &Engine,
+    controls: bool,
+    actions: Option<&Actions<Containers>>,
+    intents: &Intents,
+) -> Element {
     if engine.images.is_empty() {
         if !engine.live && !controls {
             return engine_missing(engine, intents);
@@ -916,7 +922,7 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
                 .with_icon(Icon::Layers)
                 .with_message("Pull an image to create containers from it.")
                 .with_action("Pull image")
-                .on_view(intents.sender(Intent::PullImage(None))),
+                .on_view(intents.sender(Intent::PullImage)),
         );
     }
     let rows: Vec<Element> = engine
@@ -933,22 +939,22 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
                     row,
                     Icon::Download,
                     format!("Pull {r} again"),
-                    Intent::PullImage(Some(r.clone())),
-                    intents,
+                    &ContainersEffect::PullImage { image: r.clone() },
+                    actions,
                 );
                 row = row_action(
                     row,
                     Icon::Copy,
                     format!("Add a tag to {r}"),
-                    Intent::TagImage(r.clone()),
-                    intents,
+                    &ContainersEffect::TagImage { image: r.clone() },
+                    actions,
                 );
                 row = row_action(
                     row,
                     Icon::Trash,
                     format!("Remove {r}"),
-                    Intent::RemoveImage(r),
-                    intents,
+                    &ContainersEffect::AskToRemoveImage { image: r },
+                    actions,
                 );
             }
             Box::new(row) as Element
@@ -967,7 +973,12 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
     page(Some(summary), rows)
 }
 
-pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
+pub(crate) fn volumes_page(
+    engine: &Engine,
+    controls: bool,
+    actions: Option<&Actions<Containers>>,
+    intents: &Intents,
+) -> Element {
     if engine.volumes.is_empty() {
         if !engine.live && !controls {
             return engine_missing(engine, intents);
@@ -992,8 +1003,10 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
                     row,
                     Icon::Trash,
                     format!("Remove {}", v.name),
-                    Intent::RemoveVolume(v.name.clone()),
-                    intents,
+                    &ContainersEffect::AskToRemoveVolume {
+                        volume: v.name.clone(),
+                    },
+                    actions,
                 );
             }
             Box::new(row) as Element
@@ -1004,7 +1017,12 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
     page(Some(summary), rows)
 }
 
-pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
+pub(crate) fn distrobox_page(
+    engine: &Engine,
+    controls: bool,
+    actions: Option<&Actions<Containers>>,
+    intents: &Intents,
+) -> Element {
     if engine.distroboxes.is_empty() {
         if !engine.live && !controls {
             return engine_missing(engine, intents);
@@ -1025,14 +1043,20 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
                 .meta(b.status.label());
             row = with_status(row, b.status);
             if controls {
-                row = row_action(
-                    row,
-                    Icon::Terminal,
-                    format!("Enter {}", b.name),
-                    Intent::EnterDistrobox(b.name.clone()),
-                    intents,
-                )
-                .on_effect(intents.sender(Intent::EnterDistrobox(b.name.clone())));
+                // The row's control and its activation both enter the box.
+                let effect = ContainersEffect::EnterDistrobox {
+                    distrobox: b.name.clone(),
+                };
+                row = match actions.and_then(|actions| actions.effect(&effect)) {
+                    Some(binding) => row
+                        .action_binding(
+                            Icon::Terminal,
+                            format!("Enter {}", b.name),
+                            binding.clone(),
+                        )
+                        .on_action(binding),
+                    None => row,
+                };
             }
             Box::new(row) as Element
         })
@@ -1179,6 +1203,9 @@ pub(crate) struct Parts {
     pub sort: ui::LocalState<Option<TableSort>>,
     /// The chosen container's name, the content's title.
     pub detail_title: ui::LocalState<String>,
+    /// The app's published actions, which the pages' rows run; `None`
+    /// before the window joins the framework.
+    pub actions: Option<Actions<Containers>>,
 }
 
 /// The window: a shell per section, its columns rebuilt from the model.
@@ -1229,7 +1256,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             "images-pull",
             "Pull image",
             Icon::Download,
-            Intent::PullImage(None),
+            Intent::PullImage,
         )),
         Place::Volumes => Some(("volumes-new", "New volume", Icon::Plus, Intent::NewVolume)),
         Place::Containers | Place::Distrobox => None,
@@ -1374,6 +1401,7 @@ fn detail_view(parts: &Parts) -> Element {
 
 fn page_view(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
+    let actions = parts.actions.clone();
     let view = Box::new(ModelView::from_state_by(
         &parts.model,
         |m: &Model| (m.view.section, m.page_digest, m.controls, m.missing),
@@ -1381,10 +1409,11 @@ fn page_view(parts: &Parts) -> Element {
             if m.missing {
                 return engine_missing(&m.engine, &intents);
             }
+            let actions = actions.as_ref();
             match m.view.section {
-                Place::Images => images_page(&m.engine, m.controls, &intents),
-                Place::Volumes => volumes_page(&m.engine, m.controls, &intents),
-                _ => distrobox_page(&m.engine, m.controls, &intents),
+                Place::Images => images_page(&m.engine, m.controls, actions, &intents),
+                Place::Volumes => volumes_page(&m.engine, m.controls, actions, &intents),
+                _ => distrobox_page(&m.engine, m.controls, actions, &intents),
             }
         },
     ));
