@@ -6,7 +6,7 @@
 
 use automerge::AutoCommit;
 use tilolang_runtime::store::{Version, VersionKind};
-use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Value};
+use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Store as _, Value};
 
 use crate::fixtures::Replica;
 
@@ -63,8 +63,33 @@ fn runs(versions: &[Version]) -> Vec<Option<&str>> {
         .collect()
 }
 
-#[test]
-fn a_runs_changes_in_two_apps_name_the_run_and_stay_unseen_until_the_person_deals_with_them() {
+/// Ada's room after an agent's run tidied her notes and tasks.
+struct Tidied {
+    ada: Replica,
+    /// The note the run made, the one it renamed and the one it deleted.
+    made: ResourceRef,
+    groceries: ResourceRef,
+    old: ResourceRef,
+    /// The task it added, the one it checked off and the one it removed.
+    dentist: ResourceRef,
+    landlord: ResourceRef,
+    stale: ResourceRef,
+}
+
+impl Tidied {
+    fn all(&self) -> [&ResourceRef; 6] {
+        [
+            &self.made,
+            &self.groceries,
+            &self.old,
+            &self.dentist,
+            &self.landlord,
+            &self.stale,
+        ]
+    }
+}
+
+fn a_run_in_notes_and_tasks() -> Tidied {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
@@ -132,7 +157,7 @@ fn a_runs_changes_in_two_apps_name_the_run_and_stay_unseen_until_the_person_deal
         AGENT,
         NOTES_APP,
         "delete",
-        vec![notes.clone(), Value::resource(&old)],
+        vec![notes, Value::resource(&old)],
     );
     let dentist = call(
         &ada,
@@ -153,12 +178,32 @@ fn a_runs_changes_in_two_apps_name_the_run_and_stay_unseen_until_the_person_deal
         AGENT,
         TASKS_APP,
         "remove",
-        vec![tasks.clone(), Value::resource(&stale)],
+        vec![tasks, Value::resource(&stale)],
     );
     ada.commit_in_run(AGENT, RUN, "Tidy my notes and tasks");
-    let (made, dentist) = (target(&made), target(&dentist));
+    Tidied {
+        made: target(&made),
+        dentist: target(&dentist),
+        ada,
+        groceries,
+        old,
+        landlord,
+        stale,
+    }
+}
+
+#[test]
+fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() {
+    let Tidied {
+        ada,
+        made,
+        groceries,
+        old,
+        dentist,
+        landlord,
+        stale,
+    } = a_run_in_notes_and_tasks();
     let store = ada.host.store();
-    use tilolang_runtime::Store as _;
 
     // Each version names the run that made it and what it did.
     let renamed = store.versions(&groceries).unwrap();
@@ -207,10 +252,36 @@ fn a_runs_changes_in_two_apps_name_the_run_and_stay_unseen_until_the_person_deal
     }
     assert!(changes.iter().all(|v| v.who == AGENT));
     assert!(changes.windows(2).all(|w| w[0].at <= w[1].at));
+}
+
+#[test]
+fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
+    let tidied = a_run_in_notes_and_tasks();
+    let all = tidied.all().map(Clone::clone);
+    let Tidied {
+        mut ada,
+        made,
+        groceries,
+        landlord,
+        ..
+    } = tidied;
+    let touched = {
+        let mut touched: Vec<String> = ada
+            .host
+            .store()
+            .run_changes(RUN)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.resource)
+            .collect();
+        touched.sort();
+        touched.dedup();
+        touched
+    };
 
     // Everything the run did is unseen by Ada.
     let runtime = ada.host.runtime();
-    for at in [&made, &groceries, &old, &dentist, &landlord, &stale] {
+    for at in &all {
         let unseen = runtime.unseen("ada", at).unwrap();
         assert_eq!(runs(&unseen), [Some(RUN)], "{at:?}");
     }
@@ -248,7 +319,7 @@ fn a_runs_changes_in_two_apps_name_the_run_and_stay_unseen_until_the_person_deal
         runtime.mark_run_seen("ada", RUN).unwrap(),
         touched.len() - 1
     );
-    for at in [&made, &groceries, &old, &dentist, &landlord, &stale] {
+    for at in &all {
         assert!(runtime.unseen("ada", at).unwrap().is_empty(), "{at:?}");
     }
     // Someone else's seen marks are their own: Ben has seen nothing of the run.
@@ -369,7 +440,7 @@ fn code_reads_a_versions_run_kind_and_fields_and_what_is_unseen() {
         "retitle",
         vec![book.clone(), Value::text("Dune Messiah")],
     );
-    call(&ada, AGENT, app, "drop", vec![shelf.clone(), gone.clone()]);
+    call(&ada, AGENT, app, "drop", vec![shelf, gone.clone()]);
     ada.commit_in_run(AGENT, RUN, "Sort the shelf");
     // The book, the removed one and the shelf whose collection changed.
     assert_eq!(

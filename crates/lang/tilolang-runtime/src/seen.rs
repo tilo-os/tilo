@@ -76,15 +76,15 @@ pub fn unseen(versions: &[Version], person: &str, mark: Option<&SeenMark>) -> Ve
     let mut from = 0;
     if let Some(mark) = mark {
         from = match versions.iter().rposition(|v| v.change == mark.change) {
-            Some(at) => at + 1,
+            Some(at) => at.saturating_add(1),
             None => versions
                 .iter()
                 .rposition(|v| v.at <= mark.at)
-                .map_or(0, |at| at + 1),
+                .map_or(0, |at| at.saturating_add(1)),
         };
     }
     if let Some(own) = versions.iter().rposition(|v| v.who == person) {
-        from = from.max(own + 1);
+        from = from.max(own.saturating_add(1));
     }
     versions
         .get(from..)

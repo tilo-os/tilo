@@ -268,74 +268,9 @@ impl Core {
                 self.note_state_read(key, generation, &value)?;
                 self.ret_h(value)
             }
-            Imp::Versions => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let versions = self
-                    .store
-                    .borrow()
-                    .versions(&target.target)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&target.target)?;
-                let list = versions
-                    .into_iter()
-                    .map(|v| self.version_value(v, &target.target))
-                    .collect();
-                self.ret_h(Value::List(list))
-            }
-            Imp::VersionEnd => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let last = a.h(1)? != 0;
-                let end = self
-                    .store
-                    .borrow()
-                    .version_end(&target.target, last)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                self.read_versions_of(&target.target)?;
-                let value = end.map_or_else(Value::none, |v| {
-                    Value::some(self.version_value(v, &target.target))
-                });
+            Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen => {
+                let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
-            }
-            Imp::RunChanges => {
-                // `changes(of: run)`: the run is a `host.TaskRun`, its group first.
-                let run = match self.val(a.h(0)?)? {
-                    Value::Tuple(fields) => match fields.into_iter().next() {
-                        Some(Value::Text(id)) => id,
-                        _ => return trap("changes: a task run names its group first"),
-                    },
-                    other => {
-                        return trap(format!(
-                            "changes: expected a task run, got {}",
-                            other.kind_name()
-                        ));
-                    }
-                };
-                let versions = self
-                    .store
-                    .borrow()
-                    .run_changes(&run)
-                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                let mut list = Vec::with_capacity(versions.len());
-                for v in versions {
-                    let ty = ResourceRef::parse_id(&v.resource, String::new())
-                        .and_then(|at| self.store.borrow().type_of(&at).ok())
-                        .unwrap_or_default();
-                    if let Some(at) = ResourceRef::parse_id(&v.resource, ty) {
-                        self.read_versions_of(&at)?;
-                        list.push(self.version_value(v, &at));
-                    }
-                }
-                self.ret_h(Value::List(list))
-            }
-            Imp::Unseen => {
-                let target = self.ref_arg(a.h(0)?)?;
-                let person = self.looking()?;
-                let unseen = self.unseen_read(&person, &target.target)?;
-                let list = unseen
-                    .into_iter()
-                    .map(|v| self.version_value(v, &target.target))
-                    .collect();
-                self.ret_h(Value::List(list))
             }
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
@@ -412,6 +347,84 @@ impl Core {
             Value::List(fields),
             Value::resource(of),
         ])
+    }
+
+    /// Reflection on versions: `history(r)`, `created(r)` and `updated(r)`, `changes(of:)` and
+    /// `unseen(r)`.
+    fn versions_import(&self, imp: crate::abi::Imp, a: &Args<'_>) -> HResult<Value> {
+        use crate::abi::Imp;
+        let trapped = |e: crate::store::StoreError| crate::engine::HostFail::Trap(e.to_string());
+        if imp == Imp::RunChanges {
+            return self.run_changes_value(a.h(0)?);
+        }
+        let target = self.ref_arg(a.h(0)?)?;
+        let at = &target.target;
+        Ok(match imp {
+            Imp::VersionEnd => {
+                let last = a.h(1)? != 0;
+                let end = self.store.borrow().version_end(at, last).map_err(trapped)?;
+                self.read_versions_of(at)?;
+                end.map_or_else(Value::none, |v| Value::some(self.version_value(v, at)))
+            }
+            Imp::Unseen => {
+                let person = self.looking()?;
+                let unseen = self.unseen_read(&person, at)?;
+                Value::List(
+                    unseen
+                        .into_iter()
+                        .map(|v| self.version_value(v, at))
+                        .collect(),
+                )
+            }
+            _ => {
+                let versions = self.store.borrow().versions(at).map_err(trapped)?;
+                self.read_versions_of(at)?;
+                Value::List(
+                    versions
+                        .into_iter()
+                        .map(|v| self.version_value(v, at))
+                        .collect(),
+                )
+            }
+        })
+    }
+
+    /// `changes(of: run)` of the `host.TaskRun` held at `h`: every version it made, oldest
+    /// first, each of the resource it is a version of.
+    fn run_changes_value(&self, h: i32) -> HResult<Value> {
+        let run = match self.val(h)? {
+            Value::Tuple(fields) => match fields.into_iter().next() {
+                Some(Value::Text(id)) => id,
+                _ => return trap("changes: a task run names its group first"),
+            },
+            other => {
+                return trap(format!(
+                    "changes: expected a task run, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let versions = self
+            .store
+            .borrow()
+            .run_changes(&run)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let mut list = Vec::with_capacity(versions.len());
+        for v in versions {
+            let Some(at) = ResourceRef::parse_id(&v.resource, String::new()) else {
+                return trap(format!("changes: `{}` names no resource", v.resource));
+            };
+            // A resource the run removed has no type any more; its version is still the run's.
+            let ty = match self.store.borrow().type_of(&at) {
+                Ok(ty) => ty,
+                Err(crate::store::StoreError::NotFound(_)) => String::new(),
+                Err(error) => return trap(error.to_string()),
+            };
+            let at = ResourceRef { ty, ..at };
+            self.read_versions_of(&at)?;
+            list.push(self.version_value(v, &at));
+        }
+        Ok(Value::List(list))
     }
 
     /// Who is looking: the person a view shows to, or the invoker of the action running.

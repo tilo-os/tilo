@@ -302,18 +302,14 @@ impl DynAction {
     pub fn made(&self) -> Vec<Made> {
         let mut out: Vec<Made> = Vec::new();
         let mut add = |resource: String, kind: VersionKind, field: Option<String>| {
-            let at = match out.iter().position(|m| m.resource == resource) {
-                Some(at) => at,
-                None => {
-                    out.push(Made {
-                        resource,
-                        kind,
-                        fields: Vec::new(),
-                    });
-                    out.len() - 1
-                }
-            };
-            let Some(made) = out.get_mut(at) else {
+            if !out.iter().any(|m| m.resource == resource) {
+                out.push(Made {
+                    resource: resource.clone(),
+                    kind,
+                    fields: Vec::new(),
+                });
+            }
+            let Some(made) = out.iter_mut().find(|m| m.resource == resource) else {
                 return;
             };
             // Made, then removed in one go, is removed; made, then changed, stays made.

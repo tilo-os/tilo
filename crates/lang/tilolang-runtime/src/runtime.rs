@@ -669,13 +669,13 @@ impl Runtime {
         let mut resources: Vec<String> = changes.into_iter().map(|v| v.resource).collect();
         resources.sort();
         resources.dedup();
-        let mut moved = 0;
+        let mut moved: usize = 0;
         for resource in resources {
             let Some(at) = ResourceRef::parse_id(&resource, String::new()) else {
                 continue;
             };
             if self.core.mark_seen(person, &at)? {
-                moved += 1;
+                moved = moved.saturating_add(1);
             }
         }
         Ok(moved)
