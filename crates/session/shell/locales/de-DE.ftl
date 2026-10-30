@@ -634,6 +634,7 @@ overview-site-here = { $count ->
 }
 
 # Filterchips der Suche
+search-scope-in-resource = In { $resource }
 search-filter-all = Alle
 search-filter-more = Mehr
 
