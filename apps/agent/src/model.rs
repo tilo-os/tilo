@@ -1290,11 +1290,11 @@ impl Conversation {
     }
 
     pub fn body(&self, tools: &[agent_provider_config::protocol::ToolDefinition]) -> Value {
+        use agent_provider_config::protocol::Content;
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
             return legacy.body(tools, &self.compacted);
         }
-        use agent_provider_config::protocol::Content;
         let mut request = self.history.request(tools.to_vec(), 4096);
         if let Some(first) = &self.first {
             first.apply_to(&mut request);
@@ -1564,7 +1564,9 @@ impl LegacyConversation {
             if message.get("tool_call_id").is_some() {
                 put_aside(message);
             } else if let Some(Value::Array(blocks)) = message.get_mut("content") {
-                blocks.iter_mut().for_each(|block| put_aside(block));
+                for block in blocks.iter_mut() {
+                    put_aside(block);
+                }
             }
         }
         let messages = &messages;

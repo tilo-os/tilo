@@ -5239,6 +5239,7 @@ mod tests {
             "use-mode",
             "use-lens",
             "set-grid",
+            "crop-page",
         ] {
             assert!(
                 camera_ids.contains(&id.to_owned()),
@@ -5265,7 +5266,6 @@ mod tests {
                 "recognize-text",
                 "copy-text",
                 "export-pdf",
-                "crop-page",
                 "move-page-earlier",
                 "move-page-later",
                 "remove-page",
@@ -5286,6 +5286,10 @@ mod tests {
             app.effect_on(crate::actions::DOCUMENT_ROW, &CameraEffect::RotatePage)
                 .is_err(),
             "a page operation waits for a page"
+        );
+        assert!(
+            app.effect(&CameraEffect::CropPage).is_err(),
+            "cropping waits for a page"
         );
     }
 }

@@ -190,6 +190,13 @@ pub enum DbEffect {
     /// Show query result
     #[effect(view, row)]
     ShowResult { connection: Uuid, generation: usize },
+    /// Read query result
+    ///
+    /// What the statement answered: its columns and its first rows (each
+    /// cell a number, text, null or a binary value's size), how many rows it
+    /// returned or changed, and whether collection stopped short.
+    #[effect(view, row, returns)]
+    ReadResult { connection: Uuid, generation: usize },
     /// Export CSV
     #[effect(attended, row, job)]
     ExportCsv { connection: Uuid, generation: usize },
@@ -336,3 +343,55 @@ impl ResourceApp for DbClientShell {
 mod tests;
 
 ui::reach_tests!(DbClientShell);
+
+#[cfg(test)]
+mod agent_disclosure_tests {
+    use ui::framework::ResourceApp;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_actions::ResourceSpec;
+
+    /// The document read of the first resource of `kind` any scenario
+    /// publishes, invoked as `tilo_read` on it does.
+    fn read_first(kind: &str) -> ui::serde_json::Value {
+        for scenario in <super::DbClientShell as ResourceApp>::scenarios() {
+            let mut app = TestApp::<super::DbClientShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            app.settle();
+            let resources = app.harness().resources();
+            if let Some((resource, read)) = document_read(&resources, kind) {
+                return app
+                    .call_on(&resource, &read, ui::serde_json::json!({}))
+                    .unwrap_or_else(|error| panic!("{kind} in {scenario}: {error}"))
+                    .unwrap_or_else(|| panic!("the read of {kind} answers"));
+            }
+        }
+        panic!("no scenario publishes a {kind} with a document read");
+    }
+
+    fn document_read(resources: &[ResourceSpec], kind: &str) -> Option<(String, String)> {
+        resources.iter().find_map(|resource| {
+            resource
+                .actions
+                .iter()
+                .find(|action| resource.kind == kind && action.contract.reads_document())
+                .map(|read| (resource.id.as_str().to_owned(), read.id.clone()))
+                .or_else(|| document_read(&resource.children, kind))
+        })
+    }
+
+    #[test]
+    fn a_query_result_is_read_through_its_document_read() {
+        let answer = read_first("database.query-result");
+        assert!(answer["message"].is_string(), "{answer}");
+        assert!(answer["returns_rows"].is_boolean(), "{answer}");
+    }
+
+    #[test]
+    fn every_scenario_shows_an_agent_its_actions() {
+        if let Err(failures) =
+            ui::framework::testing::check_agents_are_shown_every_action::<super::DbClientShell>()
+        {
+            panic!("{failures}");
+        }
+    }
+}

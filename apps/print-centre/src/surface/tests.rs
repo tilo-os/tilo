@@ -146,13 +146,21 @@ fn scenarios_and_resources_expose_real_navigation_and_backend_states() {
         let job = row_id(&surface, "print-centre.job");
         let scanner = row_id(&surface, "print-centre.scanner");
 
-        // A page opens through the effect a control sends; a row opens
-        // its own printer.
+        // A page opens through the effect a control sends, a printer
+        // through Print Centre's own view naming it; its row offers what
+        // can be done to it, not a view of the window.
         app.effect(&PrintCentreEffect::OpenHistory).unwrap();
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("Shipping labels"), "{frame}");
-        app.call_on(&printer, "open-printer", ui::serde_json::json!({}))
-            .unwrap();
+        assert!(
+            app.call_on(&printer, "open-printer", ui::serde_json::json!({}))
+                .is_err(),
+            "the printer's row carries no view of the window"
+        );
+        app.effect(&PrintCentreEffect::OpenPrinter {
+            printer: "Studio_printer".into(),
+        })
+        .unwrap();
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains("print-centre.device"), "{frame}");
         app.call_on(&scanner, "scan-with", ui::serde_json::json!({}))

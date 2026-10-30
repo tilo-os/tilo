@@ -777,11 +777,15 @@ pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Elem
     cx.on_open(state.borrow().opener());
     {
         let (answer, status) = (Rc::clone(&state), Rc::clone(&state));
-        cx.effects(move |effect: ContainersEffect, _| {
-            answer
+        cx.effects(move |effect: ContainersEffect, _| match effect {
+            ContainersEffect::ReadContainer { container } => answer
+                .borrow()
+                .read_container(&container)
+                .map(Effected::value),
+            effect => answer
                 .borrow_mut()
                 .perform_effect(effect)
-                .map(|()| Effected::done())
+                .map(|()| Effected::done()),
         })
         .status(move || status.borrow().effect_statuses());
     }
@@ -2171,6 +2175,11 @@ pub(crate) fn container_row(container: &crate::model::Container, engine_live: bo
         "containers.container",
         container.name.clone(),
     )
+    .operation(
+        ContainersEffect::ReadContainer { container: id() }
+            .bound()
+            .reads_document(),
+    )
     .operation({
         let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
         open.type_mut().label = format!("Open {}", container.name);
@@ -2218,9 +2227,6 @@ fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
         "containers.image",
         reference.clone(),
     )
-    .effect(&ContainersEffect::ShowImage {
-        image: reference.clone(),
-    })
     .operation(offered(
         &ContainersEffect::RemoveImage { image: reference },
         engine_live,
@@ -2234,9 +2240,6 @@ fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
         "containers.volume",
         volume.name.clone(),
     )
-    .effect(&ContainersEffect::ShowVolume {
-        volume: volume.name.clone(),
-    })
     .operation(offered(
         &ContainersEffect::RemoveVolume {
             volume: volume.name.clone(),
@@ -2252,9 +2255,6 @@ fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> Live
         "containers.distrobox",
         distrobox.name.clone(),
     )
-    .effect(&ContainersEffect::ShowDistrobox {
-        distrobox: distrobox.name.clone(),
-    })
     .operation(offered(
         &ContainersEffect::EnterDistrobox {
             distrobox: distrobox.name.clone(),
