@@ -128,6 +128,7 @@ impl SplitRatio {
 /// results, a source beside its preview) keeps one too, sets its rect each
 /// layout and lays its panes out in [`SplitHandle::pane_rects`].
 #[derive(Clone, Debug)]
+#[crate::component::not_a_component(part, "the handle of the language's `split`")]
 pub struct SplitHandle {
     orientation: SplitOrientation,
     ratio: SplitRatio,
@@ -596,6 +597,7 @@ struct SplitGlide {
     to: f64,
 }
 
+#[crate::component::not_a_component(layout, "the language's `split`")]
 pub struct ResizableSplit<L: Widget, R: Widget> {
     left: L,
     right: R,

@@ -105,6 +105,7 @@ impl TileMetrics {
     clippy::struct_excessive_bools,
     reason = "on, enabled and the drawn-since flag are independent states of one control"
 )]
+#[crate::component::not_a_component(system, "Quick Settings are the system's")]
 pub struct QuickTile {
     id: String,
     icon: Icon,

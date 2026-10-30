@@ -593,6 +593,7 @@ enum SaveNameError {
     NotAllowed(PathBuf),
 }
 
+#[crate::component::not_a_component(system, "files open through the system's file door")]
 pub struct FilePicker {
     rect: Rect,
     /// The app's own purpose ("Choose a QR code image"); empty when it gave
@@ -624,8 +625,7 @@ pub struct FilePicker {
     recent: Vec<PathBuf>,
     /// The system search across the places the person can reach.
     search: Option<PickerSearch>,
-    /// Wakes the host when a lookup finishes, so it shows without waiting
-    /// for the next input.
+    /// Wakes the host when a lookup finishes, to show it before the next input.
     waker: Option<std::task::Waker>,
     /// The listing being read, while it is.
     lookup: Option<Lookup>,

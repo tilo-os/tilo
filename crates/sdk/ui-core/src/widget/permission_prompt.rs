@@ -75,6 +75,10 @@ pub enum PromptChoice {
 /// on the right. The `Always` button is dimmed and ignores clicks
 /// when [`PermissionPrompt::is_owner`] is `false`.
 #[derive(Clone, Debug)]
+#[crate::component::not_a_component(
+    system,
+    "only the system asks for a permission; an app must not be able to forge the prompt"
+)]
 pub struct PermissionPrompt {
     rect: Rect,
     pub app_id: String,

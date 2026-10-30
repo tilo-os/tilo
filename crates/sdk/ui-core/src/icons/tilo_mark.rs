@@ -54,17 +54,12 @@ pub(super) fn subpaths() -> Vec<BezPath> {
 /// there.
 pub fn paint_tilo_mark(scene: &mut Scene, transform: Affine, rect: Rect, dark: bool) {
     static SIDE: std::sync::LazyLock<BezPath> = std::sync::LazyLock::new(side);
-    let (sides, middle) = if dark {
-        (
-            Color::from_rgb8(0x3b, 0x43, 0x76),
-            Color::from_rgb8(0x6f, 0x82, 0xff),
-        )
+    let tones = if dark {
+        crate::tokens::brand::MARK_ON_DARK
     } else {
-        (
-            Color::from_rgb8(0x9f, 0xa6, 0xe0),
-            Color::from_rgb8(0x2a, 0x3f, 0xd1),
-        )
+        crate::tokens::brand::MARK_ON_LIGHT
     };
+    let (sides, middle) = (tones.bars, tones.block);
     let edge = rect.width().min(rect.height());
     let center = rect.center();
     let view = transform

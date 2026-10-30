@@ -115,6 +115,7 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, door: f
 /// the items it was given ([`Self::open`]); the row the person chose comes
 /// back once, by index, in the order the items were given
 /// ([`Self::take_choice`]).
+#[crate::component::not_a_component(shell, "the strip's overflow")]
 pub struct OverflowDoor {
     button: Button,
     menu: ContextMenu,

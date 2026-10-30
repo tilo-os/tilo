@@ -16,6 +16,7 @@ fn wheel_sign(v: f64) -> i32 {
     if v > 0.0 { -1 } else { i32::from(v < 0.0) }
 }
 
+#[crate::component::not_a_component(shell, "a strip of windows")]
 pub struct StripView {
     strip_names: Vec<String>,
     active_index: usize,
