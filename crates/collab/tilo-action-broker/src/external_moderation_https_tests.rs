@@ -611,13 +611,7 @@ mod https_completion {
                         // the person nothing: it carries the caller's own
                         // evidence, not the person's confirmation.
                         let retry = store_invoke(target.handle.clone(), request(invocation)).await;
-                        assert!(
-                            retry.as_ref().is_ok_and(|retry| *retry == admitted)
-                                || retry
-                                    .as_ref()
-                                    .is_err_and(|error| error == "InvocationConflict"),
-                            "{retry:?}"
-                        );
+                        assert_eq!(retry.as_ref(), Ok(&admitted), "{retry:?}");
                     } else {
                         let denied = result.expect_err("the host declined disclosure");
                         assert!(denied.contains("NotPermitted"), "{denied}");

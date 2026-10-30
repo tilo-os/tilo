@@ -256,14 +256,35 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                             tilo_actions::InvocationUpdate::Succeeded { .. }
                         ));
                     }
-                    // Asking again with the retained id runs nothing again,
-                    // a confirmation included: it is evidence for a new
-                    // admission, not a new intent for a retained one.
-                    assert!(invoke(handle, invocation).await.is_err());
+                    // Asking again with the retained id answers with what
+                    // the journal keeps: nothing runs again, nothing is
+                    // admitted anew, and the caller recovers the answer it
+                    // lost across the restart.
+                    let retained_receipt = tilo_actions::remote::InvocationState::new(
+                        invocation,
+                        row.update.clone(),
+                    )
+                    .receipt();
+                    assert_eq!(
+                        invoke(handle, invocation).await.unwrap(),
+                        retained_receipt,
+                        "{label:?}"
+                    );
+                    assert_eq!(
+                        observe(handle, invocation).await.unwrap().unwrap().update,
+                        row.update,
+                        "{label:?}"
+                    );
+                    // A confirmation is evidence for a new admission, not a
+                    // new intent for a retained one.
                     let mut confirmed = durable_request(invocation);
                     confirmed.confirmation =
                         Some(Confirmation::Phrase("changed retry evidence".into()));
-                    assert!(invoke_with(handle, confirmed).await.is_err());
+                    assert_eq!(
+                        invoke_with(handle, confirmed).await.unwrap(),
+                        retained_receipt,
+                        "{label:?}"
+                    );
                 }
                 no_delivery(&restarted).await;
                 assert_eq!(effect_count(&env), ran.then(|| "1".into()), "{label:?}");

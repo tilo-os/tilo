@@ -225,6 +225,33 @@ async fn a_private_draft_reaches_chat_only_for_its_adoption_and_stays_out_of_dur
                     .contains_key(&token),
                 "fetching is not consuming"
             );
+            // Only an invocation still the person's own reaches the draft: a
+            // run that took it over does not.
+            let old_owner = {
+                let mut pending = rig.state.pending_invocations.lock().unwrap();
+                std::mem::replace(
+                    &mut pending.get_mut(&delivered.id).unwrap().owner,
+                    InvocationOwner::NativeTask {
+                        task: "task:private".into(),
+                        agent: "scribe".into(),
+                        epoch: 1,
+                    },
+                )
+            };
+            assert!(
+                handle
+                    .private_draft(&fetch, invocation.0.as_bytes())
+                    .await
+                    .is_err(),
+                "an invocation a task owns does not reach the person's draft"
+            );
+            rig.state
+                .pending_invocations
+                .lock()
+                .unwrap()
+                .get_mut(&delivered.id)
+                .unwrap()
+                .owner = old_owner;
             assert!(
                 handle
                     .private_draft(
@@ -268,6 +295,35 @@ async fn a_private_draft_reaches_chat_only_for_its_adoption_and_stays_out_of_dur
                     .await
                     .is_err()
             );
+            // A staged draft expires on its own, and staging needs the
+            // person's device to prove itself now.
+            let expired = rig
+                .state
+                .stage_private_draft(&caller, &proof, draft.clone())
+                .unwrap();
+            rig.state
+                .private_drafts
+                .lock()
+                .unwrap()
+                .get_mut(&expired)
+                .unwrap()
+                .expires = std::time::Instant::now();
+            rig.state.expire_stale_invocations();
+            assert!(
+                !rig.state
+                    .private_drafts
+                    .lock()
+                    .unwrap()
+                    .contains_key(&expired),
+                "a draft past its bound is gone"
+            );
+            *env.authority.certificate.lock().unwrap() = None;
+            assert!(
+                rig.state
+                    .stage_private_draft(&caller, &proof, draft.clone())
+                    .is_err(),
+                "staging without the device's certificate is refused"
+            );
             assert_private_editor_absent_from_store(env.root.path(), &draft.editor);
             rig.stop().await;
         })
@@ -304,6 +360,117 @@ async fn private_drafts_are_bounded_per_person() {
                     .stage_private_draft(&caller, &proof, draft)
                     .is_err()
             );
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// One Chat window holding two conversations of one workspace: the draft
+/// belongs to the conversation its adopt action is delivered to, so that
+/// record's channel fetches it and its sibling's does not.
+#[tokio::test(flavor = "current_thread")]
+async fn private_draft_belongs_to_the_record_its_adoption_targets() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const CHAT_WINDOW: u64 = 906;
+            let mut env = Environment::new();
+            env.route.app_id = "so.tilo.chat".into();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let mut services = env.membership.services();
+            services.launcher = Some(Arc::new(LaunchedHere {
+                app: env.route.app_id.clone(),
+                room: env.route.cluster_id.clone(),
+            }));
+            services.local_person = Some(Arc::new(super::signed_worker::NativePerson(
+                env.authority.clone(),
+            )));
+            let rig = Rig::with_services(&env, services).await;
+            let (window, _server, _client) = launched_app_connection(
+                &rig.state,
+                &rig.directories,
+                CHAT_WINDOW,
+                &env.route.app_id,
+                &env.route.cluster_id,
+            );
+            let proof = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            let record =
+                |id: &str| CrdtRoute::record("so.tilo.chat", env.route.cluster_id.clone(), id);
+            let first = window
+                .join_channel(&record("conversation-a").channel_key(), &proof)
+                .await
+                .unwrap();
+            let second = window
+                .join_channel(&record("conversation-b").channel_key(), &proof)
+                .await
+                .unwrap();
+            let (caller, _) = chat_person(&env);
+            let draft = private_draft_fixture(&env);
+            let token = rig
+                .state
+                .stage_private_draft(&caller, &proof, draft.clone())
+                .expect("a person with Chat open across several records may stage a draft");
+            second
+                .publish_action_directory(crate::collab_broker_capnp::wire_answerer(Rc::new(
+                    NamedActionDirectory {
+                        revision: "draft-r1",
+                        action: "adopt-private-draft",
+                    },
+                )))
+                .await
+                .unwrap();
+            let stream = second.subscribe_stable_invocations().await.unwrap();
+            // The window holds each conversation as its own route hold.
+            let second_hold = rig
+                .state
+                .host_workers
+                .lock()
+                .unwrap()
+                .holder_of(&record("conversation-b"))
+                .unwrap();
+            assert_eq!(rig.state.connection_of(second_hold), CHAT_WINDOW);
+            let mut request = local_host_request(true);
+            request.revision = Some("draft-r1".into());
+            request.target.provider = second_hold.to_string();
+            request.target.address =
+                tilo_actions::ActionAddress::new("workspace:atlas", "adopt-private-draft");
+            request.argument = tilo_actions::remote::InvokeArgument::Json(
+                serde_json::json!({"token": token})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            let invocation = request.invocation;
+            let receipt =
+                local_host_answer(rig.state.action_invoke_local_person(&caller, &request))
+                    .await
+                    .unwrap();
+            assert_eq!(receipt.invocation, invocation);
+            let delivered = tilo_test_env::within("the conversation's own delivery", stream.read())
+                .await
+                .unwrap();
+            assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
+            assert_eq!(delivered.action, "adopt-private-draft");
+            let fetch = runtime_collab::private_draft::Request {
+                private_draft: token,
+                acknowledge: false,
+            };
+            assert!(
+                first
+                    .private_draft(&fetch, invocation.0.as_bytes())
+                    .await
+                    .is_err(),
+                "a sibling conversation's channel does not hold this draft"
+            );
+            let fetched: runtime_collab::private_draft::Draft = serde_json::from_slice(
+                &second
+                    .private_draft(&fetch, invocation.0.as_bytes())
+                    .await
+                    .expect("the conversation the adoption targets fetches its draft"),
+            )
+            .unwrap();
+            assert!(fetched.editor == draft.editor);
+            drop((first, second, window));
             rig.stop().await;
         })
         .await;

@@ -223,7 +223,7 @@ impl DurableInvocation {
     }
 
     /// Whether `intent` is the whole intent this invocation was admitted with.
-    fn admitted_intent_is(&self, intent: &serde_json::Value) -> bool {
+    pub(crate) fn admitted_intent_is(&self, intent: &serde_json::Value) -> bool {
         if self.request_digest.is_none() {
             return self.intent == *intent;
         }

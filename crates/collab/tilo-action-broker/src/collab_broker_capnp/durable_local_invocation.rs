@@ -1,9 +1,11 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
+use super::invocation_journal::{InvocationJournal, InvocationKey};
 use super::{
     AdmittedJoinIdentity, BrokerActor, CallerInvocation, CapnpBrokerState, CapnpChannelHandle,
     CrdtRoute, DurableInvocation, InvocationCaller, InvocationEnvelope, InvocationOwner,
     PublishedAction, PublishedSurface, VerifiedActionCaller, mpsc,
 };
+use tilo_actions::remote::Caller;
 
 #[derive(Clone)]
 pub(super) struct LocalCaller {
@@ -399,5 +401,166 @@ impl CapnpBrokerState {
             return Err("application invocation stream closed or replaced".into());
         }
         Ok(())
+    }
+}
+
+fn unavailable(reason: impl Into<String>) -> tilo_actions::remote::ActionHostError {
+    tilo_actions::remote::ActionHostError::Unavailable {
+        reason: reason.into(),
+    }
+}
+
+impl CapnpBrokerState {
+    /// Who owns an invocation admitted for `actor` in `room` under `origin`:
+    /// exactly the owner its admission records, so an observation or a retry
+    /// looks it up under the same key the admission wrote.
+    pub(super) fn invocation_owner(
+        &self,
+        origin: Option<&InvocationCaller>,
+        room: &str,
+        actor: &BrokerActor,
+    ) -> Result<InvocationOwner, String> {
+        Ok(match origin {
+            Some(InvocationCaller::Certified { caller, .. }) => caller.owner()?,
+            Some(InvocationCaller::NativePerson { certificate, .. }) => {
+                InvocationOwner::AuthenticatedLocal {
+                    root: certificate.user_public_key,
+                    device: certificate.device_public_key,
+                    agent: None,
+                }
+            }
+            Some(InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+            }) => {
+                self.checked_policy_time(time.as_ref())?;
+                let current = self
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?;
+                let certificate = current
+                    .certificate
+                    .as_ref()
+                    .ok_or("original caller certificate missing")?;
+                if route.cluster_id != room {
+                    return Err("original local caller does not match invocation room".into());
+                }
+                let expected = current.agent_id.as_ref().map_or_else(
+                    || super::principal_id_for_root(certificate.user_public_key),
+                    |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
+                );
+                if actor.id == expected && actor.is_agent == current.agent_id.is_some() {
+                    InvocationOwner::AuthenticatedLocal {
+                        root: certificate.user_public_key,
+                        device: certificate.device_public_key,
+                        agent: current.agent_id.clone(),
+                    }
+                } else {
+                    // The connection's custody attests only its own admitted
+                    // Person or agent. An application acting under its own
+                    // identity, or an effect continuing another caller's
+                    // invocation, is decided as that actor and stays
+                    // actor-owned: never attested as the connection's.
+                    InvocationOwner::Local {
+                        actor: actor.id.clone(),
+                    }
+                }
+            }
+            None => InvocationOwner::Local {
+                actor: actor.id.clone(),
+            },
+        })
+    }
+
+    /// The record `journal` retains for `invocation` as `owner`'s, once its
+    /// action is still allowed for `actor`: what an observation or a repeated
+    /// request is answered with, never a permit to run it again.
+    pub(super) fn retained_invocation(
+        &self,
+        journal: &InvocationJournal,
+        room: &str,
+        owner: &InvocationOwner,
+        invocation: tilo_actions::InvocationId,
+        actor: &BrokerActor,
+        now: u64,
+    ) -> Result<Option<DurableInvocation>, String> {
+        let key = InvocationKey {
+            room: room.into(),
+            host: journal.host(),
+            owner: owner.clone(),
+            invocation,
+        };
+        let Some(record) = journal.lookup(&key)? else {
+            return Ok(None);
+        };
+        let contract: tilo_actions::ActionContract =
+            serde_json::from_value(record.intent.get("contract").cloned().unwrap_or_default())
+                .map_err(|_| "retained invocation contract invalid")?;
+        let field = |name| {
+            record
+                .intent
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "retained invocation intent invalid".to_string())
+        };
+        self.authorize_invocation_permission(
+            room,
+            (
+                field("app_id")?,
+                field("resource_kind")?,
+                field("resource")?,
+                field("action")?,
+            ),
+            &contract.need(),
+            actor,
+            now,
+        )?;
+        Ok(Some(record))
+    }
+
+    /// Invocation `invocation` as `caller` last had it, from the journal: the
+    /// answer the connection, its application and this process holding it
+    /// cannot take away. `None` when the caller had nothing admitted under
+    /// that id.
+    /// # Errors
+    /// The journal is unavailable, or the caller's current permission no
+    /// longer covers the invocation.
+    pub(super) fn retained_observation(
+        &self,
+        caller: &Caller,
+        origin: &InvocationCaller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Option<tilo_actions::remote::InvocationState>, tilo_actions::remote::ActionHostError>
+    {
+        let room = caller
+            .room()
+            .ok_or_else(|| unavailable("caller room unavailable"))?;
+        let actor = self.caller_actor(caller, room);
+        let owner = self
+            .invocation_owner(Some(origin), room, &actor)
+            .map_err(unavailable)?;
+        let now = self.policy_now_ns().map_err(unavailable)? / 1_000_000_000;
+        let record = {
+            let guard = self
+                .journal
+                .lock()
+                .map_err(|_| unavailable("invocation journal unavailable"))?;
+            let Some(journal) = guard
+                .as_ref()
+                .map_err(|error| unavailable(error.clone()))?
+                .as_ref()
+            else {
+                return Ok(None);
+            };
+            let record = self
+                .retained_invocation(journal, room, &owner, invocation, &actor, now)
+                .map_err(unavailable)?;
+            drop(guard);
+            record
+        };
+        Ok(record.map(|record| {
+            tilo_actions::remote::InvocationState::new(invocation, record.update)
+                .with_untrusted(self.untrusted_job(record.wire_id))
+        }))
     }
 }

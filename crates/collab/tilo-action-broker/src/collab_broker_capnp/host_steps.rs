@@ -134,13 +134,7 @@ impl CapnpBrokerState {
             }
             error
         };
-        let reservation = self
-            .remote_invocations
-            .lock()
-            .map_err(|_| ActionHostError::Unavailable {
-                reason: "the invocation ledger is unavailable".into(),
-            })?
-            .reserve(caller, request)?;
+        let reservation = self.reserve_invocation(caller, request)?;
         if matches!(reservation, Reservation::Admitted) {
             return self
                 .remote_job(caller, &request.invocation)

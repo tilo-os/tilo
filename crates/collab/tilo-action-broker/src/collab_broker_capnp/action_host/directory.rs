@@ -176,9 +176,6 @@ impl CapnpBrokerState {
         origin: Option<&super::super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let unavailable = || ActionHostError::Unavailable {
-            reason: "the invocation ledger is unavailable".into(),
-        };
         // A request naming no revision acts on the directory as it is now:
         // its owner resolves it so, in the same turn this broker admits it,
         // instead of the caller first reading the revision across the same
@@ -213,10 +210,7 @@ impl CapnpBrokerState {
                 reason: "the directory target or argument is malformed".into(),
             }));
         }
-        let reservation = match self.remote_invocations.lock() {
-            Ok(mut ledger) => ledger.reserve(caller, request),
-            Err(_) => Err(unavailable()),
-        };
+        let reservation = self.reserve_invocation(caller, request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {

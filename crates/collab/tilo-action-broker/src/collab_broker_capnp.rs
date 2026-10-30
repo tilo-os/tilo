@@ -3283,6 +3283,25 @@ struct AdmissionProvenance<'a> {
     origin: Option<InvocationCaller>,
     retained_time: Option<&'a crate::peer_actions::PolicyTime>,
 }
+/// What an admission's intent records besides the surface it resolves to:
+/// which invocation, for whom, and the exact request the caller asked for.
+/// Built once per admission, so a repeated invocation is compared with what
+/// was recorded.
+#[derive(Clone, Copy)]
+struct IntentInputs<'a> {
+    peer_id: u64,
+    id: u64,
+    invocation: tilo_actions::InvocationId,
+    actor: &'a BrokerActor,
+    argument: Option<&'a str>,
+    revision: Option<&'a str>,
+    original_request: Option<&'a tilo_actions::remote::InvokeRequest>,
+    durable: Option<DurableContext<'a>>,
+    origin: Option<&'a InvocationCaller>,
+    local_report: Option<&'a crate::local_document_action::Request>,
+    typed_local_arguments: Option<&'a serde_json::Map<String, serde_json::Value>>,
+    receipt_context: &'a tilo_actions::ActionContext,
+}
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
     /// Serializes the cloneable shell facade against final shutdown. Broker
@@ -5649,56 +5668,7 @@ impl CapnpBrokerState {
         let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = match durable {
             Some(context) => context.owner()?,
-            None => match &origin {
-                Some(InvocationCaller::Certified { caller, .. }) => caller.owner()?,
-                Some(InvocationCaller::NativePerson { certificate, .. }) => {
-                    InvocationOwner::AuthenticatedLocal {
-                        root: certificate.user_public_key,
-                        device: certificate.device_public_key,
-                        agent: None,
-                    }
-                }
-                Some(InvocationCaller::Local {
-                    route,
-                    admitted,
-                    time,
-                }) => {
-                    self.checked_policy_time(time.as_ref())?;
-                    let current = self
-                        .revalidate_admission(route, admitted)
-                        .map_err(|error| error.to_string())?;
-                    let certificate = current
-                        .certificate
-                        .as_ref()
-                        .ok_or("original caller certificate missing")?;
-                    if route.cluster_id != offered.0.route.cluster_id {
-                        return Err("original local caller does not match invocation room".into());
-                    }
-                    let expected = current.agent_id.as_ref().map_or_else(
-                        || principal_id_for_root(certificate.user_public_key),
-                        |agent| format!("agent:{}", agent.strip_prefix("agent:").unwrap_or(agent)),
-                    );
-                    if actor.id == expected && actor.is_agent == current.agent_id.is_some() {
-                        InvocationOwner::AuthenticatedLocal {
-                            root: certificate.user_public_key,
-                            device: certificate.device_public_key,
-                            agent: current.agent_id.clone(),
-                        }
-                    } else {
-                        // The connection's custody attests only its own admitted
-                        // Person or agent. An application acting under its own
-                        // identity, or an effect continuing another caller's
-                        // invocation, is decided as that actor and stays
-                        // actor-owned: never attested as the connection's.
-                        InvocationOwner::Local {
-                            actor: actor.id.clone(),
-                        }
-                    }
-                }
-                None => InvocationOwner::Local {
-                    actor: actor.id.clone(),
-                },
-            },
+            None => self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?,
         };
         owner.validate()?;
         // In native rooms an agent's action authority comes only from the
@@ -5853,6 +5823,88 @@ impl CapnpBrokerState {
         if (durable.is_some() || owner.verified_actor().is_some()) && journal.is_none() {
             return Err("action_evidence_unavailable: admission journal unavailable".into());
         }
+        // What this admission is, decided before the confirmation is looked
+        // at: an invocation the caller already had admitted under this id is
+        // answered from its record, never asked for another confirmation.
+        let id = self
+            .invocation_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| "invocation handle space exhausted")?;
+        let authoritative = durable
+            .map(DurableContext::invocation)
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+            .or(match &origin {
+                Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
+                _ => None,
+            });
+        if requested.is_some_and(|requested| {
+            requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
+        }) {
+            return Err("requested invocation does not match admitted custody".into());
+        }
+        let invocation = match durable {
+            Some(context) => context.invocation(),
+            None => requested.or(authoritative).unwrap_or_else(|| {
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+            }),
+        };
+        let mut receipt_context = tilo_actions::ActionContext::for_resource(
+            &offered.1.resource,
+            &offered.1.resource_kind,
+            &offered.1.resource_label,
+        )
+        .with_app(&offered.0.app_id, &offered.0.app_id)
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                &offered.0.app_id,
+                &offered.1.resource_kind,
+                &offered.1.action,
+            ),
+            [],
+        )));
+        if let Some(ambient) = &context {
+            receipt_context = receipt_context.enriched_by(ambient);
+        }
+        let intent = match journal.as_ref() {
+            Some(_) => Some(self.invocation_intent(
+                &offered,
+                IntentInputs {
+                    peer_id,
+                    id,
+                    invocation,
+                    actor,
+                    argument,
+                    revision,
+                    original_request,
+                    durable,
+                    origin: origin.as_ref(),
+                    local_report,
+                    typed_local_arguments: typed_local_arguments.as_ref(),
+                    receipt_context: &receipt_context,
+                },
+            )?),
+            _ => None,
+        };
+        // Only what this connection's own admission decides has a record to
+        // answer from here; a peer's or a run's custody carries its own, and
+        // a report is admitted through its own receipts.
+        if local_report.is_none()
+            && durable.is_none()
+            && let (Some(journal), Some(intent)) = (journal.as_ref(), intent.as_ref())
+            && let Some(record) = self.retained_invocation(
+                journal,
+                &offered.0.route.cluster_id,
+                &owner,
+                invocation,
+                actor,
+                now,
+            )?
+        {
+            if !record.admitted_intent_is(intent) {
+                return Err("invocation identity reused with different intent".into());
+            }
+            return Ok(self.retained_answer(&record));
+        }
         // Where the room's grants ask first, the person's confirmation in
         // the host is the answer: the invocation needs a confirmation token
         // even when the action itself asks for none.
@@ -5914,46 +5966,7 @@ impl CapnpBrokerState {
                 );
             }
         }
-        let id = self
-            .invocation_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .map_err(|_| "invocation handle space exhausted")?;
-        let authoritative = durable
-            .map(DurableContext::invocation)
-            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
-            .or(match &origin {
-                Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
-                _ => None,
-            });
-        if requested.is_some_and(|requested| {
-            requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
-        }) {
-            return Err("requested invocation does not match admitted custody".into());
-        }
-        let invocation = match durable {
-            Some(context) => context.invocation(),
-            None => requested.or(authoritative).unwrap_or_else(|| {
-                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
-            }),
-        };
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut receipt_context = tilo_actions::ActionContext::for_resource(
-            &offered.1.resource,
-            &offered.1.resource_kind,
-            &offered.1.resource_label,
-        )
-        .with_app(&offered.0.app_id, &offered.0.app_id)
-        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new(
-                &offered.0.app_id,
-                &offered.1.resource_kind,
-                &offered.1.action,
-            ),
-            [],
-        )));
-        if let Some(ambient) = &context {
-            receipt_context = receipt_context.enriched_by(ambient);
-        }
         let mut admitted = invocation_journal::Durable::settled();
         let journal_key = if let Some(journal) = journal.as_mut() {
             let key = InvocationKey {
@@ -5962,73 +5975,7 @@ impl CapnpBrokerState {
                 invocation,
                 owner: owner.clone(),
             };
-            let request = if offered.0.app_id == "so.tilo.desktop"
-                && offered.1.resource == workspace_checkpoints::RESOURCE
-            {
-                let certificate = match origin.as_ref() {
-                    Some(InvocationCaller::Certified { caller, .. }) => self
-                        .current_action_caller(caller)?
-                        .certificate
-                        .ok_or("checkpoint caller certificate absent")?,
-                    Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
-                    _ => return Err("checkpoint requires original certified caller custody".into()),
-                };
-                let mut intent = workspace_checkpoints::intent(
-                    &offered.0.route.cluster_id,
-                    &certificate,
-                    &InvocationEnvelope {
-                        id,
-                        invocation,
-                        resource: offered.1.resource.clone(),
-                        action: offered.1.action.clone(),
-                        argument: argument.map(str::to_owned),
-                        actor: actor.id.clone(),
-                        context: None,
-                    },
-                )?;
-                if let Some(request) = original_request {
-                    intent
-                        .as_object_mut()
-                        .ok_or("checkpoint intent invalid")?
-                        .insert(
-                            "remote_request".into(),
-                            workspace_checkpoints::remote_request(request)?,
-                        );
-                }
-                intent
-            } else {
-                match durable {
-                    Some(context) => context.intent(),
-                    None => serde_json::json!({
-                        "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
-                        "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
-                        "original_request": original_request,
-                    }),
-                }
-            };
-            let request = match local_report {
-                Some(report) => serde_json::json!({
-                    "kind": "local-document-action-report-v1",
-                    "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
-                    "resolved_request": {
-                        "app_id": offered.0.app_id,
-                        "record_id": offered.0.route.record_id,
-                        "resource": offered.1.resource,
-                        "action": offered.1.action,
-                        "argument": argument,
-                        "original_request": original_request,
-                    },
-                    "report": report,
-                    "typed_arguments": typed_local_arguments,
-                }),
-                None => request,
-            };
-            let intent = serde_json::json!({ "request": request,
-                "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
-                "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
-                "record_id": offered.0.route.record_id,
-                "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
-                "action": offered.1.action, "revision": revision });
+            let intent = intent.ok_or("invocation intent unavailable")?;
             if let Some(context) = durable {
                 context.before_admission(
                     self,
@@ -6074,7 +6021,10 @@ impl CapnpBrokerState {
                 let (fresh, durable) =
                     journal.admit_with_evidence(key.clone(), intent, id, admission)?;
                 if !fresh {
-                    return Err("invocation already admitted".into());
+                    // A duplicate racing this admission: answer what the
+                    // journal now retains instead of admitting it twice.
+                    let record = journal.lookup(&key)?.ok_or("admitted invocation missing")?;
+                    return Ok(self.retained_answer(&record));
                 }
                 admitted = durable;
                 Some(key)
@@ -6199,6 +6149,116 @@ impl CapnpBrokerState {
                 untrusted,
             })),
         })
+    }
+
+    /// The intent an admission of `offered` is recorded with: the exact
+    /// request the caller asked for, and everything that decides it. Built
+    /// once, so a repeated invocation is compared with what was admitted.
+    fn invocation_intent(
+        &self,
+        offered: &(PublishedSurface, PublishedAction),
+        inputs: IntentInputs<'_>,
+    ) -> Result<serde_json::Value, String> {
+        let IntentInputs {
+            peer_id,
+            id,
+            invocation,
+            actor,
+            argument,
+            revision,
+            original_request,
+            durable,
+            origin,
+            local_report,
+            typed_local_arguments,
+            receipt_context,
+        } = inputs;
+        let request = if offered.0.app_id == "so.tilo.desktop"
+            && offered.1.resource == workspace_checkpoints::RESOURCE
+        {
+            let certificate = match origin {
+                Some(InvocationCaller::Certified { caller, .. }) => self
+                    .current_action_caller(caller)?
+                    .certificate
+                    .ok_or("checkpoint caller certificate absent")?,
+                Some(InvocationCaller::NativePerson { certificate, .. }) => certificate.clone(),
+                _ => return Err("checkpoint requires original certified caller custody".into()),
+            };
+            let mut intent = workspace_checkpoints::intent(
+                &offered.0.route.cluster_id,
+                &certificate,
+                &InvocationEnvelope {
+                    id,
+                    invocation,
+                    resource: offered.1.resource.clone(),
+                    action: offered.1.action.clone(),
+                    argument: argument.map(str::to_owned),
+                    actor: actor.id.clone(),
+                    context: None,
+                },
+            )?;
+            if let Some(request) = original_request {
+                intent
+                    .as_object_mut()
+                    .ok_or("checkpoint intent invalid")?
+                    .insert(
+                        "remote_request".into(),
+                        workspace_checkpoints::remote_request(request)?,
+                    );
+            }
+            intent
+        } else {
+            match durable {
+                Some(context) => context.intent(),
+                None => serde_json::json!({
+                    "peer_id": peer_id, "app_id": offered.0.app_id, "record_id": offered.0.route.record_id,
+                    "resource": offered.1.resource, "action": offered.1.action, "argument": argument,
+                    "original_request": original_request,
+                }),
+            }
+        };
+        let request = match local_report {
+            Some(report) => serde_json::json!({
+                "kind": "local-document-action-report-v1",
+                "claim": "semantic-admission-and-app-reported-input-and-hashes-not-execution",
+                "resolved_request": {
+                    "app_id": offered.0.app_id,
+                    "record_id": offered.0.route.record_id,
+                    "resource": offered.1.resource,
+                    "action": offered.1.action,
+                    "argument": argument,
+                    "original_request": original_request,
+                },
+                "report": report,
+                "typed_arguments": typed_local_arguments,
+            }),
+            None => request,
+        };
+        Ok(serde_json::json!({ "request": request,
+            "contract": offered.1.contract, "operation_kind": offered.1.operation_kind,
+            "context": receipt_context, "actor": actor.id, "app_id": offered.0.app_id,
+            "record_id": offered.0.route.record_id,
+            "resource": offered.1.resource, "resource_kind": offered.1.resource_kind,
+            "action": offered.1.action, "revision": revision }))
+    }
+
+    /// What `record`'s invocation is answered with when it is asked for
+    /// again: its retained outcome, on a fresh local handle, with nothing
+    /// delivered and nothing admitted.
+    fn retained_answer(&self, record: &DurableInvocation) -> StagedJob {
+        self.record_completion(
+            record.wire_id,
+            record.key.owner.clone(),
+            record.update.clone(),
+        );
+        let (_sent, completion) = std::sync::mpsc::channel();
+        StagedJob {
+            admitted: invocation_journal::Durable::settled(),
+            start: Admitted::Reported(InvocationJob {
+                id: record.wire_id,
+                completion,
+            }),
+        }
     }
 
     /// Retire only this run's transient presence, preserving its pending jobs.

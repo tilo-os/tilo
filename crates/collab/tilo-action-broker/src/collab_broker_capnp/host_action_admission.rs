@@ -436,7 +436,7 @@ impl CapnpBrokerState {
             .remote_invocations
             .lock()
             .map_err(|_| unavailable("invocation ledger unavailable"))?;
-        ledger.reserve(caller, request)?;
+        ledger.reserve(caller, &Self::invocation_identity(request))?;
         ledger.complete(&request.invocation, record.wire_id);
         drop(ledger);
         self.record_completion(record.wire_id, record.key.owner, record.update.clone());

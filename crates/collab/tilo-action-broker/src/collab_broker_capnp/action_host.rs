@@ -158,7 +158,15 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        self.state.action_observe(caller, id)
+        // What this connection admitted outlives the ledger that answered it
+        // while it ran: the journal still holds it, and says so after the
+        // application, the connection or this process is gone.
+        self.state.action_observe(caller, id).or_else(|| {
+            self.state
+                .retained_observation(caller, &self.origin, *id)
+                .ok()
+                .flatten()
+        })
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {
@@ -1668,13 +1676,7 @@ impl CapnpBrokerState {
             // Exact UUID/request replay precedes live selection checks. A retired
             // custodian must not turn an admitted request into another dispatch.
             if let Some(job) = self.remote_job(caller, &request.invocation) {
-                let replay = self
-                    .remote_invocations
-                    .lock()
-                    .map_err(|_| ActionHostError::Unavailable {
-                        reason: "the invocation ledger is unavailable".into(),
-                    })
-                    .and_then(|mut ledger| ledger.reserve(caller, request));
+                let replay = self.reserve_invocation(caller, request);
                 return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
             }
             let root = match self.canonical_token_directory(&request.target.provider) {
@@ -1717,13 +1719,7 @@ impl CapnpBrokerState {
         }
         if let Some(origin) = origin {
             if let Some(job) = self.remote_job(caller, &request.invocation) {
-                let replay = self
-                    .remote_invocations
-                    .lock()
-                    .map_err(|_| ActionHostError::Unavailable {
-                        reason: "the invocation ledger is unavailable".into(),
-                    })
-                    .and_then(|mut ledger| ledger.reserve(caller, request));
+                let replay = self.reserve_invocation(caller, request);
                 return Pending::ready(replay.map(|_| self.receipt_for(request.invocation, job)));
             }
             // Admission can sign and durably record an invocation. Keep only
@@ -1759,12 +1755,7 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let reservation = match self.remote_invocations.lock() {
-            Ok(mut ledger) => ledger.reserve(caller, request),
-            Err(_) => Err(ActionHostError::Unavailable {
-                reason: "the invocation ledger is unavailable".into(),
-            }),
-        };
+        let reservation = self.reserve_invocation(caller, request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
@@ -2414,13 +2405,7 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        let reservation = self
-            .remote_invocations
-            .lock()
-            .map_err(|_| ActionHostError::Unavailable {
-                reason: "the invocation ledger is unavailable".into(),
-            })
-            .and_then(|mut ledger| ledger.reserve(caller, request));
+        let reservation = self.reserve_invocation(caller, request);
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
@@ -2925,6 +2910,33 @@ impl CapnpBrokerState {
         };
         self.complete_host_action(&admitted, update)?;
         Ok(id)
+    }
+
+    /// The request as the idempotency ledger identifies it. The confirmation
+    /// it carries is evidence an admission already used, not part of the
+    /// invocation: a retry carrying another grant — or none, as a caller
+    /// that already saw the answer sends — is the same invocation and gets
+    /// its receipt, never a conflict.
+    pub(crate) fn invocation_identity(request: &InvokeRequest) -> InvokeRequest {
+        InvokeRequest {
+            confirmation: None,
+            ..request.clone()
+        }
+    }
+
+    /// Reserves `request`'s invocation in the idempotency ledger, keyed by
+    /// [`Self::invocation_identity`].
+    pub(crate) fn reserve_invocation(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<Reservation, ActionHostError> {
+        self.remote_invocations
+            .lock()
+            .map_err(|_| ActionHostError::Unavailable {
+                reason: "the invocation ledger is unavailable".into(),
+            })?
+            .reserve(caller, &Self::invocation_identity(request))
     }
 
     #[must_use]

@@ -293,7 +293,9 @@ impl super::CapnpBrokerState {
             .remote_invocations
             .lock()
             .map_err(|_| "checkpoint ledger unavailable")?;
-        ledger.reserve(caller, request).map_err(|e| e.to_string())?;
+        ledger
+            .reserve(caller, &Self::invocation_identity(request))
+            .map_err(|e| e.to_string())?;
         ledger.complete(&request.invocation, record.wire_id);
         drop(ledger);
         self.record_completion(
