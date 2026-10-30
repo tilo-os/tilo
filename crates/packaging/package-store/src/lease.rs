@@ -155,16 +155,75 @@ pub(crate) fn forget(layout: &Layout, id: PackageId, taken: FileLock) -> io::Res
 }
 
 /// `<root>/leases/<hex>`, its directory created and never a link.
+///
+/// Launches take leases at the same time (an agent and its companions start
+/// together), so the directory may appear between the look and the removal
+/// of whatever was there instead: a directory found then is the one wanted,
+/// not a failure.
 fn lease_file(layout: &Layout, id: PackageId) -> io::Result<std::path::PathBuf> {
     let path = layout.lease(id);
     if let Some(dir) = path.parent()
         && !std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir())
     {
         match std::fs::remove_file(dir) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::IsADirectory
+                ) => {}
+            Err(error) => return Err(error),
         }
         std::fs::create_dir_all(dir)?;
+        if !std::fs::symlink_metadata(dir)?.is_dir() {
+            return Err(io::Error::other(format!(
+                "{} is not a directory of leases",
+                dir.display()
+            )));
+        }
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Launches of a fresh store take their first leases at once: every one
+    /// is held, none fails on the leases directory another just made.
+    #[test]
+    fn launches_taking_first_leases_at_once_all_hold() {
+        const LAUNCHES: usize = 16;
+        for _ in 0..8 {
+            let root = tempfile::tempdir().expect("store root");
+            let layout = Layout::new(root.path().to_path_buf());
+            let payloads: Vec<_> = (0..LAUNCHES)
+                .map(|n| {
+                    let payload = layout.packages().join(format!("{n:064x}"));
+                    std::fs::create_dir_all(&payload).expect("payload tree");
+                    payload
+                })
+                .collect();
+            let start = std::sync::Barrier::new(LAUNCHES);
+            std::thread::scope(|scope| {
+                let held: Vec<_> = payloads
+                    .iter()
+                    .map(|payload| {
+                        let (layout, start) = (&layout, &start);
+                        scope.spawn(move || {
+                            start.wait();
+                            hold_payload_in(layout, payload)
+                        })
+                    })
+                    .collect();
+                for launch in held {
+                    let lease = launch.join().expect("launch thread");
+                    assert!(
+                        lease.expect("the lease is held").is_some(),
+                        "a store tree is leased"
+                    );
+                }
+            });
+        }
+    }
 }

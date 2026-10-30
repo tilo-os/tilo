@@ -1575,7 +1575,7 @@ impl ShellOverlayHost {
                         anchor: ask.anchor,
                     });
                 }
-                AskOutcome::Refused | AskOutcome::Unknown => {
+                AskOutcome::Refused(_) | AskOutcome::Unknown(_) => {
                     tracing::warn!(
                         ?outcome,
                         "a question asked on the canvas did not reach the agent"
