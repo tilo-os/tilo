@@ -12,6 +12,14 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
 
 const MAX_INTENT_BYTES: usize = MAX_WORKSPACE_JOIN_REQUEST_BYTES + 8192;
+/// The record this build writes: its Complete decodes in the layout its own
+/// challenge version names.
+const INTENT_VERSION: u8 = 2;
+/// The record a build wrote before the join version bump, whose Complete
+/// holds that earlier challenge layout. Its bytes are the ones the device
+/// signed, so restoring one keeps them and only the record around them is
+/// rewritten ([`VerifiedNativeEnrollmentIntent::durable_bytes`]).
+const PREVIOUS_INTENT_VERSION: u8 = 1;
 #[derive(Clone, Serialize, Deserialize)]
 struct IntentRecord {
     version: u8,
@@ -90,47 +98,34 @@ impl VerifiedNativeEnrollmentIntent {
         Self::validate(record)
     }
     fn validate(record: IntentRecord) -> Result<Self, String> {
-        if record.version != 1
+        if !matches!(record.version, PREVIOUS_INTENT_VERSION | INTENT_VERSION)
             || record.complete.len() > MAX_WORKSPACE_JOIN_REQUEST_BYTES
             || record.prepared_at_ns > now_ns(SystemTime::now())?
         {
             return Err("invalid native enrollment intent version, time or bound".into());
         }
-        let request: JoinTransportRequest =
-            postcard::from_bytes(&record.complete).map_err(|e| e.to_string())?;
-        if postcard::to_stdvec(&request).map_err(|e| e.to_string())? != record.complete {
-            return Err("noncanonical native Complete".into());
-        }
-        let JoinTransportRequest::Complete(complete) = request else {
-            return Err("native intent is not Complete".into());
-        };
-        let redemption = join::verify_join_proof(
-            &complete.proof,
-            &complete.proof.challenge,
+        // The stored Complete is the proof exactly as the device signed it,
+        // in the challenge layout its version names.
+        let redemption = join::verify_stored_complete(
+            &record.complete,
             &record.local_device,
             &RevocationList::new(),
             record.prepared_at_ns,
         )?;
         let join = redemption.join().clone();
-        let challenge = &complete.proof.challenge;
-        let expected = join::JoinChallenge::new(
-            &join,
-            &record.local_device,
-            challenge.request_id,
-            challenge.nonce,
-            challenge.expires_at_ns,
-            record.prepared_at_ns,
-        )?;
-        if &expected != challenge {
-            return Err("native Complete challenge scope mismatch".into());
-        }
         let hint = join
             .grant()
             .transport
             .get(record.hint_index as usize)
             .ok_or("native Iroh hint index missing")?;
         validate_historical_iroh(&join, hint, record.prepared_at_ns)?;
-        Ok(Self { record, join })
+        Ok(Self {
+            record: IntentRecord {
+                version: INTENT_VERSION,
+                ..record
+            },
+            join,
+        })
     }
     #[cfg(not(target_arch = "wasm32"))]
     #[allow(
@@ -164,7 +159,7 @@ impl VerifiedNativeEnrollmentIntent {
             return Err("ambiguous used Iroh hint".into());
         }
         let record = IntentRecord {
-            version: 1,
+            version: INTENT_VERSION,
             prepared_at_ns: now_ns(prepared_at)?,
             local_device,
             complete: postcard::to_stdvec(&JoinTransportRequest::Complete(complete))
@@ -177,6 +172,29 @@ impl VerifiedNativeEnrollmentIntent {
         }
         intent.durable_bytes()?;
         Ok(intent)
+    }
+    /// The stored record a build wrote before the join version bump, holding
+    /// `complete` in that build's challenge layout: what restoring such a
+    /// record has to carry.
+    ///
+    /// # Errors
+    /// `complete` is not a proof this build accepts.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn previous_layout_bytes(
+        complete: Vec<u8>,
+        local_device: DeviceCert,
+        hint_index: u32,
+        prepared_at: SystemTime,
+    ) -> Result<Vec<u8>, String> {
+        let record = IntentRecord {
+            version: PREVIOUS_INTENT_VERSION,
+            prepared_at_ns: now_ns(prepared_at)?,
+            local_device,
+            complete,
+            hint_index,
+        };
+        Self::validate(record.clone())?;
+        postcard::to_stdvec(&record).map_err(|e| e.to_string())
     }
 }
 // Recovery verifies the historical hint at its preparation time. Live dialing

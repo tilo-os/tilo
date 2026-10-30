@@ -112,7 +112,8 @@ pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,
 ) -> Result<NativeWorkspaceOwner, String> {
-    let authority = read_file(path)?;
+    let mut authority = read_file(path)?;
+    let migrated = crate::owner::enrollment::migrate_intents(&mut authority)?;
     let store = FileStore {
         host,
         path: path.to_path_buf(),
@@ -120,7 +121,22 @@ pub fn open_file_with(
         healthy: AtomicBool::new(true),
         uncertain: RwLock::new(BTreeSet::new()),
     };
-    NativeWorkspaceOwner::restore(Arc::new(store), authority, SystemTime::now())
+    let owner = NativeWorkspaceOwner::restore(Arc::new(store), authority, SystemTime::now())?;
+    if migrated {
+        write_migrated(path, &owner.0.authority.read())?;
+    }
+    Ok(owner)
+}
+
+/// Make a record this build rewrote on open durable where it was read.
+///
+/// The rewrite changes no room and no workspace, only the form of records
+/// already there, so it goes straight to the file rather than through a
+/// publication of the store: nothing a host follows has changed.
+fn write_migrated(path: &Path, next: &NativeAuthorityStorage) -> Result<(), String> {
+    // The cap and its preflight still count the pretty-printed form, so the
+    // compact file [`write_file`] writes always fits it.
+    write_file(path, next)
 }
 
 pub(crate) struct FileStore {

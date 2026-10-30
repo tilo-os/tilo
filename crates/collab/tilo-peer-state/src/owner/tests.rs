@@ -948,6 +948,113 @@ fn an_owner_file_from_before_the_room_host_had_its_name_restores() {
 }
 
 #[test]
+fn an_owner_file_from_before_the_join_version_bump_restores() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+
+    let joined = enrolled();
+    drop(joined.owner);
+    let now_ns = u64::try_from(
+        joined
+            .now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap();
+    let revocations = tilo_user_identity::RevocationList::new();
+    // The record's invitation, re-signed as the device that issued it by the
+    // build before the version bump.
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let stored = value["rooms"][joined.room.to_string()]
+        .as_object_mut()
+        .expect("a stored room");
+    let invitation = STANDARD
+        .decode(stored["invitation"].as_str().expect("base64 invitation"))
+        .unwrap();
+    let verified =
+        crate::join::decode_and_verify_invitation(&invitation, None, &revocations, now_ns).unwrap();
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let governor = crate::owner::testing::certificate(
+        &SigningKey::from_bytes(&[62; 32]),
+        &governor_key,
+        "Governor",
+    );
+    let previous_invitation = crate::join::issue_previous_invitation(
+        verified.grant(),
+        verified.inviter(),
+        &governor,
+        &governor_key,
+    )
+    .unwrap();
+    // The proof the same device signed then: the challenge it answered in the
+    // layout before the bump, with the authority the invitation named.
+    let device_key = SigningKey::from_bytes(&[63; 32]);
+    let device = crate::owner::testing::certificate(
+        &SigningKey::from_bytes(&[64; 32]),
+        &device_key,
+        "Member",
+    );
+    let previous_verified =
+        crate::join::decode_and_verify_invitation(&previous_invitation, None, &revocations, now_ns)
+            .unwrap();
+    let challenge = crate::join::JoinChallenge::new(
+        &previous_verified,
+        &device,
+        [66; 32],
+        [67; 32],
+        now_ns.checked_add(30_000_000_000).unwrap(),
+        now_ns,
+    )
+    .unwrap();
+    let complete =
+        crate::join::complete_previous_layout(&challenge, &governor, &device_key).unwrap();
+    let previous_intent = crate::owner::VerifiedNativeEnrollmentIntent::previous_layout_bytes(
+        complete.clone(),
+        device,
+        0,
+        joined.now,
+    )
+    .unwrap();
+    stored.insert(
+        "invitation".into(),
+        serde_json::Value::String(STANDARD.encode(&previous_invitation)),
+    );
+    stored.insert(
+        "enrollment_intent".into(),
+        serde_json::Value::String(STANDARD.encode(&previous_intent)),
+    );
+    std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
+
+    let reopened = open_file(&joined.path).expect("a file from before the join version bump reads");
+    assert_eq!(reopened.rooms(), vec![joined.room]);
+
+    // Opened once, the file is written in this build's form; the proof keeps
+    // the bytes it was signed as.
+    let value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let stored_intent = STANDARD
+        .decode(
+            value["rooms"][joined.room.to_string()]["enrollment_intent"]
+                .as_str()
+                .expect("base64 intent"),
+        )
+        .unwrap();
+    let intent = crate::owner::VerifiedNativeEnrollmentIntent::restore(&stored_intent).unwrap();
+    assert_eq!(
+        intent.durable_bytes().unwrap(),
+        stored_intent,
+        "the record is in the form this build writes"
+    );
+    assert_eq!(
+        intent.complete_bytes(),
+        complete,
+        "the stored proof is still the one signed"
+    );
+}
+
+#[test]
 fn owner_file_holds_byte_fields_as_compact_base64() {
     let joined = enrolled();
     let current = std::fs::read(&joined.path).unwrap();

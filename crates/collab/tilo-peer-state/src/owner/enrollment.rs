@@ -64,18 +64,46 @@ fn validate_enrollment(
     enrollment: &crate::owner::record::StoredEnrollment,
 ) -> Result<(), String> {
     let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
-    let grant = intent.verified_join().grant();
+    let join = intent.verified_join();
+    let grant = join.grant();
     if intent.room() != room
-        || record.room_host != grant.issuer
+        || record.room_host != *join.room_authority()
         || record.workspace != grant.workspace_id
         || (record.device != *intent.local_device()
             && !crate::owner::renewal::renews(&record.device, intent.local_device()))
         || enrollment.transport_hint != *intent.transport_hint()
-        || enrollment.invitation != intent.verified_join().signed_invitation()
+        || enrollment.invitation != join.signed_invitation()
     {
         return Err("native committed room differs from its authenticated enrollment".into());
     }
     Ok(())
+}
+
+/// Rewrite every stored enrollment intent a build wrote before the join
+/// version bump in this build's form. The signed Complete stays exactly as
+/// the device signed it - nothing here can sign for it again - and the
+/// record around it takes this build's version, so what is left on disk is
+/// the shape this build writes.
+pub(crate) fn migrate_intents(storage: &mut NativeAuthorityStorage) -> Result<bool, String> {
+    let mut changed = false;
+    for record in storage.rooms.values_mut() {
+        if let Some(enrollment) = &mut record.enrollment {
+            let bytes = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?
+                .durable_bytes()?;
+            if bytes != enrollment.enrollment_intent {
+                enrollment.enrollment_intent = bytes;
+                changed = true;
+            }
+        }
+    }
+    for pending in storage.pending.values_mut() {
+        let bytes = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?.durable_bytes()?;
+        if bytes != pending.intent {
+            pending.intent = bytes;
+            changed = true;
+        }
+    }
+    Ok(changed)
 }
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost

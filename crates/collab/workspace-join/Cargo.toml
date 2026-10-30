@@ -9,6 +9,10 @@ repository.workspace = true
 homepage.workspace = true
 description = "Signed workspace invitations, join and membership proofs, and transport hints"
 
+[features]
+# Producers of the layouts earlier builds wrote, for replaying their records.
+test-support = []
+
 # The invitation and join contract, below room state: pure types and signature
 # checks, no Automerge, admission or transport. Browsers and the relay client
 # speak it; `tilo-peer-state` re-exports it as `tilo_peer_state::join`.

@@ -8,7 +8,7 @@ description = "A device's workspace engine: its admitted replicas, their durable
 
 [features]
 # Fixtures and internals the desktop session's own owner tests assert on.
-test-support = ["dep:iroh-base"]
+test-support = ["dep:iroh-base", "tilo-workspace-join/test-support"]
 
 [package.metadata.cargo-machete]
 # Used only as `#[serde(with = "serde_bytes")]`, a string machete does not read.
@@ -82,6 +82,9 @@ tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 
 [dev-dependencies]
+# The producers of invitation and proof layouts earlier builds wrote: the
+# restore tests replay a record as such a build left it.
+tilo-workspace-join = { path = "../workspace-join", features = ["test-support"] }
 # The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
 tilo-automerge.workspace = true
 tempfile.workspace = true
