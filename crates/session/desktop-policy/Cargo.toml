@@ -15,6 +15,7 @@ description = "The desktop's window policy: native windows as tabs of the portab
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-surface = { version = "0.1.0", path = "../desktop-surface" }
+workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }

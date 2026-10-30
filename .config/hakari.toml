@@ -84,6 +84,9 @@ third-party = [
     { name = "gstreamer-app" },
     { name = "gstreamer-base" },
     { name = "gstreamer-video" },
+    # The bindings run pkg-config for libpipewire, and only the desktop's
+    # shell, session and speaker service turn the feature on.
+    { name = "pipewire" },
     # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
     # bundled sources, so it may stay.
     { name = "smithay-client-toolkit" },
@@ -94,7 +97,7 @@ third-party = [
     # shell builds them. The color-management handlers' crate builds smithay
     # with just its Wayland frontend, and the union would put every backend
     # into the hack.
-    { name = "smithay" },
+    { name = "smithay", path = "vendor/smithay" },
     # The peer transport belongs to the hosts: tilo-desktop is managed and
     # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).
     { name = "iroh", path = "vendor/iroh" },
