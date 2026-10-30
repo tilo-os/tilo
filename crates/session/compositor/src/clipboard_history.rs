@@ -421,7 +421,7 @@ mod tests {
             "the other copy was never pinned"
         );
         assert!(
-            !keep(&mut history, &[(TEXT_MIME, b"two")], 4),
+            !keep(&mut history, &[(TEXT_MIME, b"one")], 4),
             "a copy already at the front changes nothing"
         );
     }
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(
             history
                 .copies()
-                .last()
+                .find(|copy| copy.id == image.id)
                 .and_then(|copy| copy.from.as_deref()),
             Some("phone"),
             "the copy says where it came from"
