@@ -262,11 +262,17 @@ impl PlanModel for KeywordModel {
 
 /// The document bodies among what a host retains, as `(readable, sealed)`:
 /// a readable one opens without any content key, a sealed one needs a key
-/// the host does not have. Governance and other messages are neither.
-pub fn retained_documents(bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>) -> (usize, usize) {
+/// the host does not have. Governance and other messages are neither, and
+/// the documents `host` wrote itself are not counted.
+pub fn retained_documents(
+    host: &[u8; 32],
+    bodies: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>,
+) -> (usize, usize) {
     let mut ciphers = tilo_browser_peer::document::Ciphers::new();
     let (mut readable, mut sealed) = (0_usize, 0_usize);
-    for (author, body) in bodies {
+    // The host of a governed room writes the room's own record state; what
+    // counts is what reaches it from the room's members.
+    for (author, body) in bodies.into_iter().filter(|(author, _)| author != host) {
         match tilo_browser_peer::document::open_frame(&body, author, &mut ciphers) {
             Ok(Some(_)) => readable = readable.saturating_add(1),
             Ok(None) => {}
