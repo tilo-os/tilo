@@ -895,6 +895,74 @@ mod tests {
         assert_eq!(read_page(&mut app), Ask, "and stays signed in");
     }
 
+    /// What an agent can reach of a Browser window with a loaded page: the
+    /// action directory the window publishes, walked as the broker lists it
+    /// to an agent. A resource disclosed through a private UI view (one that
+    /// only changes what its caller sees, and neither reads the document nor
+    /// is the caller's own view) is never listed to an agent, and nothing
+    /// below it is either; any other resource is listed, or its actions are
+    /// listed in its place.
+    fn reachable_by_an_agent(app: &mut TestApp<BrowserShell>) -> Vec<(String, String)> {
+        use ui::collaboration::action_directory::ActionDirectorySnapshot;
+        use ui::tilo_actions::OperationKind;
+        let resources = app.harness().resources();
+        let descriptors = ui::tilo_actions::door::survey(&resources);
+        let snapshot = ActionDirectorySnapshot::build(&resources, &descriptors, |_| None);
+        let mut reached = Vec::new();
+        let mut levels = vec![Browser::KIND.to_owned()];
+        while let Some(level) = levels.pop() {
+            for row in snapshot
+                .nodes
+                .get(&level)
+                .map_or(&[][..], |node| &node.rows)
+            {
+                match (&row.action, &row.visibility) {
+                    (Some(action), _) => reached.push((row.resource.clone(), action.clone())),
+                    (None, Some(visibility)) => {
+                        let private_view = visibility.governing_kind == Some(OperationKind::View)
+                            && !visibility.contract.is_participant_view()
+                            && !visibility.contract.reads_document();
+                        if !private_view {
+                            levels.push(row.resource.clone());
+                        }
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+        reached
+    }
+
+    /// A Browser window that has loaded its page offers an agent the page's
+    /// own actions, read-page among them: the window it opened as a visitor
+    /// and the person's own alike. The page used to be disclosed only
+    /// through Stop, a private view, which hid it and everything on it.
+    #[test]
+    fn a_window_with_a_loaded_page_offers_an_agent_read_page() {
+        let url = "https://github.com/ada";
+        for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
+            let engine = ui::webview::test_engine::TestEngine::new();
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
+            engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+            app.settle();
+            let reached = reachable_by_an_agent(&mut app);
+            for action in [
+                "read-page",
+                "capture-page",
+                "find-page-element",
+                "click-page",
+            ] {
+                assert!(
+                    reached
+                        .iter()
+                        .any(|(resource, id)| resource == "browser.page" && id == action),
+                    "{arguments:?}: {action} on browser.page is not offered to an agent: {reached:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_new_browser_starts_with_the_default_preferences() {
         let state = ui::tilo_resource::Replica::<Browser>::new()

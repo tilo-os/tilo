@@ -44,6 +44,9 @@ pub struct Session {
     // Fields retire in declaration order: stop all save producers and release
     // membership before flushing, while the profile lock still excludes restart.
     _final_saves: FinalSessionSaves,
+    // After the final saves, the state writer closes and lets go of its
+    // lease, before the profile lock: the next session takes both.
+    _writer: ClosedAtEnd,
     _lock: advisory_lock::FileLock,
 }
 
@@ -166,6 +169,7 @@ impl Session {
             tilo_runtime::offload::action_offload(&[room_id.as_str()], media.store()),
         )?;
         channel_keys.set(broker.channel_encryption());
+        let writer = tree.read().native_runtime.clone();
         Ok(Self {
             broker,
             _peer_sync: peer_sync,
@@ -175,6 +179,7 @@ impl Session {
             identity_socket,
             blob_socket,
             _media: media,
+            _writer: ClosedAtEnd(writer),
             _membership: tree,
             _final_saves: FinalSessionSaves,
             _lock: lock,
@@ -436,6 +441,16 @@ impl Drop for Session {
         // fields retire. BrokerHandle's close is idempotent; the final-save
         // guard drains any shutdown work after those producers have stopped.
         self.broker.local_session_lifecycle().close();
+    }
+}
+
+/// The session's state writer, closed when the session ends: its lease
+/// belongs to the session, not to the last holder of the tree.
+struct ClosedAtEnd(crate::shell::native_workspace_owner::NativeStateRuntime);
+
+impl Drop for ClosedAtEnd {
+    fn drop(&mut self) {
+        self.0.close();
     }
 }
 

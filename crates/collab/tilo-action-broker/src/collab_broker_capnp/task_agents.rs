@@ -44,7 +44,7 @@ pub(super) fn task_still_goes(
     let Some(run) = runs.iter().find(|run| run.issue == task.work_group) else {
         return Err("the task this agent was made for has ended (its issue holds no run)".into());
     };
-    if run.agent != task.agent_id || run.delegation.as_deref() != Some(encoded.as_slice()) {
+    if run.agent != task.agent_id || run.delegation() != Ok(Some(encoded.as_slice())) {
         return Err(
             "the task this agent was made for has ended (its issue's run is another agent's)"
                 .into(),

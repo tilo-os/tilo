@@ -4,6 +4,45 @@
 
 use super::*;
 
+/// The compositor loop asks for installed apps while building tiles and
+/// naming apps in Activity. It is served the last enumeration, stale or
+/// not, and never reads the registry itself: a stale list is refreshed
+/// on a worker and the refresh lands for a later ask.
+#[test]
+#[serial_test::serial(process_env)]
+fn the_loop_is_served_the_last_app_list_while_a_worker_refreshes_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", tmp.path());
+    invalidate_app_cache();
+    let initial = installed_apps().unwrap();
+    assert_eq!(initial[0].version, "1.2.3");
+
+    let manifest = payload.join("manifest.toml");
+    let changed_manifest = std::fs::read_to_string(&manifest)
+        .unwrap()
+        .replace("1.2.3", "1.2.4");
+    std::fs::write(&manifest, changed_manifest).unwrap();
+    lock(&APP_CACHE).as_mut().unwrap().1 = None;
+
+    let served = installed_apps_without_waiting();
+    assert_eq!(
+        served, initial,
+        "the stale list is served; the registry was not read here"
+    );
+    let refreshed = tilo_test_env::wait_for("the refreshed app list", || {
+        let served = installed_apps_without_waiting();
+        served
+            .first()
+            .is_some_and(|app| app.version == "1.2.4")
+            .then_some(served)
+    });
+    env.remove("TILO_APPS_DATA_DIR");
+    invalidate_app_cache();
+    assert_eq!(refreshed.len(), 1);
+}
+
 /// An install that completed is what the next launch starts, whether or not the registry
 /// watch has expired the memoised list yet: the list answers only while the registry is the
 /// file it was read from.
@@ -42,45 +81,6 @@ fn a_launch_right_after_an_install_reads_the_installed_package() {
         2,
         "the memoised list did not answer for the new registry"
     );
-}
-
-/// The compositor loop asks for installed apps while building tiles and
-/// naming apps in Activity. It is served the last enumeration, stale or
-/// not, and never reads the registry itself: a stale list is refreshed
-/// on a worker and the refresh lands for a later ask.
-#[test]
-#[serial_test::serial(process_env)]
-fn the_loop_is_served_the_last_app_list_while_a_worker_refreshes_it() {
-    let tmp = tempfile::tempdir().unwrap();
-    let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_APPS_DATA_DIR", tmp.path());
-    invalidate_app_cache();
-    let initial = installed_apps().unwrap();
-    assert_eq!(initial[0].version, "1.2.3");
-
-    let manifest = payload.join("manifest.toml");
-    let changed_manifest = std::fs::read_to_string(&manifest)
-        .unwrap()
-        .replace("1.2.3", "1.2.4");
-    std::fs::write(&manifest, changed_manifest).unwrap();
-    lock(&APP_CACHE).as_mut().unwrap().1 = None;
-
-    let served = installed_apps_without_waiting();
-    assert_eq!(
-        served, initial,
-        "the stale list is served; the registry was not read here"
-    );
-    let refreshed = tilo_test_env::wait_for("the refreshed app list", || {
-        let served = installed_apps_without_waiting();
-        served
-            .first()
-            .is_some_and(|app| app.version == "1.2.4")
-            .then_some(served)
-    });
-    env.remove("TILO_APPS_DATA_DIR");
-    invalidate_app_cache();
-    assert_eq!(refreshed.len(), 1);
 }
 
 #[test]
@@ -143,11 +143,15 @@ fn app_registry_enumeration_reads_signed_manifests_and_keeps_generations() {
         let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_APPS_DATA_DIR", tmp.path());
-        invalidate_app_cache();
-        // Seed and re-read through `record_app_read` only. `installed_apps`
-        // arms the real watch; earlier helpers (or a dropped tempdir) can
-        // leave that watch firing `expire_watched_app_cache` mid-read and
-        // falsely fail the uncontested memoisation assert below.
+        // No watch over the fixture: this scenario writes its manifest, and a
+        // watch would report that write on its own thread whenever it likes,
+        // contesting the re-read below, which this scenario says is not.
+        // (`invalidate_app_cache` reads the registry, and that arms one.) A
+        // watch an earlier scenario left is forgotten too: its reports no
+        // longer touch the cache (`registry_changed`).
+        forget_app_cache();
+        // Seed and re-read through `record_app_read` only: `installed_apps`
+        // arms the real watch.
         record_app_read(
             APP_CACHE_EPOCH.load(Ordering::Acquire),
             &read_installed_apps().unwrap(),
@@ -299,6 +303,52 @@ fn app_registry_watch_invalidates_without_waiting_for_ttl() {
     tilo_test_env::wait_until("inotify invalidates the app cache", || {
         installed_apps().is_ok_and(|apps| apps.first().is_some_and(|app| app.version == "1.2.4"))
     });
+    env.remove("TILO_APPS_DATA_DIR");
+    invalidate_app_cache();
+}
+
+/// A watch reports a change on its own thread, at its own time, and keeps
+/// delivering what was queued for it after the cache moved on. A report from
+/// a watch of other registries than the ones the cache is watched for (the
+/// registry repointed, the watch replaced or forgotten) expires nothing; one
+/// from the cache's own watch does.
+#[test]
+#[serial_test::serial(process_env)]
+fn only_the_cache_s_own_watch_expires_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_APPS_DATA_DIR", tmp.path());
+    invalidate_app_cache();
+    let fresh = || {
+        lock(&APP_CACHE)
+            .as_ref()
+            .is_some_and(|(_, at)| at.is_some())
+    };
+    let held = lock(&APP_CACHE_WATCH)
+        .as_ref()
+        .map(|(roots, _)| roots.clone())
+        .expect("reading the registry watches it");
+    assert!(fresh(), "the read is memoised");
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    registry_changed(&[elsewhere.path().to_path_buf()]);
+    assert!(fresh(), "a watch the cache moved on from expires nothing");
+
+    let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
+    registry_changed(&held);
+    assert_ne!(
+        APP_CACHE_EPOCH.load(Ordering::Acquire),
+        epoch,
+        "the cache's own watch expires it"
+    );
+
+    forget_app_cache();
+    registry_changed(&held);
+    assert!(
+        lock(&APP_CACHE).is_none(),
+        "nor does a forgotten one record a read"
+    );
     env.remove("TILO_APPS_DATA_DIR");
     invalidate_app_cache();
 }

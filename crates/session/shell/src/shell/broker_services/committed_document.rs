@@ -385,7 +385,7 @@ impl NativeOwnerCommitService {
     /// the channel. A read of those would wait for the missing changes
     /// forever, so the record is the app's own to open, from the copy it
     /// keeps, as a new one is; it then hands its channel what it holds.
-    fn reads_sealed_writes(
+    pub(super) fn reads_sealed_writes(
         &self,
         room: super::super::state::RoomId,
         route: &tilo_action_broker::route::CrdtRoute,

@@ -398,10 +398,11 @@ impl super::ShellOverlayHost {
         let Some(broker) = self.shortcut_triggers.broker() else {
             return false;
         };
-        if !self.agent_actions.entry(owner.clone()).or_default().open(
+        if let Err(error) = self.agent_actions.entry(owner.clone()).or_default().open(
             crate::shell::certified_action_session::ActionSessionSource::new(broker),
             owner.clone(),
         ) {
+            tracing::warn!(%error, "the composer did not open");
             return false;
         }
         let viewport = self.overlay_area();

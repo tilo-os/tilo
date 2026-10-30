@@ -1978,9 +1978,15 @@ impl Widget for TileHost {
         // frame due to show, is a change of what the tile shows: the host
         // that woke for it paints.
         let progress = self.arrival_progress();
+        let now = crate::motion::frame_now();
         let arrival = self
             .arrival_now()
-            .is_some_and(|arrival| arrival.needs_redraw(crate::motion::frame_now(), progress));
+            .is_some_and(|arrival| arrival.needs_redraw(now, progress));
+        // The arrival's steps advance with time, not with drawing: a tile on
+        // a strip that is not shown is never drawn, and a step that came due
+        // there, unconsumed, would be due again on every wake, turning the
+        // loop as fast as it can.
+        self.advance_arrival(now);
         self.update_content(s, p) || arrival || adopted
     }
     fn build_layout(

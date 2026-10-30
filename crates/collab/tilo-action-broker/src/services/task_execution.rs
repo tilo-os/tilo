@@ -215,6 +215,18 @@ pub const TRACKER_APP: &str = "so.tilo.tasks";
 /// The tracker's own resource, where its verbs are invoked with the issue
 /// they act on.
 pub const TRACKER_RESOURCE: &str = "tasks.tracker";
+/// The tracker's record: the app's one record of a room, its package primary.
+pub const TRACKER_RECORD: &str = "";
+
+/// A write on `route` was admitted to this device's channels. Where it is a
+/// room's tracker, its readers (the broker's runs, the composer following
+/// one) are told to read it again, as the owner's publication tells them in
+/// a room it commits: a sealed room's tracker changes only here.
+pub fn tracker_written(route: &crate::route::CrdtRoute) {
+    if route.app_id == TRACKER_APP && route.record_id == TRACKER_RECORD {
+        tilo_identity_host::policy_change::announce();
+    }
+}
 
 #[must_use]
 pub fn is_tracker_issue(task_id: &str) -> bool {
@@ -347,12 +359,27 @@ pub struct TrackerRun {
     /// What the run asks or last asked its person.
     pub question: Option<TrackerQuestion>,
     /// The task delegation the asking device signed for a task agent's run,
-    /// encoded (`TaskDelegation::encode`); `None` for a collaborator's run,
-    /// whose membership is its certification.
-    pub delegation: Option<Vec<u8>>,
+    /// encoded (`TaskDelegation::encode`), or why what the run carries is
+    /// none; `None` for a collaborator's run, whose membership is its
+    /// certification. Read through [`Self::delegation`].
+    pub delegation: Option<Result<Vec<u8>, String>>,
 }
 
 impl TrackerRun {
+    /// The run's task delegation, encoded; `None` for a collaborator's run.
+    ///
+    /// # Errors
+    /// The run carries a delegation that does not decode, and why.
+    pub fn delegation(&self) -> Result<Option<&[u8]>, String> {
+        match &self.delegation {
+            None => Ok(None),
+            Some(Ok(encoded)) => Ok(Some(encoded)),
+            Some(Err(error)) => Err(format!(
+                "the run's task delegation does not decode: {error}"
+            )),
+        }
+    }
+
     /// How many of the run's messages its agent took in: messages are taken
     /// in in order, so this is the revision the agent's steering reached.
     #[must_use]

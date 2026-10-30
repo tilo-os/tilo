@@ -981,8 +981,12 @@ impl LauncherServices for NativeLauncher {
         };
         launched.map(|_| ()).map_err(|e| e.to_string())
     }
-    fn windowless(&self, app: &str, room: &str) -> Result<bool, String> {
-        super::windowless::request(app, room)
+    fn windowless(
+        &self,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::WindowlessStart>, String> {
+        Ok(super::windowless::request(app, room))
     }
     fn begin_launch(
         &self,
@@ -1893,8 +1897,8 @@ fn native_workspace_memberships(
 }
 
 /// The room's tracker, read for the broker's runs and for whoever follows
-/// one in the shell: from the room's committed record, or, in a room whose
-/// records are sealed channels, from the sealed writes this device holds.
+/// one in the shell: from the owner where it commits the room, from the
+/// sealed writes this device holds where the room seals its records.
 pub(crate) fn native_tracker(
     tree: &WorkspaceTreeHandle,
     network: Option<Arc<super::network::ShellNetwork>>,

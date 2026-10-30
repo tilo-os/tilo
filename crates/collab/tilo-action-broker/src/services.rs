@@ -7,8 +7,9 @@ pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use room_nodes::{RoomNodeActions, RoomNodeAsk, RoomNodeOutcome};
 pub use task_execution::{
     NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
-    TRACKER_ISSUE_PREFIX, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection, TrackerQuestion,
-    TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+    TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
+    TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
+    tracker_written,
 };
 
 use std::sync::Arc;
@@ -669,6 +670,11 @@ pub enum ExecutingBindingPhase {
     Abandoned,
 }
 
+/// How the start of an instance of an app with no window ends
+/// ([`LauncherServices::windowless`]): `Ok` once it runs, why it could not
+/// otherwise. Its sender dropped unsent is a host that stopped starting it.
+pub type WindowlessStart = tokio::sync::oneshot::Receiver<Result<(), String>>;
+
 pub trait LauncherServices: Send + Sync {
     /// Bind an optional diagnostic observation to the host's current exact
     /// launcher task. The returned ID is correlation only, never authority.
@@ -776,15 +782,16 @@ pub trait LauncherServices: Send + Sync {
     /// Have an instance of `app` with no window run in `room`, started now
     /// unless one runs there already, to take an invocation of the app's
     /// actions on its records: what a closed app gets in place of a window
-    /// for an action that shows nothing. `Ok(true)` when this host runs one
-    /// there, `Ok(false)` when it runs none of `app` (its actions then launch
+    /// for an action that shows nothing. `Some` when this host runs one
+    /// there: how its start ends, which the action waits on with its
+    /// delivery; `None` when it runs none of `app` (its actions then launch
     /// it as before). It ends with the session.
     ///
     /// # Errors
     /// Why the instance this host runs of `app` there failed.
-    fn windowless(&self, app: &str, room: &str) -> Result<bool, String> {
+    fn windowless(&self, app: &str, room: &str) -> Result<Option<WindowlessStart>, String> {
         let _ = (app, room);
-        Ok(false)
+        Ok(None)
     }
     /// Snapshot the original launch facts while admitting this connection.
     /// Unsupported launchers retain no private window-instance authority.

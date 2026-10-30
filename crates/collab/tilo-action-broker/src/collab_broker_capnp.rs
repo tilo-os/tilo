@@ -1984,6 +1984,7 @@ mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
 pub(crate) mod run_question;
+mod windowless_instances;
 mod witness;
 use witness::requires_store_witness;
 mod workspace_open;
@@ -12882,6 +12883,7 @@ fn handle_signed_op_send_for_artifact(
             if envelope.kind == collab_types::OpKind::Redaction {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
+            crate::services::tracker_written(route);
             // Republishing is not vouching.
             if !state.durable_owner_required {
                 state.publisher().signed_document(route, envelope.clone());

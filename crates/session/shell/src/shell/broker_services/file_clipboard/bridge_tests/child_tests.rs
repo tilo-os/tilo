@@ -47,6 +47,11 @@ fn clipboard_bridge_runs_in_a_real_sandboxed_child() {
         .expect("proof completion");
         return;
     }
+    tilo_test_env::require_capability!(
+        UserNamespace,
+        tilo_test_env::bubblewrap_with_proc(),
+        "the child runs in bubblewrap with a /proc of its own"
+    );
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

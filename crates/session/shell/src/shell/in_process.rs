@@ -483,31 +483,26 @@ impl InProcessApps {
             author: self.author.clone(),
             action_context: tilo_actions::ActionContext::default(),
         };
-        let (mut context, target) = if record.is_package_primary() && definition.keeps_room_record()
-        {
-            // The workspace's own record of an app that keeps one, opened as
-            // a window of the app opens it: the record every window and the
-            // room's readers share, created by the first to open it.
-            let target = definition
-                .unsaved_target(&records)
-                .map_err(LaunchError::Record)?;
-            (HostContext::prepare(definition, inputs(), &target)?, target)
-        } else {
-            let checkout = RecordCheckout::new(record, definition.record_kind.clone());
-            match records.try_open_record(&checkout) {
-                Ok(_) => {
-                    let target = LaunchTarget::Record {
-                        checkout,
-                        reveal: None,
-                    };
-                    (HostContext::prepare(definition, inputs(), &target)?, target)
-                }
-                Err(RecordOpenError::MissingRecord) => (
-                    HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
-                    LaunchTarget::New,
-                ),
-                Err(error) => return Err(LaunchError::Record(error)),
+        let checkout = RecordCheckout::new(record, definition.record_kind.clone());
+        let (mut context, target) = match records.try_open_record(&checkout) {
+            Ok(_) => {
+                let target = LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                };
+                (HostContext::prepare(definition, inputs(), &target)?, target)
             }
+            // The app's package primary, the record a launched window of it
+            // opens, is made as that record, under its own custody key.
+            Err(RecordOpenError::MissingRecord) if checkout.id.is_package_primary() => (
+                HostContext::prepare(definition, inputs(), &LaunchTarget::PrimaryNew)?,
+                LaunchTarget::PrimaryNew,
+            ),
+            Err(RecordOpenError::MissingRecord) => (
+                HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
+                LaunchTarget::New,
+            ),
+            Err(error) => return Err(LaunchError::Record(error)),
         };
         // The person's records of other apps (their accounts and contacts)
         // are the ones the session holds.
@@ -1740,7 +1735,13 @@ mod tests {
                         .as_any()
                         .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
                         .map_or_else(String::new, |embedded| {
-                            format!("{:?}", embedded.app().collaboration_state())
+                            let app = embedded.app();
+                            // Offered, and (taken, refused) by the broker.
+                            format!(
+                                "{:?} directory {:?}",
+                                app.collaboration_state(),
+                                app.action_directory_observation()
+                            )
                         })
                 })
                 .collect();
