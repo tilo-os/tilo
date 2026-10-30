@@ -1,6 +1,2 @@
-[ratchets.closure_action_button]
-"apps/db-client/src/navigator.rs" = 1
-
 [ratchets.closure_control]
-"apps/db-client/src/navigator.rs" = 1
 "apps/db-client/src/query.rs" = 1
