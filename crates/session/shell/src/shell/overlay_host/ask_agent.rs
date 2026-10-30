@@ -54,16 +54,56 @@ impl ShellOverlayHost {
         match self.selection_requests.route(focused.as_deref(), now) {
             Some(ChordRoute::Ask(connections)) => connections,
             Some(ChordRoute::Open) => {
-                self.open_ask_agent_on_primary();
+                self.open_ask_agent_once_settled(now);
                 Vec::new()
             }
             None => {
                 if self.selection_requests.expired(now) {
-                    self.open_ask_agent_on_primary();
+                    self.open_ask_agent_once_settled(now);
                 }
                 Vec::new()
             }
         }
+    }
+
+    /// Open the composer on the primary selection, or, while this device's
+    /// identity in the active room has just changed and is not settled yet
+    /// (the composer's session is bound to a settled one), at the moment it
+    /// settles: the press and what the palette asked wait for it rather
+    /// than being dropped.
+    fn open_ask_agent_once_settled(&mut self, now: Instant) {
+        if let Some(at) = self.identity_settles_at(now) {
+            tracing::debug!(
+                wait = ?at.saturating_duration_since(now),
+                "the composer opens once this device's identity in the room settles"
+            );
+            self.selection_requests.defer_open(at);
+            return;
+        }
+        self.open_ask_agent_on_primary();
+    }
+
+    /// When this device's identity in the active workspace's room settles,
+    /// while it is not settled yet.
+    fn identity_settles_at(&self, now: Instant) -> Option<Instant> {
+        let room = self
+            .chrome
+            .as_ref()?
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()?
+            .room()
+            .to_string();
+        let stamp = tilo_identity_host::join_proof::current_device_stamp(&room)?;
+        if stamp.settled() {
+            return None;
+        }
+        let wait = stamp
+            .settles_at()?
+            .duration_since(std::time::SystemTime::now())
+            .unwrap_or_default();
+        Some(now.checked_add(wait).unwrap_or(now))
     }
 
     /// When the ask-agent chord next needs a tick.
@@ -143,7 +183,6 @@ impl ShellOverlayHost {
     /// no model, offline) the composer says which and offers the fix in
     /// place: it never waits on an agent that is not coming.
     pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
-        use crate::shell::state::WorkspaceAuthority as _;
         use crate::shell::task_agents::NEW_TASK_AGENT;
         // On a canvas a question's answer is a window where it was asked.
         if self.canvas_shown() && seed.ask.is_some() {
@@ -152,24 +191,12 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let Some((room, person, members)) = ({
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop.active_workspace().map(|workspace| {
-                (
-                    workspace.room().to_string(),
-                    state.active_local_user_in(&tree),
-                    workspace
-                        .agent_members()
-                        .into_iter()
-                        .map(|(agent, _)| agent)
-                        .collect::<Vec<_>>(),
-                )
-            })
-        }) else {
+        let Some((room, person, members)) = active_room_agents(&chrome.borrow()) else {
+            tracing::warn!("the composer did not open: no workspace is active");
             return false;
         };
         let Some((source, collaborators)) = self.live_agents(&room, members) else {
+            tracing::warn!("the composer did not open: the session reaches no broker");
             return false;
         };
         let mut choices = vec![NEW_TASK_AGENT.to_owned()];
@@ -179,6 +206,9 @@ impl ShellOverlayHost {
             .choose_agent(&room, &choices)
             .unwrap_or_else(|| NEW_TASK_AGENT.to_owned());
         let Some(identity_revision) = source.identity_revision(&room) else {
+            tracing::warn!(
+                "the composer did not open: this device's identity in the room is not settled yet"
+            );
             return false;
         };
         let owner = ComposerOwner {
@@ -187,12 +217,13 @@ impl ShellOverlayHost {
             person,
             identity_revision,
         };
-        if !self
+        if let Err(error) = self
             .agent_actions
             .entry(owner.clone())
             .or_default()
             .open(source, owner.clone())
         {
+            tracing::warn!(%error, "the composer did not open");
             return false;
         }
         self.selection_requests.asked(&room, &agent);
@@ -326,7 +357,7 @@ impl ShellOverlayHost {
                 .and_then(|workspace| minted.launch(&workspace));
             match outcome {
                 Ok(()) => {
-                    tracing::info!(agent = %minted.agent_id, "launched the agent made for the task")
+                    tracing::info!(agent = %minted.agent_id, "launched the agent made for the task");
                 }
                 Err(error) => {
                     tracing::warn!(agent = %minted.agent_id, %error, "the agent made for the task could not be launched");
@@ -563,4 +594,22 @@ mod tests {
             selection_area(window, Some(caret), None)
         );
     }
+}
+
+/// The active workspace's room, the person in it, and its agent members.
+fn active_room_agents(
+    state: &crate::shell::chrome_state::ChromeState,
+) -> Option<(String, crate::shell::state::UserId, Vec<String>)> {
+    use crate::shell::state::WorkspaceAuthority as _;
+    let tree = state.tree();
+    let workspace = tree.desktop.active_workspace()?;
+    let room = workspace.room().to_string();
+    let members = workspace
+        .agent_members()
+        .into_iter()
+        .map(|(agent, _)| agent)
+        .collect();
+    let person = state.active_local_user_in(&tree);
+    drop(tree);
+    Some((room, person, members))
 }

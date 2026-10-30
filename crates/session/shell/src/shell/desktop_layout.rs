@@ -771,6 +771,13 @@ pub(crate) fn open(
         .find(|workspace| workspace.id == workspace_id)
         .cloned()
         .ok_or("this workspace is not open on this device")?;
+    // A document has one writer: content already open in a window here is
+    // that window, not a second process contending for its record.
+    if let Target::Content(_) = target
+        && let Some(opened) = already_open(state, room, &target.address())
+    {
+        return Ok(opened);
+    }
     let launch = resolve(state, room, &mut workspace, target, publisher)?;
     if let Some(document) = &launch.document {
         // The app reads the staged content under a grant the live tree
@@ -829,6 +836,44 @@ pub(crate) fn open(
         crate::shell::launcher::clear_pending_placement(&launch.app);
         return Err("the window's place could not be held".into());
     };
+    // What the launch carries is the workspace's accepted policy, as a
+    // document opened from Files is: a read of the content it opens is
+    // granted in the tree itself (with this device's provenance for it), and
+    // the launch takes the workspace as it stands after that, so the
+    // launch's authority gate finds every grant it was handed.
+    let workspace = {
+        let mut tree = state.tree_mut();
+        if let Some(path) = &launch.document {
+            let granted = crate::shell::doc_open::grant_document_read(
+                &mut tree,
+                workspace_id,
+                &launch.app,
+                path,
+            );
+            if granted != Some(true) {
+                drop(tree);
+                if let Err(gone) = crate::shell::window_actions::close_tab(state, tab) {
+                    tracing::debug!(
+                        tab,
+                        ?gone,
+                        "the place held for refused content was already gone"
+                    );
+                }
+                return Err(format!(
+                    "{} could not be handed {}",
+                    label,
+                    target.address()
+                ));
+            }
+        }
+        tree.queue_save();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace_id)
+            .cloned()
+            .unwrap_or(workspace)
+    };
     // This launch's own startup is observed: its failure is this open's,
     // whatever another launch of the same app does.
     let started = crate::shell::launch_readiness::observe(|| {
@@ -876,6 +921,45 @@ pub(crate) fn open(
         app: launch.app,
         startup,
     })
+}
+
+/// The window an earlier [`open`] made for `address` in `room`, while it
+/// is still there.
+fn already_open(state: &ChromeState, room: RoomId, address: &str) -> Option<Opened> {
+    let tree = state.tree();
+    let found = tree
+        .desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.room() == room)
+        .flat_map(|workspace| &workspace.strips)
+        .find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .find(|tab| state.desktop_layout.opened_with(tab.id) == Some(address))
+                    .map(|tab| Opened {
+                        tab: tab.id,
+                        group: group.id,
+                        strip: strip.id,
+                        app: tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .unwrap_or_default(),
+                        startup: started_already(),
+                    })
+            })
+        });
+    drop(tree);
+    found
+}
+
+/// The startup of a window already running: it started, so it cannot fail.
+fn started_already() -> tilo_action_broker::services::LaunchReadiness {
+    let (started, readiness) = tokio::sync::oneshot::channel();
+    if started.send(Ok(())).is_err() {
+        tracing::debug!("a startup observed as done had nobody to tell");
+    }
+    tilo_action_broker::services::LaunchReadiness::new(readiness, || {})
 }
 
 /// `tab`'s launch failed with `why`: its place goes, it is not opened at a

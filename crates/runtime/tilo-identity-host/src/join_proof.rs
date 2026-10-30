@@ -59,6 +59,18 @@ impl CurrentDeviceStamp {
     pub fn settled(&self) -> bool {
         self.registry.settled() && self.device.as_ref().is_none_or(DeviceStamp::settled)
     }
+
+    /// When it is [`Self::settled`], the moment its last file is old
+    /// enough: a reader that found it unsettled reads again then. `None`
+    /// when it holds no file.
+    #[must_use]
+    pub fn settles_at(&self) -> Option<std::time::SystemTime> {
+        let device = self.device.as_ref().map(DeviceStamp::settles_at);
+        [self.registry.settles_at(), device.flatten()]
+            .into_iter()
+            .flatten()
+            .max()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -71,6 +83,16 @@ struct RegistryStamp {
 impl RegistryStamp {
     fn settled(&self) -> bool {
         self.dir.is_none_or(DirStamp::settled) && self.file.is_none_or(FileStamp::settled)
+    }
+
+    fn settles_at(&self) -> Option<std::time::SystemTime> {
+        [
+            self.dir.map(DirStamp::settles_at),
+            self.file.map(FileStamp::settles_at),
+        ]
+        .into_iter()
+        .flatten()
+        .max()
     }
 }
 
@@ -88,6 +110,15 @@ impl DeviceStamp {
             .flatten()
             .all(FileStamp::settled)
             && self.fleet.settled()
+    }
+
+    fn settles_at(&self) -> Option<std::time::SystemTime> {
+        [self.key, self.cert]
+            .into_iter()
+            .flatten()
+            .map(FileStamp::settles_at)
+            .chain(self.fleet.settles_at())
+            .max()
     }
 }
 

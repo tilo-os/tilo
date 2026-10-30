@@ -264,6 +264,10 @@ impl Freshness {
     }
 }
 
+/// The last ask ticket handed out: unique across every owner's asks, so a
+/// ticket names one ask.
+static NEXT_ASK_TICKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Default)]
 pub(super) struct AgentActions {
     owner: Option<ComposerOwner>,
@@ -280,6 +284,12 @@ pub(super) struct AgentActions {
     started: Option<Instant>,
     /// Task agents whose task now exists, to launch in their room.
     launches: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
+    /// Task agents whose ask Tasks took, by their issue's address, until the
+    /// room's tracker as this device holds it shows their run going: their
+    /// join is admitted against that tracker, so launched before it shows
+    /// the run they would be refused as made for a task that ended. The
+    /// tracker's change wakes the pump that moves them on.
+    awaiting: Vec<(String, Arc<crate::shell::task_agents::MintedTaskAgent>)>,
     /// Requests that could not become a task, and why.
     refused: Vec<(ComposerRequest, String)>,
     /// How asks handed out ended, until the host takes them.
@@ -287,30 +297,37 @@ pub(super) struct AgentActions {
 }
 
 impl AgentActions {
-    pub(super) fn open(&mut self, source: ActionSessionSource, owner: ComposerOwner) -> bool {
+    ///
+    /// # Errors
+    /// Why it could not: requests of another owner still going, this
+    /// device's identity in the room not settled or changed, or the
+    /// session refused.
+    pub(super) fn open(
+        &mut self,
+        source: ActionSessionSource,
+        owner: ComposerOwner,
+    ) -> Result<(), String> {
         // Opening chrome must not retire a still-observable request or a
         // saved message. It is never a cancellation or a retry.
         if self.owner.as_ref() == Some(&owner) && self.session.is_some() {
-            return true;
+            return Ok(());
         }
         if !self.calls.is_empty() || !self.sent.is_empty() {
-            return false;
+            return Err("requests asked before are still going".into());
         }
-        let Some(revision) = source.identity_revision(&owner.room) else {
-            return false;
-        };
+        let revision = source
+            .identity_revision(&owner.room)
+            .ok_or("this device's identity in the room is not settled yet")?;
         if revision != owner.identity_revision {
-            return false;
+            return Err("this device's identity in the room changed".into());
         }
-        let Ok(session) = source.open(&owner.room, Some(&owner.person)) else {
-            return false;
-        };
+        let session = source.open(&owner.room, Some(&owner.person))?;
         self.owner = Some(owner);
         self.source = Some(source);
         self.session = Some(session);
         self.followed = None;
         self.fresh.mark();
-        true
+        Ok(())
     }
 
     fn begin(&mut self, operation: Operation) {
@@ -392,6 +409,37 @@ impl AgentActions {
         });
     }
 
+    /// Who the person is in the owner's room changed since the session
+    /// opened: every call is refused and the session ends. Whether there
+    /// was one to end; `None` while the identity stands.
+    fn end_on_identity_change(
+        &mut self,
+        owner: &ComposerOwner,
+        composer: &mut AgentQuickComposer,
+    ) -> Option<bool> {
+        if self
+            .source
+            .as_ref()
+            .and_then(|source| source.identity_revision(&owner.room))
+            == Some(owner.identity_revision)
+        {
+            return None;
+        }
+        let changed = self.session.is_some();
+        for call in std::mem::take(&mut self.calls) {
+            self.refuse(
+                &call.operation,
+                composer,
+                &Refusal::unknown("who you are in this workspace changed"),
+            );
+        }
+        self.followed = None;
+        self.session = None;
+        self.sent.clear();
+        composer.project(owner, None);
+        Some(changed)
+    }
+
     pub(super) fn pump(
         &mut self,
         composer: &mut AgentQuickComposer,
@@ -401,24 +449,7 @@ impl AgentActions {
             return false;
         };
         let active = composer.owner() == Some(&owner) && composer.is_open();
-        if self
-            .source
-            .as_ref()
-            .and_then(|source| source.identity_revision(&owner.room))
-            != Some(owner.identity_revision)
-        {
-            let changed = self.session.is_some();
-            for call in std::mem::take(&mut self.calls) {
-                self.refuse(
-                    &call.operation,
-                    composer,
-                    &Refusal::unknown("who you are in this workspace changed"),
-                );
-            }
-            self.followed = None;
-            self.session = None;
-            self.sent.clear();
-            composer.project(&owner, None);
+        if let Some(changed) = self.end_on_identity_change(&owner, composer) {
             return changed && active;
         }
         let pending = std::mem::take(&mut self.calls);
@@ -460,6 +491,7 @@ impl AgentActions {
                 changed = true;
             }
         }
+        changed |= self.launch_shown_runs(&owner.room, runs);
         if !active {
             self.fresh.mark();
             return changed;
@@ -566,12 +598,15 @@ impl AgentActions {
         show: bool,
         quick: bool,
     ) -> Option<AskTicket> {
-        if !self.open(source, owner.clone()) {
+        if let Err(error) = self.open(source, owner.clone()) {
+            tracing::warn!(%error, "the agent's session could not be opened for the ask");
             return None;
         }
-        // Unique across every owner's asks, so a ticket names one ask.
-        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let issued = AskTicket(LAST.fetch_add(1, Ordering::Relaxed) + 1);
+        let issued = AskTicket(
+            NEXT_ASK_TICKET
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+        );
         let mut operation = match queue_operation(owner, None, (title, body), about, None, quick) {
             Ok(operation) => operation,
             Err(error) => {
@@ -587,6 +622,39 @@ impl AgentActions {
         // call ends asked, refused or out of time: an outcome either way.
         self.begin(operation);
         Some(issued)
+    }
+
+    /// Move the task agents whose run the tracker now shows going to
+    /// [`Self::launches`]; one whose run shows ended is not launched.
+    /// Whether any moved.
+    fn launch_shown_runs(&mut self, room: &str, runs: Option<&dyn RunSource>) -> bool {
+        let Some(source) = runs.filter(|_| !self.awaiting.is_empty()) else {
+            return false;
+        };
+        // Armed before the read, so a change after it wakes the next pump;
+        // still stale for `read_runs`, which reads its own way.
+        self.fresh.take();
+        self.fresh.mark();
+        let shown = source.runs(room);
+        let mut moved = false;
+        for (issue, minted) in std::mem::take(&mut self.awaiting) {
+            let agent = format!("agent:{}", minted.agent_id);
+            match shown
+                .iter()
+                .find(|run| run.issue == issue && run.agent == agent)
+            {
+                Some(run) if run.phase.active() => {
+                    self.launches.push((room.to_owned(), minted));
+                    moved = true;
+                }
+                Some(run) => {
+                    tracing::warn!(%issue, phase = ?run.phase, "the task ended before its agent was launched");
+                    moved = true;
+                }
+                None => self.awaiting.push((issue, minted)),
+            }
+        }
+        moved
     }
 
     /// How the asks handed out by [`Self::open_and_ask`] ended since the
@@ -710,12 +778,12 @@ impl AgentActions {
             } => {
                 let asked = asked_issue(operation);
                 // The task exists and its run carries the delegation: its
-                // agent can join now, under its own key.
+                // agent joins under its own key once the tracker shows it.
                 if let Some(task_agent) = task_agent
-                    && let Some(owner) = &self.owner
+                    && let Some(issue) = &asked
                 {
-                    self.launches
-                        .push((owner.room.clone(), Arc::clone(task_agent)));
+                    self.awaiting.push((issue.clone(), Arc::clone(task_agent)));
+                    self.fresh.mark();
                 }
                 if let Some(ticket) = ticket {
                     let outcome = asked.clone().map_or_else(
@@ -2101,13 +2169,15 @@ mod tests {
     fn composer_in(room: &Arc<Room>) -> (AgentActions, AgentQuickComposer, ComposerOwner) {
         let owner = owner(&room.id);
         let mut actions = AgentActions::default();
-        assert!(actions.open(
-            ActionSessionSource::with_mock(
-                crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
-                room.clone(),
-            ),
-            owner.clone(),
-        ));
+        actions
+            .open(
+                ActionSessionSource::with_mock(
+                    crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue(),
+                    room.clone(),
+                ),
+                owner.clone(),
+            )
+            .expect("opened");
         let mut composer = AgentQuickComposer::default();
         composer.open(
             owner.clone(),

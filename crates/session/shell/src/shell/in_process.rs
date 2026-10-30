@@ -492,6 +492,12 @@ impl InProcessApps {
                 };
                 (HostContext::prepare(definition, inputs(), &target)?, target)
             }
+            // The app's package primary, the record a launched window of it
+            // opens, is made as that record, under its own custody key.
+            Err(RecordOpenError::MissingRecord) if checkout.id.is_package_primary() => (
+                HostContext::prepare(definition, inputs(), &LaunchTarget::PrimaryNew)?,
+                LaunchTarget::PrimaryNew,
+            ),
             Err(RecordOpenError::MissingRecord) => (
                 HostContext::prepare_new_record(definition, inputs(), checkout.id)?,
                 LaunchTarget::New,
@@ -1729,7 +1735,13 @@ mod tests {
                         .as_any()
                         .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
                         .map_or_else(String::new, |embedded| {
-                            format!("{:?}", embedded.app().collaboration_state())
+                            let app = embedded.app();
+                            // Offered, and (taken, refused) by the broker.
+                            format!(
+                                "{:?} directory {:?}",
+                                app.collaboration_state(),
+                                app.action_directory_observation()
+                            )
                         })
                 })
                 .collect();

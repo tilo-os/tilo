@@ -2042,20 +2042,15 @@ impl CapnpBrokerState {
         let address = &current_address(destination.resource.as_deref(), request);
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
-        let expired = || ActionHostError::Unavailable {
-            reason: format!(
-                "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
-                address.action,
-                timeout.as_secs_f32(),
-                self.publishers_seen(app_id, &room, address),
-            ),
-        };
+        let expired = || self.not_offered(app_id, &room, address, timeout);
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         // Taken before the first look, so a publication between that look
         // and the wait below still wakes it.
         let mut changes = self.publisher_changes();
         let mut launched = false;
+        // The start of the instance with no window asked for, until it ends.
+        let mut starting: Option<crate::services::WindowlessStart> = None;
         loop {
             self.check_launch_origin(caller, origin, &room)?;
             if let Some(native) = native {
@@ -2081,8 +2076,9 @@ impl CapnpBrokerState {
             // wait below delivers to it. Only an `open` launches a window.
             if !launched
                 && address.action != APPLICATION_OPEN_ACTION
-                && self.run_windowless(app_id, &room)?
+                && let Some(start) = self.run_windowless(app_id, &room)?
             {
+                starting = Some(start);
                 launched = true;
                 continue;
             }
@@ -2126,7 +2122,30 @@ impl CapnpBrokerState {
                 () = &mut deadline => return Err(expired()),
                 () = &mut abandoned => return Err(stopped_waiting()),
                 () = tilo_rt::sleep(std::time::Duration::from_millis(50)), if native.is_some() => {},
+                // A start that failed is the action's answer now, with why.
+                failed = super::windowless_instances::start_failed(&mut starting, app_id) => {
+                    return Err(failed);
+                }
             }
+        }
+    }
+
+    /// `app_id` was launched in `room` but did not offer `address` within
+    /// `timeout`: why, with what its connections publish.
+    fn not_offered(
+        &self,
+        app_id: &str,
+        room: &str,
+        address: &tilo_actions::ActionAddress,
+        timeout: std::time::Duration,
+    ) -> ActionHostError {
+        ActionHostError::Unavailable {
+            reason: format!(
+                "{app_id} was launched but did not offer \"{}\" within {:.1} s ({})",
+                address.action,
+                timeout.as_secs_f32(),
+                self.publishers_seen(app_id, room, address),
+            ),
         }
     }
 
@@ -2417,59 +2436,6 @@ impl CapnpBrokerState {
                 .view_of(room, &BrokerActor::for_caller(caller).id)
                 .map_or(LaunchPlace::Aside, |app_id| LaunchPlace::Beside { app_id }),
         }
-    }
-
-    /// Have the host run `app_id` with no window in `room`, for an action
-    /// that shows nothing: whether it does.
-    fn run_windowless(&self, app_id: &str, room: &str) -> Result<bool, ActionHostError> {
-        let started = match (
-            self.launchable.windowless(),
-            self.services.launcher.as_ref(),
-        ) {
-            (Some(stand_in), _) => stand_in(app_id, room),
-            (None, Some(launcher)) => launcher.windowless(app_id, room),
-            (None, None) => Ok(false),
-        };
-        started.map_err(|why| ActionHostError::Unavailable {
-            reason: format!("{app_id} could not run without a window: {why}"),
-        })
-    }
-
-    /// Note whether peer `peer_id`, the connection of `local`, is an
-    /// instance of its app the host runs with no window.
-    pub(super) fn note_windowless(
-        &self,
-        peer_id: u64,
-        local: Option<&super::native_media::LocalAppConnection>,
-    ) {
-        if local.is_some_and(|local| local.windowless)
-            && let Ok(mut windowless) = self.launchable.windowless_peers.lock()
-        {
-            windowless.insert(peer_id);
-        }
-    }
-
-    /// Peer `peer_id` disconnected: forget the window it was for, and that
-    /// it had none.
-    pub(super) fn forget_windows_of(&self, peer_id: u64) {
-        if let Ok(mut windows) = self.window_instances.lock() {
-            windows.remove(&peer_id);
-        }
-        if let Ok(mut windowless) = self.launchable.windowless_peers.lock() {
-            windowless.remove(&peer_id);
-        }
-    }
-
-    /// Whether peer `peer_id` may take an invocation of `action`: an
-    /// instance with no window takes every action but `open`, which shows
-    /// what it opens and so goes to a window.
-    pub(super) fn shows(&self, peer_id: u64, action: &str) -> bool {
-        action != APPLICATION_OPEN_ACTION
-            || self
-                .launchable
-                .windowless_peers
-                .lock()
-                .is_ok_and(|windowless| !windowless.contains(&peer_id))
     }
 
     /// The live connection of `app_id` in `room` that publishes `address`

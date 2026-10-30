@@ -9,16 +9,14 @@ use tasks::model::{
     ConfirmationState, Issue, MessageKind, ModelChoice, RunPhase, Tracker, issue_resource,
 };
 use tilo_action_broker::services::{
-    NativeTaskActionRequirement, TRACKER_APP, TrackerAnswer, TrackerDirection, TrackerQuestion,
-    TrackerRun, TrackerRuns,
+    NativeTaskActionRequirement, TRACKER_APP, TRACKER_RECORD, TrackerAnswer, TrackerDirection,
+    TrackerQuestion, TrackerRun, TrackerRuns,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_resource::{Id, Reader};
 
 use super::NativeOwnerCommitService;
 
-/// The tracker's record: the app's one record of the workspace.
-const TRACKER_RECORD: &str = "";
 /// The largest tracker the broker reads.
 const MAX_TRACKER_BYTES: usize = 16 * 1024 * 1024;
 /// How far up a chain of parents a run's model is looked for. A tracker
@@ -176,6 +174,17 @@ impl NativeTrackerRuns {
             .lock_recover()
             .get(room)
             .map(|(revision, _)| *revision);
+        // A sealed room's owner keeps no replica of its records: the tracker
+        // is what the sealed writes this device holds of it make, as an
+        // app's read of it is.
+        let route = tilo_action_broker::route::CrdtRoute::record(
+            TRACKER_APP,
+            room.to_owned(),
+            TRACKER_RECORD,
+        );
+        if self.owner.reads_sealed_writes(room_id, &route) {
+            return self.sealed_tracker(room, room_id, &route, known);
+        }
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         let read = owner.with_current(room_id, |view| {
             view.read_document_with_history(
@@ -199,11 +208,7 @@ impl NativeTrackerRuns {
             Ok(DocumentRead::Captured(document)) => {
                 let doc = automerge::AutoCommit::load(&document.bytes)
                     .map_err(|error| format!("the tracker does not load: {error}"))?;
-                let tracker = Arc::new(TrackerView::of(
-                    Reader::<Tracker>::read(&doc)
-                        .map_err(|error| format!("the tracker does not read: {error}"))?
-                        .state(),
-                ));
+                let tracker = view_of(&doc)?;
                 held.insert(room.to_owned(), (document.revision, tracker.clone()));
                 Ok(Some(tracker))
             }
@@ -220,6 +225,51 @@ impl NativeTrackerRuns {
             Err(error) => Err(error),
         }
     }
+}
+
+impl NativeTrackerRuns {
+    /// Sealed `room`'s tracker as the sealed writes this device holds of it
+    /// make it; the one read last while the channel's keys are on their way.
+    fn sealed_tracker(
+        &self,
+        room: &str,
+        room_id: super::super::state::RoomId,
+        route: &tilo_action_broker::route::CrdtRoute,
+        known: Option<[u8; 32]>,
+    ) -> Result<Option<Arc<TrackerView>>, String> {
+        use super::committed_document::HeldSealed;
+        let held_view = |held: &HashMap<String, Read>| held.get(room).map(|(_, view)| view.clone());
+        match self
+            .owner
+            .held_sealed_record(room_id, route, MAX_TRACKER_BYTES)?
+        {
+            HeldSealed::Readable(mut doc) => {
+                let revision = tilo_peer_state::committed_document_revision(&doc.get_heads());
+                if known == Some(revision) {
+                    return Ok(held_view(&self.read.lock_recover()));
+                }
+                let tracker = view_of(&doc)?;
+                self.read
+                    .lock_recover()
+                    .insert(room.to_owned(), (revision, tracker.clone()));
+                Ok(Some(tracker))
+            }
+            HeldSealed::Waiting => Ok(held_view(&self.read.lock_recover())),
+            HeldSealed::Incomplete { missing } => Err(format!(
+                "the sealed writes this device holds of the tracker build on {missing} \
+                 change(s) it does not hold"
+            )),
+        }
+    }
+}
+
+/// The tracker `doc` holds, as the shell reads it.
+fn view_of(doc: &automerge::AutoCommit) -> Result<Arc<TrackerView>, String> {
+    Ok(Arc::new(TrackerView::of(
+        Reader::<Tracker>::read(doc)
+            .map_err(|error| format!("the tracker does not read: {error}"))?
+            .state(),
+    )))
 }
 
 /// The runs `tracker` holds: every issue with a run, as the broker reads it.
@@ -289,12 +339,12 @@ fn with_conversation(instruction: String, said: &[tasks::model::Said]) -> String
         if line.len() > room {
             break;
         }
-        room -= line.len();
+        room = room.saturating_sub(line.len());
         kept.push(line);
     }
     let mut out = instruction;
     out.push_str(runtime_collab::INSTRUCTION_CONVERSATION);
-    let left_out = said.len() - kept.len();
+    let left_out = said.len().saturating_sub(kept.len());
     if left_out > 0 {
         let _ = std::fmt::Write::write_fmt(
             &mut out,
@@ -368,13 +418,12 @@ fn run_of(tracker: &Tracker, id: &Id, issue: &Issue) -> Option<TrackerRun> {
         }),
         directions,
         question,
-        // A delegation that does not decode is carried as nothing to verify:
-        // the agent's check refuses it rather than reading the run as a
-        // collaborator's.
+        // A delegation that does not decode is carried with why: the agent's
+        // check refuses the run so, never reading it as a collaborator's.
         delegation: run.delegation.as_deref().map(|hex| {
             tilo_peer_state::join::task_delegation::TaskDelegation::from_hex(hex)
                 .map(|delegation| delegation.encode())
-                .unwrap_or_default()
+                .map_err(|error| error.to_string())
         }),
     })
 }
@@ -433,7 +482,7 @@ impl TrackerRuns for NativeTrackerRuns {
         owner.with_current(room_id, |view| {
             view.peer().workspace().check_admitted_agent(
                 &run.agent,
-                run.delegation.as_deref(),
+                run.delegation()?,
                 std::time::SystemTime::now(),
             )
         })
@@ -449,11 +498,9 @@ impl TrackerRuns for NativeTrackerRuns {
         let owner = &self.owner.opened_owner("tracker owner unavailable")?;
         owner.with_current(room_id, |view| {
             let now = std::time::SystemTime::now();
-            view.peer().workspace().check_admitted_agent(
-                &run.agent,
-                run.delegation.as_deref(),
-                now,
-            )?;
+            view.peer()
+                .workspace()
+                .check_admitted_agent(&run.agent, run.delegation()?, now)?;
             requirement.check_tracker(view.peer(), room, run, now)
         })
     }

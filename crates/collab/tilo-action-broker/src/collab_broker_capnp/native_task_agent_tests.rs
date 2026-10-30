@@ -83,7 +83,7 @@ impl Fixture {
             model: None,
             directions: Vec::new(),
             question: None,
-            delegation: Some(minted.delegation.encode()),
+            delegation: Some(Ok(minted.delegation.encode())),
         });
         self.state.refresh_native_task_delivery();
     }
@@ -295,7 +295,7 @@ async fn a_delegation_signed_by_an_uncertified_device_is_refused() {
             assert!(refused.contains("task delegation refused"), "{refused}");
             // The run's check refuses it too, whoever reads it.
             let mut run = f.native.runs.lock().unwrap()[0].clone();
-            run.delegation = Some(forged.delegation.encode());
+            run.delegation = Some(Ok(forged.delegation.encode()));
             run.agent.clone_from(&forged.delegation.agent_id);
             assert!(f.native.check_agent(&room().to_string(), &run).is_err());
             drop(f);
