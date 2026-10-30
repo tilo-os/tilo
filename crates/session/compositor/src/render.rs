@@ -462,6 +462,8 @@ where
     }
     elements.extend(state.drag_icon_elements(renderer, output));
     elements.extend(state.input_popup_elements(renderer, output));
+    // The layer surfaces above the windows: the bar and its panels.
+    elements.extend(state.layer_elements(renderer, output, true, geometry, output_scale));
     hosted(renderer, &mut elements, false);
     elements.extend(window_elements(
         renderer,
@@ -477,6 +479,8 @@ where
             .collect(),
     ));
     hosted(renderer, &mut elements, true);
+    // The layer surfaces below the windows: the desk.
+    elements.extend(state.layer_elements(renderer, output, false, geometry, output_scale));
     elements
 }
 

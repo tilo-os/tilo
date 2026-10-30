@@ -40,6 +40,7 @@ pub mod host;
 pub mod idle;
 pub mod input;
 pub mod keys;
+mod layer;
 mod lock;
 pub mod output;
 mod output_management;
@@ -303,7 +304,7 @@ impl Compositor {
         /// checks still run.
         const IDLE: Duration = Duration::from_millis(250);
         let now = std::time::Instant::now();
-        let backend = self.data.backend.next_deadline();
+        let backend = self.data.backend.next_deadline(&self.data.state);
         // A running visual alert fades frame by frame.
         let alert = a11y::flashing(&self.data.state, now)
             .then(|| now.checked_add(a11y::FLASH_STEP).unwrap_or(now));
@@ -327,6 +328,7 @@ impl Compositor {
     pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
         host.outputs_changed(&self.data.state.hosted_outputs());
         self.data.state.hosts.push(host);
+        self.data.state.mark_redraw_all();
     }
 
     /// Connect a client over a socket pair; the returned end is the
@@ -450,6 +452,7 @@ impl Compositor {
         {
             self.a11y.magnifier.zoom = zoom.min(f64::from(u8::MAX)) as u8;
         }
+        self.data.state.mark_redraw_all();
     }
 
     /// The magnifier's zoom; 1 is off.
@@ -545,6 +548,7 @@ impl Compositor {
             Some(effect) => self.data.state.effects.insert(id, effect),
             None => self.data.state.effects.remove(&id),
         };
+        self.data.state.mark_redraw_all();
     }
 
     /// How every window is framed (its corners, its shadow, its edge) from
@@ -552,6 +556,7 @@ impl Compositor {
     /// [`WindowFrame::square`] through [`Compositor::set_window_frame_for`].
     pub fn set_window_frame(&mut self, frame: WindowFrame) {
         self.data.state.frame = frame;
+        self.data.state.mark_redraw_all();
     }
 
     /// Frame the window `id` with `frame` instead of the desktop's, or as
@@ -561,6 +566,7 @@ impl Compositor {
             Some(frame) => self.data.state.window_frames.insert(id, frame),
             None => self.data.state.window_frames.remove(&id),
         };
+        self.data.state.mark_redraw_all();
     }
 
     /// The windows that closed and are still drawn from the last buffer
@@ -581,6 +587,7 @@ impl Compositor {
     /// frame on.
     pub fn release_snapshot(&mut self, id: u64) {
         self.data.state.release_snapshot(id);
+        self.data.state.mark_redraw_all();
     }
 
     /// Night light's colour temperature, while it is on.
@@ -1150,8 +1157,12 @@ impl Compositor {
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
         self.seed_visuals();
+        let mut drew = false;
         for host in &mut self.data.state.hosts {
-            host.prepare_frame();
+            drew |= host.prepare_frame();
+        }
+        if drew {
+            self.data.state.mark_redraw_all();
         }
         // A frame can move windows (a strip panning, a group resizing): the
         // policy places them where the surfaces just laid them out.
@@ -1179,6 +1190,22 @@ impl Compositor {
     /// apps that exited.
     pub fn take_exited_pids(&mut self) -> Vec<u32> {
         self.data.state.take_exited_pids()
+    }
+
+    /// The areas the layer surfaces on `output` keep for themselves at its
+    /// edges, as logical rectangles `(x, y, w, h)`: what the desktop keeps
+    /// windows and the desk itself out of (the bar's height along the top).
+    pub fn reserved(&self, output: &str) -> Vec<(i32, i32, i32, i32)> {
+        self.data
+            .state
+            .space
+            .outputs()
+            .find(|known| known.name() == output)
+            .map(|output| self.data.state.layer_reserved(output))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+            .collect()
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,

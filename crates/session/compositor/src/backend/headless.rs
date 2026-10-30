@@ -125,6 +125,10 @@ impl Backend for HeadlessBackend {
             if output.dark {
                 continue;
             }
+            // Nothing new to show: an idle output draws nothing.
+            if !state.take_redraw(&output.output) {
+                continue;
+            }
             let elements = output_elements(&mut self.renderer, state, &output.output);
             let mut framebuffer = self
                 .renderer

@@ -639,13 +639,13 @@ impl Backend for DrmBackend {
         libinput::arm_ticker(&self.input, &self.handle);
     }
 
-    fn next_deadline(&self) -> Option<Instant> {
+    fn next_deadline(&self, state: &State) -> Option<Instant> {
         let inner = self.inner.borrow();
         inner
             .gpus
             .values()
             .flat_map(|gpu| gpu.outputs.values())
-            .filter(|lit| !lit.queued && !lit.dark)
+            .filter(|lit| !lit.queued && !lit.dark && state.redraw_owed(&lit.output))
             .map(|lit| lit.next_frame)
             .min()
     }
@@ -653,7 +653,7 @@ impl Backend for DrmBackend {
 
 /// Draw every output that is not waiting for a vertical blank and whose
 /// next frame is due.
-fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
+fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let mut inner = inner.borrow_mut();
     if !inner.active {
         return;
@@ -680,7 +680,7 @@ fn render_gpu(
     renderers: &mut Renderers,
     primary: DrmNode,
     config: &DisplayConfig,
-    state: &State,
+    state: &mut State,
     now: Instant,
 ) {
     let Gpu {
@@ -704,6 +704,10 @@ fn render_gpu(
             );
         }
         if lit.queued || lit.dark || now < lit.next_frame {
+            continue;
+        }
+        // Nothing new to show: an idle output draws nothing.
+        if !state.take_redraw(&lit.output) {
             continue;
         }
         // The build starts at its deadline; a wakeup a refresh or more
@@ -1302,7 +1306,7 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
-                render_ready(&vblank_inner, &data.state);
+                render_ready(&vblank_inner, &mut data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
         })

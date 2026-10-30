@@ -26,8 +26,9 @@ pub trait Backend {
     fn render(&mut self, state: &mut State) -> Result<(), BackendError>;
 
     /// When the backend next wants [`Backend::render`] called with no event
-    /// to bring it (an output whose frame is due).
-    fn next_deadline(&self) -> Option<std::time::Instant> {
+    /// to bring it: an output with something new to show that cannot take a
+    /// frame yet. Nothing owed, nothing due: the compositor sleeps.
+    fn next_deadline(&self, _state: &State) -> Option<std::time::Instant> {
         None
     }
 

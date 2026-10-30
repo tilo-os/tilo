@@ -188,10 +188,18 @@ fn handle_event(inner: &Rc<RefCell<Inner>>, state: &mut State, event: WinitEvent
             inner.output.set_preferred(mode);
             inner.damage = OutputDamageTracker::from_output(&inner.output);
             inner.next_frame = Instant::now();
+            let output = inner.output.clone();
             drop(inner);
+            state.mark_redraw(&output);
             state.rearrange();
         }
-        WinitEvent::Redraw => inner.borrow_mut().next_frame = Instant::now(),
+        WinitEvent::Redraw => {
+            let mut inner = inner.borrow_mut();
+            inner.next_frame = Instant::now();
+            let output = inner.output.clone();
+            drop(inner);
+            state.mark_redraw(&output);
+        }
         WinitEvent::CloseRequested => inner.borrow_mut().closed = true,
         WinitEvent::Focus(_) => {}
     }
@@ -207,6 +215,10 @@ impl Backend for NestedBackend {
         let inner = &mut *guard;
         let now = Instant::now();
         if inner.closed || inner.dark || now < inner.next_frame {
+            return Ok(());
+        }
+        // Nothing new to show: an idle session draws nothing.
+        if !state.take_redraw(&inner.output) {
             return Ok(());
         }
         let age = inner.window.buffer_age().unwrap_or(0);
@@ -342,17 +354,19 @@ impl Backend for NestedBackend {
         Ok(())
     }
 
-    fn next_deadline(&self) -> Option<Instant> {
+    fn next_deadline(&self, state: &State) -> Option<Instant> {
         let inner = self.inner.borrow();
-        (!inner.closed && !inner.dark).then_some(inner.next_frame)
+        let ready = !inner.closed && !inner.dark && state.redraw_owed(&inner.output);
+        ready.then_some(inner.next_frame)
     }
 
-    fn set_power(&mut self, _state: &mut State, _name: &str, on: bool) -> Result<(), BackendError> {
+    fn set_power(&mut self, state: &mut State, _name: &str, on: bool) -> Result<(), BackendError> {
         let mut inner = self.inner.borrow_mut();
         inner.dark = !on;
         if on {
             inner.next_frame = Instant::now();
             inner.damage = OutputDamageTracker::from_output(&inner.output);
+            state.mark_redraw(&inner.output);
         }
         Ok(())
     }

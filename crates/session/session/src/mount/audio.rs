@@ -24,7 +24,7 @@ const SOUND: &str = tilo_audio_service::sound::SOUND;
 /// Land what the audio service reads of the sound, if it publishes it and
 /// this session has a device to show it on. Returns whether the person's
 /// panel has that reading now.
-pub fn land(shared: &Shared) -> bool {
+pub(crate) fn land(shared: &Shared) -> bool {
     let Some(device) = &shared.device else {
         return false;
     };
@@ -46,7 +46,7 @@ pub fn land(shared: &Shared) -> bool {
 /// Carry out a sound effect quick settings asked of the desktop through the
 /// audio service. Returns whether this was one; `false` leaves it to the
 /// other things the session follows.
-pub fn follow(shared: &Shared, request: &SessionRequest) -> bool {
+pub(crate) fn follow(shared: &Shared, request: &SessionRequest) -> bool {
     let SessionRequest::Effect(effect) = request else {
         return false;
     };

@@ -351,8 +351,6 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 # Host-side identity lifecycle: new records are moved into Secret Service (or
 # the explicitly reported private-file fallback) before the ceremony returns.
 runtime-identity = { path = "../../runtime/runtime-identity" }
-tilo-onboarding-host = { path = "../onboarding-host" }
-tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # Length-prefixed framing for the identity, pairing and collaboration sockets.
 wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 # Identity key generation draws from getrandom's `SysRng`; `rand_core`

@@ -98,6 +98,9 @@ impl State {
                 },
             );
         }
+        // The session's own surfaces are clients too: they hear of the frame
+        // with everyone else.
+        self.layer_frame_drawn(output, time, &mut feedback, states);
         if let CursorImageStatus::Surface(surface) = &self.cursor.status {
             send_frames_surface_tree(surface, output, time, Some(Duration::ZERO), |_, _| {
                 Some(output.clone())

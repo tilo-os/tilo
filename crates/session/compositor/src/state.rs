@@ -125,6 +125,9 @@ pub struct State {
     /// Toplevels a client created that have not shown a buffer yet.
     unmapped: Vec<Window>,
     pub(crate) popups: PopupManager,
+    /// The surfaces that place themselves on a layer of an output
+    /// (`zwlr_layer_shell_v1`).
+    pub(crate) layers: crate::layer::Layers,
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     /// The outputs the hosted surfaces were last told of.
@@ -176,6 +179,9 @@ pub struct State {
     /// The processes whose clients disconnected since the session last
     /// looked: the apps that exited.
     pub(crate) exited: Arc<std::sync::Mutex<Vec<u32>>>,
+    /// The outputs whose next frame must be drawn: something that shows
+    /// changed on them since the last one. An idle session draws nothing.
+    pub(crate) redraw: Vec<Output>,
     /// The compositor's event loop, for work the window manager schedules.
     pub(crate) loop_handle:
         Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
@@ -212,6 +218,7 @@ impl State {
             space: Space::default(),
             unmapped: Vec::new(),
             popups: PopupManager::default(),
+            layers: crate::layer::Layers::new(display),
             policy,
             hosts: Vec::new(),
             told_outputs: Vec::new(),
@@ -248,6 +255,7 @@ impl State {
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
             input_observer: None,
+            redraw: Vec::new(),
             loop_handle: None,
         }
     }
@@ -263,9 +271,40 @@ impl State {
         u32::try_from(self.now().as_millis() & u128::from(u32::MAX)).unwrap_or_default()
     }
 
+    /// `output` must be drawn again: something that shows on it changed
+    /// since its last frame.
+    pub(crate) fn mark_redraw(&mut self, output: &Output) {
+        if self.redraw_owed(output) {
+            return;
+        }
+        self.redraw.push(output.clone());
+    }
+
+    /// Every output must be drawn again.
+    pub(crate) fn mark_redraw_all(&mut self) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in outputs {
+            self.mark_redraw(&output);
+        }
+    }
+
+    /// Whether `output` has something to show its last frame did not.
+    pub(crate) fn redraw_owed(&self, output: &Output) -> bool {
+        self.redraw.iter().any(|owed| owed == output)
+    }
+
+    /// [`State::redraw_owed`], forgetting the debt: a frame is drawn now.
+    pub(crate) fn take_redraw(&mut self, output: &Output) -> bool {
+        let owed = self.redraw_owed(output);
+        self.redraw.retain(|owed| owed != output);
+        owed
+    }
+
     pub(crate) fn add_output(&mut self, output: &Output, location: Point<i32, Logical>) {
         self.space.map_output(output, location);
+        self.place_layers();
         self.rearrange();
+        self.mark_redraw(output);
     }
 
     /// Stop showing anything on `output` (it was disconnected) and
@@ -275,7 +314,9 @@ impl State {
         self.space.refresh();
         self.disabled_outputs.retain(|disabled| disabled != output);
         crate::output::withdraw(output, &self.display);
+        self.place_layers();
         self.rearrange();
+        self.mark_redraw_all();
     }
 
     /// The hosted surface that has the pointer.
@@ -315,6 +356,8 @@ impl State {
         if outputs == self.told_outputs {
             return;
         }
+        // Layer surfaces follow the output they are on.
+        self.place_layers();
         for host in &mut self.hosts {
             host.outputs_changed(&outputs);
         }
@@ -370,6 +413,7 @@ impl State {
             index,
             frame: self.framing(window).frame,
         });
+        self.mark_redraw_all();
     }
 
     /// Ask the window `id` to close, as its own close button would: the
@@ -440,6 +484,22 @@ impl State {
         }
     }
 
+    /// The client surface under a logical point, with where it starts in the
+    /// logical layout: a layer surface above the windows, else a window's,
+    /// else a layer surface below them.
+    pub(crate) fn pointer_surface_under(
+        &self,
+        point: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if let Some((surface, origin)) = self.layer_surface_under(point, true) {
+            return Some((surface, origin));
+        }
+        if let Some((_, surface, origin)) = self.surface_under(point) {
+            return Some((surface, origin));
+        }
+        self.layer_surface_under(point, false)
+    }
+
     /// The window under a logical point, with its surface and that surface's
     /// origin in the logical layout.
     pub(crate) fn surface_under(
@@ -490,6 +550,8 @@ impl State {
         {
             return;
         }
+        // Input changes what shows: hover, a press, the pointer itself.
+        self.mark_redraw_all();
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
         match event {
@@ -676,9 +738,7 @@ impl State {
                 None
             }
             PointerTarget::Clients if self.locked() => self.lock_surface_under(location),
-            PointerTarget::Clients => self
-                .surface_under(location)
-                .map(|(_, surface, origin)| (surface, origin)),
+            PointerTarget::Clients => self.pointer_surface_under(location),
         };
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -770,6 +830,7 @@ impl State {
     }
 
     pub(crate) fn focus_window(&mut self, window: &Window, serial: Serial) {
+        self.mark_redraw_all();
         // A modal dialog of the window takes the focus in its place, with
         // the window raised under it.
         self.space.raise_element(window, true);
@@ -927,10 +988,16 @@ impl State {
 
     /// Drop windows whose clients went away and refresh output membership.
     pub(crate) fn refresh(&mut self) {
+        // A closed window is one the frame shows no more.
+        let shown = self.space.elements().count();
         self.space.refresh();
+        if self.space.elements().count() != shown {
+            self.mark_redraw_all();
+        }
         self.popups.cleanup();
         self.unmapped.retain(IsAlive::alive);
         self.sync_toplevels();
+        self.layers.refresh();
     }
 }
 
@@ -960,6 +1027,7 @@ impl State {
                 self.focus_window(&window, serial);
             }
         }
+        self.layer_focus_on_press(point);
     }
 }
 
@@ -1111,6 +1179,11 @@ impl CompositorHandler for State {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+        // A client drew: the frame it committed is on its way.
+        self.mark_redraw_all();
+        if self.layers.holds(surface) {
+            self.layer_committed(surface);
+        }
         self.drag_icon_commit(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
