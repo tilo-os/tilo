@@ -70,6 +70,12 @@ SECOND_SHARE = 0.25
 # The packages kept on x86_64 when a test set is split: their code or tests differ by
 # architecture and CI tests them on x86_64.
 X86_ONLY = {"shell"}
+# A change to what the session's real paths cross (the shell, collaboration, the tilolang host
+# and tilolang-tilo) also runs scripts/headless-examples/session-e2e.py: one headless nested
+# session of this tree, built on the arm builder and run here, since the builders' containers
+# cannot start Tilo's sandboxes.
+SESSION_E2E_PATHS = ("crates/session/shell/", "crates/collab/", "crates/platform/tilolang-host/",
+                     "crates/platform/tilolang-tilo/", "scripts/headless-examples/session-e2e.py")
 # nextest's status line for a test that did not pass, and the test it names.
 FAILED_LINE = re.compile(
     r"^\s*(?:TRY \d+ )?(FAIL|TIMEOUT|LEAK-FAIL|ABORT|SIG[A-Z]+)\s+\[[^\]]*\]\s+"
@@ -508,6 +514,14 @@ def main() -> int:
             if mine:
                 spawn(f"{label}-failed", failed_first(builder, packages, mine))
             spawn(label, test_share(builder, packages, mine))
+
+    # The session's real paths, end to end: built once on the arm builder, run on this machine.
+    changed_files = plan.get("changed_files", [])
+    if args.changed and want("test") and any(path.startswith(SESSION_E2E_PATHS) for path in changed_files):
+        spawn("session-e2e", lambda job: job.run(
+            "session e2e (scripts/headless-examples/session-e2e.py)", Builder("local", None),
+            [sys.executable, "scripts/headless-examples/session-e2e.py", "--build",
+             "--out", "target/session-e2e"]))
 
     for thread in threads:
         thread.join()
