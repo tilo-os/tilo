@@ -337,6 +337,36 @@ impl PageRequest {
         }
     }
 
+    /// Whether the request only looks at the page, as any visitor can: it
+    /// reads the document, its picture, its messages or its requests, or
+    /// waits for it, and the page sees none of it. Everything else acts on
+    /// the page: it moves the pointer, types, scrolls, submits or changes
+    /// how the page is shown.
+    pub const fn only_observes(&self) -> bool {
+        match self {
+            Self::Outline { .. }
+            | Self::Changes { .. }
+            | Self::At { .. }
+            | Self::Settle { .. }
+            | Self::Console { .. }
+            | Self::Network { .. }
+            | Self::Capture { .. }
+            | Self::Find { .. } => true,
+            Self::Click { .. }
+            | Self::Hover { .. }
+            | Self::Drag { .. }
+            | Self::Path { .. }
+            | Self::Fill { .. }
+            | Self::Select { .. }
+            | Self::FillFiles { .. }
+            | Self::Press { .. }
+            | Self::Submit { .. }
+            | Self::Reader { .. }
+            | Self::Pointer { .. }
+            | Self::Scroll { .. } => false,
+        }
+    }
+
     /// What the request does, in the words an answer that a dialog it opened
     /// cut short repeats: `Clicked element d1e5`, `Submitted form d1e7`.
     pub fn described(&self) -> String {
