@@ -919,6 +919,15 @@ impl CollaborationManager {
         manager
     }
 
+    /// Hand the transport the callback that schedules this owner's next
+    /// frame ([`CollabTransport::set_wake`]): what a transport answered
+    /// outside a drain of its own calls instead of waiting for one.
+    pub fn set_transport_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {
+        if let Backend::Transport(transport) = &mut self.backend {
+            transport.set_wake(wake);
+        }
+    }
+
     /// Connects to the launcher-inherited collaboration service when this
     /// build has one, entering Disabled mode when it is unavailable.
     ///

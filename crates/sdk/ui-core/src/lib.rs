@@ -331,6 +331,7 @@ pub mod snap;
 pub mod state;
 pub mod strip_layers;
 pub mod surface;
+pub mod surface_peer;
 pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;

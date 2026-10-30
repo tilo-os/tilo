@@ -1312,12 +1312,27 @@ fn selected_local_construction()
     .map_err(LaunchError::Operation)
 }
 
+/// The actions socket the session handed this process, when it is a
+/// surface app's: `None` when the number in [`crate::surface_peer::ACTIONS_FD_ENV`]
+/// names no socket.
+#[cfg(feature = "native")]
+fn surface_peer() -> Option<crate::surface_peer::SurfacePeer> {
+    let number = std::env::var(crate::surface_peer::ACTIONS_FD_ENV).ok()?;
+    let number: i32 = number.trim().parse().ok()?;
+    crate::surface_peer::SurfacePeer::from_descriptor(number)
+}
+
 #[cfg(feature = "native")]
 fn native_launch_manager(
     spec: &LaunchSpec,
     args: &LaunchArgs,
 ) -> Result<crate::collaboration::CollaborationManager, LaunchError> {
     crate::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
+    // A surface app is handed the actions of the desktop that places its
+    // window, in place of a room it never joins.
+    if let Some(peer) = surface_peer() {
+        return Ok(crate::collaboration::CollaborationManager::with_peer_transport(peer));
+    }
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }

@@ -41,6 +41,11 @@ pub trait PeerTransport {
     ) -> Result<(), String> {
         Err("document encryption unavailable".into())
     }
+    /// Install the callback that schedules this owner's next frame, as
+    /// [`super::CollabTransport::set_wake`] does for a host-supplied
+    /// transport: a peer answered on a thread of its own calls it, so what
+    /// it carries is not left waiting for an unrelated frame.
+    fn set_wake(&mut self, _wake: Box<dyn Fn() + Send + Sync>) {}
 }
 
 /// Drives a host-owned [`PeerTransport`] through the manager's single
@@ -193,6 +198,13 @@ impl super::CollabTransport for PeerTransportAdapter {
         self.check_owner();
         if self.closed.is_none() {
             out.extend(self.peer.poll());
+        }
+    }
+
+    fn set_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {
+        self.check_owner();
+        if self.closed.is_none() {
+            self.peer.set_wake(wake);
         }
     }
 

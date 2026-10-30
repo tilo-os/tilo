@@ -44,6 +44,7 @@ mod questions;
 mod search;
 mod setup;
 mod sheets;
+pub mod surfaces;
 pub mod sync;
 mod system_sounds;
 pub mod unlock;
@@ -177,6 +178,9 @@ pub struct Options {
     /// The portal's link to the loop: what shares the session's screens,
     /// drives its seat and passes its selection.
     pub portal: Option<portal_link::SessionLink>,
+    /// The surface apps the session runs as its own processes, each a client
+    /// of its compositor.
+    pub surfaces: Vec<surfaces::Surface>,
     /// Where this device keeps what outlives a session: the desk as it was
     /// left, and the pictures on it. Without one, the session starts on a
     /// fresh desk and keeps nothing (tests and screenshots).
@@ -266,6 +270,7 @@ impl Default for Options {
             desktop: None,
             questions: None,
             portal: None,
+            surfaces: Vec::new(),
             state: None,
             collab: true,
             fabric: None,
@@ -1026,6 +1031,8 @@ pub struct Session {
     /// The watch that keeps the notification policy current; dropping it
     /// stops the news.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
+    /// The surface apps the session started, and those still running.
+    surfaces: surfaces::Surfaces,
 }
 
 /// The lock screen's passwords being checked, off the loop.
@@ -1265,6 +1272,7 @@ impl Session {
             running: Vec::new(),
             pids: std::collections::BTreeMap::new(),
             _settings_watch: settings_watch,
+            surfaces: surfaces::Surfaces::default(),
             ended: false,
             magnifier: (
                 settings_store::magnifier::OFF,
@@ -1307,6 +1315,43 @@ impl Session {
     /// The compositor, to connect clients, route input and read frames.
     pub fn compositor(&mut self) -> &mut Compositor {
         &mut self.compositor
+    }
+
+    /// The surface apps the session started, and those still running.
+    #[must_use]
+    pub const fn surfaces(&self) -> &surfaces::Surfaces {
+        &self.surfaces
+    }
+
+    /// Start `surface` now, as a client of the running compositor.
+    ///
+    /// # Errors
+    /// Its socket or process could not be made.
+    pub fn start_surface(
+        &mut self,
+        surface: &surfaces::Surface,
+    ) -> Result<(), surfaces::StartError> {
+        self.surfaces.start(&mut self.compositor, surface)
+    }
+
+    /// Stop the surface app `name`, if it runs.
+    pub fn stop_surface(&mut self, name: &str) {
+        self.surfaces.stop(name);
+    }
+
+    /// Ask the surface app `name` to run `action` of `resource`, as one of
+    /// the actions it publishes, and name the invocation `id`; `None` when
+    /// no such app runs. Its answering carries on in the session's turns
+    /// ([`Surfaces::outcome`](surfaces::Surfaces::outcome)).
+    pub fn ask_surface(
+        &mut self,
+        name: &str,
+        resource: &str,
+        action: &str,
+        argument: Option<&str>,
+        actor: &str,
+    ) -> Option<u64> {
+        self.surfaces.ask(name, resource, action, argument, actor)
     }
 
     /// The desktop under the windows and its policy.
@@ -1713,6 +1758,8 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
+        self.surfaces.poll();
+        self.surfaces.serve(&mut self.shared.doors);
         self.shared.services.borrow_mut().poll();
         let compositor = &mut self.compositor;
         self.shared
@@ -1822,6 +1869,22 @@ fn mount_quick_settings(
 /// The system services' published side, behind the session's door like
 /// every hosted surface: one action host for all of them.
 struct ServiceDoor(Rc<RefCell<Services>>);
+
+/// A surface app reaches the desktop's actions exactly as a person's
+/// palette does: through the door over every surface it hosts.
+impl surfaces::ActionDoor for tilo_surface_host::Doors {
+    fn resources(&mut self) -> Vec<ResourceSpec> {
+        tilo_surface_host::Doors::resources(self)
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        tilo_surface_host::Doors::invoke(self, address, arguments)
+    }
+}
 
 impl Published for ServiceDoor {
     fn resources(&mut self) -> Vec<ResourceSpec> {

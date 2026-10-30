@@ -4976,6 +4976,15 @@ impl App {
                 let _ = wake_proxy.send_event(UserEvent::Wake(event));
             })
             .expect("App wake scope must be open and unbound at native startup");
+        // A transport answered on a socket of its own (a surface's session)
+        // wakes the loop: what it carries is applied by a frame that would
+        // otherwise never run.
+        if let Some(scope) = self.wake_scope.as_ref() {
+            let wake = scope.handle();
+            self.collaboration
+                .manager
+                .set_transport_wake(Box::new(move || wake.wake()));
+        }
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
