@@ -313,11 +313,20 @@ fn start_run(issue: &mut Issue, starter: String, now: i64) -> Result<u64, Refusa
         .map_or(0, |run| run.epoch)
         .saturating_add(1);
     let model = issue.model.clone();
+    // A task agent's delegation is for its task (this issue) and the person
+    // it acts for: the issue's next run by the same agent for the same
+    // person carries it, so a conversation goes on with the agent made for
+    // it. Anyone else starts a run its delegation does not cover.
+    let delegation = issue
+        .run
+        .as_ref()
+        .filter(|previous| previous.agent.0 == agent && previous.starter == starter)
+        .and_then(|previous| previous.delegation.clone());
     issue.run = Some(Run {
         epoch,
         agent: ui::tilo_resource::Atom(agent),
         starter,
-        delegation: None,
+        delegation,
         model,
         device: None,
         phase: RunPhase::Approved,

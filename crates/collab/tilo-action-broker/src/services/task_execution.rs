@@ -345,6 +345,10 @@ pub struct TrackerRun {
     pub starter: String,
     /// Whether the run is still going.
     pub active: bool,
+    /// Whether the run ended by its own agent's report (done or failed),
+    /// rather than by its person's Stop or a newer run: its agent may still
+    /// hear how its own last steps ended, and acts no more.
+    pub finished_by_agent: bool,
     /// Where a person paused it: the messages to it its agent had taken in
     /// then. Its agent takes no new step until a person lets it go on.
     pub paused_through: Option<u64>,

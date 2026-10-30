@@ -228,6 +228,12 @@ impl Session {
         {
             anyhow::bail!("native task control belongs to another run or frontier");
         }
+        // A poll sent before the agent took messages in is answered from
+        // the frontier it was sent at: what it holds was taken in already,
+        // and anything newer comes with the next poll from the new frontier.
+        if control.from_revision < state.revision {
+            return Ok(());
+        }
         if control.from_revision != state.revision {
             anyhow::bail!("native task control belongs to another instruction frontier");
         }

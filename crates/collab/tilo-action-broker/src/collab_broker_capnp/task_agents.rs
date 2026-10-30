@@ -56,6 +56,32 @@ pub(super) fn task_still_goes(
     Ok(())
 }
 
+/// Whether a task agent's session is still heard: its task goes
+/// ([`task_still_goes`]), or its own agent just finished it (done or failed),
+/// so it hears how its last steps ended and tells its host. A run its person
+/// stopped, or a newer run of the issue, ends the session at once. A run
+/// finished this way admits no action: each is admitted against a going
+/// run on its own.
+///
+/// # Errors
+/// As [`task_still_goes`], for a run its agent did not finish.
+pub(super) fn task_still_heard(
+    runs: &[crate::services::TrackerRun],
+    task: &TaskDelegation,
+) -> Result<(), String> {
+    let finished_by_it = runs.iter().any(|run| {
+        run.issue == task.work_group
+            && run.finished_by_agent
+            && run.agent == task.agent_id
+            && run.delegation() == Ok(Some(task.encode().as_slice()))
+    });
+    if finished_by_it {
+        Ok(())
+    } else {
+        task_still_goes(runs, task)
+    }
+}
+
 /// Admit a task agent's join: the asking device's certificate is admitted
 /// to the room as any device's is (in its device list, not revoked), it
 /// signed the task delegation for this room inside both windows, and the
@@ -153,6 +179,19 @@ impl CapnpBrokerState {
         }
         self.task_goes(room, task)
             .map_err(|error| format!("task agent join rejected: {error}"))
+    }
+
+    /// Whether the session of the task agent `task` was delegated for is
+    /// still heard in `room` ([`task_still_heard`]).
+    ///
+    /// # Errors
+    /// The tracker cannot be read, or the task ended other than by its agent.
+    pub(super) fn task_heard(&self, room: &str, task: &TaskDelegation) -> Result<(), String> {
+        let runs = self
+            .tracker_runs(room)
+            .ok_or("the room's tracker is unavailable")?
+            .runs(room)?;
+        task_still_heard(&runs, task)
     }
 
     /// Whether the task `task` was delegated for still goes in `room`'s
