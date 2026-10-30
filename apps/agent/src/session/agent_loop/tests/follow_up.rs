@@ -19,7 +19,7 @@ impl TurnTransport for ReadsTheConversation {
     fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
         let turn = {
             let mut bodies = self.bodies.lock().unwrap();
-            bodies.push(request.body.clone());
+            bodies.push(request.body);
             bodies.len() - 1
         };
         let first = self.bodies.lock().unwrap()[0].to_string();

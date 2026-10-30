@@ -79,12 +79,12 @@ fn letters() -> World {
 }
 
 /// A budget for a long chat task.
-fn long_budget(turns: u32) -> Option<collab_types::task_budget::TaskExecutionBudget> {
-    Some(collab_types::task_budget::TaskExecutionBudget {
+fn long_budget(turns: u32) -> collab_types::task_budget::TaskExecutionBudget {
+    collab_types::task_budget::TaskExecutionBudget {
         turn_ms: 20_000,
         total_ms: 600_000,
         max_turns: Some(turns),
-    })
+    }
 }
 
 /// A fixture whose model is `decide`, declaring `model`.
@@ -159,7 +159,7 @@ fn put_aside(body: &Value) -> Vec<String> {
 /// item's last turn.
 fn read_turn(turn: usize) -> Vec<(&'static str, Value)> {
     let mut input = invoke("read-letter", &serde_json::json!({"letter": turn + 1})).1;
-    if (turn + 1) % TURNS_PER_ITEM == 0 {
+    if (turn + 1).is_multiple_of(TURNS_PER_ITEM) {
         let done = (turn + 1) / TURNS_PER_ITEM;
         input["progress"] = serde_json::json!({
             "done": done, "of": ITEMS, "item": format!("reviewed candidate {done}")
@@ -190,7 +190,7 @@ fn a_150_turn_run_of_8_items_stays_within_its_models_context() {
     let (mut f, reading) = reading_fixture(
         "Go through today's applications and review each",
         letters(),
-        long_budget(200),
+        Some(long_budget(200)),
         model_with_context(),
         Box::new(move |turn, body| {
             match turn {
@@ -269,7 +269,7 @@ fn a_confirmation_inside_a_long_run_waits_and_the_run_goes_on() {
             awaiting: Some(("append-paragraph".into(), 1)),
             ..letters()
         },
-        long_budget(120),
+        Some(long_budget(120)),
         model_with_context(),
         Box::new(|turn, _| match turn {
             60 => vec![invoke(
@@ -288,12 +288,12 @@ fn a_confirmation_inside_a_long_run_waits_and_the_run_goes_on() {
         }
     );
     let world = f.world.borrow();
-    let appended: Vec<_> = world
+    let appended = world
         .steps
         .iter()
         .filter(|(action, _)| action == "append-paragraph")
-        .collect();
-    assert_eq!(appended.len(), 1, "the confirmed step ran once");
+        .count();
+    assert_eq!(appended, 1, "the confirmed step ran once");
     assert_eq!(
         world.blocks.last().unwrap().1,
         "Kind regards, the hiring team"
@@ -326,7 +326,7 @@ fn a_long_run_resumes_after_a_restart_and_goes_on_within_its_context() {
             awaiting: Some(("append-paragraph".into(), 1)),
             ..letters()
         },
-        long_budget(200),
+        Some(long_budget(200)),
         model_with_context(),
         Box::new(|turn, _| match turn {
             last if last + 1 == TURNS => vec![finish("Finished the applications.", true)],
@@ -384,7 +384,7 @@ fn a_model_without_tool_calling_is_refused_by_name() {
     let (mut f, reading) = reading_fixture(
         "Go through today's applications",
         World::default(),
-        long_budget(200),
+        Some(long_budget(200)),
         agent_provider_config::ModelDescriptor {
             tool_calling: false,
             ..agent_provider_config::ModelDescriptor::new("tiny-chat")

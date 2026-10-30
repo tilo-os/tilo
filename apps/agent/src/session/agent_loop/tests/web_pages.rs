@@ -23,7 +23,7 @@ impl TurnTransport for LooksAtSites {
     fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
         let turn = {
             let mut bodies = self.bodies.lock().unwrap();
-            bodies.push(request.body.clone());
+            bodies.push(request.body);
             bodies.len() - 1
         };
         let invoke = |action: &str, parameters: Value| {
@@ -129,7 +129,7 @@ impl TurnTransport for ReadsManyPages {
     fn start(&self, request: TurnRequest) -> Receiver<TurnEvent> {
         let turn = {
             let mut bodies = self.bodies.lock().unwrap();
-            bodies.push(request.body.clone());
+            bodies.push(request.body);
             bodies.len() - 1
         };
         let call = if turn < self.pages {

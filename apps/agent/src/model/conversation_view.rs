@@ -26,11 +26,11 @@ impl Conversation {
     /// Every tool call so far with its result, oldest first: the result as
     /// it was, not as a compaction sends it.
     pub fn answered(&self) -> Vec<Answered> {
+        use agent_provider_config::protocol::Content;
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
             return legacy.answered();
         }
-        use agent_provider_config::protocol::Content;
         let mut calls: HashMap<&str, (&str, &Value)> = HashMap::new();
         let mut answered = Vec::new();
         for (at, content) in self
