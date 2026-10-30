@@ -7,7 +7,7 @@
 //! so this is one run rather than a harness of cases; a machine with no
 //! display runs nothing.
 //!
-//!     cargo run -p tilo-compositor --example nested_window
+//!     cargo run -p tilo-compositor --example nested_orientation
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
