@@ -176,7 +176,17 @@ impl crate::Published for WidgetHost {
         self.host
             .a11y_nodes()
             .into_iter()
-            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .flat_map(|(_, node)| {
+                // A live region is heard by what it says, which it carries
+                // as its value: a confirmation has no name of its own.
+                let words = if node.live().is_some() {
+                    node.value().map(str::to_owned)
+                } else {
+                    None
+                };
+                node.label().map(str::to_owned).into_iter().chain(words)
+            })
+            .filter(|words| !words.is_empty())
             .collect()
     }
 }
