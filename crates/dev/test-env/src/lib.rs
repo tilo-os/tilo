@@ -101,7 +101,10 @@ pub mod swtpm;
 
 pub use capability::{Capability, Probe, capability_unavailable};
 #[cfg(target_os = "linux")]
-pub use capability::{bubblewrap, mount_namespace, user_namespace};
+pub use capability::{
+    NamedProbe, PROBES, bubblewrap, bubblewrap_overlay, bubblewrap_with_proc, mount_namespace,
+    network_tunnel, user_namespace,
+};
 #[cfg(unix)]
 pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
