@@ -1016,7 +1016,14 @@ impl LaunchFailure {
         }
     }
 
-    pub(crate) const fn message_key(self) -> &'static str {
+    /// What the person reads for this failure to open `display_name`.
+    /// Formatted with the app's name whether or not the message names it
+    /// today, so no message can show its `{ $app }` unfilled.
+    pub(crate) fn message(self, display_name: &str) -> String {
+        app_message(self.message_key(), display_name)
+    }
+
+    const fn message_key(self) -> &'static str {
         match self {
             Self::LauncherUnavailable | Self::Other => "launch-failed-launcher-unavailable",
             Self::ProviderUnavailable => "launch-error-provider-unavailable",
@@ -1182,14 +1189,12 @@ impl LaunchEvent {
                 reason: LaunchFailure::RoomRefused,
                 detail,
             } => detail.clone(),
-            LaunchEventKind::SpawnFailed { reason, .. } => {
-                crate::shell::i18n::t(reason.message_key())
-            }
+            LaunchEventKind::SpawnFailed { reason, .. } => reason.message(&self.display_name),
             LaunchEventKind::Failed { code, stderr_tail } => {
-                crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
+                app_message(stopped_reason_key(*code, stderr_tail), &self.display_name)
             }
             LaunchEventKind::WindowLost { .. } => {
-                crate::shell::i18n::t("launch-failed-window-lost")
+                app_message("launch-failed-window-lost", &self.display_name)
             }
             LaunchEventKind::Started { .. }
             | LaunchEventKind::Exited
@@ -1333,6 +1338,12 @@ fn compact_notice_name(name: &str) -> String {
     } else {
         compact
     }
+}
+
+/// The launch-failure message `key`, formatted with the app's name: every
+/// such message may name the app it is about.
+fn app_message(key: &str, display_name: &str) -> String {
+    crate::shell::i18n::t_args(key, &[("app", compact_notice_name(display_name).into())])
 }
 
 pub(crate) fn launch_failure_title(display_name: &str) -> String {
@@ -4500,7 +4511,18 @@ pub(crate) fn admit_native_app(
         }
         Ok(())
     };
-    delegate().map_err(|detail| {
+    let asked = delegate();
+    // The grant can be in the room though its answer said otherwise (it
+    // landed, and only recording its receipt failed): the room, not the
+    // answer, says whether the app may author there now.
+    if asked.is_err()
+        && native_app_open_access(owner, room, certificate, package)
+            .is_ok_and(|now| now == NativeAppOpenAccess::Author)
+    {
+        // As any later opening of the app finds it.
+        return Ok(NativeAppOpenAccess::Author);
+    }
+    asked.map_err(|detail| {
         if let Some(detail) = app_authorship_refusal(&detail) {
             return LaunchError::AppAuthorshipRefused {
                 package_id: package.to_owned(),

@@ -2622,6 +2622,7 @@ agent-quick-shots-release-streamed = Three cards are still open on **Release 2.4
 agent-quick-shots-release-reply = Three cards are still open on **Release 2.4**, and two todos are left: *Sign the macOS build* by Friday and *Tell the beta group* on Saturday. I moved the release notes to Review and drafted a post for the Release channel, which waits for you.
 agent-quick-shots-answer-title = What's left for release 2.4
 agent-quick-placeholder-idle = Ask { $agent }, or say what to do
+agent-quick-new-agent-addressed = a new agent
 agent-quick-placeholder-running = Tell { $agent } how to continue
 agent-quick-editor-name = Your message to the agent
 agent-quick-send = Send
