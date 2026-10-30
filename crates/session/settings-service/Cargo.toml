@@ -1,0 +1,24 @@
+[package]
+name = "tilo-settings-service"
+description = "The session's settings service: the person's settings sections kept whether or not Settings is open, and every setting people look for by name published as an action that flips, picks or sets it."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+settings-sections = { path = "../../system/settings-sections" }
+settings-store = { path = "../../system/settings-store" }
+tilo-actions = { path = "../../collab/actions" }
+tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-service = { path = "../service" }
+tracing.workspace = true
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
