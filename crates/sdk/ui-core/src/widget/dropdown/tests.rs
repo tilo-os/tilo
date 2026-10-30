@@ -121,11 +121,18 @@ fn dropdown_touch_choices_use_host_targets_and_select_stable_values() {
                 .with_widget_mut::<Dropdown, _>(|dropdown| {
                     assert!(dropdown.is_open());
                     let minimum = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
-                    assert!(dropdown.rect.height() >= minimum,
-                        "the actual touch field must use the host minimum target");
-                    assert!(dropdown.list.row_height() >= minimum,
-                        "each actual painted and hit-tested choice must use the host touch target");
-                    let row = dropdown.list.row_rect(1).expect("the second choice is in view");
+                    assert!(
+                        dropdown.rect.height() >= minimum,
+                        "the actual touch field must use the host minimum target"
+                    );
+                    assert!(
+                        dropdown.list.row_height() >= minimum,
+                        "each actual painted and hit-tested choice must use the host touch target"
+                    );
+                    let row = dropdown
+                        .list
+                        .row_rect(1)
+                        .expect("the second choice is in view");
                     assert!(row.height() >= minimum);
                     row.center()
                 })
@@ -314,10 +321,8 @@ fn dropdown_language_revoked_action_releases_modal_capture() {
     let _settled = crate::motion::testing::settled();
     let mut dropdown =
         Dropdown::new(opts(), "legacy").on_action(crate::widget::test_string_action_binding());
-    let allowed = std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-        "test:control",
-        "set",
-    )]);
+    let allowed =
+        std::collections::HashSet::from([tilo_actions::ActionAddress::new("test:control", "set")]);
     crate::widget::controls::refresh_control_action_availability(&mut dropdown, &allowed);
     let mut doc = AutoCommit::new();
     assert!(Widget::perform_action(
@@ -730,8 +735,7 @@ fn combobox_filter_editing_handles_case_spaces_graphemes_and_ime() {
             &Theme::dark(),
             &PresenceCtx::empty(),
         );
-        let candidate =
-            Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
+        let candidate = Widget::ime_cursor_rect(&dd).expect("open combobox publishes its caret");
         assert!(dd.get_rect().contains(candidate.center()));
 
         assert!(feed_key(
@@ -1298,11 +1302,8 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
 
         let filled = crate::widget::Row::new()
             .push(Box::new(Dropdown::new(opts(), "tz").with_id("fill").fill()));
-        let app = crate::headless::FrameHarness::new(
-            crate::State::new(),
-            Box::new(filled),
-            (900, 200),
-        );
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(filled), (900, 200));
         let fill = *app.targets().get("fill").expect("filling dropdown");
         assert!(fill.width() > 600.0, "fill spans the row: {fill:?}");
     }
@@ -1423,8 +1424,7 @@ fn dropdown_sizes_to_its_options_and_keeps_its_value_while_open() {
             .abs()
                 < 1e-9
         );
-        let captioned =
-            DropdownFace::new(Rect::new(0.0, 0.0, 120.0, 60.0), "UTC").caption("Zone");
+        let captioned = DropdownFace::new(Rect::new(0.0, 0.0, 120.0, 60.0), "UTC").caption("Zone");
         let field = captioned.field_rect(&theme);
         assert!(field.y0 > 0.0 && field.y1 == 60.0);
         assert!(captioned.contains(&theme, field.center()));

@@ -244,6 +244,7 @@ impl Finish {
                 edge_highlight,
                 specular,
                 saturation,
+                light: Optics::LIGHT,
             },
             Self::Translucent { saturation, .. } => Optics {
                 saturation,
@@ -405,14 +406,20 @@ pub struct Optics {
     pub specular: f32,
     /// The backdrop's saturation.
     pub saturation: f32,
+    /// The light the rim and the sheen catch.
+    pub light: vello::peniko::Color,
 }
 
 impl Optics {
+    /// Daylight: what glass catches on its rim and across its body.
+    pub const LIGHT: vello::peniko::Color = vello::peniko::Color::WHITE;
+
     pub const NONE: Self = Self {
         refraction: 0.0,
         edge_highlight: 0.0,
         specular: 0.0,
         saturation: 1.0,
+        light: Self::LIGHT,
     };
 
     /// Whether the backdrop pass has anything to do beyond the blur.

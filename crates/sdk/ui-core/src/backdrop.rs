@@ -150,7 +150,7 @@ fn fill_finish(
             ),
         }
         if let Some(body) = body {
-            crate::surface::sheen(scene, transform, &body, optics.specular);
+            crate::surface::sheen(scene, transform, &body, optics);
         }
         settle(scene, transform, shape, theme, ground);
         scene.fill(
@@ -161,14 +161,14 @@ fn fill_finish(
             shape,
         );
         if let Some(body) = body {
-            crate::surface::rim_light(scene, transform, &body, optics.edge_highlight);
+            crate::surface::rim_light(scene, transform, &body, optics);
         }
         return;
     }
     scene.fill(Fill::NonZero, transform, ground, None, shape);
     if let Some(body) = body {
-        crate::surface::sheen(scene, transform, &body, optics.specular);
-        crate::surface::rim_light(scene, transform, &body, optics.edge_highlight);
+        crate::surface::sheen(scene, transform, &body, optics);
+        crate::surface::rim_light(scene, transform, &body, optics);
     }
 }
 

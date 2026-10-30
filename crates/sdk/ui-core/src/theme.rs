@@ -127,9 +127,9 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
             .unwrap_or(tokens.colors.text_tertiary),
     };
     tokens.elevation = tokens.elevation.with_depth(document.depth, outline);
-    if let Some(ink) = border_ink(&tokens.colors, document.shape.border.ink)
-        && document.shape.border.outlines()
-    {
+    tokens.border_color = border_ink(&tokens.colors, document.shape.border.ink)
+        .filter(|_| document.shape.border.outlines());
+    if let Some(ink) = tokens.border_color {
         // A floating panel's inner hairline becomes the border.
         tokens.elevation.floating_edge = ink;
     }
