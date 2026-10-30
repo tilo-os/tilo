@@ -279,6 +279,7 @@ ScopeDecl = "tilo_resource::ScopeDecl: an object of `anchor` (the resource or pa
 "FloatingSurfaceHostMessage::suspended" = "struct"
 "FloatingSurfaceHostMessage::suspended.id" = "String"
 "FloatingSurfaceHostMessage::toolbar_event" = "struct"
+"FloatingSurfaceHostMessage::toolbar_event.after_input" = "Option<u32> optional"
 "FloatingSurfaceHostMessage::toolbar_event.event" = "ToolbarEvent"
 "FloatingSurfaceHostMessage::version_mismatch" = "struct"
 "FloatingSurfaceHostMessage::version_mismatch.shell" = "u16"

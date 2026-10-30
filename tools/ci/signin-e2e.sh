@@ -17,7 +17,7 @@
 # serial logs and journals, each searched for every secret the run used.
 #
 # tools/ci/signin-e2e-builder.sh builds the image and the medium and runs this on a machine
-# without t, such as an rcargo builder.
+# without t, such as a remote build host.
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 

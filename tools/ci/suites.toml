@@ -51,6 +51,12 @@ by = "os/tests/test_image_size_budget.py"
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
+# Not a suite: the developer entry point that execs local_affected.py --changed,
+# whose command line and runs its test covers.
+[[covered]]
+suite = "tools/ci/test-changed.sh"
+by = "tools/tests/test_local_affected.py"
+
 [[covered]]
 suite = "tools/test-env-setup.sh"
 by = "tools/tests/test_test_environment.py"
@@ -795,9 +801,10 @@ readers = [
 
 [[cargo]]
 package = "tilolang-app"
-# The window's tests compile the built-in tilolang packages (source and ids lock).
-inputs = ["apps/tl/"]
-readers = ["apps/tilolang/tests/board.rs", "apps/tilolang/tests/opening.rs"]
+# The window's tests compile the built-in tilolang packages (source and ids lock), and its
+# package list embeds the letters fixture.
+inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/letters/"]
+readers = ["apps/tilolang/src/packages.rs", "apps/tilolang/tests/board.rs", "apps/tilolang/tests/opening.rs"]
 
 [[cargo]]
 package = "tilolang"
@@ -807,15 +814,18 @@ readers = ["crates/lang/tilolang/tests/it/multifile.rs"]
 
 [[cargo]]
 package = "tilolang-cli"
-# The build tests build and sign copies of the built-in packages.
-inputs = ["apps/tl/"]
-readers = ["crates/lang/tilolang-cli/tests/build.rs"]
+# The build tests build and sign copies of the built-in packages; the native-types tests
+# describe the chat app's native surface.
+inputs = ["apps/tl/", "apps/chat/"]
+readers = ["crates/lang/tilolang-cli/tests/build.rs", "crates/lang/tilolang-cli/tests/native_types.rs"]
 
 [[cargo]]
 package = "tilolang-runtime"
-# The end-to-end tests compile the built-in packages from their sources.
-inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/"]
+# The end-to-end tests compile the built-in packages from their sources; the apps test
+# renders the view the agent's recorded release script answers with.
+inputs = ["apps/tl/", "crates/lang/tilolang/tests/fixtures/", "scripts/headless-examples/agent-tilolang/release.json"]
 readers = [
+  "crates/lang/tilolang-runtime/tests/e2e_apps.rs",
   "crates/lang/tilolang-runtime/tests/e2e_blocks.rs",
   "crates/lang/tilolang-runtime/tests/e2e_cleanup.rs",
   "crates/lang/tilolang-runtime/tests/e2e_counter.rs",
@@ -837,8 +847,9 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
-  "crates/platform/tilolang-tilo/tests/reflection.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
+  "crates/platform/tilolang-tilo/tests/task.rs",
+  "crates/platform/tilolang-tilo/tests/tasks.rs",
 ]
 
 [[cargo]]
@@ -849,13 +860,20 @@ readers = [
   "crates/platform/tilolang-host/examples/host_cost.rs",
   "crates/platform/tilolang-host/src/phrases.rs",
   "crates/platform/tilolang-host/tests/host.rs",
+  "crates/platform/tilolang-host/tests/own_records.rs",
 ]
 
 [[cargo]]
 package = "onboarding-walk"
-# The names test reads the shell's onboarding view it walks.
-inputs = ["crates/session/shell/src/onboarding_view.rs"]
+# The names test reads the shell's onboarding view it walks and the page modules beside it.
+inputs = ["crates/session/shell/src/onboarding_view.rs", "crates/session/shell/src/onboarding_view/"]
 readers = ["crates/session/onboarding-walk/tests/names.rs"]
+
+[[cargo]]
+package = "provider-settings-ui"
+# The provider screenshots list the models of the provider config's recorded OpenRouter answer.
+inputs = ["crates/agent/provider-config/tests/fixtures/openrouter-models.json"]
+readers = ["crates/sdk/provider-settings-ui/src/app_tests.rs"]
 
 [[cargo]]
 package = "mail"

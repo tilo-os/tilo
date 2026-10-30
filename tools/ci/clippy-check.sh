@@ -47,7 +47,7 @@ mkdir -p "$reports" || exit 2
 
 run_clippy() {
     local source_commit result receipt_name
-    # A builder's copy of the worktree (rcargo exec, tools/ci/lint-affected.sh) has no git
+    # A builder's copy of the worktree (tools/ci/local_affected.py's builders) may have no git
     # metadata: there the receipt below is not written, the diagnostics are the verdict.
     source_commit=
     if git rev-parse --git-dir >/dev/null 2>&1; then
