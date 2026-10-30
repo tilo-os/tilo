@@ -101,12 +101,11 @@ mod nested {
             || PathBuf::from(&socket),
             |directory| Path::new(&directory).join(&socket),
         );
-        // SAFETY: this run is one thread and has opened no window yet; winit
-        // reads the display when it does, below.
-        unsafe {
-            std::env::set_var("WAYLAND_DISPLAY", &socket);
-            std::env::remove_var("DISPLAY");
-        }
+        // The scope takes the environment lock and restores both variables
+        // when it ends.
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &socket);
+        environment.remove("DISPLAY");
 
         let mut window = match Compositor::nested(
             Box::new(StackPolicy),
